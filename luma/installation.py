@@ -11,15 +11,21 @@ import json
 import os
 from pathlib import Path
 import pwd
+import shutil
 import stat
 import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from urllib.parse import urlsplit
 
 SCHEMA = "luma.installation/v1"
 RECORD = "luma-installation.json"
+LIFECYCLE = "lifecycle"
+TARGET = "target.json"
+PREVIOUS_SHIM = "previous-luma"
+PREVIOUS_META = "previous.json"
 
 
 def _absolute(value: str) -> Path:
@@ -141,6 +147,108 @@ def installer_environment(env: dict[str, str], record: dict | None) -> dict[str,
     return result
 
 
+def lifecycle_dir(install_home: Path) -> Path:
+    path = _absolute(str(install_home)) / LIFECYCLE
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        path.chmod(stat.S_IMODE(path.stat().st_mode) & ~0o077)
+    except OSError:
+        pass
+    return path
+
+
+def write_json(path: Path, value: dict) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as file:
+            json.dump(value, file, indent=2, sort_keys=True)
+            file.write("\n")
+            file.flush()
+            os.fsync(file.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def backup_shim(bin_dir: Path, install_home: Path, *, previous_runtime: str = "") -> dict | None:
+    """Copy the live command shim aside. Missing shim is a first install, not an error."""
+    shim = _absolute(str(bin_dir)) / "luma"
+    home = lifecycle_dir(install_home)
+    if not shim.is_file():
+        return None
+    destination = home / PREVIOUS_SHIM
+    shutil.copy2(shim, destination)
+    os.chmod(destination, 0o755)
+    meta = {"shim": str(shim), "previousRuntime": previous_runtime, "backedUpAt": int(time.time())}
+    write_json(home / PREVIOUS_META, meta)
+    return meta
+
+
+def restore_shim(install_home: Path, bin_dir: Path) -> None:
+    home = lifecycle_dir(install_home)
+    previous = home / PREVIOUS_SHIM
+    if not previous.is_file():
+        raise ValueError("no previous Luma command shim is available to restore")
+    shim = _absolute(str(bin_dir)) / "luma"
+    shim.parent.mkdir(parents=True, exist_ok=True)
+    temporary = shim.with_name(f".luma.rollback.{os.getpid()}")
+    shutil.copy2(previous, temporary)
+    os.chmod(temporary, 0o755)
+    os.replace(temporary, shim)
+
+
+def write_target(install_home: Path, *, runtime: Path, version: str, source: Path,
+                 bin_dir: Path, previous_runtime: str = "") -> dict:
+    record = {
+        "runtime": str(_absolute(str(runtime)).resolve()),
+        "version": version,
+        "source": str(_absolute(str(source)).resolve()),
+        "binDir": str(_absolute(str(bin_dir)).resolve()),
+        "installHome": str(_absolute(str(install_home)).resolve()),
+        "previousRuntime": previous_runtime,
+    }
+    write_json(lifecycle_dir(install_home) / TARGET, record)
+    return record
+
+
+def read_target(install_home: Path) -> dict | None:
+    path = lifecycle_dir(install_home) / TARGET
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"lifecycle target record is unreadable: {exc}") from exc
+    if not isinstance(data, dict) or not data.get("runtime"):
+        raise ValueError("lifecycle target record is invalid")
+    return data
+
+
+def write_operation(install_home: Path, record: dict) -> dict:
+    if not isinstance(record, dict) or not str(record.get("id") or "").strip():
+        raise ValueError("lifecycle operation id is required")
+    record = dict(record)
+    home = lifecycle_dir(install_home)
+    write_json(home / "current.json", {"id": record["id"]})
+    write_json(home / "operations" / f"{record['id']}.json", record)
+    return record
+
+
+def read_operation(install_home: Path, operation_id: str) -> dict | None:
+    path = lifecycle_dir(install_home) / "operations" / f"{operation_id}.json"
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"lifecycle operation is unreadable: {exc}") from exc
+    return data if isinstance(data, dict) else None
+
+
 def write_record(prefix: Path, *, root: Path, bindir: Path, home: Path, source: Path,
                  policy: dict, version: str, previous_runtime: str = "") -> dict:
     for path in (prefix, root, bindir, home, source):
@@ -230,13 +338,20 @@ def installation_diagnostics(env: dict[str, str] | None = None) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("pip", "record", "shim"))
+    parser.add_argument("action", choices=("pip", "record", "shim", "backup-shim", "target", "restore-shim"))
     args, rest = parser.parse_known_args()
     env = dict(os.environ)
     try:
         policy = dependency_policy(env)
         if args.action == "pip":
             return subprocess.call([sys.executable, "-I", "-m", "pip", *rest], env=pip_environment(env, policy))
+        if args.action == "backup-shim":
+            backup_shim(Path(env["BIN_DIR"]), Path(env["INSTALL_HOME"]),
+                        previous_runtime=env.get("LUMA_PREVIOUS_RUNTIME", ""))
+            return 0
+        if args.action == "restore-shim":
+            restore_shim(Path(env["INSTALL_HOME"]), Path(env["BIN_DIR"]))
+            return 0
         source = _absolute(env["SOURCE_DIR"])
         if args.action == "shim":
             # Quote paths as shell data, not interpolated shell program text.
@@ -246,6 +361,11 @@ def main() -> int:
             print("exec " + shlex.quote(str(Path(sys.prefix) / "bin/python")) + ' -m luma.cli "$@"')
             return 0
         version = next(line.split('"')[1] for line in (source / "luma/__init__.py").read_text().splitlines() if line.startswith('__version__ = "'))
+        if args.action == "target":
+            write_target(Path(env["INSTALL_HOME"]), runtime=Path(sys.prefix), version=version,
+                         source=source, bin_dir=Path(env["BIN_DIR"]),
+                         previous_runtime=env.get("LUMA_PREVIOUS_RUNTIME", ""))
+            return 0
         write_record(Path(sys.prefix), root=Path(env["INSTALL_HOME"]), bindir=Path(env["BIN_DIR"]),
                      home=Path(env["LUMA_USER_HOME"]), source=source, policy=policy,
                      version=version, previous_runtime=env.get("LUMA_PREVIOUS_RUNTIME", ""))

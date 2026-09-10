@@ -191,3 +191,12 @@ CI 使用仓库 `scripts/check-luma.sh` 全门禁；真实机器验收额外记�
 真实隔离安装冒烟测试使用本地源码归档和全新 venv，故意注入错误 PIP_INDEX_URL/PIP_NO_INDEX；依赖安装、CLI version、doctor --local 均通过。此测试不是 systemd/launchd 服务切换或自动回滚证明。此次用户已授权 review 后提交、发布、升级控制面；生产操作按发布顺序另行核验，未完成计划项继续保留。
 
 v0.1.317 发布门禁：1299 个 Python 测试、67 个 JavaScript 测试和完整 scripts/check-luma.sh 均通过。Review 新增旧解释器重入、目录别名一致性、显式 CA 优先级回归覆盖；真实全新 venv 冒烟通过。后续未实施阶段不计入本次完成度。
+
+### A3/B2 源码落地（2026-09-10，未发布）
+
+| 项目 | 本批源码落地 | 尚未完成 |
+| --- | --- | --- |
+| A3 | `luma/node_lifecycle.py` 独立 systemd-run/launchd supervisor；切换前备份 shim；新进程必须证明目标 runtime 或 nonce；失败恢复 previous shim 并再重启；`target.json` 缺失时保留旧 in-process refresh | 真实 systemd/launchd 升级回滚、切换全周期锁、Control 重启后 supervisor 恢复、host 无 systemd-run 的明确拒绝 UX |
+| B2 | Control `controlMaintenance` 租约；manager 更新拒绝并发 deploy/build；要求内部 registry 已缓存 Control 镜像；捕获 route baseline；status 在 agent 终态后对照路由并释放租约 | 镜像预缓存自动并入同一 operation、活跃构建排队而非拒绝、Dashboard 展示 operation/lease、manager 本机 supervisor 不依赖即将被替换的 Control 进程做唯一验证 |
+
+未 bump 版本、未提交/推送、未发布制品、未变更生产节点。

@@ -1,8 +1,12 @@
 # Managed installation and local diagnosis
 
 > Introduced in v0.1.317: the initial managed-installation hardening batch.
-> Candidate preparation is isolated; service-level supervised rollback is **not**
-> implemented yet. Do not treat this document as a completed fleet migration procedure.
+> Candidate preparation is isolated. A later change adds an independent
+> node-agent cutover supervisor with shim rollback when the new process does
+> not prove it is the target runtime. Manager updates take a Control
+> maintenance lease that rejects concurrent deploys/builds and requires a
+> cached Control image. Do not treat this document as a completed fleet
+> migration procedure.
 
 ## Installation identity
 
@@ -113,10 +117,23 @@ join command. Roll out the compatible Control endpoint **before** new joining
 clients. This is join verification, not the planned persistent join operation,
 full role-capability preflight or update nonce verification.
 
+## Node-agent cutover
+
+After a managed installer publishes a new command shim it writes
+`<install-root>/lifecycle/target.json` and copies the previous shim aside.
+`update-luma` then starts an independent systemd/launchd supervisor
+(`python -m luma.node_lifecycle switch`) instead of restarting the agent from
+inside the running task. The supervisor restarts the node-agent service, waits
+until the new process is the target runtime (or the new agent records the
+cutover nonce), and restores the previous shim if that proof never appears.
+
+This is not yet a durable distributed maintenance lease, and a host without
+systemd-run/launchd cannot use the supervised path. Mixed-version agents that
+do not find `target.json` keep the previous in-process service refresh.
+
 ## Not yet covered
 
-Independent systemd/launchd update supervision, crash recovery, automatic service
-rollback, version/operation-bound upgrade heartbeats, public adoption/repair,
+Crash recovery of a supervisor that died mid-switch, public adoption/repair,
 Dashboard lifecycle UI, stable-release default resolution, builder/registry
 validation, manager maintenance gates and observe/backup standardization remain
 tracked in `standard-path-remediation-plan-2026-09-09.md`. No live upgrade should

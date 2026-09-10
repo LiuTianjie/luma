@@ -8734,6 +8734,7 @@ def handle_build_deploy(
 ) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
+    _reject_control_maintenance(state)
     _apply_state_secrets(state)
     build_config = _build_config(state)
     provider_id = str(body.get("providerId") or "").strip()
@@ -11286,6 +11287,7 @@ def _forget_compose_deployment(state: Dict[str, Any], deployment: ComposeDeploym
 def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
+    _reject_control_maintenance(state)
     _apply_state_secrets(state)
     steps: list[dict[str, str]] = []
     manifest = body.get("manifest")
@@ -12368,6 +12370,7 @@ def handle_fleet_update(
 ) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
+    _reject_control_maintenance(state)
     install_ref = str(body.get("installRef") or "").strip()
     include_all = bool(body.get("includeAll"))
     include_manager = bool(body.get("includeManager"))
@@ -12415,6 +12418,15 @@ def handle_fleet_update(
         }
         if progress:
             progress(dict(item))
+        try:
+            _reject_control_maintenance(current_state)
+        except LumaError as exc:
+            item["status"] = "failed"
+            item["message"] = str(exc)
+            results.append(item)
+            if progress:
+                progress(dict(item))
+            continue
         if _node_record_is_manager(record) and not include_manager:
             item["status"] = "skipped"
             item["message"] = (
@@ -12491,7 +12503,10 @@ def handle_fleet_update(
                 item["installedVersion"] = installed_version
             if result.get("output"):
                 item["output"] = str(result.get("output"))
-            if wait_ready_seconds:
+            verify_seconds = wait_ready_seconds
+            if result.get("lifecycleOperationId"):
+                verify_seconds = max(verify_seconds, 120)
+            if verify_seconds:
                 item["status"] = "verifying"
                 item["message"] = "Installer finished; waiting for the updated node agent to reconnect."
                 if progress:
@@ -12507,7 +12522,7 @@ def handle_fleet_update(
                         "Installer did not report the installed version for this commit/branch update; "
                         "update this node with a release tag once before retrying an untagged ref."
                     )
-                verify_deadline = time.monotonic() + wait_ready_seconds
+                verify_deadline = time.monotonic() + verify_seconds
                 verified_agent: Dict[str, Any] | None = None
                 while time.monotonic() < verify_deadline:
                     time.sleep(min(2.0, max(verify_deadline - time.monotonic(), 0.1)))
@@ -12536,7 +12551,7 @@ def handle_fleet_update(
                     item["status"] = "failed"
                     item["message"] = (
                         "Installer finished, but the updated node agent did not reconnect with the expected version "
-                        f"within {wait_ready_seconds} seconds. Retry this node from the update center."
+                        f"within {verify_seconds} seconds. Retry this node from the update center."
                     )
                 else:
                     item["status"] = "succeeded"
@@ -12953,9 +12968,177 @@ def handle_control_image_prepare_get(token: str, operation_id: str = "") -> Dict
         return _control_image_prepare_public(record)
 
 
+_CONTROL_MAINTENANCE_HELD = "held"
+_MANAGER_UPDATE_TERMINAL = {"succeeded", "failed", "interrupted"}
+
+
+def _control_maintenance(state: Dict[str, Any]) -> Dict[str, Any] | None:
+    current = state.get("controlMaintenance")
+    if isinstance(current, dict) and str(current.get("status") or "") == _CONTROL_MAINTENANCE_HELD:
+        return current
+    return None
+
+
+def _reject_control_maintenance(state: Dict[str, Any]) -> None:
+    current = _control_maintenance(state)
+    if current:
+        kind = str(current.get("kind") or "update")
+        operation_id = str(current.get("id") or "")
+        raise LumaError(
+            f"cluster maintenance in progress ({kind} {operation_id}). "
+            "Retry after the manager update finishes."
+        )
+
+
+def _active_build_blockers(state: Dict[str, Any]) -> list[str]:
+    runs = _build_runs(state)
+    statuses = {"queued", "running", "canceling", "finalizing"}
+    values = getattr(runs, "active_values", None)
+    items = list(values(statuses)) if callable(values) else [
+        run for run in runs.values()
+        if isinstance(run, dict) and str(run.get("status") or "") in statuses
+    ]
+    return [
+        str(run.get("id") or run.get("name") or "build")
+        for run in items if isinstance(run, dict)
+    ]
+
+
+def _manager_update_operation_dir() -> Path:
+    return state_dir() / "manager-update-operations"
+
+
+def _manager_update_operation_path(operation_id: str) -> Path:
+    safe_id = str(operation_id or "").strip()
+    if not re.fullmatch(r"manager-op-[0-9]{10,}-[a-f0-9]{8}", safe_id):
+        raise LumaError("invalid manager update operation id")
+    return _manager_update_operation_dir() / f"{safe_id}.json"
+
+
+def _manager_update_operation_write(record: Dict[str, Any]) -> None:
+    record["updatedAt"] = int(time.time())
+    save_state(record, _manager_update_operation_path(str(record.get("id") or "")))
+
+
+def _manager_update_operation_read(operation_id: str) -> Dict[str, Any]:
+    path = _manager_update_operation_path(operation_id)
+    if not path.exists():
+        raise LumaError("manager update operation not found")
+    return load_state(path)
+
+
+def _latest_manager_update_operation() -> Dict[str, Any] | None:
+    root = _manager_update_operation_dir()
+    if not root.exists():
+        return None
+    candidates = sorted(root.glob("manager-op-*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    if not candidates:
+        return None
+    return load_state(candidates[0])
+
+
+def _prepared_control_image(state: Dict[str, Any], install_ref: str, source_image: str) -> str:
+    try:
+        plan = _control_image_prepare_plan(state, install_ref, source_image)
+    except LumaError as exc:
+        message = str(exc)
+        if "registryHost is not configured" in message or "pushHost is not configured" in message:
+            return source_image
+        raise
+    destination = str(plan.get("destinationImage") or source_image)
+    if plan.get("alreadyInternal"):
+        return destination
+    root = _control_image_prepare_dir()
+    if root.exists():
+        for path in sorted(root.glob("image-*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+            try:
+                record = load_state(path)
+            except (LumaError, OSError):
+                continue
+            if (
+                str(record.get("status") or "") == "succeeded"
+                and str(record.get("installRef") or "") == install_ref
+                and str(record.get("destinationImage") or "") == destination
+            ):
+                return destination
+    raise LumaError(
+        "Control image is not cached in the internal registry; "
+        "prepare it from the update page before starting the manager update"
+    )
+
+
+def _manager_update_baseline(state: Dict[str, Any], domain: str) -> Dict[str, Any]:
+    _name, record = _manager_update_target(state)
+    agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
+    probe: Dict[str, Any]
+    try:
+        probe = _sentinel_probe_public_route(domain)
+    except Exception as exc:
+        probe = {"ok": False, "status": 0, "error": str(exc)[:240]}
+    return {
+        "agentVersion": str(agent.get("version") or ""),
+        "routeOk": probe.get("ok"),
+        "routeStatus": probe.get("status"),
+        "routeError": str(probe.get("error") or ""),
+        "controlVersion": __version__,
+        "capturedAt": int(time.time()),
+    }
+
+
+def _set_control_maintenance(*, kind: str, operation_id: str, install_ref: str) -> None:
+    def mutate(state: Dict[str, Any]) -> Dict[str, Any]:
+        existing = _control_maintenance(state)
+        if existing:
+            raise LumaError(
+                f"cluster maintenance already held by {existing.get('kind')} {existing.get('id')}"
+            )
+        state["controlMaintenance"] = {
+            "schemaVersion": "luma.control-maintenance/v1",
+            "kind": kind,
+            "id": operation_id,
+            "installRef": install_ref,
+            "status": _CONTROL_MAINTENANCE_HELD,
+            "createdAt": int(time.time()),
+        }
+        return state["controlMaintenance"]
+    mutate_state(mutate)
+
+
+def _release_control_maintenance(operation_id: str, *, status: str = "released") -> None:
+    def mutate(state: Dict[str, Any]) -> Dict[str, Any] | None:
+        current = state.get("controlMaintenance")
+        if not isinstance(current, dict) or str(current.get("id") or "") != operation_id:
+            return current if isinstance(current, dict) else None
+        updated = dict(current)
+        updated["status"] = status
+        updated["releasedAt"] = int(time.time())
+        state["controlMaintenance"] = updated
+        return updated
+    mutate_state(mutate)
+
+
+def _verify_manager_update(operation: Dict[str, Any], domain: str) -> Dict[str, Any]:
+    baseline = operation.get("baseline") if isinstance(operation.get("baseline"), dict) else {}
+    try:
+        probe = _sentinel_probe_public_route(domain)
+    except Exception as exc:
+        return {"ok": False, "message": f"route verification failed: {exc}"}
+    if baseline.get("routeOk") is True and probe.get("ok") is not True:
+        return {
+            "ok": False,
+            "message": (
+                "manager update finished but the control domain route is newly failing "
+                f"(status={probe.get('status') or 0})"
+            ),
+            "probe": probe,
+        }
+    return {"ok": True, "probe": probe}
+
+
 def handle_manager_update_start(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
+    _reject_control_maintenance(state)
     install_ref = str(body.get("installRef") or "").strip()
     if not install_ref or len(install_ref) > 200 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", install_ref):
         raise LumaError("installRef must be a Git tag, branch, or commit")
@@ -12983,6 +13166,15 @@ def handle_manager_update_start(token: str, body: Dict[str, Any]) -> Dict[str, A
             raise LumaError("controlEnvironment values must not be empty")
     else:
         raise LumaError("controlEnvironment must be an object")
+    blockers = _active_build_blockers(state)
+    if blockers:
+        raise LumaError(
+            "active build(s) in progress: "
+            + ", ".join(blockers[:5])
+            + "; wait for them to finish before updating the manager"
+        )
+    control_image = _prepared_control_image(state, install_ref, control_image)
+    baseline = _manager_update_baseline(state, domain)
     node_name, _record = _manager_update_target(state)
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     watchdog_peers = sorted(
@@ -12995,23 +13187,56 @@ def handle_manager_update_start(token: str, body: Dict[str, Any]) -> Dict[str, A
             and str(record.get("tailscaleIP") or "").strip()
         }
     )
-    result = _run_node_agent_task(
-        state,
-        node_name,
-        "start-manager-update",
-        {
-            "installRef": install_ref,
-            "controlImage": control_image,
-            "domain": domain,
-            "controlEnvironment": control_environment,
-            "tailscaleWatchdogPeers": watchdog_peers,
-        },
-        timeout=90,
-        required_capability="manager-update-v1",
-    )
+    operation_id = f"manager-op-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
+    operation: Dict[str, Any] = {
+        "schemaVersion": "luma.manager-update-operation/v1",
+        "id": operation_id,
+        "clusterId": str(state.get("clusterId") or ""),
+        "installRef": install_ref,
+        "controlImage": control_image,
+        "domain": domain,
+        "managerNode": node_name,
+        "status": "switching",
+        "baseline": baseline,
+        "createdAt": int(time.time()),
+    }
+    _set_control_maintenance(kind="manager-update", operation_id=operation_id, install_ref=install_ref)
+    try:
+        _manager_update_operation_write(operation)
+        result = _run_node_agent_task(
+            state,
+            node_name,
+            "start-manager-update",
+            {
+                "installRef": install_ref,
+                "controlImage": control_image,
+                "domain": domain,
+                "controlEnvironment": control_environment,
+                "tailscaleWatchdogPeers": watchdog_peers,
+            },
+            timeout=90,
+            required_capability="manager-update-v1",
+        )
+    except Exception:
+        operation["status"] = "failed"
+        operation["message"] = "failed to start the independent manager update unit"
+        operation["finishedAt"] = int(time.time())
+        try:
+            _manager_update_operation_write(operation)
+        except Exception:
+            pass
+        _release_control_maintenance(operation_id, status="failed")
+        raise
+    operation["agentUpdateId"] = str(result.get("updateId") or "")
+    operation["taskId"] = str(result.get("taskId") or "")
+    operation["status"] = str(result.get("status") or "running")
+    operation["message"] = str(result.get("message") or "")
+    _manager_update_operation_write(operation)
     return {
         "clusterId": str(state.get("clusterId") or ""),
         "managerNode": node_name,
+        "operationId": operation_id,
+        "baseline": baseline,
         **{key: value for key, value in result.items() if key != "taskId"},
         "taskId": str(result.get("taskId") or ""),
     }
@@ -13030,7 +13255,53 @@ def handle_manager_update_status(token: str, update_id: str = "") -> Dict[str, A
         required_capability="manager-update-v1",
     )
     result.pop("taskId", None)
-    return {"clusterId": str(state.get("clusterId") or ""), "managerNode": node_name, **result}
+    held = _control_maintenance(state)
+    operation = None
+    if held and held.get("id"):
+        try:
+            operation = _manager_update_operation_read(str(held.get("id") or ""))
+        except (LumaError, OSError):
+            operation = None
+    if operation is None:
+        try:
+            operation = _latest_manager_update_operation()
+        except (LumaError, OSError):
+            operation = None
+    payload = {"clusterId": str(state.get("clusterId") or ""), "managerNode": node_name, **result}
+    if not operation:
+        return payload
+    payload["operationId"] = str(operation.get("id") or "")
+    payload["baseline"] = operation.get("baseline")
+    if operation.get("finishedAt"):
+        payload["status"] = str(operation.get("status") or payload.get("status") or "")
+        payload["message"] = str(operation.get("message") or payload.get("message") or "")
+        payload["maintenance"] = _control_maintenance(load_state())
+        return payload
+    agent_status = str(result.get("status") or "")
+    agent_update_id = str(result.get("updateId") or update_id or "")
+    owned_update = str(operation.get("agentUpdateId") or "")
+    if agent_update_id and owned_update and agent_update_id != owned_update:
+        payload["maintenance"] = held
+        return payload
+    domain = str(state.get("domain") or operation.get("domain") or "")
+    if agent_status in _MANAGER_UPDATE_TERMINAL:
+        final_status = agent_status
+        message = str(result.get("message") or "")
+        if agent_status == "succeeded" and domain:
+            verification = _verify_manager_update(operation, domain)
+            payload["verification"] = {key: value for key, value in verification.items() if key != "probe"}
+            if verification.get("ok") is not True:
+                final_status = "failed"
+                message = str(verification.get("message") or message)
+                payload["status"] = "failed"
+                payload["message"] = message
+        operation["status"] = final_status
+        operation["message"] = message
+        operation["finishedAt"] = int(time.time())
+        _manager_update_operation_write(operation)
+        _release_control_maintenance(str(operation.get("id") or ""), status=final_status)
+    payload["maintenance"] = _control_maintenance(load_state())
+    return payload
 
 
 def _sentinel_probe_public_route(domain: str) -> Dict[str, Any]:
@@ -13177,6 +13448,7 @@ def _is_system_stack(stack: str) -> bool:
 def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
+    _reject_control_maintenance(state)
     _apply_state_secrets(state)
     steps: list[dict[str, str]] = []
     source_name = str(body.get("sourceName") or "luma.compose.yml")

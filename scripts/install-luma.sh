@@ -453,6 +453,8 @@ if [ "$LOCAL_CHECKOUT" -eq 0 ]; then
   fi
   "$VENV_DIR/bin/python" "$SOURCE_DIR/luma/installation.py" record
   mkdir -p "$BIN_DIR"
+  "$VENV_DIR/bin/python" "$SOURCE_DIR/luma/installation.py" backup-shim
+  "$VENV_DIR/bin/python" "$SOURCE_DIR/luma/installation.py" target
   shim_tmp="$(mktemp "$BIN_DIR/.luma.XXXXXXXX")"
   "$VENV_DIR/bin/python" "$SOURCE_DIR/luma/installation.py" shim > "$shim_tmp"
   chmod 755 "$shim_tmp"

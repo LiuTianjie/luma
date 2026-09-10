@@ -1362,6 +1362,11 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
     node_id = str(config.get("nodeId") or "")
     if not endpoint or not token or not node_name:
         raise LumaError(f"invalid node agent config: {config_path}")
+    try:
+        from .node_lifecycle import note_agent_started
+        note_agent_started()
+    except Exception:
+        pass
     client = ControlClient(
         endpoint,
         token,
@@ -4493,6 +4498,55 @@ def update_luma_install(
             "the update cannot be verified"
         )
     installed_version = version_match.group(1)
+    layout = _current_install_layout()
+    target = None
+    if layout:
+        try:
+            from .installation import read_target
+            target = read_target(layout[1])
+        except (ValueError, OSError):
+            target = None
+    if target and str(target.get("version") or "") == installed_version:
+        emit("Package installed; starting independent node-agent cutover.")
+        from .node_lifecycle import start_cutover
+        os_value = node_agent_os()
+        executable = _installed_luma_executable()
+        try:
+            executor = LocalExecutor()
+            executor.sudo(
+                _agent_service_command(config_path, executable=executable, restart=False),
+                timeout=60,
+            )
+        except Exception as exc:
+            raise LumaError(
+                f"Luma installer finished but node agent service refresh failed: {exc}"
+            ) from exc
+        try:
+            LocalExecutor().sudo(_node_tailscale_watchdog_install_command(os_value), timeout=60)
+        except Exception:
+            pass
+        try:
+            operation = start_cutover(
+                install_home=layout[1],
+                bin_dir=layout[2],
+                target_runtime=Path(target["runtime"]),
+                target_version=installed_version,
+                config_path=config_path,
+                previous_runtime=str(target.get("previousRuntime") or ""),
+            )
+        except Exception as exc:
+            raise LumaError(
+                f"Luma installer finished but node-agent cutover could not start: {exc}"
+            ) from exc
+        emit("Independent supervisor started; previous runtime remains available until verification succeeds.")
+        return {
+            "installRef": exact_ref,
+            "installedVersion": installed_version,
+            "lifecycleOperationId": str(operation.get("id") or ""),
+            "message": "Luma installer finished; node-agent cutover scheduled",
+            "output": _tail_text(output),
+            "restartAgent": True,
+        }
     emit("Package installed; refreshing the node agent service definition.")
     os_value = node_agent_os()
     executable = _installed_luma_executable()

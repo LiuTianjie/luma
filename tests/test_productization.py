@@ -4989,7 +4989,17 @@ class ControlApiTests(unittest.TestCase):
         }
         with patch("luma.control.server.load_state", return_value=state), patch(
             "luma.control.server._run_node_agent_task", return_value=result
-        ) as run:
+        ) as run, patch(
+            "luma.control.server._prepared_control_image",
+            return_value="ghcr.io/liutianjie/luma-control:v0.1.173",
+        ), patch(
+            "luma.control.server._manager_update_baseline",
+            return_value={"routeOk": True, "controlVersion": "0.1.173"},
+        ), patch(
+            "luma.control.server._set_control_maintenance"
+        ), patch(
+            "luma.control.server._manager_update_operation_write"
+        ):
             response = handle_manager_update_start(
                 "management-token",
                 {
