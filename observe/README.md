@@ -27,7 +27,15 @@ Tailscale or port 3000.
 It does not scrape application stdout and does not evaluate alerts inside Control.
 Deploying this stack is the observability component: later Luma app deploys
 receive official OTel env vars automatically. Redeploy existing apps to pick
-them up. There is no Luma SDK.
+them up. There is no Luma SDK. Restarting an old allocation is not enough.
+
+## Application integration
+
+Public HTTP already has Traefik RED and an ingress span. Process spans need
+the official OpenTelemetry distro in the image. Do not set the OTLP endpoint
+or a Luma SDK; Control injects `OTEL_*` on the next deploy. Manual spans use
+`opentelemetry.trace.get_tracer(...).start_as_current_span(...)` (or the
+language equivalent). See [Application integration](../docs/observability.md#application-integration).
 
 ## Deploy
 

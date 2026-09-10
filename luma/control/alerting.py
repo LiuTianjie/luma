@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 from ..errors import LumaError
 from . import database
-from .alert_notifications import FeishuError, send_feishu, validate_credentials
+from .alert_notifications import FeishuError, alert_outbox_text, feishu_alert_card, send_feishu, validate_credentials
 
 PRESETS = [
     dict(metric='node.offline', name='节点失联', description='Agent 心跳距今超过阈值；不是 Nomad 调度状态', threshold=120, forSeconds=60, unit='seconds'),
@@ -195,7 +195,22 @@ def _notify(conn,rule,incident,kind,now,cluster):
         return False
     label = {'firing':'告警触发','resolved':'告警恢复','reminder':'告警持续'}[kind]
     value = '无新鲜数据' if incident['no_data'] else f"{incident['value']:g}"
-    text = f"Luma {label} · {rule['name']}\n集群：{cluster}\n对象：{incident['target']}\n级别：{rule['severity']}\n当前值：{value}；阈值：{rule['threshold']:g}\n事件编号：{incident['id']}\n请在 Dashboard → 可观测性 → 告警中心查看。"
+    threshold = f"{rule['threshold']:g}"
+    fallback = f"Luma {label} · {rule['name']}\n集群：{cluster}\n对象：{incident['target']}\n级别：{rule['severity']}\n当前值：{value}；阈值：{threshold}\n事件编号：{incident['id']}\n请在 Dashboard → 可观测性 → 告警中心查看。"
+    text = alert_outbox_text(
+        kind=kind,
+        fallback=fallback,
+        card=feishu_alert_card(
+            kind=kind,
+            title=rule['name'],
+            cluster=cluster,
+            target=incident['target'],
+            severity=rule['severity'],
+            value=value,
+            threshold=threshold,
+            incident_id=incident['id'],
+        ),
+    )
     for channel in channels:
         if kind == 'resolved' and not conn.execute("SELECT 1 FROM alert_outbox WHERE incident_id=? AND channel_id=? AND kind IN ('firing','reminder') AND status IN ('sent','sending')",(incident['id'],channel['id'])).fetchone():
             continue
@@ -450,7 +465,18 @@ def dispatch(method: str, resource: str, body=None, query=None):
             if not channel or not channel['enabled']: raise LumaError('enabled notification channel not found')
             last = conn.execute("SELECT created_at FROM alert_outbox WHERE channel_id=? AND kind='test' ORDER BY id DESC LIMIT 1",(identifier,)).fetchone()
             if last and now-last[0]<30: raise LumaError('wait 30 seconds between channel tests')
-            delivery = _enqueue(conn,identifier,None,'test','Luma 通知测试：飞书告警渠道连接验证。',now)
+            delivery = _enqueue(
+                conn,
+                identifier,
+                None,
+                'test',
+                alert_outbox_text(
+                    kind='test',
+                    fallback='Luma 通知测试：飞书告警渠道连接验证。',
+                    card=feishu_alert_card(kind='test', title='飞书告警渠道连接验证'),
+                ),
+                now,
+            )
             return {'delivery':_delivery(conn.execute('SELECT * FROM alert_outbox WHERE id=?',(delivery,)).fetchone())}
         if name=='incidents' and identifier:
             row = conn.execute('SELECT * FROM alert_incidents WHERE id=?',(identifier,)).fetchone()

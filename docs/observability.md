@@ -26,6 +26,76 @@ The charts are per Luma app (Traefik HTTP rate, 5xx and p90/p95/p99 latency + No
 Selecting observe also injects official OpenTelemetry environment variables into later Luma deploys (`OTEL_SERVICE_NAME`, `luma.stack` / `luma.task` / `luma.region`, OTLP HTTP to the mesh listener). Apps that already ship an OpenTelemetry distro emit spans without a Luma SDK. Redeploy existing apps after observe is first enabled. Trace export is sampled at 10% (`parentbased_traceidratio`) and fail-open.
 Do not ship raw access logs or traces off the manager public interface.
 
+## Application integration
+
+Deploying [`observe/`](../observe/) is the cluster opt-in. After that, new Luma
+deploys get OTel wiring automatically. A process restart of an old job is not
+enough; the Nomad job must be rendered again. There is no Luma telemetry SDK
+and no language agent injection.
+
+What you get without changing the app:
+
+- Traefik HTTP RED (rate, 5xx, p90/p95/p99) labeled by Luma app name
+- Nomad running / current failed / restart counts labeled by Luma app name
+- An ingress span for public HTTP (`cn-edge` / `external-edge`) stored in Tempo
+
+What you get after a new deploy, only if the image already speaks OpenTelemetry:
+
+- Process spans exported to Tempo with `luma.stack` / `luma.task` / `luma.region`
+- Look at Dashboard → Observability → Apps → Traces, or Grafana `/grafana/d/luma-traces`
+
+What you still do not get: nginx / static Go / images with no OTel SDK, traffic
+that never hits Traefik, request bodies, SQL text, or 100% of requests (about
+one in ten traces is kept). Export is fail-open.
+
+### Manual spans
+
+Do not set `OTEL_EXPORTER_OTLP_ENDPOINT` or the bearer header. Control already
+injects them. Use the official OpenTelemetry API and keep exporters fail-open.
+
+Install the official distro plus OTLP exporter in the image, for example Python:
+
+```text
+opentelemetry-distro
+opentelemetry-exporter-otlp
+```
+
+Then start with `opentelemetry-instrument` (or the equivalent for Node/Java) so
+the SDK reads the injected env. Add a span around a business step:
+
+```python
+from opentelemetry import trace
+
+tracer = trace.get_tracer("orders")
+
+def charge(order_id: str) -> None:
+    with tracer.start_as_current_span("charge_card") as span:
+        span.set_attribute("order.id", order_id)
+        provider.charge(order_id)
+```
+
+Node:
+
+```javascript
+const { trace } = require("@opentelemetry/api");
+const tracer = trace.getTracer("orders");
+
+async function charge(orderId) {
+  return tracer.startActiveSpan("charge_card", async (span) => {
+    span.setAttribute("order.id", orderId);
+    try {
+      return await provider.charge(orderId);
+    } finally {
+      span.end();
+    }
+  });
+}
+```
+
+Do not put secrets, tokens, or full request bodies on span attributes. Custom
+span names show up under the same `luma.stack` as the process. If the image has
+no OpenTelemetry SDK, these calls are no-ops unless you add the distro.
+
 ## Dashboard and logs
 
 Dashboard → Observability opens incidents. Metrics and Logs have dedicated pages; rules and notification channels have separate list and edit URLs. Storage governance is under Infrastructure → Storage → Data governance.

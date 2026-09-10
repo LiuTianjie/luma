@@ -33,5 +33,7 @@ OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <control-issued-token>
 Traefik keeps using loopback `http://127.0.0.1:4318` without a bearer token.
 Apps that already include an OpenTelemetry distro emit spans; export is
 fail-open and sampled (`parentbased_traceidratio=0.1`). Do not create a Luma
-SDK. Redeploy existing apps after enabling observe. Cross-node OTLP uses the
-manager Tailscale IP, never a public listener.
+SDK. Redeploy existing apps after enabling observe. Restart is not a redeploy.
+Cross-node OTLP uses the manager Tailscale IP, never a public listener.
+Manual spans: official OpenTelemetry API only, never set the OTLP endpoint.
+See docs/observability.md § Application integration.

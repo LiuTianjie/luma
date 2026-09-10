@@ -3,7 +3,7 @@
   "title": "Traces",
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "tags": [
     "luma-observe",
@@ -38,7 +38,7 @@
     {
       "id": 1,
       "type": "traces",
-      "title": "Recent traces by app",
+      "title": "Recent traces",
       "gridPos": {
         "h": 16,
         "w": 24,
@@ -57,7 +57,7 @@
             "uid": "tempo"
           },
           "queryType": "traceql",
-          "query": "{ resource.luma.stack =~ \"$app\" }",
+          "query": "{ resource.service.name = \"traefik\" || resource.luma.stack =~ \"$app\" }",
           "limit": 20
         }
       ]

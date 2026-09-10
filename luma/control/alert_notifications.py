@@ -136,11 +136,80 @@ def _tenant_token(app_id: str,app_secret: str,*,deadline: float) -> str:
         return token
 
 
+CARD_FORMAT = 'feishu-card/v1'
+_KIND_HEADER = {
+    'firing': ('告警触发', 'red'),
+    'resolved': ('告警恢复', 'green'),
+    'reminder': ('告警持续', 'orange'),
+    'test': ('通知测试', 'blue'),
+}
+
+
+def _plain(value: object, limit: int = 200) -> str:
+    text = ' '.join(str(value or '').split())
+    return text[:limit] if text else '—'
+
+
+def feishu_alert_card(
+    *,
+    kind: str,
+    title: str,
+    cluster: str = '',
+    target: str = '',
+    severity: str = '',
+    value: str = '',
+    threshold: str = '',
+    incident_id: object = '',
+) -> dict[str, object]:
+    """Interactive card so firing and recovery are visually distinct in Feishu."""
+    label, template = _KIND_HEADER.get(kind, ('告警通知', 'grey'))
+    heading = f"{label} · {title}".strip(' ·') if title else label
+    if kind == 'test':
+        elements: list[dict[str, object]] = [{
+            'tag': 'div',
+            'text': {'tag': 'lark_md', 'content': _plain(title or '飞书告警渠道连接验证')},
+        }]
+    else:
+        fields = [{
+            'is_short': True,
+            'text': {'tag': 'lark_md', 'content': f"**{name}**\n{_plain(item, 80)}"},
+        } for name, item in (('对象', target), ('级别', severity), ('当前值', value), ('阈值', threshold))]
+        elements = [{'tag': 'div', 'fields': fields}]
+        subtitle_parts = [p for p in (f"集群 `{_plain(cluster, 80)}`" if cluster else '', f"事件 #{incident_id}" if incident_id not in ('', None) else '') if p]
+        if subtitle_parts:
+            elements.append({'tag': 'div', 'text': {'tag': 'lark_md', 'content': ' · '.join(subtitle_parts)}})
+    elements.append({'tag': 'note', 'elements': [{'tag': 'plain_text', 'content': 'Dashboard → 可观测性 → 告警中心'}]})
+    return {
+        'config': {'wide_screen_mode': True},
+        'header': {
+            'template': template,
+            'title': {'tag': 'plain_text', 'content': _plain(heading, 80)},
+        },
+        'elements': elements,
+    }
+
+
+def alert_outbox_text(*, kind: str, fallback: str, card: dict[str, object]) -> str:
+    return json.dumps({'format': CARD_FORMAT, 'kind': kind, 'fallback': fallback[:4000], 'card': card}, ensure_ascii=False)
+
+
+def _message_body(chat_id: str, text: str, delivery_uuid: str) -> dict[str, str]:
+    raw = str(text or '')
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and payload.get('format') == CARD_FORMAT and isinstance(payload.get('card'), dict):
+        content = json.dumps(payload['card'], ensure_ascii=False)[:30000]
+        return {'receive_id': chat_id, 'msg_type': 'interactive', 'content': content, 'uuid': delivery_uuid}
+    return {'receive_id': chat_id, 'msg_type': 'text', 'content': json.dumps({'text': raw[:16000]}, ensure_ascii=False), 'uuid': delivery_uuid}
+
+
 def send_feishu(app_id: str, app_secret: str, chat_id: str, text: str, delivery_uuid: str) -> None:
     """Send to one configured group. Stable uuid is retained across outbox retries."""
     validate_credentials(app_id,app_secret,chat_id)
     deadline=time.monotonic()+16
-    body={'receive_id':chat_id,'msg_type':'text','content':json.dumps({'text':text[:16000]},ensure_ascii=False),'uuid':delivery_uuid}
+    body=_message_body(chat_id,text,delivery_uuid)
     token=_tenant_token(app_id,app_secret,deadline=deadline)
     try:
         _post(MESSAGE_URL,body,token=token,deadline=deadline)

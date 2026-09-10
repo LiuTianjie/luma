@@ -48,6 +48,9 @@ class AlertingTest(unittest.TestCase):
         self.assertEqual(len(self.items('deliveries')),2)
         alerting.deliver_pending(now=1060,transport=lambda *args:sent.append(args))
         self.assertIn('告警触发',sent[0][3]); self.assertIn('告警恢复',sent[1][3])
+        firing=json.loads(sent[0][3]); recovered=json.loads(sent[1][3])
+        self.assertEqual(firing['card']['header']['template'],'red')
+        self.assertEqual(recovered['card']['header']['template'],'green')
 
     def test_missing_data_does_not_recover_and_breaks_pending(self):
         self.rule()
@@ -305,6 +308,26 @@ class FeishuTransportTest(unittest.TestCase):
         self.assertEqual(sends[0][1],{'receive_id':'oc_group1234','msg_type':'text','content':'{"text": "hello"}','uuid':'same-id'})
         self.assertEqual(sends[0][2]['token'],'tenant-secret-token')
         self.assertEqual(sends[0][1]['uuid'],sends[1][1]['uuid'])
+
+    def test_alert_envelope_sends_interactive_card(self):
+        from luma.control.alert_notifications import alert_outbox_text, feishu_alert_card
+        calls=[]
+        def post(url,body,**kwargs):
+            calls.append((url,body))
+            return {'code':0,'tenant_access_token':'tenant-secret-token','expire':7200} if url==notifications.AUTH_URL else {'code':0}
+        payload=alert_outbox_text(kind='firing',fallback='Luma 告警触发 · CPU',card=feishu_alert_card(kind='firing',title='CPU持续高占用',cluster='luma-1',target='ppt',severity='warning',value='100',threshold='90',incident_id=3))
+        with patch.object(notifications,'_post',side_effect=post):
+            send_feishu('cli_test1234','private-app-secret','oc_group1234',payload,'card-id')
+        send=[c[1] for c in calls if c[0]==notifications.MESSAGE_URL][0]
+        self.assertEqual(send['msg_type'],'interactive')
+        card=json.loads(send['content'])
+        self.assertEqual(card['header']['template'],'red')
+        self.assertIn('告警触发',card['header']['title']['content'])
+        recovered=alert_outbox_text(kind='resolved',fallback='Luma 告警恢复 · CPU',card=feishu_alert_card(kind='resolved',title='CPU持续高占用',cluster='luma-1',target='ppt',severity='warning',value='42.9',threshold='90',incident_id=3))
+        with patch.object(notifications,'_post',side_effect=post):
+            send_feishu('cli_test1234','private-app-secret','oc_group1234',recovered,'card-id-2')
+        send=[c[1] for c in calls if c[0]==notifications.MESSAGE_URL][-1]
+        self.assertEqual(json.loads(send['content'])['header']['template'],'green')
 
     def test_token_expiry_and_secret_rotation_reacquire(self):
         with patch.object(notifications,'_post',return_value={'code':0,'tenant_access_token':'tenant-token','expire':100}) as post:

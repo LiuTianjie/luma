@@ -289,7 +289,9 @@ class ObserveTraceStackTests(unittest.TestCase):
         self.assertIn("uid: tempo", sources)
         dashboard = json.loads((ROOT / "observe" / "grafana" / "dashboards" / "traces.json").read_text(encoding="utf-8"))
         self.assertEqual(dashboard["uid"], "luma-traces")
-        self.assertIn("resource.luma.stack", dashboard["panels"][0]["targets"][0]["query"])
+        query = dashboard["panels"][0]["targets"][0]["query"]
+        self.assertIn("resource.service.name = \"traefik\"", query)
+        self.assertIn("resource.luma.stack", query)
 
 
 class GrafanaRouteTests(unittest.TestCase):
