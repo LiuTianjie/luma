@@ -25,6 +25,11 @@ receivers:
           scrape_timeout: 5s
           static_configs:
             - targets: ["127.0.0.1:9107"]
+        - job_name: log-shipper
+          scrape_interval: 15s
+          scrape_timeout: 5s
+          static_configs:
+            - targets: ["127.0.0.1:9108"]
         - job_name: luma-control
           scrape_interval: 15s
           scrape_timeout: 5s
@@ -34,10 +39,32 @@ receivers:
 
 processors:
   memory_limiter:
-    check_interval: 2s
-    limit_mib: 180
-  probabilistic_sampler:
-    sampling_percentage: 10
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  tail_sampling:
+    decision_wait: 10s
+    num_traces: 20000
+    expected_new_traces_per_sec: 100
+    policies:
+      - name: http-5xx
+        type: numeric_attribute
+        numeric_attribute:
+          key: http.response.status_code
+          min_value: 500
+          max_value: 599
+      - name: otel-errors
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+      - name: slow
+        type: latency
+        latency:
+          threshold_ms: 1000
+      - name: baseline
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 10
   batch:
     timeout: 5s
     send_batch_size: 1024
@@ -69,7 +96,7 @@ service:
   pipelines:
     traces:
       receivers: [otlp, otlp/mesh]
-      processors: [memory_limiter, probabilistic_sampler, batch]
+      processors: [memory_limiter, tail_sampling, batch]
       exporters: [spanmetrics, otlphttp/tempo]
     metrics/span:
       receivers: [spanmetrics]

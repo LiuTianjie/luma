@@ -10,7 +10,7 @@
 
 ## Loopback ports on manager
 
-8082 Traefik metrics · 4318/4317 OTLP loopback · 4319 OTLP mesh (Tailscale, bearer) · 3200 Tempo · 8428 VictoriaMetrics (127.0.0.1 plus Nomad/docker0 via host-gateway) · 8880 vmalert · 9093 Alertmanager · 9107 nomad-exporter · 9095 Feishu webhook · 3100 Grafana loopback only; 3000 is already itool.tech; the Dashboard Apps tab is the operator view
+8082 Traefik metrics · 4318/4317 OTLP loopback · 4319 OTLP mesh (Tailscale, bearer) · 3200 Tempo · 8428 VictoriaMetrics · 9428 VictoriaLogs · 8880 vmalert · 9093 Alertmanager · 9107 nomad-exporter · 9108 log-shipper · 9095 Feishu webhook · 3100 Grafana loopback only
 
 Open Dashboard → 可观测性 → 应用 (Viewer, no login). Do not open port 3000 on the public NIC.
 
@@ -32,7 +32,8 @@ OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <control-issued-token>
 
 Traefik keeps using loopback `http://127.0.0.1:4318` without a bearer token.
 Apps that already include an OpenTelemetry distro emit spans; export is
-fail-open and sampled (`parentbased_traceidratio=0.1`). Do not create a Luma
+fail-open. The collector keeps HTTP 5xx, OTel errors, traces slower than 1s,
+and a 10% baseline; it drops new traces near its memory limit instead of OOM. Do not create a Luma
 SDK. Redeploy existing apps after enabling observe. Restart is not a redeploy.
 Cross-node OTLP uses the manager Tailscale IP, never a public listener.
 Manual spans: official OpenTelemetry API only, never set the OTLP endpoint.

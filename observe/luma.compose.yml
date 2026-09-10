@@ -14,6 +14,11 @@ volumes:
       node: manager
       path: /srv/luma/data/luma-observe/tempo
     initialize: empty
+  victorialogs-data:
+    local:
+      node: manager
+      path: /srv/luma/data/luma-observe/victorialogs
+    initialize: empty
 
 services:
   collector:
@@ -49,6 +54,14 @@ services:
     exposure: none
     replicas: 1
   grafana:
+    node: manager
+    exposure: none
+    replicas: 1
+  victoria-logs:
+    node: manager
+    exposure: none
+    replicas: 1
+  log-shipper:
     node: manager
     exposure: none
     replicas: 1

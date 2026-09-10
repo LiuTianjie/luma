@@ -16,7 +16,7 @@ services:
           cpus: "0.10"
           memory: 192M
         limits:
-          memory: 256M
+          memory: 384M
 
   tempo:
     build:
@@ -97,6 +97,47 @@ services:
         limits:
           memory: 128M
 
+  victoria-logs:
+    image: victoriametrics/victoria-logs:v1.25.0
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - "-httpListenAddr=127.0.0.1:9428"
+      - "-retentionPeriod=15d"
+      - "-storageDataPath=/data"
+    volumes:
+      - victorialogs-data:/data
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.10"
+          memory: 256M
+        limits:
+          memory: 512M
+
+  log-shipper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: luma-observe-python:local
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - victoria-logs
+    command: ["/app/log_shipper.py"]
+    environment:
+      NOMAD_ADDR: http://127.0.0.1:4646
+      LUMA_OBSERVE_BIND: "127.0.0.1"
+      LUMA_OBSERVE_PORT: "9108"
+      VICTORIALOGS_URL: "http://127.0.0.1:9428"
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+        limits:
+          memory: 96M
+
   nomad-exporter:
     build:
       context: .
@@ -170,6 +211,7 @@ services:
     depends_on:
       - victoria
       - tempo
+      - victoria-logs
     environment:
       GF_SERVER_HTTP_ADDR: "127.0.0.1"
       GF_SERVER_HTTP_PORT: "3100"
@@ -196,3 +238,4 @@ services:
 volumes:
   victoria-data:
   tempo-data:
+  victorialogs-data:

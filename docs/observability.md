@@ -5,10 +5,9 @@ Luma exposes node/container samples, current task queues, resource history, runt
 
 ## Application alerts (`luma-observe`)
 
-Control dashboards show node/container samples and live allocation logs. They
-are not application availability.
-
-Application HTTP 5xx, latency (p90/p95/p99), Nomad failed allocations, restart storms and traces are an
+Control dashboards show node/container samples. Live allocation tails remain
+an on-demand Control proxy. Application HTTP 5xx, latency (p90/p95/p99), Nomad
+failed allocations, restart storms, traces and searchable stdout/stderr are an
 optional [`observe/`](../observe/) Compose app. Deploy it with Luma; skip it
 and Control still runs. Operators look at Dashboard → Observability → Apps,
 which embeds Grafana at `/grafana` on the Control domain. HTTP, Nomad and trace series are labeled with the Luma app/stack name as soon as
@@ -23,7 +22,7 @@ Deploy from `observe/` with `luma build local . --platform linux/amd64 --env .en
 Refresh Traefik after the current CLI includes the loopback metrics/OTLP flags
 so RED rules have a scrape target. Operators look at Dashboard → Observability → Apps.
 The charts are per Luma app (Traefik HTTP rate, 5xx and p90/p95/p99 latency + Nomad health), not each container's `/metrics`. Traefik histogram buckets are `0.05,0.1,0.25,0.5,1,2.5,5,10` seconds so those quantiles are distinguishable.
-Selecting observe also injects official OpenTelemetry environment variables into later Luma deploys (`OTEL_SERVICE_NAME`, `luma.stack` / `luma.task` / `luma.region`, OTLP HTTP to the mesh listener). Apps that already ship an OpenTelemetry distro emit spans without a Luma SDK. Redeploy existing apps after observe is first enabled. Trace export is sampled at 10% (`parentbased_traceidratio`) and fail-open.
+Selecting observe also injects official OpenTelemetry environment variables into later Luma deploys (`OTEL_SERVICE_NAME`, `luma.stack` / `luma.task` / `luma.region`, OTLP HTTP to the mesh listener). Apps that already ship an OpenTelemetry distro emit spans without a Luma SDK. Redeploy existing apps after observe is first enabled. Apps export traces fail-open; the collector keeps HTTP 5xx, OTel errors, and traces slower than 1s, plus a 10% baseline. Near the collector memory limit it drops new traces instead of OOM.
 Do not ship raw access logs or traces off the manager public interface.
 
 ## Application integration
@@ -45,8 +44,9 @@ What you get after a new deploy, only if the image already speaks OpenTelemetry:
 - Look at Dashboard → Observability → Apps → Traces, or Grafana `/grafana/d/luma-traces`
 
 What you still do not get: nginx / static Go / images with no OTel SDK, traffic
-that never hits Traefik, request bodies, SQL text, or 100% of requests (about
-one in ten traces is kept). Export is fail-open.
+that never hits Traefik, request bodies, SQL text, or every successful fast
+request (5xx and >1s traces are kept; the rest are sampled at 10%). Export is
+fail-open.
 
 ### Manual spans
 
@@ -98,11 +98,19 @@ no OpenTelemetry SDK, these calls are no-ops unless you add the distro.
 
 ## Dashboard and logs
 
-Dashboard → Observability opens incidents. Metrics and Logs have dedicated pages; rules and notification channels have separate list and edit URLs. Storage governance is under Infrastructure → Storage → Data governance.
+Dashboard → Observability opens incidents. Metrics have a dedicated page; Logs
+opens Grafana Explore against VictoriaLogs (15 days). Rules and notification
+channels have separate list and edit URLs. Storage governance is under
+Infrastructure → Storage → Data governance.
 
-The metrics page shows the actual sampled time span and retention, separates missing/stale/failed queries, and breaks resource lines across sampling gaps. Select a service for its resource history, or open its logs from the application detail.
+The metrics page shows the actual sampled time span and retention, separates missing/stale/failed queries, and breaks resource lines across sampling gaps. Select a service for its resource history, or open observability logs filtered by its stack.
 
-Logs follow Nomad allocation files using byte-position cursors. Select an allocation to distinguish replicas; reconnecting resumes from the last received cursor. Rotation or missing retained files is reported as a gap. The initial tail and snapshot download are bounded recent excerpts, not complete archives. Arbitrary time filtering is not offered because application stdout/stderr need not carry reliable timestamps. Log text is not deduplicated by content: identical repeated lines are distinct records.
+Observability logs are Nomad allocation stdout/stderr shipped by luma-observe
+into VictoriaLogs. Filter by `app` (the Nomad job / Luma stack). Traefik JSON
+access logs are the `traefik` job's stdout; unpack with LogsQL `unpack_json`.
+Line time is observation time because Nomad frames have no event timestamps.
+`luma service logs` and the application-detail live tail still follow Nomad
+files through Control and are bounded excerpts, not this 15-day store.
 
 Resources are retained in 30-second buckets, independently of the number of nodes reporting a service. `LUMA_METRICS_HISTORY_POINTS` defaults to 720 (approximately six hours), bounded between 60 and 10000. Resource history remains a separate bounded `metrics-history.json` file in the Control state directory; collection outside Control is still useful for longer investigations and independent outage detection. See [Control storage and recovery](control-storage.md) for backup scope. A service aggregate covers reporting nodes; missing contributions expire after 180 seconds. It is not proof that all replicas have reported.
 

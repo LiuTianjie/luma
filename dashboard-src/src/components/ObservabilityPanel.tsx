@@ -4,7 +4,6 @@ import { fetchMetricsHistory } from "../metricsApi";
 import type { ActualResourceValues, DashboardNode, DashboardService, Lang, MetricsHistoryPayload, ResourceValues } from "../types";
 import { Badge, StatePill } from "./ui";
 import { TrendChart } from "./charts";
-import { ServiceLogsModal } from "./ServiceLogsModal";
 import "./ObservabilityPanel.css";
 import { useRouter, useSearchParams } from "../router";
 
@@ -151,7 +150,6 @@ export function ObservabilityPanel({ lang, token, nodes, services, mode = "metri
     next.set("window", String([...HISTORY_WINDOWS].reverse().find((value) => value <= retention) || 900));
     if (next.get("window") !== String(historyWindow)) navigate(`${path}?${next}`, { replace: true });
   }, [mode, retention, historyWindow, query, path, navigate]);
-  if (mode === "logs") return <ServiceLogsModal inline lang={lang} token={token} services={services} initialServiceName={query.get("target") || query.get("service") || ""} />;
   return <div className="metrics-workspace">
     <div className="history-toolbar">
       <label>{zh ? "对象类型" : "Object type"}<select value={kind} onChange={(event) => update({ kind: event.target.value, target: "" })}>{nodes.length > 0 && <option value="node">{zh ? "节点" : "Node"}</option>}<option value="service">{zh ? "服务" : "Service"}</option></select></label>
@@ -166,7 +164,7 @@ export function ObservabilityPanel({ lang, token, nodes, services, mode = "metri
       {retention && <small>{zh ? "历史保留" : "History retention"} · {Math.round(retention / 60)} min</small>}
       <div className="service-history-charts">{(kind === "node" ? [["cpuPercent", "CPU", formatPercent], ["memoryUsedPercent", zh ? "内存" : "Memory", formatPercent], ["diskUsedPercent", zh ? "磁盘" : "Disk", formatPercent], ["inodesUsedPercent", "Inodes", formatPercent]] : [["cpuPercent", "CPU", formatPercent], ["memoryUsageBytes", zh ? "内存" : "Memory", formatBytes]]).map(([key, label, format]) => <div key={key as string}><h3>{label as string}</h3><TrendChart maxGapSeconds={90} points={series[key as string] || []} format={format as (value: number) => string} height={(series[key as string] || []).length < 2 ? 80 : 144} emptyLabel={zh ? "等待至少两个采样点" : "Waiting for two samples"} /></div>)}</div>
       <small>{zh ? "180 秒未更新的节点不计入服务汇总；超过 90 秒的采样间隔显示为断点。" : "Service totals exclude nodes stale for 180s. Gaps over 90s break the line."}</small>
-      {kind === "service" && <p><button className="ghost" onClick={() => navigate(`/observe/logs?target=${encodeURIComponent(selected)}`)}>{zh ? "查看此服务日志" : "View service logs"}</button></p>}
+      {kind === "service" && <p><button className="ghost" onClick={() => navigate(`/observe/logs?app=${encodeURIComponent(service?.stack || selected)}`)}>{zh ? "查看此服务日志" : "View service logs"}</button></p>}
     </section>}
   </div>;
 }

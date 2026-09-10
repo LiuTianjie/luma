@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -20,6 +21,7 @@ def load_observe(filename: str, name: str):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -125,9 +127,13 @@ class RepoManifestTests(unittest.TestCase):
         self.assertIn("grafana", names)
         self.assertIn("host-gateway", names)
         self.assertIn("tempo", names)
+        self.assertIn("victoria-logs", names)
+        self.assertIn("log-shipper", names)
         self.assertTrue(all(task["Config"].get("network_mode") == "host" for task in job["TaskGroups"][0]["Tasks"]))
         victoria = next(task for task in job["TaskGroups"][0]["Tasks"] if task["Name"] == "victoria")
         self.assertEqual(victoria["Config"]["mount"][0]["source"], "/srv/luma/data/luma-observe/victoria")
+        logs = next(task for task in job["TaskGroups"][0]["Tasks"] if task["Name"] == "victoria-logs")
+        self.assertEqual(logs["Config"]["mount"][0]["source"], "/srv/luma/data/luma-observe/victorialogs")
 
 
 class NomadExporterTests(unittest.TestCase):
@@ -325,7 +331,11 @@ class ObserveTraceStackTests(unittest.TestCase):
         text = (ROOT / "observe" / "collector.yaml").read_text(encoding="utf-8")
         self.assertIn("otlphttp/tempo", text)
         self.assertIn("http://127.0.0.1:4418", text)
-        self.assertIn("probabilistic_sampler", text)
+        self.assertIn("tail_sampling", text)
+        self.assertNotIn("probabilistic_sampler", text)
+        self.assertIn("processors: [memory_limiter, tail_sampling, batch]", text)
+        self.assertIn("http.response.status_code", text)
+        self.assertIn("sampling_percentage: 10", text)
         self.assertIn("otlp/mesh", text)
         self.assertIn("bearertokenauth", text)
         self.assertIn("${env:LUMA_OTLP_MESH_BIND}:4319", text)
@@ -359,6 +369,11 @@ class ObserveTraceStackTests(unittest.TestCase):
         self.assertIn("grafana-app-filter", text)
         self.assertIn('uid: "luma-nodes"', text)
         self.assertIn("autofitpanels", text)
+        self.assertIn('uid: "victorialogs"', text)
+        self.assertIn('app:="', text)
+        page = (ROOT / "dashboard-src" / "src" / "pages" / "ObservabilityPage.tsx").read_text(encoding="utf-8")
+        self.assertIn("initialView={section === \"logs\" ? \"logs\" : \"http\"}", page)
+        self.assertNotIn("ServiceLogsModal", page)
 
     def test_nodes_dashboard_plots_nomad_node_gauges(self):
         dashboard = json.loads((ROOT / "observe" / "grafana" / "dashboards" / "nodes.json").read_text(encoding="utf-8"))
@@ -375,6 +390,19 @@ class ObserveTraceStackTests(unittest.TestCase):
         self.assertIn("job_name: luma-control", text)
         self.assertIn("127.0.0.1:8080", text)
         self.assertIn("metrics_path: /v1/metrics", text)
+        self.assertIn("127.0.0.1:9108", text)
+        self.assertNotIn("\n    logs:\n      receivers:", text)
+
+    def test_victorialogs_is_loopback_with_fifteen_day_retention(self):
+        compose = (ROOT / "observe" / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("127.0.0.1:9428", compose)
+        self.assertIn("retentionPeriod=15d", compose)
+        self.assertNotIn("0.0.0.0:9428", compose)
+        sources = (ROOT / "observe" / "grafana" / "provisioning" / "datasources" / "datasource.yml").read_text(encoding="utf-8")
+        self.assertIn("uid: victorialogs", sources)
+        self.assertIn("http://127.0.0.1:9428", sources)
+        dockerfile = (ROOT / "observe" / "Dockerfile.grafana").read_text(encoding="utf-8")
+        self.assertIn("victoriametrics-logs-datasource", dockerfile)
 
     def test_grafana_lets_anonymous_viewers_open_explore(self):
         text = (ROOT / "observe" / "docker-compose.yml").read_text(encoding="utf-8")

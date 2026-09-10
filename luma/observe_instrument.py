@@ -14,7 +14,6 @@ from .errors import LumaError
 
 OBSERVE_STACK = "luma-observe"
 OTLP_MESH_PORT = 4319
-TRACES_SAMPLER_RATIO = "0.1"
 
 
 def mint_otlp_token() -> str:
@@ -129,8 +128,7 @@ def app_env(
         "OTEL_TRACES_EXPORTER": "otlp",
         "OTEL_METRICS_EXPORTER": "none",
         "OTEL_LOGS_EXPORTER": "none",
-        "OTEL_TRACES_SAMPLER": "parentbased_traceidratio",
-        "OTEL_TRACES_SAMPLER_ARG": TRACES_SAMPLER_RATIO,
+        "OTEL_TRACES_SAMPLER": "parentbased_always_on",
         "OTEL_EXPORTER_OTLP_TIMEOUT": "5000",
     }
 

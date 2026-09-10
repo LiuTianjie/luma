@@ -149,6 +149,9 @@ exposure: none
         env = job["TaskGroups"][0]["Tasks"][0]["Env"]
         self.assertEqual(env["OTEL_EXPORTER_OTLP_ENDPOINT"], "http://100.66.177.70:4319")
         self.assertEqual(env["OTEL_SERVICE_NAME"], "demo")
+        self.assertEqual(env["OTEL_TRACES_SAMPLER"], "parentbased_always_on")
+        self.assertEqual(env["OTEL_LOGS_EXPORTER"], "none")
+        self.assertNotIn("OTEL_TRACES_SAMPLER_ARG", env)
         self.assertIn("luma.stack=demo", env["OTEL_RESOURCE_ATTRIBUTES"])
 
 

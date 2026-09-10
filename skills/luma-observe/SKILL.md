@@ -22,7 +22,7 @@ Do not use this skill for Dashboard node CPU/disk presets, Nomad job YAML for or
 
 - Pin the stack to the Traefik node (`node: manager` on this cluster).
 - Every Compose service uses `network_mode: host` and `exposure: none`.
-- Collectors bind `127.0.0.1` only. Control uses host networking to read VictoriaMetrics at `127.0.0.1:8428`. Never publish 4318/8082/8428/3100 on eth0 or Tailscale.
+- Collectors bind `127.0.0.1` only. Control uses host networking to read VictoriaMetrics at `127.0.0.1:8428`. Never publish 4318/8082/8428/9428/3100 on eth0 or Tailscale.
 - After observe is deployed, look at Dashboard → Observability → Apps. It embeds Grafana at `/grafana` on the Control domain.
 - Alert evaluation is vmalert + Alertmanager + optional Feishu webhook.
 - Auto-instrumentation is automatic after observe is deployed: Control injects official OTel env vars into later app jobs. Do not create a Luma telemetry SDK.
