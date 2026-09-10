@@ -182,7 +182,7 @@ from ..lae_admin_proxy import (
     load_lae_admin_proxy_config,
 )
 from .. import __version__
-from .metrics import history_metadata, load_history, record_samples, retention_seconds, sustained_breach
+from .metrics import history_metadata, load_history, load_history_snapshot, record_samples, retention_seconds, sustained_breach
 from .observe import handle_observe_apps
 from .monitoring import CONTENT_TYPE as METRICS_CONTENT_TYPE, peer_is_loopback, render_metrics, require_metrics_token
 from . import operations as operations_api
@@ -191,6 +191,7 @@ from . import history as control_history
 
 from .state import (
     init_state,
+    load_dashboard_state,
     load_auth_state,
     load_runtime_state,
     load_state,
@@ -574,6 +575,7 @@ def _normalize_container_stats_for_engine(
     config: Any | None = None,
     state: Dict[str, Any] | None = None,
     allocation_index: dict[str, Dict[str, str]] | None = None,
+    compose_stacks: set[str] | None = None,
 ) -> list[Dict[str, Any]]:
     if not isinstance(raw_items, list):
         return []
@@ -588,10 +590,11 @@ def _normalize_container_stats_for_engine(
         return _container_stats(raw_items)
     if allocation_index is None:
         allocation_index = _nomad_allocation_service_index(cfg, current_state) if cfg else {}
-    try:
-        _, compose_stacks = _dashboard_deployment_service_index(current_state)
-    except Exception:
-        compose_stacks = set()
+    if compose_stacks is None:
+        try:
+            _, compose_stacks = _dashboard_deployment_service_index(current_state)
+        except Exception:
+            compose_stacks = set()
     normalized: list[Dict[str, Any]] = []
     for raw in raw_items:
         if not isinstance(raw, dict):
@@ -3218,7 +3221,7 @@ def handle_control_status(token: str) -> Dict[str, Any]:
 
 
 def handle_dashboard(token: str) -> Dict[str, Any]:
-    state = load_state()
+    state = load_dashboard_state()
     require_token(state, token, token_type="deploy")
     _apply_state_secrets(state)
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
@@ -3248,8 +3251,9 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
     nodes = _dashboard_nodes(registered_nodes, raw_nodes, terminal_nodes=TERMINAL_BROKER.connected_nodes())
 
     route_files = _dashboard_route_files(config, config_path, errors)
-    services = _dashboard_nomad_services(nomad_services, route_files, state=state)
-    service_stats = _service_stats_by_name(registered_nodes, config=config, state=state)
+    deployment_index = _dashboard_deployment_service_index(state)
+    services = _dashboard_nomad_services(nomad_services, route_files, state=state, deployment_index=deployment_index)
+    service_stats = _service_stats_by_name(registered_nodes, config=config, state=state, compose_stacks=deployment_index[1])
     for service in services:
         _attach_service_actual_resources(service, service_stats.get(str(service.get("fullName") or ""), []))
     traffic_paths = _dashboard_traffic_paths(services, route_files, dns_target)
@@ -16309,6 +16313,7 @@ def _service_stats_by_name(
     *,
     config: Any | None = None,
     state: Dict[str, Any] | None = None,
+    compose_stacks: set[str] | None = None,
 ) -> dict[str, list[Dict[str, Any]]]:
     result: dict[str, list[Dict[str, Any]]] = {}
     allocation_index: dict[str, Dict[str, str]] | None = None
@@ -16321,10 +16326,15 @@ def _service_stats_by_name(
             allocation_index = {}
     except Exception:
         allocation_index = {}
+    if compose_stacks is None:
+        try:
+            _, compose_stacks = _dashboard_deployment_service_index(state or {})
+        except Exception:
+            compose_stacks = set()
     for node in registered_nodes:
         node_name = str(node.get("name") or "")
         raw_stats = node.get("containerStats") if isinstance(node.get("containerStats"), list) else []
-        stats = _normalize_container_stats_for_engine(raw_stats, config=config, state=state, allocation_index=allocation_index)
+        stats = _normalize_container_stats_for_engine(raw_stats, config=config, state=state, allocation_index=allocation_index, compose_stacks=compose_stacks)
         for raw in stats:
             if not isinstance(raw, dict):
                 continue
@@ -16369,6 +16379,10 @@ def _attach_service_actual_resources(service: Dict[str, Any], stats: list[Dict[s
 
 def _dashboard_issues(nodes: list[Dict[str, Any]], services: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
     issues: list[Dict[str, Any]] = []
+    # Each response evaluates all nodes against one atomic history snapshot.
+    # Re-reading the whole history twice per node makes CPU grow with the fleet.
+    snapshot = load_history_snapshot() if nodes else {}
+    now = int(time.time())
     for node in nodes:
         name = str(node.get("name") or "-")
         state = str(node.get("state") or "").lower()
@@ -16384,12 +16398,14 @@ def _dashboard_issues(nodes: list[Dict[str, Any]], services: list[Dict[str, Any]
         mem_peak = sustained_breach(
             "node", name, "memoryUsedPercent",
             threshold=ALERT_NODE_MEMORY_PERCENT, duration_seconds=ALERT_SUSTAINED_SECONDS,
+            snapshot=snapshot, now=now,
         )
         if mem_peak is not None:
             issues.append({"severity": "warning", "kind": "node-memory", "target": name, "message": f"Node {name} memory stayed above {ALERT_NODE_MEMORY_PERCENT:.0f}% for {sustained_mins}m (peak {mem_peak:.1f}%)"})
         cpu_peak = sustained_breach(
             "node", name, "cpuPercent",
             threshold=ALERT_NODE_CPU_PERCENT, duration_seconds=ALERT_SUSTAINED_SECONDS,
+            snapshot=snapshot, now=now,
         )
         if cpu_peak is not None:
             issues.append({"severity": "warning", "kind": "node-cpu", "target": name, "message": f"Node {name} CPU stayed above {ALERT_NODE_CPU_PERCENT:.0f}% for {sustained_mins}m (peak {cpu_peak:.1f}%)"})
@@ -16575,6 +16591,7 @@ def _dashboard_nomad_services(
     route_files: dict[str, Dict[str, Any]],
     *,
     state: Dict[str, Any] | None = None,
+    deployment_index: tuple[dict[str, Dict[str, Any]], set[str]] | None = None,
 ) -> list[Dict[str, Any]]:
     """Assemble the dashboard service list from Nomad jobs + Traefik file routes.
 
@@ -16582,7 +16599,7 @@ def _dashboard_nomad_services(
     single Nomad job with multiple tasks, so those are expanded to task-level
     dashboard services and enriched from the stored Luma manifest.
     """
-    deployment_index, compose_stacks = _dashboard_deployment_service_index(state or {})
+    deployment_index, compose_stacks = deployment_index if deployment_index is not None else _dashboard_deployment_service_index(state or {})
     out: list[Dict[str, Any]] = []
     for svc in nomad_services:
         job_name = str(svc.get("jobId") or svc.get("name") or "")
@@ -16807,14 +16824,22 @@ def _dashboard_deployment_service_index(state: Dict[str, Any]) -> tuple[dict[str
     return index, compose_stacks
 
 
-def _safe_manifest_dict(value: Any) -> Dict[str, Any]:
-    if not isinstance(value, str) or not value.strip():
-        return {}
+@functools.lru_cache(maxsize=512)
+def _safe_manifest_dict_cached(value: str) -> Dict[str, Any]:
     try:
         parsed = yaml.safe_load(value)
     except yaml.YAMLError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _safe_manifest_dict(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    # Deployment manifests are immutable for the lifetime of their state row;
+    # reuse the parsed object across dashboard requests instead of reparsing
+    # hundreds of historical YAML strings on every request.
+    return _safe_manifest_dict_cached(value)
 
 
 def _put_dashboard_deployment_entry(index: dict[str, Dict[str, Any]], entry: Dict[str, Any]) -> None:

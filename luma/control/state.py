@@ -114,6 +114,18 @@ def load_runtime_state() -> Dict[str, Any]:
         return read_state(conn, kinds={"nodes", "agentTasks", "builderTasks"})
 
 
+def load_dashboard_state() -> Dict[str, Any]:
+    """Read overview configuration and current nodes without history rows."""
+    from .database import database_path, ensure_initialized, read_state, transaction
+    if not is_initialized():
+        raise LumaError(f"control state not initialized: {database_path()}; run luma bootstrap")
+    ensure_initialized()
+    with transaction(immediate=False) as conn:
+        # Build runs, deployment events, and task receipts are served by their
+        # own paginated endpoints and need not be materialized on every refresh.
+        return read_state(conn, kinds={"nodes"})
+
+
 def load_entity(kind: str, identifier: str) -> Dict[str, Any] | None:
     """Read one task/receipt without loading unrelated history or event streams."""
     from .database import ensure_initialized, read_entity, transaction

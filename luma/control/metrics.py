@@ -319,12 +319,18 @@ def record_samples(
         _save_raw(data)
 
 
+def load_history_snapshot() -> Dict[str, Any]:
+    """Read one complete sample snapshot for a batch of related queries."""
+    return _load_raw()
+
+
 def load_history(
     kind: str,
     name: str,
     *,
     window: Optional[int] = None,
     now: Optional[int] = None,
+    snapshot: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, List[List[float]]]:
     """Return {seriesKey: [[ts, value], ...]} for one node or service.
 
@@ -337,7 +343,7 @@ def load_history(
     name = str(name or "").strip()
     if not name:
         return {}
-    data = _load_raw()
+    data = snapshot if snapshot is not None else _load_raw()
     bucket = data.get(bucket_key, {})
     obj = bucket.get(name)
     if not isinstance(obj, dict):
@@ -377,13 +383,14 @@ def sustained_breach(
     duration_seconds: int,
     min_fraction: float = 0.8,
     now: Optional[int] = None,
+    snapshot: Optional[Dict[str, Any]] = None,
 ) -> Optional[float]:
     """Return the peak value if a series has stayed above ``threshold`` for the
     window, else None. Used to turn instantaneous spikes into "sustained"
     alerts. Guards against false positives: needs enough points, enough time
     coverage, a current breach, and a majority of breaching samples — so a
     single transient spike or an already-resolved problem does not alert."""
-    points = load_history(kind, name, window=duration_seconds, now=now).get(series_key) or []
+    points = load_history(kind, name, window=duration_seconds, now=now, snapshot=snapshot).get(series_key) or []
     if len(points) < 3:
         return None
     first_ts, last_ts = int(points[0][0]), int(points[-1][0])
