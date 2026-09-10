@@ -96,15 +96,7 @@ export function ObserveAppsPanel({
             ))}
           </select>
         ) : null}
-        <small>
-          {view === "traces"
-            ? zh
-              ? "点 Trace ID 打开 Tempo。按应用筛选匹配 luma.stack；未插桩的应用请选「全部」看 Traefik 入口 span。"
-              : "Click a Trace ID to open Tempo. App filter matches luma.stack; Traefik ingress spans are under All."
-            : zh
-              ? "Grafana 嵌在控制面域名 /grafana，observe 未部署时这里会空白。"
-              : "Grafana is embedded at /grafana on the Control domain. Empty if observe is not deployed."}
-        </small>
+        <small>{zh ? "Grafana 嵌在控制面域名 /grafana，observe 未部署时这里会空白。" : "Grafana is embedded at /grafana on the Control domain. Empty if observe is not deployed."}</small>
       </div>
       <iframe key={src} title={zh ? current.zh : current.en} src={src} allow="fullscreen" />
     </div>

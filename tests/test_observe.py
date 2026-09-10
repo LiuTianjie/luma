@@ -306,6 +306,11 @@ class ObserveTraceStackTests(unittest.TestCase):
         self.assertIn("resource.luma.stack", text)
         self.assertIn("grafana-app-filter", text)
 
+    def test_grafana_lets_anonymous_viewers_open_explore(self):
+        text = (ROOT / "observe" / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn('GF_USERS_VIEWERS_CAN_EDIT: "true"', text)
+        self.assertIn('GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"', text)
+
 
 class GrafanaRouteTests(unittest.TestCase):
     def test_grafana_route_is_on_the_control_domain(self):
