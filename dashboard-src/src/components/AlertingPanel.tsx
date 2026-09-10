@@ -16,8 +16,9 @@ export function formatAlertObservedValue(metric: string, value: number | null | 
     if (value === 0) return zh ? "未失败" : "Not failed";
   }
   const formatted = new Intl.NumberFormat(zh ? "zh-CN" : "en-US", { maximumFractionDigits: 1 }).format(value);
-  if (metric === "node.offline" || metric === "task.queue_age") return `${formatted} ${zh ? "秒" : "s"}`;
+  if (metric === "node.offline" || metric === "task.queue_age" || metric === "app.http_p95") return `${formatted} ${zh ? "秒" : "s"}`;
   if (["node.cpu", "node.memory", "node.disk", "node.inode"].includes(metric)) return `${formatted}%`;
+  if (metric === "app.http_5xx_ratio") return `${new Intl.NumberFormat(zh ? "zh-CN" : "en-US", { style: "percent", maximumFractionDigits: 1 }).format(value)}`;
   return formatted;
 }
 

@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 from .config import LumaConfig
 from .compose import render_storage_class_volume, resolve_storage_mounts
 from .errors import LumaError
-from .observe_instrument import apply_env as apply_observe_env
+from .observe_instrument import OBSERVE_STACK, apply_env as apply_observe_env, pin_observe_placement
 from .registry import normalize_registry_host
 from .service import ServiceSpec, slugify, tcp_entrypoint_name, tcp_relay_publish_port
 
@@ -525,6 +525,8 @@ def render_compose_job(
     The group runs on one node (Nomad schedules a group atomically); if compose
     services pin to different nodes this raises.
     """
+    if getattr(deployment, "slug", "") == OBSERVE_STACK and node_records:
+        deployment = pin_observe_placement(deployment, node_records)
     compose = deployment.compose
     services = compose.get("services") if isinstance(compose.get("services"), dict) else {}
     if not services:

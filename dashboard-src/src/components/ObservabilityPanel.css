@@ -48,8 +48,8 @@
   .metrics-summary { gap:20px; }
 }
 
-.grafana-embed { max-width: none; height: calc(100vh - 220px); min-height: 640px; grid-template-rows: auto 1fr; }
-.grafana-embed .grafana-toolbar { align-items: center; }
+.grafana-embed { max-width: none; height: calc(100vh - 168px); min-height: 560px; grid-template-rows: auto 1fr; }
+.grafana-embed .grafana-toolbar { align-items: center; gap: 8px; }
 .grafana-view-switch { display:flex; gap:4px; }
 .grafana-view-switch button[aria-selected="true"] { color: var(--text); border-bottom: 2px solid var(--accent); }
 .grafana-embed .grafana-app-filter { width: auto; min-width: 140px; max-width: 220px; }

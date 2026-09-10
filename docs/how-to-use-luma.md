@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.326 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.327 sh
 ```
 
 For local development from a checkout:
@@ -599,4 +599,4 @@ dashboard 的 Applications → Versions 也能做同样的回滚。注意这是 
 
 ## 13. 应用级可观测（luma-observe）
 
-Dashboard 里的 CPU/内存是节点样本，不是应用是否可用。HTTP 5xx、Nomad 失败/重启走独立的 [`observe/`](../observe/) 栈，和 Traefik 同机、只绑 loopback。详见 [Observability](observability.md)。不要把这类告警做进 Control。
+Dashboard 里的 CPU/内存是节点样本，不是应用是否可用。HTTP 5xx、延迟、Nomad 失败/重启和节点水位走独立的 [`observe/`](../observe/) 栈，和 Traefik/Control 同机、只绑 loopback。部署该栈后 Control 会把它钉到 manager、把 Grafana 挂到控制面域名的 `/grafana`，告警规则里会出现 p95 / 5xx / 失败 alloc 预设。详见 [Observability](observability.md)。

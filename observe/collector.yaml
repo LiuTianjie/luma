@@ -25,6 +25,12 @@ receivers:
           scrape_timeout: 5s
           static_configs:
             - targets: ["127.0.0.1:9107"]
+        - job_name: luma-control
+          scrape_interval: 15s
+          scrape_timeout: 5s
+          metrics_path: /v1/metrics
+          static_configs:
+            - targets: ["127.0.0.1:8080"]
 
 processors:
   memory_limiter:

@@ -1,3 +1,5 @@
+# Control pins this stack to the registered manager (Traefik/Control node) and
+# rewrites region/node on deploy. Values below are only the local-render fallback.
 name: luma-observe
 compose: docker-compose.yml
 region: cn

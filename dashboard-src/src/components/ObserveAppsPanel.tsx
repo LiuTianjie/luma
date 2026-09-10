@@ -3,10 +3,11 @@ import type { Lang } from "../types";
 import "./ObservabilityPanel.css";
 
 const VIEWS = [
-  { id: "http", zh: "HTTP 应用", en: "HTTP apps" },
-  { id: "nomad", zh: "Nomad", en: "Nomad" },
-  { id: "traces", zh: "链路", en: "Traces" },
-  { id: "grafana", zh: "Grafana", en: "Grafana" },
+  { id: "http", uid: "luma-http-apps", zh: "HTTP 应用", en: "HTTP apps" },
+  { id: "nomad", uid: "luma-nomad-jobs", zh: "Nomad", en: "Nomad" },
+  { id: "nodes", uid: "luma-nodes", zh: "节点", en: "Nodes" },
+  { id: "traces", uid: "", zh: "链路", en: "Traces" },
+  { id: "grafana", uid: "", zh: "Grafana", en: "Grafana" },
 ] as const;
 
 // Grafana OSS 11.5 dashboard panels query Tempo through /api/ds/query, which
@@ -42,7 +43,7 @@ function tracesExploreSrc(app: string): string {
 }
 
 function dashboardSrc(uid: string, app: string): string {
-  const params = new URLSearchParams({ orgId: "1", kiosk: "tv" });
+  const params = new URLSearchParams({ orgId: "1", kiosk: "tv", autofitpanels: "true" });
   if (app) params.set("var-app", app);
   return `/grafana/d/${uid}?${params.toString()}`;
 }
@@ -59,13 +60,14 @@ export function ObserveAppsPanel({
   const [view, setView] = useState<(typeof VIEWS)[number]["id"]>("http");
   const [app, setApp] = useState("");
   const names = [...new Set(applicationNames.filter(Boolean))].sort();
+  const current = VIEWS.find((item) => item.id === view) || VIEWS[0];
   const src =
     view === "traces"
       ? tracesExploreSrc(app)
       : view === "grafana"
         ? "/grafana/?orgId=1"
-        : dashboardSrc(view === "http" ? "luma-http-apps" : "luma-nomad-jobs", app);
-  const current = VIEWS.find((item) => item.id === view) || VIEWS[0];
+        : dashboardSrc(current.uid, app);
+  const showAppFilter = view === "http" || view === "nomad" || view === "nodes" || view === "traces";
   return (
     <div className="metrics-workspace grafana-embed">
       <div className="history-toolbar grafana-toolbar">
@@ -83,7 +85,7 @@ export function ObserveAppsPanel({
             </button>
           ))}
         </div>
-        {view !== "grafana" ? (
+        {showAppFilter ? (
           <select
             className="grafana-app-filter"
             value={app}
@@ -96,7 +98,6 @@ export function ObserveAppsPanel({
             ))}
           </select>
         ) : null}
-        <small>{zh ? "Grafana 嵌在控制面域名 /grafana，observe 未部署时这里会空白。" : "Grafana is embedded at /grafana on the Control domain. Empty if observe is not deployed."}</small>
       </div>
       <iframe key={src} title={zh ? current.zh : current.en} src={src} allow="fullscreen" />
     </div>

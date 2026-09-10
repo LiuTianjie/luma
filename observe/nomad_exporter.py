@@ -133,6 +133,13 @@ def current_failed(allocations: Iterable[Any]) -> dict[tuple[str, str], int]:
     return counts
 
 
+def node_identity(node: dict[str, Any]) -> tuple[str, str]:
+    meta = node.get("Meta") if isinstance(node.get("Meta"), dict) else {}
+    name = str(meta.get("luma_node_name") or node.get("Name") or node.get("ID") or "").strip()
+    region = str(meta.get("region") or "").strip()
+    return name, region
+
+
 def collect(addr: str, token: str, *, routes_dir: Path | None = None) -> str:
     lines = [
         "# HELP luma_observe_nomad_up Whether the Nomad API was reachable from luma-observe.",
@@ -141,9 +148,10 @@ def collect(addr: str, token: str, *, routes_dir: Path | None = None) -> str:
     try:
         jobs = fetch_json(addr, "/v1/jobs?meta=true", token)
         allocations = fetch_json(addr, "/v1/allocations?resources=false", token)
+        nodes = fetch_json(addr, "/v1/nodes", token)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, OSError):
         return "\n".join(lines + ["luma_observe_nomad_up 0", ""])
-    if not isinstance(jobs, list) or not isinstance(allocations, list):
+    if not isinstance(jobs, list) or not isinstance(allocations, list) or not isinstance(nodes, list):
         return "\n".join(lines + ["luma_observe_nomad_up 0", ""])
 
     failed_now = current_failed(allocations)
@@ -219,6 +227,37 @@ def collect(addr: str, token: str, *, routes_dir: Path | None = None) -> str:
             + _labels(app=row["app"], service=row["service"], router=row["router"])
             + " 1"
         )
+    lines += [
+        "# HELP luma_observe_node_ready 1 if the Nomad client is ready.",
+        "# TYPE luma_observe_node_ready gauge",
+        "# HELP luma_observe_node_eligible 1 if the Nomad client can receive work.",
+        "# TYPE luma_observe_node_eligible gauge",
+        "# HELP luma_observe_node_allocs Allocation count by node and client status.",
+        "# TYPE luma_observe_node_allocs gauge",
+    ]
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        name, region = node_identity(node)
+        if not name:
+            continue
+        ready = 1 if str(node.get("Status") or "").lower() == "ready" else 0
+        eligible = 1 if str(node.get("SchedulingEligibility") or "").lower() == "eligible" else 0
+        labels = _labels(node=name, region=region)
+        lines.append(f"luma_observe_node_ready{labels} {ready}")
+        lines.append(f"luma_observe_node_eligible{labels} {eligible}")
+    node_allocs: dict[tuple[str, str], int] = {}
+    for alloc in allocations:
+        if not isinstance(alloc, dict):
+            continue
+        node = str(alloc.get("NodeName") or "").strip()
+        status = str(alloc.get("ClientStatus") or "unknown")
+        if not node:
+            continue
+        key = (node, status)
+        node_allocs[key] = node_allocs.get(key, 0) + 1
+    for (node, status), count in sorted(node_allocs.items()):
+        lines.append(f"luma_observe_node_allocs{_labels(node=node, status=status)} {count}")
     return "\n".join(lines) + "\n"
 
 

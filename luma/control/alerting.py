@@ -25,8 +25,16 @@ PRESETS = [
     dict(metric='node.inode', name='inode 空间紧张', description='Agent 所采样文件系统 inode 使用率', threshold=90, forSeconds=300, unit='percent'),
     dict(metric='task.queue_age', name='任务排队过久', description='按 agent/builder/build 分组的最老排队任务等待秒数', threshold=600, forSeconds=60, unit='seconds'),
     dict(metric='build.failed', name='最新构建失败', description='每个应用的最新构建失败，下一次构建成功才恢复', threshold=0, forSeconds=0, unit='count'),
+    dict(metric='app.http_p95', name='应用 p95 延迟', description='Traefik 入口 p95，来自 luma-observe', threshold=1, forSeconds=300, unit='seconds'),
+    dict(metric='app.http_5xx_ratio', name='应用 5xx 占比', description='公开 HTTP 5xx / 总请求，来自 luma-observe', threshold=0.05, forSeconds=300, unit='ratio'),
+    dict(metric='app.nomad_failed', name='应用失败 alloc', description='Nomad 仍想跑但失败的 alloc 数，来自 luma-observe', threshold=0, forSeconds=120, unit='count'),
 ]
 METRICS = {p['metric'] for p in PRESETS}
+OBSERVE_ALERTS = {
+    'app.http_p95': ('luma_app:http_duration_seconds:p95', 'app'),
+    'app.http_5xx_ratio': ('luma_app:http_errors:rate5m / clamp_min(luma_app:http_requests:rate5m, 0.001)', 'app'),
+    'app.nomad_failed': ('sum by (app) (luma_observe_job_failed)', 'app'),
+}
 
 
 def _schema(conn):
@@ -254,6 +262,8 @@ def _observations(state,metric,now):
             if target and (target not in latest or when > latest[target][0]): latest[target] = (when,item)
         for target,(_,item) in latest.items():
             result[target] = 1 if item.get('status') in ('failed','error') else (0 if item.get('status') in ('succeeded','success','completed') else None)
+    elif metric in OBSERVE_ALERTS:
+        return dict((state.get('_observeAlerts') or {}).get(metric) or {})
     return result
 
 
@@ -392,7 +402,22 @@ def load_evaluation_state(*, now=None):
         rows = conn.execute("""SELECT id,payload FROM (SELECT id,payload,ROW_NUMBER() OVER (PARTITION BY CASE WHEN app='' THEN id ELSE app END ORDER BY created_at DESC,id DESC) rank FROM control_entities WHERE kind='buildRuns') WHERE rank=1""")
         for row in rows:
             result['buildRuns'][row['id']] = json.loads(row['payload'])
-        return result
+        table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='alert_rules'").fetchone()
+        result['_observeMetrics'] = {str(item[0]) for item in conn.execute("SELECT DISTINCT metric FROM alert_rules WHERE enabled=1")} if table else set()
+    _hydrate_observe_alerts(result)
+    return result
+
+
+def _hydrate_observe_alerts(state: dict[str, Any]) -> None:
+    """Fill instant observe samples outside the SQLite transaction. Fail open."""
+    wanted = set(state.get('_observeMetrics') or ()) & set(OBSERVE_ALERTS)
+    alerts: dict[str, dict[str, float]] = {}
+    if wanted:
+        from .observe import instant_values
+        for metric in wanted:
+            expr, label = OBSERVE_ALERTS[metric]
+            alerts[metric] = instant_values(state, expr, label)
+    state['_observeAlerts'] = alerts
 
 
 def retention_plan(conn, *, cutoff):

@@ -237,6 +237,15 @@ class AlertingTest(unittest.TestCase):
         alerting.tick(state,now=1030)
         self.assertEqual(self.items('incidents')[0]['status'],'resolved')
 
+    def test_observe_p95_preset_uses_hydrated_samples(self):
+        alerting.save_rule({'name':'p95','metric':'app.http_p95','target':'*','threshold':1,'forSeconds':0},now=1000)
+        state={'clusterId':'t','nodes':{},'buildRuns':{},'_observeAlerts':{'app.http_p95':{'web':1.4}}}
+        alerting.tick(state,now=1000)
+        incident=self.items('incidents')[0]
+        self.assertEqual(incident['target'],'web')
+        self.assertEqual(incident['status'],'firing')
+        self.assertEqual(incident['value'],1.4)
+
     def test_global_silence_defers_existing_queue(self):
         ch=self.channel();self.rule(forSeconds=0,channelIds=[ch['id']])
         alerting.tick(self.state(1000),now=1000)

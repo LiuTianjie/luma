@@ -184,7 +184,7 @@ from ..lae_admin_proxy import (
 from .. import __version__
 from .metrics import history_metadata, load_history, record_samples, retention_seconds, sustained_breach
 from .observe import handle_observe_apps
-from .monitoring import CONTENT_TYPE as METRICS_CONTENT_TYPE, render_metrics, require_metrics_token
+from .monitoring import CONTENT_TYPE as METRICS_CONTENT_TYPE, peer_is_loopback, render_metrics, require_metrics_token
 from . import operations as operations_api
 from .workflows import handle_workflow_check, handle_workflow_get, handle_workflow_list, handle_workflow_record
 from . import history as control_history
@@ -7788,9 +7788,10 @@ def handle_builder_storage_status(token: str, task_id: str) -> Dict[str, Any]:
     return {"task": _builder_storage_public_task(task)}
 
 
-def handle_prometheus_metrics(token: str) -> str:
+def handle_prometheus_metrics(token: str | None, *, allow_unauthenticated: bool = False) -> str:
     state = load_state()
-    require_metrics_token(state, token)
+    if not allow_unauthenticated:
+        require_metrics_token(state, str(token or ""))
     _deployment_index, compose_jobs = _dashboard_deployment_service_index(state)
     return render_metrics(state, compose_jobs=compose_jobs)
 
@@ -11140,6 +11141,7 @@ def _observe_otlp_settings(state: Dict[str, Any], stack: str) -> Dict[str, str] 
         "token": token,
         "mesh_bind": mesh_bind,
         "endpoint": otlp_mesh_endpoint(mesh_bind),
+        "grafana_domain": str(state.get("domain") or "").strip(),
     }
 
 
@@ -18808,6 +18810,19 @@ class ControlHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if parsed_path == "/v1/metrics":
+            try:
+                auth = self.headers.get("Authorization") or ""
+                if auth:
+                    body = handle_prometheus_metrics(bearer_token(self.headers))
+                elif peer_is_loopback(self.client_address[0] if self.client_address else ""):
+                    body = handle_prometheus_metrics(None, allow_unauthenticated=True)
+                else:
+                    raise LumaError("missing bearer token")
+                self._bytes(200, body.encode("utf-8"), METRICS_CONTENT_TYPE, headers={"Cache-Control": "no-store"})
+            except LumaError as exc:
+                self._json(401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400, {"error": str(exc)})
+            return
         try:
             token = bearer_token(self.headers)
             if operations_api.handles(parsed_path):
@@ -19794,6 +19809,21 @@ async def _asgi_dashboard_asset(request: Request) -> Response:
         return _json_response(404, {"error": "not found"})
 
 
+async def _asgi_metrics(request: Request) -> Response:
+    try:
+        auth = request.headers.get("Authorization") or ""
+        if auth:
+            body = await run_in_threadpool(handle_prometheus_metrics, bearer_token(request.headers))
+        elif peer_is_loopback(request.client.host if request.client else ""):
+            body = await run_in_threadpool(functools.partial(handle_prometheus_metrics, None, allow_unauthenticated=True))
+        else:
+            raise LumaError("missing bearer token")
+        return Response(body, headers={"Content-Type": METRICS_CONTENT_TYPE, "Cache-Control": "no-store"})
+    except LumaError as exc:
+        status = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
+        return _asgi_error(status, exc, code="luma_error")
+
+
 async def _asgi_health(_: Request) -> JSONResponse:
     return _json_response(
         200,
@@ -20724,6 +20754,7 @@ def create_app() -> Starlette:
             Route("/dashboard", _asgi_dashboard_asset, methods=["GET"]),
             Route("/dashboard/{path:path}", _asgi_dashboard_asset, methods=["GET"]),
             Route("/v1/health", _asgi_health, methods=["GET"]),
+            Route("/v1/metrics", _asgi_metrics, methods=["GET"]),
             Route("/v1/{path:path}", _asgi_authenticated_get, methods=["GET"]),
             Route("/v1/{path:path}", _asgi_authenticated_post, methods=["POST"]),
             Route("/v1/{path:path}", _asgi_operations_delete, methods=["DELETE"]),

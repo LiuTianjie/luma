@@ -131,6 +131,20 @@ class MonitoringEndpointTests(unittest.TestCase):
             httpd.server_close()
             thread.join(3)
 
+    def test_loopback_scrape_does_not_need_a_token(self):
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.ControlHandler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{httpd.server_port}/v1/metrics"
+            with urllib.request.urlopen(url, timeout=3) as response:
+                self.assertEqual(response.status, 200)
+                self.assertIn(b"luma_control_info", response.read())
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(3)
+
     def test_invalid_token_file_fails_closed(self):
         self.token_file.chmod(0o644)
         with self.assertRaisesRegex(LumaError, "unauthorized"):

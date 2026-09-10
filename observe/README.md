@@ -39,7 +39,12 @@ language equivalent). See [Application integration](../docs/observability.md#app
 
 ## Deploy
 
-Pin is `node: manager`. Build and deploy from this directory:
+luma-observe colocates with Traefik and Control on the manager host network.
+Control pins the stack to the registered manager node (not the name `manager`)
+and injects Grafana's public URL from the Control domain. Do not edit node
+names or hardcode a Grafana host.
+
+Build and deploy from this directory:
 
 ```bash
 luma build local . --platform linux/amd64
@@ -65,9 +70,10 @@ as soon as this stack is running.
 | 9093 | Alertmanager |
 | 9107 | nomad-exporter |
 | 9095 | feishu-webhook |
-| 3000 | Grafana on 127.0.0.1 only |
+| 3100 | Grafana on 127.0.0.1; published at `/grafana` on the Control domain |
 
 Do not publish these on `0.0.0.0` or the public NIC.
 `host-gateway` is part of this optional stack: it exposes VictoriaMetrics on
-the Nomad/docker0 bridge so Control can query it after a normal Luma deploy.
-Port 3000 is left alone (it is already itool.tech on this manager).
+the Nomad/docker0 bridge. Control itself is host-networked and queries
+`http://127.0.0.1:8428`. Grafana listens on `127.0.0.1:3100` and is published
+at `/grafana` on the Control domain.

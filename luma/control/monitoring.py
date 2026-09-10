@@ -23,6 +23,11 @@ SAMPLE_TTL_SECONDS = 120
 CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 
 
+def peer_is_loopback(host: str) -> bool:
+    value = str(host or "").strip().lower().strip("[]")
+    return value in {"127.0.0.1", "::1", "localhost"}
+
+
 def require_metrics_token(state: dict[str, Any], token: str) -> None:
     """A dedicated token grants only the metrics endpoint, never management."""
     management = str(state.get("deployToken") or "")

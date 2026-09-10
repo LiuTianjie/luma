@@ -114,7 +114,11 @@ SQLite database. The evaluator uses samples and task state already reported to
 Control; creating a resource rule does not start a public HTTP probe.
 
 Available presets cover node heartbeat age, sustained CPU, memory, disk and
-inode usage, queued-task age and the latest failed build per application.
+inode usage, queued-task age, the latest failed build per application, and —
+when luma-observe is deployed — application p95 latency, HTTP 5xx ratio and
+Nomad failed allocations. Observe samples are instant PromQL reads from
+VictoriaMetrics; if observe is down those rules keep their last state
+(`noData: keep`) instead of firing.
 Thresholds and the required continuous duration are configurable. A pending
 incident becomes firing only when its condition lasts for that duration; a
 healthy observation resolves it. One active incident is maintained per rule
@@ -170,8 +174,9 @@ Alerting management APIs under `/v1/alerting/` require the management token;
 the metrics-only token cannot manage them. No notification channel is
 provisioned automatically. The Control must remain available to evaluate and deliver its own alerts; retain an independent
 Prometheus scrape or external probe for Manager/Control outages. Built-in
-resource alerts do not currently establish end-user route availability, HTTP
-error rates, p95/p99 latency or desired replica compliance.
+resource alerts do not probe public URLs. Application p95, 5xx ratio and
+failed-allocation presets read luma-observe; they are not a substitute for an
+external Control-down probe.
 
 ## Host disk samples
 
@@ -181,13 +186,15 @@ Disk usage excludes reserved blocks from usable capacity, matching the usual `df
 
 ## Prometheus endpoint
 
-`GET /v1/metrics` emits Prometheus text exposition. It reads the persisted heartbeat snapshot without contacting Nomad, contacting agents or changing control state. It supports the management token, but a collector should use a dedicated read-only metrics token.
+`GET /v1/metrics` emits Prometheus text exposition. It reads the persisted heartbeat snapshot without contacting Nomad, contacting agents or changing control state. It supports the management token. A remote collector should use a dedicated read-only metrics token.
+
+The bundled luma-observe collector colocates on the manager host network and scrapes `http://127.0.0.1:8080/v1/metrics` without a token — the same loopback trust as Traefik `:8082`. A request that presents an `Authorization` header is still validated. Remote Prometheus scrapes continue to need the dedicated token.
 
 On the manager, provision a random token of at least 32 ASCII characters in `/opt/luma/control/metrics-token`. The file must be a private regular file, readable by the Control process (typically mode 0600), not a symlink. The existing `/opt/luma` Control mount makes this default path visible to the container. It is read on each request, allowing atomic rotation without restarting Control. No token is created automatically.
 
 An explicitly configured `LUMA_METRICS_TOKEN_FILE` overrides that path. For custom Control installations, expose the absolute path inside the process/container and set the environment variable there; an arbitrary manager shell environment is not automatically forwarded to the Nomad job.
 
-Copy the token securely into the Prometheus collector's credentials file. This dedicated token is accepted only by `/v1/metrics`; it cannot query the Dashboard, read application logs, deploy, restart or access LAE tenant APIs. Keep it distinct from every other Luma token. Endpoint output includes infrastructure names and region labels, so the endpoint remains authenticated.
+Copy the token securely into the Prometheus collector's credentials file. This dedicated token is accepted only by `/v1/metrics`; it cannot query the Dashboard, read application logs, deploy, restart or access LAE tenant APIs. Keep it distinct from every other Luma token. Endpoint output includes infrastructure names and region labels. Remote scrapes remain authenticated; the colocated luma-observe scrape is loopback-only.
 
 The example [Prometheus scrape config](./examples/monitoring/prometheus.yml) and [alert rules](./examples/monitoring/luma-alerts.yml) are opt-in templates. Replace the hostname and credential path, check with your Prometheus version, and configure an Alertmanager destination before expecting notifications. These external templates are separate from Luma's built-in alert rules and Feishu channels described above. Applying Prometheus/Alertmanager configuration is a separate infrastructure change; it does not create a Luma notification channel.
 

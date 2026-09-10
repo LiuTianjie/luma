@@ -1,0 +1,136 @@
+{
+  "uid": "luma-nodes",
+  "title": "Nodes",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "30s",
+  "tags": [
+    "luma-observe",
+    "nodes"
+  ],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "app",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "victoria"
+        },
+        "query": "label_values(luma_observe_router_app, app)",
+        "includeAll": true,
+        "multi": false,
+        "allValue": ".+",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "label": "App"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Ready nodes",
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "victoria" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [{ "refId": "A", "expr": "count(luma_observe_node_ready == 1) or vector(0)" }]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Ineligible nodes",
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "victoria" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [{ "refId": "A", "expr": "count(luma_observe_node_eligible == 0) or vector(0)" }]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Nomad API",
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "victoria" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [{ "refId": "A", "expr": "luma_observe_nomad_up" }]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "CPU by node",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "victoria" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "luma_node_cpu_used_ratio", "legendFormat": "{{node}}" }]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Memory by node",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "victoria" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "luma_node_memory_used_ratio", "legendFormat": "{{node}}" }]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Disk by node",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "victoria" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "luma_node_filesystem_used_ratio", "legendFormat": "{{node}}" }]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "App CPU by node",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "victoria" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "sum by (node, service) (luma_service_cpu_cores{service=~\"$app.*\"})", "legendFormat": "{{node}} {{service}}" }]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "App memory by node",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "victoria" },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "sum by (node, service) (luma_service_memory_bytes{service=~\"$app.*\"})", "legendFormat": "{{node}} {{service}}" }]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Running allocations by node",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "victoria" },
+      "targets": [{ "refId": "A", "expr": "sum by (node) (luma_observe_node_allocs{status=\"running\"})", "legendFormat": "{{node}}" }]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Failed allocations by node",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "victoria" },
+      "targets": [{ "refId": "A", "expr": "sum by (node) (luma_observe_node_allocs{status=\"failed\"})", "legendFormat": "{{node}}" }]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Node ready",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "victoria" },
+      "fieldConfig": { "defaults": { "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "luma_observe_node_ready", "legendFormat": "{{node}}" }]
+    }
+  ]
+}

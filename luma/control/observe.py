@@ -50,21 +50,7 @@ def observe_base_url(state: dict[str, Any] | None = None) -> str:
     configured = os.environ.get("LUMA_OBSERVE_URL", "").strip()
     if configured:
         return configured.rstrip("/")
-    current = state if isinstance(state, dict) else load_state()
-    nodes = current.get("nodes") if isinstance(current.get("nodes"), dict) else {}
-    for name, record in nodes.items():
-        if not isinstance(record, dict):
-            continue
-        labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
-        manager = (
-            str(record.get("status") or "").lower() == "manager"
-            or str(name) == "manager"
-            or str(labels.get("role.nomad-manager") or "").lower() == "true"
-        )
-        ip = str(record.get("tailscaleIP") or "").strip()
-        if manager and ip:
-            return f"http://{ip}:8428"
-    return "http://host.docker.internal:8428"
+    return "http://127.0.0.1:8428"
 
 
 def _query_range(base: str, expr: str, *, window: int, now: float) -> list[dict[str, Any]]:
@@ -102,6 +88,37 @@ def _query_range(base: str, expr: str, *, window: int, now: float) -> list[dict[
         if len(series) >= MAX_SERIES:
             break
     return series
+
+
+def instant_values(state: dict[str, Any] | None, expr: str, label: str) -> dict[str, float]:
+    """Allowlisted PromQL instant vector keyed by app/node. Empty if observe is down."""
+    base = observe_base_url(state)
+    params = urllib.parse.urlencode({"query": expr})
+    request = urllib.request.Request(
+        f"{base}/api/v1/query?{params}",
+        headers={"Accept": "application/json"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, OSError):
+        return {}
+    if payload.get("status") != "success":
+        return {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    rows = data.get("result") if isinstance(data.get("result"), list) else {}
+    values: dict[str, float] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        metric = row.get("metric") if isinstance(row.get("metric"), dict) else {}
+        name = _label(metric, label, "app", "node")
+        point = row.get("value") if isinstance(row.get("value"), (list, tuple)) else []
+        number = _num(point[1]) if len(point) > 1 else None
+        if name and number is not None:
+            values[name] = number
+    return values
 
 
 def _latest(points: list[list[float]]) -> float | None:

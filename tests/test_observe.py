@@ -166,6 +166,8 @@ class NomadExporterTests(unittest.TestCase):
             if path.startswith("/v1/jobs"):
                 self.assertIn("meta=true", path)
                 return jobs
+            if path.startswith("/v1/nodes"):
+                return []
             return allocations
 
         with patch.object(exporter, "fetch_json", side_effect=fake_fetch):
@@ -198,7 +200,11 @@ class NomadExporterTests(unittest.TestCase):
             "TaskStates": {"web": {"Restarts": 1}},
         }]
         def fake_fetch(addr, path, token, timeout=4.0):
-            return jobs if path.startswith("/v1/jobs") else allocations
+            if path.startswith("/v1/jobs"):
+                return jobs
+            if path.startswith("/v1/nodes"):
+                return []
+            return allocations
         with patch.object(exporter, "fetch_json", side_effect=fake_fetch):
             text = exporter.collect("http://127.0.0.1:4646", "", routes_dir=Path("/tmp/missing-luma-routes"))
         self.assertIn('luma_observe_job_failed{app="word2pdf",job="word2pdf",task_group="word2pdf"} 1', text)
@@ -210,6 +216,52 @@ class NomadExporterTests(unittest.TestCase):
             text = exporter.collect("http://127.0.0.1:4646", "")
         self.assertIn("luma_observe_nomad_up 0", text)
         self.assertNotIn("luma_observe_job_failed", text)
+        self.assertNotIn("luma_observe_node_ready", text)
+
+    def test_collects_node_ready_and_allocs_by_node(self):
+        exporter = load_observe("nomad_exporter.py", "nomad_exporter")
+        jobs = [{
+            "ID": "word2pdf",
+            "Name": "word2pdf",
+            "Status": "running",
+            "JobSummary": {"Summary": {"word2pdf": {"Running": 1, "Failed": 0, "Queued": 0}}},
+        }]
+        allocations = [{
+            "ID": "dddddddd-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "JobID": "word2pdf",
+            "TaskGroup": "word2pdf",
+            "NodeName": "manager",
+            "ClientStatus": "running",
+            "DesiredStatus": "run",
+            "TaskStates": {"web": {"Restarts": 0}},
+        }]
+        nodes = [{
+            "ID": "aaaa",
+            "Name": "iZexample",
+            "Status": "ready",
+            "SchedulingEligibility": "ineligible",
+            "Meta": {"luma_node_name": "aly", "region": "cn"},
+        }, {
+            "ID": "bbbb",
+            "Name": "manager",
+            "Status": "ready",
+            "SchedulingEligibility": "eligible",
+            "Meta": {"luma_node_name": "manager", "region": "cn"},
+        }]
+
+        def fake_fetch(addr, path, token, timeout=4.0):
+            if path.startswith("/v1/jobs"):
+                return jobs
+            if path.startswith("/v1/nodes"):
+                return nodes
+            return allocations
+
+        with patch.object(exporter, "fetch_json", side_effect=fake_fetch):
+            text = exporter.collect("http://127.0.0.1:4646", "")
+        self.assertIn('luma_observe_node_ready{node="aly",region="cn"} 1', text)
+        self.assertIn('luma_observe_node_eligible{node="aly",region="cn"} 0', text)
+        self.assertIn('luma_observe_node_eligible{node="manager",region="cn"} 1', text)
+        self.assertIn('luma_observe_node_allocs{node="manager",status="running"} 1', text)
 
 
 class FeishuWebhookTests(unittest.TestCase):
@@ -305,11 +357,32 @@ class ObserveTraceStackTests(unittest.TestCase):
         self.assertIn('uid: "tempo"', text)
         self.assertIn("resource.luma.stack", text)
         self.assertIn("grafana-app-filter", text)
+        self.assertIn('uid: "luma-nodes"', text)
+        self.assertIn("autofitpanels", text)
+
+    def test_nodes_dashboard_plots_nomad_node_gauges(self):
+        dashboard = json.loads((ROOT / "observe" / "grafana" / "dashboards" / "nodes.json").read_text(encoding="utf-8"))
+        self.assertEqual(dashboard["uid"], "luma-nodes")
+        exprs = [target["expr"] for panel in dashboard["panels"] for target in panel["targets"]]
+        self.assertIn("count(luma_observe_node_ready == 1) or vector(0)", exprs)
+        self.assertIn("luma_node_cpu_used_ratio", exprs)
+        self.assertIn("luma_node_memory_used_ratio", exprs)
+        self.assertIn('luma_service_cpu_cores{service=~"$app.*"}', "".join(exprs))
+        self.assertEqual(dashboard["templating"]["list"][0]["name"], "app")
+
+    def test_collector_scrapes_control_host_metrics(self):
+        text = (ROOT / "observe" / "collector.yaml").read_text(encoding="utf-8")
+        self.assertIn("job_name: luma-control", text)
+        self.assertIn("127.0.0.1:8080", text)
+        self.assertIn("metrics_path: /v1/metrics", text)
 
     def test_grafana_lets_anonymous_viewers_open_explore(self):
         text = (ROOT / "observe" / "docker-compose.yml").read_text(encoding="utf-8")
         self.assertIn('GF_USERS_VIEWERS_CAN_EDIT: "true"', text)
         self.assertIn('GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"', text)
+        self.assertNotIn("itool.tech", text)
+        self.assertNotIn("GF_SERVER_DOMAIN", text)
+        self.assertNotIn("GF_SERVER_ROOT_URL", text)
 
 
 class GrafanaRouteTests(unittest.TestCase):

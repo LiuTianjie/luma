@@ -49,9 +49,12 @@ export function localizeAlertPreset(preset: AlertPreset, zh: boolean): AlertPres
     "node.inode": ["Inode pressure", "Inode usage of the filesystem sampled by the Agent"],
     "task.queue_age": ["Task queue delay", "Age of the oldest queued task, grouped by agent / builder / build"],
     "build.failed": ["Latest build failed", "The latest build per application failed; recovers after a successful build"],
+    "app.http_p95": ["App p95 latency", "Traefik ingress p95 from luma-observe"],
+    "app.http_5xx_ratio": ["App 5xx ratio", "Public HTTP 5xx / requests from luma-observe"],
+    "app.nomad_failed": ["App failed allocations", "Failed allocations Nomad still wants to run"],
   };
   const translation = labels[preset.metric];
-  const units: Record<string, [string, string]> = { seconds: ["秒", "s"], percent: ["%", "%"], count: ["计数", "count"] };
+  const units: Record<string, [string, string]> = { seconds: ["秒", "s"], percent: ["%", "%"], count: ["计数", "count"], ratio: ["占比", "ratio"] };
   return { ...preset, ...(!zh && translation ? { name: translation[0], description: translation[1] } : {}), unit: units[preset.unit]?.[zh ? 0 : 1] || preset.unit };
 }
 
