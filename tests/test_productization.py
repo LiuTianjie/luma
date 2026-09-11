@@ -214,7 +214,14 @@ class ProductConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
             client = Mock()
-            client.lease_agent_task.side_effect = [LumaError("temporary control failure"), {"task": {}}]
+            lease_calls = 0
+            def lease_agent_task(**_kwargs):
+                nonlocal lease_calls
+                lease_calls += 1
+                if lease_calls == 1:
+                    raise LumaError("temporary control failure")
+                return {"task": {}}
+            client.lease_agent_task.side_effect = lease_agent_task
             stats_sampler = Mock()
             stats_sampler.snapshot.return_value = []
             terminal_supervisor = Mock()
