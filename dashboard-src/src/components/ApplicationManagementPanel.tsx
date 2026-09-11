@@ -796,7 +796,20 @@ export function ApplicationManagementPanel({
       </div>
       <div className="application-card-list">
         {filteredApplications.length ? filteredApplications.map((app) => (
-          <article className="application-mobile-card" key={app.stack}>
+          <article
+            className="application-mobile-card is-clickable"
+            key={app.stack}
+            role="button"
+            tabIndex={0}
+            aria-label={`${t(lang, "details")}: ${app.stack}`}
+            onClick={() => openDetails(app)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                openDetails(app);
+              }
+            }}
+          >
             <header>
               <PrimaryCell title={app.stack} meta={serviceCountLabel(app.services.length)} />
               <StatePill label={localizeState(lang, app.status)} value={app.status} />
