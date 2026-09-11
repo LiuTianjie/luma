@@ -18,7 +18,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { LogOut, RefreshCw, Settings2, Monitor, Moon, Sun } from "lucide-react";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { useState } from "react";
 import type { ThemeMode } from "./useTheme";
 import { buildNavGroups, type NavGroup } from "./navItems";
 import type { DashboardViewModel, NavPage } from "./dashboardViewModel";
@@ -57,6 +57,7 @@ export function AppSidebar({
   const { path, navigate: navigatePath } = useRouter();
   const activeWorkspace = ["builder", "deploy"].includes(activeNavPage) ? "deployments"
     : ["storage", "registry"].includes(activeNavPage) ? "nodes" : activeNavPage;
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
 
   return (
     <Sidebar collapsible="icon" variant="sidebar">
@@ -147,23 +148,16 @@ export function AppSidebar({
       </SidebarContent>
       <SidebarFooter>
         <div className="flex items-center gap-1 px-2 group-data-[collapsible=icon]:flex-col">
-          <DropdownMenu>
-            <DropdownMenuTrigger render={<Button variant="ghost" size="sm" className="flex-1 justify-start group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:flex-none group-data-[collapsible=icon]:justify-center" title={lang === "zh" ? "偏好" : "Preferences"} />}><Settings2 data-icon="inline-start" /><span className="group-data-[collapsible=icon]:hidden">{lang === "zh" ? "偏好" : "Preferences"}</span></DropdownMenuTrigger>
-            <DropdownMenuContent side="inline-end" align="end" className="min-w-52">
-              <DropdownMenuLabel>{lang === "zh" ? "外观" : "Appearance"}</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={themeMode} onValueChange={(value) => onThemeModeChange(value as ThemeMode)}>
-                <DropdownMenuRadioItem value="system"><Monitor />{lang === "zh" ? "跟随系统" : "Follow system"}</DropdownMenuRadioItem>
-                <DropdownMenuRadioItem value="light"><Sun />{lang === "zh" ? "日间模式" : "Light mode"}</DropdownMenuRadioItem>
-                <DropdownMenuRadioItem value="dark"><Moon />{lang === "zh" ? "夜间模式" : "Dark mode"}</DropdownMenuRadioItem>
-              </DropdownMenuRadioGroup>
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel>{lang === "zh" ? "语言" : "Language"}</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={lang} onValueChange={(value) => onLangChange(value as Lang)}>
-                <DropdownMenuRadioItem value="zh">中文</DropdownMenuRadioItem>
-                <DropdownMenuRadioItem value="en">English</DropdownMenuRadioItem>
-              </DropdownMenuRadioGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <div className="relative flex-1 group-data-[collapsible=icon]:flex-none">
+            <Button variant="ghost" size="sm" className="w-full justify-start group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:justify-center" title={lang === "zh" ? "偏好" : "Preferences"} onClick={() => setPreferencesOpen((open) => !open)} aria-expanded={preferencesOpen}><Settings2 data-icon="inline-start" /><span className="group-data-[collapsible=icon]:hidden">{lang === "zh" ? "偏好" : "Preferences"}</span></Button>
+            {preferencesOpen ? <div className="absolute bottom-full left-0 z-50 mb-2 w-56 rounded-lg border bg-popover p-2 text-sm text-popover-foreground shadow-md group-data-[collapsible=icon]:left-10">
+              <p className="px-2 py-1 text-xs font-medium text-muted-foreground">{lang === "zh" ? "外观" : "Appearance"}</p>
+              {([["system", Monitor], ["light", Sun], ["dark", Moon]] as const).map(([mode, Icon]) => <button type="button" key={mode} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent" aria-pressed={themeMode === mode} onClick={() => onThemeModeChange(mode)}><Icon className="size-4" />{mode === "system" ? (lang === "zh" ? "跟随系统" : "Follow system") : mode === "light" ? (lang === "zh" ? "日间模式" : "Light mode") : (lang === "zh" ? "夜间模式" : "Dark mode")}</button>)}
+              <div className="my-2 border-t" />
+              <p className="px-2 py-1 text-xs font-medium text-muted-foreground">{lang === "zh" ? "语言" : "Language"}</p>
+              {([["zh", "中文"], ["en", "English"]] as const).map(([value, label]) => <button type="button" key={value} className="flex w-full items-center rounded-md px-2 py-1.5 text-left hover:bg-accent" aria-pressed={lang === value} onClick={() => onLangChange(value)}>{label}</button>)}
+            </div> : null}
+          </div>
           <Button variant="ghost" size="sm" className="flex-1 justify-start group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:flex-none group-data-[collapsible=icon]:justify-center" onClick={onRefresh} title={t(lang, "refresh")}><RefreshCw data-icon="inline-start" /><span className="group-data-[collapsible=icon]:hidden">{t(lang, "refresh")}</span></Button>
           <Button variant="ghost" size="sm" className="flex-1 justify-start group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:flex-none group-data-[collapsible=icon]:justify-center" onClick={onSignOut} title={t(lang, "signOut")}><LogOut data-icon="inline-start" /><span className="group-data-[collapsible=icon]:hidden">{t(lang, "signOut")}</span></Button>
         </div>
