@@ -149,7 +149,7 @@ export function AppSidebar({
         <div className="flex items-center gap-1 px-2 group-data-[collapsible=icon]:flex-col">
           <DropdownMenu>
             <DropdownMenuTrigger render={<Button variant="ghost" size="sm" className="flex-1 justify-start group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:flex-none group-data-[collapsible=icon]:justify-center" title={lang === "zh" ? "偏好" : "Preferences"} />}><Settings2 data-icon="inline-start" /><span className="group-data-[collapsible=icon]:hidden">{lang === "zh" ? "偏好" : "Preferences"}</span></DropdownMenuTrigger>
-            <DropdownMenuContent side="right" align="end" className="min-w-52">
+            <DropdownMenuContent side="inline-end" align="end" className="min-w-52">
               <DropdownMenuLabel>{lang === "zh" ? "外观" : "Appearance"}</DropdownMenuLabel>
               <DropdownMenuRadioGroup value={themeMode} onValueChange={(value) => onThemeModeChange(value as ThemeMode)}>
                 <DropdownMenuRadioItem value="system"><Monitor />{lang === "zh" ? "跟随系统" : "Follow system"}</DropdownMenuRadioItem>

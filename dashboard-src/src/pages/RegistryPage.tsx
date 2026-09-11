@@ -16,6 +16,7 @@ import {
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { CodeCell, SelectControl, StatePill } from "../components/primitives";
 import { Button } from "@/components/ui/button";
+import { Toggle } from "@/components/ui/toggle";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -469,7 +470,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
               <InputGroupInput value={query} onChange={(event) => setQuery(event.target.value)} placeholder={zh ? "搜索仓库、tag 或 digest" : "Search repository, tag, or digest"} />
             </InputGroup>
             <div className="registry-filters">
-              {["all", "protected", "retained", "candidate", "unknown"].map((value) => <Button type="button" key={value} size="sm" variant={filter === value ? "secondary" : "outline"} onClick={() => setFilter(value)}>{value === "all" ? (zh ? "全部" : "All") : statusLabel(value, zh)}</Button>)}
+              {["all", "protected", "retained", "candidate", "unknown"].map((value) => <Toggle type="button" key={value} size="sm" variant="outline" pressed={filter === value} onPressedChange={(pressed) => { if (pressed) setFilter(value); }}>{value === "all" ? (zh ? "全部" : "All") : statusLabel(value, zh)}</Toggle>)}
             </div>
             <Button variant="destructive" type="button" disabled={!selected.size || !!busy} onClick={() => void openDeletePreview()}><Trash2 size={15} /> {zh ? `删除并回收 ${selected.size} 项` : `Delete and reclaim ${selected.size}`}</Button>
           </div>

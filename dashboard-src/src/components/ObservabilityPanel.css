@@ -55,3 +55,9 @@
 .grafana-embed .grafana-app-filter { width: auto; min-width: 140px; max-width: 220px; }
 .grafana-embed iframe { width: 100%; height: 100%; border: 0; border-radius: 12px; background: #111827; }
 .grafana-embed > small, .grafana-embed .grafana-toolbar > small { color: var(--text-muted); }
+@media (max-width: 900px) {
+  .grafana-embed { margin-top: -28px; height: auto; min-height: 0; gap: 12px; }
+  .grafana-embed iframe { min-height: 620px; height: 70vh; }
+  .grafana-embed .grafana-toolbar { align-items: stretch; }
+  .grafana-view-switch { width: 100%; overflow-x: auto; }
+}

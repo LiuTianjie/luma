@@ -6179,3 +6179,16 @@ dd {
 }
 .data-table thead th:last-child, .app-table thead th:last-child,
 .credentials-table thead th:last-child, .alert-table thead th:last-child { z-index: 2; }
+
+/* Final mobile overrides must come after legacy table rules. */
+@media (max-width: 900px) {
+  .app-management-panel > .table-wrap { display: none !important; }
+  .app-management-panel > .application-card-list { display: grid !important; gap: var(--space-md); }
+  .app-management-panel .application-mobile-card { min-width: 0; overflow: hidden; }
+  .app-management-panel .application-mobile-card header { align-items: flex-start; flex-wrap: wrap; }
+  .app-management-panel .app-card-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .app-management-panel .app-card-actions button { min-width: 0; width: 100%; }
+  .app-management-panel .application-filter-bar { grid-template-columns: minmax(0, 1fr); }
+  .app-management-panel .application-search-field,
+  .app-management-panel .application-filter-count { grid-column: 1; }
+}
