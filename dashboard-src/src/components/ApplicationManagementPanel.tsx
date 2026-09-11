@@ -710,7 +710,7 @@ export function ApplicationManagementPanel({
   };
 
   return (
-    <div className="flex flex-col gap-6" id="section-1">
+    <div className="app-management-panel flex flex-col gap-6" id="section-1">
       {selectedStack && !selected ? (
         <Alert>
           <AlertCircle />

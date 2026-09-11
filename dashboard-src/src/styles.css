@@ -6181,7 +6181,7 @@ dd {
 .credentials-table thead th:last-child, .alert-table thead th:last-child { z-index: 2; }
 
 /* Final mobile overrides must come after legacy table rules. */
-@media (max-width: 900px) {
+@media (max-width: 1180px) {
   .app-management-panel > .table-wrap { display: none !important; }
   .app-management-panel > .application-card-list { display: grid !important; gap: var(--space-md); }
   .app-management-panel .application-mobile-card { min-width: 0; overflow: hidden; }
