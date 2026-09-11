@@ -17,7 +17,9 @@ import {
 } from "@/components/ui/sidebar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { LogOut, RefreshCw } from "lucide-react";
+import { LogOut, RefreshCw, Settings2, Monitor, Moon, Sun } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import type { ThemeMode } from "./useTheme";
 import { buildNavGroups, type NavGroup } from "./navItems";
 import type { DashboardViewModel, NavPage } from "./dashboardViewModel";
 import { ROUTE_BY_PAGE } from "./routes";
@@ -35,6 +37,9 @@ export function AppSidebar({
   onPrefetch,
   onRefresh,
   onSignOut,
+  themeMode,
+  onThemeModeChange,
+  onLangChange,
 }: {
   lang: Lang;
   clusterId: string;
@@ -44,6 +49,9 @@ export function AppSidebar({
   onPrefetch?: (page: NavPage) => void;
   onRefresh: () => void;
   onSignOut: () => void;
+  themeMode: ThemeMode;
+  onThemeModeChange: (mode: ThemeMode) => void;
+  onLangChange: (lang: Lang) => void;
 }) {
   const groups: NavGroup[] = buildNavGroups(lang, vm);
   const { path, navigate: navigatePath } = useRouter();
@@ -139,6 +147,23 @@ export function AppSidebar({
       </SidebarContent>
       <SidebarFooter>
         <div className="flex items-center gap-1 px-2 group-data-[collapsible=icon]:flex-col">
+          <DropdownMenu>
+            <DropdownMenuTrigger render={<Button variant="ghost" size="sm" className="flex-1 justify-start group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:flex-none group-data-[collapsible=icon]:justify-center" title={lang === "zh" ? "偏好" : "Preferences"} />}><Settings2 data-icon="inline-start" /><span className="group-data-[collapsible=icon]:hidden">{lang === "zh" ? "偏好" : "Preferences"}</span></DropdownMenuTrigger>
+            <DropdownMenuContent side="right" align="end" className="min-w-52">
+              <DropdownMenuLabel>{lang === "zh" ? "外观" : "Appearance"}</DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={themeMode} onValueChange={(value) => onThemeModeChange(value as ThemeMode)}>
+                <DropdownMenuRadioItem value="system"><Monitor />{lang === "zh" ? "跟随系统" : "Follow system"}</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="light"><Sun />{lang === "zh" ? "日间模式" : "Light mode"}</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="dark"><Moon />{lang === "zh" ? "夜间模式" : "Dark mode"}</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>{lang === "zh" ? "语言" : "Language"}</DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={lang} onValueChange={(value) => onLangChange(value as Lang)}>
+                <DropdownMenuRadioItem value="zh">中文</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="en">English</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button variant="ghost" size="sm" className="flex-1 justify-start group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:flex-none group-data-[collapsible=icon]:justify-center" onClick={onRefresh} title={t(lang, "refresh")}><RefreshCw data-icon="inline-start" /><span className="group-data-[collapsible=icon]:hidden">{t(lang, "refresh")}</span></Button>
           <Button variant="ghost" size="sm" className="flex-1 justify-start group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:flex-none group-data-[collapsible=icon]:justify-center" onClick={onSignOut} title={t(lang, "signOut")}><LogOut data-icon="inline-start" /><span className="group-data-[collapsible=icon]:hidden">{t(lang, "signOut")}</span></Button>
         </div>
