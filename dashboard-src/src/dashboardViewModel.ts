@@ -13,6 +13,7 @@ export type PageId =
   | "storage"
   | "registry"
   | "nodes"
+  | "setup"
   | "credentials"
   | "update";
 export type NavPage = Exclude<PageId, "update">;

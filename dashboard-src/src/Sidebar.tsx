@@ -10,29 +10,36 @@ import {
   SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem,
 } from "@/components/ui/sidebar";
+import { Badge } from "@/components/ui/badge";
 import { buildNavGroups, type NavGroup } from "./navItems";
 import type { DashboardViewModel, NavPage } from "./dashboardViewModel";
 import { ROUTE_BY_PAGE } from "./routes";
-import { toHref } from "./router";
+import { toHref, useRouter } from "./router";
 import type { Lang } from "./types";
 import { t } from "./i18n";
 import lumaLogoMark from "./assets/luma-logo-mark.png";
 
 export function AppSidebar({
   lang,
+  clusterId,
   vm,
   activeNavPage,
   onNavigate,
   onPrefetch,
 }: {
   lang: Lang;
+  clusterId: string;
   vm: DashboardViewModel;
   activeNavPage: NavPage;
   onNavigate: (page: NavPage) => void;
   onPrefetch?: (page: NavPage) => void;
 }) {
   const groups: NavGroup[] = buildNavGroups(lang, vm);
+  const { path, navigate: navigatePath } = useRouter();
   const activeWorkspace = ["builder", "deploy"].includes(activeNavPage) ? "deployments"
     : ["storage", "registry"].includes(activeNavPage) ? "nodes" : activeNavPage;
 
@@ -47,6 +54,10 @@ export function AppSidebar({
             <span className="truncate text-xs text-muted-foreground">Luma</span>
             <strong className="truncate text-sm font-medium">{t(lang, "title")}</strong>
           </div>
+        </div>
+        <div className="flex min-w-0 items-center gap-2 px-2 pb-2 group-data-[collapsible=icon]:hidden">
+          <span className="text-xs text-muted-foreground">{t(lang, "cluster")}</span>
+          <Badge variant="outline" className="min-w-0 max-w-full truncate font-mono" translate="no">{clusterId}</Badge>
         </div>
       </SidebarHeader>
       <SidebarContent>
@@ -84,6 +95,32 @@ export function AppSidebar({
                         <span className="truncate group-data-[collapsible=icon]:hidden">{item.label}</span>
                       </SidebarMenuButton>
                       {showValue ? <SidebarMenuBadge className="group-data-[collapsible=icon]:hidden">{item.value}</SidebarMenuBadge> : null}
+                      {item.children?.length && active ? (
+                        <SidebarMenuSub>
+                          {item.children.map((child) => {
+                            const activeChild = child.href === "/fleet"
+                              ? path === child.href
+                              : path === child.href || path.startsWith(`${child.href}/`);
+                            return (
+                              <SidebarMenuSubItem key={child.href}>
+                                <SidebarMenuSubButton
+                                  size="sm"
+                                  isActive={activeChild}
+                                  title={child.detail}
+                                  render={<a href={toHref(child.href)} aria-current={activeChild ? "page" : undefined} />}
+                                  onClick={(event) => {
+                                    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                                    event.preventDefault();
+                                    navigatePath(child.href);
+                                  }}
+                                >
+                                  <span>{child.label}</span>
+                                </SidebarMenuSubButton>
+                              </SidebarMenuSubItem>
+                            );
+                          })}
+                        </SidebarMenuSub>
+                      ) : null}
                     </SidebarMenuItem>
                   );
                 })}

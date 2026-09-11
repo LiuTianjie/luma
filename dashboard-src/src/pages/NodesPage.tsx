@@ -1,15 +1,13 @@
-import { useState, type MouseEvent } from "react";
+import { useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { NodeFleetMap } from "../components/NodeFleetMap";
 import { RegionPanel } from "../components/RegionPanel";
 import { NodeTopology } from "../components/NodeTopology";
 import { SystemUpdatePanel } from "../components/SystemUpdatePanel";
 import { TrafficPaths } from "../components/TrafficPaths";
-import { InfrastructureNavigation } from "../components/InfrastructureNavigation";
-import { toHref, useRouter } from "../router";
+import { useRouter } from "../router";
 import type { DashboardNode, Lang } from "../types";
 import type { DashboardViewModel } from "../dashboardViewModel";
 import { PageHeader } from "./PageHeader";
@@ -83,7 +81,6 @@ export function NodesPage({
 
   return (
     <div className="infrastructure-workspace">
-      <InfrastructureNavigation lang={lang} />
       <PageHeader
         meta={{
           eyebrow: zh ? "节点舰队" : "Fleet",
@@ -101,32 +98,6 @@ export function NodesPage({
           ] : [],
         }}
       />
-
-      {section !== "network" ? (
-        <Tabs value={section}>
-          <TabsList aria-label={zh ? "节点管理" : "Node management"}>
-            {[
-              ["nodes", "/fleet", zh ? "节点列表" : "All nodes"],
-              ["join", "/fleet/join", zh ? "加入节点" : "Join node"],
-              ["regions", "/fleet/regions", zh ? "区域" : "Regions"],
-              ["maintenance", "/fleet/maintenance", zh ? "系统维护" : "Maintenance"],
-            ].map(([key, href, label]) => (
-              <TabsTrigger
-                key={key}
-                value={key}
-                render={<a href={toHref(href)} aria-current={section === key ? "page" : undefined} />}
-                onClick={(event: MouseEvent<HTMLElement>) => {
-                  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-                  event.preventDefault();
-                  navigate(href);
-                }}
-              >
-                {label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-      ) : null}
 
       {section === "unknown" && <div className="empty-inline"><p>{zh ? "此基础设施页面不存在。" : "This infrastructure page does not exist."}</p><Button type="button" onClick={() => navigate("/fleet")}>{zh ? "返回节点列表" : "Back to nodes"}</Button></div>}
       {section === "nodes" && <NodeFleetMap lang={lang} nodes={vm.nodes} services={vm.services} onSelect={onSelectNode} onTerminal={onTerminal} />}

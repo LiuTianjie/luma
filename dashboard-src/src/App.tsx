@@ -71,6 +71,7 @@ export function App() {
   // wait on nodes, services, metrics, and issue history.
   const pageCanRenderWithoutDashboard = resolvedPage === "deployments"
     || resolvedPage === "credentials"
+    || resolvedPage === "setup"
     || resolvedPage === "registry"
     || resolvedPage === "lae"
     // Observability has its own alerting/metrics requests. Do not make its
@@ -158,6 +159,7 @@ export function App() {
         </a>
         <AppSidebar
           lang={lang}
+          clusterId={vm.clusterId}
           vm={vm}
           activeNavPage={activeNavPage}
           onNavigate={navigate}
@@ -166,7 +168,6 @@ export function App() {
         <SidebarInset id="main" tabIndex={-1} className="min-h-svh overflow-hidden">
           {token && !terminalTarget && activeNavPage === "overview" && !objectRoute && !editName ? (
             <Topbar
-              clusterId={vm.clusterId}
               lang={lang}
               lastUpdated={lastUpdated}
               themeMode={themeMode}
@@ -181,7 +182,7 @@ export function App() {
               <SidebarTrigger />
             </div>
           )}
-          <div className={terminalTarget ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "min-h-0 flex-1 overflow-auto p-6"}>
+          <div className={terminalTarget ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "min-h-0 flex-1 overflow-auto p-4 sm:p-6"}>
             {!token ? (
               <div className="flex min-h-[60vh] items-center">
                 <LoginPanel lang={lang} onSubmit={setToken} />

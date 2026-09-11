@@ -1,21 +1,18 @@
-import { InfrastructureNavigation } from "../components/InfrastructureNavigation";
 import { StorageGovernancePanel } from "../components/StorageGovernancePanel";
-import { toHref, useRouter } from "../router";
+import { useRouter } from "../router";
 import { StoragePanel } from "../components/StoragePanel";
 import { t } from "../i18n";
 import type { Lang } from "../types";
 import type { DashboardViewModel } from "../dashboardViewModel";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "./PageHeader";
 import "./InfrastructureWorkspace.css";
 
 export function StoragePage({ lang, vm, token }: { lang: Lang; vm: DashboardViewModel; token: string }) {
   const zh = lang === "zh";
-  const { path, navigate } = useRouter();
+  const { path } = useRouter();
   const governance = path.startsWith("/storage/governance");
   return (
     <div className="infrastructure-workspace">
-      <InfrastructureNavigation lang={lang} />
       <PageHeader
         meta={{
           eyebrow: zh ? "存储状态" : "Storage",
@@ -30,24 +27,6 @@ export function StoragePage({ lang, vm, token }: { lang: Lang; vm: DashboardView
           ],
         }}
       />
-      <Tabs value={governance ? "/storage/governance" : "/storage"}>
-        <TabsList aria-label={zh ? "存储管理" : "Storage management"}>
-          {[["/storage", zh ? "卷与存储类" : "Volumes and classes"], ["/storage/governance", zh ? "容量与回收" : "Capacity and cleanup"]].map(([href, label]) => (
-            <TabsTrigger
-              key={href}
-              value={href}
-              render={<a href={toHref(href)} aria-current={(governance ? "/storage/governance" : "/storage") === href ? "page" : undefined} />}
-              onClick={(event) => {
-                if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-                event.preventDefault();
-                navigate(href);
-              }}
-            >
-              {label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
       {governance ? <StorageGovernancePanel lang={lang} token={token} /> : <StoragePanel lang={lang} volumes={vm.storageVolumes} storageClasses={vm.storageClasses} warnings={vm.storageWarnings} />}
     </div>
   );

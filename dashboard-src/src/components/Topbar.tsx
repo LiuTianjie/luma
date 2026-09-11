@@ -1,5 +1,4 @@
 import { LogOut, Monitor, Moon, RefreshCw, Settings2, Sun } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,7 +16,6 @@ import type { Lang, SyncStatus } from "../types";
 import type { ThemeMode } from "../useTheme";
 
 type Props = {
-  clusterId: string;
   lang: Lang;
   lastUpdated: Date | null;
   syncStatus: SyncStatus;
@@ -29,7 +27,6 @@ type Props = {
 };
 
 export function Topbar({
-  clusterId,
   lang,
   lastUpdated,
   syncStatus,
@@ -56,10 +53,6 @@ export function Topbar({
   return (
     <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
       <SidebarTrigger className="md:hidden" />
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="text-xs text-muted-foreground">{t(lang, "cluster")}</span>
-        <Badge variant="outline" className="max-w-56 truncate font-mono" translate="no">{clusterId}</Badge>
-      </div>
       <div className="ml-auto flex items-center gap-1.5">
         <span className="hidden text-xs text-muted-foreground sm:inline" title={statusText} role="status">
           {statusText}

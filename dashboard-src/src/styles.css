@@ -463,6 +463,8 @@ pre code { display: block; white-space: inherit; overflow-wrap: inherit; color: 
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--surface);
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 table {
@@ -1158,6 +1160,56 @@ tbody tr.is-selected {
 @media (prefers-reduced-transparency: reduce) {
   .topbar-wrapper {
     background: var(--bg);
+  }
+}
+
+/* Mobile data surfaces: keep tables semantic and horizontally scrollable inside
+   their card instead of letting a long identifier widen the whole dashboard. */
+@media (max-width: 640px) {
+  .table-wrap {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+  }
+
+  .table-wrap table {
+    width: max-content;
+    min-width: 100%;
+  }
+
+  .table-wrap th,
+  .table-wrap td {
+    padding: 10px 12px;
+  }
+
+  .table-wrap th {
+    white-space: nowrap;
+  }
+
+  .table-wrap td {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .page-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-lg);
+    padding-inline: 0;
+  }
+
+  .page-toolbar-side {
+    justify-content: flex-start;
+  }
+
+  .page-toolbar-metrics {
+    width: 100%;
+    grid-auto-flow: row;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .page-toolbar-metrics span,
+  .metric-tile {
+    min-width: 0;
+    padding-inline: 12px;
   }
 }
 

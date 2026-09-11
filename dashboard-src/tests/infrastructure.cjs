@@ -58,8 +58,9 @@ test("fleet opens at inventory and preserves independent region, network, and ma
       assert.doesNotMatch(html, /<node-join-token>/);
       assert.match(html, /Control did not return a node join token/);
     }
-    if (url !== "/fleet/network") assert.match(html, /href="\/dashboard\/fleet\/maintenance"/);
-    else assert.doesNotMatch(html, /aria-label="Node management"/);
+    // Fleet destinations are now exposed by the shared sidebar secondary
+    // navigation; the page itself should only render its content and header.
+    assert.doesNotMatch(html, /aria-label="Node management"/);
     if (url !== "/fleet") assert.doesNotMatch(html, /aria-label="Page metrics"/);
   }
 });

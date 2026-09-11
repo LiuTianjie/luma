@@ -35,7 +35,6 @@ import {
 } from "../registryManagementApi";
 import type { Lang } from "../types";
 import { useRouter, toHref } from "../router";
-import { InfrastructureNavigation } from "../components/InfrastructureNavigation";
 import { useConfirm } from "../components/ConfirmDialog";
 import { findRegistryImage } from "../registryDetail";
 import { PageHeader } from "./PageHeader";
@@ -314,7 +313,6 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
 
   return (
     <div className="registry-workspace">
-      <InfrastructureNavigation lang={lang} />
       <PageHeader
         meta={{
           eyebrow: zh ? "镜像生命周期" : "Image lifecycle",
@@ -340,9 +338,6 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
         }}
       />
 
-      <nav className="workspace-tabs" aria-label={zh ? "镜像管理" : "Registry management"}>
-        {[["/registry", zh ? "镜像" : "Images"], ["/registry/cleanup", zh ? "容量与清理" : "Capacity and cleanup"], ["/registry/policy", zh ? "保留策略" : "Retention policy"]].map(([href, label]) => <a key={href} href={toHref(href)} className={path === href ? "active" : ""} aria-current={path === href ? "page" : undefined} onClick={(event) => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(href); }}>{label}</a>)}
-      </nav>
       <main className="registry-page">
         {inventory?.scanPending ? (
           <Alert>

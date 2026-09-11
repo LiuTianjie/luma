@@ -12,11 +12,13 @@ const loadBuilderPage = () => import("./pages/BuilderPage").then((module) => ({ 
 const loadDeploymentsPage = () => import("./pages/DeploymentsPage").then((module) => ({ default: module.DeploymentsPage }));
 const loadDeployPage = () => import("./pages/DeployPage").then((module) => ({ default: module.DeployPage }));
 const loadCredentialsPage = () => import("./pages/CredentialsPage").then((module) => ({ default: module.CredentialsPage }));
+const loadSetupPage = () => import("./pages/SetupPage").then((module) => ({ default: module.SetupPage }));
 const ApplicationsPage = lazy(loadApplicationsPage);
 const BuilderPage = lazy(loadBuilderPage);
 const DeploymentsPage = lazy(loadDeploymentsPage);
 const DeployPage = lazy(loadDeployPage);
 const CredentialsPage = lazy(loadCredentialsPage);
+const SetupPage = lazy(loadSetupPage);
 const NodesPage = lazy(() => import("./pages/NodesPage").then((module) => ({ default: module.NodesPage })));
 const LaeAdminPage = lazy(() => import("./pages/LaeAdminPage").then((module) => ({ default: module.LaeAdminPage })));
 const NotFound = lazy(() => import("./pages/NotFound").then((module) => ({ default: module.NotFound })));
@@ -54,6 +56,7 @@ export type AppRoutesProps = {
 export function preloadPage(page: NavPage): void {
   const loader = page === "deployments" ? loadDeploymentsPage
     : page === "credentials" ? loadCredentialsPage
+    : page === "setup" ? loadSetupPage
     : page === "applications" ? loadApplicationsPage
     : page === "builder" ? loadBuilderPage
     : page === "deploy" ? loadDeployPage
@@ -139,7 +142,10 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
       content = <RegistryPage lang={lang} token={token} />;
       break;
     case "credentials":
-      content = <CredentialsPage lang={lang} token={token} vm={vm} readiness={payload.readiness} />;
+      content = <CredentialsPage lang={lang} token={token} vm={vm} />;
+      break;
+    case "setup":
+      content = <SetupPage lang={lang} token={token} readiness={payload.readiness} onRefresh={props.onRefresh} />;
       break;
     default:
       content = <NotFound lang={lang} onHome={() => props.onNavigate("overview")} />;

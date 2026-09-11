@@ -27,8 +27,6 @@
 .infrastructure-workspace .table-wrap :is(td, th) { white-space: normal; overflow-wrap: anywhere; }
 .infrastructure-workspace .table-wrap :is(.primary-cell, .code-cell) { max-width: 32rem; white-space: normal; }
 .infrastructure-workspace .table-wrap td:first-child { max-width: 22rem; }
-.infrastructure-workspace .workspace-tabs { max-width: 100%; min-width: 0; overflow-x: auto; }
-.infrastructure-workspace .workspace-tabs a { flex-shrink: 0; }
 .infrastructure-workspace :is(.node-region-grid, .node-tile-grid) { grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); }
 .infrastructure-workspace :is(.node-tile, .node-tile-head strong, .node-tile-meta, .node-tile-foot, .node-region-band > header > div) { min-width: 0; }
 .infrastructure-workspace :is(.node-tile-head strong, .node-tile-meta) { white-space: normal; overflow-wrap: anywhere; }
