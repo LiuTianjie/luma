@@ -1,6 +1,8 @@
 import "./resourceWorkspaces.css";
+import { Input } from "@/components/ui/input";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, GitBranch, KeyRound, LockKeyhole, PackageCheck, ShieldCheck } from "lucide-react";
+import { AlertCircle, ChevronDown, GitBranch, KeyRound, LockKeyhole, PackageCheck, ShieldCheck } from "lucide-react";
 import {
   fetchControlResources,
   removeGitProvider,
@@ -12,11 +14,14 @@ import {
   type GitProviderCredential,
   type RegistryCredential,
 } from "../controlResourcesApi";
-import { Badge, CodeCell, PrimaryCell, SelectControl, StatePill } from "../components/ui";
+import { Badge, CodeCell, PrimaryCell, SelectControl, StatePill } from "../components/primitives";
 import { useConfirm } from "../components/ConfirmDialog";
 import type { DashboardStorageClass, Lang } from "../types";
 import type { DashboardViewModel } from "../dashboardViewModel";
 import { PageHeader } from "./PageHeader";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useRouter, toHref } from "../router";
 
 type CredentialsState = {
@@ -364,24 +369,28 @@ export function CredentialsPage({
           eyebrow: zh ? "设置" : "Settings",
           title: editing ? (zh ? "新增或轮换凭据" : "Add or rotate credential") : (zh ? "凭据与维护" : "Credentials and maintenance"),
           description: zh ? "管理访问凭据。敏感值只写不回显，保存后不会返回浏览器。" : "Manage access credentials. Sensitive values are write-only and never returned after saving.",
-          action: editing ? <button type="button" className="ghost" disabled={!!busy} onClick={() => navigate(`/settings/${activeTab}`)}>{zh ? "返回列表" : "Back to list"}</button> : ["secrets", "registries", "git"].includes(activeTab) ? <button type="button" className="primary" onClick={() => navigate(`/settings/${activeTab}/new`)}>{zh ? "新增 / 轮换凭据" : "Add / rotate credential"}</button> : undefined,
+          action: editing ? <Button variant="outline" size="sm" disabled={!!busy} onClick={() => navigate(`/settings/${activeTab}`)}>{zh ? "返回列表" : "Back to list"}</Button> : ["secrets", "registries", "git"].includes(activeTab) ? <Button size="sm" className="shrink-0" onClick={() => navigate(`/settings/${activeTab}/new`)}>{zh ? "新增 / 轮换凭据" : "Add / rotate credential"}</Button> : undefined,
         }}
       />
 
       {state.error ? (
-        <div className="alert alert-error">
-          <span>{state.error}</span>
-        </div>
+        <Alert variant="destructive">
+          <AlertCircle />
+          <AlertTitle>{zh ? "读取失败" : "Load failed"}</AlertTitle>
+          <AlertDescription>{state.error}</AlertDescription>
+        </Alert>
       ) : null}
       {notice ? (
-        <div className="alert alert-success">
-          <span>{notice}</span>
-        </div>
+        <Alert>
+          <AlertDescription>{notice}</AlertDescription>
+        </Alert>
       ) : null}
       {writeError ? (
-        <div className="alert alert-error">
-          <span>{writeError}</span>
-        </div>
+        <Alert variant="destructive">
+          <AlertCircle />
+          <AlertTitle>{zh ? "保存失败" : "Save failed"}</AlertTitle>
+          <AlertDescription>{writeError}</AlertDescription>
+        </Alert>
       ) : null}
 
       {state.loading && !state.secrets.length && !state.registries.length ? (
@@ -396,40 +405,29 @@ export function CredentialsPage({
 
       <section className="credentials-layout" style={{ display: "block" }} hidden={state.loading && !state.secrets.length && !state.registries.length}>
         <article className="panel credentials-index-panel" hidden={editing}>
-          <div className="credentials-tabs" role="navigation" aria-label={zh ? "凭据视图" : "Credential views"}>
-            <button type="button" className={activeTab === "secrets" ? "active" : ""} onClick={() => setActiveTab("secrets")}>
-              <LockKeyhole size={15} aria-hidden="true" />
-              Secrets
-            </button>
-            <button type="button" className={activeTab === "registries" ? "active" : ""} onClick={() => setActiveTab("registries")}>
-              <PackageCheck size={15} aria-hidden="true" />
-              Registries
-            </button>
-            <button type="button" className={activeTab === "git" ? "active" : ""} onClick={() => setActiveTab("git")}>
-              <GitBranch size={15} aria-hidden="true" />
-              Git Providers
-            </button>
-            <button type="button" className={activeTab === "storage" ? "active" : ""} onClick={() => setActiveTab("storage")}>
-              {zh ? "存储配置" : "Storage configuration"}
-            </button>
-            <button type="button" className={activeTab === "maintenance" ? "active" : ""} onClick={() => setActiveTab("maintenance")}>
-              {zh ? "系统维护" : "Maintenance"}
-            </button>
-          </div>
+          <Tabs value={activeTab}>
+            <TabsList aria-label={zh ? "凭据视图" : "Credential views"}>
+              <TabsTrigger value="secrets" onClick={() => setActiveTab("secrets")}><LockKeyhole />{zh ? "密钥" : "Secrets"}</TabsTrigger>
+              <TabsTrigger value="registries" onClick={() => setActiveTab("registries")}><PackageCheck />{zh ? "镜像仓库" : "Registries"}</TabsTrigger>
+              <TabsTrigger value="git" onClick={() => setActiveTab("git")}><GitBranch />Git</TabsTrigger>
+              <TabsTrigger value="storage" onClick={() => setActiveTab("storage")}>{zh ? "存储" : "Storage"}</TabsTrigger>
+              <TabsTrigger value="maintenance" onClick={() => setActiveTab("maintenance")}>{zh ? "维护" : "Maintenance"}</TabsTrigger>
+            </TabsList>
+          </Tabs>
 
-          {activeTab === "maintenance" ? <div className="empty-state"><h2>{zh ? "集群维护" : "Cluster maintenance"}</h2><p>{zh ? "查看系统版本、升级 CLI 与 Agent，并跟踪升级任务。" : "Inspect system versions, upgrade CLI and agents, and track maintenance tasks."}</p><a className="primary" href={toHref("/fleet/maintenance")} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate("/fleet/maintenance"); }}>{zh ? "进入系统维护" : "Open maintenance"}</a></div> : null}
+          {activeTab === "maintenance" ? <div className="empty-state"><h2>{zh ? "集群维护" : "Cluster maintenance"}</h2><p>{zh ? "查看系统版本、升级 CLI 与 Agent，并跟踪升级任务。" : "Inspect system versions, upgrade CLI and agents, and track maintenance tasks."}</p><Button render={<a href={toHref("/fleet/maintenance")} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate("/fleet/maintenance"); }} />}>{zh ? "进入系统维护" : "Open maintenance"}</Button></div> : null}
           {activeTab === "secrets" ? (
             parsedSecrets.length ? (
               <div className="secret-groups">
                 <div className="secret-groups-toolbar">
                   <span>{zh ? `${secretGroups.length} 个分组` : `${secretGroups.length} groups`}</span>
                   <div>
-                    <button type="button" className="ghost" onClick={() => setExpandedSecretGroups(new Set(secretGroups.map((group) => group.id)))}>
+                    <Button variant="outline" type="button" onClick={() => setExpandedSecretGroups(new Set(secretGroups.map((group) => group.id)))}>
                       {zh ? "全部展开" : "Expand all"}
-                    </button>
-                    <button type="button" className="ghost" onClick={() => setExpandedSecretGroups(new Set())}>
+                    </Button>
+                    <Button variant="outline" type="button" onClick={() => setExpandedSecretGroups(new Set())}>
                       {zh ? "全部收起" : "Collapse all"}
-                    </button>
+                    </Button>
                   </div>
                 </div>
                 {secretGroups.map((group) => {
@@ -437,12 +435,11 @@ export function CredentialsPage({
                   const contentId = `secret-group-${group.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
                   return (
                     <section className={expanded ? "secret-group expanded" : "secret-group"} key={group.id}>
-                      <button
-                        type="button"
-                        className="secret-group-trigger"
-                        aria-expanded={expanded}
-                        aria-controls={contentId}
-                        onClick={() => toggleSecretGroup(group.id)}
+                      <Button type="button"
+ className="secret-group-trigger"
+ aria-expanded={expanded}
+ aria-controls={contentId}
+ onClick={() => toggleSecretGroup(group.id)}
                       >
                         <span className="secret-group-mark" aria-hidden="true">{group.label.slice(0, 1).toUpperCase()}</span>
                         <span className="secret-group-copy">
@@ -451,7 +448,7 @@ export function CredentialsPage({
                         </span>
                         <span className="secret-group-count">{group.secrets.length}</span>
                         <ChevronDown className="secret-group-chevron" size={16} aria-hidden="true" />
-                      </button>
+                      </Button>
                       {expanded ? (
                         <div className="table-wrap secret-group-table" id={contentId} tabIndex={0} role="region" aria-label={zh ? "密钥列表，可横向滚动" : "Secrets, horizontally scrollable"}>
                           <table className="credentials-table">
@@ -472,17 +469,15 @@ export function CredentialsPage({
                                   <td><CodeCell value="write-only" /></td>
                                   <td><StatePill label={zh ? "已保存" : "saved"} value="ready" /></td>
                                   <td>
-                                    <button type="button" className="ghost" disabled={!!busy} onClick={() => navigate(`/settings/secrets/new?${new URLSearchParams({ name: secret.name, scope: secret.scope })}`)}>{zh ? "轮换" : "Rotate"}</button>
-                                    <button
-                                      className="ghost danger"
-                                      type="button"
-                                      disabled={busy !== ""}
-                                      onClick={() => void deleteSecret(secret)}
+                                    <Button variant="outline" type="button" disabled={!!busy} onClick={() => navigate(`/settings/secrets/new?${new URLSearchParams({ name: secret.name, scope: secret.scope })}`)}>{zh ? "轮换" : "Rotate"}</Button>
+                                    <Button variant="destructive" type="button"
+ disabled={busy !== ""}
+ onClick={() => void deleteSecret(secret)}
                                     >
                                       {busy === `remove-secret-${secretLabel(secret)}`
                                         ? (zh ? "删除中..." : "Removing...")
                                         : (zh ? "删除" : "Remove")}
-                                    </button>
+                                    </Button>
                                   </td>
                                 </tr>
                               ))}
@@ -517,14 +512,12 @@ export function CredentialsPage({
                       <td><CodeCell value={registryUser(item)} /></td>
                       <td><StatePill label={item.configured ? (zh ? "已配置" : "configured") : (zh ? "缺失" : "missing")} value={item.configured ? "ready" : "missing"} /></td>
                       <td>
-                        <button
-                          className="ghost"
-                          type="button"
-                          disabled={busy !== ""}
-                          onClick={() => void deleteRegistry(registryLabel(item))}
+                        <Button variant="outline" type="button"
+ disabled={busy !== ""}
+ onClick={() => void deleteRegistry(registryLabel(item))}
                         >
                           {busy === `remove-${registryLabel(item)}` ? (zh ? "删除中..." : "Removing...") : (zh ? "删除" : "Remove")}
-                        </button>
+                        </Button>
                       </td>
                     </tr>
                   )) : (
@@ -555,14 +548,12 @@ export function CredentialsPage({
                       <td><CodeCell value={item.cloneBaseUrl || item.baseUrl || "-"} /></td>
                       <td><StatePill label={item.configured ? (zh ? "已配置" : "configured") : (zh ? "缺失" : "missing")} value={item.configured ? "ready" : "missing"} /></td>
                       <td>
-                        <button
-                          className="ghost"
-                          type="button"
-                          disabled={busy !== ""}
-                          onClick={() => void deleteGitProvider(gitProviderLabel(item))}
+                        <Button variant="outline" type="button"
+ disabled={busy !== ""}
+ onClick={() => void deleteGitProvider(gitProviderLabel(item))}
                         >
                           {busy === `remove-git-${gitProviderLabel(item)}` ? (zh ? "删除中..." : "Removing...") : (zh ? "删除" : "Remove")}
-                        </button>
+                        </Button>
                       </td>
                     </tr>
                   )) : (
@@ -616,20 +607,20 @@ export function CredentialsPage({
               <div className="credential-form">
                 <label className="field">
                   <span>{zh ? "Registry 主机" : "Registry host"}</span>
-                  <input type="text" value={registryForm.host} placeholder="ghcr.io" onChange={(event) => setRegistryForm((current) => ({ ...current, host: event.target.value }))} />
+                  <Input type="text" value={registryForm.host} placeholder="ghcr.io" onChange={(event) => setRegistryForm((current) => ({ ...current, host: event.target.value }))} />
                 </label>
                 <label className="field">
                   <span>{zh ? "用户名" : "Username"}</span>
-                  <input type="text" autoComplete="off" value={registryForm.username} onChange={(event) => setRegistryForm((current) => ({ ...current, username: event.target.value }))} />
+                  <Input type="text" autoComplete="off" value={registryForm.username} onChange={(event) => setRegistryForm((current) => ({ ...current, username: event.target.value }))} />
                 </label>
                 <label className="field">
                   <span>{zh ? "密码 / Token" : "Password / token"}</span>
-                  <input type="password" autoComplete="new-password" value={registryForm.password} onChange={(event) => setRegistryForm((current) => ({ ...current, password: event.target.value }))} />
+                  <Input type="password" autoComplete="new-password" value={registryForm.password} onChange={(event) => setRegistryForm((current) => ({ ...current, password: event.target.value }))} />
                 </label>
-                <button type="button" disabled={busy !== "" || !registryForm.host.trim() || !registryForm.username.trim() || !registryForm.password} onClick={() => void submitRegistry()}>
+                <Button type="button" disabled={busy !== "" || !registryForm.host.trim() || !registryForm.username.trim() || !registryForm.password} onClick={() => void submitRegistry()}>
                   <ShieldCheck size={16} aria-hidden="true" />
                   {busy === "registry" ? (zh ? "保存中..." : "Saving...") : (zh ? "保存凭据" : "Save credential")}
-                </button>
+                </Button>
                 <p className="credential-hint">{zh ? "用于拉取私有镜像。值保存后不回显。等价于 luma registry login。" : "Used to pull private images. The value is not echoed back. Equivalent to luma registry login."}</p>
               </div>
             </>
@@ -656,41 +647,40 @@ export function CredentialsPage({
                 </label>
                 <label className="field">
                   <span>{zh ? "账户名称" : "Account name"}</span>
-                  <input type="text" value={gitProviderForm.account} placeholder={gitProviderForm.type === "github" ? "personal" : "work"} autoComplete="off" onChange={(event) => setGitProviderForm((current) => ({ ...current, account: event.target.value }))} />
+                  <Input type="text" value={gitProviderForm.account} placeholder={gitProviderForm.type === "github" ? "personal" : "work"} autoComplete="off" onChange={(event) => setGitProviderForm((current) => ({ ...current, account: event.target.value }))} />
                 </label>
                 <label className="field">
                   <span>{zh ? "用户名（可选）" : "Username (optional)"}</span>
-                  <input type="text" value={gitProviderForm.username} autoComplete="off" onChange={(event) => setGitProviderForm((current) => ({ ...current, username: event.target.value }))} />
+                  <Input type="text" value={gitProviderForm.username} autoComplete="off" onChange={(event) => setGitProviderForm((current) => ({ ...current, username: event.target.value }))} />
                 </label>
                 {gitProviderForm.type === "gitea" ? (
                   <>
                     <label className="field">
                       <span>Base URL</span>
-                      <input type="text" value={gitProviderForm.baseUrl} placeholder="https://gcode.example.com" onChange={(event) => setGitProviderForm((current) => ({ ...current, baseUrl: event.target.value }))} />
+                      <Input type="text" value={gitProviderForm.baseUrl} placeholder="https://gcode.example.com" onChange={(event) => setGitProviderForm((current) => ({ ...current, baseUrl: event.target.value }))} />
                     </label>
                     <label className="field">
                       <span>Clone base URL</span>
-                      <input type="text" value={gitProviderForm.cloneBaseUrl} placeholder={zh ? "留空同 Base URL" : "blank = Base URL"} onChange={(event) => setGitProviderForm((current) => ({ ...current, cloneBaseUrl: event.target.value }))} />
+                      <Input type="text" value={gitProviderForm.cloneBaseUrl} placeholder={zh ? "留空同 Base URL" : "blank = Base URL"} onChange={(event) => setGitProviderForm((current) => ({ ...current, cloneBaseUrl: event.target.value }))} />
                     </label>
                   </>
                 ) : null}
                 <label className="field">
                   <span>{zh ? "Token / PAT" : "Token / PAT"}</span>
-                  <input type="password" autoComplete="new-password" value={gitProviderForm.token} onChange={(event) => setGitProviderForm((current) => ({ ...current, token: event.target.value }))} />
+                  <Input type="password" autoComplete="new-password" value={gitProviderForm.token} onChange={(event) => setGitProviderForm((current) => ({ ...current, token: event.target.value }))} />
                 </label>
-                <button
-                  type="button"
-                  disabled={
-                    busy !== "" ||
-                    !gitProviderForm.account.trim() ||
-                    !gitProviderForm.token ||
-                    (gitProviderForm.type === "gitea" && !gitProviderForm.baseUrl.trim())
-                  }
-                  onClick={() => void submitGitProvider()}
+                <Button type="button"
+ disabled={
+ busy !== "" ||
+ !gitProviderForm.account.trim() ||
+ !gitProviderForm.token ||
+ (gitProviderForm.type === "gitea" && !gitProviderForm.baseUrl.trim())
+ }
+ onClick={() => void submitGitProvider()}
                 >
                   <ShieldCheck size={16} aria-hidden="true" />
                   {busy === "git-provider" ? (zh ? "保存中..." : "Saving...") : (zh ? "保存 Git 凭据" : "Save Git credential")}
-                </button>
+                </Button>
                 <p className="credential-hint">{zh ? "同一 provider 可保存多个账户。Token 只写不回显，导入仓库时按账户选择注入。" : "You can save multiple accounts per provider. Tokens are write-only and injected only for the selected import account."}</p>
               </div>
             </>
@@ -706,20 +696,20 @@ export function CredentialsPage({
               <div className="credential-form">
                 <label className="field">
                   <span>{zh ? "名称" : "Name"}</span>
-                  <input type="text" value={secretForm.name} placeholder="DATABASE_URL" autoComplete="off" onChange={(event) => setSecretForm((current) => ({ ...current, name: event.target.value }))} />
+                  <Input type="text" value={secretForm.name} placeholder="DATABASE_URL" autoComplete="off" onChange={(event) => setSecretForm((current) => ({ ...current, name: event.target.value }))} />
                 </label>
                 <label className="field">
                   <span>{zh ? "作用域（可选）" : "Scope (optional)"}</span>
-                  <input type="text" value={secretForm.scope} placeholder={zh ? "留空为全局；或填应用名" : "blank = global; or an app name"} autoComplete="off" onChange={(event) => setSecretForm((current) => ({ ...current, scope: event.target.value }))} />
+                  <Input type="text" value={secretForm.scope} placeholder={zh ? "留空为全局；或填应用名" : "blank = global; or an app name"} autoComplete="off" onChange={(event) => setSecretForm((current) => ({ ...current, scope: event.target.value }))} />
                 </label>
                 <label className="field">
                   <span>{zh ? "值" : "Value"}</span>
-                  <input type="password" autoComplete="new-password" value={secretForm.value} onChange={(event) => setSecretForm((current) => ({ ...current, value: event.target.value }))} />
+                  <Input type="password" autoComplete="new-password" value={secretForm.value} onChange={(event) => setSecretForm((current) => ({ ...current, value: event.target.value }))} />
                 </label>
-                <button type="button" disabled={busy !== "" || !secretForm.name.trim() || !secretForm.value} onClick={() => void submitSecret()}>
+                <Button type="button" disabled={busy !== "" || !secretForm.name.trim() || !secretForm.value} onClick={() => void submitSecret()}>
                   <ShieldCheck size={16} aria-hidden="true" />
                   {busy === "secret" ? (zh ? "保存中..." : "Saving...") : (zh ? "保存 Secret" : "Save secret")}
-                </button>
+                </Button>
                 <p className="credential-hint">{zh ? "同名保存即轮换。值保存后不回显；删除只影响后续部署，不会修改已经运行的实例。GitHub 私有仓库导入用名称 GITHUB_TOKEN。" : "Saving the same name rotates it. Values are never echoed back; removal affects future deployments and does not modify running instances. For private GitHub imports use the name GITHUB_TOKEN."}</p>
               </div>
             </>

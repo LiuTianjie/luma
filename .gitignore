@@ -16,3 +16,7 @@ node_modules/
 # not committed). The directory is kept via .gitkeep so package-data has a target.
 /luma/assets/dashboard/*
 !/luma/assets/dashboard/.gitkeep
+
+# shadcn CLI may emit a nested package.json; dashboard deps live in the repo root.
+/dashboard-src/package.json
+/dashboard-src/package-lock.json

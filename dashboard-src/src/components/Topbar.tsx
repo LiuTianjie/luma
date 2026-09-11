@@ -1,4 +1,17 @@
 import { LogOut, Monitor, Moon, RefreshCw, Settings2, Sun } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { SidebarTrigger } from "@/components/ui/sidebar";
 import { t } from "../i18n";
 import type { Lang, SyncStatus } from "../types";
 import type { ThemeMode } from "../useTheme";
@@ -41,66 +54,51 @@ export function Topbar({
   ];
 
   return (
-    <header className="topbar">
-      <div className="cluster-chip">
-        <span>{t(lang, "cluster")}</span>
-        <strong translate="no">{clusterId}</strong>
+    <header className="flex h-14 shrink-0 items-center gap-2 border-b px-3">
+      <SidebarTrigger />
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="text-xs text-muted-foreground">{t(lang, "cluster")}</span>
+        <Badge variant="outline" className="max-w-56 truncate font-mono" translate="no">{clusterId}</Badge>
       </div>
-      <div className="top-actions">
-        <span className={`sync-state ${syncStatus}`} title={statusText} role="status">{statusText}</span>
-        <details className="topbar-preferences" onKeyDown={(event) => { if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); } }}>
-          <summary aria-label={lang === "zh" ? "界面偏好设置" : "Display preferences"} title={lang === "zh" ? "界面偏好设置" : "Display preferences"}>
-            <Settings2 size={16} aria-hidden="true" />
-            <span>{lang === "zh" ? "偏好" : "Display"}</span>
-          </summary>
-          <div className="topbar-preferences-panel">
-          <span className="preference-label">{lang === "zh" ? "外观" : "Appearance"}</span>
-        <div className="lang-switch theme-switch" role="group" aria-label={lang === "zh" ? "主题" : "Theme"}>
-          {themeOptions.map(({ mode, icon: Icon, label }) => (
-            <button
-              key={mode}
-              className={themeMode === mode ? "active" : ""}
-              type="button"
-              title={label}
-              aria-label={label}
-              aria-pressed={themeMode === mode}
-              onClick={() => onThemeModeChange(mode)}
-            >
-              <Icon size={16} aria-hidden="true" />
-            </button>
-          ))}
-        </div>
-          <span className="preference-label">{lang === "zh" ? "语言" : "Language"}</span>
-        <div className="lang-switch" role="group" aria-label={lang === "zh" ? "语言切换" : "Language switch"}>
-          <button
-            className={lang === "zh" ? "active" : ""}
-            onClick={() => onLangChange("zh")}
-            type="button"
-            aria-pressed={lang === "zh"}
-            aria-label={lang === "zh" ? "切换到中文" : "Switch to Chinese"}
-          >
-            中文
-          </button>
-          <button
-            className={lang === "en" ? "active" : ""}
-            onClick={() => onLangChange("en")}
-            type="button"
-            aria-pressed={lang === "en"}
-            aria-label={lang === "zh" ? "切换到英文" : "Switch to English"}
-          >
-            EN
-          </button>
-        </div>
-          </div>
-        </details>
-        <button type="button" onClick={onRefresh} aria-label={t(lang, "refresh")} title={t(lang, "refresh")}>
-          <RefreshCw size={16} aria-hidden="true" />
-          <span className="topbar-action-label">{t(lang, "refresh")}</span>
-        </button>
-        <button className="ghost" type="button" onClick={onSignOut} aria-label={t(lang, "signOut")} title={t(lang, "signOut")}>
-          <LogOut size={16} aria-hidden="true" />
-          <span className="topbar-action-label">{t(lang, "signOut")}</span>
-        </button>
+      <div className="ml-auto flex items-center gap-1.5">
+        <span className="hidden text-xs text-muted-foreground sm:inline" title={statusText} role="status">
+          {statusText}
+        </span>
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="outline" size="sm" />}>
+            <Settings2 data-icon="inline-start" />
+            <span className="hidden sm:inline">{lang === "zh" ? "偏好" : "Display"}</span>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-52">
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>{lang === "zh" ? "外观" : "Appearance"}</DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={themeMode} onValueChange={(value) => onThemeModeChange(value as ThemeMode)}>
+                {themeOptions.map(({ mode, icon: Icon, label }) => (
+                  <DropdownMenuRadioItem key={mode} value={mode}>
+                    <Icon />
+                    {label}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>{lang === "zh" ? "语言" : "Language"}</DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={lang} onValueChange={(value) => onLangChange(value as Lang)}>
+                <DropdownMenuRadioItem value="zh">中文</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="en">English</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <Button variant="outline" size="sm" onClick={onRefresh} aria-label={t(lang, "refresh")} title={t(lang, "refresh")}>
+          <RefreshCw data-icon="inline-start" />
+          <span className="hidden sm:inline">{t(lang, "refresh")}</span>
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onSignOut} aria-label={t(lang, "signOut")} title={t(lang, "signOut")}>
+          <LogOut data-icon="inline-start" />
+          <span className="hidden sm:inline">{t(lang, "signOut")}</span>
+        </Button>
       </div>
     </header>
   );

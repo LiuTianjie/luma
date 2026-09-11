@@ -26,6 +26,11 @@ function load(filename) {
     if (name.endsWith("/router")) return { useRouter: () => ({ path: route, search: "", navigate() {} }), toHref: (value) => `/dashboard${value}` };
     if (name.endsWith("/ConfirmDialog")) return { useConfirm: () => ({ confirm() {}, element: null }) };
     if (name.endsWith(".css")) return {};
+    if (name.startsWith("@/")) {
+      const base = path.resolve(__dirname, "../src", name.slice(2));
+      const resolved = [base, `${base}.ts`, `${base}.tsx`].find((file) => fs.existsSync(file) && fs.statSync(file).isFile());
+      if (resolved) return load(resolved);
+    }
     if (name.startsWith(".")) {
       const base = path.resolve(path.dirname(filename), name);
       const resolved = [base, `${base}.ts`, `${base}.tsx`].find((file) => fs.existsSync(file) && fs.statSync(file).isFile());

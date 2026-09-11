@@ -23,6 +23,11 @@ function load(filename) {
     if (name.endsWith(".css")) return {};
     if (name === "@xterm/xterm") return { Terminal: class {} };
     if (name === "@xterm/addon-fit") return { FitAddon: class {} };
+    if (name.startsWith("@/")) {
+      const base = path.resolve(__dirname, "../src", name.slice(2));
+      const resolved = [base, `${base}.ts`, `${base}.tsx`].find((file) => fs.existsSync(file) && fs.statSync(file).isFile());
+      if (resolved) return load(resolved);
+    }
     if (name.startsWith(".")) {
       const base = path.resolve(path.dirname(filename), name);
       const resolved = [base, `${base}.ts`, `${base}.tsx`].find((file) => fs.existsSync(file) && fs.statSync(file).isFile());
@@ -67,8 +72,8 @@ test("storage governance has a dedicated destination without hiding volume inven
 
 test("inline object details retain zero and false values and do not declare a modal", () => {
   const html = renderToStaticMarkup(React.createElement(DetailDrawer, { lang: "en", inline: true, detail: { kind: "node", title: "manager", items: { cpu: 0, leader: false } }, onClose() {} }));
-  assert.match(html, /<dd>0%<\/dd>/);
-  assert.match(html, /<dd>false<\/dd>/);
+  assert.match(html, /<dd[^>]*>0%<\/dd>/);
+  assert.match(html, /<dd[^>]*>false<\/dd>/);
   assert.doesNotMatch(html, /role="dialog"|aria-modal/);
 });
 
@@ -102,9 +107,9 @@ test("node units follow known metrics without interpreting load or changing sour
   const detail = { kind: "node", title: "manager", items: { cpu: 15, memory: 23.6, memoryTotal: 15797473280, memoryCapacity: 0, load1: 1.2, cpuCapacity: 8 } };
   const before = JSON.stringify(detail);
   const html = renderToStaticMarkup(React.createElement(DetailDrawer, { lang: "en", inline: true, detail, onClose() {} }));
-  for (const value of ["15%", "23.6%", "14.71 GiB", "0 B", "1.2", "8"]) assert.ok(html.includes(`<dd>${value}</dd>`), value);
+  for (const value of ["15%", "23.6%", "14.71 GiB", "0 B", "1.2", "8"]) assert.match(html, new RegExp(`<dd[^>]*>${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}</dd>`), value);
   assert.equal(JSON.stringify(detail), before);
   const service = renderToStaticMarkup(React.createElement(DetailDrawer, { lang: "en", inline: true, detail: { kind: "service", title: "service", items: { memory: 12, pending: 0 } }, onClose() {} }));
-  assert.match(service, /<dd>12<\/dd>/);
-  assert.match(service, /<dd>0<\/dd>/);
+  assert.match(service, /<dd[^>]*>12<\/dd>/);
+  assert.match(service, /<dd[^>]*>0<\/dd>/);
 });

@@ -1,3 +1,4 @@
+import { ArrowRight, Container, FileCode2, GitBranch, LayoutTemplate } from "lucide-react";
 import { useRouter } from "../router";
 import type { ReactNode } from "react";
 import { DeployWorkspace } from "../deploy/DeployWorkspace";
@@ -7,6 +8,7 @@ import type { ComposeDeploymentDraft, DeployMode, ServiceManifestDraft } from ".
 import type { DeploymentConfig } from "../deploymentConfigApi";
 import type { DashboardViewModel } from "../dashboardViewModel";
 import { PageHeader } from "./PageHeader";
+import { Card, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 
 export type DeployUpdateContext = {
   deployMode: DeployMode;
@@ -47,13 +49,44 @@ export function DeployPage({
   const source = path.split("/")[2] || "";
   if (!updating && !source) return <>
     <PageHeader meta={{ eyebrow: zh ? "应用 / 创建" : "Applications / Create", title: zh ? "创建应用" : "Create application", description: zh ? "选择配置来源，再校验和部署到集群。" : "Choose a configuration source, then validate and deploy.", metrics: [] }} />
-    <section className="source-grid" aria-label={zh ? "创建来源" : "Application source"}>
+    <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label={zh ? "创建来源" : "Application source"}>
       {[
-        { path: "/builds", title: zh ? "Git 仓库" : "Git repository", description: zh ? "连接 GitHub、Gitea 或 Git URL，构建镜像并部署。" : "Connect GitHub, Gitea or a Git URL to build and deploy." },
-        { path: "/create/image", title: zh ? "容器镜像" : "Container image", description: zh ? "配置现有镜像、网络、资源、环境变量和存储。" : "Configure an existing image, networking, resources and storage." },
-        { path: "/create/yaml", title: zh ? "YAML 文件" : "YAML documents", description: zh ? "编辑服务清单；Compose 应用可从模板入口开始。" : "Edit a service manifest. Start Compose applications from templates." },
-        { path: "/create/templates", title: zh ? "应用模板" : "Application templates", description: zh ? "从单服务或 Compose 模板开始，保留所有高级配置。" : "Start from service or Compose templates with full configuration." },
-      ].map((item) => <button type="button" className="panel source-card" key={item.path} onClick={() => navigate(item.path)}><h2>{item.title}</h2><p>{item.description}</p><span>{zh ? "继续 →" : "Continue →"}</span></button>)}
+        { path: "/builds", icon: GitBranch, title: zh ? "Git 仓库" : "Git repository", description: zh ? "连接 GitHub、Gitea 或 Git URL，构建镜像并部署。" : "Connect GitHub, Gitea or a Git URL to build and deploy." },
+        { path: "/create/image", icon: Container, title: zh ? "容器镜像" : "Container image", description: zh ? "配置现有镜像、网络、资源、环境变量和存储。" : "Configure an existing image, networking, resources and storage." },
+        { path: "/create/yaml", icon: FileCode2, title: zh ? "YAML 文件" : "YAML documents", description: zh ? "编辑服务清单；Compose 应用可从模板入口开始。" : "Edit a service manifest. Start Compose applications from templates." },
+        { path: "/create/templates", icon: LayoutTemplate, title: zh ? "应用模板" : "Application templates", description: zh ? "从单服务或 Compose 模板开始，保留所有高级配置。" : "Start from service or Compose templates with full configuration." },
+      ].map((item) => {
+        const Icon = item.icon;
+        return (
+          <Card
+            key={item.path}
+            role="button"
+            tabIndex={0}
+            className="h-full cursor-pointer text-left transition-colors hover:bg-muted/50"
+            onClick={() => navigate(item.path)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                navigate(item.path);
+              }
+            }}
+          >
+            <CardHeader>
+              <div className="mb-2 flex size-9 items-center justify-center rounded-lg bg-muted text-foreground">
+                <Icon />
+              </div>
+              <CardTitle>{item.title}</CardTitle>
+              <CardDescription>{item.description}</CardDescription>
+            </CardHeader>
+            <CardFooter>
+              <span className="inline-flex items-center gap-1 text-sm font-medium">
+                {zh ? "继续" : "Continue"}
+                <ArrowRight />
+              </span>
+            </CardFooter>
+          </Card>
+        );
+      })}
     </section>
   </>;
   const title = updating && updateContext

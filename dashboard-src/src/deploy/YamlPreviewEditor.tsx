@@ -1,4 +1,8 @@
 import { useState } from "react";
+import { Button } from "@/components/ui/button";
+
+import { Textarea } from "@/components/ui/textarea";
+
 import type { Lang } from "../types";
 
 export function YamlPreviewEditor({
@@ -21,12 +25,12 @@ export function YamlPreviewEditor({
   return <section className="workbench-code-editor">
     <header>
       {mode === "compose" ? <nav aria-label={lang === "zh" ? "配置文件" : "Configuration files"}>
-        <button type="button" aria-current={active === "compose" ? "page" : undefined} onClick={() => setActive("compose")}>docker-compose.yml</button>
-        <button type="button" aria-current={active === "sidecar" ? "page" : undefined} onClick={() => setActive("sidecar")}>luma.compose.yml</button>
+        <Button type="button" aria-current={active === "compose" ? "page" : undefined} onClick={() => setActive("compose")}>docker-compose.yml</Button>
+        <Button type="button" aria-current={active === "sidecar" ? "page" : undefined} onClick={() => setActive("sidecar")}>luma.compose.yml</Button>
       </nav> : <strong>{name}</strong>}
       <span>YAML</span>
     </header>
-    <textarea aria-label={name} value={value} onChange={(event) => onChange(event.target.value)} spellCheck={false} autoCapitalize="off" autoCorrect="off" />
+    <Textarea aria-label={name} value={value} onChange={(event) => onChange(event.target.value)} spellCheck={false} autoCapitalize="off" autoCorrect="off" />
     <footer><span>{value.split("\n").length} {lang === "zh" ? "行" : "lines"}</span><span>UTF-8</span></footer>
   </section>;
 }

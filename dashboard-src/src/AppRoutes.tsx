@@ -147,7 +147,7 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
 
   return (
     <Suspense fallback={<PageLoading lang={lang} />}>
-      <div className="page-route" key={props.updateContext ? "update" : page}>
+      <div className="flex flex-col gap-6" key={props.updateContext ? "update" : page}>
         {content}
       </div>
     </Suspense>

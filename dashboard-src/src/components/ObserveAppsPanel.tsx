@@ -1,5 +1,7 @@
 import { useState } from "react";
 import type { Lang } from "../types";
+import { SelectControl } from "./primitives";
+import { Button } from "@/components/ui/button";
 import "./ObservabilityPanel.css";
 
 const VIEWS = [
@@ -103,32 +105,32 @@ export function ObserveAppsPanel({
   return (
     <div className="metrics-workspace grafana-embed">
       <div className="history-toolbar grafana-toolbar">
-        <div className="grafana-view-switch" role="tablist" aria-label={zh ? "Grafana 面板" : "Grafana dashboards"}>
+        <div className="flex flex-wrap gap-1" role="tablist" aria-label={zh ? "Grafana 面板" : "Grafana dashboards"}>
           {VIEWS.map((item) => (
-            <button
+            <Button
               key={item.id}
               type="button"
-              className="ghost"
+              size="sm"
+              variant={view === item.id ? "secondary" : "ghost"}
               role="tab"
               aria-selected={view === item.id}
               onClick={() => setView(item.id)}
             >
               {zh ? item.zh : item.en}
-            </button>
+            </Button>
           ))}
         </div>
         {showAppFilter ? (
-          <select
-            className="grafana-app-filter"
+          <SelectControl
+            className="w-56 min-w-0"
+            ariaLabel={zh ? "按应用筛选" : "Filter by app"}
             value={app}
-            aria-label={zh ? "按应用筛选" : "Filter by app"}
-            onChange={(event) => setApp(event.target.value)}
-          >
-            <option value="">{zh ? "全部应用" : "All apps"}</option>
-            {names.map((name) => (
-              <option key={name} value={name}>{name}</option>
-            ))}
-          </select>
+            onChange={setApp}
+            options={[
+              { value: "", label: zh ? "全部应用" : "All apps" },
+              ...names.map((name) => ({ value: name, label: name })),
+            ]}
+          />
         ) : null}
       </div>
       <iframe key={src} title={zh ? current.zh : current.en} src={src} allow="fullscreen" />

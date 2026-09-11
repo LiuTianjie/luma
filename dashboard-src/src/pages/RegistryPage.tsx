@@ -14,7 +14,12 @@ import {
   Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
-import { CodeCell, StatePill } from "../components/ui";
+import { CodeCell, SelectControl, StatePill } from "../components/primitives";
+import { Button } from "@/components/ui/button";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Field, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { formatTimestamp } from "../format";
 import {
   fetchRegistryInventory,
@@ -324,12 +329,12 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
           ],
           action: (
             <div className="registry-header-actions">
-              <button type="button" className="ghost" disabled={loading || !!busy} onClick={() => { void load(true).then(() => setDetailRevision((value) => value + 1)); }}>
+              <Button variant="outline" type="button" disabled={loading || !!busy} onClick={() => { void load(true).then(() => setDetailRevision((value) => value + 1)); }}>
                 <RefreshCw size={15} className={loading ? "spin" : ""} /> {zh ? "重新扫描" : "Rescan"}
-              </button>
-              <button type="button" className="ghost" onClick={() => setShowPolicy(!showPolicy)}>
+              </Button>
+              <Button variant="outline" type="button" onClick={() => setShowPolicy(!showPolicy)}>
                 <Settings2 size={15} /> {zh ? "保留策略" : "Retention"}
-              </button>
+              </Button>
             </div>
           ),
         }}
@@ -340,19 +345,41 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
       </nav>
       <main className="registry-page">
         {inventory?.scanPending ? (
-          <div className="registry-alert warning" role="status">
-            <RefreshCw size={18} className="spin" />
-            <span><strong>{zh ? "首次镜像快照正在后台建立" : "Building the first image snapshot in the background"}</strong><small>{zh ? "可以离开本页；完成后再次进入会直接读取快照。" : "You may leave this page; future visits load the snapshot immediately."}</small></span>
-          </div>
+          <Alert>
+            <RefreshCw className="animate-spin" />
+            <AlertTitle>{zh ? "首次镜像快照正在后台建立" : "Building the first image snapshot in the background"}</AlertTitle>
+            <AlertDescription>{zh ? "可以离开本页；完成后再次进入会直接读取快照。" : "You may leave this page; future visits load the snapshot immediately."}</AlertDescription>
+          </Alert>
         ) : !inventory?.protectionComplete ? (
-          <div className="registry-alert critical" role="alert">
-            <AlertTriangle size={18} />
-            <span><strong>{zh ? "引用扫描不完整，自动清理已暂停" : "Reference scan incomplete; automatic cleanup paused"}</strong><small>{inventory?.referenceError || (zh ? "人工删除仍可继续，风险由操作者确认承担。" : "Manual deletion remains available after operator confirmation.")}</small></span>
-          </div>
+          <Alert variant="destructive">
+            <AlertTriangle />
+            <AlertTitle>{zh ? "引用扫描不完整，自动清理已暂停" : "Reference scan incomplete; automatic cleanup paused"}</AlertTitle>
+            <AlertDescription>{inventory?.referenceError || (zh ? "人工删除仍可继续，风险由操作者确认承担。" : "Manual deletion remains available after operator confirmation.")}</AlertDescription>
+          </Alert>
         ) : null}
-        {error ? <div className="registry-alert critical" role="alert"><AlertTriangle size={18} /><span><strong>{zh ? "操作失败" : "Operation failed"}</strong><small>{error}</small></span></div> : null}
-        {usage.error ? <div className="registry-alert warning" role="alert"><AlertTriangle size={18} /><span><strong>{zh ? "容量数据暂不可用" : "Storage data unavailable"}</strong><small>{usage.error}</small></span></div> : null}
-        {notice ? <div className="registry-alert success"><ShieldCheck size={18} /><span><strong>{notice}</strong></span><button type="button" onClick={() => setNotice("")}>×</button></div> : null}
+        {error ? (
+          <Alert variant="destructive">
+            <AlertTriangle />
+            <AlertTitle>{zh ? "操作失败" : "Operation failed"}</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+        {usage.error ? (
+          <Alert>
+            <AlertTriangle />
+            <AlertTitle>{zh ? "容量数据暂不可用" : "Storage data unavailable"}</AlertTitle>
+            <AlertDescription>{usage.error}</AlertDescription>
+          </Alert>
+        ) : null}
+        {notice ? (
+          <Alert>
+            <ShieldCheck />
+            <AlertTitle>{notice}</AlertTitle>
+            <AlertAction>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setNotice("")}>{zh ? "关闭" : "Dismiss"}</Button>
+            </AlertAction>
+          </Alert>
+        ) : null}
 
         {section === "cleanup" ? <>
         <section className="registry-usage-grid">
@@ -387,28 +414,69 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
           <section className="panel registry-policy-panel">
             <div className="panel-heading"><div><p className="eyebrow">Retention</p><h2>{zh ? "保留与安全窗口" : "Retention and safety windows"}</h2></div><Settings2 size={18} /></div>
             <div className="registry-policy-grid">
-              <label><span>{zh ? "模式" : "Mode"}</span><select value={policy.mode} onChange={(event) => setPolicy({ ...policy, mode: event.target.value as RegistryPolicy["mode"] })}><option value="off">Off</option><option value="recommend">Recommend</option><option value="enforce">Enforce</option></select></label>
-              <label><span>{zh ? "每仓库至少保留" : "Keep per repository"}</span><input type="number" min={1} value={policy.keepLast} onChange={(event) => setPolicy({ ...policy, keepLast: Number(event.target.value) })} /></label>
-              <label><span>{zh ? "保留天数" : "Max age days"}</span><input type="number" min={1} value={policy.maxAgeDays} onChange={(event) => setPolicy({ ...policy, maxAgeDays: Number(event.target.value) })} /></label>
-              <label><span>{zh ? "系统版本保留" : "System versions"}</span><input type="number" min={1} value={policy.systemKeepLast} onChange={(event) => setPolicy({ ...policy, systemKeepLast: Number(event.target.value) })} /></label>
-              <label><span>{zh ? "删除宽限期（小时，0 为立即执行）" : "Queue grace hours (0 = immediate)"}</span><input type="number" min={0} value={policy.queueGraceHours} onChange={(event) => setPolicy({ ...policy, queueGraceHours: Number(event.target.value) })} /></label>
-              <label><span>{zh ? "GC 恢复窗口（天）" : "GC grace days"}</span><input type="number" min={1} value={policy.gcGraceDays} onChange={(event) => setPolicy({ ...policy, gcGraceDays: Number(event.target.value) })} /></label>
-              <label><span>{zh ? "容量预警（%）" : "Warning usage (%)"}</span><input type="number" min={1} max={99} value={policy.warningPercent} onChange={(event) => setPolicy({ ...policy, warningPercent: Number(event.target.value) })} /></label>
-              <label><span>{zh ? "容量严重（%）" : "Critical usage (%)"}</span><input type="number" min={2} max={100} value={policy.criticalPercent} onChange={(event) => setPolicy({ ...policy, criticalPercent: Number(event.target.value) })} /></label>
-              <label><span>{zh ? "容量紧急（%）" : "Emergency usage (%)"}</span><input type="number" min={3} max={100} value={policy.emergencyPercent} onChange={(event) => setPolicy({ ...policy, emergencyPercent: Number(event.target.value) })} /></label>
+              <Field>
+                <FieldLabel>{zh ? "模式" : "Mode"}</FieldLabel>
+                <SelectControl
+                  className="min-w-0"
+                  value={policy.mode}
+                  onChange={(value) => setPolicy({ ...policy, mode: value as RegistryPolicy["mode"] })}
+                  options={[
+                    { value: "off", label: "Off" },
+                    { value: "recommend", label: "Recommend" },
+                    { value: "enforce", label: "Enforce" },
+                  ]}
+                />
+              </Field>
+              <Field>
+                <FieldLabel>{zh ? "每仓库至少保留" : "Keep per repository"}</FieldLabel>
+                <Input type="number" min={1} value={policy.keepLast} onChange={(event) => setPolicy({ ...policy, keepLast: Number(event.target.value) })} />
+              </Field>
+              <Field>
+                <FieldLabel>{zh ? "保留天数" : "Max age days"}</FieldLabel>
+                <Input type="number" min={1} value={policy.maxAgeDays} onChange={(event) => setPolicy({ ...policy, maxAgeDays: Number(event.target.value) })} />
+              </Field>
+              <Field>
+                <FieldLabel>{zh ? "系统版本保留" : "System versions"}</FieldLabel>
+                <Input type="number" min={1} value={policy.systemKeepLast} onChange={(event) => setPolicy({ ...policy, systemKeepLast: Number(event.target.value) })} />
+              </Field>
+              <Field>
+                <FieldLabel>{zh ? "删除宽限期（小时，0 为立即执行）" : "Queue grace hours (0 = immediate)"}</FieldLabel>
+                <Input type="number" min={0} value={policy.queueGraceHours} onChange={(event) => setPolicy({ ...policy, queueGraceHours: Number(event.target.value) })} />
+              </Field>
+              <Field>
+                <FieldLabel>{zh ? "GC 恢复窗口（天）" : "GC grace days"}</FieldLabel>
+                <Input type="number" min={1} value={policy.gcGraceDays} onChange={(event) => setPolicy({ ...policy, gcGraceDays: Number(event.target.value) })} />
+              </Field>
+              <Field>
+                <FieldLabel>{zh ? "容量预警（%）" : "Warning usage (%)"}</FieldLabel>
+                <Input type="number" min={1} max={99} value={policy.warningPercent} onChange={(event) => setPolicy({ ...policy, warningPercent: Number(event.target.value) })} />
+              </Field>
+              <Field>
+                <FieldLabel>{zh ? "容量严重（%）" : "Critical usage (%)"}</FieldLabel>
+                <Input type="number" min={2} max={100} value={policy.criticalPercent} onChange={(event) => setPolicy({ ...policy, criticalPercent: Number(event.target.value) })} />
+              </Field>
+              <Field>
+                <FieldLabel>{zh ? "容量紧急（%）" : "Emergency usage (%)"}</FieldLabel>
+                <Input type="number" min={3} max={100} value={policy.emergencyPercent} onChange={(event) => setPolicy({ ...policy, emergencyPercent: Number(event.target.value) })} />
+              </Field>
             </div>
             {policy.mode === "enforce" ? <div className="registry-policy-warning"><AlertTriangle size={16} /><span>{policy.queueGraceHours > 0 ? (zh ? "Enforce 会自动把候选 manifest 加入队列，宽限期后删除，并在恢复窗口结束后执行离线 GC。" : "Enforce automatically queues candidates, deletes them after the grace period, and runs offline GC after the recovery window.") : (zh ? "Enforce 会自动把候选 manifest 加入队列并立即删除；最终 GC 仍会等待恢复窗口结束。" : "Enforce automatically queues and immediately deletes candidates; final GC still waits for the recovery window.")}</span></div> : null}
-            <div className="registry-policy-actions"><button type="button" className="ghost" onClick={() => setShowPolicy(false)}>{zh ? "取消" : "Cancel"}</button><button type="button" className="primary" disabled={busy === "policy"} onClick={() => void savePolicy()}>{busy === "policy" ? (zh ? "保存中…" : "Saving…") : (zh ? "保存策略" : "Save policy")}</button></div>
+            <div className="registry-policy-actions"><Button type="button" variant="outline" onClick={() => setShowPolicy(false)}>{zh ? "取消" : "Cancel"}</Button><Button type="button" disabled={busy === "policy"} onClick={() => void savePolicy()}>{busy === "policy" ? (zh ? "保存中…" : "Saving…") : (zh ? "保存策略" : "Save policy")}</Button></div>
           </section>
         ) : null}
 
         {section === "inventory" ? <section className="panel registry-inventory-panel">
           <div className="registry-inventory-toolbar">
-            <div className="registry-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={zh ? "搜索仓库、tag 或 digest" : "Search repository, tag, or digest"} /></div>
+            <InputGroup className="max-w-xl">
+              <InputGroupAddon>
+                <Search />
+              </InputGroupAddon>
+              <InputGroupInput value={query} onChange={(event) => setQuery(event.target.value)} placeholder={zh ? "搜索仓库、tag 或 digest" : "Search repository, tag, or digest"} />
+            </InputGroup>
             <div className="registry-filters">
-              {["all", "protected", "retained", "candidate", "unknown"].map((value) => <button type="button" key={value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{value === "all" ? (zh ? "全部" : "All") : statusLabel(value, zh)}</button>)}
+              {["all", "protected", "retained", "candidate", "unknown"].map((value) => <Button type="button" key={value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{value === "all" ? (zh ? "全部" : "All") : statusLabel(value, zh)}</Button>)}
             </div>
-            <button type="button" className="danger" disabled={!selected.size || !!busy} onClick={() => void openDeletePreview()}><Trash2 size={15} /> {zh ? `删除并回收 ${selected.size} 项` : `Delete and reclaim ${selected.size}`}</button>
+            <Button variant="destructive" type="button" disabled={!selected.size || !!busy} onClick={() => void openDeletePreview()}><Trash2 size={15} /> {zh ? `删除并回收 ${selected.size} 项` : `Delete and reclaim ${selected.size}`}</Button>
           </div>
           <div className="table-wrap registry-table-wrap" tabIndex={0} role="region" aria-label={zh ? "镜像列表，可横向滚动" : "Image inventory, horizontally scrollable"}>
             <table className="registry-table">
@@ -429,7 +497,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
               </tbody>
             </table>
           </div>
-          {inventory?.page?.hasMore ? <div className="registry-load-more"><button type="button" className="ghost" disabled={loading || !!busy} onClick={() => void load(false, (inventory.page?.offset || 0) + (inventory.page?.limit || REGISTRY_PAGE_SIZE), true)}>{loading ? (zh ? "加载中…" : "Loading…") : (zh ? `加载更多（已显示 ${entries.length} / ${inventory.page.total || 0}）` : `Load more (${entries.length} / ${inventory.page.total || 0})`)}</button></div> : null}
+          {inventory?.page?.hasMore ? <div className="registry-load-more"><Button variant="outline" type="button" disabled={loading || !!busy} onClick={() => void load(false, (inventory.page?.offset || 0) + (inventory.page?.limit || REGISTRY_PAGE_SIZE), true)}>{loading ? (zh ? "加载中…" : "Loading…") : (zh ? `加载更多（已显示 ${entries.length} / ${inventory.page.total || 0}）` : `Load more (${entries.length} / ${inventory.page.total || 0})`)}</Button></div> : null}
         </section> : null}
 
         {section === "cleanup" ? <section className="registry-lifecycle-grid">
@@ -440,8 +508,8 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
                 <span><strong>{deletion.manifests?.[0]?.repository || deletion.id}</strong><small>{deletion.manifests?.length || 0} manifests · {formatBytes(deletion.logicalBytes)}</small><small>{deletion.message}</small></span>
                 <span><StatePill label={deletionStatusLabel(deletion.status, zh)} value={deletion.status.startsWith("failed") ? "failed" : deletion.status === "deleted_pending_gc" ? "warning" : deletion.status === "gc_completed" || deletion.status === "restored" ? "ready" : "pending"} /><small>{formatTimestamp(deletion.updatedAt || deletion.createdAt, lang)}</small></span>
                 <div>
-                  {deletion.status === "queued" ? <><button type="button" className="ghost" disabled={!!busy} onClick={() => void runDeletionAction(deletion, "cancel")}>{zh ? "取消" : "Cancel"}</button><button type="button" className="ghost danger" disabled={!!busy || Number(deletion.notBefore || 0) > Date.now() / 1000} onClick={() => void runDeletionAction(deletion, "execute")}>{zh ? "执行" : "Execute"}</button></> : null}
-                  {deletion.status === "deleted_pending_gc" || deletion.status === "failed_recoverable" ? <button type="button" className="ghost" disabled={!!busy} onClick={() => void runDeletionAction(deletion, "restore")}><RotateCcw size={14} /> {zh ? "恢复" : "Restore"}</button> : null}
+                  {deletion.status === "queued" ? <><Button variant="outline" type="button" disabled={!!busy} onClick={() => void runDeletionAction(deletion, "cancel")}>{zh ? "取消" : "Cancel"}</Button><Button variant="destructive" type="button" disabled={!!busy || Number(deletion.notBefore || 0)> Date.now() / 1000} onClick={() => void runDeletionAction(deletion, "execute")}>{zh ? "执行" : "Execute"}</Button></> : null}
+                  {deletion.status === "deleted_pending_gc" || deletion.status === "failed_recoverable" ? <Button variant="outline" type="button" disabled={!!busy} onClick={() => void runDeletionAction(deletion, "restore")}><RotateCcw size={14} /> {zh ? "恢复" : "Restore"}</Button> : null}
                 </div>
               </div>)}
               {!(inventory?.deletions || []).length ? <div className="registry-empty-state"><Boxes size={22} /><span>{zh ? "清理队列为空" : "Cleanup queue is empty"}</span></div> : null}
@@ -451,24 +519,23 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
             <div className="panel-heading"><div><p className="eyebrow">Garbage collection</p><h2>{zh ? "空间回收" : "Space reclamation"}</h2></div><Database size={18} /></div>
             <p>{zh ? "上面的「删除并回收」已经自动完成回收，这里只用于处理保留策略自动删除后待回收的记录，或手动清理历史遗留的无引用 blob。" : "\"Delete and reclaim\" above already reclaims space. This panel is for records left pending by automatic policy enforcement, or to sweep unreferenced blobs left over from earlier deletions."}</p>
             <div className="registry-gc-actions">
-              <button type="button" className="ghost" disabled={!!busy} onClick={() => void runGc(false)}>
+              <Button variant="outline" type="button" disabled={!!busy} onClick={() => void runGc(false)}>
                 <Search size={15} /> {busy === "gc-preview" ? (zh ? "预检中…" : "Previewing…") : (zh ? "GC 预检" : "Preview GC")}
-              </button>
-              <button
-                type="button"
-                className="danger"
-                disabled={!!busy || !(inventory?.deletions || []).some((item) => item.status === "deleted_pending_gc")}
+              </Button>
+              <Button variant="destructive" type="button"
+
+ disabled={!!busy || !(inventory?.deletions || []).some((item) => item.status === "deleted_pending_gc")}
                 onClick={() => void runGc(true)}
               >
                 <Play size={15} /> {busy === "gc" ? (zh ? "回收中…" : "Reclaiming…") : (zh ? "执行 GC" : "Run GC")}
-              </button>
+              </Button>
             </div>
           </article>
         </section> : null}
       </main>
 
       {section === "image" ? <section className="panel registry-image-detail">
-        <button type="button" className="ghost" onClick={() => navigate("/registry")}>{zh ? "返回镜像" : "Back to images"}</button>
+        <Button variant="outline" type="button" onClick={() => navigate("/registry")}>{zh ? "返回镜像" : "Back to images"}</Button>
         {detail ? <><h2>{detail.repository}</h2><CodeCell value={detail.digest} /><dl className="detail-grid">
           <div><dt>Tags</dt><dd>{detail.tags?.join(", ") || "—"}</dd></div>
           <div><dt>{zh ? "平台" : "Platforms"}</dt><dd>{detail.platforms?.join(", ") || "—"}</dd></div>
@@ -479,10 +546,10 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
         </dl><h3>{zh ? "引用关系" : "References"}</h3>{detail.protectionReasons?.length ? <ul>{detail.protectionReasons.map((reason, index) => <li key={index}>{reason.kind} · {reason.source} · {reason.reference}</li>)}</ul> : <p>{zh ? "没有已知引用" : "No known references"}</p>} <h3>{zh ? "平台 manifests" : "Platform manifests"}</h3>{detail.childManifestDigests?.map((digest) => <CodeCell key={digest} value={digest} />)}</> : <div role={detailStatus === "error" ? "alert" : "status"} aria-busy={detailStatus === "loading" || detailStatus === "pending"}>
           <p>{detailStatus === "loading" ? (zh ? "正在查询镜像…" : "Loading image…") : detailStatus === "pending" ? (zh ? "镜像索引正在建立，完成后将自动刷新。" : "Building image index; this page will refresh when ready.") : detailStatus === "error" ? (zh ? "镜像查询失败。" : "Image lookup failed.") : (zh ? "未找到此镜像，它可能已经删除或不在当前索引中。" : "Image not found. It may have been deleted or is absent from the current index.")}</p>
           {detailStatus === "error" ? <p>{detailState.error}</p> : null}
-          {detailStatus === "error" || detailStatus === "missing" ? <button type="button" className="ghost" onClick={() => setDetailRevision((value) => value + 1)}>{zh ? "重新查询" : "Retry lookup"}</button> : null}
+          {detailStatus === "error" || detailStatus === "missing" ? <Button variant="outline" type="button" onClick={() => setDetailRevision((value) => value + 1)}>{zh ? "重新查询" : "Retry lookup"}</Button> : null}
         </div>}
       </section> : null}
-      {section === "delete" && !preview ? <section className="panel registry-image-detail"><h2>{zh ? "重新选择清理范围" : "Select cleanup scope"}</h2><p>{zh ? "为确保清理范围准确，刷新页面后需要重新选择镜像并分析。" : "After refreshing, select images and preview again to confirm the exact cleanup scope."}</p><button type="button" onClick={() => navigate("/registry")}>{zh ? "返回镜像列表" : "Back to images"}</button></section> : null}
+      {section === "delete" && !preview ? <section className="panel registry-image-detail"><h2>{zh ? "重新选择清理范围" : "Select cleanup scope"}</h2><p>{zh ? "为确保清理范围准确，刷新页面后需要重新选择镜像并分析。" : "After refreshing, select images and preview again to confirm the exact cleanup scope."}</p><Button type="button" onClick={() => navigate("/registry")}>{zh ? "返回镜像列表" : "Back to images"}</Button></section> : null}
       {section === "delete" && preview ? (
           <section className="panel registry-delete-page" aria-labelledby="registry-delete-title">
             <div className="registry-dialog-icon"><Trash2 size={22} /></div>
@@ -530,14 +597,14 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
               </div>
             ) : null}
             <div className="registry-dialog-actions">
-              <button type="button" className="ghost" disabled={!!busy} onClick={() => { setPreview(null); navigate("/registry"); }}>
+              <Button variant="outline" type="button" disabled={!!busy} onClick={() => { setPreview(null); navigate("/registry"); }}>
                 {zh ? "返回" : "Back"}
-              </button>
-              <button type="button" className="danger" disabled={!preview.allowed || !!busy} onClick={() => void purgeSelection()}>
+              </Button>
+              <Button variant="destructive" type="button" disabled={!preview.allowed || !!busy} onClick={() => void purgeSelection()}>
                 {busy === "purge"
                   ? (zh ? "删除并回收中…" : "Deleting and reclaiming…")
                   : (zh ? "确认删除并回收" : "Delete and reclaim")}
-              </button>
+              </Button>
             </div>
           </section>
 

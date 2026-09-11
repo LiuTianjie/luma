@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
+
 import dagre from "dagre";
 import CytoscapeComponent from "react-cytoscapejs";
 import type cytoscape from "cytoscape";
@@ -158,7 +160,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
         "background-color": nodeBg,
         "border-color": nodeBorder,
         "border-width": 1.5,
-        "font-family": '"Berkeley Mono", "IBM Plex Mono", ui-monospace, Menlo, monospace',
+        "font-family": 'ui-monospace, Menlo, Monaco, Consolas, monospace',
         "font-size": 12,
         "font-weight": 500,
         "height": `${NODE_HEIGHT}px`,
@@ -352,9 +354,9 @@ export function NodeTopology({
         />
         
         <div className="cy-controls" aria-label="Topology controls">
-          <button aria-label="Zoom in" className="cy-control-btn" onClick={handleZoomIn} type="button" title="Zoom In">+</button>
-          <button aria-label="Zoom out" className="cy-control-btn" onClick={handleZoomOut} type="button" title="Zoom Out">-</button>
-          <button aria-label="Reset view" className="cy-control-btn" onClick={handleReset} type="button" title="Reset View">0</button>
+          <Button aria-label="Zoom in" className="cy-control-btn" onClick={handleZoomIn} type="button" title="Zoom In">+</Button>
+          <Button aria-label="Zoom out" className="cy-control-btn" onClick={handleZoomOut} type="button" title="Zoom Out">-</Button>
+          <Button aria-label="Reset view" className="cy-control-btn" onClick={handleReset} type="button" title="Reset View">0</Button>
         </div>
       </div>
     </section>

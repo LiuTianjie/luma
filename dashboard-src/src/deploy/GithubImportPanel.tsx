@@ -1,5 +1,4 @@
-import "./builder.css";
-import { ArrowLeft, ChevronDown, GitBranch, Rocket, Server, Settings2 } from "lucide-react";
+import { AlertCircle, ChevronDown, GitBranch, Rocket, Server, Settings2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   fetchGitProviderRefs,
@@ -15,6 +14,15 @@ import type { DashboardBuildNode, DashboardNode, Lang } from "../types";
 import { buildImportStream, registryServeStream } from "./deployApi";
 import { isReadyNode, regionChoices } from "./options";
 import { StepLog } from "./StepLog";
+import { SelectControl } from "../components/primitives";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
+import { PageHeader } from "../pages/PageHeader";
 import type { DeployStep, Exposure, Region } from "./types";
 const EXPOSURES: Exposure[] = ["none", "cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel", "tcp-relay"];
 const PROVIDER_TYPES = ["github", "gitea"] as const;
@@ -299,99 +307,120 @@ export function GithubImportPanel({
   };
 
   return (
-    <section className="git-build-workspace">
-      <header className="git-build-header">
-        <button type="button" className="ghost git-build-back" onClick={() => onBack ? onBack() : router.navigate("/deployments")}><ArrowLeft size={16} aria-hidden="true" />{onBack ? (zh ? "返回模板" : "Back to templates") : (zh ? "返回交付记录" : "Back to delivery")}</button>
-        <p className="eyebrow">{zh ? "交付 / 新建构建" : "Delivery / New build"}</p>
-        <h1>{zh ? "从 Git 构建并部署" : "Build and deploy from Git"}</h1>
-        <p>{zh ? "选择代码来源和构建节点。部署配置默认沿用仓库，也可以在下方覆盖。" : "Choose a source and build node. Use the repository’s deployment configuration or override it below."}</p>
-        <div className="git-build-context"><span>{zh ? "可用构建节点" : "Available build nodes"} <strong>{candidates.length}</strong></span><span>Registry <code>{clusterRegistryHost || (zh ? "尚未配置" : "Not configured")}</code></span></div>
-      </header>
+    <section className="flex flex-col gap-6">
+      <PageHeader
+        meta={{
+          eyebrow: zh ? "交付 / 新建构建" : "Delivery / New build",
+          title: zh ? "从 Git 构建并部署" : "Build and deploy from Git",
+          description: zh ? "选择代码来源和构建节点。部署配置默认沿用仓库，也可以在下方覆盖。" : "Choose a source and build node. Use the repository’s deployment configuration or override it below.",
+          metrics: [
+            { label: zh ? "可用构建节点" : "Build nodes", value: candidates.length },
+            { label: "Registry", value: clusterRegistryHost || (zh ? "尚未配置" : "Not configured") },
+          ],
+        }}
+      />
 
-      <div className="deploy-form-stack">
-        <section className="deploy-config-section">
-          <header><span>01</span><h3>{zh ? "代码来源" : "Source repository"}</h3></header>
-          <div className="credentials-tabs repository-source-tabs" role="tablist" aria-label={zh ? "仓库来源" : "Repository source"}>
-            <button type="button" className={mode === "provider" ? "active" : ""} onClick={() => setMode("provider")} disabled={!providers.length && !providerLoading}>
-              <GitBranch size={15} aria-hidden="true" />
-              {zh ? "已托管凭据" : "Saved providers"}
-            </button>
-            <button type="button" className={mode === "manual" ? "active" : ""} onClick={() => setMode("manual")}>
-              {zh ? "手填 URL" : "Repo URL"}
-            </button>
-          </div>
+      <div className="flex flex-col gap-8">
+        <section className="flex flex-col gap-4">
+          <h2 className="text-sm font-medium">{zh ? "01  代码来源" : "01  Source repository"}</h2>
+          <Tabs value={mode} onValueChange={(value) => { if (value === "provider" || value === "manual") setMode(value); }}>
+            <TabsList aria-label={zh ? "仓库来源" : "Repository source"}>
+              <TabsTrigger value="provider" disabled={!providers.length && !providerLoading}>
+                <GitBranch data-icon="inline-start" />
+                {zh ? "已托管凭据" : "Saved providers"}
+              </TabsTrigger>
+              <TabsTrigger value="manual">{zh ? "手填 URL" : "Repo URL"}</TabsTrigger>
+            </TabsList>
+          </Tabs>
 
           {mode === "provider" ? (
-            <div className="deploy-field-grid">
-              <label>
-                <span>{zh ? "Git provider" : "Git provider"}</span>
-                <select value={providerType} onChange={(event) => setProviderType(event.target.value as (typeof PROVIDER_TYPES)[number])}>
-                  {PROVIDER_TYPES.map((type) => <option key={type} value={type}>{providerTypeLabel(type, lang)}</option>)}
-                </select>
-              </label>
-              <label>
-                <span>{zh ? "账户凭据" : "Account credential"}</span>
-                <select value={providerId} onChange={(event) => setProviderId(event.target.value)}>
-                  <option value="">{providerLoading ? (zh ? "读取中..." : "Loading...") : (zh ? "选择账户" : "Select account")}</option>
-                  {accounts.map((provider) => (
-                    <option key={provider.id} value={provider.id}>{providerAccountLabel(provider)}</option>
-                  ))}
-                </select>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <Field>
+                <FieldLabel>{zh ? "Git provider" : "Git provider"}</FieldLabel>
+                <SelectControl
+                  className="min-w-0"
+                  value={providerType}
+                  onChange={(value) => setProviderType(value as (typeof PROVIDER_TYPES)[number])}
+                  options={PROVIDER_TYPES.map((type) => ({ value: type, label: providerTypeLabel(type, lang) }))}
+                />
+              </Field>
+              <Field>
+                <FieldLabel>{zh ? "账户凭据" : "Account credential"}</FieldLabel>
+                <SelectControl
+                  className="min-w-0"
+                  value={providerId}
+                  onChange={setProviderId}
+                  options={[
+                    { value: "", label: providerLoading ? (zh ? "读取中..." : "Loading...") : (zh ? "选择账户" : "Select account") },
+                    ...accounts.map((provider) => ({ value: provider.id || "", label: providerAccountLabel(provider) })),
+                  ]}
+                />
                 {!accounts.length && !providerLoading ? (
-                  <small className="deploy-muted">
+                  <FieldDescription>
                     {zh ? "还没有该 provider 的账户凭据。" : "No account credentials for this provider yet."}
                     {" "}
-                    <button type="button" className="text-link-button deploy-inline-link" onClick={() => router.navigate(ROUTE_BY_PAGE.credentials)}>
+                    <Button type="button" variant="link" className="h-auto px-0" onClick={() => router.navigate(ROUTE_BY_PAGE.credentials)}>
                       {zh ? "打开凭据设置" : "Open credentials"}
-                    </button>
-                  </small>
+                    </Button>
+                  </FieldDescription>
                 ) : null}
-              </label>
-              <label className="deploy-field-wide">
-                <span>{zh ? "仓库" : "Repository"}</span>
-                <select value={repository} onChange={(event) => setRepository(event.target.value)} disabled={!providerId || repositoryLoading}>
-                  <option value="">{repositoryLoading ? (zh ? "读取仓库中..." : "Loading repositories...") : (zh ? "选择仓库" : "Select repository")}</option>
-                  {repositories.map((repo) => (
-                    <option key={repo.fullName} value={repo.fullName}>{repoOptionLabel(repo)}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>{zh ? "分支 / Tag" : "Branch / tag"}</span>
-                <select value={ref} onChange={(event) => setRef(event.target.value)} disabled={!repository || refLoading}>
-                  <option value="">{refLoading ? (zh ? "读取 refs 中..." : "Loading refs...") : (zh ? "默认分支" : "Default branch")}</option>
-                  {refs.map((item) => (
-                    <option key={`${item.type}-${item.name}`} value={item.name}>{item.name} ({item.type})</option>
-                  ))}
-                </select>
-              </label>
+              </Field>
+              <Field className="md:col-span-2">
+                <FieldLabel>{zh ? "仓库" : "Repository"}</FieldLabel>
+                <SelectControl
+                  className="min-w-0"
+                  value={repository}
+                  disabled={!providerId || repositoryLoading}
+                  onChange={setRepository}
+                  options={[
+                    { value: "", label: repositoryLoading ? (zh ? "读取仓库中..." : "Loading repositories...") : (zh ? "选择仓库" : "Select repository") },
+                    ...repositories.map((repo) => ({ value: repo.fullName, label: repoOptionLabel(repo) })),
+                  ]}
+                />
+              </Field>
+              <Field>
+                <FieldLabel>{zh ? "分支 / Tag" : "Branch / tag"}</FieldLabel>
+                <SelectControl
+                  className="min-w-0"
+                  value={ref}
+                  disabled={!repository || refLoading}
+                  onChange={setRef}
+                  options={[
+                    { value: "", label: refLoading ? (zh ? "读取 refs 中..." : "Loading refs...") : (zh ? "默认分支" : "Default branch") },
+                    ...refs.map((item) => ({ value: item.name, label: `${item.name} (${item.type})` })),
+                  ]}
+                />
+              </Field>
             </div>
           ) : (
-            <div className="deploy-field-grid">
-              <label className="deploy-field-wide">
-                <span>{zh ? "仓库 URL" : "Repository URL"}</span>
-                <input type="text" value={repoUrl} placeholder="https://github.com/owner/repo" onChange={(event) => setRepoUrl(event.target.value)} />
-              </label>
-              <label>
-                <span>{zh ? "分支 / Tag（可选）" : "Branch / tag (optional)"}</span>
-                <input type="text" value={ref} placeholder="main" onChange={(event) => setRef(event.target.value)} />
-              </label>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <Field className="md:col-span-2">
+                <FieldLabel>{zh ? "仓库 URL" : "Repository URL"}</FieldLabel>
+                <Input type="text" value={repoUrl} placeholder="https://github.com/owner/repo" onChange={(event) => setRepoUrl(event.target.value)} />
+              </Field>
+              <Field>
+                <FieldLabel>{zh ? "分支 / Tag（可选）" : "Branch / tag (optional)"}</FieldLabel>
+                <Input type="text" value={ref} placeholder="main" onChange={(event) => setRef(event.target.value)} />
+              </Field>
             </div>
           )}
-          {sourceError ? <div className="alert alert-error" role="alert"><span>{sourceError}</span></div> : null}
+          {sourceError ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{zh ? "代码来源读取失败" : "Could not load source"}</AlertTitle><AlertDescription>{sourceError}</AlertDescription></Alert> : null}
         </section>
 
-        <section className="deploy-config-section">
-          <header><span>02</span><h3>{zh ? "构建目标" : "Build target"}</h3></header>
+        <section className="flex flex-col gap-4">
+          <h2 className="text-sm font-medium">{zh ? "02  构建目标" : "02  Build target"}</h2>
           <div className="deploy-field-grid deploy-field-grid-single">
             <label>
               <span>{zh ? "构建节点" : "Build node"}</span>
-              <select value={buildNode} onChange={(event) => setBuildNode(event.target.value)}>
-                <option value="">{zh ? "选择构建节点" : "Select build node"}</option>
-                {candidates.map((node) => (
-                  <option key={node.name} value={node.name}>{node.displayName || node.name}</option>
-                ))}
-              </select>
+              <SelectControl
+                className="min-w-0"
+                value={buildNode}
+                onChange={setBuildNode}
+                options={[
+                  { value: "", label: zh ? "选择构建节点" : "Select build node" },
+                  ...candidates.map((node) => ({ value: node.name || "", label: node.displayName || node.name || "" })),
+                ]}
+              />
               {!candidates.length ? <small className="deploy-muted">{zh ? "当前没有可用的声明构建节点，节点需具备 docker-build 能力。" : "No declared builder node is currently available; the node must advertise docker-build."}</small> : null}
             </label>
           </div>
@@ -403,81 +432,92 @@ export function GithubImportPanel({
                   <strong>{zh ? "集群 registry" : "Cluster registry"}</strong>
                   <small>{clusterRegistryHost}</small>
                 </span>
-                <button type="button" className="ghost" onClick={() => setShowRegistry(true)}>
+                <Button type="button" variant="outline" size="sm" onClick={() => setShowRegistry(true)}>
                   {zh ? "管理" : "Manage"}
-                </button>
+                </Button>
               </div>
             ) : null}
-            <button
-              type="button"
-              className="ghost form-disclosure-toggle"
-              aria-expanded={showRegistry}
-              onClick={() => setShowRegistry((current) => !current)}
+            <Button variant="outline" type="button"
+ className="w-fit"
+ aria-expanded={showRegistry}
+ onClick={() => setShowRegistry((current) => !current)}
             >
               <Server size={15} aria-hidden="true" />
               {zh ? "内部 registry 设置" : "Internal registry setup"}
               <ChevronDown size={15} className={showRegistry ? "disclosure-chevron open" : "disclosure-chevron"} aria-hidden="true" />
-            </button>
+            </Button>
             {showRegistry ? (
               <div className="registry-setup-body form-disclosure-body">
                 <div className="registry-setup-row">
                   <label>
                     <span>{zh ? "registry 所在节点" : "Registry node"}</span>
-                    <select value={registryNode} onChange={(event) => setRegistryNode(event.target.value)}>
-                      <option value="">{zh ? "选择节点" : "Select node"}</option>
-                      {candidates.map((node) => (
-                        <option key={node.name} value={node.name}>{node.displayName || node.name}</option>
-                      ))}
-                    </select>
+                    <SelectControl
+                      className="min-w-0"
+                      value={registryNode}
+                      onChange={setRegistryNode}
+                      options={[
+                        { value: "", label: zh ? "选择节点" : "Select node" },
+                        ...candidates.map((node) => ({ value: node.name || "", label: node.displayName || node.name || "" })),
+                      ]}
+                    />
                     {!candidates.length ? <small className="deploy-muted">{zh ? "内部 registry 需要部署到已声明且可用的构建节点。" : "Internal registry setup needs a declared, available builder node."}</small> : null}
                   </label>
-                  <button
-                    type="button"
-                    className="primary registry-deploy-btn"
-                    disabled={registryStatus !== "idle" || !registryNode}
-                    onClick={() => void runRegistry()}
+                  <Button type="button"
+
+ disabled={registryStatus !== "idle" || !registryNode}
+ onClick={() => void runRegistry()}
                   >
                     <Server size={15} aria-hidden="true" />
                     {registryStatus === "running" ? (zh ? "部署中..." : "Deploying...") : (zh ? "部署 registry" : "Deploy registry")}
-                  </button>
+                  </Button>
                 </div>
                 {registryDone ? <small className="deploy-muted registry-done">{registryDone}</small> : null}
-                {registryError ? <div className="alert alert-error" role="alert"><span>{registryError}</span></div> : null}
+                {registryError ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{zh ? "Registry 部署失败" : "Registry deploy failed"}</AlertTitle><AlertDescription>{registryError}</AlertDescription></Alert> : null}
                 {registrySteps.length ? <StepLog steps={registrySteps} lang={lang} /> : null}
               </div>
             ) : null}
           </div>
         </section>
 
-        <section className="deploy-config-section">
-          <header><span>03</span><h3>{zh ? "部署覆盖项" : "Deploy overrides"}</h3></header>
-          <div className="deploy-field-grid">
+        <section className="flex flex-col gap-4">
+          <h2 className="text-sm font-medium">{zh ? "03  部署覆盖项" : "03  Deploy overrides"}</h2>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <label>
               <span>{zh ? "区域" : "Region"}</span>
-              <select value={region} onChange={(event) => setRegion(event.target.value as Region | "")}>
-                <option value="">{zh ? "不覆盖（跟随仓库）" : "No override (use repo)"}</option>
-                {regionOptions.map((value) => <option key={value} value={value}>{value}</option>)}
-              </select>
+              <SelectControl
+                className="min-w-0"
+                value={region}
+                onChange={(value) => setRegion(value as Region | "")}
+                options={[
+                  { value: "", label: zh ? "不覆盖（跟随仓库）" : "No override (use repo)" },
+                  ...regionOptions.map((value) => ({ value, label: value })),
+                ]}
+              />
             </label>
             <label>
               <span>{zh ? "入口模式" : "Exposure"}</span>
-              <select value={exposure} onChange={(event) => setExposure(event.target.value as Exposure | "")}>
-                <option value="">{zh ? "不覆盖（跟随仓库）" : "No override (use repo)"}</option>
-                {EXPOSURES.map((value) => <option key={value} value={value}>{value}</option>)}
-              </select>
+              <SelectControl
+                className="min-w-0"
+                value={exposure}
+                onChange={(value) => setExposure(value as Exposure | "")}
+                options={[
+                  { value: "", label: zh ? "不覆盖（跟随仓库）" : "No override (use repo)" },
+                  ...EXPOSURES.map((value) => ({ value, label: value })),
+                ]}
+              />
             </label>
             <label>
               <span>{zh ? "域名" : "Domain"}</span>
-              <input type="text" value={domain} placeholder="app.example.com" onChange={(event) => setDomain(event.target.value)} />
+              <Input type="text" value={domain} placeholder="app.example.com" onChange={(event) => setDomain(event.target.value)} />
             </label>
             <label>
               <span>{zh ? "端口" : "Port"}</span>
-              <input type="text" value={port} placeholder="8080" onChange={(event) => setPort(event.target.value)} />
+              <Input type="text" value={port} placeholder="8080" onChange={(event) => setPort(event.target.value)} />
             </label>
           </div>
           <label className="deploy-field-wide deploy-manifest-field">
             <span>{zh ? "Luma 部署文件（可选）" : "Luma manifest (optional)"}</span>
-            <textarea
+            <Textarea
               value={manifest}
               onChange={(event) => setManifest(event.target.value)}
               placeholder={"name: app\nimage: placeholder\nregion: cn\nexposure: none"}
@@ -491,7 +531,7 @@ export function GithubImportPanel({
           </label>
           <label className="deploy-field-wide deploy-manifest-field">
             <span>{zh ? "环境变量（可选）" : "Environment (.env optional)"}</span>
-            <textarea
+            <Textarea
               value={envText}
               onChange={(event) => setEnvText(event.target.value)}
               placeholder={"DATABASE_URL=postgres://...\nAPI_KEY=..."}
@@ -506,38 +546,37 @@ export function GithubImportPanel({
         </section>
 
         <section className="deploy-config-section">
-          <button
-            type="button"
-            className="ghost form-disclosure-toggle"
-            aria-expanded={showAdvanced}
-            onClick={() => setShowAdvanced((current) => !current)}
+          <Button variant="outline" type="button"
+ className="w-fit"
+ aria-expanded={showAdvanced}
+ onClick={() => setShowAdvanced((current) => !current)}
           >
             <Settings2 size={15} aria-hidden="true" />
             {zh ? "高级选项" : "Advanced"}
             <ChevronDown size={15} className={showAdvanced ? "disclosure-chevron open" : "disclosure-chevron"} aria-hidden="true" />
-          </button>
+          </Button>
           {showAdvanced ? (
             <div className="form-disclosure-body">
               <div className="deploy-field-grid">
                 <label>
                   <span>{zh ? "构建平台" : "Build platform"}</span>
-                  <input type="text" value={platform} placeholder="linux/amd64" onChange={(event) => setPlatform(event.target.value)} />
+                  <Input type="text" value={platform} placeholder="linux/amd64" onChange={(event) => setPlatform(event.target.value)} />
                 </label>
                 <label>
                   <span>{zh ? "Registry 地址" : "Registry host"}</span>
-                  <input type="text" value={registryHost} placeholder="100.66.177.70:5000" onChange={(event) => setRegistryHost(event.target.value)} />
+                  <Input type="text" value={registryHost} placeholder="100.66.177.70:5000" onChange={(event) => setRegistryHost(event.target.value)} />
                 </label>
                 <label>
                   <span>{zh ? "Push 地址" : "Push host"}</span>
-                  <input type="text" value={pushHost} placeholder="localhost:5000" onChange={(event) => setPushHost(event.target.value)} />
+                  <Input type="text" value={pushHost} placeholder="localhost:5000" onChange={(event) => setPushHost(event.target.value)} />
                 </label>
                 <label>
                   <span>{zh ? "构建上下文" : "Context"}</span>
-                  <input type="text" value={context} placeholder="." onChange={(event) => setContext(event.target.value)} />
+                  <Input type="text" value={context} placeholder="." onChange={(event) => setContext(event.target.value)} />
                 </label>
                 <label>
                   <span>Dockerfile</span>
-                  <input type="text" value={dockerfile} placeholder="Dockerfile" onChange={(event) => setDockerfile(event.target.value)} />
+                  <Input type="text" value={dockerfile} placeholder="Dockerfile" onChange={(event) => setDockerfile(event.target.value)} />
                 </label>
               </div>
             </div>
@@ -545,26 +584,30 @@ export function GithubImportPanel({
         </section>
 
         {errors.length ? (
-          <div className="alert alert-error" role="alert">
-            <ul className="alert-list">
-              {errors.map((message) => <li key={message}>{message}</li>)}
-            </ul>
-          </div>
+          <Alert variant="destructive">
+            <AlertCircle />
+            <AlertTitle>{zh ? "还不能开始构建" : "Cannot start build"}</AlertTitle>
+            <AlertDescription>
+              <ul className="list-disc pl-4">
+                {errors.map((message) => <li key={message}>{message}</li>)}
+              </ul>
+            </AlertDescription>
+          </Alert>
         ) : null}
-        {error ? <div className="alert alert-error" role="alert"><span>{error}</span></div> : null}
+        {error ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{zh ? "构建失败" : "Build failed"}</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
 
-        {steps.length ? <><StepLog steps={steps} lang={lang} /><button type="button" className="ghost" onClick={() => { const id = steps.find((step) => step.buildRunId)?.buildRunId; router.navigate(id ? `/deployments/build/${encodeURIComponent(id)}` : "/deployments?kind=build"); }}>{zh ? "查看持久构建记录" : "View build record"}</button></> : null}
+        {steps.length ? <><StepLog steps={steps} lang={lang} /><Button variant="outline" type="button" onClick={() => { const id = steps.find((step) => step.buildRunId)?.buildRunId; router.navigate(id ? `/deployments/build/${encodeURIComponent(id)}` : "/deployments?kind=build"); }}>{zh ? "查看持久构建记录" : "View build record"}</Button></> : null}
       </div>
 
-      <div className="deploy-action-bar">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
         <div>
           <strong>{mode === "provider" ? providerId || (zh ? "Git provider" : "Git provider") : (zh ? "手填仓库" : "Manual repository")}</strong>
           <span>{mode === "provider" ? repository || (zh ? "选择仓库后即可构建部署" : "Select a repository to build and deploy") : repoUrl || (zh ? "临时仓库 URL" : "Temporary repository URL")}</span>
         </div>
-        <button type="button" className="primary" disabled={status !== "idle" || errors.length > 0 || repositoryLoading || refLoading} onClick={() => void run()}>
+        <Button type="button" disabled={status !== "idle" || errors.length> 0 || repositoryLoading || refLoading} onClick={() => void run()}>
           <Rocket size={16} aria-hidden="true" />
           {status === "running" ? (zh ? "构建并部署中..." : "Building and deploying...") : (zh ? "构建并部署" : "Build and deploy")}
-        </button>
+        </Button>
       </div>
     </section>
   );
@@ -573,13 +616,28 @@ export function GithubImportPanel({
 export function GithubImportEntryCard({ lang, onOpen }: { lang: Lang; onOpen: () => void }) {
   const zh = lang === "zh";
   return (
-    <button type="button" className="github-import-entry" onClick={onOpen}>
-      <GitBranch size={18} aria-hidden="true" />
-      <div>
-        <strong>{zh ? "仓库导入" : "Repository import"}</strong>
-        <span>{zh ? "选择 Git provider 账户和仓库，自动构建并部署" : "Choose a Git provider account and repo, then build and deploy"}</span>
-      </div>
-      <span className="github-import-entry-action">{zh ? "打开" : "Open"} -&gt;</span>
-    </button>
+    <Card
+      className="cursor-pointer transition-colors hover:bg-muted/50"
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+    >
+      <CardContent className="flex items-center gap-4 py-4">
+        <GitBranch size={18} className="text-primary" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium">{zh ? "仓库导入" : "Repository import"}</p>
+          <p className="text-sm text-muted-foreground">
+            {zh ? "选择 Git provider 账户和仓库，自动构建并部署" : "Choose a Git provider account and repo, then build and deploy"}
+          </p>
+        </div>
+        <span className="text-sm text-muted-foreground">{zh ? "打开" : "Open"} →</span>
+      </CardContent>
+    </Card>
   );
 }

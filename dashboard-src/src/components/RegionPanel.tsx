@@ -3,7 +3,12 @@ import { createRegion, removeRegion } from "../controlResourcesApi";
 import { BUILTIN_REGIONS, regionChoices } from "../deploy/options";
 import type { DashboardNode, DashboardRegion, Lang } from "../types";
 import { useConfirm } from "./ConfirmDialog";
-import { Badge, BadgeGroup, PrimaryCell } from "./ui";
+import { Badge, BadgeGroup, PrimaryCell, SelectControl } from "./primitives";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 export function RegionPanel({
   lang,
@@ -88,79 +93,74 @@ export function RegionPanel({
   };
 
   return (
-    <article className="panel region-panel">
+    <div className="flex flex-col gap-6">
       {element}
-      <div className="panel-heading">
-        <div>
-          <p className="eyebrow">{zh ? "调度区域" : "Regions"}</p>
-          <h2>{zh ? "给一批机器单独建 Region" : "Create a region for a machine pool"}</h2>
-        </div>
-        <span>{rows.length}</span>
-      </div>
-      <p className="region-panel-copy">
+      <p className="max-w-3xl text-sm text-muted-foreground">
         {zh
           ? "自定义 Region 只用于调度。节点 join 时带上这个名字，服务 YAML 写同样的 region 和 replicas 即可，不必指定具体机器。"
           : "Custom regions are scheduling pools. Join nodes with this name, then deploy with the same region and a replica count. You do not pin individual machines."}
       </p>
       <form
-        className="credential-form region-create-form"
+        className="flex max-w-3xl flex-col gap-4 sm:flex-row sm:items-end"
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
         }}
       >
-        <label>
-          <span>{zh ? "Region 名" : "Region name"}</span>
-          <input value={name} onChange={(event) => setName(event.target.value)} placeholder="batch-a" autoCapitalize="none" autoCorrect="off" spellCheck={false} />
-        </label>
-        <label>
-          <span>egress</span>
-          <select value={egress} onChange={(event) => setEgress(event.target.value as "proxy" | "direct")}>
-            <option value="proxy">{zh ? "proxy（走 manager 网关）" : "proxy (manager gateway)"}</option>
-            <option value="direct">{zh ? "direct（直连外网）" : "direct (no gateway)"}</option>
-          </select>
-        </label>
-        <button type="submit" className="primary" disabled={busy === "create" || !name.trim()}>
+        <Field className="min-w-0 flex-1">
+          <FieldLabel>{zh ? "Region 名" : "Region name"}</FieldLabel>
+          <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="batch-a" autoCapitalize="none" autoCorrect="off" spellCheck={false} />
+        </Field>
+        <Field className="sm:w-64">
+          <FieldLabel>egress</FieldLabel>
+          <SelectControl
+            value={egress}
+            onChange={(value) => setEgress(value as "proxy" | "direct")}
+            options={[
+              { value: "proxy", label: zh ? "proxy（走 manager 网关）" : "proxy (manager gateway)" },
+              { value: "direct", label: zh ? "direct（直连外网）" : "direct (no gateway)" },
+            ]}
+          />
+        </Field>
+        <Button type="submit" disabled={busy === "create" || !name.trim()}>
           {busy === "create" ? (zh ? "创建中..." : "Creating...") : (zh ? "创建 Region" : "Create region")}
-        </button>
+        </Button>
       </form>
-      {error ? <div className="alert alert-warning"><span>{error}</span></div> : null}
-      <div className="table-wrap">
-        <table className="storage-table">
-          <thead>
-            <tr>
-              <th>{zh ? "名称" : "Name"}</th>
-              <th>{zh ? "类型" : "Kind"}</th>
-              <th>egress</th>
-              <th>{zh ? "节点" : "Nodes"}</th>
-              <th>{zh ? "允许的入口" : "Exposures"}</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((region) => (
-              <tr key={region.name}>
-                <td><PrimaryCell title={region.name} /></td>
-                <td><Badge value={region.builtin ? "builtin" : "custom"} /></td>
-                <td><Badge value={region.egress || "-"} /></td>
-                <td><Badge value={String(region.nodeCount)} /></td>
-                <td>
-                  <BadgeGroup>
-                    {(region.exposures || (region.builtin ? [] : ["none"])).map((exposure) => <Badge key={exposure} value={exposure} />)}
-                  </BadgeGroup>
-                </td>
-                <td>
-                  {region.builtin ? null : (
-                    <button type="button" className="ghost" disabled={busy === `remove:${region.name}`} onClick={() => void remove(region)}>
-                      {zh ? "删除" : "Remove"}
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </article>
+      {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>{zh ? "名称" : "Name"}</TableHead>
+            <TableHead>{zh ? "类型" : "Kind"}</TableHead>
+            <TableHead>egress</TableHead>
+            <TableHead>{zh ? "节点" : "Nodes"}</TableHead>
+            <TableHead>{zh ? "允许的入口" : "Exposures"}</TableHead>
+            <TableHead />
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((region) => (
+            <TableRow key={region.name}>
+              <TableCell><PrimaryCell title={region.name} /></TableCell>
+              <TableCell><Badge value={region.builtin ? "builtin" : "custom"} /></TableCell>
+              <TableCell><Badge value={region.egress || "-"} /></TableCell>
+              <TableCell><Badge value={String(region.nodeCount)} /></TableCell>
+              <TableCell>
+                <BadgeGroup>
+                  {(region.exposures || (region.builtin ? [] : ["none"])).map((exposure) => <Badge key={exposure} value={exposure} />)}
+                </BadgeGroup>
+              </TableCell>
+              <TableCell>
+                {region.builtin ? null : (
+                  <Button variant="ghost" size="sm" disabled={busy === `remove:${region.name}`} onClick={() => void remove(region)}>
+                    {zh ? "删除" : "Remove"}
+                  </Button>
+                )}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
   );
 }

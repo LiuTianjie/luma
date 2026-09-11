@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
+import { Button } from "@/components/ui/button";
+
 import { createPortal } from "react-dom";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
@@ -67,7 +69,7 @@ function TerminalContent({ lang, target, token, onClose, inline = false, panelRe
     const term = new Terminal({
       cursorBlink: true,
       convertEol: true,
-      fontFamily: '"Berkeley Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
       fontSize: 13,
       theme: {
         background: "#1a1818",
@@ -212,10 +214,10 @@ function TerminalContent({ lang, target, token, onClose, inline = false, panelRe
           </div>
           <div className="terminal-session__actions">
             <span className={`terminal-session__status is-${status}`} role="status" aria-live="polite">{statusLabel}</span>
-            <button type="button" className="terminal-session__close" onClick={onClose}>
+            <Button type="button" className="terminal-session__close" onClick={onClose}>
               {inline ? <ArrowLeft size={15} aria-hidden="true" /> : <X size={15} aria-hidden="true" />}
               {inline ? (lang === "zh" ? "结束并返回" : "End session and return") : t(lang, "close")}
-            </button>
+            </Button>
           </div>
         </header>
         <div className="terminal-surface" style={inline ? { flex: 1, minHeight: "55vh" } : undefined} ref={containerRef} />

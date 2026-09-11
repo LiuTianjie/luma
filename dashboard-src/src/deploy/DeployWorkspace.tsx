@@ -1,4 +1,6 @@
 import "./workbench.css";
+import { Button } from "@/components/ui/button";
+
 import { StepLog } from "./StepLog";
 import { ArrowLeft, FileCode2, ListChecks, Rocket } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -418,13 +420,13 @@ export function DeployWorkspace({
       ) : (
       <>
       {!templateLanding ? <header className="workbench-header">
-        <button type="button" className="ghost workbench-back" disabled={status !== "idle"} onClick={() => onClose ? onClose() : showTemplates ? backToTemplates() : router.navigate("/create")}>
+        <Button variant="outline" type="button" className="workbench-back" disabled={status !== "idle"} onClick={() => onClose ? onClose() : showTemplates ? backToTemplates() : router.navigate("/create")}>
           <ArrowLeft size={16} aria-hidden="true" />{onClose ? (lang === "zh" ? "返回应用" : "Back to application") : showTemplates ? (lang === "zh" ? "返回模板" : "Back to templates") : (lang === "zh" ? "返回创建" : "Back to create")}
-        </button>
+        </Button>
         <div className="workbench-title"><div><p className="eyebrow">{lang === "zh" ? "应用配置" : "Application configuration"}</p><h1>{modalTitle || (lang === "zh" ? "创建应用" : "Create application")}</h1><p>{modalSubtitle || (lang === "zh" ? "编辑配置，校验后提交到当前集群。" : "Edit the configuration, validate it, then submit to this cluster.")}</p></div><span className="workbench-kind">{mode === "service" ? (lang === "zh" ? "单服务" : "Single service") : "Compose"}</span></div>
         <nav className="deploy-editor-tabs" aria-label={lang === "zh" ? "编辑方式" : "Editor mode"}>
-          <button type="button" aria-current={editorMode === "form" ? "page" : undefined} className={editorMode === "form" ? "active" : ""} disabled={yamlDirty || status !== "idle"} onClick={() => setEditorMode("form")}><ListChecks size={16} aria-hidden="true" />{lang === "zh" ? "配置表单" : "Form"}</button>
-          <button type="button" aria-current={editorMode === "yaml" ? "page" : undefined} className={editorMode === "yaml" ? "active" : ""} disabled={status !== "idle"} onClick={() => setEditorMode("yaml")}><FileCode2 size={16} aria-hidden="true" />{lang === "zh" ? "YAML 编辑器" : "YAML editor"}</button>
+          <Button type="button" aria-current={editorMode === "form" ? "page" : undefined} className={editorMode === "form" ? "active" : ""} disabled={yamlDirty || status !== "idle"} onClick={() => setEditorMode("form")}><ListChecks size={16} aria-hidden="true" />{lang === "zh" ? "配置表单" : "Form"}</Button>
+          <Button type="button" aria-current={editorMode === "yaml" ? "page" : undefined} className={editorMode === "yaml" ? "active" : ""} disabled={status !== "idle"} onClick={() => setEditorMode("yaml")}><FileCode2 size={16} aria-hidden="true" />{lang === "zh" ? "YAML 编辑器" : "YAML editor"}</Button>
         </nav>
       </header> : null}
       {modalContext}
@@ -440,7 +442,7 @@ export function DeployWorkspace({
             <strong>{lang === "zh" ? "模板只会填充配置，不会自动部署。" : "Templates only prefill configuration. Nothing deploys automatically."}</strong>
             <span>{lang === "zh" ? "点击模板卡片后进入表单页面，可随时切换 YAML 视图。" : "Click a template to continue to the form page, where YAML view remains available."}</span>
           </div>
-          <button type="button" className="ghost" onClick={() => selectTemplate(firstTemplate(mode))}>{lang === "zh" ? "使用当前推荐" : "Use recommended"}</button>
+          <Button variant="outline" type="button" onClick={() => selectTemplate(firstTemplate(mode))}>{lang === "zh" ? "使用当前推荐" : "Use recommended"}</Button>
         </div>
       ) : (
         <>
@@ -462,10 +464,10 @@ export function DeployWorkspace({
           </fieldset> : null}
           <div className={`deploy-workspace-grid ${editorMode === "yaml" ? "yaml-active" : ""}`}>
             <div className="deploy-config-main" inert={status !== "idle" ? true : undefined}>
-              {yamlDirty ? <div className="workbench-source-note" role="status"><div><strong>{lang === "zh" ? "使用 YAML 配置" : "Using YAML configuration"}</strong><p>{lang === "zh" ? "校验和部署均使用当前文件内容。" : "Validation and deployment use the current documents."}</p></div><button type="button" className="ghost" disabled={status !== "idle"} onClick={async () => {
+              {yamlDirty ? <div className="workbench-source-note" role="status"><div><strong>{lang === "zh" ? "使用 YAML 配置" : "Using YAML configuration"}</strong><p>{lang === "zh" ? "校验和部署均使用当前文件内容。" : "Validation and deployment use the current documents."}</p></div><Button variant="outline" type="button" disabled={status !== "idle"} onClick={async () => {
                 if (!await confirm({ title: lang === "zh" ? "恢复表单配置？" : "Restore form configuration?", body: lang === "zh" ? "这会丢弃手动 YAML 修改，使用表单当前值重新生成文件。" : "This discards manual YAML edits and regenerates documents from the form.", confirmLabel: lang === "zh" ? "恢复表单" : "Restore form" })) return;
                 setServiceYaml(serviceDraftToYaml(serviceDraft)); setComposeYaml(composeDraft.dockerComposeYaml); setSidecarYaml(composeDraftToSidecarYaml(composeDraft)); setYamlDirty(false); setEditorMode("form"); setPreview(null);
-              }}>{lang === "zh" ? "恢复表单…" : "Restore form…"}</button></div> : null}
+              }}>{lang === "zh" ? "恢复表单…" : "Restore form…"}</Button></div> : null}
               {editorMode === "form" ? (
                 mode === "service"
                   ? <SingleServiceDeployForm lang={lang} draft={serviceDraft} nodes={nodes} storageClasses={storageClasses} regions={regions} onChange={updateServiceDraft} />
@@ -485,21 +487,21 @@ export function DeployWorkspace({
             </div>
             <DeploySummary lang={lang} mode={mode} serviceDraft={serviceDraft} composeDraft={composeDraft} preview={preview} steps={[]} errors={allErrors} submission={submitted.summary} />
           </div>
-          {steps.length ? <section className="workbench-progress" aria-label={lang === "zh" ? "部署进度" : "Deployment progress"}><header><h3>{lang === "zh" ? "部署进度" : "Deployment progress"}</h3><button type="button" className="ghost" onClick={() => router.navigate(`/deployments?app=${encodeURIComponent(submitted.summary?.name || configTitle)}`)}>{lang === "zh" ? "查看交付记录 →" : "View delivery records →"}</button></header><StepLog steps={steps} lang={lang} /></section> : null}
+          {steps.length ? <section className="workbench-progress" aria-label={lang === "zh" ? "部署进度" : "Deployment progress"}><header><h3>{lang === "zh" ? "部署进度" : "Deployment progress"}</h3><Button variant="outline" type="button" onClick={() => router.navigate(`/deployments?app=${encodeURIComponent(submitted.summary?.name || configTitle)}`)}>{lang === "zh" ? "查看交付记录 →" : "View delivery records →"}</Button></header><StepLog steps={steps} lang={lang} /></section> : null}
           <div className="deploy-action-bar">
             <div>
               <strong>{yamlDirty ? (lang === "zh" ? "提交当前 YAML" : "Submit current YAML") : (lang === "zh" ? "提交当前配置" : "Submit current configuration")}</strong>
               <span>{lang === "zh" ? <>Secret 使用 ${"{NAME}"} 引用，明文密钥请先存入 Luma Control。</> : <>Secrets must use ${"{NAME}"} references. Store plaintext secrets in Luma Control first.</>}</span>
             </div>
 
-            <button type="button" className="ghost" disabled={status !== "idle"} onClick={() => void runPreview()}>
+            <Button variant="outline" type="button" disabled={status !== "idle"} onClick={() => void runPreview()}>
               <ListChecks size={16} aria-hidden="true" />
               {status === "previewing" ? (lang === "zh" ? "校验中..." : "Validating...") : (lang === "zh" ? "校验" : "Validate")}
-            </button>
-            <button type="button" className="primary" disabled={status !== "idle" || validationErrors.length > 0 || Boolean(submitted.error)} onClick={() => void runDeploy()}>
+            </Button>
+            <Button type="button" disabled={status !== "idle" || validationErrors.length> 0 || Boolean(submitted.error)} onClick={() => void runDeploy()}>
               <Rocket size={16} aria-hidden="true" />
               {status === "deploying" ? (lang === "zh" ? "部署中..." : "Deploying...") : (lang === "zh" ? "部署" : "Deploy")}
-            </button>
+            </Button>
           </div>
         </>
       )}

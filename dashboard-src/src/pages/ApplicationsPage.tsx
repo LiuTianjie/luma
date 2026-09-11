@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { applicationPath, parseApplicationPath } from "../components/applicationRoutes";
 import { Plus } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { ApplicationManagementPanel, type ApplicationUpdateRequest } from "../components/ApplicationManagementPanel";
 import { groupApplications } from "../components/applicationModel";
 import { t } from "../i18n";
@@ -55,10 +56,10 @@ export function ApplicationsPage({
             { label: zh ? "失败" : "Failed", value: failed },
           ],
           action: (
-            <button type="button" className="primary page-toolbar-cta" onClick={onCreateApplication}>
-              <Plus size={16} aria-hidden="true" />
+            <Button onClick={onCreateApplication}>
+              <Plus data-icon="inline-start" />
               {t(lang, "createApplication")}
-            </button>
+            </Button>
           ),
         }}
       /> : null}

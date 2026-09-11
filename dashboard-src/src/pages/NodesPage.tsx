@@ -1,5 +1,8 @@
-import { useState } from "react";
+import { useState, type MouseEvent } from "react";
 import { Check, Copy } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { NodeFleetMap } from "../components/NodeFleetMap";
 import { RegionPanel } from "../components/RegionPanel";
 import { NodeTopology } from "../components/NodeTopology";
@@ -94,40 +97,58 @@ export function NodesPage({
         }}
       />
 
-      {section !== "network" && <nav className="workspace-tabs" aria-label={zh ? "节点管理" : "Node management"}>
-        {[
-          ["nodes", "/fleet", zh ? "节点列表" : "All nodes"],
-          ["join", "/fleet/join", zh ? "加入节点" : "Join node"],
-          ["regions", "/fleet/regions", zh ? "区域" : "Regions"],
-          ["maintenance", "/fleet/maintenance", zh ? "系统维护" : "Maintenance"],
-        ].map(([key, href, label]) => <a key={key} href={toHref(href)} className={section === key ? "active" : ""} aria-current={section === key ? "page" : undefined} onClick={(event) => {
-          if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-          event.preventDefault(); navigate(href);
-        }}>{label}</a>)}
-      </nav>}
+      {section !== "network" ? (
+        <Tabs value={section}>
+          <TabsList aria-label={zh ? "节点管理" : "Node management"}>
+            {[
+              ["nodes", "/fleet", zh ? "节点列表" : "All nodes"],
+              ["join", "/fleet/join", zh ? "加入节点" : "Join node"],
+              ["regions", "/fleet/regions", zh ? "区域" : "Regions"],
+              ["maintenance", "/fleet/maintenance", zh ? "系统维护" : "Maintenance"],
+            ].map(([key, href, label]) => (
+              <TabsTrigger
+                key={key}
+                value={key}
+                render={<a href={toHref(href)} aria-current={section === key ? "page" : undefined} />}
+                onClick={(event: MouseEvent<HTMLElement>) => {
+                  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                  event.preventDefault();
+                  navigate(href);
+                }}
+              >
+                {label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+      ) : null}
 
-      {section === "unknown" && <div className="empty-inline"><p>{zh ? "此基础设施页面不存在。" : "This infrastructure page does not exist."}</p><button type="button" onClick={() => navigate("/fleet")}>{zh ? "返回节点列表" : "Back to nodes"}</button></div>}
+      {section === "unknown" && <div className="empty-inline"><p>{zh ? "此基础设施页面不存在。" : "This infrastructure page does not exist."}</p><Button type="button" onClick={() => navigate("/fleet")}>{zh ? "返回节点列表" : "Back to nodes"}</Button></div>}
       {section === "nodes" && <NodeFleetMap lang={lang} nodes={vm.nodes} services={vm.services} onSelect={onSelectNode} onTerminal={onTerminal} />}
       {section === "regions" && <RegionPanel lang={lang} token={token} regions={vm.regions} nodes={vm.nodes} onRefresh={onRefresh} />}
 
-      {section === "join" && <article className="panel fleet-command-panel">
-        <div className="panel-heading">
-          <div>
-            <h2>{zh ? "在目标机器上执行" : "Run on the target host"}</h2>
-          </div>
-          <button type="button" className="ghost" onClick={() => void copyCommand()}>
-            {copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
-            {copied ? (zh ? "已复制" : "Copied") : (zh ? "复制命令" : "Copy command")}
-          </button>
-        </div>
-        {copyError && <p role="status">{zh ? "无法自动复制，请选择下面的命令手动复制。" : "Could not copy automatically. Select and copy the command below."}</p>}
-        <pre className="command-snippet"><code>{command}</code></pre>
-        <p>
-          {zh
-            ? "控制域名已按当前访问地址填好。把 <node-join-token> 换成 luma node join token，--region 换成区域管理中创建的 Region 名，<node-name> 换成节点名后在目标机器执行。"
-            : "The control domain is filled from the current address. Replace <node-join-token> with a node join token, --region with a created region name, and <node-name> with the node name, then run it on the target host."}
-        </p>
-      </article>}
+      {section === "join" && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{zh ? "在目标机器上执行" : "Run on the target host"}</CardTitle>
+            <CardDescription>
+              {zh
+                ? "控制域名已按当前访问地址填好。把 <node-join-token> 换成 luma node join token，--region 换成区域管理中创建的 Region 名，<node-name> 换成节点名后在目标机器执行。"
+                : "The control domain is filled from the current address. Replace <node-join-token> with a node join token, --region with a created region name, and <node-name> with the node name, then run it on the target host."}
+            </CardDescription>
+            <CardAction>
+              <Button variant="outline" size="sm" onClick={() => void copyCommand()}>
+                {copied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
+                {copied ? (zh ? "已复制" : "Copied") : (zh ? "复制命令" : "Copy command")}
+              </Button>
+            </CardAction>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            {copyError ? <p role="status">{zh ? "无法自动复制，请选择下面的命令手动复制。" : "Could not copy automatically. Select and copy the command below."}</p> : null}
+            <pre className="overflow-auto rounded-lg bg-muted p-3 font-mono text-sm"><code>{command}</code></pre>
+          </CardContent>
+        </Card>
+      )}
 
       {section === "maintenance" && <SystemUpdatePanel
         lang={lang}

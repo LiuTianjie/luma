@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Button } from "@/components/ui/button";
+
+import { Input } from "@/components/ui/input";
+
 import { createPortal } from "react-dom";
 import { Activity, ChevronDown, Copy, Download, Info, Pause, Play, RefreshCw, Search, Terminal, WrapText, X } from "lucide-react";
 import { t } from "../i18n";
 import { appendLogFrame, formatLogLine, logRetryDelay, readLogFrames, waitForLogRetry, type DisplayLogLine } from "../logStream";
 import type { DashboardService, Lang } from "../types";
 import { useOverlay } from "../useOverlay";
-import { SelectControl, type SelectOption } from "./ui";
+import { SelectControl, type SelectOption } from "./primitives";
 import "./serviceLogs.css";
 
 type LogsState = {
@@ -559,9 +563,9 @@ export function ServiceLogsModal({
         </div>
         <div className="log-console__header-actions">
           <span className={`log-console__connection is-${connection}`} role="status" aria-live="polite">{connectionLabel}</span>
-          {!inline && <button type="button" className="log-console__button log-console__close" onClick={onClose} aria-label={t(lang, "close")}>
+          {!inline && <Button type="button" className="log-console__button log-console__close" onClick={onClose} aria-label={t(lang, "close")}>
             <X size={16} aria-hidden="true" />
-          </button>}
+          </Button>}
         </div>
       </header>
 
@@ -582,39 +586,39 @@ export function ServiceLogsModal({
           <span>{lang === "zh" ? "搜索当前日志" : "Search current logs"}</span>
           <span className="log-console__search">
             <Search size={16} aria-hidden="true" />
-            <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder={lang === "zh" ? "输入关键词" : "Filter by keyword"} />
+            <Input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder={lang === "zh" ? "输入关键词" : "Filter by keyword"} />
           </span>
         </label>
       </div>
 
       <div className="log-console__toolbar" aria-label={lang === "zh" ? "日志操作" : "Log actions"}>
         <div className="log-console__action-group">
-          <button type="button" className="log-console__button" aria-pressed={paused} onClick={() => setPaused((value) => !value)}>
+          <Button type="button" className="log-console__button" aria-pressed={paused} onClick={() => setPaused((value) => !value)}>
             {paused ? <Play size={15} aria-hidden="true" /> : <Pause size={15} aria-hidden="true" />}
             {paused ? (lang === "zh" ? "继续" : "Resume") : (lang === "zh" ? "暂停" : "Pause")}
-          </button>
-          <button type="button" className="log-console__button" onClick={() => { setPaused(false); setRefreshVersion((value) => value + 1); }}>
+          </Button>
+          <Button type="button" className="log-console__button" onClick={() => { setPaused(false); setRefreshVersion((value) => value + 1); }}>
             <RefreshCw size={15} aria-hidden="true" />
             {logsLoading || runtimeLoading ? t(lang, "refreshing") : t(lang, "refresh")}
-          </button>
-          <button type="button" className="log-console__button" disabled={pullLoading || !selectedService} onClick={() => void diagnosePull()}>
+          </Button>
+          <Button type="button" className="log-console__button" disabled={pullLoading || !selectedService} onClick={() => void diagnosePull()}>
             <Activity size={15} aria-hidden="true" />
             {pullLoading ? (lang === "zh" ? "诊断中" : "Diagnosing") : (lang === "zh" ? "诊断拉取" : "Pull diagnostic")}
-          </button>
+          </Button>
         </div>
         <div className="log-console__action-group">
-          <button type="button" className="log-console__button" aria-pressed={wrapLines} onClick={() => setWrapLines((value) => !value)}>
+          <Button type="button" className="log-console__button" aria-pressed={wrapLines} onClick={() => setWrapLines((value) => !value)}>
             <WrapText size={15} aria-hidden="true" />
             {lang === "zh" ? "自动折行" : "Wrap lines"}
-          </button>
-          <button type="button" className="log-console__button" disabled={!filteredLogs.length} onClick={() => void copyLogs()}>
+          </Button>
+          <Button type="button" className="log-console__button" disabled={!filteredLogs.length} onClick={() => void copyLogs()}>
             <Copy size={15} aria-hidden="true" />
             {copyState || (lang === "zh" ? "复制" : "Copy")}
-          </button>
-          <button type="button" className="log-console__button" disabled={!selectedService || Boolean(downloadState)} onClick={() => void downloadLogs()}>
+          </Button>
+          <Button type="button" className="log-console__button" disabled={!selectedService || Boolean(downloadState)} onClick={() => void downloadLogs()}>
             <Download size={15} aria-hidden="true" />
             {downloadState || (lang === "zh" ? "下载近期日志" : "Download recent")}
-          </button>
+          </Button>
         </div>
       </div>
 

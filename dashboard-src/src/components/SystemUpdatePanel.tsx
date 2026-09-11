@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
+
+import { Input } from "@/components/ui/input";
+
 import { AlertTriangle, CheckCircle2, LoaderCircle, RefreshCw, Route, ServerCog, XCircle } from "lucide-react";
 import type { DashboardNode, Lang } from "../types";
 import {
@@ -230,34 +234,34 @@ export function SystemUpdatePanel({
       <div className="system-update-form">
         <label>
           <span>{zh ? "目标发布版本" : "Release ref"}</span>
-          <input value={installRef} onChange={(event) => onRefChange(event.target.value)} placeholder="v0.1.174" spellCheck={false} />
+          <Input value={installRef} onChange={(event) => onRefChange(event.target.value)} placeholder="v0.1.174" spellCheck={false} />
         </label>
         <label>
           <span>{zh ? "Control 镜像" : "Control image"}</span>
-          <input value={controlImage} onChange={(event) => setControlImage(event.target.value)} placeholder="ghcr.io/liutianjie/luma-control:v0.1.174" spellCheck={false} />
+          <Input value={controlImage} onChange={(event) => setControlImage(event.target.value)} placeholder="ghcr.io/liutianjie/luma-control:v0.1.174" spellCheck={false} />
         </label>
       </div>
 
       <div className="system-update-actions">
-        <button type="button" className="ghost" disabled={Boolean(busy)} onClick={() => void probeRoutes()}>
+        <Button variant="outline" type="button" disabled={Boolean(busy)} onClick={() => void probeRoutes()}>
           {busy === "sentinel" ? <LoaderCircle className="spin" size={16} /> : <Route size={16} />}
           {zh ? "检查全部公网路由" : "Check public routes"}
-        </button>
-        <button type="button" className={confirm === "manager" ? "danger" : "secondary"} disabled={!installRef.trim() || !controlImage.trim() || Boolean(busy) || manager?.status === "running" || imagePreparation?.status === "queued" || imagePreparation?.status === "running"} onClick={() => void requestManagerUpdate()}>
+        </Button>
+        <Button type="button" variant={confirm === "manager" ? "destructive" : "secondary"} disabled={!installRef.trim() || !controlImage.trim() || Boolean(busy) || manager?.status === "running" || imagePreparation?.status === "queued" || imagePreparation?.status === "running"} onClick={() => void requestManagerUpdate()}>
           {busy === "manager" || busy === "image" ? <LoaderCircle className="spin" size={16} /> : <ServerCog size={16} />}
           {busy === "image" || imagePreparation?.status === "queued" || imagePreparation?.status === "running" ? (zh ? "正在准备内网镜像" : "Preparing internal image") : confirm === "manager" ? (zh ? "确认升级 Control" : "Confirm Control update") : (zh ? "升级 Control" : "Update Control")}
-        </button>
-        <button type="button" className={confirm === "fleet" ? "primary" : "secondary"} disabled={!installRef.trim() || staleNodes.length === 0 || Boolean(busy) || fleet?.status === "running" || fleet?.status === "queued"} onClick={() => void requestFleetUpdate()}>
+        </Button>
+        <Button type="button" variant={confirm === "fleet" ? "default" : "secondary"} disabled={!installRef.trim() || staleNodes.length === 0 || Boolean(busy) || fleet?.status === "running" || fleet?.status === "queued"} onClick={() => void requestFleetUpdate()}>
           {busy === "fleet" ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
           {staleNodes.length === 0 ? (zh ? "节点已全部对齐" : "Fleet aligned") : confirm === "fleet" ? (zh ? `确认更新 ${staleNodes.length} 台节点` : `Confirm ${staleNodes.length} nodes`) : (zh ? "更新未对齐节点" : "Update stale nodes")}
-        </button>
+        </Button>
       </div>
 
       {confirm === "manager" ? (
         <div className="system-update-confirm" role="alert">
           <AlertTriangle size={17} aria-hidden="true" />
           <span>{zh ? `升级会短暂重连 Control。基线检查：${baseline?.succeeded || 0} 正常，${baseline?.failed || 0} 异常；完成后会自动再次检查。` : `Control will reconnect briefly. Baseline: ${baseline?.succeeded || 0} healthy, ${baseline?.failed || 0} failed; routes are checked again automatically.`}</span>
-          <button type="button" className="ghost" onClick={() => setConfirm("")}>{zh ? "取消" : "Cancel"}</button>
+          <Button variant="outline" type="button" onClick={() => setConfirm("")}>{zh ? "取消" : "Cancel"}</Button>
         </div>
       ) : null}
 

@@ -1,3 +1,5 @@
+import path from "node:path";
+import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -260,7 +262,13 @@ export default defineConfig({
     },
   } : undefined,
   publicDir: false,
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "src"),
+    },
+  },
   plugins: [
+    tailwindcss(),
     react(),
     {
       name: "strip-dashboard-trailing-whitespace",
@@ -516,6 +524,148 @@ export default defineConfig({
           response.setHeader("Content-Type", "application/json; charset=utf-8");
           response.setHeader("Cache-Control", "no-store");
           response.end(JSON.stringify({ storageClasses: devDashboardPayload.storage.storageClasses }));
+        });
+        server.middlewares.use("/v1/git-providers", (request, response, next) => {
+          if (request.method !== "GET") {
+            next();
+            return;
+          }
+          const auth = request.headers.authorization || "";
+          if (!auth.startsWith("Bearer ")) {
+            response.statusCode = 401;
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            response.end(JSON.stringify({ error: "unauthorized" }));
+            return;
+          }
+          const rest = (request.url || "/").split("?")[0];
+          const json = (payload: unknown) => {
+            response.statusCode = 200;
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            response.setHeader("Cache-Control", "no-store");
+            response.end(JSON.stringify(payload));
+          };
+          if (rest === "/" || rest === "") {
+            json({
+              providers: [
+                { id: "github-liutianjie", type: "github", account: "liutianjie", username: "liutianjie", configured: true },
+                { id: "gitea-codex", type: "gitea", account: "codex", username: "codex", baseUrl: "https://gcode.gaojiua.com", configured: true },
+              ],
+            });
+            return;
+          }
+          if (/^\/[^/]+\/repositories\/[^/]+\/[^/]+\/refs\/?$/.test(rest)) {
+            json({ refs: [{ name: "main", type: "branch" }, { name: "dev", type: "branch" }, { name: "v0.1.335", type: "tag" }] });
+            return;
+          }
+          if (/^\/[^/]+\/repositories\/?$/.test(rest)) {
+            json({
+              repositories: [
+                { fullName: "liutianjie/luma", defaultBranch: "main", private: true },
+                { fullName: "liutianjie/infra-stacks", defaultBranch: "main", private: true },
+              ],
+            });
+            return;
+          }
+          next();
+        });
+        server.middlewares.use("/v1/history", (request, response, next) => {
+          if (request.method !== "GET") {
+            next();
+            return;
+          }
+          const nowSec = Math.floor(Date.now() / 1000);
+          const rest = (request.url || "/").split("?")[0];
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.setHeader("Cache-Control", "no-store");
+          if (rest === "/" || rest === "") {
+            response.end(JSON.stringify({
+              items: [
+                { kind: "deployment", id: "deploy-1", title: "linkshell-gateway", application: "linkshell-gateway", source: "dashboard", status: "succeeded", createdAt: nowSec - 3600, updatedAt: nowSec - 3500 },
+                { kind: "build", id: "build-1", title: "codex-gitea", application: "codex-gitea", source: "build", status: "succeeded", createdAt: nowSec - 7200, repository: "liutianjie/codex-gitea", ref: "main", buildNode: "home-mac-mini" },
+              ],
+              page: { limit: 50, nextCursor: null, hasMore: false },
+            }));
+            return;
+          }
+          const parts = rest.split("/").filter(Boolean);
+          const kind = parts[0] === "build" ? "build" : "deployment";
+          const id = decodeURIComponent(parts[1] || "preview");
+          response.end(JSON.stringify({
+            item: { kind, id, title: id, application: id, source: "dashboard", status: "succeeded", createdAt: nowSec - 3600 },
+            record: {},
+            events: [{ name: "Apply", status: "ok", message: "Mock history detail" }],
+            page: { limit: 50, nextCursor: null, hasMore: false },
+          }));
+        });
+        server.middlewares.use("/v1/alerting", (request, response, next) => {
+          if (request.method !== "GET") {
+            next();
+            return;
+          }
+          const auth = request.headers.authorization || "";
+          if (!auth.startsWith("Bearer ")) {
+            response.statusCode = 401;
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            response.end(JSON.stringify({ error: "unauthorized" }));
+            return;
+          }
+          const nowSec = Math.floor(Date.now() / 1000);
+          const rest = (request.url || "/").split("?")[0];
+          const json = (payload: unknown) => {
+            response.statusCode = 200;
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            response.setHeader("Cache-Control", "no-store");
+            response.end(JSON.stringify(payload));
+          };
+          if (rest === "/" || rest === "") {
+            next();
+            return;
+          }
+          if (rest.startsWith("/overview")) {
+            json({ counts: { pending: 0, firing: 1, resolved: 2 }, lastEvaluatedAt: nowSec - 12, silencedUntil: 0, enabledRules: 3, channels: 1 });
+            return;
+          }
+          if (rest.startsWith("/presets")) {
+            json({ items: [
+              { metric: "node.cpu", name: "节点 CPU", description: "主机 CPU 持续占用", threshold: 90, forSeconds: 300, unit: "percent" },
+              { metric: "node.memory", name: "节点内存", description: "主机内存占用", threshold: 90, forSeconds: 300, unit: "percent" },
+              { metric: "build.failed", name: "构建失败", description: "最近一次构建失败", threshold: 1, forSeconds: 0, unit: "count" },
+            ] });
+            return;
+          }
+          if (rest.startsWith("/rules")) {
+            json({ items: [
+              { id: "cpu-home", name: "home CPU", metric: "node.cpu", target: "home-mac-mini", threshold: 90, forSeconds: 300, severity: "warning", channelIds: ["feishu-ops"], enabled: true, repeatSeconds: 3600, noData: "keep" },
+            ] });
+            return;
+          }
+          if (rest.startsWith("/channels")) {
+            json({ items: [
+              { id: "feishu-ops", name: "飞书告警", type: "feishu", enabled: true, appId: "cli_mock", chatId: "oc_mock", appSecretConfigured: true },
+            ] });
+            return;
+          }
+          if (rest.startsWith("/incidents/")) {
+            json({
+              incident: { id: 101, ruleId: "cpu-home", ruleName: "home CPU", target: "home-mac-mini", metric: "node.cpu", severity: "warning", status: "firing", value: 93.2, startedAt: nowSec - 420, firedAt: nowSec - 120, updatedAt: nowSec - 12 },
+              events: [{ id: 1, kind: "firing", at: nowSec - 120, detail: { value: 93.2 } }],
+            });
+            return;
+          }
+          if (rest.startsWith("/incidents")) {
+            json({ items: [
+              { id: 101, ruleId: "cpu-home", ruleName: "home CPU", target: "home-mac-mini", metric: "node.cpu", severity: "warning", status: "firing", value: 93.2, startedAt: nowSec - 420, firedAt: nowSec - 120, updatedAt: nowSec - 12 },
+            ] });
+            return;
+          }
+          if (rest.startsWith("/deliveries")) {
+            json({ items: [
+              { id: 12, channelId: "feishu-ops", incidentId: 101, kind: "firing", status: "sent", attempts: 1, createdAt: nowSec - 110, sentAt: nowSec - 108 },
+            ] });
+            return;
+          }
+          next();
         });
         server.middlewares.use("/v1/builds", (request, response, next) => {
           if (request.method !== "GET") {

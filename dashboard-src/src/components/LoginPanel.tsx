@@ -1,4 +1,8 @@
 import { FormEvent, useId, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
 import { t } from "../i18n";
 import type { Lang } from "../types";
 import lumaLogoMark from "../assets/luma-logo-mark.png";
@@ -15,33 +19,39 @@ export function LoginPanel({ lang, onSubmit }: { lang: Lang; onSubmit: (token: s
   };
 
   return (
-    <section className="login-panel">
-      <div className="login-panel-brand">
-        <div className="brand-mark" aria-hidden="true">
-          <img src={lumaLogoMark} alt="" width={24} height={24} />
+    <Card className="mx-auto w-full max-w-md">
+      <CardHeader>
+        <div className="flex items-center gap-3">
+          <div className="flex size-9 items-center justify-center overflow-hidden rounded-lg bg-muted">
+            <img src={lumaLogoMark} alt="" width={24} height={24} />
+          </div>
+          <div className="flex flex-col gap-1">
+            <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{t(lang, "readonly")}</p>
+            <CardTitle>{t(lang, "loginTitle")}</CardTitle>
+          </div>
         </div>
-        <div>
-          <p className="eyebrow">{t(lang, "readonly")}</p>
-          <h1>{t(lang, "loginTitle")}</h1>
-        </div>
-      </div>
-      <p>{t(lang, "loginCopy")}</p>
-      <form onSubmit={submit}>
-        <label htmlFor={fieldId}>
-          <span>{zh ? "管理 Token" : "Management token"}</span>
-          <input
-            id={fieldId}
-            autoComplete="current-password"
-            name="management-token"
-            onChange={(event) => setToken(event.target.value)}
-            placeholder={zh ? "luma_…" : "luma_…"}
-            spellCheck={false}
-            type="password"
-            value={token}
-          />
-        </label>
-        <button type="submit" className="primary">{t(lang, "openStatus")}</button>
-      </form>
-    </section>
+        <CardDescription>{t(lang, "loginCopy")}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={submit}>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor={fieldId}>{zh ? "管理 Token" : "Management token"}</FieldLabel>
+              <Input
+                id={fieldId}
+                autoComplete="current-password"
+                name="management-token"
+                onChange={(event) => setToken(event.target.value)}
+                placeholder={zh ? "luma_…" : "luma_…"}
+                spellCheck={false}
+                type="password"
+                value={token}
+              />
+            </Field>
+            <Button type="submit">{t(lang, "openStatus")}</Button>
+          </FieldGroup>
+        </form>
+      </CardContent>
+    </Card>
   );
 }

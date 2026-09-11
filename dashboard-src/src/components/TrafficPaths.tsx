@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
+
 import dagre from "dagre";
 import CytoscapeComponent from "react-cytoscapejs";
 import type cytoscape from "cytoscape";
 import { t } from "../i18n";
 import { retryCertificate } from "../lifecycleApi";
 import type { Lang, TrafficDestination, TrafficPath } from "../types";
-import { Badge, PrimaryCell } from "./ui";
+import { Badge, PrimaryCell } from "./primitives";
 
 type TopologyNode = {
   id: string;
@@ -245,7 +247,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
         "background-color": nodeBg,
         "border-color": nodeBorder,
         "border-width": 1.5,
-        "font-family": '"Berkeley Mono", "IBM Plex Mono", ui-monospace, Menlo, monospace',
+        "font-family": 'ui-monospace, Menlo, Monaco, Consolas, monospace',
         "font-size": 12,
         "font-weight": 500,
         "height": `${NODE_HEIGHT}px`,
@@ -340,10 +342,10 @@ export function TrafficPaths({
       if (target.isNode()) {
         cyRef.elements().addClass("dimmed");
         target.removeClass("dimmed").addClass("highlighted");
-        
+
         const connectedEdges = target.connectedEdges();
         connectedEdges.removeClass("dimmed").addClass("highlighted");
-        
+
         const connectedNodes = target.neighborhood().nodes();
         connectedNodes.removeClass("dimmed").addClass("highlighted");
       }
@@ -427,11 +429,11 @@ export function TrafficPaths({
               stylesheet={stylesheet}
               cy={(cy) => setCyRef(cy)}
             />
-            
+
             <div className="cy-controls" aria-label="Topology controls">
-              <button aria-label="Zoom in" className="cy-control-btn" onClick={handleZoomIn} type="button" title="Zoom In">+</button>
-              <button aria-label="Zoom out" className="cy-control-btn" onClick={handleZoomOut} type="button" title="Zoom Out">-</button>
-              <button aria-label="Reset view" className="cy-control-btn" onClick={handleReset} type="button" title="Reset View">0</button>
+              <Button aria-label="Zoom in" className="cy-control-btn" onClick={handleZoomIn} type="button" title="Zoom In">+</Button>
+              <Button aria-label="Zoom out" className="cy-control-btn" onClick={handleZoomOut} type="button" title="Zoom Out">-</Button>
+              <Button aria-label="Reset view" className="cy-control-btn" onClick={handleReset} type="button" title="Reset View">0</Button>
             </div>
           </div>
           <aside className="route-index" aria-label={t(lang, "trafficPaths")}>
@@ -449,16 +451,15 @@ export function TrafficPaths({
                   <div className="route-index-actions">
                     <Badge value={path.kind || "unknown"} />
                     {certificateRetryAvailable ? (
-                      <button
-                        type="button"
-                        className="ghost"
-                        disabled={Boolean(certBusy)}
-                        onClick={() => void handleCertificateRetry(path)}
+                      <Button variant="outline" type="button"
+
+ disabled={Boolean(certBusy)}
+ onClick={() => void handleCertificateRetry(path)}
                       >
                         {certBusy === routeId
                           ? (lang === "zh" ? "重试中..." : "Retrying...")
                           : (lang === "zh" ? "重试证书" : "Retry cert")}
-                      </button>
+                      </Button>
                     ) : null}
                   </div>
                   {certMessage?.routeId === routeId ? (

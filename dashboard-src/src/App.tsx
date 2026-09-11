@@ -5,7 +5,11 @@ import { appToComposeDraft, serviceToDraft } from "./components/applicationModel
 import { LoginPanel } from "./components/LoginPanel";
 import { Topbar } from "./components/Topbar";
 import { AppRoutes, preloadPage } from "./AppRoutes";
-import { Sidebar } from "./Sidebar";
+import { AppSidebar } from "./Sidebar";
+import { Button } from "@/components/ui/button";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { nodePath, servicePath, terminalPath, updatePath, parseObjectRoute } from "./objectRoutes";
 import { ResourceDetailPage } from "./pages/ResourceDetailPage";
 import { fetchDeploymentConfig } from "./deploymentConfigApi";
@@ -138,32 +142,28 @@ export function App() {
 
   const visibleStatus: SyncStatus = token ? syncStatus : "notConnected";
 
-  const toggleSidebar = () => {
-    setSidebarCollapsed((prev) => {
-      const next = !prev;
-      if (next) localStorage.setItem(SIDEBAR_KEY, "collapsed");
-      else localStorage.removeItem(SIDEBAR_KEY);
-      return next;
-    });
-  };
-
   return (
-    <div className={`dashboard-shell page-${activeNavPage}${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
-      <a className="skip-link" href="#main">
-        {lang === "zh" ? "跳到主内容" : "Skip to main content"}
-      </a>
-      <Sidebar
-        lang={lang}
-        vm={vm}
-        activeNavPage={activeNavPage}
-        sidebarCollapsed={sidebarCollapsed}
-        onNavigate={navigate}
-        onPrefetch={preloadPage}
-        onToggle={toggleSidebar}
-      />
-
-      <main id="main" className="workspace" tabIndex={-1}>
-        <div className="topbar-wrapper">
+    <TooltipProvider>
+      <SidebarProvider
+        className={`min-h-svh page-${activeNavPage}`}
+        open={!sidebarCollapsed}
+        onOpenChange={(open) => {
+          setSidebarCollapsed(!open);
+          if (!open) localStorage.setItem(SIDEBAR_KEY, "collapsed");
+          else localStorage.removeItem(SIDEBAR_KEY);
+        }}
+      >
+        <a className="skip-link" href="#main">
+          {lang === "zh" ? "跳到主内容" : "Skip to main content"}
+        </a>
+        <AppSidebar
+          lang={lang}
+          vm={vm}
+          activeNavPage={activeNavPage}
+          onNavigate={navigate}
+          onPrefetch={preloadPage}
+        />
+        <SidebarInset id="main" tabIndex={-1}>
           <Topbar
             clusterId={vm.clusterId}
             lang={lang}
@@ -175,51 +175,50 @@ export function App() {
             onSignOut={signOut}
             syncStatus={visibleStatus}
           />
-        </div>
-
-        <div className="workspace-body">
-          {!token ? (
-            <div className="login-panel-container">
-              <LoginPanel lang={lang} onSubmit={setToken} />
-            </div>
-          ) : (
-            <>
-              <ErrorBanner errors={errors} />
-              {payload || pageCanRenderWithoutDashboard ? (
-                terminalTarget ? <Suspense fallback={<PageLoading lang={lang} />}><TerminalDrawer key={router.path} lang={lang} target={terminalTarget} token={token} onClose={closeTerminal} inline /></Suspense>
-                : objectRoute && objectRoute.kind !== "update" ? (routeNode || routeService ? <ResourceDetailPage lang={lang} node={routeNode} service={routeService} services={vm.services} applicationNames={vm.applications.map(app => app.stack)} onTerminal={() => { if (routeNode) openNodeTerminal(routeNode); else if (routeService) openServiceTerminal(routeService, routeService.stack || ""); }} />
-                  : <section className="detail-page"><h1>{lang === "zh" ? "对象不存在或已移除" : "Object not found or removed"}</h1><button onClick={() => navigate("overview")}>{lang === "zh" ? "返回总览" : "Back to overview"}</button></section>)
-                : editName && !updateContext ? <section className="detail-page"><button className="page-back" onClick={closeUpdatePage}>{lang === "zh" ? "← 返回应用" : "← Back to application"}</button><h1>{lang === "zh" ? "更新应用" : "Update application"} · {editName}</h1>{updateError ? <><p role="alert">{updateError}</p><button onClick={() => setUpdateAttempt(value => value + 1)}>{lang === "zh" ? "重试读取配置" : "Retry loading config"}</button></> : !vm.applications.some(app => app.stack === editName) ? <p>{lang === "zh" ? "应用不存在或已移除" : "Application not found or removed"}</p> : <PageLoading lang={lang} />}</section>
-                : <AppRoutes
-                  page={resolvedPage}
-                  lang={lang}
-                  token={token}
-                  theme={theme}
-                  payload={payload || EMPTY_DASHBOARD_PAYLOAD}
-                  vm={vm}
-                  updateContext={updateContext}
-                  updateContextNode={updateContextNode}
-                  deployTemplateLanding={deployTemplateLanding}
-                  onNavigate={navigate}
-                  onNavigateToDeployments={() => navigate("deployments")}
-                  onSelectNode={openNodeDetail}
-                  onSelectService={openServiceDetail}
-                  onTerminal={openNodeTerminal}
-                  onServiceTerminal={openServiceTerminal}
-                  onRefresh={refreshPage}
-                  onCreateApplication={() => navigate("deploy")}
-                  onUpdateApplication={openUpdatePage}
-                  onCloseUpdate={closeUpdatePage}
-                  onTemplateLandingChange={setDeployTemplateLanding}
-                />
-              ) : (
-                <PageLoading lang={lang} />
-              )}
-            </>
-          )}
-        </div>
-      </main>
-
-    </div>
+          <div className="flex-1 overflow-auto p-6">
+            {!token ? (
+              <div className="flex min-h-[60vh] items-center">
+                <LoginPanel lang={lang} onSubmit={setToken} />
+              </div>
+            ) : (
+              <div className="flex flex-col gap-6">
+                <ErrorBanner errors={errors} />
+                {payload || pageCanRenderWithoutDashboard ? (
+                  terminalTarget ? <Suspense fallback={<PageLoading lang={lang} />}><TerminalDrawer key={router.path} lang={lang} target={terminalTarget} token={token} onClose={closeTerminal} inline /></Suspense>
+                  : objectRoute && objectRoute.kind !== "update" ? (routeNode || routeService ? <ResourceDetailPage lang={lang} node={routeNode} service={routeService} services={vm.services} applicationNames={vm.applications.map(app => app.stack)} onTerminal={() => { if (routeNode) openNodeTerminal(routeNode); else if (routeService) openServiceTerminal(routeService, routeService.stack || ""); }} />
+                    : <section className="flex flex-col gap-3"><h1 className="font-heading text-2xl">{lang === "zh" ? "对象不存在或已移除" : "Object not found or removed"}</h1><Button variant="outline" onClick={() => navigate("overview")}>{lang === "zh" ? "返回总览" : "Back to overview"}</Button></section>)
+                  : editName && !updateContext ? <section className="flex flex-col gap-3"><Button variant="ghost" className="w-fit" onClick={closeUpdatePage}>{lang === "zh" ? "← 返回应用" : "← Back to application"}</Button><h1 className="font-heading text-2xl">{lang === "zh" ? "更新应用" : "Update application"} · {editName}</h1>{updateError ? <><p role="alert">{updateError}</p><Button variant="outline" onClick={() => setUpdateAttempt(value => value + 1)}>{lang === "zh" ? "重试读取配置" : "Retry loading config"}</Button></> : !vm.applications.some(app => app.stack === editName) ? <p>{lang === "zh" ? "应用不存在或已移除" : "Application not found or removed"}</p> : <PageLoading lang={lang} />}</section>
+                  : <AppRoutes
+                    page={resolvedPage}
+                    lang={lang}
+                    token={token}
+                    theme={theme}
+                    payload={payload || EMPTY_DASHBOARD_PAYLOAD}
+                    vm={vm}
+                    updateContext={updateContext}
+                    updateContextNode={updateContextNode}
+                    deployTemplateLanding={deployTemplateLanding}
+                    onNavigate={navigate}
+                    onNavigateToDeployments={() => navigate("deployments")}
+                    onSelectNode={openNodeDetail}
+                    onSelectService={openServiceDetail}
+                    onTerminal={openNodeTerminal}
+                    onServiceTerminal={openServiceTerminal}
+                    onRefresh={refreshPage}
+                    onCreateApplication={() => navigate("deploy")}
+                    onUpdateApplication={openUpdatePage}
+                    onCloseUpdate={closeUpdatePage}
+                    onTemplateLandingChange={setDeployTemplateLanding}
+                  />
+                ) : (
+                  <PageLoading lang={lang} />
+                )}
+              </div>
+            )}
+          </div>
+        </SidebarInset>
+        <Toaster theme={theme} />
+      </SidebarProvider>
+    </TooltipProvider>
   );
 }

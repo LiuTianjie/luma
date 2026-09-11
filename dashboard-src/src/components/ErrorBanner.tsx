@@ -1,10 +1,17 @@
+import { AlertCircle } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+
 export function ErrorBanner({ errors }: { errors: string[] }) {
   if (!errors.length) return null;
   return (
-    <section className="error-list" role="alert">
+    <div className="flex flex-col gap-2">
       {errors.map((message) => (
-        <div key={message}>{message}</div>
+        <Alert key={message} variant="destructive">
+          <AlertCircle />
+          <AlertTitle>Error</AlertTitle>
+          <AlertDescription>{message}</AlertDescription>
+        </Alert>
       ))}
-    </section>
+    </div>
   );
 }

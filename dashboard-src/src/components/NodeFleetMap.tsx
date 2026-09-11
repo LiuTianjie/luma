@@ -1,5 +1,8 @@
+import { Activity, Cpu, HardDrive, MapPin, MemoryStick, Server, SquareTerminal, TerminalSquare } from "lucide-react";
 import { localizeState } from "../i18n";
 import type { DashboardNode, DashboardService, Lang } from "../types";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 
 function clampPercent(value?: number) {
   if (typeof value !== "number" || Number.isNaN(value)) return 0;
@@ -101,6 +104,23 @@ function regionsFor(nodes: DashboardNode[]) {
     .sort((a, b) => a.region.localeCompare(b.region));
 }
 
+function Meter({ label, value, icon: Icon }: { label: string; value: number; icon: typeof Cpu }) {
+  return (
+    <div className="flex items-center gap-2">
+      <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+      <div className="min-w-0 flex-1">
+        <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+          <span>{label}</span>
+          <span className="tabular-nums">{formatPercent(value)}</span>
+        </div>
+        <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+          <div className="h-full rounded-full bg-primary" style={{ width: `${clampPercent(value)}%` }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function NodeFleetMap({
   lang,
   nodes,
@@ -114,6 +134,7 @@ export function NodeFleetMap({
   onSelect: (node: DashboardNode) => void;
   onTerminal?: (node: DashboardNode) => void;
 }) {
+  const zh = lang === "zh";
   const regions = regionsFor(nodes);
   const workloads = workloadCounts(services || []);
   const readyNodes = nodes.filter((node) => nodeHealth(node) === "good").length;
@@ -122,111 +143,102 @@ export function NodeFleetMap({
   const maxPressure = nodes.reduce((max, node) => Math.max(max, pressureOf(node)), 0);
 
   return (
-    <section className="node-fleet-map" aria-label={lang === "zh" ? "节点态势" : "Node fleet"}>
-      <div className="node-fleet-header">
-        <div>
-          <p className="eyebrow">{lang === "zh" ? "节点态势" : "Node posture"}</p>
-          <h2>{lang === "zh" ? "服务器健康矩阵" : "Server health matrix"}</h2>
-        </div>
-        <div className="node-fleet-kpis" aria-label="Node summary">
-          <span><b>{readyNodes}</b><small>{lang === "zh" ? "ready" : "ready"}</small></span>
-          <span><b>{terminalNodes}</b><small>terminal</small></span>
-          <span><b>{pressuredNodes}</b><small>{lang === "zh" ? "高负载" : "hot"}</small></span>
-          <span><b>{formatPercent(maxPressure)}</b><small>{lang === "zh" ? "峰值" : "peak"}</small></span>
-        </div>
+    <section className="flex flex-col gap-6" aria-label={zh ? "节点态势" : "Node fleet"}>
+      <div className="flex flex-wrap items-center gap-2">
+        {[
+          { icon: Server, value: readyNodes, label: "ready" },
+          { icon: TerminalSquare, value: terminalNodes, label: "terminal" },
+          { icon: Activity, value: pressuredNodes, label: zh ? "高负载" : "hot" },
+          { icon: Cpu, value: formatPercent(maxPressure), label: zh ? "峰值" : "peak" },
+        ].map((item) => (
+          <span key={item.label} className="inline-flex items-center gap-1.5 rounded-lg border bg-card px-2.5 py-1.5 text-xs">
+            <item.icon className="size-3.5 text-muted-foreground" />
+            <strong className="tabular-nums">{item.value}</strong>
+            <span className="text-muted-foreground">{item.label}</span>
+          </span>
+        ))}
       </div>
 
-      <div className="node-region-grid">
-        {regions.map((group) => {
-          const groupReady = group.nodes.filter((node) => nodeHealth(node) === "good").length;
-          const groupPressure = group.nodes.reduce((max, node) => Math.max(max, pressureOf(node)), 0);
-          return (
-            <article className="node-region-band" key={group.region}>
-              <header>
-                <div>
-                  <strong>{group.region}</strong>
-                  <small>{groupReady}/{group.nodes.length} {lang === "zh" ? "在线" : "online"}</small>
-                </div>
-                <span className={`region-pressure ${groupPressure >= 80 ? "hot" : groupPressure >= 60 ? "busy" : "steady"}`}>
-                  {pressureLabel(groupPressure, lang)}
-                </span>
-              </header>
-              <div className="node-tile-grid">
-                {group.nodes.map((node, index) => {
-                  const metrics = node.metrics || {};
-                  const capacity = node.capacity || {};
-                  const nodeName = node.name || "-";
-                  const cpu = clampPercent(metrics.cpuPercent ?? metrics.loadPercent);
-                  const memory = clampPercent(metrics.memoryUsedPercent);
-                  const health = nodeHealth(node);
-                  const hasTerminal = terminalReady(node);
-                  const workload = workloads.get(nodeName) || { services: 0, tasks: 0 };
-                  return (
-                    <article
-                      className={`node-tile ${health}`}
-                      key={`${node.name || "node"}-${index}`}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => onSelect(node)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          onSelect(node);
-                        }
-                      }}
-                    >
-                      <span className="node-tile-head">
-                        <span>
-                          <i aria-hidden="true" />
-                          <strong>{nodeName}</strong>
-                        </span>
-                        <b>{nodeStateLabel(node, lang)}</b>
-                      </span>
-                      <span className="node-tile-meta">
-                        {[node.role, node.agentOs, node.agentVersion ? `agent ${node.agentVersion}` : "", node.availability].filter(Boolean).join(" / ") || "-"}
-                      </span>
-                      <span className="node-meter-pair">
-                        <span>
-                          <small>CPU</small>
-                          <em>{formatPercent(metrics.cpuPercent ?? metrics.loadPercent)}</em>
-                        </span>
-                        <span className="node-meter"><span style={{ width: `${cpu}%` }} /></span>
-                      </span>
-                      <span className="node-meter-pair">
-                        <span>
-                          <small>MEM</small>
-                          <em>{formatPercent(metrics.memoryUsedPercent)}</em>
-                        </span>
-                        <span className="node-meter"><span style={{ width: `${memory}%` }} /></span>
-                      </span>
-                      <span className="node-tile-foot">
-                        <span>{workload.services} svc · {workload.tasks} task</span>
-                        <span>{formatBytes(metrics.memoryTotalBytes || capacity.memoryBytes)}</span>
-                        <button
-                          type="button"
-                          className="node-terminal-button"
-                          disabled={!hasTerminal || !onTerminal}
-                          title={hasTerminal ? "Terminal" : terminalUnavailableLabel(node, lang)}
-                          aria-label={hasTerminal ? `Terminal ${node.name || ""}` : terminalUnavailableLabel(node, lang)}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onTerminal?.(node);
-                          }}
-                        >
-                          &gt;_
-                        </button>
-                      </span>
-                    </article>
-                  );
-                })}
-              </div>
-            </article>
-          );
-        })}
-      </div>
+      {regions.map((group) => {
+        const groupReady = group.nodes.filter((node) => nodeHealth(node) === "good").length;
+        const groupPressure = group.nodes.reduce((max, node) => Math.max(max, pressureOf(node)), 0);
+        const pressureTone = groupPressure >= 80 ? "destructive" : groupPressure >= 60 ? "warning" : "success";
+        return (
+          <section className="flex flex-col gap-3" key={group.region}>
+            <div className="flex items-center gap-2">
+              <MapPin className="size-4 text-muted-foreground" />
+              <strong className="text-sm">{group.region}</strong>
+              <span className="text-xs text-muted-foreground">{groupReady}/{group.nodes.length} {zh ? "在线" : "online"}</span>
+              <Badge variant={pressureTone} className="ml-auto">{pressureLabel(groupPressure, lang)}</Badge>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+              {group.nodes.map((node, index) => {
+                const metrics = node.metrics || {};
+                const capacity = node.capacity || {};
+                const nodeName = node.name || "-";
+                const health = nodeHealth(node);
+                const hasTerminal = terminalReady(node);
+                const workload = workloads.get(nodeName) || { services: 0, tasks: 0 };
+                const cpu = clampPercent(metrics.cpuPercent ?? metrics.loadPercent);
+                const memory = clampPercent(metrics.memoryUsedPercent);
+                return (
+                  <article
+                    className="flex cursor-pointer flex-col gap-3 rounded-xl border bg-card p-3 text-left shadow-xs transition-colors hover:bg-muted/40"
+                    key={`${node.name || "node"}-${index}`}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onSelect(node)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onSelect(node);
+                      }
+                    }}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <Server className="size-4 shrink-0 text-muted-foreground" />
+                        <strong className="truncate text-sm">{nodeName}</strong>
+                      </div>
+                      <Badge variant={health === "good" ? "success" : health === "danger" ? "destructive" : "warning"}>
+                        {nodeStateLabel(node, lang)}
+                      </Badge>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                      {node.role ? <span className="inline-flex items-center gap-1"><Server className="size-3" />{node.role}</span> : null}
+                      {node.agentOs ? <span className="inline-flex items-center gap-1"><HardDrive className="size-3" />{node.agentOs}</span> : null}
+                      {node.availability ? <span>{node.availability}</span> : null}
+                    </div>
+                    <Meter label="CPU" value={cpu} icon={Cpu} />
+                    <Meter label="MEM" value={memory} icon={MemoryStick} />
+                    <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+                      <span>{workload.services} svc · {workload.tasks} task</span>
+                      <span className="ml-auto tabular-nums">{formatBytes(metrics.memoryTotalBytes || capacity.memoryBytes)}</span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        disabled={!hasTerminal || !onTerminal}
+                        title={hasTerminal ? "Terminal" : terminalUnavailableLabel(node, lang)}
+                        aria-label={hasTerminal ? `Terminal ${node.name || ""}` : terminalUnavailableLabel(node, lang)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onTerminal?.(node);
+                        }}
+                      >
+                        <SquareTerminal />
+                      </Button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        );
+      })}
 
       {!nodes.length ? (
-        <div className="node-fleet-empty">{lang === "zh" ? "暂无节点" : "No nodes"}</div>
+        <p className="text-sm text-muted-foreground">{zh ? "暂无节点" : "No nodes"}</p>
       ) : null}
     </section>
   );

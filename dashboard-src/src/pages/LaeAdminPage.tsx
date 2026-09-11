@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
+
 import { Boxes, MapPinned, RefreshCw, ScrollText, UsersRound, WalletCards } from "lucide-react";
-import { Badge, CodeCell, PrimaryCell, StatePill } from "../components/ui";
+import { Badge, CodeCell, PrimaryCell, StatePill } from "../components/primitives";
 import {
   fetchLaeAdmin,
   type AdminPage,
@@ -13,6 +15,8 @@ import {
 } from "../laeAdminApi";
 import type { Lang } from "../types";
 import { PageHeader } from "./PageHeader";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { AlertCircle } from "lucide-react";
 
 type View = "applications" | "placements" | "users" | "tenants" | "operations" | "usage";
 type ResourceState = {
@@ -115,10 +119,10 @@ export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
           { label: zh ? "运行应用" : "Running", value: `${running}/${state.pages.applications.total}` },
           { label: zh ? "失败操作" : "Failed ops", value: failedOperations },
         ],
-        action: <button type="button" className="ghost page-toolbar-cta" disabled={loading} onClick={() => void load()}><RefreshCw size={15} className={loading ? "spin" : ""} />{zh ? "刷新" : "Refresh"}</button>,
+        action: <Button variant="outline" type="button" className="page-toolbar-cta" disabled={loading} onClick={() => void load()}><RefreshCw size={15} className={loading ? "spin" : ""} />{zh ? "刷新" : "Refresh"}</Button>,
       }} />
 
-      {error ? <div className="alert alert-error"><span>{error}</span></div> : null}
+      {error ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{zh ? "读取失败" : "Load failed"}</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
       {loading && !state.applications.length && !state.users.length ? (
         <div className="panel page-loading-inline" aria-busy="true">
           <span className="skeleton skeleton-line skeleton-panel-title" />
@@ -131,9 +135,9 @@ export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
       <section className="panel lae-admin-panel" hidden={loading && !state.applications.length && !state.users.length}>
         <div className="lae-admin-tabs" role="tablist" aria-label="LAE admin resources">
           {tabs.map(({ id, label, icon: Icon }) => (
-            <button key={id} type="button" className={view === id ? "active" : ""} onClick={() => setView(id)}>
+            <Button key={id} type="button" className={view === id ? "active" : ""} onClick={() => setView(id)}>
               <Icon size={15} aria-hidden="true" />{label}<span>{state.pages[id].total}</span>
-            </button>
+            </Button>
           ))}
         </div>
 

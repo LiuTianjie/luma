@@ -1,6 +1,6 @@
 import { ApplicationProperties, ApplicationVersionEntry } from "./ApplicationProperties";
 import "./ApplicationManagementPanel.css";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { FileText, History, Loader2, MoreHorizontal, Pencil, RotateCw, Search, Settings2, SquareTerminal } from "lucide-react";
 import { fetchDeploymentConfig, type DeploymentConfig } from "../deploymentConfigApi";
 import { localizeState, t } from "../i18n";
@@ -16,7 +16,21 @@ import { StepLog } from "../deploy/StepLog";
 import { ObservabilityPanel } from "./ObservabilityPanel";
 import { applicationPath, parseApplicationPath, APPLICATION_TABS } from "./applicationRoutes";
 import { useConfirm } from "./ConfirmDialog";
-import { Badge, BadgeGroup, CodeCell, PrimaryCell, SelectControl, StatePill } from "./ui";
+import { Badge, BadgeGroup, CodeCell, PrimaryCell, SelectControl, StatePill } from "./primitives";
+import { Button } from "@/components/ui/button";
+import { Field, FieldLabel } from "@/components/ui/field";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { AlertCircle } from "lucide-react";
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export type ApplicationUpdateRequest = {
   app: Application;
@@ -389,31 +403,61 @@ export function ApplicationManagementPanel({
   }, [selected?.stack, tab, token, detailRefresh]);
   const activeServices = route.service ? selected?.services.filter((service) => (service.fullName || service.name) === route.service) || [] : selected?.services || [];
   const detailPage = selected ? (
-      <section className="application-detail-page application-workspace" aria-labelledby="application-detail-title">
-        <nav className="breadcrumbs" aria-label={lang === "zh" ? "当前位置" : "Breadcrumb"}>
-          <a href={toHref("/apps")} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); setSelected(null); }}>{lang === "zh" ? "应用" : "Applications"}</a>
-          <span>/</span><span>{selected.stack}</span>{route.service ? <><span>/</span><span>{route.service}</span></> : null}
-        </nav>
-        <header className="application-detail-header">
-          <div>
-            <p className="eyebrow">{lang === "zh" ? "应用详情" : "Application"}</p>
-            <h1 id="application-detail-title">{selected.stack}</h1>
-            <span>{serviceCountLabel(selected.services.length)} · {replicaLabel(selected.running, selected.desired)}</span>
+      <section className="flex flex-col gap-6" aria-labelledby="application-detail-title">
+        <Breadcrumb>
+          <BreadcrumbList>
+            <BreadcrumbItem>
+              <BreadcrumbLink
+                render={<a href={toHref("/apps")} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); setSelected(null); }} />}
+              >
+                {lang === "zh" ? "应用" : "Applications"}
+              </BreadcrumbLink>
+            </BreadcrumbItem>
+            <BreadcrumbSeparator />
+            <BreadcrumbItem>
+              <BreadcrumbPage>{selected.stack}</BreadcrumbPage>
+            </BreadcrumbItem>
+            {route.service ? <>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem><BreadcrumbPage>{route.service}</BreadcrumbPage></BreadcrumbItem>
+            </> : null}
+          </BreadcrumbList>
+        </Breadcrumb>
+        <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex min-w-0 flex-col gap-1">
+            <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{lang === "zh" ? "应用详情" : "Application"}</p>
+            <h1 id="application-detail-title" className="font-heading text-2xl font-medium tracking-tight">{selected.stack}</h1>
+            <p className="text-sm text-muted-foreground">{serviceCountLabel(selected.services.length)} · {replicaLabel(selected.running, selected.desired)}</p>
           </div>
-          <div className="application-detail-actions">
-            <button type="button" className="ghost danger" disabled={Boolean(actionBusy)} onClick={() => void restart(selected)}>{actionBusy === selected.stack ? t(lang, "restarting") : t(lang, "restart")}</button>
-            <button type="button" className="primary" disabled={Boolean(configBusy || updatingApp)} onClick={() => void openUpdate(selected)}>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <Button variant="destructive" size="sm" disabled={Boolean(actionBusy)} onClick={() => void restart(selected)}>{actionBusy === selected.stack ? t(lang, "restarting") : t(lang, "restart")}</Button>
+            <Button size="sm" disabled={Boolean(configBusy || updatingApp)} onClick={() => void openUpdate(selected)}>
               {updatingApp === selected.stack ? (lang === "zh" ? "更新中..." : "Updating...") : configBusy === selected.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}
-            </button>
+            </Button>
           </div>
         </header>
-        <nav className="workspace-tabs" aria-label={lang === "zh" ? "应用工作区" : "Application workspace"}>
-          {APPLICATION_TABS.map((item) => <a key={item.id} href={toHref(applicationPath(selected.stack, item.id))} className={tab === item.id ? "active" : ""} aria-current={tab === item.id ? "page" : undefined} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(applicationPath(selected.stack, item.id)); }}>{lang === "zh" ? item.zh : item.en}</a>)}
-        </nav>
-        <div className="application-detail-body">
+        <Tabs value={tab}>
+          <TabsList aria-label={lang === "zh" ? "应用工作区" : "Application workspace"}>
+            {APPLICATION_TABS.map((item) => (
+              <TabsTrigger
+                key={item.id}
+                value={item.id}
+                render={<a href={toHref(applicationPath(selected.stack, item.id))} aria-current={tab === item.id ? "page" : undefined} />}
+                onClick={(event: MouseEvent<HTMLElement>) => {
+                  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                  event.preventDefault();
+                  navigate(applicationPath(selected.stack, item.id));
+                }}
+              >
+                {lang === "zh" ? item.zh : item.en}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+        <div className="flex flex-col gap-8">
           {tab === "overview" ? <>
-          <section className="application-detail-section application-runtime-summary">
-            <h3>{lang === "zh" ? "运行状态" : "Runtime"}</h3>
+          <section className="flex flex-col gap-3">
+            <h2 className="text-sm font-medium">{lang === "zh" ? "运行状态" : "Runtime"}</h2>
             <ApplicationProperties items={[
               { label: t(lang, "status"), value: <StatePill value={selected.status} label={localizeState(lang, selected.status)} /> },
               { label: t(lang, "replicas"), value: `${selected.running}/${selected.desired}` },
@@ -422,8 +466,8 @@ export function ApplicationManagementPanel({
               { label: t(lang, "exposure"), value: selected.exposure },
             ]} />
           </section>
-          <section className="application-detail-section">
-            <h3>{t(lang, "accessAddress")}</h3>
+          <section className="flex flex-col gap-3">
+            <h2 className="text-sm font-medium">{t(lang, "accessAddress")}</h2>
             <div className="application-access-list">
               {applicationEndpoints(selected.services).length ? applicationEndpoints(selected.services).map((endpoint) => (
                 endpoint.href
@@ -436,11 +480,11 @@ export function ApplicationManagementPanel({
           {tab === "versions" && selectedRollback ? (
             <section className="application-detail-section version-history-section">
               <div className="version-history-heading">
-                <h3>{t(lang, "versions")}</h3>
-                <button type="button" className="ghost" disabled={selectedRollback.loading || selectedRollback.busyVersion !== null} onClick={() => void loadVersions(selected)}>{selectedRollback.loading ? t(lang, "loadingHistory") : t(lang, "refresh")}</button>
+                <h2 className="text-sm font-medium">{t(lang, "versions")}</h2>
+                <Button variant="outline" type="button" disabled={selectedRollback.loading || selectedRollback.busyVersion !== null} onClick={() => void loadVersions(selected)}>{selectedRollback.loading ? t(lang, "loadingHistory") : t(lang, "refresh")}</Button>
               </div>
               {selectedRollback.message ? <div className="rollback-message">{selectedRollback.message}</div> : null}
-              {selectedRollback.error ? <div className="alert alert-error"><span>{selectedRollback.error}</span></div> : null}
+              {selectedRollback.error ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{lang === "zh" ? "回滚失败" : "Rollback failed"}</AlertTitle><AlertDescription>{selectedRollback.error}</AlertDescription></Alert> : null}
               {selectedRollback.loading ? (
                 <p className="deployment-config-empty">{t(lang, "loadingHistory")}</p>
               ) : selectedRollback.versions.length ? (
@@ -461,9 +505,9 @@ export function ApplicationManagementPanel({
                           ) : targetVersion === null ? (
                             <Badge value="-" />
                           ) : (
-                            <button type="button" className="ghost" disabled={selectedRollback.busyVersion !== null} onClick={() => void rollbackToVersion(selected, targetVersion)}>
+                            <Button variant="outline" type="button" disabled={selectedRollback.busyVersion !== null} onClick={() => void rollbackToVersion(selected, targetVersion)}>
                               {isBusy ? t(lang, "rollingBack") : t(lang, "rollbackToVersion")}
-                            </button>
+                            </Button>
                           )}
                         </>}
                       />
@@ -475,23 +519,23 @@ export function ApplicationManagementPanel({
               )}
             </section>
           ) : null}
-          {tab === "config" && !selectedConfig ? <div className="empty-inline">{configBusy ? t(lang, "loadingConfig") : t(lang, "noDeploymentConfig")}<button type="button" className="ghost" onClick={() => void openConfig(selected)}>{t(lang, "refresh")}</button></div> : null}
+          {tab === "config" && !selectedConfig ? <div className="empty-inline">{configBusy ? t(lang, "loadingConfig") : t(lang, "noDeploymentConfig")}<Button variant="outline" type="button" onClick={() => void openConfig(selected)}>{t(lang, "refresh")}</Button></div> : null}
           {tab === "config" && selectedConfig ? (
             <section className="application-detail-section deployment-config-section">
               <div className="deployment-config-heading">
                 <div>
-                  <h3>{t(lang, "deploymentConfig")}</h3>
+                  <h2 className="text-sm font-medium">{t(lang, "deploymentConfig")}</h2>
                   <span>{t(lang, "source")}: {selectedConfig.sourceName || "-"} · {t(lang, "lastUpdated")}: {formatTimestamp(selectedConfig.updatedAt)}</span>
                 </div>
                 <div className="deployment-config-tabs">
-                  <button type="button" disabled={!selectedConfigContent} onClick={() => {
+                  <Button type="button" disabled={!selectedConfigContent} onClick={() => {
                     setConfigCopyNotice("");
                     void Promise.resolve().then(() => navigator.clipboard.writeText(selectedConfigContent || "")).then(() => setConfigCopyNotice(lang === "zh" ? "已复制完整配置" : "Full configuration copied")).catch(() => setConfigCopyNotice(lang === "zh" ? "复制失败，请在配置区域选择并复制" : "Copy failed; select and copy the configuration below"));
-                  }}>{lang === "zh" ? "复制配置" : "Copy configuration"}</button>
+                  }}>{lang === "zh" ? "复制配置" : "Copy configuration"}</Button>
                   {selectedConfigTabs.map((tab) => (
-                    <button type="button" className={configTab === tab ? "active" : ""} key={tab} onClick={() => { setConfigTab(tab); setConfigCopyNotice(""); }}>
+                    <Button type="button" className={configTab === tab ? "active" : ""} key={tab} onClick={() => { setConfigTab(tab); setConfigCopyNotice(""); }}>
                       {tab === "compose" ? t(lang, "composeFile") : t(lang, "lumaManifest")}
-                    </button>
+                    </Button>
                   ))}
                 </div>
               </div>
@@ -503,8 +547,8 @@ export function ApplicationManagementPanel({
               )}
             </section>
           ) : null}
-          {tab === "services" ? <section className="application-detail-section">
-            <h3>{route.service || t(lang, "services")}</h3>
+          {tab === "services" ? <section className="flex flex-col gap-3">
+            <h2 className="text-sm font-medium">{route.service || t(lang, "services")}</h2>
             {route.service && !activeServices.length ? <p>{lang === "zh" ? "服务不存在或已移除" : "Service not found or removed"}</p> : null}
             {!route.service ? <div className="table-wrap"><table className="data-table">
               <thead><tr><th>{t(lang, "services")}</th><th>{t(lang, "status")}</th><th>{t(lang, "replicas")}</th><th>{t(lang, "nodes")}</th><th>{t(lang, "actions")}</th></tr></thead>
@@ -513,7 +557,7 @@ export function ApplicationManagementPanel({
                 <td><StatePill label={localizeState(lang, serviceRuntimeStatus(service))} value={serviceRuntimeStatus(service)} /></td>
                 <td>{service.running ?? 0}/{service.desired ?? 0}</td>
                 <td>{(service.nodes || []).join(", ") || service.node || "-"}</td>
-                <td><div className="app-action-row"><button type="button" className="ghost" disabled={!service.fullName} onClick={() => openServiceLogs(service, selected.services)}><FileText size={15} />{logLabel}</button><button type="button" className="ghost" disabled={!service.fullName || !serviceIsRunning(service) || !onServiceTerminal} title={!serviceIsRunning(service) ? (lang === "zh" ? "服务未运行，无法进入容器" : "Service is not running") : shellLabel} onClick={() => onServiceTerminal?.(service, selected.stack)}><SquareTerminal size={15} />{shellLabel}</button></div></td>
+                <td><div className="app-action-row"><Button variant="outline" type="button" disabled={!service.fullName} onClick={() => openServiceLogs(service, selected.services)}><FileText size={15} />{logLabel}</Button><Button variant="outline" type="button" disabled={!service.fullName || !serviceIsRunning(service) || !onServiceTerminal} title={!serviceIsRunning(service) ? (lang === "zh" ? "服务未运行，无法进入容器" : "Service is not running") : shellLabel} onClick={() => onServiceTerminal?.(service, selected.stack)}><SquareTerminal size={15} />{shellLabel}</Button></div></td>
               </tr>)}</tbody>
             </table></div> : null}
             <div className="application-service-grid">
@@ -523,31 +567,29 @@ export function ApplicationManagementPanel({
                     <a href={toHref(applicationPath(selected.stack, "services", service.fullName || service.name))} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(applicationPath(selected.stack, "services", service.fullName || service.name)); }}>{service.name}</a>
                     <div className="application-service-title-actions">
                       <StatePill label={localizeState(lang, serviceRuntimeStatus(service))} value={serviceRuntimeStatus(service)} />
-                      <button
-                        type="button"
-                        className="ghost service-log-button"
-                        disabled={!service.fullName}
-                        onClick={() => openServiceLogs(service, selected.services)}
+                      <Button variant="outline" type="button"
+ className="service-log-button"
+ disabled={!service.fullName}
+ onClick={() => openServiceLogs(service, selected.services)}
                       >
                         <FileText size={15} aria-hidden="true" />
                         {logLabel}
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost service-log-button"
-                        disabled={!service.fullName || !serviceIsRunning(service) || !onServiceTerminal}
-                        title={
-                          !service.fullName
-                            ? (lang === "zh" ? "该服务还没有可进入的运行实例" : "This service has no runnable instance")
-                            : !serviceIsRunning(service)
-                              ? (lang === "zh" ? "服务未运行，无法进入容器" : "Service is not running")
-                              : (lang === "zh" ? "进入该服务的容器终端" : "Open a shell in this service container")
-                        }
-                        onClick={() => onServiceTerminal?.(service, selected.stack)}
+                      </Button>
+                      <Button variant="outline" type="button"
+ className="service-log-button"
+ disabled={!service.fullName || !serviceIsRunning(service) || !onServiceTerminal}
+ title={
+ !service.fullName
+ ? (lang === "zh" ? "该服务还没有可进入的运行实例" : "This service has no runnable instance")
+ : !serviceIsRunning(service)
+ ? (lang === "zh" ? "服务未运行，无法进入容器" : "Service is not running")
+ : (lang === "zh" ? "进入该服务的容器终端" : "Open a shell in this service container")
+ }
+ onClick={() => onServiceTerminal?.(service, selected.stack)}
                       >
                         <SquareTerminal size={15} aria-hidden="true" />
                         {shellLabel}
-                      </button>
+                      </Button>
                     </div>
                   </div>
                   <dl>
@@ -562,8 +604,8 @@ export function ApplicationManagementPanel({
               ))}
             </div>
           </section> : null}
-          {tab === "overview" ? <section className="application-detail-section">
-            <h3>{lang === "zh" ? "存储与诊断" : "Storage and diagnostics"}</h3>
+          {tab === "overview" ? <section className="flex flex-col gap-3">
+            <h2 className="text-sm font-medium">{lang === "zh" ? "存储与诊断" : "Storage and diagnostics"}</h2>
             <div className="application-diagnostics-list">
               {selectedVolumes.length ? selectedVolumes.map((volume, index) => (
                 <article className="application-volume-entry" key={`${volume.name}-${volume.storageClass}-${volume.node}-${index}`}>
@@ -594,78 +636,73 @@ export function ApplicationManagementPanel({
         onClick={(event) => event.stopPropagation()}
         onKeyDown={(event) => event.stopPropagation()}
       >
-        <button
-          type="button"
-          className="ghost app-log-action"
-          disabled={!hasLogs}
-          onClick={() => openApplicationLogs(app)}
+        <Button variant="outline" type="button"
+ className="app-log-action"
+ disabled={!hasLogs}
+ onClick={() => openApplicationLogs(app)}
         >
           <FileText size={15} aria-hidden="true" />
           {logLabel}
-        </button>
-        <button
-          type="button"
-          className="ghost"
-          disabled={Boolean(configBusy || updatingApp)}
-          onClick={() => void openUpdate(app)}
+        </Button>
+        <Button variant="outline" type="button"
+
+ disabled={Boolean(configBusy || updatingApp)}
+ onClick={() => void openUpdate(app)}
         >
           {updatingApp === app.stack ? <Loader2 size={15} aria-hidden="true" className="spin" /> : <Pencil size={15} aria-hidden="true" />}
           {updatingApp === app.stack ? (lang === "zh" ? "更新中..." : "Updating...") : configBusy === app.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}
-        </button>
+        </Button>
         {compact ? (
           <div className="app-action-menu">
-            <button
-              type="button"
-              className="ghost app-action-menu-trigger"
-              aria-label={moreLabel}
-              aria-expanded={menuOpen}
-              aria-haspopup="menu"
-              onClick={() => setOpenMenu(menuOpen ? null : app.stack)}
+            <Button variant="outline" type="button"
+ className="app-action-menu-trigger"
+ aria-label={moreLabel}
+ aria-expanded={menuOpen}
+ aria-haspopup="menu"
+ onClick={() => setOpenMenu(menuOpen ? null : app.stack)}
             >
               <MoreHorizontal size={15} aria-hidden="true" />
-            </button>
+            </Button>
             {menuOpen ? (
               <div className="app-action-menu-panel" role="menu">
-                <button type="button" role="menuitem" onClick={() => { setOpenMenu(null); openDetails(app); }}>
+                <Button type="button" role="menuitem" onClick={() => { setOpenMenu(null); openDetails(app); }}>
                   <Settings2 size={14} aria-hidden="true" />
                   {t(lang, "details")}
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={rollbackState?.app === app.stack && rollbackState.loading}
-                  onClick={() => { setOpenMenu(null); void openVersions(app); }}
+                </Button>
+                <Button type="button"
+ role="menuitem"
+ disabled={rollbackState?.app === app.stack && rollbackState.loading}
+ onClick={() => { setOpenMenu(null); void openVersions(app); }}
                 >
                   <History size={14} aria-hidden="true" />
                   {rollbackState?.app === app.stack && rollbackState.loading ? t(lang, "loadingHistory") : t(lang, "versions")}
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="danger"
-                  disabled={Boolean(actionBusy)}
-                  onClick={() => { setOpenMenu(null); void restart(app); }}
+                </Button>
+                <Button variant="destructive" type="button"
+ role="menuitem"
+
+ disabled={Boolean(actionBusy)}
+ onClick={() => { setOpenMenu(null); void restart(app); }}
                 >
                   <RotateCw size={14} aria-hidden="true" />
                   {actionBusy === app.stack ? t(lang, "restarting") : t(lang, "restart")}
-                </button>
+                </Button>
               </div>
             ) : null}
           </div>
         ) : (
           <>
-            <button type="button" className="ghost" onClick={() => openDetails(app)}>
+            <Button variant="outline" type="button" onClick={() => openDetails(app)}>
               <Settings2 size={15} aria-hidden="true" />
               {t(lang, "details")}
-            </button>
-            <button type="button" className="ghost" disabled={rollbackState?.app === app.stack && rollbackState.loading} onClick={() => void openVersions(app)}>
+            </Button>
+            <Button variant="outline" type="button" disabled={rollbackState?.app === app.stack && rollbackState.loading} onClick={() => void openVersions(app)}>
               <History size={15} aria-hidden="true" />
               {rollbackState?.app === app.stack && rollbackState.loading ? t(lang, "loadingHistory") : t(lang, "versions")}
-            </button>
-            <button type="button" className="ghost danger" disabled={Boolean(actionBusy)} onClick={() => void restart(app)}>
+            </Button>
+            <Button variant="destructive" type="button" disabled={Boolean(actionBusy)} onClick={() => void restart(app)}>
               <RotateCw size={15} aria-hidden="true" />
               {actionBusy === app.stack ? t(lang, "restarting") : t(lang, "restart")}
-            </button>
+            </Button>
           </>
         )}
       </div>
@@ -673,26 +710,37 @@ export function ApplicationManagementPanel({
   };
 
   return (
-    <article className={`panel app-management-panel${selected ? " has-application-workspace" : ""}`} id="section-1">
-      {selectedStack && !selected ? <div className="alert alert-warning"><span>{lang === "zh" ? `未找到应用 ${selectedStack}，可能已删除或当前账号无法访问。` : `Application ${selectedStack} was not found. It may have been removed or is unavailable to this account.`}</span><button className="ghost" type="button" onClick={() => setSelected(null)}>{lang === "zh" ? "返回列表" : "Back to list"}</button></div> : null}
-      {actionError ? <div className="alert alert-error"><span>{actionError}</span></div> : null}
-      {actionNotice ? <div className="alert alert-success"><span>{actionNotice}</span></div> : null}
-      {actionSteps.length || updatingApp ? <section className="application-detail-section" aria-live="polite"><h3>{lang === "zh" ? "应用更新进度" : "Application update progress"}</h3><StepLog steps={actionSteps} lang={lang} waitingLabel={updatingApp ? (lang === "zh" ? "正在开始更新…" : "Starting update…") : undefined} /><button type="button" className="ghost" onClick={onNavigateToDeployments}>{lang === "zh" ? "查看交付记录" : "View delivery history"}</button></section> : null}
+    <div className="flex flex-col gap-6" id="section-1">
+      {selectedStack && !selected ? (
+        <Alert>
+          <AlertCircle />
+          <AlertTitle>{lang === "zh" ? "未找到应用" : "Application not found"}</AlertTitle>
+          <AlertDescription>{lang === "zh" ? `未找到应用 ${selectedStack}，可能已删除或当前账号无法访问。` : `Application ${selectedStack} was not found. It may have been removed or is unavailable to this account.`}</AlertDescription>
+          <AlertAction>
+            <Button type="button" variant="outline" size="sm" onClick={() => setSelected(null)}>{lang === "zh" ? "返回列表" : "Back to list"}</Button>
+          </AlertAction>
+        </Alert>
+      ) : null}
+      {actionError ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{lang === "zh" ? "操作失败" : "Action failed"}</AlertTitle><AlertDescription>{actionError}</AlertDescription></Alert> : null}
+      {actionNotice ? <Alert><AlertDescription>{actionNotice}</AlertDescription></Alert> : null}
+      {actionSteps.length || updatingApp ? <section className="flex flex-col gap-3" aria-live="polite"><h2 className="text-sm font-medium">{lang === "zh" ? "应用更新进度" : "Application update progress"}</h2><StepLog steps={actionSteps} lang={lang} waitingLabel={updatingApp ? (lang === "zh" ? "正在开始更新…" : "Starting update…") : undefined} /><Button variant="outline" type="button" onClick={onNavigateToDeployments}>{lang === "zh" ? "查看交付记录" : "View delivery history"}</Button></section> : null}
       {!selectedStack ? <>
       <div className="application-filter-bar" aria-label={lang === "zh" ? "应用筛选" : "Application filters"}>
-        <label className="application-search-field">
-          <span>{lang === "zh" ? "搜索应用" : "Search applications"}</span>
-          <span className="application-search-control">
-            <Search size={16} aria-hidden="true" />
-            <input
+        <Field className="min-w-0">
+          <FieldLabel>{lang === "zh" ? "搜索应用" : "Search applications"}</FieldLabel>
+          <InputGroup className="max-w-xl">
+            <InputGroupAddon>
+              <Search />
+            </InputGroupAddon>
+            <InputGroupInput
               value={filters.query}
               onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))}
               placeholder={lang === "zh" ? "搜索应用、域名、镜像" : "Search app, domain, image"}
             />
-          </span>
-        </label>
-        <label>
-          <span>{t(lang, "status")}</span>
+          </InputGroup>
+        </Field>
+        <Field>
+          <FieldLabel>{t(lang, "status")}</FieldLabel>
           <SelectControl
             value={filters.status}
             onChange={(value) => setFilters((current) => ({ ...current, status: value }))}
@@ -701,9 +749,9 @@ export function ApplicationManagementPanel({
               ...statusOptions.map((status) => ({ value: status, label: localizeState(lang, status) })),
             ]}
           />
-        </label>
-        <label>
-          <span>{t(lang, "region")}</span>
+        </Field>
+        <Field>
+          <FieldLabel>{t(lang, "region")}</FieldLabel>
           <SelectControl
             value={filters.region}
             onChange={(value) => setFilters((current) => ({ ...current, region: value }))}
@@ -712,7 +760,7 @@ export function ApplicationManagementPanel({
               ...regionOptions.map((region) => ({ value: region, label: region })),
             ]}
           />
-        </label>
+        </Field>
         <div className="application-filter-count">
           <strong>{filteredApplications.length}</strong>
           <span>{lang === "zh" ? ` / ${applications.length} 个应用` : ` / ${applications.length} apps`}</span>
@@ -794,6 +842,6 @@ export function ApplicationManagementPanel({
       </> : null}
       {detailPage}
       {confirmDialog}
-    </article>
+    </div>
   );
 }

@@ -1,32 +1,24 @@
+import { Skeleton } from "@/components/ui/skeleton";
 import type { Lang } from "../types";
 
-/** Suspense / first-paint placeholder while a route chunk (or page data) loads. */
 export function PageLoading({ lang = "zh" }: { lang?: Lang }) {
   const label = lang === "zh" ? "页面加载中…" : "Loading page…";
   return (
-    <section className="page-loading" aria-busy="true" aria-live="polite">
-      <div className="page-loading-toolbar">
-        <div className="page-loading-copy">
-          <span className="skeleton skeleton-line skeleton-eyebrow" />
-          <span className="skeleton skeleton-line skeleton-title" />
-          <span className="skeleton skeleton-line skeleton-desc" />
+    <section className="flex flex-col gap-6" aria-busy="true" aria-live="polite">
+      <div className="flex flex-col gap-3 lg:flex-row lg:justify-between">
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-3 w-24" />
+          <Skeleton className="h-8 w-56" />
+          <Skeleton className="h-4 w-80" />
         </div>
-        <div className="page-loading-metrics" aria-hidden="true">
-          <span className="skeleton skeleton-metric" />
-          <span className="skeleton skeleton-metric" />
-          <span className="skeleton skeleton-metric" />
-          <span className="skeleton skeleton-metric" />
+        <div className="flex gap-2">
+          <Skeleton className="h-14 w-24" />
+          <Skeleton className="h-14 w-24" />
+          <Skeleton className="h-14 w-24" />
         </div>
       </div>
-      <div className="page-loading-panel skeleton" aria-hidden="true">
-        <span className="skeleton skeleton-line skeleton-panel-title" />
-        <span className="skeleton skeleton-line" />
-        <span className="skeleton skeleton-line" />
-        <span className="skeleton skeleton-line skeleton-wide" />
-        <span className="skeleton skeleton-line" />
-        <span className="skeleton skeleton-line skeleton-medium" />
-      </div>
-      <p className="page-loading-label">{label}</p>
+      <Skeleton className="h-64 w-full rounded-xl" />
+      <p className="sr-only">{label}</p>
     </section>
   );
 }

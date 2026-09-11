@@ -20,8 +20,9 @@ test("version details preserve the complete digest and rollback control as separ
     action: React.createElement('button', { disabled: true }, '回滚中'),
   }));
   assert.ok(html.includes(image));
-  assert.ok(html.includes('<dt>镜像</dt>'));
-  assert.ok(html.includes('<dt>提交时间</dt><dd>2026-09-05 12:34</dd>'));
+  assert.match(html, /<dt[^>]*>镜像<\/dt>/);
+  assert.match(html, /<dt[^>]*>提交时间<\/dt>/);
+  assert.match(html, /<dd[^>]*>2026-09-05 12:34<\/dd>/);
   assert.match(html, /<button disabled="">回滚中<\/button>/);
 });
 
@@ -31,7 +32,8 @@ test("volume paths and their type retain independent labels, including special c
     { label: '类型', value: 'bind' },
     { label: '存储类 / 节点', value: '-' },
   ] }));
-  assert.ok(html.includes('<dd>/srv/agent-pool/postgres-data&lt;&amp;&gt;</dd>'));
-  assert.ok(html.includes('<dt>类型</dt><dd>bind</dd>'));
-  assert.equal((html.match(/<dt>/g) || []).length, 3);
+  assert.match(html, /<dd[^>]*>\/srv\/agent-pool\/postgres-data&lt;&amp;&gt;<\/dd>/);
+  assert.match(html, /<dt[^>]*>类型<\/dt>/);
+  assert.match(html, /<dd[^>]*>bind<\/dd>/);
+  assert.equal((html.match(/<dt\b/g) || []).length, 3);
 });

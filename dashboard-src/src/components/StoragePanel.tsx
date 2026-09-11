@@ -1,6 +1,7 @@
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { t } from "../i18n";
 import type { DashboardStorageClass, DashboardVolume, Lang } from "../types";
-import { Badge, BadgeGroup, PrimaryCell, StatePill } from "./ui";
+import { Badge, BadgeGroup, PrimaryCell, StatePill } from "./primitives";
 
 export function StoragePanel({
   lang,
@@ -23,11 +24,14 @@ export function StoragePanel({
         <span>{volumes.length + (storageClasses?.length || 0)}</span>
       </div>
       {warnings.length ? (
-        <div className="alert alert-warning">
-          {warnings.map((warning) => (
-            <span key={warning}>{warning}</span>
-          ))}
-        </div>
+        <Alert>
+          <AlertTitle>{lang === "zh" ? "存储提示" : "Storage notice"}</AlertTitle>
+          <AlertDescription>
+            {warnings.map((warning) => (
+              <p key={warning}>{warning}</p>
+            ))}
+          </AlertDescription>
+        </Alert>
       ) : null}
       <div className="table-wrap">
         <table className="storage-table">
