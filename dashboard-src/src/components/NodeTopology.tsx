@@ -354,9 +354,9 @@ export function NodeTopology({
         />
         
         <div className="cy-controls" aria-label="Topology controls">
-          <Button aria-label="Zoom in" className="cy-control-btn" onClick={handleZoomIn} type="button" title="Zoom In">+</Button>
-          <Button aria-label="Zoom out" className="cy-control-btn" onClick={handleZoomOut} type="button" title="Zoom Out">-</Button>
-          <Button aria-label="Reset view" className="cy-control-btn" onClick={handleReset} type="button" title="Reset View">0</Button>
+          <Button variant="outline" size="icon-sm" aria-label="Zoom in" className="cy-control-btn" onClick={handleZoomIn} type="button" title="Zoom In">+</Button>
+          <Button variant="outline" size="icon-sm" aria-label="Zoom out" className="cy-control-btn" onClick={handleZoomOut} type="button" title="Zoom Out">-</Button>
+          <Button variant="outline" size="icon-sm" aria-label="Reset view" className="cy-control-btn" onClick={handleReset} type="button" title="Reset View">0</Button>
         </div>
       </div>
     </section>

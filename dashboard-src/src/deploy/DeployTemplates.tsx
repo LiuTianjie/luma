@@ -126,13 +126,15 @@ export function DeployTemplates({
               <span>{lang === "zh" ? "模板类型" : "Template type"}</span>
               <div className="deploy-mode-switch-pill">
                 <Button type="button"
- className={mode === "service" ? "active" : ""}
+ size="sm"
+ variant={mode === "service" ? "secondary" : "ghost"}
  onClick={() => onModeChange("service")}
                 >
                   {lang === "zh" ? "单服务" : "Service"}
                 </Button>
                 <Button type="button"
- className={mode === "compose" ? "active" : ""}
+ size="sm"
+ variant={mode === "compose" ? "secondary" : "ghost"}
  onClick={() => onModeChange("compose")}
                 >
                   Compose
@@ -146,7 +148,7 @@ export function DeployTemplates({
 
       <div className="deploy-gallery-showcase">
         {featuredTemplate ? (
-          <Button type="button"
+          <button type="button"
  className={`template-feature-card ${activeId === featuredTemplate.id ? "active" : ""}`}
  onClick={() => onSelect(featuredTemplate)}
             style={{ "--template-accent": logoFor(featuredTemplate).accent } as CSSProperties}
@@ -164,12 +166,12 @@ export function DeployTemplates({
               {renderFacts(featuredTemplate)}
             </div>
             <span className="template-feature-action">{lang === "zh" ? "使用并进入配置" : "Use and configure"} →</span>
-          </Button>
+          </button>
         ) : null}
 
         <div className="deploy-gallery-grid">
           {secondaryTemplates.map((template) => (
-            <Button type="button"
+            <button type="button"
  className={`deploy-gallery-card ${activeId === template.id ? "active" : ""}`}
  key={template.id}
  onClick={() => onSelect(template)}
@@ -186,7 +188,7 @@ export function DeployTemplates({
               <div className="template-card-facts">
                 {renderFacts(template)}
               </div>
-            </Button>
+            </button>
           ))}
         </div>
       </div>

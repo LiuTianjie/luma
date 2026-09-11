@@ -563,7 +563,7 @@ export function ServiceLogsModal({
         </div>
         <div className="log-console__header-actions">
           <span className={`log-console__connection is-${connection}`} role="status" aria-live="polite">{connectionLabel}</span>
-          {!inline && <Button type="button" className="log-console__button log-console__close" onClick={onClose} aria-label={t(lang, "close")}>
+          {!inline && <Button type="button" variant="ghost" size="sm" className="log-console__button log-console__close" onClick={onClose} aria-label={t(lang, "close")}>
             <X size={16} aria-hidden="true" />
           </Button>}
         </div>
@@ -593,29 +593,29 @@ export function ServiceLogsModal({
 
       <div className="log-console__toolbar" aria-label={lang === "zh" ? "日志操作" : "Log actions"}>
         <div className="log-console__action-group">
-          <Button type="button" className="log-console__button" aria-pressed={paused} onClick={() => setPaused((value) => !value)}>
+          <Button type="button" variant="ghost" size="sm" className="log-console__button" aria-pressed={paused} onClick={() => setPaused((value) => !value)}>
             {paused ? <Play size={15} aria-hidden="true" /> : <Pause size={15} aria-hidden="true" />}
             {paused ? (lang === "zh" ? "继续" : "Resume") : (lang === "zh" ? "暂停" : "Pause")}
           </Button>
-          <Button type="button" className="log-console__button" onClick={() => { setPaused(false); setRefreshVersion((value) => value + 1); }}>
+          <Button type="button" variant="ghost" size="sm" className="log-console__button" onClick={() => { setPaused(false); setRefreshVersion((value) => value + 1); }}>
             <RefreshCw size={15} aria-hidden="true" />
             {logsLoading || runtimeLoading ? t(lang, "refreshing") : t(lang, "refresh")}
           </Button>
-          <Button type="button" className="log-console__button" disabled={pullLoading || !selectedService} onClick={() => void diagnosePull()}>
+          <Button type="button" variant="ghost" size="sm" className="log-console__button" disabled={pullLoading || !selectedService} onClick={() => void diagnosePull()}>
             <Activity size={15} aria-hidden="true" />
             {pullLoading ? (lang === "zh" ? "诊断中" : "Diagnosing") : (lang === "zh" ? "诊断拉取" : "Pull diagnostic")}
           </Button>
         </div>
         <div className="log-console__action-group">
-          <Button type="button" className="log-console__button" aria-pressed={wrapLines} onClick={() => setWrapLines((value) => !value)}>
+          <Button type="button" variant="ghost" size="sm" className="log-console__button" aria-pressed={wrapLines} onClick={() => setWrapLines((value) => !value)}>
             <WrapText size={15} aria-hidden="true" />
             {lang === "zh" ? "自动折行" : "Wrap lines"}
           </Button>
-          <Button type="button" className="log-console__button" disabled={!filteredLogs.length} onClick={() => void copyLogs()}>
+          <Button type="button" variant="ghost" size="sm" className="log-console__button" disabled={!filteredLogs.length} onClick={() => void copyLogs()}>
             <Copy size={15} aria-hidden="true" />
             {copyState || (lang === "zh" ? "复制" : "Copy")}
           </Button>
-          <Button type="button" className="log-console__button" disabled={!selectedService || Boolean(downloadState)} onClick={() => void downloadLogs()}>
+          <Button type="button" variant="ghost" size="sm" className="log-console__button" disabled={!selectedService || Boolean(downloadState)} onClick={() => void downloadLogs()}>
             <Download size={15} aria-hidden="true" />
             {downloadState || (lang === "zh" ? "下载近期日志" : "Download recent")}
           </Button>

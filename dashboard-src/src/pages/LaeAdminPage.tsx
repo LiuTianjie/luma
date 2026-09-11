@@ -135,7 +135,7 @@ export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
       <section className="panel lae-admin-panel" hidden={loading && !state.applications.length && !state.users.length}>
         <div className="lae-admin-tabs" role="tablist" aria-label="LAE admin resources">
           {tabs.map(({ id, label, icon: Icon }) => (
-            <Button key={id} type="button" className={view === id ? "active" : ""} onClick={() => setView(id)}>
+            <Button key={id} type="button" size="sm" variant={view === id ? "secondary" : "ghost"} onClick={() => setView(id)}>
               <Icon size={15} aria-hidden="true" />{label}<span>{state.pages[id].total}</span>
             </Button>
           ))}

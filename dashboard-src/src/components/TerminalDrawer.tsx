@@ -199,7 +199,6 @@ function TerminalContent({ lang, target, token, onClose, inline = false, panelRe
   return (
       <section
         className={`terminal-session ${inline ? "terminal-page" : "terminal-modal"} terminal-modal-${status}`}
-        style={inline ? { minHeight: "65vh", display: "flex", flexDirection: "column" } : undefined}
         ref={panelRef}
         role={inline ? "region" : "dialog"}
         aria-modal={inline ? undefined : true}
@@ -208,19 +207,19 @@ function TerminalContent({ lang, target, token, onClose, inline = false, panelRe
       >
         <header className="terminal-session__header">
           <div className="terminal-session__identity">
-            <TerminalSquare size={18} aria-hidden="true" />
+            <TerminalSquare size={16} aria-hidden="true" />
             <h2 id="terminal-modal-title" title={title}>{title}</h2>
             <span className="terminal-session__meta" title={meta}>{isContainer ? (lang === "zh" ? "容器" : "Container") : (lang === "zh" ? "节点" : "Node")} · {meta}</span>
           </div>
           <div className="terminal-session__actions">
             <span className={`terminal-session__status is-${status}`} role="status" aria-live="polite">{statusLabel}</span>
-            <Button type="button" className="terminal-session__close" onClick={onClose}>
-              {inline ? <ArrowLeft size={15} aria-hidden="true" /> : <X size={15} aria-hidden="true" />}
+            <Button type="button" variant="outline" size="sm" className="terminal-session__close" onClick={onClose}>
+              {inline ? <ArrowLeft data-icon="inline-start" /> : <X data-icon="inline-start" />}
               {inline ? (lang === "zh" ? "结束并返回" : "End session and return") : t(lang, "close")}
             </Button>
           </div>
         </header>
-        <div className="terminal-surface" style={inline ? { flex: 1, minHeight: "55vh" } : undefined} ref={containerRef} />
+        <div className="terminal-surface" ref={containerRef} />
       </section>
   );
 }

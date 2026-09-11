@@ -528,12 +528,12 @@ export function ApplicationManagementPanel({
                   <span>{t(lang, "source")}: {selectedConfig.sourceName || "-"} · {t(lang, "lastUpdated")}: {formatTimestamp(selectedConfig.updatedAt)}</span>
                 </div>
                 <div className="deployment-config-tabs">
-                  <Button type="button" disabled={!selectedConfigContent} onClick={() => {
+                  <Button type="button" variant="outline" size="sm" disabled={!selectedConfigContent} onClick={() => {
                     setConfigCopyNotice("");
                     void Promise.resolve().then(() => navigator.clipboard.writeText(selectedConfigContent || "")).then(() => setConfigCopyNotice(lang === "zh" ? "已复制完整配置" : "Full configuration copied")).catch(() => setConfigCopyNotice(lang === "zh" ? "复制失败，请在配置区域选择并复制" : "Copy failed; select and copy the configuration below"));
                   }}>{lang === "zh" ? "复制配置" : "Copy configuration"}</Button>
                   {selectedConfigTabs.map((tab) => (
-                    <Button type="button" className={configTab === tab ? "active" : ""} key={tab} onClick={() => { setConfigTab(tab); setConfigCopyNotice(""); }}>
+                    <Button type="button" size="sm" variant={configTab === tab ? "secondary" : "ghost"} key={tab} onClick={() => { setConfigTab(tab); setConfigCopyNotice(""); }}>
                       {tab === "compose" ? t(lang, "composeFile") : t(lang, "lumaManifest")}
                     </Button>
                   ))}
@@ -665,11 +665,11 @@ export function ApplicationManagementPanel({
             </Button>
             {menuOpen ? (
               <div className="app-action-menu-panel" role="menu">
-                <Button type="button" role="menuitem" onClick={() => { setOpenMenu(null); openDetails(app); }}>
+                <Button type="button" variant="ghost" className="w-full justify-start" role="menuitem" onClick={() => { setOpenMenu(null); openDetails(app); }}>
                   <Settings2 size={14} aria-hidden="true" />
                   {t(lang, "details")}
                 </Button>
-                <Button type="button"
+                <Button type="button" variant="ghost" className="w-full justify-start"
  role="menuitem"
  disabled={rollbackState?.app === app.stack && rollbackState.loading}
  onClick={() => { setOpenMenu(null); void openVersions(app); }}

@@ -58,7 +58,7 @@ export function DetailDrawer({ lang, detail, onClose, inline = false, showBack =
               <p className="eyebrow">{t(lang, "details")}</p>
               <h2 id="detail-drawer-title">{detail.title}</h2>
             </div>
-            <Button type="button" className="icon-button" onClick={onClose}>
+            <Button type="button" variant="ghost" size="icon" className="icon-button" onClick={onClose}>
               {t(lang, "close")}
             </Button>
           </header>

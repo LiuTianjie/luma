@@ -425,8 +425,8 @@ export function DeployWorkspace({
         </Button>
         <div className="workbench-title"><div><p className="eyebrow">{lang === "zh" ? "应用配置" : "Application configuration"}</p><h1>{modalTitle || (lang === "zh" ? "创建应用" : "Create application")}</h1><p>{modalSubtitle || (lang === "zh" ? "编辑配置，校验后提交到当前集群。" : "Edit the configuration, validate it, then submit to this cluster.")}</p></div><span className="workbench-kind">{mode === "service" ? (lang === "zh" ? "单服务" : "Single service") : "Compose"}</span></div>
         <nav className="deploy-editor-tabs" aria-label={lang === "zh" ? "编辑方式" : "Editor mode"}>
-          <Button type="button" aria-current={editorMode === "form" ? "page" : undefined} className={editorMode === "form" ? "active" : ""} disabled={yamlDirty || status !== "idle"} onClick={() => setEditorMode("form")}><ListChecks size={16} aria-hidden="true" />{lang === "zh" ? "配置表单" : "Form"}</Button>
-          <Button type="button" aria-current={editorMode === "yaml" ? "page" : undefined} className={editorMode === "yaml" ? "active" : ""} disabled={status !== "idle"} onClick={() => setEditorMode("yaml")}><FileCode2 size={16} aria-hidden="true" />{lang === "zh" ? "YAML 编辑器" : "YAML editor"}</Button>
+          <Button type="button" variant={editorMode === "form" ? "secondary" : "ghost"} aria-current={editorMode === "form" ? "page" : undefined} disabled={yamlDirty || status !== "idle"} onClick={() => setEditorMode("form")}><ListChecks size={16} aria-hidden="true" />{lang === "zh" ? "配置表单" : "Form"}</Button>
+          <Button type="button" variant={editorMode === "yaml" ? "secondary" : "ghost"} aria-current={editorMode === "yaml" ? "page" : undefined} disabled={status !== "idle"} onClick={() => setEditorMode("yaml")}><FileCode2 size={16} aria-hidden="true" />{lang === "zh" ? "YAML 编辑器" : "YAML editor"}</Button>
         </nav>
       </header> : null}
       {modalContext}

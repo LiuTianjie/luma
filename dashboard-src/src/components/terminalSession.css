@@ -1,3 +1,15 @@
+.terminal-session.terminal-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+.terminal-session.terminal-page > .terminal-surface {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
 /* Node and container terminals share a compact header. Keep xterm's sizing
    surface unchanged; only the surrounding header/containment is controlled here. */
 .terminal-session {
@@ -10,13 +22,13 @@
   box-sizing: border-box;
   display: flex;
   flex: 0 0 auto;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: space-between;
   min-inline-size: 0;
-  min-block-size: 56px;
-  gap: 8px 20px;
-  padding: 10px 16px;
+  min-block-size: 40px;
+  gap: 8px;
+  padding: 0 8px;
   border-block-end: 1px solid var(--line);
   background: var(--surface);
 }
@@ -39,7 +51,7 @@
   color: var(--text);
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 16px;
+  font-size: 13px;
   font-weight: 600;
   line-height: 1.4;
 }
@@ -59,7 +71,7 @@
 .terminal-session__actions {
   display: flex;
   flex: 0 1 auto;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px 16px;
   min-inline-size: 0;

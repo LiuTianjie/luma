@@ -435,8 +435,8 @@ export function CredentialsPage({
                   const contentId = `secret-group-${group.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
                   return (
                     <section className={expanded ? "secret-group expanded" : "secret-group"} key={group.id}>
-                      <Button type="button"
- className="secret-group-trigger"
+                      <Button type="button" variant="ghost"
+ className="h-auto w-full justify-start secret-group-trigger"
  aria-expanded={expanded}
  aria-controls={contentId}
  onClick={() => toggleSecretGroup(group.id)}

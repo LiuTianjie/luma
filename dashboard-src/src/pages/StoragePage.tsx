@@ -5,6 +5,7 @@ import { StoragePanel } from "../components/StoragePanel";
 import { t } from "../i18n";
 import type { Lang } from "../types";
 import type { DashboardViewModel } from "../dashboardViewModel";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "./PageHeader";
 import "./InfrastructureWorkspace.css";
 
@@ -29,12 +30,24 @@ export function StoragePage({ lang, vm, token }: { lang: Lang; vm: DashboardView
           ],
         }}
       />
-      <nav className="workspace-tabs" aria-label={zh ? "存储管理" : "Storage management"}>
-        {[["/storage", zh ? "卷与存储类" : "Volumes and classes"], ["/storage/governance", zh ? "容量与回收" : "Capacity and cleanup"]].map(([href, label], index) => <a key={href} href={toHref(href)} className={governance === Boolean(index) ? "active" : ""} aria-current={governance === Boolean(index) ? "page" : undefined} onClick={(event) => {
-          if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-          event.preventDefault(); navigate(href);
-        }}>{label}</a>)}
-      </nav>
+      <Tabs value={governance ? "/storage/governance" : "/storage"}>
+        <TabsList aria-label={zh ? "存储管理" : "Storage management"}>
+          {[["/storage", zh ? "卷与存储类" : "Volumes and classes"], ["/storage/governance", zh ? "容量与回收" : "Capacity and cleanup"]].map(([href, label]) => (
+            <TabsTrigger
+              key={href}
+              value={href}
+              render={<a href={toHref(href)} aria-current={(governance ? "/storage/governance" : "/storage") === href ? "page" : undefined} />}
+              onClick={(event) => {
+                if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                event.preventDefault();
+                navigate(href);
+              }}
+            >
+              {label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
       {governance ? <StorageGovernancePanel lang={lang} token={token} /> : <StoragePanel lang={lang} volumes={vm.storageVolumes} storageClasses={vm.storageClasses} warnings={vm.storageWarnings} />}
     </div>
   );

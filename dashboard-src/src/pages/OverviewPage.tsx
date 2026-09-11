@@ -72,18 +72,29 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
             onClick: () => onNavigate("observability"),
           },
         ].map((item) => (
-          <Button key={item.label}
- type="button"
- data-slot="summary-card"
- onClick={item.onClick}
- className="flex min-h-32 flex-col items-start gap-3 rounded-xl border bg-card p-5 text-left shadow-xs transition-colors hover:bg-muted/40">
-            <span className="text-sm text-muted-foreground">{item.label}</span>
-            <strong className="text-3xl font-medium tracking-tight">
-              {item.value}
-              {item.meta ? <small className="ml-1 text-lg font-normal text-muted-foreground">{item.meta}</small> : null}
-            </strong>
-            <span className="text-xs text-muted-foreground">{item.hint}</span>
-          </Button>
+          <Card
+            key={item.label}
+            size="sm"
+            role="link"
+            tabIndex={0}
+            onClick={item.onClick}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                item.onClick();
+              }
+            }}
+            className="cursor-pointer transition-colors hover:bg-muted/40"
+          >
+            <CardHeader>
+              <CardDescription>{item.label}</CardDescription>
+              <CardTitle className="text-2xl font-semibold tabular-nums text-card-foreground">
+                {item.value}
+                {item.meta ? <span className="ml-1 text-sm font-normal text-muted-foreground">{item.meta}</span> : null}
+              </CardTitle>
+            </CardHeader>
+            <CardFooter className="text-xs text-muted-foreground">{item.hint}</CardFooter>
+          </Card>
         ))}
       </section>
 

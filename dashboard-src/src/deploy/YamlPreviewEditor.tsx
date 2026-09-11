@@ -25,8 +25,8 @@ export function YamlPreviewEditor({
   return <section className="workbench-code-editor">
     <header>
       {mode === "compose" ? <nav aria-label={lang === "zh" ? "配置文件" : "Configuration files"}>
-        <Button type="button" aria-current={active === "compose" ? "page" : undefined} onClick={() => setActive("compose")}>docker-compose.yml</Button>
-        <Button type="button" aria-current={active === "sidecar" ? "page" : undefined} onClick={() => setActive("sidecar")}>luma.compose.yml</Button>
+        <Button type="button" size="sm" variant={active === "compose" ? "secondary" : "ghost"} aria-current={active === "compose" ? "page" : undefined} onClick={() => setActive("compose")}>docker-compose.yml</Button>
+        <Button type="button" size="sm" variant={active === "sidecar" ? "secondary" : "ghost"} aria-current={active === "sidecar" ? "page" : undefined} onClick={() => setActive("sidecar")}>luma.compose.yml</Button>
       </nav> : <strong>{name}</strong>}
       <span>YAML</span>
     </header>

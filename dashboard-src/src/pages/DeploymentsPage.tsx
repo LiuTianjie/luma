@@ -8,6 +8,7 @@ import { Badge, CodeCell, SelectControl, StatePill } from "../components/primiti
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -429,25 +430,45 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
           {staleFilters ? <p className="text-sm text-muted-foreground" role="status">{zh ? "新筛选结果尚未加载，下方仍为上次筛选的记录。" : "The new filter results have not loaded. The previous results remain below."}</p> : null}
           {!list.items.length && loading ? <p className="text-sm text-muted-foreground" role="status">{zh ? "正在加载记录…" : "Loading records…"}</p> : null}
           {list.items.length ? (
-            <ol className="divide-y" aria-busy={Boolean(loading)}>
-              {list.items.map((item) => (
-                <li key={historyItemKey(item)}>
-                  <Button type="button"
- className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 py-3 text-left hover:bg-muted/50 sm:grid-cols-[auto_minmax(0,1fr)_auto_auto]"
- aria-label={`${t(lang, "details")}: ${item.title || item.application || item.id}`}
- onClick={() => select(item)}
+            <Table aria-busy={Boolean(loading)}>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{zh ? "来源" : "Source"}</TableHead>
+                  <TableHead>{zh ? "记录" : "Record"}</TableHead>
+                  <TableHead>{zh ? "状态" : "Status"}</TableHead>
+                  <TableHead className="text-right">{zh ? "时间" : "Time"}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {list.items.map((item) => (
+                  <TableRow
+                    key={historyItemKey(item)}
+                    className="cursor-pointer"
+                    tabIndex={0}
+                    aria-label={`${t(lang, "details")}: ${item.title || item.application || item.id}`}
+                    onClick={() => select(item)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        select(item);
+                      }
+                    }}
                   >
-                    <Badge value={sourceLabel(item.source, lang)} />
-                    <span className="min-w-0">
-                      <CodeCell value={item.title || item.application || item.id} />
-                      <small className="mt-0.5 block truncate text-xs text-muted-foreground">{[item.kind === "build" ? (zh ? "构建" : "Build") : (zh ? "部署" : "Deployment"), item.application, item.ref, item.buildNode].filter(Boolean).join(" · ")}</small>
-                    </span>
-                    <StatePill label={historyStatus(item.status, lang)} value={historyStatusValue(item.status)} />
-                    <time className="col-start-2 text-xs text-muted-foreground sm:col-start-auto" title={zh ? "创建时间" : "Created time"}>{formatTimestamp(item.createdAt, lang)}</time>
-                  </Button>
-                </li>
-              ))}
-            </ol>
+                    <TableCell><Badge value={sourceLabel(item.source, lang)} /></TableCell>
+                    <TableCell>
+                      <div className="min-w-0">
+                        <CodeCell value={item.title || item.application || item.id} />
+                        <p className="mt-0.5 truncate text-xs text-muted-foreground">{[item.kind === "build" ? (zh ? "构建" : "Build") : (zh ? "部署" : "Deployment"), item.application, item.ref, item.buildNode].filter(Boolean).join(" · ")}</p>
+                      </div>
+                    </TableCell>
+                    <TableCell><StatePill label={historyStatus(item.status, lang)} value={historyStatusValue(item.status)} /></TableCell>
+                    <TableCell className="text-right text-xs text-muted-foreground">
+                      <time title={zh ? "创建时间" : "Created time"}>{formatTimestamp(item.createdAt, lang)}</time>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           ) : !loading && !error ? (
             <Empty className="py-8">
               <EmptyHeader>

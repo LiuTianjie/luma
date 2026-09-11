@@ -163,25 +163,28 @@ export function App() {
           onNavigate={navigate}
           onPrefetch={preloadPage}
         />
-        <SidebarInset id="main" tabIndex={-1}>
-          <Topbar
-            clusterId={vm.clusterId}
-            lang={lang}
-            lastUpdated={lastUpdated}
-            themeMode={themeMode}
-            onLangChange={setLang}
-            onThemeModeChange={setThemeMode}
-            onRefresh={() => void refreshPage()}
-            onSignOut={signOut}
-            syncStatus={visibleStatus}
-          />
-          <div className="flex-1 overflow-auto p-6">
+        <SidebarInset id="main" tabIndex={-1} className="min-h-svh overflow-hidden">
+          {terminalTarget ? null : (
+            <Topbar
+              clusterId={vm.clusterId}
+              lang={lang}
+              lastUpdated={lastUpdated}
+              themeMode={themeMode}
+              onLangChange={setLang}
+              onThemeModeChange={setThemeMode}
+              onRefresh={() => void refreshPage()}
+              onSignOut={signOut}
+              syncStatus={visibleStatus}
+              compact={!token || activeNavPage !== "overview" || Boolean(objectRoute) || Boolean(editName)}
+            />
+          )}
+          <div className={terminalTarget ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "min-h-0 flex-1 overflow-auto p-6"}>
             {!token ? (
               <div className="flex min-h-[60vh] items-center">
                 <LoginPanel lang={lang} onSubmit={setToken} />
               </div>
             ) : (
-              <div className="flex flex-col gap-6">
+              <div className={terminalTarget ? "flex h-full min-h-0 flex-col" : "flex flex-col gap-6"}>
                 <ErrorBanner errors={errors} />
                 {payload || pageCanRenderWithoutDashboard ? (
                   terminalTarget ? <Suspense fallback={<PageLoading lang={lang} />}><TerminalDrawer key={router.path} lang={lang} target={terminalTarget} token={token} onClose={closeTerminal} inline /></Suspense>
