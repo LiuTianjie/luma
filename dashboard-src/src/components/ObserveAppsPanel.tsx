@@ -122,7 +122,7 @@ export function ObserveAppsPanel({
         </div>
         {showAppFilter ? (
           <SelectControl
-            className="w-56 min-w-0"
+            className="grafana-app-filter w-56 min-w-0"
             ariaLabel={zh ? "按应用筛选" : "Filter by app"}
             value={app}
             onChange={setApp}
