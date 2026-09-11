@@ -22,6 +22,7 @@ import shutil
 import socket
 import ssl
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -64,7 +65,9 @@ from ..builder_tasks import (
     sanitize_builder_task_result,
     validate_builder_task_request,
 )
-from ..cloudflare import delete_dns, sync_dns
+from ..cloudflare import CloudflareClient, delete_dns, sync_dns
+from ..dependencies import initialize_service_requirements, require_service_requirements, service_requirements
+from ..egress import minimal_mihomo_config_from_bytes
 from ..credential_broker import (
     CredentialLeaseBinding,
     ObjectSourceLeaseBinding,
@@ -88,7 +91,7 @@ from ..compose import (
     resolve_storage_mounts,
     storage_summary,
 )
-from ..config import LumaConfig, load_config
+from ..config import LumaConfig, load_config, save_config
 from ..errors import LumaError
 from .logs import LogReader, LogUnavailable, CAPABILITIES as LOG_CAPABILITIES, LIMITS as LOG_LIMITS, POLL_INTERVAL as LOG_POLL_INTERVAL, encode_event as _log_event
 from ..io import load_yaml
@@ -3220,6 +3223,42 @@ def handle_control_status(token: str) -> Dict[str, Any]:
     return result
 
 
+def _ensure_dashboard_join_token(state: Dict[str, Any]) -> str:
+    """Return a durable join token, repairing legacy states on first use."""
+    join_token = str(state.get("joinToken") or "").strip()
+    if join_token:
+        return join_token
+    candidate = secrets.token_urlsafe(32)
+
+    def restore_join_token(current: Dict[str, Any]) -> str:
+        existing = str(current.get("joinToken") or "").strip()
+        if existing:
+            return existing
+        current["joinToken"] = candidate
+        return candidate
+
+    join_token = str(mutate_state(restore_join_token) or candidate)
+    state["joinToken"] = join_token
+    return join_token
+
+
+def _invalidate_setup_checks(state: Dict[str, Any], *kinds: str) -> None:
+    """Mark provider checks stale after the inputs they verified change."""
+    record = state.get("setupChecks")
+    if not isinstance(record, dict):
+        return
+    checks = record.get("checks")
+    if not isinstance(checks, dict):
+        return
+    wanted = {str(kind) for kind in kinds if str(kind).strip()}
+    for kind in wanted:
+        item = checks.get(kind)
+        if not isinstance(item, dict):
+            continue
+        item["status"] = "stale"
+        item["detail"] = "configuration changed; run setup check again"
+
+
 def handle_dashboard(token: str) -> Dict[str, Any]:
     state = load_dashboard_state()
     require_token(state, token, token_type="deploy")
@@ -3264,6 +3303,14 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
     issues.sort(key=lambda item: (0 if item.get("severity") == "critical" else 1, str(item.get("target") or "")))
 
     lae_admin_available = _lae_admin_proxy_available()
+    # Keep first-install guidance explicit and secret-free.  These checks only
+    # report whether the inputs needed by each capability exist; provider/API
+    # verification is performed by the corresponding setup action.
+    acme_email = os.environ.get("TRAEFIK_ACME_EMAIL") or secrets.get("TRAEFIK_ACME_EMAIL")
+    tailscale_key = os.environ.get("TAILSCALE_AUTHKEY") or secrets.get("TAILSCALE_AUTHKEY")
+    egress_url = os.environ.get("EGRESS_SUBSCRIPTION_URL") or secrets.get("EGRESS_SUBSCRIPTION_URL")
+    build_config = _build_config(state)
+    registry_configured = bool(str(build_config.get("registryHost") or "").strip() and str(build_config.get("pushHost") or "").strip())
     readiness = {
         "dns": {
             "ready": not dns_missing,
@@ -3281,13 +3328,40 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
         "laeAdmin": {
             "available": lae_admin_available,
         },
+        "setup": {
+            "cloudflare": {"configured": not dns_missing, "required": dns_provider == "cloudflare", "missing": dns_missing},
+            "acme": {"configured": bool(str(acme_email or "").strip()), "required": True, "missing": [] if acme_email else ["TRAEFIK_ACME_EMAIL"]},
+            "tailscale": {"configured": bool(str(tailscale_key or "").strip()) or any(bool(item.get("tailscaleIP")) for item in registered_nodes if isinstance(item, dict)), "required": False, "missing": [] if tailscale_key else ["TAILSCALE_AUTHKEY"]},
+            "egress": {"configured": bool(str(egress_url or "").strip()), "required": False, "missing": [] if egress_url else ["EGRESS_SUBSCRIPTION_URL"]},
+            "registry": {"configured": registry_configured, "required": False, "missing": [] if registry_configured else ["build.registryHost", "build.pushHost"]},
+        },
     }
+    previous_setup = state.get("setupChecks")
+    if isinstance(previous_setup, dict):
+        readiness["setupLastCheck"] = {
+            "checkedAt": int(previous_setup.get("checkedAt") or 0),
+            "checks": previous_setup.get("checks") if isinstance(previous_setup.get("checks"), dict) else {},
+        }
+
+    # A few early development states were created before joinToken became part
+    # of the durable state contract. Repair that state lazily while the
+    # authenticated Dashboard is open so the join card never has to fall back
+    # to a fake token.
+    join_token = _ensure_dashboard_join_token(state)
 
     return {
         "cluster": {
             "id": str(state.get("clusterId") or ""),
             "version": __version__,
             "configPath": str(config_path),
+        },
+        # The dashboard is already authenticated with the management token.  A
+        # node join token is therefore safe to return only as part of this
+        # authenticated response and fixes the old placeholder-only join card.
+        # Keep it out of logs and all unauthenticated endpoints.
+        "nodeJoin": {
+            "token": join_token,
+            "domain": str(state.get("domain") or ""),
         },
         "readiness": readiness,
         "nodes": nodes,
@@ -3299,6 +3373,158 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
         "issues": issues,
         "errors": errors,
     }
+
+
+def handle_dashboard_setup_configure(token: str, body: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Persist non-secret first-install provider settings from the Dashboard.
+
+    Secret values continue to use ``/v1/secrets`` so they remain write-only.
+    This endpoint owns the corresponding DNS shape (provider, zone and edge
+    target), which prevents the wizard from creating a set of credentials that
+    the deployment renderer cannot discover.
+    """
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    payload = body if isinstance(body, dict) else {}
+    allowed = {"cloudflareZone", "cloudflareZoneId", "edgeTarget"}
+    unknown = sorted(str(key) for key in payload if str(key) not in allowed)
+    if unknown:
+        raise LumaError(f"unsupported setup configuration field(s): {', '.join(unknown)}")
+
+    def clean(name: str) -> str:
+        value = str(payload.get(name) or "").strip()
+        if len(value) > 253:
+            raise LumaError(f"{name} is too long")
+        return value
+
+    zone = clean("cloudflareZone").rstrip(".")
+    zone_id = clean("cloudflareZoneId")
+    edge_target = clean("edgeTarget")
+    if zone and ("/" in zone or "://" in zone or " " in zone):
+        raise LumaError("cloudflareZone must be a DNS name without a scheme or path")
+    if edge_target and any(char in edge_target for char in " /\\"):
+        raise LumaError("edgeTarget must be an IP address or hostname")
+
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    raw = copy.deepcopy(config.raw)
+    providers = raw.get("providers") if isinstance(raw.get("providers"), dict) else {}
+    dns = dict(providers.get("dns") or raw.get("dns") or {})
+    if zone or zone_id or edge_target:
+        dns["type"] = "cloudflare"
+        dns["provider"] = "cloudflare"
+        if zone:
+            dns["zone"] = zone
+        if zone_id:
+            dns["zoneId"] = zone_id
+        if edge_target:
+            dns["edgeTarget"] = edge_target
+        providers["dns"] = dns
+        raw["providers"] = providers
+        save_config(LumaConfig(raw, config_path))
+        _invalidate_setup_checks(state, "cloudflare")
+
+    return {
+        "saved": bool(zone or zone_id or edge_target),
+        "dns": {
+            "provider": str(dns.get("provider") or ""),
+            "zone": str(dns.get("zone") or ""),
+            "zoneIdConfigured": bool(str(dns.get("zoneId") or "")),
+            "target": str(dns.get("edgeTarget") or ""),
+        },
+    }
+
+
+def handle_dashboard_setup_check(token: str, body: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Run bounded, secret-free checks used by the first-install wizard."""
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
+    secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
+    now = int(time.time())
+    checks: Dict[str, Dict[str, Any]] = {}
+
+    def check(name: str, required: bool, fn: Callable[[], str]) -> None:
+        try:
+            detail = fn()
+            checks[name] = {"status": "ready", "required": required, "detail": detail}
+        except Exception as exc:  # provider errors become actionable UI data
+            checks[name] = {"status": "error", "required": required, "detail": str(exc)[:500]}
+
+    dns = config.dns
+    token_env = str(dns.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))
+    cf_token = str(os.environ.get(token_env) or secrets.get(token_env) or "")
+    zone_id_env = str(dns.get("zoneIdEnv", "CLOUDFLARE_ZONE_ID"))
+    zone_id = str(os.environ.get(zone_id_env) or secrets.get(zone_id_env) or dns.get("zoneId") or "")
+    cf_required = str(dns.get("provider") or "") == "cloudflare"
+    if cf_token and zone_id:
+        def verify_cloudflare() -> str:
+            client = CloudflareClient(cf_token)
+            client.request("GET", "/user/tokens/verify")
+            client.request("GET", f"/zones/{urllib.parse.quote(zone_id, safe='')}")
+            default_target = config.default_dns_target() if callable(getattr(config, "default_dns_target", None)) else ""
+            target = str(dns.get("edgeTarget") or default_target or "").strip()
+            if cf_required and not target:
+                raise LumaError("Cloudflare zone is reachable but providers.dns.edgeTarget is missing")
+            # A read of the DNS collection validates the zone/API path used by
+            # the later synchronizer without creating a test record.
+            client.request("GET", f"/zones/{urllib.parse.quote(zone_id, safe='')}/dns_records?per_page=1")
+            return "Cloudflare token, zone, DNS API and edge target are reachable"
+        check("cloudflare", cf_required, verify_cloudflare)
+    else:
+        checks["cloudflare"] = {"status": "missing", "required": cf_required, "detail": "configure token and zoneId"}
+
+    acme_email = str(os.environ.get("TRAEFIK_ACME_EMAIL") or secrets.get("TRAEFIK_ACME_EMAIL") or "")
+    checks["acme"] = {"status": "ready" if acme_email else "missing", "required": True, "detail": "ACME email configured" if acme_email else "TRAEFIK_ACME_EMAIL is missing"}
+
+    tailscale_key = str(os.environ.get("TAILSCALE_AUTHKEY") or secrets.get("TAILSCALE_AUTHKEY") or "")
+    if not tailscale_key:
+        checks["tailscale"] = {"status": "skipped", "required": False, "detail": "optional for public-only clusters"}
+    elif not shutil.which("tailscale"):
+        checks["tailscale"] = {"status": "error", "required": False, "detail": "TAILSCALE_AUTHKEY is configured but tailscale is not installed on the manager"}
+    else:
+        try:
+            probe = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=8, check=False)
+            address = probe.stdout.strip().splitlines()[0] if probe.returncode == 0 and probe.stdout.strip() else ""
+            checks["tailscale"] = {"status": "ready" if address else "error", "required": False, "detail": f"tailnet address {address}" if address else (probe.stderr.strip() or "tailscale is not connected")[:500]}
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            checks["tailscale"] = {"status": "error", "required": False, "detail": str(exc)[:500]}
+
+    egress = str(os.environ.get("EGRESS_SUBSCRIPTION_URL") or secrets.get("EGRESS_SUBSCRIPTION_URL") or "")
+    if not egress:
+        checks["egress"] = {"status": "skipped", "required": False, "detail": "optional; use direct registry access when possible"}
+    else:
+        def verify_egress() -> str:
+            parsed = urllib.parse.urlparse(egress)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise LumaError("egress subscription URL must use http or https")
+            request = urllib.request.Request(egress, headers={"User-Agent": "Luma-Setup-Check"})
+            try:
+                with urllib.request.urlopen(request, timeout=20) as response:
+                    raw = response.read(1024 * 1024)
+                config_text = minimal_mihomo_config_from_bytes(raw)
+            except Exception as exc:
+                raise LumaError(f"egress subscription verification failed: {type(exc).__name__}") from exc
+            proxy_count = len(yaml.safe_load(config_text).get("proxies") or [])
+            return f"Egress subscription is reachable ({proxy_count} usable proxy(s))"
+        check("egress", False, verify_egress)
+
+    def verify_registry() -> str:
+        spec = _managed_registry_spec(state)
+        _managed_registry_client(state, spec).request("GET", "/v2/")
+        return f"Registry reachable at {spec['host']}"
+    try:
+        verify_registry()
+        checks["registry"] = {"status": "ready", "required": False, "detail": "Managed registry is reachable"}
+    except Exception as exc:
+        checks["registry"] = {"status": "skipped", "required": False, "detail": str(exc)[:500]}
+
+    result = {"checkedAt": now, "checks": checks}
+    def persist(current: Dict[str, Any]) -> None:
+        current["setupChecks"] = result
+    _mutate_control_state(persist)
+    return result
 
 
 _LAE_ADMIN_DASHBOARD_RESOURCES = frozenset(
@@ -7648,6 +7874,8 @@ def handle_build_config_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                 else:
                     build.pop(key, None)
         state["build"] = build
+        if any(body.get(key) is not None for key in ("registryHost", "pushHost")):
+            _invalidate_setup_checks(state, "registry")
         return _build_summary(state)
 
     return {"build": _mutate_control_state(mutate)}
@@ -11374,6 +11602,57 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     if service.exposure == "cloudflare-tunnel":
         extra_secret_names.add(str(service.tunnel.get("tokenEnv", "CLOUDFLARE_TUNNEL_TOKEN")))
     secrets, secret_result = _render_secrets(state, scope=service.slug, body=body, texts=[manifest], extra_referenced=extra_secret_names)
+    requirements = service_requirements(
+        service,
+        state,
+        config,
+        resolved_secrets=secrets,
+        require_verified=str(body.get("origin") or "") == "dashboard",
+    )
+    requirement_step = {
+        "name": "Check component prerequisites",
+        "status": "start",
+        "message": f"checking {len(requirements['checks'])} requirement(s)",
+    }
+    steps.append(requirement_step)
+    _emit_progress(progress, requirement_step)
+    try:
+        # Dashboard submissions have already shown the full inferred contract
+        # in preview, so enforce it again server-side at the point of commit.
+        # CLI deployments retain compatibility with older manifests that
+        # predate this metadata while still enforcing explicit requirements.
+        require_service_requirements(
+            requirements,
+            component=service.name,
+            explicit_only=str(body.get("origin") or "") != "dashboard",
+        )
+        initialized = initialize_service_requirements(requirements, component=service.name)
+    except Exception as exc:
+        requirement_step.update(status="fail", message=str(exc))
+        _emit_progress(progress, requirement_step)
+        _mark_service_deployment(
+            service,
+            manifest,
+            source_name,
+            status="failed_partial",
+            steps=steps,
+            error=str(exc),
+            git_source=git_source,
+        )
+        _record_deployment_event(
+            kind="service",
+            name=service.name,
+            slug=service.slug,
+            source_name=source_name,
+            origin=_deployment_origin(body),
+            status="failed_partial",
+            error=str(exc),
+            steps=steps,
+            git_source=git_source,
+        )
+        raise
+    requirement_step.update(status="ok", message=f"component prerequisites ready; init: {', '.join(initialized) or 'none'}")
+    _emit_progress(progress, requirement_step)
     if secret_result["scoped"] or body.get("envSecrets") is not None:
         secret_step = {
             "name": "Load scoped env",
@@ -11515,6 +11794,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         "dns": dns_result,
         "orchestrator": orchestrator_result,
         "probe": probe_result,
+        "health": _deployment_health_result(service, probe_result),
         "cniHostports": cni_hostports,
         "storagePreparation": storage_preparation,
         "steps": steps,
@@ -11545,6 +11825,12 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
     _require_nomad_engine(effective_engine)
     service, manifest = _bind_service_local_storage(config, state, service, manifest, inspect_runtime=False)
     service = resolve_service_node_pin(service, state, engine=effective_engine)
+    requirements = service_requirements(
+        service,
+        state,
+        config,
+        require_verified=str(body.get("origin") or "") == "dashboard",
+    )
     stack_text = render_nomad_job(
         runtime_config,
         service,
@@ -11583,8 +11869,10 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
             "replicas": service.replicas,
             "proxy": service.proxy,
             "secrets": [],
+            "requirementsReady": requirements["ready"],
         },
         "artifacts": artifacts,
+        "requirements": requirements,
         "warnings": resource_policy_warnings(service.resources or {}),
     }
 
@@ -13528,6 +13816,55 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     _emit_tcp_ingress_refresh_advisory(steps, progress, state, _compose_tcp_relay_ports(deployment))
     compose_content = str(body.get("composeContent") or "")
     secrets, secret_result = _render_secrets(state, scope=deployment.slug, body=body, texts=[str(body.get("manifest") or ""), compose_content])
+    compose_requirements = {
+        service_name: service_requirements(
+            _compose_service_as_service_spec(deployment, compose_service),
+            state,
+            config,
+            resolved_secrets=secrets,
+            require_verified=str(body.get("origin") or "") == "dashboard",
+        )
+        for service_name, compose_service in deployment.services.items()
+    }
+    requirement_step = {
+        "name": "Check component prerequisites",
+        "status": "start",
+        "message": f"checking {len(compose_requirements)} component(s)",
+    }
+    steps.append(requirement_step)
+    _emit_progress(progress, requirement_step)
+    try:
+        for service_name, requirements in compose_requirements.items():
+            require_service_requirements(
+                requirements,
+                component=f"{deployment.name}/{service_name}",
+                explicit_only=str(body.get("origin") or "") != "dashboard",
+            )
+            initialize_service_requirements(requirements, component=f"{deployment.name}/{service_name}")
+    except Exception as exc:
+        requirement_step.update(status="fail", message=str(exc))
+        _emit_progress(progress, requirement_step)
+        _mark_compose_deployment(
+            deployment,
+            body,
+            source_name,
+            status="failed_partial",
+            steps=steps,
+            error=str(exc),
+        )
+        _record_deployment_event(
+            kind="compose",
+            name=deployment.name,
+            slug=deployment.slug,
+            source_name=source_name,
+            origin=_deployment_origin(body),
+            status="failed_partial",
+            error=str(exc),
+            steps=steps,
+        )
+        raise
+    requirement_step.update(status="ok", message="component prerequisites ready; init plan accepted")
+    _emit_progress(progress, requirement_step)
     if secret_result["scoped"] or body.get("envSecrets") is not None:
         secret_step = {
             "name": "Load scoped env",
@@ -13667,6 +14004,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
             written.append(str(route_target))
 
         probe_results: list[str] = []
+        probe_by_service: dict[str, str] = {}
         for service in compose_public_services(deployment):
             service_spec = _compose_service_as_service_spec(deployment, service)
             route_file = (
@@ -13674,23 +14012,23 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                 if service.exposure == "tailscale-relay"
                 else None
             )
-            probe_results.append(
-                _deploy_step(
-                    steps,
-                    f"Probe public route {service.name}",
-                    lambda service_spec=service_spec, route_file=route_file: _probe_public_route_with_recovery(
-                        token,
-                        service_spec,
-                        stack=deployment.slug,
-                        skip_orchestrator=_skip_orchestrator(body),
-                        steps=steps,
-                        route_file=route_file,
-                        routes_root=routes_root,
-                        progress=progress,
-                    ),
+            probe_result = _deploy_step(
+                steps,
+                f"Probe public route {service.name}",
+                lambda service_spec=service_spec, route_file=route_file: _probe_public_route_with_recovery(
+                    token,
+                    service_spec,
+                    stack=deployment.slug,
+                    skip_orchestrator=_skip_orchestrator(body),
+                    steps=steps,
+                    route_file=route_file,
+                    routes_root=routes_root,
                     progress=progress,
-                )
+                ),
+                progress=progress,
             )
+            probe_results.append(probe_result)
+            probe_by_service[service.name] = probe_result
     except Exception as exc:
         # See handle_deployment: any failure (not just LumaError — OSError, raw
         # socket errors) must reach a terminal state so the record never strands
@@ -13708,6 +14046,13 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         "dns": dns_results,
         "orchestrator": orchestrator_result,
         "probe": probe_results,
+        "health": [
+            _deployment_health_result(
+                _compose_service_as_service_spec(deployment, service),
+                probe_by_service.get(service.name),
+            )
+            for service in deployment.services.values()
+        ],
         "cniHostports": cni_hostports,
         "storagePreparation": storage_preparation,
         "storage": storage_summary(deployment, node_records=_state_nodes(state)),
@@ -13731,6 +14076,15 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
     target = _resolve_control_path(compose_stack_path(config, deployment), config_path)
     _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
     _ensure_compose_exposure_supported_on_nodes(state, deployment)
+    compose_requirements = {
+        service_name: service_requirements(
+            _compose_service_as_service_spec(deployment, service),
+            state,
+            config,
+            require_verified=str(body.get("origin") or "") == "dashboard",
+        )
+        for service_name, service in deployment.services.items()
+    }
     stack_text = render_compose_job(
         runtime_config,
         deployment,
@@ -13793,8 +14147,10 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
             "region": deployment.region,
             "services": services,
             "storageGuard": storage_guard,
+            "requirementsReady": all(item["ready"] for item in compose_requirements.values()),
         },
         "artifacts": artifacts,
+        "requirements": compose_requirements,
         "storage": storage_summary(deployment, node_records=_state_nodes(state)),
         "warnings": list(deployment.warnings) + [
             f"{name}: {warning}"
@@ -14739,6 +15095,7 @@ def _compose_service_as_service_spec(deployment: ComposeDeploymentSpec, service:
         tunnel=service.tunnel,
         tcp=service.tcp,
         proxy=service.proxy,
+        requirements=service.requirements,
     )
 
 
@@ -15018,6 +15375,14 @@ def handle_secret_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if value is None or str(value) == "":
         raise LumaError("secret value is required")
 
+    setup_kind = {
+        "CLOUDFLARE_API_TOKEN": "cloudflare",
+        "CLOUDFLARE_ZONE_ID": "cloudflare",
+        "TAILSCALE_AUTHKEY": "tailscale",
+        "EGRESS_SUBSCRIPTION_URL": "egress",
+        "TRAEFIK_ACME_EMAIL": "acme",
+    }.get(name)
+
     def mutate(state: Dict[str, Any]) -> None:
         require_token(state, token, token_type="deploy")
         if scope:
@@ -15037,6 +15402,9 @@ def handle_secret_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
             state["secrets"] = secrets
         secrets[name] = str(value)
 
+        if setup_kind:
+            _invalidate_setup_checks(state, setup_kind)
+
     mutate_state(mutate)
     return {"name": name, "scope": scope, "saved": True}
 
@@ -15047,6 +15415,14 @@ def handle_secret_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     scope = slugify(raw_scope) if raw_scope else ""
     if not _valid_env_name(name):
         raise LumaError("secret name must be a valid environment variable name")
+
+    setup_kind = {
+        "CLOUDFLARE_API_TOKEN": "cloudflare",
+        "CLOUDFLARE_ZONE_ID": "cloudflare",
+        "TAILSCALE_AUTHKEY": "tailscale",
+        "EGRESS_SUBSCRIPTION_URL": "egress",
+        "TRAEFIK_ACME_EMAIL": "acme",
+    }.get(name)
 
     result = {"removed": False}
 
@@ -15067,6 +15443,8 @@ def handle_secret_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         result["removed"] = name in secrets
         secrets.pop(name, None)
         state["secrets"] = secrets
+        if setup_kind:
+            _invalidate_setup_checks(state, setup_kind)
 
     mutate_state(mutate)
     return {"name": name, "scope": scope, "removed": result["removed"]}
@@ -15112,6 +15490,7 @@ def handle_registry_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
             "password": str(password),
             "updatedAt": int(time.time()),
         }
+        _invalidate_setup_checks(state, "registry")
 
     mutate_state(mutate)
     return {"host": host, "username": username, "saved": True}
@@ -15128,6 +15507,7 @@ def handle_registry_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
         registries.pop(host, None)
         state["registries"] = registries
+        _invalidate_setup_checks(state, "registry")
 
     mutate_state(mutate)
     return {"host": host, "removed": removed}
@@ -15752,6 +16132,49 @@ def _probe_public_route(service: ServiceSpec) -> str:
         return _probe_status_message(url, int(exc.code), headers=headers, body_sample=body_sample)
     except (urllib.error.URLError, TimeoutError, socket.timeout, ssl.SSLError) as exc:
         return f"Public route probe inconclusive: {url} ({exc})"
+
+
+def _deployment_health_result(service: ServiceSpec, probe: str | None = None) -> Dict[str, Any]:
+    """Return a stable, machine-readable post-deploy health summary.
+
+    A public route is marked ready only when the exact route probe completed.
+    Internal services cannot be proven from the control node, so their result
+    explicitly describes the Nomad check configuration instead of claiming
+    runtime readiness.
+    """
+    checked_at = int(time.time())
+    exposure = str(service.exposure or "none")
+    public_exposures = {"cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel"}
+    if exposure in public_exposures:
+        message = str(probe or "Public route probe was not executed")
+        if message.startswith("Public route probe skipped:"):
+            status = "skipped"
+        elif message.startswith("Public route probe inconclusive:"):
+            status = "inconclusive"
+        else:
+            status = "ready"
+        return {
+            "status": status,
+            "kind": "public-route",
+            "target": f"https://{service.domain}/" if service.domain else None,
+            "message": message,
+            "checkedAt": checked_at,
+        }
+    if service.healthcheck:
+        return {
+            "status": "configured",
+            "kind": "nomad-check",
+            "target": service.name,
+            "message": "Nomad health check configured; runtime allocation health is reported by Nomad.",
+            "checkedAt": checked_at,
+        }
+    return {
+        "status": "not-configured",
+        "kind": "nomad-check",
+        "target": service.name,
+        "message": "No service healthcheck is configured.",
+        "checkedAt": checked_at,
+    }
 
 
 def _probe_public_route_with_recovery(
@@ -19451,6 +19874,9 @@ class ControlHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/builds/config":
                 self._json(200, handle_build_config_set(token, body))
                 return
+            if self.path == "/v1/dashboard/setup/configure":
+                self._json(200, handle_dashboard_setup_configure(token, body))
+                return
             if self.path == "/v1/builds/local/prepare":
                 self._json(200, handle_local_build_prepare(token, body))
                 return
@@ -20564,6 +20990,10 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             return _json_response(202, await run_in_threadpool(handle_manager_update_start, token, body))
         if path == "/v1/dashboard/route-sentinel":
             return _json_response(200, await run_in_threadpool(handle_route_sentinel, token, body))
+        if path == "/v1/dashboard/setup/check":
+            return _json_response(200, await run_in_threadpool(handle_dashboard_setup_check, token, body))
+        if path == "/v1/dashboard/setup/configure":
+            return _json_response(200, await run_in_threadpool(handle_dashboard_setup_configure, token, body))
         handler = routes.get(path)
         if handler:
             return _json_response(200, await run_in_threadpool(handler, token, body))

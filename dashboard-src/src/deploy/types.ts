@@ -99,6 +99,14 @@ export type DeployStep = {
   result?: unknown;
 };
 
+export type DeploymentHealth = {
+  status?: string;
+  kind?: string;
+  target?: string | null;
+  message?: string;
+  checkedAt?: number;
+};
+
 export type DeployPreviewArtifact = {
   kind: string;
   path: string;
@@ -116,6 +124,15 @@ export type DeployPreviewResult = {
     warnings?: string[];
   };
   warnings?: string[];
+  requirements?: ServiceRequirements | Record<string, ServiceRequirements>;
+};
+
+export type ServiceRequirements = {
+  ready?: boolean;
+  requiredSecrets?: string[];
+  init?: string[];
+  notes?: string[];
+  checks?: Array<{ kind?: string; required?: boolean; status?: string; detail?: string; missing?: string[] }>;
 };
 
 export type DeployWorkspaceData = {

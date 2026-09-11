@@ -8,3 +8,7 @@ domain: panel.example.com
 port: 8080
 publishPort: 8080            # host port published on the home node
 replicas: 1
+requirements:
+  capabilities: [cloudflare, tailscale]
+  init: [tailscale-node, cloudflare-dns]
+  notes: ["A home node with a Tailscale address is required."]

@@ -51,6 +51,7 @@ luma deploy status.yaml
 | `proxy` | 否 | boolean | 服务运行时是否需要走 egress proxy。为 `true` 时会自动挂上 egress 代理和代理环境变量。调度仍按 `region`。不是镜像拉取代理。 |
 | `resources` | 否 | map | 渲染到 Nomad task 的 `resources` 块，CPU 使用 `reservations.cpus` 弹性共享，不执行 `limits.cpus`。内存 reservation 映射到 `memory`、limit 映射到 `memory_max`；首次部署这类任务时会自动启用 Nomad 内存超卖，确保 limit 真正成为容器硬上限。 |
 | `healthcheck` | 否 | map | 渲染成 Nomad `check`（脚本/http）。公共 HTTP 服务建议探测本地端口，例如 `http://127.0.0.1:<port>/healthz`。 |
+| `requirements` | 否 | map | 组件依赖契约。支持 `capabilities`（`cloudflare` / `tailscale` / `egress` / `registry`）、`secrets`、`init` 和 `notes`。`init` 支持 `cloudflare-dns`、`cloudflare-tunnel`、`tailscale-node`、`egress`、`registry`、`secrets`。部署预览会合并显式声明与运行时推导，并在必需项缺失时阻止提交；正式部署会先执行并记录初始化计划。 |
 | `publishPort` | 公开服务可用 | integer | 显式启用 Nomad bridge 端口映射，把宿主机 `publishPort` 转到容器 `port`。Linux 节点可用；Mac/OrbStack 节点不要设置，保持 host mode 并让 route 指向真实 `port`。 |
 | `relay` | tailscale-relay 可选 | map | 覆盖 Tailscale relay 上游。默认跟随实际运行 allocation 所在的 home 节点自动推导。 |
 | `tcp` | tcp-relay 可选 | map | TCP relay 高级上游覆盖。正常情况不需要填写；入口由 `publishPort` / `port` 自动派生。 |
@@ -171,6 +172,23 @@ image: ghcr.io/acme/private-api:1.0.0
 ```
 
 部署时 Luma 会从 image 推断 registry host，使用匹配的凭证，并把 registry auth 注入 Nomad jobspec 的 docker `config.auth` 块，让被调度的节点可以拉取私有镜像。`luma registry list` 只显示 registry host 和 username，不显示 password/token。
+
+## Compose 组件依赖
+
+Compose sidecar 的 `services.<name>` 可以声明与单服务相同的 `requirements` 契约：
+
+```yaml
+services:
+  web:
+    exposure: cn-edge
+    domain: web.example.com
+    port: 3000
+    requirements:
+      capabilities: [cloudflare]
+      init: [cloudflare-dns]
+```
+
+Control 会在 Compose 预览和部署前逐服务检查这些依赖。未知 capability 或初始化动作会在解析阶段直接报错，不会被静默忽略。
 
 常见 GitHub 场景：GitHub Actions 把应用镜像推到私有 GHCR，同一个仓库还可以用 GitHub Pages 发布文档或营销页。Luma 只需要 GHCR 的 registry credential 来拉运行时镜像，不需要把 GitHub token 写进 manifest，也不影响 GitHub Pages 的静态站点发布。
 

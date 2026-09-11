@@ -124,7 +124,7 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
       content = <DeploymentsPage lang={lang} token={token} />;
       break;
     case "nodes":
-      content = <NodesPage lang={lang} vm={vm} theme={theme} token={token} controlVersion={payload.cluster?.version || ""} onSelectNode={props.onSelectNode} onTerminal={props.onTerminal} onRefresh={props.onRefresh} />;
+      content = <NodesPage lang={lang} vm={vm} theme={theme} token={token} nodeJoin={payload.nodeJoin} controlVersion={payload.cluster?.version || ""} onSelectNode={props.onSelectNode} onTerminal={props.onTerminal} onRefresh={props.onRefresh} />;
       break;
     case "lae":
       content = <LaeAdminPage lang={lang} token={token} />;
@@ -139,7 +139,7 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
       content = <RegistryPage lang={lang} token={token} />;
       break;
     case "credentials":
-      content = <CredentialsPage lang={lang} token={token} vm={vm} />;
+      content = <CredentialsPage lang={lang} token={token} vm={vm} readiness={payload.readiness} />;
       break;
     default:
       content = <NotFound lang={lang} onHome={() => props.onNavigate("overview")} />;

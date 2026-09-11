@@ -2,7 +2,7 @@ import "./resourceWorkspaces.css";
 import { Input } from "@/components/ui/input";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, ChevronDown, GitBranch, KeyRound, LockKeyhole, PackageCheck, ShieldCheck } from "lucide-react";
+import { AlertCircle, ChevronDown, GitBranch, KeyRound, LockKeyhole, PackageCheck, ShieldCheck, WandSparkles } from "lucide-react";
 import {
   fetchControlResources,
   removeGitProvider,
@@ -16,13 +16,14 @@ import {
 } from "../controlResourcesApi";
 import { Badge, CodeCell, PrimaryCell, SelectControl, StatePill } from "../components/primitives";
 import { useConfirm } from "../components/ConfirmDialog";
-import type { DashboardStorageClass, Lang } from "../types";
+import type { DashboardStorageClass, Lang, Readiness } from "../types";
 import type { DashboardViewModel } from "../dashboardViewModel";
 import { PageHeader } from "./PageHeader";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useRouter, toHref } from "../router";
+import { configureSetup, runSetupChecks, setBuildConfig, type SetupCheckPayload } from "../setupApi";
 
 type CredentialsState = {
   secrets: string[];
@@ -135,15 +136,18 @@ export function CredentialsPage({
   lang,
   token,
   vm,
+  readiness,
 }: {
   lang: Lang;
   token: string;
   vm: DashboardViewModel;
+  readiness?: Readiness;
 }) {
   const zh = lang === "zh";
   const { path, search, navigate } = useRouter();
+  const setupReadiness = readiness?.setup || {};
   const section = path.split("/")[2] || "secrets";
-  const activeTab = ["registries", "git", "storage", "maintenance"].includes(section) ? section : "secrets";
+  const activeTab = ["setup", "registries", "git", "storage", "maintenance"].includes(section) ? section : "secrets";
   const editing = path.endsWith("/new") && ["secrets", "registries", "git"].includes(activeTab);
   const setActiveTab = (tab: string) => navigate(`/settings/${tab}`);
   const [state, setState] = useState<CredentialsState>({
@@ -161,6 +165,8 @@ export function CredentialsPage({
   const [secretForm, setSecretForm] = useState({ name: "", scope: "", value: "" });
   const [registryForm, setRegistryForm] = useState({ host: "", username: "", password: "" });
   const [gitProviderForm, setGitProviderForm] = useState({ type: "github", account: "", baseUrl: "", cloneBaseUrl: "", username: "", token: "" });
+  const [setupForm, setSetupForm] = useState({ cloudflareToken: "", cloudflareZone: readiness?.dns?.zone || "", cloudflareZoneId: "", edgeTarget: readiness?.dns?.target || "", tailscaleAuthKey: "", acmeEmail: "", egressSubscriptionUrl: "", registryHost: "", pushHost: "" });
+  const [setupChecks, setSetupChecks] = useState<SetupCheckPayload | null>(readiness?.setupLastCheck || null);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [writeError, setWriteError] = useState("");
@@ -203,6 +209,8 @@ export function CredentialsPage({
     setSecretForm({ name: params.get("name") || "", scope: params.get("scope") || "", value: "" });
     setRegistryForm({ host: "", username: "", password: "" });
     setGitProviderForm({ type: "github", account: "", baseUrl: "", cloneBaseUrl: "", username: "", token: "" });
+    setSetupForm({ cloudflareToken: "", cloudflareZone: readiness?.dns?.zone || "", cloudflareZoneId: "", edgeTarget: readiness?.dns?.target || "", tailscaleAuthKey: "", acmeEmail: "", egressSubscriptionUrl: "", registryHost: "", pushHost: "" });
+    setSetupChecks(null);
     setWriteError("");
   }, [path, search]);
 
@@ -241,6 +249,47 @@ export function CredentialsPage({
     } finally {
       setBusy("");
     }
+  };
+
+  const submitSetup = async () => {
+    const values = [
+      ["CLOUDFLARE_API_TOKEN", setupForm.cloudflareToken],
+      ["CLOUDFLARE_ZONE_ID", setupForm.cloudflareZoneId],
+      ["TAILSCALE_AUTHKEY", setupForm.tailscaleAuthKey],
+      ["TRAEFIK_ACME_EMAIL", setupForm.acmeEmail],
+      ["EGRESS_SUBSCRIPTION_URL", setupForm.egressSubscriptionUrl],
+    ] as const;
+    const pending = values.filter(([, value]) => value.trim());
+    const hasRegistry = Boolean(setupForm.registryHost.trim() || setupForm.pushHost.trim());
+    const hasDnsConfig = Boolean(setupForm.cloudflareZone.trim() || setupForm.cloudflareZoneId.trim() || setupForm.edgeTarget.trim());
+    if (!pending.length && !hasRegistry && !hasDnsConfig) return;
+    if (hasRegistry && (!setupForm.registryHost.trim() || !setupForm.pushHost.trim())) {
+      setWriteError(zh ? "registryHost 和 pushHost 需要同时填写。" : "registryHost and pushHost must be provided together.");
+      return;
+    }
+    setBusy("setup"); setNotice(""); setWriteError("");
+    try {
+      if (hasDnsConfig) {
+        await configureSetup(token, {
+          cloudflareZone: setupForm.cloudflareZone.trim(),
+          cloudflareZoneId: setupForm.cloudflareZoneId.trim(),
+          edgeTarget: setupForm.edgeTarget.trim(),
+        });
+      }
+      for (const [name, value] of pending) await setSecret({ token, name, value: value.trim() });
+      if (hasRegistry) await setBuildConfig(token, { registryHost: setupForm.registryHost.trim(), pushHost: setupForm.pushHost.trim() });
+      setSetupForm({ cloudflareToken: "", cloudflareZone: setupForm.cloudflareZone.trim(), cloudflareZoneId: "", edgeTarget: setupForm.edgeTarget.trim(), tailscaleAuthKey: "", acmeEmail: "", egressSubscriptionUrl: "", registryHost: "", pushHost: "" });
+      setNotice(zh ? "基础设施配置已保存。后续部署会使用新配置。" : "Infrastructure settings saved. New deployments will use them.");
+      await refresh();
+    } catch (error) { setWriteError(String(error instanceof Error ? error.message : error)); }
+    finally { setBusy(""); }
+  };
+
+  const verifySetup = async () => {
+    setBusy("setup-check"); setWriteError("");
+    try { setSetupChecks(await runSetupChecks(token)); }
+    catch (error) { setWriteError(String(error instanceof Error ? error.message : error)); }
+    finally { setBusy(""); }
   };
 
   const submitRegistry = async () => {
@@ -408,6 +457,7 @@ export function CredentialsPage({
           <Tabs value={activeTab}>
             <TabsList aria-label={zh ? "凭据视图" : "Credential views"}>
               <TabsTrigger value="secrets" onClick={() => setActiveTab("secrets")}><LockKeyhole />{zh ? "密钥" : "Secrets"}</TabsTrigger>
+              <TabsTrigger value="setup" onClick={() => setActiveTab("setup")}><WandSparkles />{zh ? "首次安装向导" : "Setup wizard"}</TabsTrigger>
               <TabsTrigger value="registries" onClick={() => setActiveTab("registries")}><PackageCheck />{zh ? "镜像仓库" : "Registries"}</TabsTrigger>
               <TabsTrigger value="git" onClick={() => setActiveTab("git")}><GitBranch />Git</TabsTrigger>
               <TabsTrigger value="storage" onClick={() => setActiveTab("storage")}>{zh ? "存储" : "Storage"}</TabsTrigger>
@@ -415,7 +465,18 @@ export function CredentialsPage({
             </TabsList>
           </Tabs>
 
-          {activeTab === "maintenance" ? <div className="empty-state"><h2>{zh ? "集群维护" : "Cluster maintenance"}</h2><p>{zh ? "查看系统版本、升级 CLI 与 Agent，并跟踪升级任务。" : "Inspect system versions, upgrade CLI and agents, and track maintenance tasks."}</p><Button render={<a href={toHref("/fleet/maintenance")} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate("/fleet/maintenance"); }} />}>{zh ? "进入系统维护" : "Open maintenance"}</Button></div> : null}
+          {activeTab === "setup" ? (
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="md:col-span-2 grid gap-2 sm:grid-cols-5">{["cloudflare", "acme", "tailscale", "egress", "registry"].map((id) => { const item = setupReadiness[id]; const ok = Boolean(item?.configured); const required = Boolean(item?.required); return <div key={id} className="rounded-lg border p-3"><div className="flex items-center justify-between gap-2"><strong className="capitalize">{id}</strong><StatePill label={ok ? (zh ? "正常" : "Ready") : required ? (zh ? "处理" : "Action") : (zh ? "可选" : "Optional")} value={ok ? "ready" : required ? "error" : "pending"} /></div><p className="mt-1 text-xs text-muted-foreground">{ok ? (zh ? "已配置" : "Configured") : required ? (zh ? "需要处理" : "Action required") : (zh ? "可选" : "Optional")}</p></div>; })}</div>
+              <div className="rounded-xl border p-4"><h2 className="font-semibold">Cloudflare</h2><p className="mb-3 text-sm text-muted-foreground">{zh ? "用于 DNS、边缘入口和证书自动化。填写后会同步到控制面配置。" : "Used for DNS, edge routes, and certificate automation. Saving also updates Control's DNS configuration."}</p><Input type="password" placeholder="CLOUDFLARE_API_TOKEN" value={setupForm.cloudflareToken} onChange={(e) => setSetupForm((v) => ({ ...v, cloudflareToken: e.target.value }))} /><Input className="mt-2" placeholder={zh ? "Zone 域名，例如 example.com" : "Zone name, e.g. example.com"} value={setupForm.cloudflareZone} onChange={(e) => setSetupForm((v) => ({ ...v, cloudflareZone: e.target.value }))} /><Input className="mt-2" placeholder="CLOUDFLARE_ZONE_ID" value={setupForm.cloudflareZoneId} onChange={(e) => setSetupForm((v) => ({ ...v, cloudflareZoneId: e.target.value }))} /><Input className="mt-2" placeholder={zh ? "边缘目标 IP/域名，例如 203.0.113.10" : "Edge target IP/hostname, e.g. 203.0.113.10"} value={setupForm.edgeTarget} onChange={(e) => setSetupForm((v) => ({ ...v, edgeTarget: e.target.value }))} /></div>
+              <div className="rounded-xl border p-4"><h2 className="font-semibold">Tailscale</h2><p className="mb-3 text-sm text-muted-foreground">{zh ? "用于跨网络节点接入和内部服务互联。" : "Used for cross-network node joins and private service connectivity."}</p><Input type="password" placeholder="TAILSCALE_AUTHKEY" value={setupForm.tailscaleAuthKey} onChange={(e) => setSetupForm((v) => ({ ...v, tailscaleAuthKey: e.target.value }))} /></div>
+              <div className="rounded-xl border p-4"><h2 className="font-semibold">ACME / TLS</h2><p className="mb-3 text-sm text-muted-foreground">{zh ? "用于 Traefik 自动签发 HTTPS 证书。" : "Used by Traefik to issue HTTPS certificates."}</p><Input type="email" placeholder="TRAEFIK_ACME_EMAIL" value={setupForm.acmeEmail} onChange={(e) => setSetupForm((v) => ({ ...v, acmeEmail: e.target.value }))} /></div>
+              <div className="rounded-xl border p-4"><h2 className="font-semibold">Egress</h2><p className="mb-3 text-sm text-muted-foreground">{zh ? "需要代理出网或大陆节点拉取镜像时填写。" : "Use when workloads or mainland nodes need proxy egress."}</p><Input type="url" placeholder="EGRESS_SUBSCRIPTION_URL" value={setupForm.egressSubscriptionUrl} onChange={(e) => setSetupForm((v) => ({ ...v, egressSubscriptionUrl: e.target.value }))} /></div>
+              <div className="rounded-xl border p-4 md:col-span-2"><h2 className="font-semibold">Builder Registry</h2><p className="mb-3 text-sm text-muted-foreground">{zh ? "启用构建或私有镜像分发时填写 Builder 可达地址。" : "Configure Builder-reachable registry addresses for builds and private image distribution."}</p><div className="grid gap-2 sm:grid-cols-2"><Input placeholder="registryHost 例如 100.64.0.10:5000" value={setupForm.registryHost} onChange={(e) => setSetupForm((v) => ({ ...v, registryHost: e.target.value }))} /><Input placeholder="pushHost 例如 100.64.0.10:5000" value={setupForm.pushHost} onChange={(e) => setSetupForm((v) => ({ ...v, pushHost: e.target.value }))} /></div></div>
+              <div className="md:col-span-2 flex flex-wrap items-center gap-3"><Button disabled={busy === "setup"} onClick={() => void submitSetup()}>{busy === "setup" ? (zh ? "保存中…" : "Saving…") : (zh ? "保存配置" : "Save settings")}</Button><Button variant="outline" disabled={busy === "setup-check"} onClick={() => void verifySetup()}>{busy === "setup-check" ? (zh ? "验证中…" : "Checking…") : (zh ? "立即验证依赖" : "Verify dependencies")}</Button><p className="basis-full text-xs text-muted-foreground">{zh ? "空白字段不会覆盖已有 Secret；值只写入，不会回显。验证会调用对应服务并保存最近结果。" : "Blank fields do not overwrite existing secrets; values are write-only. Verification calls each provider and stores the latest result."}</p></div>
+              {setupChecks ? <div className="md:col-span-2 rounded-xl border p-4"><h2 className="font-semibold">{zh ? "最近验证结果" : "Latest verification"}</h2><div className="mt-3 grid gap-2 sm:grid-cols-2">{Object.entries(setupChecks.checks || {}).map(([id, item]) => <div key={id} className="rounded-lg bg-muted/40 p-3"><div className="flex justify-between gap-2"><strong className="capitalize">{id}</strong><StatePill label={item.status || "unknown"} value={item.status} /></div><p className="mt-1 text-xs text-muted-foreground">{item.detail || "-"}</p></div>)}</div></div> : null}
+            </div>
+          ) : null}
           {activeTab === "secrets" ? (
             parsedSecrets.length ? (
               <div className="secret-groups">

@@ -5,3 +5,7 @@ image: ghcr.io/your-org/internal-tool:latest
 region: home
 exposure: none
 replicas: 1
+requirements:
+  capabilities: [tailscale]
+  init: [tailscale-node]
+  notes: ["A Tailscale-connected home node is required for private access."]

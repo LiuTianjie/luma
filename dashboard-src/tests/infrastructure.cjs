@@ -54,7 +54,10 @@ test("fleet opens at inventory and preserves independent region, network, and ma
     const html = renderToStaticMarkup(React.createElement(NodesPage, props));
     const rendered = [...html.matchAll(/data-capability="([^"]+)"/g)].map((match) => match[1]);
     assert.deepEqual(rendered, expected, url);
-    if (url === "/fleet/join") assert.match(html, /luma node join/);
+    if (url === "/fleet/join") {
+      assert.doesNotMatch(html, /<node-join-token>/);
+      assert.match(html, /Control did not return a node join token/);
+    }
     if (url !== "/fleet/network") assert.match(html, /href="\/dashboard\/fleet\/maintenance"/);
     else assert.doesNotMatch(html, /aria-label="Node management"/);
     if (url !== "/fleet") assert.doesNotMatch(html, /aria-label="Page metrics"/);

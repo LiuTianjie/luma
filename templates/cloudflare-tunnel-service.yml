@@ -7,5 +7,10 @@ exposure: cloudflare-tunnel   # User -> Cloudflare -> cloudflared -> service
 domain: tool.example.com
 port: 8080
 replicas: 1
+requirements:
+  capabilities: [cloudflare]
+  secrets: [CLOUDFLARE_TUNNEL_TOKEN]
+  init: [cloudflare-tunnel]
+  notes: ["Create a Cloudflare Tunnel and store its token before deployment."]
 tunnel:
   tokenEnv: CLOUDFLARE_TUNNEL_TOKEN   # store with: luma secret set CLOUDFLARE_TUNNEL_TOKEN

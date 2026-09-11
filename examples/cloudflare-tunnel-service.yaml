@@ -5,5 +5,9 @@ exposure: cloudflare-tunnel
 domain: tool.example.com
 port: 8080
 replicas: 1
+requirements:
+  capabilities: [cloudflare]
+  secrets: [CLOUDFLARE_TUNNEL_TOKEN]
+  init: [cloudflare-tunnel]
 tunnel:
   tokenEnv: CLOUDFLARE_TUNNEL_TOKEN

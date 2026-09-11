@@ -5,3 +5,6 @@ exposure: cn-edge
 domain: whoami.example.com
 port: 80
 replicas: 1
+requirements:
+  capabilities: [cloudflare]
+  init: [cloudflare-dns]

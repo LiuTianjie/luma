@@ -1,0 +1,8 @@
+name: hello-world
+image: traefik/whoami:v1.10.3
+region: cn
+exposure: none
+port: 80
+replicas: 1
+healthcheck:
+  test: ["CMD", "true"]

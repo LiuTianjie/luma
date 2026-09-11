@@ -6,5 +6,8 @@ domain: panel.example.com
 port: 8080
 publishPort: 8080
 replicas: 1
+requirements:
+  capabilities: [cloudflare, tailscale]
+  init: [tailscale-node, cloudflare-dns]
 relay:
   host: home-1.your-tailnet.ts.net

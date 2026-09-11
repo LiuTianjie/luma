@@ -3,5 +3,7 @@ image: ghcr.io/your-org/fetch-worker:latest
 region: global
 exposure: none
 replicas: 1
+requirements:
+  init: [registry]
 env:
   QUEUE_URL: redis://redis:6379/0

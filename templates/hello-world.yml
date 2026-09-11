@@ -1,0 +1,10 @@
+# Luma first-install smoke service. It has no DNS, Tailscale, egress, or
+# application secret requirement and is safe to run on the first ready node.
+name: hello-world
+image: traefik/whoami:v1.10.3
+region: cn
+exposure: none
+port: 80
+replicas: 1
+healthcheck:
+  test: ["CMD", "true"]

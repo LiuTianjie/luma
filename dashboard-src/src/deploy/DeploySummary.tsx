@@ -1,6 +1,6 @@
 import type { SubmissionSummary } from "./submissionSummary";
 import type { Lang } from "../types";
-import type { ComposeDeploymentDraft, DeployMode, DeployPreviewResult, DeployStep, ServiceManifestDraft } from "./types";
+import type { ComposeDeploymentDraft, DeployMode, DeployPreviewResult, DeployStep, DeploymentHealth, ServiceManifestDraft } from "./types";
 
 function compact(values: Array<string | number | undefined | null | false>) {
   return values.filter((value) => value !== undefined && value !== null && value !== false && value !== "").join(" / ") || "-";
@@ -15,6 +15,7 @@ export function DeploySummary({
   steps,
   errors,
   submission,
+  health,
 }: {
   lang: Lang;
   mode: DeployMode;
@@ -24,6 +25,7 @@ export function DeploySummary({
   steps: DeployStep[];
   errors: string[];
   submission?: SubmissionSummary | null;
+  health?: DeploymentHealth[];
 }) {
   const zh = lang === "zh";
   const publicTargets = mode === "service"
@@ -33,6 +35,14 @@ export function DeploySummary({
     ? composeDraft.volumes.map((volume) => volume.storageMode === "storageClass" ? `${volume.name}:${volume.storageClass || (zh ? "未选择" : "not selected")}` : `${volume.name}: ${volume.localNode || (zh ? "部署节点本地目录" : "deployment-node directory")}`)
     : (serviceDraft.volumeMounts || []).map((volume) => volume.storageMode === "storageClass" ? `${volume.name}:${volume.storageClass || (zh ? "未选择" : "not selected")}` : `${volume.name}: ${zh ? "部署节点本地卷" : "deployment-node volume"}`);
   const previewWarnings = preview ? [...(preview.warnings || []), ...(preview.storage?.warnings || [])] : [];
+  const requirementGroups = preview?.requirements
+    ? Array.isArray(preview.requirements)
+      ? []
+      : "checks" in preview.requirements
+        ? [preview.requirements]
+        : Object.values(preview.requirements)
+    : [];
+  const requirementFailures = requirementGroups.flatMap((group) => (group?.checks || []).filter((check: { required?: boolean; status?: string }) => check.required && check.status !== "ready"));
   const summaryState = errors.length
     ? (zh ? "待修正" : "Blocked")
     : preview
@@ -62,11 +72,19 @@ export function DeploySummary({
           <dl>
             <div><dt>{zh ? "生成产物" : "Artifacts"}</dt><dd>{preview.artifacts?.length || 0}</dd></div>
             <div><dt>{zh ? "提示" : "Warnings"}</dt><dd>{previewWarnings.length}</dd></div>
+            <div><dt>{zh ? "初始化动作" : "Init actions"}</dt><dd>{requirementGroups.flatMap((group) => group?.init || []).join(", ") || (zh ? "无" : "None")}</dd></div>
           </dl>
           {preview.artifacts?.length ? preview.artifacts.map((artifact) => (
             <p key={`${artifact.kind}-${artifact.path}`}>{artifact.kind}: {artifact.path}</p>
           )) : null}
           {previewWarnings.map((warning, index) => <p key={`${warning}-${index}`}>{warning}</p>)}
+          {requirementFailures.length ? <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3"><strong>{zh ? "部署前置条件" : "Deployment prerequisites"}</strong>{requirementFailures.map((check, index) => <p key={`${check.kind}-${index}`}>{check.kind}: {check.detail || (check.missing || []).join(", ") || (zh ? "未满足" : "not ready")}</p>)}</div> : <p className="mt-3 text-emerald-700">{zh ? "部署前置条件已满足" : "Deployment prerequisites are ready"}</p>}
+        </div>
+      ) : null}
+      {health?.length ? (
+        <div className="deploy-summary-card">
+          <h3>{zh ? "交付健康" : "Delivery health"}</h3>
+          {health.map((item, index) => <div className="deploy-step" key={`${item.target || item.kind || "health"}-${index}`}><span className={`deploy-step-status ${item.status || ""}`}>{item.status || "unknown"}</span><strong className="deploy-step-name">{item.target || item.kind || (zh ? "服务" : "Service")}</strong><small className="deploy-step-message">{item.message || "-"}</small></div>)}
         </div>
       ) : null}
       {errors.length ? (

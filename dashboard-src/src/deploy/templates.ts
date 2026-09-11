@@ -94,6 +94,23 @@ function composeVolume(name: string, target: string, overrides: Partial<ComposeV
 
 export const DEPLOY_TEMPLATES: DeployTemplate[] = [
   {
+    id: "service-hello-world",
+    mode: "service",
+    name: "hello-world 首装验证",
+    nameEn: "hello-world first install",
+    description: "零 Secret、零 DNS 的最小服务，用于验证首台节点和 Nomad 调度。",
+    descriptionEn: "A zero-secret, no-DNS smoke service for validating the first node and Nomad scheduling.",
+    tags: ["first-install", "smoke", "internal"],
+    service: serviceDraft({
+      name: "hello-world",
+      image: "traefik/whoami:v1.10.3",
+      exposure: "none",
+      domain: "",
+      port: "80",
+      healthcheckUrl: "http://127.0.0.1:80/",
+    }),
+  },
+  {
     id: "service-custom",
     mode: "service",
     name: "自定义配置",

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from .config import LumaConfig
 from .errors import LumaError
+from .dependencies import validate_requirement_block
 from .io import dump_yaml, load_yaml
 from .regions import parse_region_name, validate_region_exposure
 from .service import VALID_EXPOSURES, slugify, tcp_entrypoint_name
@@ -67,6 +68,7 @@ class ComposeServiceSpec:
     relay: Dict[str, Any] = field(default_factory=dict)
     tunnel: Dict[str, Any] = field(default_factory=dict)
     tcp: Dict[str, Any] = field(default_factory=dict)
+    requirements: Dict[str, Any] = field(default_factory=dict)
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -455,6 +457,7 @@ def _load_compose_services(raw: Any) -> Dict[str, ComposeServiceSpec]:
         relay = value.get("relay") or {}
         tunnel = value.get("tunnel") or {}
         tcp = value.get("tcp") or {}
+        requirements = validate_requirement_block(value.get("requirements") or {}, label=f"services.{name}.requirements")
         if not isinstance(relay, dict):
             raise LumaError(f"services.{name}.relay must be a mapping")
         if not isinstance(tunnel, dict):
@@ -474,6 +477,7 @@ def _load_compose_services(raw: Any) -> Dict[str, ComposeServiceSpec]:
             relay=dict(relay),
             tunnel=dict(tunnel),
             tcp=dict(tcp),
+            requirements=requirements,
             raw=dict(value),
         )
     return result

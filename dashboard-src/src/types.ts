@@ -5,12 +5,22 @@ export type Readiness = {
     ready?: boolean;
     provider?: string;
     zone?: string;
+    zoneIdConfigured?: boolean;
     target?: string;
   };
   nomad?: {
     available?: boolean;
     engine?: string;
     leader?: string;
+  };
+  setup?: Record<string, {
+    configured?: boolean;
+    required?: boolean;
+    missing?: string[];
+  }>;
+  setupLastCheck?: {
+    checkedAt?: number;
+    checks?: Record<string, { status?: string; required?: boolean; detail?: string }>;
   };
 };
 
@@ -83,6 +93,11 @@ export type DashboardNode = {
   terminalStatus?: string;
   metrics?: NodeMetrics;
   capacity?: ResourceValues;
+};
+
+export type DashboardNodeJoin = {
+  token?: string;
+  domain?: string;
 };
 
 export type DashboardBuildNode = {
@@ -201,6 +216,7 @@ export type DashboardRegion = {
 };
 
 export type DashboardPayload = {
+  nodeJoin?: DashboardNodeJoin;
   cluster?: {
     id?: string;
     version?: string;

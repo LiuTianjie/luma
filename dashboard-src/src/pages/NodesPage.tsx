@@ -27,11 +27,12 @@ function agentReady(node: DashboardNode) {
   return (node.agentStatus || "").toLowerCase() === "ready";
 }
 
-// Fill the control domain from where the dashboard is served. The join token stays a
-// placeholder — it is never rendered from state; run `luma node join` on the host.
-function joinCommand() {
-  const origin = typeof window !== "undefined" ? window.location.origin : "https://<control-domain>";
-  return `luma node join ${origin} --token <node-join-token> --region home --name <node-name>`;
+function joinCommand(nodeJoin?: { token?: string; domain?: string }, region?: string) {
+  const rawOrigin = nodeJoin?.domain || (typeof window !== "undefined" ? window.location.origin : "https://<control-domain>");
+  const origin = /^https?:\/\//i.test(rawOrigin) ? rawOrigin : `https://${rawOrigin}`;
+  const token = nodeJoin?.token?.trim() || "";
+  if (!token) return "";
+  return `luma node join ${origin} --token ${token} --region ${region || "<region>"} --name <node-name>`;
 }
 
 export function NodesPage({
@@ -39,6 +40,7 @@ export function NodesPage({
   vm,
   theme,
   token,
+  nodeJoin,
   onSelectNode,
   onTerminal,
   onRefresh,
@@ -48,6 +50,7 @@ export function NodesPage({
   vm: DashboardViewModel;
   theme: "light" | "dark";
   token: string;
+  nodeJoin?: { token?: string; domain?: string };
   onSelectNode: (node: DashboardNode) => void;
   onTerminal: (node: DashboardNode) => void;
   onRefresh: () => Promise<void> | void;
@@ -61,7 +64,9 @@ export function NodesPage({
   const managers = vm.nodes.filter(managerNode).length;
   const agents = vm.nodes.filter(agentReady).length;
   const terminalNodes = vm.nodes.filter((node) => node.terminalConnected).length;
-  const command = joinCommand();
+  const defaultRegion = vm.regions.find((item) => !item.builtin)?.name || vm.regions[0]?.name;
+  const command = joinCommand(nodeJoin, defaultRegion);
+  const joinTokenAvailable = Boolean(nodeJoin?.token?.trim());
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState(false);
 
@@ -133,11 +138,15 @@ export function NodesPage({
             <CardTitle>{zh ? "在目标机器上执行" : "Run on the target host"}</CardTitle>
             <CardDescription>
               {zh
-                ? "控制域名已按当前访问地址填好。把 <node-join-token> 换成 luma node join token，--region 换成区域管理中创建的 Region 名，<node-name> 换成节点名后在目标机器执行。"
-                : "The control domain is filled from the current address. Replace <node-join-token> with a node join token, --region with a created region name, and <node-name> with the node name, then run it on the target host."}
+              ? joinTokenAvailable
+                ? "命令已包含当前集群的节点加入 Token 和可用区域。把 <region> 或当前区域按需调整，把 <node-name> 换成节点名后在目标机器执行。"
+                : "控制面暂时没有返回节点加入 Token。请刷新 Dashboard；如果仍然缺失，请先升级 Manager 控制面。"
+              : joinTokenAvailable
+                ? "The command includes this cluster's node join token and an available region. Adjust the region if needed and replace <node-name> with the host name."
+                : "Control did not return a node join token. Refresh the Dashboard; if it remains missing, update the Manager control plane first."}
             </CardDescription>
             <CardAction>
-              <Button variant="outline" size="sm" onClick={() => void copyCommand()}>
+              <Button variant="outline" size="sm" disabled={!joinTokenAvailable} onClick={() => void copyCommand()}>
                 {copied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
                 {copied ? (zh ? "已复制" : "Copied") : (zh ? "复制命令" : "Copy command")}
               </Button>
@@ -145,7 +154,7 @@ export function NodesPage({
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             {copyError ? <p role="status">{zh ? "无法自动复制，请选择下面的命令手动复制。" : "Could not copy automatically. Select and copy the command below."}</p> : null}
-            <pre className="overflow-auto rounded-lg bg-muted p-3 font-mono text-sm"><code>{command}</code></pre>
+            <pre className="overflow-auto rounded-lg bg-muted p-3 font-mono text-sm"><code>{command || (zh ? "等待控制面返回真实 Token…" : "Waiting for Control to return the real token…")}</code></pre>
           </CardContent>
         </Card>
       )}

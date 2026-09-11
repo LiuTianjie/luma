@@ -11,7 +11,7 @@ import { DeploySummary } from "./DeploySummary";
 import { DeployTemplates } from "./DeployTemplates";
 import { GithubImportEntryCard, GithubImportPanel } from "./GithubImportPanel";
 import { DEPLOY_TEMPLATES } from "./templates";
-import type { ComposeDeploymentDraft, DeployMode, DeployPreviewResult, DeployStep, DeployTemplate, ServiceManifestDraft } from "./types";
+import type { ComposeDeploymentDraft, DeployMode, DeployPreviewResult, DeployStep, DeploymentHealth, DeployTemplate, ServiceManifestDraft } from "./types";
 import { findNode, hasReadyNodeInRegion, isReadyNode, nodesForRegion, regionChoices } from "./options";
 import { composeDraftToSidecarYaml, serviceDraftToYaml, syncComposeYamlWithDraft } from "./yaml";
 import { SingleServiceDeployForm } from "./SingleServiceDeployForm";
@@ -233,6 +233,7 @@ export function DeployWorkspace({
   const [yamlDirty, setYamlDirty] = useState(Boolean(initialYamlDirty));
   const [preview, setPreview] = useState<DeployPreviewResult | null>(null);
   const [steps, setSteps] = useState<DeployStep[]>([]);
+  const [health, setHealth] = useState<DeploymentHealth[]>([]);
   const [status, setStatus] = useState<"idle" | "previewing" | "deploying">("idle");
   const [runtimeErrors, setRuntimeErrors] = useState<string[]>([]);
   const [importView, setImportView] = useState(false);
@@ -251,6 +252,7 @@ export function DeployWorkspace({
     setActiveTemplateId("current-application");
     setPreview(null);
     setSteps([]);
+    setHealth([]);
     setRuntimeErrors([]);
     setYamlDirty(Boolean(initialYamlDirty));
     setTemplateLanding(false);
@@ -285,7 +287,7 @@ export function DeployWorkspace({
     try { return { summary: submissionSummary(mode, mode === "service" ? serviceYaml : sidecarYaml, composeYaml), error: "" }; }
     catch (error) { return { summary: null, error: error instanceof Error ? error.message : String(error) }; }
   }, [mode, serviceYaml, sidecarYaml, composeYaml]);
-  useEffect(() => { setPreview(null); }, [serviceYaml, sidecarYaml, composeYaml, serviceDraft.skipDns, serviceDraft.skipOrchestrator, composeDraft.skipDns, composeDraft.skipOrchestrator]);
+  useEffect(() => { setPreview(null); setHealth([]); }, [serviceYaml, sidecarYaml, composeYaml, serviceDraft.skipDns, serviceDraft.skipOrchestrator, composeDraft.skipDns, composeDraft.skipOrchestrator]);
   const allErrors = [...validationErrors, ...(submitted.error ? [submitted.error] : []), ...runtimeErrors];
   const configTitle = submitted.summary?.name || currentConfigTitle(mode, serviceDraft, composeDraft);
   const configFacts = submitted.summary ? [submitted.summary.region, ...submitted.summary.images, ...submitted.summary.ingress] : [];
@@ -298,6 +300,7 @@ export function DeployWorkspace({
     setEditorMode("form");
     setPreview(null);
     setSteps([]);
+    setHealth([]);
     setRuntimeErrors([]);
     setYamlDirty(false);
     setSourceName(template.mode === "compose" ? "luma.compose.yml" : "service.yaml");
@@ -318,6 +321,7 @@ export function DeployWorkspace({
     setTemplateLanding(true);
     setPreview(null);
     setSteps([]);
+    setHealth([]);
     setRuntimeErrors([]);
   };
 
@@ -327,6 +331,7 @@ export function DeployWorkspace({
     setActiveTemplateId(template.id);
     setPreview(null);
     setSteps([]);
+    setHealth([]);
     setRuntimeErrors([]);
   };
 
@@ -371,8 +376,23 @@ export function DeployWorkspace({
       ? { token, manifest: serviceYaml, sourceName, skipDns: serviceDraft.skipDns, skipOrchestrator: serviceDraft.skipOrchestrator }
       : { token, manifest: sidecarYaml, composeContent: composeYaml, sourceName, skipDns: composeDraft.skipDns, skipOrchestrator: composeDraft.skipOrchestrator };
     setStatus("previewing");
-    try { setPreview(await (mode === "service" ? previewService(request) : previewCompose(request))); }
+    let latestPreview: DeployPreviewResult;
+    try {
+      latestPreview = await (mode === "service" ? previewService(request) : previewCompose(request));
+      setPreview(latestPreview);
+    }
     catch (error) { setRuntimeErrors([error instanceof Error ? error.message : String(error)]); setStatus("idle"); return; }
+    const requirementGroups = latestPreview.requirements
+      ? "checks" in latestPreview.requirements
+        ? [latestPreview.requirements]
+        : Object.values(latestPreview.requirements)
+      : [];
+    const requirementFailures = requirementGroups.flatMap((group) => (group.checks || []).filter((check: { required?: boolean; status?: string; detail?: string; missing?: string[] }) => check.required && check.status !== "ready"));
+    if (requirementFailures.length) {
+      setRuntimeErrors([lang === "zh" ? `部署前置条件未满足：${requirementFailures.map((item) => item.detail || (item.missing || []).join(", ")).join("；")}` : `Deployment prerequisites are not ready: ${requirementFailures.map((item) => item.detail || (item.missing || []).join(", ")).join("; ")}`]);
+      setStatus("idle");
+      return;
+    }
     const target = submitted.summary!.name;
     const region = submitted.summary!.region;
     const ok = await confirm({
@@ -392,11 +412,13 @@ export function DeployWorkspace({
     if (!ok) { setStatus("idle"); return; }
     setStatus("deploying");
     try {
-      await deployStream(
+      const result = await deployStream(
         request,
         mode,
         (step) => setSteps((current) => [...current, step]),
       );
+      const healthResult = result && typeof result === "object" ? (result as { health?: DeploymentHealth | DeploymentHealth[] }).health : undefined;
+      setHealth(Array.isArray(healthResult) ? healthResult : healthResult ? [healthResult] : []);
       await onRefresh();
     } catch (error) {
       setRuntimeErrors([String(error instanceof Error ? error.message : error)]);
@@ -485,7 +507,7 @@ export function DeployWorkspace({
                 />
               )}
             </div>
-            <DeploySummary lang={lang} mode={mode} serviceDraft={serviceDraft} composeDraft={composeDraft} preview={preview} steps={[]} errors={allErrors} submission={submitted.summary} />
+            <DeploySummary lang={lang} mode={mode} serviceDraft={serviceDraft} composeDraft={composeDraft} preview={preview} steps={[]} errors={allErrors} submission={submitted.summary} health={health} />
           </div>
           {steps.length ? <section className="workbench-progress" aria-label={lang === "zh" ? "部署进度" : "Deployment progress"}><header><h3>{lang === "zh" ? "部署进度" : "Deployment progress"}</h3><Button variant="outline" type="button" onClick={() => router.navigate(`/deployments?app=${encodeURIComponent(submitted.summary?.name || configTitle)}`)}>{lang === "zh" ? "查看交付记录 →" : "View delivery records →"}</Button></header><StepLog steps={steps} lang={lang} /></section> : null}
           <div className="deploy-action-bar">

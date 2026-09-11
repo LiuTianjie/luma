@@ -7,5 +7,9 @@ exposure: external-edge     # Cloudflare DNS -> overseas/global edge -> service
 domain: ai.example.com
 port: 3000
 replicas: 1
+requirements:
+  capabilities: [cloudflare]
+  init: [cloudflare-dns]
+  notes: ["Cloudflare Zone DNS write access is required before deployment."]
 dns:
   target: 198.51.100.10     # global edge IP this domain should point at

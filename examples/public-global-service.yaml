@@ -5,3 +5,6 @@ exposure: external-edge
 domain: ai.example.com
 port: 3000
 replicas: 1
+requirements:
+  capabilities: [cloudflare]
+  init: [cloudflare-dns]

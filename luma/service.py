@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .errors import LumaError
+from .dependencies import validate_requirement_block
 from .io import load_yaml
 from .regions import parse_region_name, validate_region_exposure
 
@@ -38,6 +39,7 @@ SERVICE_FIELDS = {
     "replicas",
     "resources",
     "routePath",
+    "requirements",
     "stackPath",
     "storage",
     "tcp",
@@ -106,6 +108,7 @@ class ServiceSpec:
     tcp: Dict[str, Any] = field(default_factory=dict)
     proxy: bool = False
     engine: str = ""
+    requirements: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def slug(self) -> str:
@@ -214,6 +217,8 @@ def load_service(path: Path) -> ServiceSpec:
     if not isinstance(environment, dict):
         raise LumaError("env/environment must be a mapping")
 
+    requirements = validate_requirement_block(raw.get("requirements") or {})
+
     constraints = raw.get("constraints") or []
     labels = raw.get("labels") or []
     networks = raw.get("networks") or []
@@ -272,6 +277,7 @@ def load_service(path: Path) -> ServiceSpec:
         tcp=tcp,
         proxy=bool(raw.get("proxy", False)),
         engine=engine,
+        requirements=requirements,
     )
 
 
