@@ -31,6 +31,7 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
 export type ApplicationUpdateRequest = {
   app: Application;
@@ -653,42 +654,16 @@ export function ApplicationManagementPanel({
           {updatingApp === app.stack ? (lang === "zh" ? "更新中..." : "Updating...") : configBusy === app.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}
         </Button>
         {compact ? (
-          <div className="app-action-menu">
-            <Button variant="outline" type="button"
- className="app-action-menu-trigger"
- aria-label={moreLabel}
- aria-expanded={menuOpen}
- aria-haspopup="menu"
- onClick={() => setOpenMenu(menuOpen ? null : app.stack)}
-            >
+          <DropdownMenu open={menuOpen} onOpenChange={(open) => setOpenMenu(open ? app.stack : null)}>
+            <DropdownMenuTrigger render={<Button variant="outline" type="button" className="app-action-menu-trigger" aria-label={moreLabel} />}>
               <MoreHorizontal size={15} aria-hidden="true" />
-            </Button>
-            {menuOpen ? (
-              <div className="app-action-menu-panel" role="menu">
-                <Button type="button" variant="ghost" className="w-full justify-start" role="menuitem" onClick={() => { setOpenMenu(null); openDetails(app); }}>
-                  <Settings2 size={14} aria-hidden="true" />
-                  {t(lang, "details")}
-                </Button>
-                <Button type="button" variant="ghost" className="w-full justify-start"
- role="menuitem"
- disabled={rollbackState?.app === app.stack && rollbackState.loading}
- onClick={() => { setOpenMenu(null); void openVersions(app); }}
-                >
-                  <History size={14} aria-hidden="true" />
-                  {rollbackState?.app === app.stack && rollbackState.loading ? t(lang, "loadingHistory") : t(lang, "versions")}
-                </Button>
-                <Button variant="destructive" type="button"
- role="menuitem"
-
- disabled={Boolean(actionBusy)}
- onClick={() => { setOpenMenu(null); void restart(app); }}
-                >
-                  <RotateCw size={14} aria-hidden="true" />
-                  {actionBusy === app.stack ? t(lang, "restarting") : t(lang, "restart")}
-                </Button>
-              </div>
-            ) : null}
-          </div>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-40">
+              <DropdownMenuItem onClick={() => openDetails(app)}><Settings2 size={14} />{t(lang, "details")}</DropdownMenuItem>
+              <DropdownMenuItem disabled={rollbackState?.app === app.stack && rollbackState.loading} onClick={() => void openVersions(app)}><History size={14} />{rollbackState?.app === app.stack && rollbackState.loading ? t(lang, "loadingHistory") : t(lang, "versions")}</DropdownMenuItem>
+              <DropdownMenuItem disabled={Boolean(actionBusy)} onClick={() => void restart(app)}><RotateCw size={14} />{actionBusy === app.stack ? (lang === "zh" ? "重启中..." : "Restarting...") : (lang === "zh" ? "重启" : "Restart")}</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         ) : (
           <>
             <Button variant="outline" type="button" onClick={() => openDetails(app)}>
