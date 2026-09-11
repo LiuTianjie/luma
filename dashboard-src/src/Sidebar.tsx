@@ -10,7 +10,6 @@ import {
   SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { buildNavGroups, type NavGroup } from "./navItems";
 import type { DashboardViewModel, NavPage } from "./dashboardViewModel";
@@ -48,7 +47,6 @@ export function AppSidebar({
             <span className="truncate text-xs text-muted-foreground">Luma</span>
             <strong className="truncate text-sm font-medium">{t(lang, "title")}</strong>
           </div>
-          <SidebarTrigger className="ml-auto group-data-[collapsible=icon]:ml-0" />
         </div>
       </SidebarHeader>
       <SidebarContent>

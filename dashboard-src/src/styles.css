@@ -6098,3 +6098,15 @@ dd {
   color: var(--muted-foreground);
   font-weight: 500;
 }
+
+/* Keep wide data-table action columns visible while horizontally scrolling. */
+.data-table th:last-child, .data-table td:last-child,
+.app-table th:last-child, .app-table td:last-child,
+.credentials-table th:last-child, .credentials-table td:last-child,
+.alert-table th:last-child, .alert-table td:last-child {
+  position: sticky; right: 0; z-index: 1;
+  background: var(--background, #fff);
+  box-shadow: -1px 0 0 var(--border, #e5e7eb);
+}
+.data-table thead th:last-child, .app-table thead th:last-child,
+.credentials-table thead th:last-child, .alert-table thead th:last-child { z-index: 2; }

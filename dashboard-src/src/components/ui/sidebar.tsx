@@ -244,6 +244,7 @@ function Sidebar({
         >
           {children}
         </div>
+        <SidebarTrigger className="absolute -right-10 top-3 z-30 hidden md:inline-flex" />
       </div>
     </div>
   )
