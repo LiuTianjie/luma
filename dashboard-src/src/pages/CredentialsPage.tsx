@@ -143,6 +143,15 @@ export function CredentialsPage({
   const { path, search, navigate } = useRouter();
   const section = path.split("/")[2] || "secrets";
   const activeTab = ["registries", "git", "storage", "maintenance"].includes(section) ? section : "secrets";
+  const sectionMeta = {
+    secrets: { zh: "密钥", en: "Secrets", zhDescription: "管理应用和平台密钥。敏感值只写不回显。", enDescription: "Manage application and platform secrets. Sensitive values are write-only." },
+    registries: { zh: "镜像仓库凭据", en: "Registry credentials", zhDescription: "管理私有镜像仓库的拉取凭据。", enDescription: "Manage credentials for pulling from private registries." },
+    git: { zh: "Git 凭据", en: "Git credentials", zhDescription: "管理代码仓库访问凭据。", enDescription: "Manage credentials for source repositories." },
+    storage: { zh: "存储配置", en: "Storage configuration", zhDescription: "查看集群可用的存储类和节点端点。", enDescription: "View storage classes and node endpoints available to the cluster." },
+    maintenance: { zh: "维护", en: "Maintenance", zhDescription: "进入基础设施维护，执行升级和路由检查。", enDescription: "Open infrastructure maintenance for upgrades and route checks." },
+  }[activeTab] || {
+    zh: "设置", en: "Settings", zhDescription: "管理设置。", enDescription: "Manage settings.",
+  };
   const editing = path.endsWith("/new") && ["secrets", "registries", "git"].includes(activeTab);
   const [state, setState] = useState<CredentialsState>({
     secrets: [],
@@ -365,8 +374,8 @@ export function CredentialsPage({
         meta={{
           metrics: [],
           eyebrow: zh ? "设置" : "Settings",
-          title: editing ? (zh ? "新增或轮换凭据" : "Add or rotate credential") : (zh ? "凭据与维护" : "Credentials and maintenance"),
-          description: zh ? "管理访问凭据。敏感值只写不回显，保存后不会返回浏览器。" : "Manage access credentials. Sensitive values are write-only and never returned after saving.",
+          title: editing ? (zh ? "新增或轮换凭据" : "Add or rotate credential") : (zh ? sectionMeta.zh : sectionMeta.en),
+          description: editing ? (zh ? "敏感值只写不回显，保存后不会返回浏览器。" : "Sensitive values are write-only and never returned after saving.") : (zh ? sectionMeta.zhDescription : sectionMeta.enDescription),
           action: editing ? <Button variant="outline" size="sm" disabled={!!busy} onClick={() => navigate(`/settings/${activeTab}`)}>{zh ? "返回列表" : "Back to list"}</Button> : ["secrets", "registries", "git"].includes(activeTab) ? <Button size="sm" className="shrink-0" onClick={() => navigate(`/settings/${activeTab}/new`)}>{zh ? "新增 / 轮换凭据" : "Add / rotate credential"}</Button> : undefined,
         }}
       />
@@ -577,6 +586,16 @@ export function CredentialsPage({
                   )}
                 </tbody>
               </table>
+            </div>
+          ) : null}
+          {activeTab === "maintenance" ? (
+            <div className="flex flex-col gap-4 p-6">
+              <div>
+                <p className="eyebrow">{zh ? "控制面维护" : "Control-plane maintenance"}</p>
+                <h2>{zh ? "维护操作" : "Maintenance actions"}</h2>
+                <p className="text-sm text-muted-foreground">{zh ? "维护和升级操作请从基础设施菜单的“系统维护”进入；这里保留入口说明，避免出现空白页面。" : "Open Infrastructure → Maintenance for upgrades and route checks. This page keeps the settings entry explicit instead of showing an empty panel."}</p>
+              </div>
+              <Button type="button" className="w-fit" onClick={() => navigate("/fleet/maintenance")}>{zh ? "打开系统维护" : "Open system maintenance"}</Button>
             </div>
           ) : null}
         </article>

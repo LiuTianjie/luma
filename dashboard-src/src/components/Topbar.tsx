@@ -51,7 +51,7 @@ export function Topbar({
   ];
 
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
+    <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3 md:hidden">
       <SidebarTrigger className="md:hidden" />
       <div className="ml-auto flex items-center gap-1.5">
         <span className="hidden text-xs text-muted-foreground sm:inline" title={statusText} role="status">

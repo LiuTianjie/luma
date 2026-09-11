@@ -164,6 +164,8 @@ export function App() {
           activeNavPage={activeNavPage}
           onNavigate={navigate}
           onPrefetch={preloadPage}
+          onRefresh={() => void refreshPage()}
+          onSignOut={signOut}
         />
         <SidebarInset id="main" tabIndex={-1} className="min-h-svh overflow-hidden">
           {token && !terminalTarget && activeNavPage === "overview" && !objectRoute && !editName ? (

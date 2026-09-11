@@ -5328,6 +5328,8 @@ dd {
 .registry-table-wrap {
   max-height: min(66vh, 760px);
   overflow: auto;
+  border: 0;
+  border-radius: 0;
 }
 
 .registry-load-more {
@@ -5750,7 +5752,9 @@ dd {
 }
 .region-create-form {
   display: grid;
-  grid-template-columns: minmax(12rem, 1fr) minmax(12rem, 1fr) auto;
+  grid-template-columns: minmax(220px, 360px) minmax(180px, 260px) auto;
+  width: fit-content;
+  max-width: 100%;
   gap: 12px;
   align-items: end;
   margin-bottom: 16px;

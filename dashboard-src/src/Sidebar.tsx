@@ -13,8 +13,11 @@ import {
   SidebarMenuSub,
   SidebarMenuSubButton,
   SidebarMenuSubItem,
+  SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { LogOut, RefreshCw } from "lucide-react";
 import { buildNavGroups, type NavGroup } from "./navItems";
 import type { DashboardViewModel, NavPage } from "./dashboardViewModel";
 import { ROUTE_BY_PAGE } from "./routes";
@@ -30,6 +33,8 @@ export function AppSidebar({
   activeNavPage,
   onNavigate,
   onPrefetch,
+  onRefresh,
+  onSignOut,
 }: {
   lang: Lang;
   clusterId: string;
@@ -37,6 +42,8 @@ export function AppSidebar({
   activeNavPage: NavPage;
   onNavigate: (page: NavPage) => void;
   onPrefetch?: (page: NavPage) => void;
+  onRefresh: () => void;
+  onSignOut: () => void;
 }) {
   const groups: NavGroup[] = buildNavGroups(lang, vm);
   const { path, navigate: navigatePath } = useRouter();
@@ -54,6 +61,7 @@ export function AppSidebar({
             <span className="truncate text-xs text-muted-foreground">Luma</span>
             <strong className="truncate text-sm font-medium">{t(lang, "title")}</strong>
           </div>
+          <SidebarTrigger className="ml-auto shrink-0 group-data-[collapsible=icon]:ml-0" />
         </div>
         <div className="flex min-w-0 items-center gap-2 px-2 pb-2 group-data-[collapsible=icon]:hidden">
           <span className="text-xs text-muted-foreground">{t(lang, "cluster")}</span>
@@ -130,6 +138,10 @@ export function AppSidebar({
         ))}
       </SidebarContent>
       <SidebarFooter>
+        <div className="flex items-center gap-1 px-2 group-data-[collapsible=icon]:flex-col">
+          <Button variant="ghost" size="sm" className="flex-1 justify-start group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:flex-none group-data-[collapsible=icon]:justify-center" onClick={onRefresh} title={t(lang, "refresh")}><RefreshCw data-icon="inline-start" /><span className="group-data-[collapsible=icon]:hidden">{t(lang, "refresh")}</span></Button>
+          <Button variant="ghost" size="sm" className="flex-1 justify-start group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:flex-none group-data-[collapsible=icon]:justify-center" onClick={onSignOut} title={t(lang, "signOut")}><LogOut data-icon="inline-start" /><span className="group-data-[collapsible=icon]:hidden">{t(lang, "signOut")}</span></Button>
+        </div>
         <div className="flex flex-col gap-1.5 rounded-lg bg-sidebar-accent px-3 py-3 text-xs group-data-[collapsible=icon]:hidden">
           <span className="text-muted-foreground">{lang === "zh" ? "就绪节点" : "Ready nodes"}</span>
           <strong className="text-sm font-medium">

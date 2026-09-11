@@ -35,8 +35,9 @@
 .infrastructure-workspace .command-snippet { max-width: 100%; overflow-x: auto; white-space: pre; }
 .infrastructure-workspace .region-create-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-  max-width: 880px;
+  grid-template-columns: minmax(220px, 360px) minmax(180px, 260px) auto;
+  width: fit-content;
+  max-width: 100%;
   align-items: end;
   gap: 16px;
 }

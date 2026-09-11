@@ -101,17 +101,17 @@ export function RegionPanel({
           : "Custom regions are scheduling pools. Join nodes with this name, then deploy with the same region and a replica count. You do not pin individual machines."}
       </p>
       <form
-        className="flex max-w-3xl flex-col gap-4 sm:flex-row sm:items-end"
+        className="region-create-form"
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
         }}
       >
-        <Field className="min-w-0 flex-1">
+        <Field className="min-w-0">
           <FieldLabel>{zh ? "Region 名" : "Region name"}</FieldLabel>
           <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="batch-a" autoCapitalize="none" autoCorrect="off" spellCheck={false} />
         </Field>
-        <Field className="sm:w-64">
+        <Field className="min-w-0">
           <FieldLabel>egress</FieldLabel>
           <SelectControl
             value={egress}
