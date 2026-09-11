@@ -10,6 +10,7 @@ import {
   SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { buildNavGroups, type NavGroup } from "./navItems";
 import type { DashboardViewModel, NavPage } from "./dashboardViewModel";
@@ -39,7 +40,7 @@ export function AppSidebar({
   return (
     <Sidebar collapsible="icon" variant="sidebar">
       <SidebarHeader>
-        <div className="flex items-center gap-2 px-2 py-2">
+        <div className="flex items-center gap-2 px-2 py-2 group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:px-1">
           <div className="flex size-8 items-center justify-center overflow-hidden rounded-lg bg-sidebar-accent">
             <img src={lumaLogoMark} alt="" className="size-5" />
           </div>
@@ -47,6 +48,7 @@ export function AppSidebar({
             <span className="truncate text-xs text-muted-foreground">Luma</span>
             <strong className="truncate text-sm font-medium">{t(lang, "title")}</strong>
           </div>
+          <SidebarTrigger className="ml-auto group-data-[collapsible=icon]:ml-0" />
         </div>
       </SidebarHeader>
       <SidebarContent>

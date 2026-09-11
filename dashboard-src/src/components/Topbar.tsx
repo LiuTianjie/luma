@@ -1,5 +1,6 @@
 import { LogOut, Monitor, Moon, RefreshCw, Settings2, Sun } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -11,7 +12,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { SidebarTrigger } from "@/components/ui/sidebar";
 import { t } from "../i18n";
 import type { Lang, SyncStatus } from "../types";
 import type { ThemeMode } from "../useTheme";
@@ -26,7 +26,6 @@ type Props = {
   onThemeModeChange: (mode: ThemeMode) => void;
   onRefresh: () => void;
   onSignOut: () => void;
-  compact?: boolean;
 };
 
 export function Topbar({
@@ -39,7 +38,6 @@ export function Topbar({
   onThemeModeChange,
   onRefresh,
   onSignOut,
-  compact = false,
 }: Props) {
   const timeFormatter = new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", {
     hour: "2-digit",
@@ -55,17 +53,9 @@ export function Topbar({
     { mode: "dark", icon: Moon, label: lang === "zh" ? "夜间模式" : "Dark mode" },
   ];
 
-  if (compact) {
-    return (
-      <header className="flex h-10 shrink-0 items-center px-2">
-        <SidebarTrigger />
-      </header>
-    );
-  }
-
   return (
     <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
-      <SidebarTrigger />
+      <SidebarTrigger className="md:hidden" />
       <div className="flex min-w-0 items-center gap-2">
         <span className="text-xs text-muted-foreground">{t(lang, "cluster")}</span>
         <Badge variant="outline" className="max-w-56 truncate font-mono" translate="no">{clusterId}</Badge>

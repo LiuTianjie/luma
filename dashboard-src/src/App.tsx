@@ -7,7 +7,7 @@ import { Topbar } from "./components/Topbar";
 import { AppRoutes, preloadPage } from "./AppRoutes";
 import { AppSidebar } from "./Sidebar";
 import { Button } from "@/components/ui/button";
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { nodePath, servicePath, terminalPath, updatePath, parseObjectRoute } from "./objectRoutes";
@@ -164,7 +164,7 @@ export function App() {
           onPrefetch={preloadPage}
         />
         <SidebarInset id="main" tabIndex={-1} className="min-h-svh overflow-hidden">
-          {terminalTarget ? null : (
+          {token && !terminalTarget && activeNavPage === "overview" && !objectRoute && !editName ? (
             <Topbar
               clusterId={vm.clusterId}
               lang={lang}
@@ -175,8 +175,11 @@ export function App() {
               onRefresh={() => void refreshPage()}
               onSignOut={signOut}
               syncStatus={visibleStatus}
-              compact={!token || activeNavPage !== "overview" || Boolean(objectRoute) || Boolean(editName)}
             />
+          ) : (
+            <div className="flex h-10 shrink-0 items-center px-2 md:hidden">
+              <SidebarTrigger />
+            </div>
           )}
           <div className={terminalTarget ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "min-h-0 flex-1 overflow-auto p-6"}>
             {!token ? (
