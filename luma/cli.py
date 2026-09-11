@@ -211,7 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.332 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.333 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -2158,11 +2158,32 @@ def _manager_refresh_decision(args: argparse.Namespace) -> tuple[bool, str]:
         return True, "manager update options were provided"
     state = _existing_control_state()
     if not state:
+        if _manager_state_requires_privilege():
+            raise LumaError(
+                "manager control state exists but is not readable by this user. "
+                "Run `sudo luma update` (or set LUMA_SUDO_PASSWORD), then retry; "
+                "the 401 from the joined-node path is not a management-token rotation."
+            )
         return False, "no local manager control state found"
     domain = str(state.get("domain") or "").strip()
     if not domain:
         return False, "local manager control state has no domain; run luma update manager --domain <control-domain>"
     return True, "local manager control state found"
+
+
+def _manager_state_requires_privilege() -> bool:
+    """Detect a root-owned manager state directory before falling back to login context.
+
+    A manager's state is intentionally private.  When a non-root operator lacks
+    sudo credentials, treating the unreadable state as a joined node makes
+    ``luma update`` call the public node-agent API with an unrelated client
+    token, producing a misleading 401 instead of an actionable local error.
+    """
+    directory = state_path().parent
+    try:
+        return directory.is_dir() and not os.access(directory, os.R_OK | os.X_OK)
+    except OSError:
+        return False
 
 
 def _manager_update_options_provided(args: argparse.Namespace) -> bool:
@@ -2343,6 +2364,11 @@ def _refresh_manager_control(args: argparse.Namespace) -> None:
     domain = _manager_update_domain(args.domain)
     state = _existing_control_state()
     if not state:
+        if _manager_state_requires_privilege():
+            raise LumaError(
+                "manager control state exists but is not readable by this user. "
+                "Run `sudo luma update manager` (or set LUMA_SUDO_PASSWORD), then retry."
+            )
         raise LumaError("manager control state not found. Run luma bootstrap manager --domain <control-domain> for first install or repair.")
     state["domain"] = domain
     # A managed update runs in a transient systemd unit with no meaningful

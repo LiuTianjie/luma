@@ -466,7 +466,10 @@ def dispatch(method: str, resource: str, body=None, query=None):
     now = time.time()
     if method=='POST' and name=='rules' and not identifier: return save_rule(body)
     if method=='POST' and name=='channels' and not identifier: return save_channel(body)
-    with database.transaction(immediate=True) as conn:
+    # Once the schema exists, dashboard GETs only read SQLite. Do not make
+    # them queue for a RESERVED lock behind active writers or other GETs.
+    # Keep write operations immediate and let readers use the WAL snapshot.
+    with database.transaction(immediate=method != 'GET') as conn:
         _schema(conn)
         if method=='GET' and name=='presets': return {'items':PRESETS}
         if method=='GET' and name=='overview':

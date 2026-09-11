@@ -3024,6 +3024,24 @@ class CliTests(unittest.TestCase):
         self.assertIn("CLI updated", printed_text)
         self.assertIn("Manager control-plane refresh skipped", printed_text)
 
+    def test_update_reports_unreadable_manager_state_instead_of_using_client_token(self):
+        from luma.cli import _manager_refresh_decision
+
+        args = Mock(
+            domain=None,
+            node=None,
+            http_port=None,
+            https_port=None,
+            skip_egress=False,
+            overwrite_control_state=False,
+            profile="single-node",
+        )
+        with patch("luma.cli._existing_control_state", return_value=None), patch(
+            "luma.cli._manager_state_requires_privilege", return_value=True
+        ):
+            with self.assertRaisesRegex(LumaError, "not readable by this user"):
+                _manager_refresh_decision(args)
+
     def test_update_fleet_updates_local_cli_and_remote_nodes_with_install_ref(self):
         client = Mock()
         client.update_fleet.return_value = {

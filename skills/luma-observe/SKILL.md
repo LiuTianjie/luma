@@ -9,6 +9,12 @@ Application alerts live in the optional `observe/` Compose stack, not in Luma Co
 Deploy it with Luma (`luma build local observe`). Control keeps working if it is absent.
 Do not add log scanners, OTLP receivers, or app 5xx rules to Control.
 
+The current release does not have an "enable observability" toggle that installs
+this stack by itself. A new cluster still needs the Builder/Registry path and a
+Compose deployment (the Dashboard can run that path without an SSH session).
+Do not tell an operator that merely selecting the Observability page deploys the
+stack; the page is empty until `luma-observe` is active.
+
 ## When to use
 
 - Deploy, update, or debug `luma-observe`
@@ -27,6 +33,9 @@ Do not use this skill for Dashboard node CPU/disk presets, Nomad job YAML for or
 - Alert evaluation is vmalert + Alertmanager + optional Feishu webhook.
 - Auto-instrumentation is automatic after observe is deployed: Control injects official OTel env vars into later app jobs. Do not create a Luma telemetry SDK.
 - Fail open: Collector/Feishu down must not block user requests.
+- Grafana is currently embedded as an anonymous Viewer route. Treat all data
+  visible under `/grafana` as public to anyone who can reach the Control domain;
+  do not put secrets or sensitive payloads into logs or trace attributes.
 
 Operators look at Dashboard → Observability → Apps. Traefik routers and Nomad
 jobs are mapped to Luma app/stack names by observe itself. Do not ask apps to

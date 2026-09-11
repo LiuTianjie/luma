@@ -68,7 +68,11 @@ export function App() {
   const pageCanRenderWithoutDashboard = resolvedPage === "deployments"
     || resolvedPage === "credentials"
     || resolvedPage === "registry"
-    || resolvedPage === "lae";
+    || resolvedPage === "lae"
+    // Observability has its own alerting/metrics requests. Do not make its
+    // first paint wait for the large fleet snapshot; the snapshot only fills
+    // optional node/app filters after it arrives.
+    || resolvedPage === "observability";
 
   useEffect(() => {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";

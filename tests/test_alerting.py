@@ -32,6 +32,24 @@ class AlertingTest(unittest.TestCase):
     def items(self,resource):
         return alerting.dispatch('GET',resource)['items']
 
+    def test_dashboard_reads_do_not_wait_for_an_active_writer(self):
+        self.rule()
+        connect = database.connect
+
+        def impatient_reader():
+            conn = connect()
+            conn.execute('PRAGMA busy_timeout=50')
+            return conn
+
+        with database.transaction() as writer:
+            writer.execute("UPDATE alert_rules SET name='uncommitted'")
+            with patch('luma.control.database.connect', side_effect=impatient_reader):
+                for resource in ('overview', 'presets', 'rules', 'channels', 'incidents', 'deliveries'):
+                    with self.subTest(resource=resource):
+                        result = alerting.dispatch('GET', resource)
+                        if resource == 'rules':
+                            self.assertEqual(result['items'][0]['name'], '磁盘')
+
     def test_duration_dedupe_recovery_and_order(self):
         ch=self.channel(); self.rule(channelIds=[ch['id']])
         alerting.tick(self.state(1000),now=1000)
