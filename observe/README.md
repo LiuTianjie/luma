@@ -11,8 +11,8 @@ except for tiny Feishu posts.
 ## What it watches
 
 - Traefik Prometheus on `127.0.0.1:8082` (public HTTP rate, 5xx, p90/p95/p99)
-- Traefik OTLP on `127.0.0.1:4318` (traces stored in Tempo, 15 days)
-- Nomad allocation stdout/stderr in VictoriaLogs (`127.0.0.1:9428`, 15 days)
+- Traefik OTLP on `127.0.0.1:4318` (traces stored in Tempo, 7 days)
+- Nomad allocation stdout/stderr in VictoriaLogs (`127.0.0.1:9428`, 7 days)
 - Application OTLP on the manager Tailscale IP port `4319` (bearer token from Control)
 - Nomad job running / current failed / live restarts via a local exporter
 
@@ -72,7 +72,7 @@ as soon as this stack is running.
 | 3200 / 3201 | Tempo query (loopback) |
 | 4418 / 4417 | Tempo OTLP ingest (loopback) |
 | 8428 | VictoriaMetrics on 127.0.0.1; host-gateway also binds Nomad/docker0 so Control can scrape |
-| 9428 | VictoriaLogs (allocation stdout/stderr, 15 days) |
+| 9428 | VictoriaLogs (allocation stdout/stderr, 7 days) |
 | 8880 | vmalert |
 | 9093 | Alertmanager |
 | 9107 | nomad-exporter |

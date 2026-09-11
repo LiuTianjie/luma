@@ -32,6 +32,12 @@ Do not use this skill for Dashboard node CPU/disk presets, Nomad job YAML for or
 - After observe is deployed, look at Dashboard → Observability → Apps. It embeds Grafana at `/grafana` on the Control domain.
 - Alert evaluation is vmalert + Alertmanager + optional Feishu webhook.
 - Auto-instrumentation is automatic after observe is deployed: Control injects official OTel env vars into later app jobs. Do not create a Luma telemetry SDK.
+- This injection is configuration wiring, not magic code instrumentation. A business image
+  must include the official OpenTelemetry distro/exporter and start it with the
+  language's supported auto-instrumentation entrypoint before it emits process spans.
+- Do not add a collector sidecar to every application container. Use the shared
+  manager collector; consider one collector/eBPF agent per Linux node only after
+  there is a measured network, buffering, or host-observation need.
 - Fail open: Collector/Feishu down must not block user requests.
 - Grafana is currently embedded as an anonymous Viewer route. Treat all data
   visible under `/grafana` as public to anyone who can reach the Control domain;
@@ -59,4 +65,5 @@ Traefik RED requires the current `luma/nomad_render.py` Traefik flags
 Nomad failed-allocation alerts work as soon as the observe stack is running.
 
 Read [references/deploy.md](references/deploy.md) for ports, traffic, and
-instrumentation contract.
+instrumentation contract. Read [references/instrumentation.md](references/instrumentation.md)
+before adding application spans.

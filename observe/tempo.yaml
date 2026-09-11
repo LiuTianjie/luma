@@ -25,7 +25,7 @@ ingester:
 
 compactor:
   compaction:
-    block_retention: 336h
+    block_retention: 168h
 
 storage:
   trace:
@@ -40,7 +40,7 @@ querier:
 
 query_frontend:
   search:
-    max_duration: 336h
+    max_duration: 168h
 
 stream_over_http_enabled: true
 

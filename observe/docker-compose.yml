@@ -41,7 +41,7 @@ services:
     restart: unless-stopped
     command:
       - --httpListenAddr=127.0.0.1:8428
-      - --retentionPeriod=15d
+      - --retentionPeriod=7d
       - --storageDataPath=/data
     volumes:
       - victoria-data:/data
@@ -103,7 +103,7 @@ services:
     restart: unless-stopped
     command:
       - "-httpListenAddr=127.0.0.1:9428"
-      - "-retentionPeriod=15d"
+      - "-retentionPeriod=7d"
       - "-storageDataPath=/data"
     volumes:
       - victorialogs-data:/data

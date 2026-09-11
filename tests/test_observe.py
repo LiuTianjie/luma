@@ -342,7 +342,7 @@ class ObserveTraceStackTests(unittest.TestCase):
 
     def test_tempo_retains_fifteen_days(self):
         text = (ROOT / "observe" / "tempo.yaml").read_text(encoding="utf-8")
-        self.assertIn("block_retention: 336h", text)
+        self.assertIn("block_retention: 168h", text)
         self.assertIn("http_listen_port: 3200", text)
         self.assertIn("127.0.0.1:4418", text)
         self.assertIn("stream_over_http_enabled: true", text)
@@ -396,7 +396,7 @@ class ObserveTraceStackTests(unittest.TestCase):
     def test_victorialogs_is_loopback_with_fifteen_day_retention(self):
         compose = (ROOT / "observe" / "docker-compose.yml").read_text(encoding="utf-8")
         self.assertIn("127.0.0.1:9428", compose)
-        self.assertIn("retentionPeriod=15d", compose)
+        self.assertIn("retentionPeriod=7d", compose)
         self.assertNotIn("0.0.0.0:9428", compose)
         sources = (ROOT / "observe" / "grafana" / "provisioning" / "datasources" / "datasource.yml").read_text(encoding="utf-8")
         self.assertIn("uid: victorialogs", sources)
@@ -422,4 +422,3 @@ class GrafanaRouteTests(unittest.TestCase):
         self.assertIn("url: http://127.0.0.1:3100", text)
         self.assertNotIn("100.106.154.3:3000", text)
         self.assertNotIn(":3000", text.split("url:")[-1])
-

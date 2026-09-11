@@ -16,7 +16,8 @@ allocations Nomad still wants to run, not lifetime failure counters.
 The stack uses host networking and loopback listeners (`127.0.0.1:8082` Prometheus,
 `127.0.0.1:4318` OTLP, `127.0.0.1:3200` Tempo). Application tasks send traces to the manager Tailscale mesh listener on port 4319 with a Control-issued bearer token. Control uses host networking and queries `http://127.0.0.1:8428` when observe is present. Grafana on `127.0.0.1:3100`
 is local debug only. Alerts evaluate in vmalert/Alertmanager. Control SQLite
-is not on this path. Trace and metric storage both retain 15 days.
+is not on this path. Trace and log storage retain 7 days; metric retention is
+configured independently.
 
 Deploy from `observe/` with `luma build local . --platform linux/amd64 --env .env`.
 Refresh Traefik after the current CLI includes the loopback metrics/OTLP flags
@@ -99,7 +100,7 @@ no OpenTelemetry SDK, these calls are no-ops unless you add the distro.
 ## Dashboard and logs
 
 Dashboard → Observability opens incidents. Metrics have a dedicated page; Logs
-opens Grafana Explore against VictoriaLogs (15 days). Rules and notification
+opens Grafana Explore against VictoriaLogs (7 days). Rules and notification
 channels have separate list and edit URLs. Storage governance is under
 Infrastructure → Storage → Data governance.
 
