@@ -140,6 +140,11 @@ export function ApplicationManagementPanel({
   };
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  // Mobile Safari can omit the synthetic click for a non-native interactive
+  // card when the page is scrolled. Keep the card keyboard accessible, but
+  // activate it from the touch pointer release as well.
+  const touchCardActivation = useRef(false);
+  const touchCardStart = useRef<{ x: number; y: number } | null>(null);
   const statusOptions = useMemo(() => [...new Set(applications.map((app) => app.status).filter(Boolean))].sort(), [applications]);
   const regionOptions = useMemo(() => [...new Set(applications.flatMap((app) => app.regions).filter(Boolean))].sort(), [applications]);
   const filteredApplications = useMemo(() => {
@@ -159,16 +164,11 @@ export function ApplicationManagementPanel({
 
   useEffect(() => {
     if (!openMenu) return;
-    const close = (event: PointerEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setOpenMenu(null);
-    };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpenMenu(null);
     };
-    window.addEventListener("pointerdown", close);
     window.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("pointerdown", close);
       window.removeEventListener("keydown", onKey);
     };
   }, [openMenu]);
@@ -636,6 +636,8 @@ export function ApplicationManagementPanel({
         ref={menuOpen ? menuRef : undefined}
         onClick={(event) => event.stopPropagation()}
         onKeyDown={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+        onPointerUp={(event) => event.stopPropagation()}
       >
         <Button variant="outline" type="button"
  className="app-log-action"
@@ -802,7 +804,27 @@ export function ApplicationManagementPanel({
             role="button"
             tabIndex={0}
             aria-label={`${t(lang, "details")}: ${app.stack}`}
-            onClick={() => openDetails(app)}
+            onClick={() => {
+              // A touch pointer release may be followed by a synthetic click.
+              // The pointer handler already navigated in that case.
+              if (touchCardActivation.current) {
+                touchCardActivation.current = false;
+                return;
+              }
+              openDetails(app);
+            }}
+            onPointerDown={(event) => {
+              if (event.pointerType === "touch") touchCardStart.current = { x: event.clientX, y: event.clientY };
+            }}
+            onPointerUp={(event) => {
+              if (event.pointerType !== "touch") return;
+              const start = touchCardStart.current;
+              touchCardStart.current = null;
+              if (!start || Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10) return;
+              touchCardActivation.current = true;
+              openDetails(app);
+            }}
+            onPointerCancel={() => { touchCardStart.current = null; }}
             onKeyDown={(event) => {
               if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();

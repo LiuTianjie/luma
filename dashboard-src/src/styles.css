@@ -1404,6 +1404,10 @@ tbody tr.is-selected {
   gap: var(--space-md);
   min-width: 0;
 }
+.application-mobile-card:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
 
 /* Nodes */
 .node-fleet-map {
