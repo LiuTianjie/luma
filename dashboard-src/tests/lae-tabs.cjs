@@ -60,6 +60,13 @@ function harness(token = 'account-a') {
     react,
     'react/jsx-runtime': { jsx: element, jsxs: element, Fragment: 'Fragment' },
     '@/components/ui/button': named(['Button']),
+    '@/components/ui/badge': named(['Badge']),
+    '@/components/ui/card': named(['Card', 'CardContent', 'CardDescription', 'CardFooter', 'CardHeader', 'CardTitle']),
+    '@/components/ui/empty': named(['Empty', 'EmptyDescription', 'EmptyHeader', 'EmptyMedia', 'EmptyTitle']),
+    '@/components/ui/skeleton': named(['Skeleton']),
+    '@/components/ui/spinner': named(['Spinner']),
+    '@/components/ui/table': named(['Table', 'TableBody', 'TableCell', 'TableHead', 'TableHeader', 'TableRow']),
+    '@/components/ui/tabs': named(['Tabs', 'TabsContent', 'TabsList', 'TabsTrigger']),
     '@/components/ui/alert': named(['Alert', 'AlertDescription', 'AlertTitle']),
     'lucide-react': named(['Boxes', 'MapPinned', 'RefreshCw', 'ScrollText', 'UsersRound', 'WalletCards', 'AlertCircle']),
     '../components/primitives': named(['Badge', 'CodeCell', 'PrimaryCell', 'StatePill']),
@@ -102,7 +109,7 @@ function harness(token = 'account-a') {
     return value == null || typeof value === 'boolean' ? '' : String(value);
   }
   function tab(label) {
-    const match = nodes().find(node => node.type === 'Button' && [].concat(node.props.children).includes(label));
+    const match = nodes().find(node => node.type === 'TabsTrigger' && [].concat(node.props.children).includes(label));
     assert.ok(match, `tab ${label} exists`);
     return match;
   }
@@ -113,7 +120,12 @@ function harness(token = 'account-a') {
   }
   const runner = {
     calls, render, nodes, text, tab, refresh,
-    clickTab(label) { tab(label).props.onClick(); render(); },
+    clickTab(label) {
+      const tabs = nodes().find(node => node.type === 'Tabs');
+      assert.ok(tabs, 'controlled Tabs root exists');
+      tabs.props.onValueChange(tab(label).props.value);
+      render();
+    },
     titles() { return nodes().filter(node => node.type === 'PrimaryCell').map(node => node.props.title); },
     count(label) { return text(tab(label)).slice(label.length); },
     async flush() { for (let i = 0; i < 6; i++) { await Promise.resolve(); render(); } },

@@ -12,7 +12,7 @@ export function StoragePage({ lang, vm, token }: { lang: Lang; vm: DashboardView
   const { path } = useRouter();
   const governance = path.startsWith("/storage/governance");
   return (
-    <div className="infrastructure-workspace">
+    <div className="infrastructure-workspace flex min-w-0 flex-col gap-6">
       <PageHeader
         meta={{
           eyebrow: zh ? "存储状态" : "Storage",
@@ -21,9 +21,9 @@ export function StoragePage({ lang, vm, token }: { lang: Lang; vm: DashboardView
             ? "集中查看存储类、卷来源、节点绑定以及消费服务。"
             : "Review classes, volume sources, node bindings, and consuming services in one place.",
           metrics: governance ? [] : [
-            { label: "storageClass", value: vm.storageClasses.length },
+            { label: t(lang, "storageClass"), value: vm.storageClasses.length },
             { label: t(lang, "volume"), value: vm.storageVolumes.length },
-            { label: "Warnings", value: vm.storageWarnings.length },
+            { label: zh ? "提示" : "Warnings", value: vm.storageWarnings.length },
           ],
         }}
       />

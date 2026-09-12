@@ -1,22 +1,41 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-
-import { createPortal } from "react-dom";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Separator } from "@/components/ui/separator";
+import { Spinner } from "@/components/ui/spinner";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
-import { ArrowLeft, TerminalSquare, X } from "lucide-react";
+import { AlertCircle, ArrowLeft, Check, X } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import type { DashboardNode, DashboardService, Lang } from "../types";
 import { t } from "../i18n";
-import { OverlayShell } from "../useOverlay";
 import "./terminalSession.css";
 
 type TerminalStatus = "connecting" | "connected" | "ended" | "error";
 
-// The application detail dialog is also portalled to <body>. Keep the terminal
-// at the same root so the dashboard shell's isolated stacking context cannot
-// trap it underneath that dialog; the overlay z-index then orders them correctly.
-const TERMINAL_ROOT = typeof document === "undefined" ? null : document.body;
+// xterm needs RGB colors. The browser resolves the dashboard's OKLCH tokens.
+function terminalTheme() {
+  const styles = getComputedStyle(document.documentElement);
+  const context = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+  const color = (token: string) => {
+    const value = styles.getPropertyValue(token).trim();
+    if (!context || !value) return undefined;
+    context.clearRect(0, 0, 1, 1);
+    context.fillStyle = value;
+    context.fillRect(0, 0, 1, 1);
+    const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data;
+    return `rgba(${red}, ${green}, ${blue}, ${alpha / 255})`;
+  };
+  return {
+    background: color("--background"),
+    foreground: color("--foreground"),
+    cursor: color("--primary"),
+    selectionBackground: color("--accent"),
+  };
+}
 
 export type TerminalSessionTarget = {
   kind: "node" | "container";
@@ -35,16 +54,20 @@ type TerminalDrawerProps = {
 
 export function TerminalDrawer(props: TerminalDrawerProps) {
   if (props.inline) return <TerminalContent {...props} />;
-  if (!TERMINAL_ROOT) return null;
-  return createPortal(
-    <OverlayShell<HTMLElement> className="terminal-modal-backdrop" onClose={props.onClose}>
-      {(panelRef) => <TerminalContent {...props} panelRef={panelRef} />}
-    </OverlayShell>,
-    TERMINAL_ROOT,
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) props.onClose(); }}>
+      <DialogContent
+        className="flex h-[min(84dvh,920px)] min-h-0 flex-col overflow-hidden sm:max-w-[min(1440px,calc(100%-2rem))]"
+        showCloseButton={false}
+        initialFocus={false}
+      >
+        <TerminalContent {...props} />
+      </DialogContent>
+    </Dialog>
   );
 }
 
-function TerminalContent({ lang, target, token, onClose, inline = false, panelRef }: TerminalDrawerProps & { panelRef?: RefObject<HTMLElement | null> }) {
+function TerminalContent({ lang, target, token, onClose, inline = false }: TerminalDrawerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -52,12 +75,14 @@ function TerminalContent({ lang, target, token, onClose, inline = false, panelRe
   const sessionRef = useRef("");
   const reportedCloseRef = useRef(false);
   const [status, setStatus] = useState<TerminalStatus>("connecting");
+  const [errorMessage, setErrorMessage] = useState("");
+  const titleId = useId();
   const isContainer = target.kind === "container";
   const title = isContainer
     ? `${target.stack || target.service?.stack || "-"} / ${target.service?.name || target.service?.fullName || "-"}`
     : (target.node?.name || "-");
   const meta = isContainer
-    ? [target.node?.name, target.node?.region, "container"].filter(Boolean).join(" · ")
+    ? [target.node?.name, target.node?.region].filter(Boolean).join(" · ")
     : `${target.node?.region || "-"} · ${target.node?.agentOs || "agent"}`;
 
   useEffect(() => {
@@ -65,25 +90,20 @@ function TerminalContent({ lang, target, token, onClose, inline = false, panelRe
     const container = containerRef.current;
     if (!container) return;
     setStatus("connecting");
+    setErrorMessage("");
     reportedCloseRef.current = false;
     const term = new Terminal({
       cursorBlink: true,
       convertEol: true,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
       fontSize: 13,
-      theme: {
-        background: "#1a1818",
-        foreground: "#fdfcfc",
-        cursor: "#007aff",
-        selectionBackground: "#004085",
-      },
+      theme: terminalTheme(),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
     fit.fit();
-    // Take focus off whatever useOverlay picked (the first control in the
-    // dialog): in a terminal the caret belongs in the terminal.
+    // Dialog owns focus containment; the terminal caret is the initial target.
     term.focus();
     terminalRef.current = term;
     fitRef.current = fit;
@@ -106,6 +126,8 @@ function TerminalContent({ lang, target, token, onClose, inline = false, panelRe
 
     const resizeObserver = new ResizeObserver(sendResize);
     resizeObserver.observe(container);
+    const themeObserver = new MutationObserver(() => { term.options.theme = terminalTheme(); });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme", "style"] });
 
     socket.addEventListener("open", () => {
       if (!active) return;
@@ -137,6 +159,7 @@ function TerminalContent({ lang, target, token, onClose, inline = false, panelRe
       } else if (kind === "error") {
         reportedCloseRef.current = true;
         setStatus("error");
+        setErrorMessage(String(message.message || "Terminal error"));
         term.writeln("");
         term.writeln(String(message.message || "Terminal error"));
       }
@@ -145,6 +168,7 @@ function TerminalContent({ lang, target, token, onClose, inline = false, panelRe
       if (!active) return;
       if (!sessionRef.current && !reportedCloseRef.current) {
         setStatus("error");
+        setErrorMessage(lang === "zh" ? `终端连接已关闭（${event.code || "-"}）。` : `Terminal connection closed (${event.code || "-"}).`);
         term.writeln("");
         term.writeln(
           lang === "zh"
@@ -159,6 +183,7 @@ function TerminalContent({ lang, target, token, onClose, inline = false, panelRe
       if (!active) return;
       reportedCloseRef.current = true;
       setStatus("error");
+      setErrorMessage(lang === "zh" ? "终端连接失败，请稍后重试。" : "The terminal could not connect. Try again shortly.");
       term.writeln("");
       term.writeln(lang === "zh" ? "Terminal WebSocket 连接失败。" : "Terminal WebSocket connection failed.");
     });
@@ -173,6 +198,7 @@ function TerminalContent({ lang, target, token, onClose, inline = false, panelRe
       active = false;
       window.removeEventListener("resize", sendResize);
       resizeObserver.disconnect();
+      themeObserver.disconnect();
       disposable.dispose();
       if (socket.readyState === WebSocket.OPEN) {
         if (sessionRef.current) {
@@ -196,30 +222,51 @@ function TerminalContent({ lang, target, token, onClose, inline = false, panelRe
     error: lang === "zh" ? "错误" : "Error",
   }[status];
 
-  return (
-      <section
-        className={`terminal-session ${inline ? "terminal-page" : "terminal-modal"} terminal-modal-${status}`}
-        ref={panelRef}
-        role={inline ? "region" : "dialog"}
-        aria-modal={inline ? undefined : true}
-        aria-labelledby="terminal-modal-title"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <header className="terminal-session__header">
-          <div className="terminal-session__identity">
-            <TerminalSquare size={16} aria-hidden="true" />
-            <h2 id="terminal-modal-title" title={title}>{title}</h2>
-            <span className="terminal-session__meta" title={meta}>{isContainer ? (lang === "zh" ? "容器" : "Container") : (lang === "zh" ? "节点" : "Node")} · {meta}</span>
-          </div>
-          <div className="terminal-session__actions">
-            <span className={`terminal-session__status is-${status}`} role="status" aria-live="polite">{statusLabel}</span>
-            <Button type="button" variant="outline" size="sm" className="terminal-session__close" onClick={onClose}>
-              {inline ? <ArrowLeft data-icon="inline-start" /> : <X data-icon="inline-start" />}
-              {inline ? (lang === "zh" ? "结束并返回" : "End session and return") : t(lang, "close")}
-            </Button>
-          </div>
-        </header>
-        <div className="terminal-surface" ref={containerRef} />
-      </section>
+  const Header = inline ? CardHeader : DialogHeader;
+  const Title = inline ? CardTitle : DialogTitle;
+  const Description = inline ? CardDescription : DialogDescription;
+  const header = (
+    <Header className="flex shrink-0 flex-row flex-wrap items-center justify-between gap-3">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <Title id={titleId} className="truncate" title={title}>{title}</Title>
+        <Description className="truncate" title={meta}>
+          {isContainer ? (lang === "zh" ? "容器终端" : "Container terminal") : (lang === "zh" ? "节点终端" : "Node terminal")} · {meta}
+        </Description>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant={status === "error" ? "destructive" : status === "connected" ? "success" : "secondary"} role="status" aria-live="polite">
+          {status === "connecting" && <Spinner aria-hidden="true" data-icon="inline-start" />}
+          {status === "connected" && <Check data-icon="inline-start" />}
+          {statusLabel}
+        </Badge>
+        <Button type="button" variant="outline" size="sm" onClick={onClose}>
+          {inline ? <ArrowLeft data-icon="inline-start" /> : <X data-icon="inline-start" />}
+          {inline ? (lang === "zh" ? "结束并返回" : "End session and return") : t(lang, "close")}
+        </Button>
+      </div>
+    </Header>
+  );
+  const surface = (
+    <>
+      {errorMessage && <Alert variant="destructive">
+        <AlertCircle />
+        <AlertTitle>{lang === "zh" ? "终端连接异常" : "Terminal connection error"}</AlertTitle>
+        <AlertDescription>{errorMessage}</AlertDescription>
+      </Alert>}
+      <div className="terminal-session__surface" ref={containerRef} role="region" aria-label={lang === "zh" ? "交互式终端" : "Interactive terminal"} />
+    </>
+  );
+  return inline ? (
+    <Card className="h-full min-h-0 min-w-0" role="region" aria-labelledby={titleId}>
+      {header}
+      <Separator />
+      <CardContent className="flex min-h-0 flex-1 flex-col gap-3">{surface}</CardContent>
+    </Card>
+  ) : (
+    <>
+      {header}
+      <Separator />
+      {surface}
+    </>
   );
 }

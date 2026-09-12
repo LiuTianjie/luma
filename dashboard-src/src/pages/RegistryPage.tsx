@@ -1,10 +1,6 @@
-import "./resourceWorkspaces.css";
 import {
   AlertTriangle,
   Boxes,
-  Clock3,
-  Database,
-  HardDrive,
   Info,
   RefreshCw,
   Search,
@@ -12,15 +8,23 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { CodeCell, SelectControl, StatePill } from "../components/primitives";
-import { Button } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Bar, BarChart, CartesianGrid, XAxis } from "recharts";
+import { CodeCell } from "../components/primitives";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
+import { Progress } from "@/components/ui/progress";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { cn } from "@/lib/utils";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Field, FieldLabel } from "@/components/ui/field";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { formatTimestamp } from "../format";
@@ -78,7 +82,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
   const zh = lang === "zh";
   const { path, search, navigate } = useRouter();
   const routeSection = path.split("/")[2] || "inventory";
-  const section = routeSection === "cleanup" ? "inventory" : routeSection;
+  const section = ["inventory", "policy", "image", "delete"].includes(routeSection) ? routeSection : "inventory";
   const showPolicy = section === "policy";
   const setShowPolicy = (value: boolean) => navigate(value ? "/registry/policy" : "/registry");
   const detailKey = new URLSearchParams(search).get("image") || "";
@@ -186,9 +190,10 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
   const unavailable = zh ? "暂不可用" : "Unavailable";
   const usageBytes = (value: number | undefined) => hasUsage && value != null ? formatBytes(value) : unavailable;
   const usageInterrupted = usage.error === "node agent restarted before task completion";
-  const diskTone = diskPercent >= (policy.emergencyPercent || 92) ? "critical" : diskPercent >= (policy.criticalPercent || 85) ? "warning" : "healthy";
+  const diskWarning = hasDiskPercent && diskPercent >= policy.warningPercent;
+  const diskCritical = hasDiskPercent && diskPercent >= policy.criticalPercent;
+  const diskEmergency = hasDiskPercent && diskPercent >= policy.emergencyPercent;
   const monthly = (usage.monthlyBlobs || []).slice(-6);
-  const monthlyMax = Math.max(...monthly.map((item) => Number(item.bytes || 0)), 1);
 
   const selectionItems = (inventory?.entries || []).filter((item) => selected.has(keyFor(item)));
   const deletionRepositories = new Map<string, RegistryManifest[]>();
@@ -279,300 +284,223 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
     }
   };
 
+  const policyFields = [
+    { key: "keepLast", label: zh ? "每仓库至少保留" : "Keep per repository", min: 1, max: 500 },
+    { key: "maxAgeDays", label: zh ? "保留天数" : "Max age days", min: 1, max: 3650 },
+    { key: "systemKeepLast", label: zh ? "系统版本保留" : "System versions", min: 1, max: 100 },
+    { key: "queueGraceHours", label: zh ? "自动删除宽限期（小时）" : "Automatic deletion grace (hours)", min: 0, max: 720 },
+    { key: "gcGraceDays", label: zh ? "自动回收恢复窗口（天）" : "Automatic reclamation grace (days)", min: 1, max: 365 },
+    { key: "warningPercent", label: zh ? "容量预警（%）" : "Warning usage (%)", min: 1, max: 99 },
+    { key: "criticalPercent", label: zh ? "容量严重（%）" : "Critical usage (%)", min: 2, max: 100 },
+    { key: "emergencyPercent", label: zh ? "容量紧急（%）" : "Emergency usage (%)", min: 3, max: 100 },
+  ] as const;
+  const invalidPolicyField = (field: typeof policyFields[number]) => !Number.isInteger(policy[field.key]) || policy[field.key] < field.min || ("max" in field && policy[field.key] > field.max);
+  const policyInvalid = policyFields.some(invalidPolicyField);
+  const protectionBadge = (status?: string) => <Badge variant={status === "protected" ? "secondary" : "outline"}>{statusLabel(status, zh)}</Badge>;
+
   return (
-    <div className="registry-workspace">
+    <div className="registry-workspace flex min-w-0 flex-col gap-6">
       <PageHeader
         meta={{
           eyebrow: zh ? "镜像生命周期" : "Image lifecycle",
-          title: section === "delete" ? (zh ? "删除镜像" : "Delete images") : (zh ? "Registry 镜像管理" : "Registry image management"),
+          title: section === "delete" ? (zh ? "删除镜像" : "Delete images") : showPolicy ? (zh ? "镜像保留策略" : "Image retention policy") : (zh ? "Registry 镜像管理" : "Registry image management"),
           description: section === "delete"
             ? (zh ? "核对清理范围与影响后，确认执行。" : "Review the cleanup scope and impact before confirming.")
-            : zh
-            ? "查看镜像与引用情况，选择需要清理的镜像即可删除。"
-            : "Review images and their references, then select images to delete.",
+            : zh ? "查看镜像与引用情况，选择需要清理的镜像即可删除。" : "Review images and their references, then select images to delete.",
           metrics: section === "delete" ? (preview ? [
             { label: zh ? "选中镜像" : "Images", value: preview.selected?.length || 0 },
             { label: zh ? "标签" : "Tags", value: preview.selected?.reduce((count, item) => count + (item.tags?.length || 0), 0) || 0 },
             { label: zh ? "逻辑体积" : "Logical size", value: formatBytes(preview.logicalBytes) },
           ] : []) : [
-            { label: zh ? "仓库" : "Repositories", value: summary.repositoryCount || 0 },
-            { label: "Tags", value: summary.tagCount || 0 },
-            { label: zh ? "候选" : "Candidates", value: summary.candidateCount || 0 },
+            { label: zh ? "仓库" : "Repositories", value: inventory ? summary.repositoryCount || 0 : "—" },
+            { label: zh ? "标签" : "Tags", value: inventory ? summary.tagCount || 0 : "—" },
+            { label: zh ? "候选" : "Candidates", value: inventory ? summary.candidateCount || 0 : "—" },
           ],
           action: section === "delete" ? undefined : (
-            <div className="registry-header-actions">
+            <div className="flex flex-wrap items-center gap-2">
               <Button variant="outline" type="button" disabled={loading || !!busy} onClick={() => { void load(true).then(() => setDetailRevision((value) => value + 1)); }}>
-                <RefreshCw size={15} className={loading ? "spin" : ""} /> {zh ? "重新扫描" : "Rescan"}
+                {loading ? <Spinner aria-hidden="true" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}
+                {zh ? "重新扫描" : "Rescan"}
               </Button>
-              <Button variant="outline" type="button" onClick={() => setShowPolicy(!showPolicy)}>
-                <Settings2 size={15} /> {zh ? "保留策略" : "Retention"}
+              <Button variant="outline" type="button" disabled={!!busy} onClick={() => setShowPolicy(!showPolicy)}>
+                <Settings2 data-icon="inline-start" />{showPolicy ? (zh ? "返回镜像" : "Back to images") : (zh ? "保留策略" : "Retention")}
               </Button>
             </div>
           ),
         }}
       />
 
-      <main className="registry-page">
+      <div className="flex min-w-0 flex-col gap-6">
         {inventory?.scanPending ? (
           <Alert>
-            <RefreshCw className="animate-spin" />
+            <Spinner aria-hidden="true" />
             <AlertTitle>{zh ? "首次镜像快照正在后台建立" : "Building the first image snapshot in the background"}</AlertTitle>
             <AlertDescription>{zh ? "可以离开本页；完成后再次进入会直接读取快照。" : "You may leave this page; future visits load the snapshot immediately."}</AlertDescription>
           </Alert>
-        ) : !inventory?.protectionComplete ? (
+        ) : inventory && !inventory.protectionComplete ? (
           <Alert variant="destructive">
             <AlertTriangle />
             <AlertTitle>{zh ? "引用扫描不完整，自动清理已暂停" : "Reference scan incomplete; automatic cleanup paused"}</AlertTitle>
-            <AlertDescription>{inventory?.referenceError || (zh ? "人工删除仍可继续，风险由操作者确认承担。" : "Manual deletion remains available after operator confirmation.")}</AlertDescription>
+            <AlertDescription>{inventory.referenceError || (zh ? "人工删除仍可继续，风险由操作者确认承担。" : "Manual deletion remains available after operator confirmation.")}</AlertDescription>
           </Alert>
         ) : null}
-        {error ? (
-          <Alert variant="destructive">
-            <AlertTriangle />
-            <AlertTitle>{zh ? "操作失败" : "Operation failed"}</AlertTitle>
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        ) : null}
+        {error ? <Alert variant="destructive"><AlertTriangle /><AlertTitle>{zh ? "操作失败" : "Operation failed"}</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
         {usage.error ? (
           <Alert>
             <AlertTriangle />
             <AlertTitle>{zh ? "容量数据暂不可用" : "Storage data unavailable"}</AlertTitle>
-            <AlertDescription>
-              {usageInterrupted
-                ? (zh ? "节点 agent 在容量采集完成前重启，本次扫描未取得容量数据。镜像清单仍可查看；节点恢复后可重新扫描。" : "The node agent restarted before storage inspection completed. Image inventory remains available; rescan after the node recovers.")
-                : usage.error}
-            </AlertDescription>
+            <AlertDescription>{usageInterrupted
+              ? (zh ? "节点 agent 在容量采集完成前重启，本次扫描未取得容量数据。镜像清单仍可查看；节点恢复后可重新扫描。" : "The node agent restarted before storage inspection completed. Image inventory remains available; rescan after the node recovers.")
+              : usage.error}</AlertDescription>
             <AlertAction><Button type="button" variant="outline" size="sm" disabled={loading || !!busy} onClick={() => void load(true)}>{zh ? "重新采集" : "Retry scan"}</Button></AlertAction>
           </Alert>
         ) : null}
         {notice ? (
-          <Alert>
-            <ShieldCheck />
-            <AlertTitle>{notice}</AlertTitle>
-            <AlertAction>
-              <Button type="button" variant="ghost" size="sm" onClick={() => setNotice("")}>{zh ? "关闭" : "Dismiss"}</Button>
-            </AlertAction>
+          <Alert role="status">
+            <ShieldCheck /><AlertTitle>{notice}</AlertTitle>
+            <AlertAction><Button type="button" variant="ghost" size="sm" onClick={() => setNotice("")}>{zh ? "关闭" : "Dismiss"}</Button></AlertAction>
           </Alert>
         ) : null}
 
         {section === "inventory" ? <>
-        <section className="registry-usage-grid" aria-label={zh ? "镜像仓库容量" : "Registry storage usage"}>
-          <article className={`registry-usage-card disk-${diskTone}`}>
-            <div><HardDrive size={20} /><span>{zh ? "宿主磁盘" : "Host filesystem"}</span></div>
-            <strong>{hasDiskPercent ? `${diskPercent}%` : unavailable}</strong>
-            <small>{zh ? `可用 ${usageBytes(usage.filesystemAvailableBytes)}` : `${usageBytes(usage.filesystemAvailableBytes)} available`}</small>
-            {hasDiskPercent ? <i style={{ "--registry-meter": `${Math.min(diskPercent, 100)}%` } as CSSProperties} /> : null}
-          </article>
-          <article className="registry-usage-card">
-            <div><Database size={20} /><span>{zh ? "镜像数据卷" : "Registry volume"}</span></div>
-            <strong>{usageBytes(usage.volumeBytes)}</strong>
-            <small>{inventory?.registry?.volumeName || "-"}</small>
-          </article>
-          <article className="registry-usage-card">
-            <div><ShieldCheck size={20} /><span>{zh ? "受保护 manifest" : "Protected manifests"}</span></div>
-            <strong>{summary.protectedCount || 0}</strong>
-            <small>{zh ? "运行、回滚、构建与系统引用" : "Runtime, rollback, build, and system references"}</small>
-          </article>
-          <article className="registry-usage-card">
-            <div><Clock3 size={20} /><span>{zh ? "最近扫描" : "Last scan"}</span></div>
-            <strong>{summary.durationMs ? `${(summary.durationMs / 1000).toFixed(1)}s` : "-"}</strong>
-            <small>{formatTimestamp(summary.scannedAt, lang)}</small>
-          </article>
-        </section>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>{zh ? "Registry 存储月度分布" : "Registry storage by month"}</CardTitle>
-            <CardDescription>{zh ? "现存 Blob 按文件最后修改月份汇总，展示最近 6 个有数据的月份；不是每月总容量快照。" : "Existing blobs grouped by file modification month, showing the latest six populated months; not historical capacity snapshots."}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {hasUsage && monthly.length ? <div className="registry-growth-bars">{monthly.map((item) => <span key={item.month}><i aria-hidden="true" style={{ height: `${(Number(item.bytes || 0) / monthlyMax) * 100}%` }} /><strong>{formatBytes(item.bytes)}</strong><small>{item.month}</small></span>)}</div>
-              : <p className="text-sm text-muted-foreground">{usage.error
-                ? (zh ? "容量采集失败，暂无法显示月度分布。请重新采集后查看。" : "Storage collection failed. Retry the scan to load monthly data.")
-                : (zh ? "暂无月度数据，重新扫描后显示存储分布。" : "No monthly data yet. Rescan to load the storage distribution.")}</p>}
-          </CardContent>
-        </Card>
-
-        </> : null}
-
-        {showPolicy ? (
-          <section className="panel registry-policy-panel">
-            <div className="panel-heading"><div><p className="eyebrow">Retention</p><h2>{zh ? "保留与安全窗口" : "Retention and safety windows"}</h2></div><Settings2 size={18} /></div>
-            <div className="registry-policy-grid">
-              <Field>
-                <FieldLabel>{zh ? "模式" : "Mode"}</FieldLabel>
-                <SelectControl
-                  className="min-w-0"
-                  value={policy.mode}
-                  onChange={(value) => setPolicy({ ...policy, mode: value as RegistryPolicy["mode"] })}
-                  options={[
-                    { value: "off", label: "Off" },
-                    { value: "recommend", label: "Recommend" },
-                    { value: "enforce", label: "Enforce" },
-                  ]}
-                />
-              </Field>
-              <Field>
-                <FieldLabel>{zh ? "每仓库至少保留" : "Keep per repository"}</FieldLabel>
-                <Input type="number" min={1} value={policy.keepLast} onChange={(event) => setPolicy({ ...policy, keepLast: Number(event.target.value) })} />
-              </Field>
-              <Field>
-                <FieldLabel>{zh ? "保留天数" : "Max age days"}</FieldLabel>
-                <Input type="number" min={1} value={policy.maxAgeDays} onChange={(event) => setPolicy({ ...policy, maxAgeDays: Number(event.target.value) })} />
-              </Field>
-              <Field>
-                <FieldLabel>{zh ? "系统版本保留" : "System versions"}</FieldLabel>
-                <Input type="number" min={1} value={policy.systemKeepLast} onChange={(event) => setPolicy({ ...policy, systemKeepLast: Number(event.target.value) })} />
-              </Field>
-              <Field>
-                <FieldLabel>{zh ? "删除宽限期（小时，0 为立即执行）" : "Queue grace hours (0 = immediate)"}</FieldLabel>
-                <Input type="number" min={0} value={policy.queueGraceHours} onChange={(event) => setPolicy({ ...policy, queueGraceHours: Number(event.target.value) })} />
-              </Field>
-              <Field>
-                <FieldLabel>{zh ? "GC 恢复窗口（天）" : "GC grace days"}</FieldLabel>
-                <Input type="number" min={1} value={policy.gcGraceDays} onChange={(event) => setPolicy({ ...policy, gcGraceDays: Number(event.target.value) })} />
-              </Field>
-              <Field>
-                <FieldLabel>{zh ? "容量预警（%）" : "Warning usage (%)"}</FieldLabel>
-                <Input type="number" min={1} max={99} value={policy.warningPercent} onChange={(event) => setPolicy({ ...policy, warningPercent: Number(event.target.value) })} />
-              </Field>
-              <Field>
-                <FieldLabel>{zh ? "容量严重（%）" : "Critical usage (%)"}</FieldLabel>
-                <Input type="number" min={2} max={100} value={policy.criticalPercent} onChange={(event) => setPolicy({ ...policy, criticalPercent: Number(event.target.value) })} />
-              </Field>
-              <Field>
-                <FieldLabel>{zh ? "容量紧急（%）" : "Emergency usage (%)"}</FieldLabel>
-                <Input type="number" min={3} max={100} value={policy.emergencyPercent} onChange={(event) => setPolicy({ ...policy, emergencyPercent: Number(event.target.value) })} />
-              </Field>
-            </div>
-            {policy.mode === "enforce" ? <div className="registry-policy-warning"><AlertTriangle size={16} /><span>{policy.queueGraceHours > 0 ? (zh ? "Enforce 会自动把候选 manifest 加入队列，宽限期后删除，并在恢复窗口结束后执行离线 GC。" : "Enforce automatically queues candidates, deletes them after the grace period, and runs offline GC after the recovery window.") : (zh ? "Enforce 会自动把候选 manifest 加入队列并立即删除；最终 GC 仍会等待恢复窗口结束。" : "Enforce automatically queues and immediately deletes candidates; final GC still waits for the recovery window.")}</span></div> : null}
-            <div className="registry-policy-actions"><Button type="button" variant="outline" onClick={() => setShowPolicy(false)}>{zh ? "取消" : "Cancel"}</Button><Button type="button" disabled={busy === "policy"} onClick={() => void savePolicy()}>{busy === "policy" ? (zh ? "保存中…" : "Saving…") : (zh ? "保存策略" : "Save policy")}</Button></div>
+          <section className="grid min-w-0 gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label={zh ? "镜像仓库容量" : "Registry storage usage"}>
+            <Card size="sm">
+              <CardHeader><CardDescription>{zh ? "宿主磁盘" : "Host filesystem"}</CardDescription><CardTitle>{hasDiskPercent ? `${diskPercent}%` : unavailable}</CardTitle></CardHeader>
+              <CardContent className="flex flex-col gap-3">
+                <p className="text-sm text-muted-foreground">{zh ? `可用 ${usageBytes(usage.filesystemAvailableBytes)}` : `${usageBytes(usage.filesystemAvailableBytes)} available`}</p>
+                {diskWarning ? <Badge variant={diskCritical || diskEmergency ? "destructive" : "warning"}>{diskEmergency ? (zh ? "容量紧急" : "Emergency capacity") : diskCritical ? (zh ? "容量严重" : "Critical capacity") : (zh ? "容量预警" : "Capacity warning")}</Badge> : null}
+                {hasDiskPercent ? <Progress value={Math.max(0, Math.min(diskPercent, 100))} aria-label={zh ? "宿主磁盘使用率" : "Host filesystem usage"} /> : null}
+              </CardContent>
+            </Card>
+            <Card size="sm">
+              <CardHeader><CardDescription>{zh ? "镜像数据卷" : "Registry volume"}</CardDescription><CardTitle>{usageBytes(usage.volumeBytes)}</CardTitle></CardHeader>
+              <CardContent><p className="break-all text-sm text-muted-foreground">{inventory?.registry?.volumeName || "—"}</p></CardContent>
+            </Card>
+            <Card size="sm">
+              <CardHeader><CardDescription>{zh ? "受保护镜像清单" : "Protected manifests"}</CardDescription><CardTitle>{inventory ? summary.protectedCount || 0 : "—"}</CardTitle></CardHeader>
+              <CardContent><p className="text-sm text-muted-foreground">{zh ? "运行、回滚、构建与系统引用" : "Runtime, rollback, build, and system references"}</p></CardContent>
+            </Card>
+            <Card size="sm">
+              <CardHeader><CardDescription>{zh ? "最近扫描" : "Last scan"}</CardDescription><CardTitle>{summary.durationMs ? `${(summary.durationMs / 1000).toFixed(1)}s` : "—"}</CardTitle></CardHeader>
+              <CardContent><p className="text-sm text-muted-foreground">{formatTimestamp(summary.scannedAt, lang)}</p></CardContent>
+            </Card>
           </section>
-        ) : null}
 
-        {section === "inventory" ? <section className="panel registry-inventory-panel">
-          <div className="registry-inventory-toolbar">
-            <InputGroup className="max-w-xl">
-              <InputGroupAddon>
-                <Search />
-              </InputGroupAddon>
-              <InputGroupInput value={query} onChange={(event) => setQuery(event.target.value)} placeholder={zh ? "搜索仓库、tag 或 digest" : "Search repository, tag, or digest"} />
-            </InputGroup>
-            <Tabs value={filter} onValueChange={(value) => setFilter(String(value))}><TabsList aria-label={zh ? "镜像保护状态" : "Image protection status"}>
-              {["all", "protected", "retained", "candidate", "unknown"].map((value) => <TabsTrigger key={value} value={value}>{value === "all" ? (zh ? "全部" : "All") : statusLabel(value, zh)}</TabsTrigger>)}
-            </TabsList></Tabs>
-            <Button variant="destructive" type="button" disabled={!selected.size || !!busy} onClick={() => void openDeletePreview()}><Trash2 size={15} /> {zh ? `删除镜像${selected.size ? `（${selected.size}）` : ""}` : `Delete images${selected.size ? ` (${selected.size})` : ""}`}</Button>
-          </div>
-          <div className="table-wrap registry-table-wrap" tabIndex={0} role="region" aria-label={zh ? "镜像列表，可横向滚动" : "Image inventory, horizontally scrollable"}>
-            <table className="registry-table">
-              <thead><tr><th><input type="checkbox" checked={allVisibleSelected} aria-label={zh ? "选择所有可操作项" : "Select all actionable items"} onChange={() => setSelected((current) => { const next = new Set(current); selectable.forEach((item) => allVisibleSelected ? next.delete(keyFor(item)) : next.add(keyFor(item))); return next; })} /></th><th>{zh ? "仓库 / Digest" : "Repository / Digest"}</th><th>Tags</th><th>{zh ? "平台" : "Platforms"}</th><th>{zh ? "体积" : "Size"}</th><th>{zh ? "创建时间" : "Created"}</th><th>{zh ? "保护状态" : "Protection"}</th></tr></thead>
-              <tbody>
-                {entries.map((item) => {
-                  return <tr key={keyFor(item)} className={selected.has(keyFor(item)) ? "selected" : ""}>
-                    <td><input type="checkbox" checked={selected.has(keyFor(item))} onChange={() => toggle(item)} aria-label={`${item.repository} ${item.digest}`} /></td>
-                    <td><span className="registry-repository"><a href={toHref(`/registry/image?image=${encodeURIComponent(keyFor(item))}`)} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(`/registry/image?image=${encodeURIComponent(keyFor(item))}`); }}>{item.repository}</a><CodeCell value={item.digest} /></span></td>
-                    <td><span className="registry-tags">{(item.tags || []).slice(0, 4).map((tag) => <code key={tag}>{tag}</code>)}{(item.tags || []).length > 4 ? <small>+{item.tags.length - 4}</small> : null}</span></td>
-                    <td><span className="registry-platforms">{(item.platforms || []).length ? item.platforms?.map((platform) => <small key={platform}>{platform}</small>) : <small>-</small>}</span></td>
-                    <td>{formatBytes(item.logicalBytes)}</td>
-                    <td>{formatTimestamp(item.createdAt || item.lastModified, lang)}</td>
-                    <td><span className="registry-protection"><StatePill label={statusLabel(item.protectionStatus, zh)} value={item.protectionStatus === "protected" ? "ready" : item.protectionStatus === "candidate" ? "warning" : item.protectionStatus} />{item.protectionReasons?.slice(0, 2).map((reason, index) => <small key={`${reason.kind}-${index}`}>{reason.source || reason.kind}</small>)}</span></td>
-                  </tr>;
-                })}
-                {!entries.length ? <tr><td colSpan={7} className="registry-empty">{loading ? (zh ? "正在扫描 Registry…" : "Scanning Registry…") : (zh ? "没有匹配的镜像" : "No matching images")}</td></tr> : null}
-              </tbody>
-            </table>
-          </div>
-          {inventory?.page?.hasMore ? <div className="registry-load-more"><Button variant="outline" type="button" disabled={loading || !!busy} onClick={() => void load(false, (inventory.page?.offset || 0) + (inventory.page?.limit || REGISTRY_PAGE_SIZE), true)}>{loading ? (zh ? "加载中…" : "Loading…") : (zh ? `加载更多（已显示 ${entries.length} / ${inventory.page.total || 0}）` : `Load more (${entries.length} / ${inventory.page.total || 0})`)}</Button></div> : null}
-        </section> : null}
-
-      </main>
-
-      {section === "image" ? <section className="panel registry-image-detail">
-        <Button variant="outline" type="button" onClick={() => navigate("/registry")}>{zh ? "返回镜像" : "Back to images"}</Button>
-        {detail ? <><h2>{detail.repository}</h2><CodeCell value={detail.digest} /><dl className="detail-grid">
-          <div><dt>Tags</dt><dd>{detail.tags?.join(", ") || "—"}</dd></div>
-          <div><dt>{zh ? "平台" : "Platforms"}</dt><dd>{detail.platforms?.join(", ") || "—"}</dd></div>
-          <div><dt>{zh ? "逻辑大小" : "Logical size"}</dt><dd>{formatBytes(detail.logicalBytes)}</dd></div>
-          <div><dt>{zh ? "创建时间" : "Created"}</dt><dd>{formatTimestamp(detail.createdAt || detail.lastModified, lang)}</dd></div>
-          <div><dt>{zh ? "保护状态" : "Protection"}</dt><dd>{statusLabel(detail.protectionStatus, zh)}</dd></div>
-          <div><dt>{zh ? "媒体类型" : "Media type"}</dt><dd>{detail.mediaType || "—"}</dd></div>
-        </dl><h3>{zh ? "引用关系" : "References"}</h3>{detail.protectionReasons?.length ? <ul>{detail.protectionReasons.map((reason, index) => <li key={index}>{reason.kind} · {reason.source} · {reason.reference}</li>)}</ul> : <p>{zh ? "没有已知引用" : "No known references"}</p>} <h3>{zh ? "平台 manifests" : "Platform manifests"}</h3>{detail.childManifestDigests?.map((digest) => <CodeCell key={digest} value={digest} />)}</> : <div role={detailStatus === "error" ? "alert" : "status"} aria-busy={detailStatus === "loading" || detailStatus === "pending"}>
-          <p>{detailStatus === "loading" ? (zh ? "正在查询镜像…" : "Loading image…") : detailStatus === "pending" ? (zh ? "镜像索引正在建立，完成后将自动刷新。" : "Building image index; this page will refresh when ready.") : detailStatus === "error" ? (zh ? "镜像查询失败。" : "Image lookup failed.") : (zh ? "未找到此镜像，它可能已经删除或不在当前索引中。" : "Image not found. It may have been deleted or is absent from the current index.")}</p>
-          {detailStatus === "error" ? <p>{detailState.error}</p> : null}
-          {detailStatus === "error" || detailStatus === "missing" ? <Button variant="outline" type="button" onClick={() => setDetailRevision((value) => value + 1)}>{zh ? "重新查询" : "Retry lookup"}</Button> : null}
-        </div>}
-      </section> : null}
-      {section === "delete" && !preview ? <section className="panel registry-image-detail"><h2>{zh ? "重新选择清理范围" : "Select cleanup scope"}</h2><p>{zh ? "为确保清理范围准确，刷新页面后需要重新选择镜像并分析。" : "After refreshing, select images and preview again to confirm the exact cleanup scope."}</p><Button type="button" onClick={() => navigate("/registry")}>{zh ? "返回镜像列表" : "Back to images"}</Button></section> : null}
-      {section === "delete" && preview ? (
-          <Card className="registry-delete-page" aria-labelledby="registry-delete-title" aria-busy={busy === "purge"}>
+          <Card>
             <CardHeader>
-              <CardTitle id="registry-delete-title">{zh ? "清理范围" : "Cleanup scope"}</CardTitle>
-              <CardDescription>
-                {zh
-                  ? `将删除以下 ${preview.selected?.length || 0} 个镜像及其全部标签，并清理不再使用的镜像数据。`
-                  : `Delete the ${preview.selected?.length || 0} images below and all their tags, then remove their unused image data.`}
-              </CardDescription>
+              <CardTitle>{zh ? "Registry 存储月度分布" : "Registry storage by month"}</CardTitle>
+              <CardDescription>{zh ? "现存 Blob 按文件最后修改月份汇总，展示最近 6 个有数据的月份；不是每月总容量快照。" : "Existing blobs grouped by file modification month, showing the latest six populated months; not historical capacity snapshots."}</CardDescription>
             </CardHeader>
-            <CardContent className="flex flex-col gap-4">
-              <div className="registry-delete-table" tabIndex={0} role="region" aria-label={zh ? "待删除镜像，可横向滚动" : "Selected images, horizontally scrollable"}>
-                <Table>
-                  <TableHeader><TableRow>
-                    <TableHead>{zh ? "标签" : "Tags"}</TableHead>
-                    <TableHead>{zh ? "镜像摘要" : "Digest"}</TableHead>
-                    <TableHead>{zh ? "逻辑体积" : "Logical size"}</TableHead>
-                  </TableRow></TableHeader>
-                  {[...deletionRepositories].map(([repository, images]) => (
-                    <TableBody key={repository}>
-                      <TableRow><TableHead colSpan={3} scope="rowgroup"><span className="flex items-center gap-2"><Boxes aria-hidden="true" className="size-4 shrink-0" /><span>{repository}</span><Badge variant="secondary">{images.length}</Badge></span></TableHead></TableRow>
-                      {images.map((item) => <TableRow key={keyFor(item)}>
-                        <TableCell><span className="flex flex-wrap gap-1">{item.tags?.length ? item.tags.map((tag) => <Badge key={tag} variant="outline">{tag}</Badge>) : <span className="text-muted-foreground">{zh ? "无标签" : "Untagged"}</span>}</span></TableCell>
-                        <TableCell><code className="block truncate font-mono text-xs" title={item.digest}>{item.digest}</code></TableCell>
-                        <TableCell>{formatBytes(item.logicalBytes)}</TableCell>
-                      </TableRow>)}
-                    </TableBody>
-                  ))}
-                </Table>
-              </div>
-              <Alert>
-                <Info />
-                <AlertTitle>{zh ? "释放空间以清理结果为准" : "Freed space is measured after cleanup"}</AlertTitle>
-                <AlertDescription>{zh ? "其他镜像仍在使用的共享层会保留。清理完成后将显示实际释放空间。" : "Layers still used by other images are retained. Actual reclaimed space is shown when cleanup completes."}</AlertDescription>
-              </Alert>
-              <Alert variant="destructive">
-                <AlertTriangle />
-                <AlertTitle>{zh ? "删除后无法恢复" : "Deletion is permanent"}</AlertTitle>
-                <AlertDescription>{zh ? "此操作不创建备份。删除与回收期间 Registry 暂停服务，无法推送或拉取镜像。" : "No backup is created. The registry is unavailable for pushes and pulls during deletion and reclamation."}</AlertDescription>
-              </Alert>
-              {preview.risks?.length ? <Alert variant="destructive">
-                <AlertTriangle />
-                <AlertTitle>{zh ? "存在引用风险" : "Referenced images are included"}</AlertTitle>
-                <AlertDescription>{zh ? "部分镜像仍有服务引用，或引用扫描不完整。删除后，相关服务重启或回滚时可能无法拉取镜像。" : "Some images remain referenced, or reference scanning is incomplete. Affected services may fail to pull their image on restart or rollback."}</AlertDescription>
-              </Alert> : null}
-              {preview.blocked?.length ? <Alert variant="destructive">
-                <AlertTriangle />
-                <AlertTitle>{zh ? "当前范围无法执行" : "This selection cannot be processed"}</AlertTitle>
-                <AlertDescription>{zh ? `${preview.blocked.length} 项因镜像不存在或批量范围过大而无法处理，请返回调整。` : `${preview.blocked.length} items are missing or exceed the batch limit. Go back to adjust the selection.`}</AlertDescription>
-              </Alert> : null}
-              {busy === "purge" ? <Alert role="status">
-                <RefreshCw className="animate-spin" />
-                <AlertTitle>{zh ? "正在删除镜像" : "Deleting images"}</AlertTitle>
-                <AlertDescription>{zh ? `已等待 ${purgeElapsed} 秒。正在删除镜像并清理空间，完成后会自动返回列表。` : `Elapsed: ${purgeElapsed}s. Deleting images and freeing space; you will return to the list when complete.`}</AlertDescription>
-              </Alert> : null}
+            <CardContent>
+              {loading && !inventory ? <Skeleton className="h-48 w-full" aria-label={zh ? "正在加载月度分布" : "Loading monthly distribution"} /> : hasUsage && monthly.length ? <>
+                <ChartContainer config={{ bytes: { label: zh ? "存储占用" : "Storage usage", color: "var(--chart-1)" } }} className="h-48 w-full">
+                  <BarChart accessibilityLayer data={monthly}>
+                    <CartesianGrid vertical={false} />
+                    <XAxis dataKey="month" tickLine={false} axisLine={false} tickMargin={8} />
+                    <ChartTooltip content={<ChartTooltipContent formatter={(value) => formatBytes(Number(value))} />} />
+                    <Bar dataKey="bytes" fill="var(--color-bytes)" radius={4} maxBarSize={72} isAnimationActive={false} />
+                  </BarChart>
+                </ChartContainer>
+                <div className="sr-only"><Table><TableHeader><TableRow><TableHead>{zh ? "月份" : "Month"}</TableHead><TableHead>{zh ? "存储占用" : "Storage usage"}</TableHead></TableRow></TableHeader><TableBody>{monthly.map((item) => <TableRow key={item.month}><TableCell>{item.month}</TableCell><TableCell>{formatBytes(item.bytes)}</TableCell></TableRow>)}</TableBody></Table></div>
+              </> : <Empty><EmptyHeader><EmptyMedia variant="icon"><Boxes /></EmptyMedia><EmptyTitle>{zh ? "暂无月度分布" : "No monthly distribution"}</EmptyTitle><EmptyDescription>{usage.error
+                ? (zh ? "容量采集失败，暂无法显示月度分布。请重新采集后查看。" : "Storage collection failed. Retry the scan to load monthly data.")
+                : (zh ? "暂无月度数据，重新扫描后显示存储分布。" : "No monthly data yet. Rescan to load the storage distribution.")}</EmptyDescription></EmptyHeader></Empty>}
             </CardContent>
-            <CardFooter className="flex-wrap justify-end gap-2">
-              <Button variant="outline" type="button" disabled={!!busy} onClick={() => { setPreview(null); navigate("/registry"); }}>
-                {zh ? "取消" : "Cancel"}
-              </Button>
-              <Button variant="destructive" type="button" disabled={!preview.allowed || !!busy} onClick={() => void purgeSelection()}>
-                {busy === "purge" ? <RefreshCw data-icon="inline-start" className="animate-spin" /> : <Trash2 data-icon="inline-start" />}
-                {busy === "purge"
-                  ? (zh ? "正在删除…" : "Deleting…")
-                  : (zh ? "确认删除" : "Delete images")}
-              </Button>
-            </CardFooter>
           </Card>
 
-      ) : null}
+          <Card aria-busy={loading}>
+            <CardHeader><CardTitle>{zh ? "镜像列表" : "Images"}</CardTitle><CardDescription>{zh ? "按仓库、标签或摘要搜索，并选择需要删除的镜像。" : "Search by repository, tag, or digest, then select images to delete."}</CardDescription></CardHeader>
+            <CardContent className="flex min-w-0 flex-col gap-4">
+              <FieldGroup>
+                <Field>
+                  <FieldLabel htmlFor="registry-search" className="sr-only">{zh ? "搜索镜像" : "Search images"}</FieldLabel>
+                  <InputGroup className="max-w-xl"><InputGroupAddon><Search /></InputGroupAddon><InputGroupInput id="registry-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={zh ? "搜索仓库、标签或摘要" : "Search repository, tag, or digest"} /></InputGroup>
+                </Field>
+                <Field>
+                  <FieldLabel id="registry-filter-label" className="sr-only">{zh ? "镜像保护状态" : "Image protection status"}</FieldLabel>
+                  <ToggleGroup className="flex-wrap" variant="outline" size="sm" value={[filter]} onValueChange={(values) => { if (values[0]) setFilter(String(values[0])); }} aria-labelledby="registry-filter-label">
+                    {["all", "protected", "retained", "candidate", "unknown"].map((value) => <ToggleGroupItem key={value} value={value}>{value === "all" ? (zh ? "全部" : "All") : statusLabel(value, zh)}</ToggleGroupItem>)}
+                  </ToggleGroup>
+                </Field>
+              </FieldGroup>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm text-muted-foreground" role="status">{zh ? `已选择 ${selected.size} 个镜像` : `${selected.size} images selected`}</p>
+                <Button variant="destructive" type="button" disabled={!selected.size || !!busy} onClick={() => void openDeletePreview()}>{busy === "preview" ? <Spinner aria-hidden="true" data-icon="inline-start" /> : <Trash2 data-icon="inline-start" />}{busy === "preview" ? (zh ? "正在分析…" : "Reviewing…") : (zh ? `删除镜像${selected.size ? `（${selected.size}）` : ""}` : `Delete images${selected.size ? ` (${selected.size})` : ""}`)}</Button>
+              </div>
+              <Table containerProps={{ tabIndex: 0, role: "region", "aria-label": zh ? "镜像列表，可横向滚动" : "Image inventory, horizontally scrollable" }} className="min-w-[960px]">
+                  <TableHeader><TableRow>
+                    <TableHead className="w-10"><Checkbox checked={allVisibleSelected} indeterminate={!allVisibleSelected && selectable.some((item) => selected.has(keyFor(item)))} disabled={!selectable.length || !!busy} aria-label={zh ? "选择当前页所有镜像" : "Select all images on this page"} onCheckedChange={(checked) => setSelected((current) => { const next = new Set(current); selectable.forEach((item) => checked ? next.add(keyFor(item)) : next.delete(keyFor(item))); return next; })} /></TableHead>
+                    <TableHead>{zh ? "仓库 / 摘要" : "Repository / digest"}</TableHead><TableHead>{zh ? "标签" : "Tags"}</TableHead><TableHead>{zh ? "平台" : "Platforms"}</TableHead><TableHead>{zh ? "体积" : "Size"}</TableHead><TableHead>{zh ? "创建时间" : "Created"}</TableHead><TableHead>{zh ? "保护状态" : "Protection"}</TableHead>
+                  </TableRow></TableHeader>
+                  <TableBody>
+                    {entries.map((item) => <TableRow key={keyFor(item)} data-state={selected.has(keyFor(item)) ? "selected" : undefined}>
+                      <TableCell><Checkbox checked={selected.has(keyFor(item))} disabled={!!busy} onCheckedChange={() => toggle(item)} aria-label={`${item.repository} ${item.digest}`} /></TableCell>
+                      <TableCell><span className="flex w-80 flex-col items-start gap-1 whitespace-normal"><a className={cn(buttonVariants({ variant: "link", size: "sm" }), "h-auto max-w-full whitespace-normal break-all px-0 text-left")} href={toHref(`/registry/image?image=${encodeURIComponent(keyFor(item))}`)} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(`/registry/image?image=${encodeURIComponent(keyFor(item))}`); }}>{item.repository}</a><CodeCell value={item.digest} /></span></TableCell>
+                      <TableCell><span className="flex max-w-52 flex-wrap gap-1">{item.tags?.length ? item.tags.slice(0, 4).map((tag) => <Badge key={tag} variant="secondary" title={tag}><span className="max-w-44 truncate">{tag}</span></Badge>) : <span className="text-muted-foreground">—</span>}{(item.tags || []).length > 4 ? <Badge variant="outline">+{item.tags.length - 4}</Badge> : null}</span></TableCell>
+                      <TableCell><span className="flex flex-col items-start gap-1">{item.platforms?.length ? item.platforms.map((platform) => <Badge key={platform} variant="outline">{platform}</Badge>) : <span className="text-muted-foreground">—</span>}</span></TableCell>
+                      <TableCell>{formatBytes(item.logicalBytes)}</TableCell><TableCell>{formatTimestamp(item.createdAt || item.lastModified, lang)}</TableCell>
+                      <TableCell><span className="flex max-w-64 flex-col items-start gap-1">{protectionBadge(item.protectionStatus)}{item.protectionReasons?.slice(0, 2).map((reason, index) => <span className="max-w-full truncate text-xs text-muted-foreground" title={reason.source || reason.kind} key={`${reason.kind}-${index}`}>{reason.source || reason.kind}</span>)}</span></TableCell>
+                    </TableRow>)}
+                    {!entries.length ? <TableRow><TableCell colSpan={7}>{loading ? <div className="flex flex-col gap-3 py-4" role="status" aria-label={zh ? "正在加载镜像" : "Loading images"}><Skeleton className="h-5 w-2/3" /><Skeleton className="h-5 w-1/2" /><Skeleton className="h-5 w-3/4" /></div> : <Empty><EmptyHeader><EmptyMedia variant="icon"><Boxes /></EmptyMedia><EmptyTitle>{zh ? "没有匹配的镜像" : "No matching images"}</EmptyTitle><EmptyDescription>{zh ? "调整搜索或保护状态后重试。" : "Try another search or protection status."}</EmptyDescription></EmptyHeader></Empty>}</TableCell></TableRow> : null}
+                  </TableBody>
+                </Table>
+            </CardContent>
+            {inventory?.page?.hasMore ? <CardFooter className="justify-center"><Button variant="outline" type="button" disabled={loading || !!busy} onClick={() => void load(false, (inventory.page?.offset || 0) + (inventory.page?.limit || REGISTRY_PAGE_SIZE), true)}>{loading ? <Spinner aria-hidden="true" data-icon="inline-start" /> : null}{loading ? (zh ? "加载中…" : "Loading…") : (zh ? `加载更多（已显示 ${entries.length} / ${inventory.page.total || 0}）` : `Load more (${entries.length} / ${inventory.page.total || 0})`)}</Button></CardFooter> : null}
+          </Card>
+        </> : null}
+
+        {showPolicy ? <Card>
+          <CardHeader><CardTitle>{zh ? "保留与安全窗口" : "Retention and safety windows"}</CardTitle><CardDescription>{zh ? "此策略只控制自动清理；手动删除镜像会立即删除并回收空间。" : "This policy controls automatic cleanup. Manual image deletion removes images and reclaims space immediately."}</CardDescription></CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <form id="registry-policy-form" onSubmit={(event) => { event.preventDefault(); if (!policyInvalid) void savePolicy(); }}>
+              <FieldGroup className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                <Field data-disabled={!!busy}><FieldLabel id="registry-policy-mode-label">{zh ? "模式" : "Mode"}</FieldLabel><ToggleGroup className="flex-wrap" variant="outline" value={[policy.mode]} disabled={!!busy} aria-labelledby="registry-policy-mode-label" onValueChange={(values) => { if (values[0]) setPolicy({ ...policy, mode: values[0] as RegistryPolicy["mode"] }); }}>{[{ value: "off", label: zh ? "关闭" : "Off" }, { value: "recommend", label: zh ? "仅建议" : "Recommend" }, { value: "enforce", label: zh ? "自动执行" : "Enforce" }].map((item) => <ToggleGroupItem key={item.value} value={item.value}>{item.label}</ToggleGroupItem>)}</ToggleGroup></Field>
+                {policyFields.map((field) => <Field key={field.key} data-disabled={!!busy} data-invalid={invalidPolicyField(field)}><FieldLabel htmlFor={`registry-policy-${field.key}`}>{field.label}</FieldLabel><Input id={`registry-policy-${field.key}`} type="number" required disabled={!!busy} min={field.min} max={"max" in field ? field.max : undefined} step={1} value={policy[field.key]} aria-invalid={invalidPolicyField(field)} aria-describedby={invalidPolicyField(field) ? `registry-policy-${field.key}-error` : undefined} onChange={(event) => setPolicy({ ...policy, [field.key]: Number(event.target.value) })} />{invalidPolicyField(field) ? <FieldError id={`registry-policy-${field.key}-error`}>{zh ? `请输入不小于 ${field.min}${"max" in field ? ` 且不大于 ${field.max}` : ""} 的整数。` : `Enter an integer of at least ${field.min}${"max" in field ? ` and at most ${field.max}` : ""}.`}</FieldError> : field.key === "queueGraceHours" ? <FieldDescription>{zh ? "0 表示自动删除立即执行。" : "Use 0 to run automatic deletion immediately."}</FieldDescription> : null}</Field>)}
+              </FieldGroup>
+            </form>
+            {policy.mode === "enforce" ? <Alert><AlertTriangle /><AlertTitle>{zh ? "自动清理已启用" : "Automatic cleanup enabled"}</AlertTitle><AlertDescription>{policy.queueGraceHours > 0 ? (zh ? "候选镜像将在宽限期后自动删除，恢复窗口结束后自动回收空间。" : "Candidate images are automatically deleted after the grace period; space is reclaimed after the recovery window.") : (zh ? "候选镜像将立即自动删除，恢复窗口结束后自动回收空间。" : "Candidate images are automatically deleted immediately; space is reclaimed after the recovery window.")}</AlertDescription></Alert> : null}
+          </CardContent>
+          <CardFooter className="flex-wrap justify-end gap-2"><Button type="button" variant="outline" disabled={!!busy} onClick={() => setShowPolicy(false)}>{zh ? "取消" : "Cancel"}</Button><Button type="submit" form="registry-policy-form" disabled={!!busy || policyInvalid}>{busy === "policy" ? <Spinner aria-hidden="true" data-icon="inline-start" /> : null}{busy === "policy" ? (zh ? "保存中…" : "Saving…") : (zh ? "保存策略" : "Save policy")}</Button></CardFooter>
+        </Card> : null}
+
+        {section === "image" ? <Card>
+          <CardHeader><CardTitle><span className="break-all">{detail?.repository || (zh ? "镜像详情" : "Image details")}</span></CardTitle>{detail ? <CardDescription><CodeCell value={detail.digest} /></CardDescription> : null}</CardHeader>
+          <CardContent className="flex min-w-0 flex-col gap-6">
+            {detail ? <>
+              <dl className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                <div className="flex min-w-0 flex-col gap-2"><dt className="text-sm text-muted-foreground">{zh ? "标签" : "Tags"}</dt><dd className="flex flex-wrap gap-1">{detail.tags?.length ? detail.tags.map((tag) => <Badge key={tag} variant="secondary" className="h-auto max-w-full"><span className="whitespace-normal break-all">{tag}</span></Badge>) : "—"}</dd></div>
+                <div className="flex min-w-0 flex-col gap-2"><dt className="text-sm text-muted-foreground">{zh ? "平台" : "Platforms"}</dt><dd className="flex flex-wrap gap-1">{detail.platforms?.length ? detail.platforms.map((platform) => <Badge key={platform} variant="outline">{platform}</Badge>) : "—"}</dd></div>
+                <div className="flex flex-col gap-2"><dt className="text-sm text-muted-foreground">{zh ? "逻辑大小" : "Logical size"}</dt><dd>{formatBytes(detail.logicalBytes)}</dd></div>
+                <div className="flex flex-col gap-2"><dt className="text-sm text-muted-foreground">{zh ? "创建时间" : "Created"}</dt><dd>{formatTimestamp(detail.createdAt || detail.lastModified, lang)}</dd></div>
+                <div className="flex flex-col gap-2"><dt className="text-sm text-muted-foreground">{zh ? "保护状态" : "Protection"}</dt><dd>{protectionBadge(detail.protectionStatus)}</dd></div>
+                <div className="flex min-w-0 flex-col gap-2"><dt className="text-sm text-muted-foreground">{zh ? "媒体类型" : "Media type"}</dt><dd className="break-all">{detail.mediaType || "—"}</dd></div>
+              </dl>
+              <Card size="sm"><CardHeader><CardTitle>{zh ? "引用关系" : "References"}</CardTitle></CardHeader><CardContent>{detail.protectionReasons?.length ? <Table containerProps={{ tabIndex: 0, role: "region", "aria-label": zh ? "镜像引用，可横向滚动" : "Image references, horizontally scrollable" }}><TableHeader><TableRow><TableHead>{zh ? "类型" : "Kind"}</TableHead><TableHead>{zh ? "来源" : "Source"}</TableHead><TableHead>{zh ? "引用" : "Reference"}</TableHead></TableRow></TableHeader><TableBody>{detail.protectionReasons.map((reason, index) => <TableRow key={index}><TableCell><Badge variant="outline">{reason.kind}</Badge></TableCell><TableCell>{reason.source || "—"}</TableCell><TableCell><CodeCell value={reason.reference || "—"} /></TableCell></TableRow>)}</TableBody></Table> : <Empty><EmptyHeader><EmptyTitle>{zh ? "没有已知引用" : "No known references"}</EmptyTitle></EmptyHeader></Empty>}</CardContent></Card>
+              <Card size="sm"><CardHeader><CardTitle>{zh ? "平台镜像清单" : "Platform manifests"}</CardTitle></CardHeader><CardContent>{detail.childManifestDigests?.length ? <Table containerProps={{ tabIndex: 0, role: "region", "aria-label": zh ? "平台镜像清单，可横向滚动" : "Platform manifests, horizontally scrollable" }}><TableHeader><TableRow><TableHead>{zh ? "镜像摘要" : "Digest"}</TableHead></TableRow></TableHeader><TableBody>{detail.childManifestDigests.map((digest) => <TableRow key={digest}><TableCell><CodeCell value={digest} /></TableCell></TableRow>)}</TableBody></Table> : <Empty><EmptyHeader><EmptyTitle>{zh ? "没有独立平台清单" : "No separate platform manifests"}</EmptyTitle></EmptyHeader></Empty>}</CardContent></Card>
+            </> : detailStatus === "loading" || detailStatus === "pending" ? <div className="flex flex-col gap-4" role="status" aria-busy="true"><p className="text-sm text-muted-foreground">{detailStatus === "pending" ? (zh ? "镜像索引正在建立，完成后将自动刷新。" : "Building image index; this page will refresh when ready.") : (zh ? "正在查询镜像…" : "Loading image…")}</p><Skeleton className="h-5 w-3/4" /><Skeleton className="h-5 w-1/2" /><Skeleton className="h-24 w-full" /></div> : detailStatus === "error" ? <Alert variant="destructive"><AlertTriangle /><AlertTitle>{zh ? "镜像查询失败" : "Image lookup failed"}</AlertTitle><AlertDescription>{detailState.error}</AlertDescription><AlertAction><Button variant="outline" type="button" size="sm" onClick={() => setDetailRevision((value) => value + 1)}>{zh ? "重新查询" : "Retry lookup"}</Button></AlertAction></Alert> : <Empty><EmptyHeader><EmptyMedia variant="icon"><Boxes /></EmptyMedia><EmptyTitle>{zh ? "未找到此镜像" : "Image not found"}</EmptyTitle><EmptyDescription>{zh ? "它可能已经删除或不在当前索引中。" : "It may have been deleted or is absent from the current index."}</EmptyDescription></EmptyHeader><EmptyContent><Button variant="outline" type="button" onClick={() => setDetailRevision((value) => value + 1)}>{zh ? "重新查询" : "Retry lookup"}</Button></EmptyContent></Empty>}
+          </CardContent>
+          <CardFooter><Button variant="outline" type="button" onClick={() => navigate("/registry")}>{zh ? "返回镜像" : "Back to images"}</Button></CardFooter>
+        </Card> : null}
+
+        {section === "delete" && !preview ? <Card><CardHeader><CardTitle>{zh ? "重新选择清理范围" : "Select cleanup scope"}</CardTitle></CardHeader><CardContent><Empty><EmptyHeader><EmptyMedia variant="icon"><Boxes /></EmptyMedia><EmptyTitle>{zh ? "当前没有待删除镜像" : "No images selected for deletion"}</EmptyTitle><EmptyDescription>{zh ? "为确保清理范围准确，刷新页面后需要重新选择镜像并分析。" : "After refreshing, select images and preview again to confirm the exact cleanup scope."}</EmptyDescription></EmptyHeader><EmptyContent><Button type="button" onClick={() => navigate("/registry")}>{zh ? "返回镜像列表" : "Back to images"}</Button></EmptyContent></Empty></CardContent></Card> : null}
+        {section === "delete" && preview ? <Card className="registry-delete-page" aria-labelledby="registry-delete-title" aria-busy={busy === "purge"}>
+          <CardHeader><CardTitle id="registry-delete-title">{zh ? "清理范围" : "Cleanup scope"}</CardTitle><CardDescription>{zh ? `将删除以下 ${preview.selected?.length || 0} 个镜像及其全部标签，并清理不再使用的镜像数据。` : `Delete the ${preview.selected?.length || 0} images below and all their tags, then remove their unused image data.`}</CardDescription></CardHeader>
+          <CardContent className="flex min-w-0 flex-col gap-4">
+            <Table containerProps={{ tabIndex: 0, role: "region", "aria-label": zh ? "待删除镜像，可横向滚动" : "Selected images, horizontally scrollable" }} className="min-w-[560px] table-fixed"><TableHeader><TableRow><TableHead className="w-1/4">{zh ? "标签" : "Tags"}</TableHead><TableHead>{zh ? "镜像摘要" : "Digest"}</TableHead><TableHead className="w-28 text-right">{zh ? "逻辑体积" : "Logical size"}</TableHead></TableRow></TableHeader>
+                {[...deletionRepositories].map(([repository, images]) => <TableBody key={repository}>
+                  <TableRow><TableHead colSpan={3} scope="rowgroup"><span className="flex items-center gap-2"><span className="truncate" title={repository}>{repository}</span><Badge variant="secondary">{images.length}</Badge></span></TableHead></TableRow>
+                  {images.map((item) => <TableRow key={keyFor(item)}><TableCell><span className="flex flex-wrap gap-1">{item.tags?.length ? item.tags.map((tag) => <Badge key={tag} variant="outline" className="h-auto max-w-full"><span className="whitespace-normal break-all">{tag}</span></Badge>) : <span className="text-muted-foreground">{zh ? "无标签" : "Untagged"}</span>}</span></TableCell><TableCell><code className="block whitespace-normal break-all font-mono text-xs">{item.digest}</code></TableCell><TableCell className="text-right">{formatBytes(item.logicalBytes)}</TableCell></TableRow>)}
+                </TableBody>)}
+              </Table>
+            <Alert><Info /><AlertTitle>{zh ? "释放空间以清理结果为准" : "Freed space is measured after cleanup"}</AlertTitle><AlertDescription>{zh ? "其他镜像仍在使用的共享层会保留。清理完成后将显示实际释放空间。" : "Layers still used by other images are retained. Actual reclaimed space is shown when cleanup completes."}</AlertDescription></Alert>
+            <Alert variant="destructive"><AlertTriangle /><AlertTitle>{zh ? "删除后无法恢复" : "Deletion is permanent"}</AlertTitle><AlertDescription>{zh ? "此操作不创建备份。删除与回收期间 Registry 暂停服务，无法推送或拉取镜像。" : "No backup is created. The registry is unavailable for pushes and pulls during deletion and reclamation."}</AlertDescription></Alert>
+            {preview.risks?.length ? <Alert variant="destructive"><AlertTriangle /><AlertTitle>{zh ? "存在引用风险" : "Referenced images are included"}</AlertTitle><AlertDescription>{zh ? "部分镜像仍有服务引用，或引用扫描不完整。删除后，相关服务重启或回滚时可能无法拉取镜像。" : "Some images remain referenced, or reference scanning is incomplete. Affected services may fail to pull their image on restart or rollback."}</AlertDescription></Alert> : null}
+            {preview.blocked?.length ? <Alert variant="destructive"><AlertTriangle /><AlertTitle>{zh ? "当前范围无法执行" : "This selection cannot be processed"}</AlertTitle><AlertDescription>{zh ? `${preview.blocked.length} 项因镜像不存在或批量范围过大而无法处理，请返回调整。` : `${preview.blocked.length} items are missing or exceed the batch limit. Go back to adjust the selection.`}</AlertDescription></Alert> : null}
+            {busy === "purge" ? <Alert role="status"><Spinner aria-hidden="true" /><AlertTitle>{zh ? "正在删除镜像" : "Deleting images"}</AlertTitle><AlertDescription>{zh ? `已等待 ${purgeElapsed} 秒。正在删除镜像并清理空间，完成后会自动返回列表。` : `Elapsed: ${purgeElapsed}s. Deleting images and freeing space; you will return to the list when complete.`}</AlertDescription></Alert> : null}
+          </CardContent>
+          <CardFooter className="flex-wrap justify-end gap-2"><Button variant="outline" type="button" disabled={!!busy} onClick={() => { setPreview(null); navigate("/registry"); }}>{zh ? "取消" : "Cancel"}</Button><Button variant="destructive" type="button" disabled={!preview.allowed || !!busy} onClick={() => void purgeSelection()}>{busy === "purge" ? <Spinner aria-hidden="true" data-icon="inline-start" /> : <Trash2 data-icon="inline-start" />}{busy === "purge" ? (zh ? "正在删除…" : "Deleting…") : (zh ? "确认删除" : "Delete images")}</Button></CardFooter>
+        </Card> : null}
+      </div>
     </div>
   );
 }

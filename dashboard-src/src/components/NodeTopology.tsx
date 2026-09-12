@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Maximize, Minus, Network, Plus } from "lucide-react";
+import { useTopologyTheme, type TopologyTheme } from "./topologyTheme";
 import { TopologyFullscreenButton } from "./TopologyFullscreenButton";
 
 import CytoscapeComponent from "react-cytoscapejs";
@@ -8,20 +14,17 @@ import { t } from "../i18n";
 import type { DashboardNode, DashboardService, Lang } from "../types";
 import { layoutNodeTopology, nodeTopologySnapshot, NODE_HEIGHT, NODE_WIDTH } from "./nodeTopologyModel";
 
-function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[] {
-  const isDark = theme === "dark";
-  const textColor = isDark ? "#fdfcfc" : "#201d1d";
-  const nodeBg = isDark ? "#302c2c" : "#ffffff";
-  const nodeBorder = isDark ? "rgba(253, 252, 252, 0.16)" : "rgba(15, 0, 0, 0.12)";
-  const edgeColor = isDark ? "rgba(154, 152, 152, 0.4)" : "rgba(110, 110, 115, 0.5)";
-  
-  const leaderBorder = "#007aff";
-  const hostBg = isDark ? "#201d1d" : "#f8f7f7";
-  const hostBorder = isDark ? "#646262" : "#d3d0d0";
-  
-  const serviceBorder = isDark ? "rgba(48, 209, 88, 0.35)" : "rgba(48, 209, 88, 0.3)";
+function getStylesheet(tokens: TopologyTheme): cytoscape.StylesheetJsonBlock[] {
+  const textColor = tokens.foreground;
+  const nodeBg = tokens.card;
+  const nodeBorder = tokens.border;
+  const edgeColor = tokens.mutedForeground;
+  const leaderBorder = tokens.foreground;
+  const hostBg = tokens.muted;
+  const hostBorder = tokens.border;
+  const serviceBorder = nodeBorder;
   const exposedBorder = nodeBorder;
-  
+
   return [
     {
       selector: "node",
@@ -29,7 +32,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
         "background-color": nodeBg,
         "border-color": nodeBorder,
         "border-width": 1.5,
-        "font-family": 'ui-monospace, Menlo, Monaco, Consolas, monospace',
+        "font-family": tokens.fontMono,
         "font-size": 12,
         "font-weight": 500,
         "height": `${NODE_HEIGHT}px`,
@@ -57,7 +60,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
       selector: "node.region",
       style: {
         "border-width": 1.5,
-        "border-color": isDark ? "rgba(253,252,252,0.28)" : "rgba(15,0,0,0.2)",
+        "border-color": tokens.border,
         "background-color": nodeBg,
         "shape": "round-rectangle",
       },
@@ -67,7 +70,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
       style: {
         "border-width": 1.5,
         "border-color": leaderBorder,
-        "background-color": isDark ? "#1c2733" : "#eaf3ff",
+        "background-color": tokens.muted,
       },
     },
     {
@@ -112,16 +115,16 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
     {
       selector: "node.highlighted",
       style: {
-        "border-color": "#007aff",
+        "border-color": tokens.primary,
         "border-width": 3,
-        "background-color": isDark ? "#22303f" : "#e0eefe",
+        "background-color": tokens.accent,
       },
     },
     {
       selector: "edge.highlighted",
       style: {
-        "line-color": "#007aff",
-        "target-arrow-color": "#007aff",
+        "line-color": tokens.primary,
+        "target-arrow-color": tokens.primary,
         "width": "3px",
       },
     },
@@ -143,7 +146,8 @@ export function NodeTopology({
 
   const snapshot = nodeTopologySnapshot(nodes, services, lang);
   const topology = useMemo(() => layoutNodeTopology(snapshot), [snapshot]);
-  const stylesheet = useMemo(() => getStylesheet(theme), [theme]);
+  const tokens = useTopologyTheme(theme);
+  const stylesheet = useMemo(() => getStylesheet(tokens), [tokens]);
 
   useEffect(() => {
     if (cyRef) {
@@ -154,7 +158,7 @@ export function NodeTopology({
   useEffect(() => {
     if (!cyRef) return;
 
-    const handleMouseOver = (event: any) => {
+    const handleMouseOver = (event: cytoscape.EventObject) => {
       const target = event.target;
       if (target.isNode()) {
         cyRef.elements().addClass("dimmed");
@@ -201,34 +205,47 @@ export function NodeTopology({
     }
   };
 
+  const zh = lang === "zh";
+  const controls = [
+    { icon: Plus, label: zh ? "放大" : "Zoom in", action: handleZoomIn },
+    { icon: Minus, label: zh ? "缩小" : "Zoom out", action: handleZoomOut },
+    { icon: Maximize, label: zh ? "适应画布" : "Fit view", action: handleReset },
+  ];
+
   return (
-    <section className="panel topology-panel" id="section-4">
-      <div className="panel-heading">
-        <div>
-          <p className="eyebrow">{t(lang, "nodesEyebrow")}</p>
-          <h2>{t(lang, "nodeTopology")}</h2>
-        </div>
-        <span>{topology.nodes.length} nodes / {topology.edges.length} links</span>
-      </div>
-      <div className="topology-canvas standalone-topology">
-        <CytoscapeComponent
-          className="cy-topology"
-          elements={topology.elements}
-          layout={{ name: "preset", fit: true, padding: 48 }}
-          maxZoom={1.6}
-          // Allow fit() to include every node even in large clusters.
-          minZoom={0}
-          stylesheet={stylesheet}
-          cy={(cy) => setCyRef(cy)}
-        />
-        
-        <div className="cy-controls" aria-label="Topology controls">
-          <Button variant="outline" size="icon-sm" aria-label="Zoom in" className="cy-control-btn" onClick={handleZoomIn} type="button" title="Zoom In">+</Button>
-          <Button variant="outline" size="icon-sm" aria-label="Zoom out" className="cy-control-btn" onClick={handleZoomOut} type="button" title="Zoom Out">-</Button>
-          <Button variant="outline" size="icon-sm" aria-label="Reset view" className="cy-control-btn" onClick={handleReset} type="button" title="Reset View">0</Button>
-          <TopologyFullscreenButton cy={cyRef} lang={lang} />
-        </div>
-      </div>
-    </section>
+    <Card id="section-4">
+      <CardHeader>
+        <CardTitle>{t(lang, "nodeTopology")}</CardTitle>
+        <CardDescription className="col-span-full">{zh ? "查看集群、区域、节点和服务之间的关系。悬停可高亮相邻连接。" : "Explore cluster, region, node, and service relationships. Hover to highlight neighboring connections."}</CardDescription>
+        <CardAction className="row-span-1"><Badge variant="outline">{zh ? `${topology.nodes.length} 个节点 · ${topology.edges.length} 条连接` : `${topology.nodes.length} nodes · ${topology.edges.length} links`}</Badge></CardAction>
+      </CardHeader>
+      <CardContent>
+        {nodes.length ? <div className="topology-canvas standalone-topology" aria-label={t(lang, "nodeTopology")}>
+          <CytoscapeComponent
+            className="cy-topology"
+            elements={topology.elements}
+            layout={{ name: "preset", fit: true, padding: 48 }}
+            maxZoom={1.6}
+            // Allow fit() to include every node even in large clusters.
+            minZoom={0}
+            stylesheet={stylesheet}
+            cy={setCyRef}
+          />
+          <div className="cy-controls" role="group" aria-label={zh ? "拓扑图操作" : "Topology controls"}>
+            {controls.map(({ icon: Icon, label, action }) => <Tooltip key={label}>
+              <TooltipTrigger render={<Button variant="outline" size="icon-sm" aria-label={label} title={label} disabled={!cyRef} onClick={action} />}><Icon data-icon="inline-start" /></TooltipTrigger>
+              <TooltipContent>{label}</TooltipContent>
+            </Tooltip>)}
+            <TopologyFullscreenButton cy={cyRef} lang={lang} />
+          </div>
+        </div> : <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon"><Network /></EmptyMedia>
+            <EmptyTitle>{zh ? "暂无节点拓扑" : "No node topology yet"}</EmptyTitle>
+            <EmptyDescription>{zh ? "节点加入集群后，可在这里查看连接关系。" : "Connections appear here after a node joins the cluster."}</EmptyDescription>
+          </EmptyHeader>
+        </Empty>}
+      </CardContent>
+    </Card>
   );
 }

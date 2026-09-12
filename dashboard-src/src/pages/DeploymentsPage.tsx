@@ -1,21 +1,26 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowDown, GitBranch, Plus, RefreshCw, RotateCcw, Search, Square } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { ArrowDown, ArrowLeft, GitBranch, Plus, RefreshCw, RotateCcw, ScrollText, Search, Square } from "lucide-react";
 import { cancelBuildRun, retryBuildRunStream } from "../deploy/deployApi";
 import type { DeployStep } from "../deploy/types";
 import { StepLog } from "../deploy/StepLog";
 import { DateTimePicker } from "../components/DateTimePicker";
-import { Badge, CodeCell, SelectControl, StatePill } from "../components/primitives";
+import { CodeCell, StatePill } from "../components/primitives";
+import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardFooter } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
-import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { PageHeader } from "./PageHeader";
 import { formatTimestamp } from "../format";
 import { t } from "../i18n";
-import { useRouter } from "../router";
+import { toHref, useRouter } from "../router";
 import { fetchHistory, fetchHistoryDetail } from "../historyApi";
 import { dateInputTimestamp, HISTORY_FILTERS, historyFilters, historyItemKey, historySelection, historyRetentionNotice, historyStatus, historyStatusValue, localDateInput, mergeHistoryItems, retryBuildSelection, type HistoryDetail, type HistoryItem, type HistoryPage, type HistorySelection } from "../historyModel";
 import type { Lang } from "../types";
@@ -33,6 +38,7 @@ function sourceLabel(source: string | undefined, lang: Lang) {
 
 function HistoryFilters({ lang, filters, onApply }: { lang: Lang; filters: string; onApply: (filters: URLSearchParams) => void }) {
   const zh = lang === "zh";
+  const fieldId = useId();
   const params = new URLSearchParams(filters);
   const [app, setApp] = useState(params.get("app") || "");
   const [kind, setKind] = useState(params.get("kind") || "");
@@ -42,6 +48,7 @@ function HistoryFilters({ lang, filters, onApply }: { lang: Lang; filters: strin
   const [until, setUntil] = useState(localDateInput(params.get("until") || ""));
   const [validation, setValidation] = useState("");
   const statuses = Array.from(new Set([...STATUS_OPTIONS, status].filter(Boolean)));
+  const statusItems = [{ value: "all", label: zh ? "全部状态" : "All statuses" }, ...statuses.map((item) => ({ value: item, label: historyStatus(item, lang) }))];
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const values = { app, kind, source, status, since, until };
@@ -69,75 +76,68 @@ function HistoryFilters({ lang, filters, onApply }: { lang: Lang; filters: strin
     onApply(new URLSearchParams());
   };
   return (
-    <form className="flex flex-col gap-4" onSubmit={submit}>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">
+    <form onSubmit={submit}>
+      <FieldGroup>
+      <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <Field>
-          <FieldLabel>{zh ? "应用" : "Application"}</FieldLabel>
-          <Input value={app} onChange={(event) => setApp(event.target.value)} placeholder={zh ? "应用名称" : "Application name"} />
+          <FieldLabel htmlFor={`${fieldId}-app`}>{zh ? "应用" : "Application"}</FieldLabel>
+          <Input id={`${fieldId}-app`} value={app} onChange={(event) => setApp(event.target.value)} placeholder={zh ? "应用名称" : "Application name"} />
         </Field>
         <Field>
-          <FieldLabel>{zh ? "记录类型" : "Record type"}</FieldLabel>
-          <SelectControl
-            value={kind}
-            onChange={setKind}
-            className="min-w-0"
-            options={[
-              { value: "", label: zh ? "全部类型" : "All types" },
-              { value: "build", label: zh ? "构建" : "Build" },
-              { value: "deployment", label: zh ? "部署" : "Deployment" },
-            ]}
-          />
+          <FieldTitle id={`${fieldId}-kind`}>{zh ? "记录类型" : "Record type"}</FieldTitle>
+          <ToggleGroup aria-labelledby={`${fieldId}-kind`} variant="outline" value={[kind || "all"]} onValueChange={(values) => setKind(values[0] === "all" ? "" : values[0] || "")} className="flex-wrap">
+            <ToggleGroupItem value="all">{zh ? "全部" : "All"}</ToggleGroupItem>
+            <ToggleGroupItem value="build">{zh ? "构建" : "Build"}</ToggleGroupItem>
+            <ToggleGroupItem value="deployment">{zh ? "部署" : "Deployment"}</ToggleGroupItem>
+            {kind && !["build", "deployment"].includes(kind) ? <ToggleGroupItem value={kind}>{kind}</ToggleGroupItem> : null}
+          </ToggleGroup>
         </Field>
         <Field>
-          <FieldLabel>{zh ? "来源" : "Source"}</FieldLabel>
-          <SelectControl
-            value={source}
-            onChange={setSource}
-            className="min-w-0"
-            options={[
-              { value: "", label: zh ? "全部来源" : "All sources" },
-              { value: "build", label: sourceLabel("build", lang) },
-              { value: "cli", label: "CLI" },
-              { value: "dashboard", label: sourceLabel("dashboard", lang) },
-            ]}
-          />
+          <FieldTitle id={`${fieldId}-source`}>{zh ? "来源" : "Source"}</FieldTitle>
+          <ToggleGroup aria-labelledby={`${fieldId}-source`} variant="outline" value={[source || "all"]} onValueChange={(values) => setSource(values[0] === "all" ? "" : values[0] || "")} className="flex-wrap">
+            <ToggleGroupItem value="all">{zh ? "全部" : "All"}</ToggleGroupItem>
+            <ToggleGroupItem value="build">{sourceLabel("build", lang)}</ToggleGroupItem>
+            <ToggleGroupItem value="cli">CLI</ToggleGroupItem>
+            <ToggleGroupItem value="dashboard">{sourceLabel("dashboard", lang)}</ToggleGroupItem>
+            {source && !["build", "cli", "dashboard"].includes(source) ? <ToggleGroupItem value={source}>{source}</ToggleGroupItem> : null}
+          </ToggleGroup>
         </Field>
         <Field>
-          <FieldLabel>{t(lang, "status")}</FieldLabel>
-          <SelectControl
-            value={status}
-            onChange={setStatus}
-            className="min-w-0"
-            options={[
-              { value: "", label: zh ? "全部状态" : "All statuses" },
-              ...statuses.map((item) => ({ value: item, label: historyStatus(item, lang) })),
-            ]}
-          />
+          <FieldLabel htmlFor={`${fieldId}-status`}>{t(lang, "status")}</FieldLabel>
+          <Select items={statusItems} value={status || "all"} onValueChange={(value) => setStatus(value === "all" ? "" : value || "")}>
+            <SelectTrigger id={`${fieldId}-status`} className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectGroup>{statusItems.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectGroup></SelectContent>
+          </Select>
         </Field>
         <Field>
-          <FieldLabel>{zh ? "开始时间" : "From"}</FieldLabel>
-          <DateTimePicker lang={lang} value={since} onChange={setSince} defaultTime="00:00" placeholder={zh ? "选择开始时间" : "Pick start time"} />
+          <FieldLabel htmlFor={`${fieldId}-since`}>{zh ? "开始时间" : "From"}</FieldLabel>
+          <DateTimePicker id={`${fieldId}-since`} lang={lang} value={since} onChange={setSince} defaultTime="00:00" placeholder={zh ? "选择开始时间" : "Pick start time"} />
         </Field>
-        <Field>
-          <FieldLabel>{zh ? "结束时间" : "Until"}</FieldLabel>
-          <DateTimePicker lang={lang} value={until} onChange={setUntil} defaultTime="23:59" placeholder={zh ? "选择结束时间" : "Pick end time"} />
+        <Field data-invalid={Boolean(validation)}>
+          <FieldLabel htmlFor={`${fieldId}-until`}>{zh ? "结束时间" : "Until"}</FieldLabel>
+          <DateTimePicker id={`${fieldId}-until`} aria-invalid={Boolean(validation)} aria-describedby={validation ? `${fieldId}-error` : undefined} lang={lang} value={until} onChange={setUntil} defaultTime="23:59" placeholder={zh ? "选择结束时间" : "Pick end time"} />
+          {validation ? <FieldError id={`${fieldId}-error`}>{validation}</FieldError> : null}
         </Field>
-      </div>
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <FieldDescription className="mr-auto">
+      </FieldGroup>
+      <FieldDescription>
           {zh ? "时间按本地时区显示；筛选条件保存在链接中。" : "Times use your local timezone. Filters are saved in the URL."}
-        </FieldDescription>
-        <Button type="button" variant="outline" onClick={clear} disabled={!filters}>
+      </FieldDescription>
+      <Field orientation="horizontal" className="flex-wrap justify-end">
+        <Button type="button" variant="outline" onClick={clear} disabled={!app && !kind && !source && !status && !since && !until}>
           {zh ? "清空筛选" : "Clear filters"}
         </Button>
         <Button type="submit">
-          <Search />
+          <Search data-icon="inline-start" />
           {zh ? "筛选记录" : "Apply filters"}
         </Button>
-      </div>
-      {validation ? <FieldError>{validation}</FieldError> : null}
+      </Field>
+      </FieldGroup>
     </form>
   );
+}
+
+function HistoryFact({ label, children }: { label: string; children: ReactNode }) {
+  return <div className="flex min-w-0 flex-col gap-1"><dt className="text-sm text-muted-foreground">{label}</dt><dd className="m-0 min-w-0 text-sm wrap-break-word">{children}</dd></div>;
 }
 
 function HistoryDetailPage({ lang, token, selection, initialItem, onClose, onRefresh, onSelect }: {
@@ -251,62 +251,68 @@ function HistoryDetailPage({ lang, token, selection, initialItem, onClose, onRef
         title: item?.title || item?.application || id,
         description: kind === "build" ? (zh ? "构建记录与完整步骤日志" : "Build record and step log") : (zh ? "部署记录与完整步骤日志" : "Deployment record and step log"),
         metrics: [],
-        action: <Button type="button" variant="outline" onClick={onClose}>{zh ? "返回交付记录" : "Back to delivery"}</Button>,
+        action: <Button type="button" variant="outline" onClick={onClose}><ArrowLeft data-icon="inline-start" />{zh ? "返回交付记录" : "Back to delivery"}</Button>,
       }} />
-      {item ? (
-        <dl className="grid grid-cols-1 gap-x-6 md:grid-cols-2">
-          <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3 border-b py-3 text-sm"><dt className="text-muted-foreground">{zh ? "应用" : "Application"}</dt><dd className="min-w-0 break-all">{item.application || "-"}</dd></div>
-          <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3 border-b py-3 text-sm"><dt className="text-muted-foreground">{zh ? "来源" : "Source"}</dt><dd>{sourceLabel(item.source, lang)}</dd></div>
-          <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3 border-b py-3 text-sm"><dt className="text-muted-foreground">{t(lang, "status")}</dt><dd><StatePill label={historyStatus(item.status, lang)} value={historyStatusValue(item.status)} /></dd></div>
-          <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3 border-b py-3 text-sm"><dt className="text-muted-foreground">{zh ? "创建时间" : "Created"}</dt><dd>{formatTimestamp(item.createdAt, lang)}</dd></div>
-          {item.updatedAt ? <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3 border-b py-3 text-sm"><dt className="text-muted-foreground">{zh ? "最近更新" : "Updated"}</dt><dd>{formatTimestamp(item.updatedAt, lang)}</dd></div> : null}
-          {item.repository ? <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3 border-b py-3 text-sm"><dt className="text-muted-foreground">{zh ? "仓库" : "Repository"}</dt><dd className="min-w-0 break-all">{item.repository}</dd></div> : null}
-          {item.ref ? <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3 border-b py-3 text-sm"><dt className="text-muted-foreground">{zh ? "版本引用" : "Ref"}</dt><dd>{item.ref}</dd></div> : null}
-          {item.buildNode ? <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3 border-b py-3 text-sm"><dt className="text-muted-foreground">{zh ? "构建节点" : "Build node"}</dt><dd>{item.buildNode}</dd></div> : null}
-          <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3 border-b py-3 text-sm"><dt className="text-muted-foreground">ID</dt><dd><CodeCell value={id} /></dd></div>
-          {item.retryOf && item.retryOf !== id ? (
-            <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3 border-b py-3 text-sm">
-              <dt className="text-muted-foreground">{zh ? "重试来源" : "Retry of"}</dt>
-              <dd>
+      <Card aria-busy={!item && Boolean(loading)}>
+        <CardHeader><CardTitle>{zh ? "任务信息" : "Task information"}</CardTitle></CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          {item ? (
+            <dl className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              <HistoryFact label={zh ? "应用" : "Application"}>{item.application || "-"}</HistoryFact>
+              <HistoryFact label={zh ? "来源" : "Source"}>{sourceLabel(item.source, lang)}</HistoryFact>
+              <HistoryFact label={t(lang, "status")}><StatePill label={historyStatus(item.status, lang)} value={historyStatusValue(item.status)} /></HistoryFact>
+              <HistoryFact label={zh ? "创建时间" : "Created"}>{formatTimestamp(item.createdAt, lang)}</HistoryFact>
+              {item.updatedAt ? <HistoryFact label={zh ? "最近更新" : "Updated"}>{formatTimestamp(item.updatedAt, lang)}</HistoryFact> : null}
+              {item.repository ? <HistoryFact label={zh ? "仓库" : "Repository"}>{item.repository}</HistoryFact> : null}
+              {item.ref ? <HistoryFact label={zh ? "版本引用" : "Ref"}>{item.ref}</HistoryFact> : null}
+              {item.buildNode ? <HistoryFact label={zh ? "构建节点" : "Build node"}>{item.buildNode}</HistoryFact> : null}
+              <HistoryFact label="ID"><CodeCell value={id} /></HistoryFact>
+              {item.retryOf && item.retryOf !== id ? <HistoryFact label={zh ? "重试来源" : "Retry of"}>
                 <Button type="button" variant="link" className="h-auto px-0" disabled={Boolean(action)} onClick={() => onSelect({ kind: "build", id: item.retryOf! })}>
                   {zh ? "查看上一次尝试" : "View previous attempt"}
                 </Button>
-              </dd>
+              </HistoryFact> : null}
+            </dl>
+          ) : loading ? (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3" role="status">
+              <span className="sr-only">{zh ? "正在加载任务信息…" : "Loading task information…"}</span>
+              {Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="h-12 w-full" />)}
             </div>
+          ) : <Empty><EmptyHeader><EmptyTitle>{zh ? "未能读取任务信息" : "Task information unavailable"}</EmptyTitle><EmptyDescription>{zh ? "请重试加载这条记录。" : "Try loading this record again."}</EmptyDescription></EmptyHeader></Empty>}
+          {item?.message ? <Alert><AlertDescription>{item.message}</AlertDescription></Alert> : null}
+        </CardContent>
+        <CardFooter className="flex-wrap gap-2">
+          <Button type="button" variant="outline" disabled={Boolean(loading || action)} onClick={() => void load("refresh")}>
+            {loading === "refresh" ? <Spinner data-icon="inline-start" aria-hidden="true" /> : <RefreshCw data-icon="inline-start" />}
+            {zh ? "刷新详情" : "Refresh detail"}
+          </Button>
+          {retryable ? (
+            <Button type="button" variant="outline" disabled={Boolean(action)} onClick={() => void retryBuild()}>
+              {action === "retry" ? <Spinner data-icon="inline-start" aria-hidden="true" /> : <RotateCcw data-icon="inline-start" />}
+              {action === "retry" ? (zh ? "重试中…" : "Retrying…") : (zh ? "按原参数重试" : "Retry build")}
+            </Button>
           ) : null}
-        </dl>
-      ) : null}
-      {item?.message ? <p className="rounded-lg bg-muted px-3 py-2 text-sm">{item.message}</p> : null}
-      <div className="flex flex-wrap gap-2">
-        <Button type="button" variant="outline" disabled={Boolean(loading || action)} onClick={() => void load("refresh")}>
-          <RefreshCw className={loading === "refresh" ? "animate-spin" : undefined} />
-          {zh ? "刷新详情" : "Refresh detail"}
-        </Button>
-        {retryable ? (
-          <Button type="button" variant="outline" disabled={Boolean(action)} onClick={() => void retryBuild()}>
-            <RotateCcw />
-            {action === "retry" ? (zh ? "重试中…" : "Retrying…") : (zh ? "按原参数重试" : "Retry build")}
-          </Button>
-        ) : null}
-        {cancelable ? (
-          <Button type="button" variant="destructive" disabled={Boolean(action) || item?.status === "canceling"} onClick={() => void cancelBuild()}>
-            <Square />
-            {action === "cancel" || item?.status === "canceling" ? (zh ? "正在取消…" : "Canceling…") : (zh ? "取消构建" : "Cancel build")}
-          </Button>
-        ) : null}
-      </div>
+          {cancelable ? (
+            <Button type="button" variant="destructive" disabled={Boolean(action) || item?.status === "canceling"} onClick={() => void cancelBuild()}>
+              {action === "cancel" || item?.status === "canceling" ? <Spinner data-icon="inline-start" aria-hidden="true" /> : <Square data-icon="inline-start" />}
+              {action === "cancel" || item?.status === "canceling" ? (zh ? "正在取消…" : "Canceling…") : (zh ? "取消构建" : "Cancel build")}
+            </Button>
+          ) : null}
+        </CardFooter>
+      </Card>
       {actionError ? <Alert variant="destructive"><AlertDescription>{actionError}</AlertDescription></Alert> : null}
       {actionNotice ? <Alert><AlertDescription>{actionNotice}</AlertDescription></Alert> : null}
       {retryTarget && action !== "retry" ? (
-        <Button type="button" variant="outline" onClick={() => onSelect(retryTarget)}>{zh ? "查看本次重试记录" : "View this retry attempt"}</Button>
+        <Button type="button" variant="outline" className="w-fit" onClick={() => onSelect(retryTarget)}>{zh ? "查看本次重试记录" : "View this retry attempt"}</Button>
       ) : null}
-      {retrySteps.length ? <section className="flex flex-col gap-3"><h3 className="text-sm font-medium">{zh ? "本次重试日志" : "Current retry log"}</h3><StepLog steps={retrySteps} lang={lang} /></section> : null}
-      <section className="flex flex-col gap-3" aria-busy={Boolean(loading)}>
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h3 className="text-sm font-medium">{zh ? "步骤日志" : "Step log"}</h3>
-          <p className="text-xs text-muted-foreground">{zh ? `已加载 ${data?.events.length || 0}${typeof item?.stepCount === "number" ? ` / ${item.stepCount}` : ""} 条` : `${data?.events.length || 0}${typeof item?.stepCount === "number" ? ` of ${item.stepCount}` : ""} events loaded`}</p>
-        </div>
-        <p className="text-xs text-muted-foreground">{zh ? "从最早事件开始显示；刷新详情会重新加载第一页。" : "Events start with the earliest. Refreshing detail reloads the first page."}</p>
+      {retrySteps.length ? <Card><CardHeader><CardTitle>{zh ? "本次重试日志" : "Current retry log"}</CardTitle></CardHeader><CardContent><StepLog steps={retrySteps} lang={lang} /></CardContent></Card> : null}
+      <Card aria-busy={Boolean(loading)}>
+        <CardHeader>
+          <CardTitle>{zh ? "步骤日志" : "Step log"}</CardTitle>
+          <CardDescription>{zh ? "从最早事件开始显示；刷新详情会重新加载第一页。" : "Events start with the earliest. Refreshing detail reloads the first page."}</CardDescription>
+          <CardAction><Badge variant="secondary">{zh ? `已加载 ${data?.events.length || 0}${typeof item?.stepCount === "number" ? ` / ${item.stepCount}` : ""} 条` : `${data?.events.length || 0}${typeof item?.stepCount === "number" ? ` of ${item.stepCount}` : ""} events loaded`}</Badge></CardAction>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
         {error ? (
           <Alert variant="destructive">
             <AlertDescription className="flex flex-wrap items-center gap-2">
@@ -317,20 +323,25 @@ function HistoryDetailPage({ lang, token, selection, initialItem, onClose, onRef
         ) : null}
         {retentionNotice ? (
           <Alert>
-            <AlertDescription>
-              <p>{retentionNotice}</p>
-              <p className="mt-1 text-xs">{zh ? "清理时间" : "Removed at"} · {formatTimestamp(item?.detailsExpiredAt, lang)}</p>
+            <AlertDescription className="flex flex-col gap-2">
+              <span>{retentionNotice}</span>
+              <span>{zh ? "清理时间" : "Removed at"} · {formatTimestamp(item?.detailsExpiredAt, lang)}</span>
             </AlertDescription>
           </Alert>
         ) : null}
-        {data?.events.length ? <StepLog steps={data.events} lang={lang} /> : loading ? <p role="status" className="text-sm text-muted-foreground">{zh ? "正在加载步骤日志…" : "Loading step log…"}</p> : data && !error && !retentionNotice ? <p className="text-sm text-muted-foreground">{zh ? "这条记录没有分步日志。" : "No step log was recorded."}</p> : null}
+        {data?.events.length ? <StepLog steps={data.events} lang={lang} /> : loading ? (
+          <div className="flex flex-col gap-3" role="status"><span className="sr-only">{zh ? "正在加载步骤日志…" : "Loading step log…"}</span>{Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-10 w-full" />)}</div>
+        ) : data && !error && !retentionNotice ? <Empty><EmptyHeader><EmptyMedia variant="icon"><ScrollText /></EmptyMedia><EmptyTitle>{zh ? "这条记录没有分步日志" : "No step log was recorded"}</EmptyTitle><EmptyDescription>{zh ? "任务的状态和时间仍可在上方查看。" : "The task status and timestamps remain available above."}</EmptyDescription></EmptyHeader></Empty> : null}
+        </CardContent>
         {data?.page.hasMore ? (
+          <CardFooter>
           <Button type="button" variant="outline" disabled={Boolean(loading)} onClick={() => void load("more")}>
-            <ArrowDown />
+            {loading === "more" ? <Spinner data-icon="inline-start" aria-hidden="true" /> : <ArrowDown data-icon="inline-start" />}
             {loading === "more" ? (zh ? "加载中…" : "Loading…") : (zh ? "加载后续步骤" : "Load more events")}
           </Button>
+          </CardFooter>
         ) : null}
-      </section>
+      </Card>
     </div>
   );
 }
@@ -393,7 +404,7 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
   };
   if (selection) return <HistoryDetailPage key={historyItemKey(selection)} lang={lang} token={token} selection={selection} initialItem={list.items.find((item) => historyItemKey(item) === historyItemKey(selection))} onClose={() => select(null)} onRefresh={() => void load("refresh")} onSelect={select} />;
   return (
-    <>
+    <div className="flex min-w-0 flex-col gap-6">
       <PageHeader meta={{
         eyebrow: zh ? "部署记录" : "Deployments",
         title: zh ? "部署与构建时间线" : "Deployment and build timeline",
@@ -402,23 +413,33 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
         action: (
           <div className="flex flex-wrap items-center gap-2">
             <Button type="button" variant="outline" onClick={() => void load("refresh")} disabled={Boolean(loading)}>
-              <RefreshCw className={loading === "refresh" ? "animate-spin" : undefined} />
+              {loading === "refresh" ? <Spinner data-icon="inline-start" aria-hidden="true" /> : <RefreshCw data-icon="inline-start" />}
               {zh ? "刷新最新记录" : "Refresh latest"}
             </Button>
             <Button type="button" variant="outline" onClick={() => navigate("/builds")}>
-              <GitBranch />
+              <GitBranch data-icon="inline-start" />
               {zh ? "从 Git 构建" : "Build from Git"}
             </Button>
             <Button type="button" onClick={() => navigate("/create")}>
-              <Plus />
+              <Plus data-icon="inline-start" />
               {zh ? "创建应用" : "Create application"}
             </Button>
           </div>
         ),
       }} />
       <Card>
+        <CardHeader>
+          <CardTitle>{zh ? "筛选记录" : "Filter records"}</CardTitle>
+          <CardDescription>{zh ? "选择需要查看的应用、记录类型和时间范围。" : "Choose the application, record type, and time range to review."}</CardDescription>
+        </CardHeader>
+        <CardContent><HistoryFilters key={filters} lang={lang} filters={filters} onApply={apply} /></CardContent>
+      </Card>
+      <Card aria-busy={Boolean(loading)}>
+        <CardHeader>
+          <CardTitle>{zh ? "交付记录" : "Delivery records"}</CardTitle>
+          <CardDescription>{zh ? "按创建时间从新到旧排列。" : "Ordered by creation time, newest first."}</CardDescription>
+        </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <HistoryFilters key={filters} lang={lang} filters={filters} onApply={apply} />
           {error ? (
             <Alert variant="destructive">
               <AlertDescription className="flex flex-wrap items-center gap-2">
@@ -427,8 +448,8 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
               </AlertDescription>
             </Alert>
           ) : null}
-          {staleFilters ? <p className="text-sm text-muted-foreground" role="status">{zh ? "新筛选结果尚未加载，下方仍为上次筛选的记录。" : "The new filter results have not loaded. The previous results remain below."}</p> : null}
-          {!list.items.length && loading ? <p className="text-sm text-muted-foreground" role="status">{zh ? "正在加载记录…" : "Loading records…"}</p> : null}
+          {staleFilters ? <Alert role="status"><AlertDescription>{zh ? "新筛选结果尚未加载，下方仍为上次筛选的记录。" : "The new filter results have not loaded. The previous results remain below."}</AlertDescription></Alert> : null}
+          {!list.items.length && loading ? <div className="flex flex-col gap-3" role="status"><span className="sr-only">{zh ? "正在加载记录…" : "Loading records…"}</span>{Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-12 w-full" />)}</div> : null}
           {list.items.length ? (
             <Table aria-busy={Boolean(loading)}>
               <TableHeader>
@@ -441,28 +462,18 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
               </TableHeader>
               <TableBody>
                 {list.items.map((item) => (
-                  <TableRow
-                    key={historyItemKey(item)}
-                    className="cursor-pointer"
-                    tabIndex={0}
-                    aria-label={`${t(lang, "details")}: ${item.title || item.application || item.id}`}
-                    onClick={() => select(item)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        select(item);
-                      }
-                    }}
-                  >
-                    <TableCell><Badge value={sourceLabel(item.source, lang)} /></TableCell>
+                  <TableRow key={historyItemKey(item)}>
+                    <TableCell><Badge variant="secondary">{sourceLabel(item.source, lang)}</Badge></TableCell>
                     <TableCell>
-                      <div className="min-w-0">
-                        <CodeCell value={item.title || item.application || item.id} />
-                        <p className="mt-0.5 truncate text-xs text-muted-foreground">{[item.kind === "build" ? (zh ? "构建" : "Build") : (zh ? "部署" : "Deployment"), item.application, item.ref, item.buildNode].filter(Boolean).join(" · ")}</p>
+                      <div className="flex min-w-0 max-w-96 flex-col items-start gap-1">
+                        <Button variant="link" size="sm" className="h-auto max-w-full justify-start px-0" nativeButton={false} render={<a href={toHref(`/deployments/${item.kind}/${encodeURIComponent(item.id)}${filters ? `?${filters}` : ""}`)} onClick={(event) => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); select(item); } }} />}>
+                          <span className="truncate" title={item.title || item.application || item.id}>{item.title || item.application || item.id}</span>
+                        </Button>
+                        <p className="max-w-full truncate text-xs text-muted-foreground" title={[item.application, item.ref, item.buildNode].filter(Boolean).join(" · ")}>{[item.kind === "build" ? (zh ? "构建" : "Build") : (zh ? "部署" : "Deployment"), item.application, item.ref, item.buildNode].filter(Boolean).join(" · ")}</p>
                       </div>
                     </TableCell>
                     <TableCell><StatePill label={historyStatus(item.status, lang)} value={historyStatusValue(item.status)} /></TableCell>
-                    <TableCell className="text-right text-xs text-muted-foreground">
+                    <TableCell className="text-right">
                       <time title={zh ? "创建时间" : "Created time"}>{formatTimestamp(item.createdAt, lang)}</time>
                     </TableCell>
                   </TableRow>
@@ -470,8 +481,9 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
               </TableBody>
             </Table>
           ) : !loading && !error ? (
-            <Empty className="py-8">
+            <Empty>
               <EmptyHeader>
+                <EmptyMedia variant="icon"><ScrollText /></EmptyMedia>
                 <EmptyTitle>{filters ? (zh ? "没有符合筛选条件的记录。" : "No records match these filters.") : (zh ? "暂无部署或构建记录。" : "No deployment or build records yet.")}</EmptyTitle>
                 <EmptyDescription>{zh ? "调整筛选条件，或从 Git 构建 / 创建应用开始。" : "Adjust filters, or start from a Git build or a new application."}</EmptyDescription>
               </EmptyHeader>
@@ -479,17 +491,17 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
           ) : null}
         </CardContent>
         {list.loadedAt ? (
-          <CardFooter className="flex flex-wrap items-center justify-between gap-2 border-t">
+          <CardFooter className="flex-wrap justify-between gap-2">
             <span className="text-xs text-muted-foreground">{zh ? `已加载 ${list.items.length} 条 · ${formatTimestamp(list.loadedAt, lang)}` : `${list.items.length} records loaded · ${formatTimestamp(list.loadedAt, lang)}`}</span>
             {list.page.hasMore && !staleFilters ? (
               <Button type="button" variant="outline" size="sm" disabled={Boolean(loading)} onClick={() => void load("more")}>
-                <ArrowDown />
+                {loading === "more" ? <Spinner data-icon="inline-start" aria-hidden="true" /> : <ArrowDown data-icon="inline-start" />}
                 {loading === "more" ? (zh ? "加载中…" : "Loading…") : (zh ? "加载更早记录" : "Load older records")}
               </Button>
             ) : !staleFilters ? <small className="text-xs text-muted-foreground">{zh ? "已到当前查询末尾" : "End of current results"}</small> : null}
           </CardFooter>
         ) : null}
       </Card>
-    </>
+    </div>
   );
 }

@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useId, useState, type ComponentProps } from "react";
 import { CalendarIcon } from "lucide-react";
 import { zhCN } from "react-day-picker/locale";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "@/components/ui/popover";
-import { cn } from "@/lib/utils";
+import { Separator } from "@/components/ui/separator";
 import type { Lang } from "../types";
 
 function parseLocalDateTime(value: string): Date | undefined {
@@ -31,23 +32,28 @@ function formatDisplay(date: Date | undefined, lang: Lang): string {
   });
 }
 
+type DateTimePickerProps = {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  lang: Lang;
+  defaultTime?: string;
+} & Pick<ComponentProps<typeof Button>, "id" | "aria-invalid" | "aria-describedby" | "aria-labelledby" | "aria-label" | "disabled">;
+
 export function DateTimePicker({
   value,
   onChange,
   placeholder,
   lang,
   defaultTime = "00:00",
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  placeholder: string;
-  lang: Lang;
-  defaultTime?: string;
-}) {
+  disabled,
+  ...triggerProps
+}: DateTimePickerProps) {
   const zh = lang === "zh";
   const selected = parseLocalDateTime(value);
   const time = value.slice(11, 16) || defaultTime;
   const [open, setOpen] = useState(false);
+  const timeInputId = useId();
 
   const apply = (nextDate: Date | undefined, nextTime: string) => {
     if (!nextDate) {
@@ -63,20 +69,22 @@ export function DateTimePicker({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
+        {...triggerProps}
+        disabled={disabled}
         render={
           <Button
             type="button"
             variant="outline"
-            className="w-full min-w-0 justify-between font-normal"
+            className="w-full min-w-0 justify-between"
           />
         }
       >
-        <span className={cn("truncate", !selected && "text-muted-foreground")}>
+        <span className="truncate">
           {selected ? formatDisplay(selected, lang) : placeholder}
         </span>
         <CalendarIcon data-icon="inline-end" />
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-[268px] p-0">
+      <PopoverContent align="start" className="w-auto max-w-[calc(100vw-2rem)] p-0">
         <PopoverTitle className="sr-only">{placeholder}</PopoverTitle>
         <Calendar
           mode="single"
@@ -85,17 +93,24 @@ export function DateTimePicker({
           locale={zh ? zhCN : undefined}
           captionLayout="label"
         />
-        <div className="flex items-center gap-2 border-t px-2 py-2">
-          <Input
-            type="time"
-            value={selected ? time : defaultTime}
-            disabled={!selected}
-            onChange={(event) => {
-              if (!selected) return;
-              apply(selected, event.target.value || defaultTime);
-            }}
-            className="h-8 w-[7.5rem]"
-          />
+        <Separator />
+        <FieldGroup className="px-3">
+          <Field orientation="horizontal" data-disabled={!selected}>
+            <FieldLabel htmlFor={timeInputId}>{zh ? "时间" : "Time"}</FieldLabel>
+            <Input
+              id={timeInputId}
+              type="time"
+              value={selected ? time : defaultTime}
+              disabled={!selected}
+              onChange={(event) => {
+                if (!selected) return;
+                apply(selected, event.target.value || defaultTime);
+              }}
+              className="w-32"
+            />
+          </Field>
+        </FieldGroup>
+        <div className="flex justify-end gap-2 px-3 pb-3">
           <Button
             type="button"
             variant="ghost"
@@ -107,6 +122,9 @@ export function DateTimePicker({
             }}
           >
             {zh ? "清除" : "Clear"}
+          </Button>
+          <Button type="button" size="sm" onClick={() => setOpen(false)}>
+            {zh ? "完成" : "Done"}
           </Button>
         </div>
       </PopoverContent>

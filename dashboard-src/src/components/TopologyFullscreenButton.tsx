@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Expand, Shrink } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/components/ui/toast";
 import type cytoscape from "cytoscape";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Lang } from "../types";
 import "./TopologyFullscreenButton.css";
 
@@ -49,9 +50,14 @@ export function TopologyFullscreenButton({ cy, lang }: { cy: cytoscape.Core | nu
       if (document.fullscreenElement === canvas) await document.exitFullscreen();
       else await canvas.requestFullscreen();
     } catch {
-      toast.error(zh ? "无法切换全屏，请检查浏览器是否允许全屏。" : "Unable to switch fullscreen. Check your browser's fullscreen permissions.");
+      toast.add({ type: "error", title: zh ? "无法切换全屏" : "Unable to switch fullscreen", description: zh ? "请检查浏览器是否允许全屏。" : "Check your browser's fullscreen permissions." });
     }
   };
   const label = fullscreen ? (zh ? "退出全屏" : "Exit fullscreen") : (zh ? "全屏" : "Fullscreen");
-  return <Button variant="outline" size="icon-sm" type="button" aria-label={label} title={label} aria-pressed={fullscreen} disabled={!cy} onClick={toggle}>{fullscreen ? <Shrink /> : <Expand />}</Button>;
+  return <Tooltip>
+    <TooltipTrigger render={<Button variant="outline" size="icon-sm" type="button" aria-label={label} title={label} aria-pressed={fullscreen} disabled={!cy} onClick={toggle} />}>
+      {fullscreen ? <Shrink data-icon="inline-start" /> : <Expand data-icon="inline-start" />}
+    </TooltipTrigger>
+    <TooltipContent>{label}</TooltipContent>
+  </Tooltip>;
 }

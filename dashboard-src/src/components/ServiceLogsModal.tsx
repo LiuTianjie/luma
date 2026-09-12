@@ -1,15 +1,25 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Activity, Copy, Download, Info, Pause, Play, RefreshCw, Search, Terminal, WrapText, X } from "lucide-react";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
-
-import { createPortal } from "react-dom";
-import { Activity, ChevronDown, Copy, Download, Info, Pause, Play, RefreshCw, Search, Terminal, WrapText, X } from "lucide-react";
+import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
+import { Table, TableBody, TableCell, TableHead, TableRow } from "@/components/ui/table";
+import { Toggle } from "@/components/ui/toggle";
+import { cn } from "@/lib/utils";
 import { t } from "../i18n";
 import { appendLogFrame, formatLogLine, logRetryDelay, readLogFrames, waitForLogRetry, type DisplayLogLine } from "../logStream";
 import type { DashboardService, Lang } from "../types";
-import { useOverlay } from "../useOverlay";
-import { SelectControl, type SelectOption } from "./primitives";
 import "./serviceLogs.css";
 
 type LogsState = {
@@ -58,8 +68,6 @@ type ConnectionState = "connecting" | "live" | "reconnecting" | "paused" | "stop
 
 const MAX_LINES = 2000;
 
-const LOGS_MODAL_ROOT = typeof document === "undefined" ? null : document.body;
-
 function serviceTitle(service: DashboardService) {
   return service.stack ? `${service.stack}/${service.name || "-"}` : service.name || service.fullName || "-";
 }
@@ -82,11 +90,6 @@ function serviceLogFilename(service: string) {
 function runtimeEventLabel(event: RuntimeEvent) {
   const parts = [event.source, event.type, event.task].filter(Boolean);
   return parts.length ? `[${parts.join(" · ")}] ${event.message || ""}` : event.message || "";
-}
-
-function LogsOverlay({ children, onClose }: { children: ReactNode; onClose: () => void }) {
-  const ref = useOverlay<HTMLDivElement>(onClose);
-  return <div className="log-console-backdrop" onClick={onClose}><div className="log-console-dialog" ref={ref} role="dialog" aria-modal="true" aria-labelledby="logs-modal-title" onClick={(event) => event.stopPropagation()}>{children}</div></div>;
 }
 
 export function ServiceLogsModal({
@@ -119,13 +122,13 @@ export function ServiceLogsModal({
   const initialService = services.find((service) => service.fullName === initialServiceName);
   const [selectedApp, setSelectedApp] = useState(() => initialService ? appKey(initialService) : applications[0]?.key || "");
   const appServices = applications.find((item) => item.key === selectedApp)?.services || [];
-  const appOptions = useMemo<SelectOption[]>(
+  const appOptions = useMemo<{ value: string; label: string }[]>(
     () => applications.flatMap((app) => app.key
       ? [{ value: app.key, label: app.key }]
       : []),
     [applications],
   );
-  const serviceOptions = useMemo<SelectOption[]>(
+  const serviceOptions = useMemo<{ value: string; label: string }[]>(
     () => appServices.flatMap((service) => service.fullName
       ? [{ value: service.fullName, label: service.name || service.fullName }]
       : []),
@@ -142,7 +145,8 @@ export function ServiceLogsModal({
   const [keyword, setKeyword] = useState("");
   const [paused, setPaused] = useState(false);
   const [wrapLines, setWrapLines] = useState(false);
-  const [diagnosticExpanded, setDiagnosticExpanded] = useState(false);
+  const [expandedContext, setExpandedContext] = useState<string[]>([]);
+  const fieldId = useId();
   const [copyState, setCopyState] = useState("");
   const [downloadState, setDownloadState] = useState("");
   const [logsState, setLogsState] = useState<LogsState | null>(null);
@@ -214,7 +218,7 @@ export function ServiceLogsModal({
     return () => pullControllerRef.current?.abort();
   }, [selectedService]);
 
-  const allocationOptions = useMemo<SelectOption[]>(() => {
+  const allocationOptions = useMemo<{ value: string; label: string }[]>(() => {
     const ids = [...new Set(logSources.map((item) => item.allocationId).filter(Boolean))];
     if (allocation && !ids.includes(allocation)) ids.push(allocation);
     return [
@@ -438,7 +442,7 @@ export function ServiceLogsModal({
     pullControllerRef.current = controller;
     const active = () => !controller.signal.aborted && currentServiceRef.current === selectedService;
     setPullLoading(true);
-    setDiagnosticExpanded(true);
+    setExpandedContext((values) => values.includes("diagnostic") ? values : [...values, "diagnostic"]);
     setLogsError("");
     setPullDiagnostic({ status: "running", lines: [] });
     try {
@@ -543,7 +547,9 @@ export function ServiceLogsModal({
   } as Record<string, string>)[runtimeStatus] || runtimeStatus : runtimeStatus;
   const eventLines = (runtimeEvents?.events || []).filter((event) => runtimeEventLabel(event));
   const noticeMessages = [runtimeError, logsError].filter(Boolean);
-  const emptyMessage = keyword.trim()
+  const emptyMessage = !selectedService
+    ? (lang === "zh" ? "选择应用和服务后查看日志。" : "Select an application and service to view its logs.")
+    : keyword.trim()
     ? (lang === "zh" ? "没有匹配的日志。尝试调整关键词。" : "No matching logs. Try a different keyword.")
     : logsLoading ? (lang === "zh" ? "正在连接日志源…" : "Connecting to log sources…")
     : paused ? (lang === "zh" ? "已暂停。继续后将补取可用日志。" : "Paused. Resume to retrieve available logs.")
@@ -551,135 +557,221 @@ export function ServiceLogsModal({
       ? (lang === "zh" ? "容器尚未启动或尚未输出日志。展开运行事件查看原因。" : "The container has not started or emitted logs. Expand runtime events for details.")
       : (lang === "zh" ? "暂无日志，等待新的输出。" : "No logs yet. Waiting for output.");
 
+  const Header = inline ? CardHeader : DialogHeader;
+  const Title = inline ? CardTitle : DialogTitle;
+  const Description = inline ? CardDescription : DialogDescription;
+  const Content = inline ? CardContent : "div";
+  const Footer = inline ? CardFooter : DialogFooter;
   const content = (
-    <section className={`log-console ${inline ? "logs-workspace" : "log-console--modal"}`} aria-labelledby="logs-modal-title">
-      <header className="log-console__header">
-        <div className="log-console__identity">
-          <Terminal size={18} aria-hidden="true" />
-          <div>
-            <p>{lang === "zh" ? "服务日志" : "Service logs"}</p>
-            <h2 id="logs-modal-title" title={title}>{title}</h2>
-          </div>
+    <>
+      <Header className="flex flex-row flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <Title id={`${fieldId}-title`} className="truncate" title={title}>{title}</Title>
+          <Description>{lang === "zh" ? "服务日志" : "Service logs"}</Description>
         </div>
-        <div className="log-console__header-actions">
-          <span className={`log-console__connection is-${connection}`} role="status" aria-live="polite">{connectionLabel}</span>
-          {!inline && <Button type="button" variant="ghost" size="sm" className="log-console__button log-console__close" onClick={onClose} aria-label={t(lang, "close")}>
-            <X size={16} aria-hidden="true" />
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant={connection === "live" ? "success" : "secondary"} role="status" aria-live="polite">
+            {(connection === "connecting" || connection === "reconnecting") && <Spinner aria-hidden="true" data-icon="inline-start" />}
+            {connectionLabel}
+          </Badge>
+          {!inline && <Button type="button" variant="ghost" size="icon-sm" onClick={onClose} aria-label={t(lang, "close")}>
+            <X data-icon="inline-start" />
           </Button>}
         </div>
-      </header>
+      </Header>
 
-      <div className="log-console__filters" aria-label={lang === "zh" ? "日志筛选" : "Log filters"}>
-        <div className="log-console__field">
-          <span>{lang === "zh" ? "应用" : "Application"}</span>
-          <SelectControl value={selectedApp} onChange={setSelectedApp} ariaLabel={lang === "zh" ? "应用" : "Application"} options={appOptions} />
-        </div>
-        <div className="log-console__field">
-          <span>{lang === "zh" ? "服务" : "Service"}</span>
-          <SelectControl value={selectedService} onChange={setSelectedService} ariaLabel={lang === "zh" ? "子服务" : "Sub-service"} options={serviceOptions} />
-        </div>
-        <div className="log-console__field">
-          <span>{lang === "zh" ? "实例" : "Instance"}</span>
-          <SelectControl value={allocation} onChange={setAllocation} ariaLabel={lang === "zh" ? "日志实例" : "Log instance"} options={allocationOptions} />
-        </div>
-        <label className="log-console__field log-console__search-field">
-          <span>{lang === "zh" ? "搜索当前日志" : "Search current logs"}</span>
-          <InputGroup>
-            <InputGroupAddon><Search size={16} aria-hidden="true" /></InputGroupAddon>
-            <InputGroupInput value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder={lang === "zh" ? "输入关键词" : "Filter by keyword"} />
-          </InputGroup>
-        </label>
-      </div>
+      <Content className="flex min-w-0 flex-col gap-4">
+        <FieldGroup className="log-console__filters" aria-label={lang === "zh" ? "日志筛选" : "Log filters"}>
+          <Field data-disabled={!appOptions.length}>
+            <FieldLabel htmlFor={`${fieldId}-app`}>{lang === "zh" ? "应用" : "Application"}</FieldLabel>
+            <Select
+              items={[{ value: null, label: lang === "zh" ? "无可用应用" : "No applications" }, ...appOptions]}
+              value={selectedApp || null}
+              onValueChange={(value) => { if (value !== null) setSelectedApp(value); }}
+              disabled={!appOptions.length}
+            >
+              <SelectTrigger id={`${fieldId}-app`} className="w-full min-w-0" title={selectedApp}>
+                <SelectValue className="min-w-0">{(value) => <span className="truncate">{value || (lang === "zh" ? "无可用应用" : "No applications")}</span>}</SelectValue>
+              </SelectTrigger>
+              <SelectContent alignItemWithTrigger={false}><SelectGroup>
+                {appOptions.map((option) => <SelectItem key={option.value} value={option.value}><span className="min-w-0 break-all whitespace-normal">{option.label}</span></SelectItem>)}
+              </SelectGroup></SelectContent>
+            </Select>
+          </Field>
+          <Field data-disabled={!serviceOptions.length}>
+            <FieldLabel htmlFor={`${fieldId}-service`}>{lang === "zh" ? "服务" : "Service"}</FieldLabel>
+            <Select
+              items={[{ value: null, label: lang === "zh" ? "无可用服务" : "No services" }, ...serviceOptions]}
+              value={selectedService || null}
+              onValueChange={(value) => { if (value !== null) setSelectedService(value); }}
+              disabled={!serviceOptions.length}
+            >
+              <SelectTrigger id={`${fieldId}-service`} className="w-full min-w-0" title={selectedService}>
+                <SelectValue className="min-w-0">{(value) => <span className="truncate">{serviceOptions.find((option) => option.value === value)?.label || (lang === "zh" ? "无可用服务" : "No services")}</span>}</SelectValue>
+              </SelectTrigger>
+              <SelectContent alignItemWithTrigger={false}><SelectGroup>
+                {serviceOptions.map((option) => <SelectItem key={option.value} value={option.value}><span className="min-w-0 break-all whitespace-normal">{option.label}</span></SelectItem>)}
+              </SelectGroup></SelectContent>
+            </Select>
+          </Field>
+          <Field data-disabled={!selectedService}>
+            <FieldLabel htmlFor={`${fieldId}-allocation`}>{lang === "zh" ? "实例" : "Instance"}</FieldLabel>
+            <Select items={allocationOptions} value={allocation} onValueChange={(value) => { if (value !== null) setAllocation(value); }} disabled={!selectedService}>
+              <SelectTrigger id={`${fieldId}-allocation`} className="w-full min-w-0" title={allocation}>
+                <SelectValue className="min-w-0">{(value) => <span className="truncate">{allocationOptions.find((option) => option.value === value)?.label}</span>}</SelectValue>
+              </SelectTrigger>
+              <SelectContent alignItemWithTrigger={false}><SelectGroup>
+                {allocationOptions.map((option) => <SelectItem key={option.value} value={option.value} title={option.value || option.label}>{option.label}</SelectItem>)}
+              </SelectGroup></SelectContent>
+            </Select>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor={`${fieldId}-keyword`}>{lang === "zh" ? "搜索当前日志" : "Search current logs"}</FieldLabel>
+            <InputGroup>
+              <InputGroupAddon><Search aria-hidden="true" /></InputGroupAddon>
+              <InputGroupInput id={`${fieldId}-keyword`} value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder={lang === "zh" ? "输入关键词" : "Filter by keyword"} />
+            </InputGroup>
+          </Field>
+        </FieldGroup>
 
-      <div className="log-console__toolbar" aria-label={lang === "zh" ? "日志操作" : "Log actions"}>
-        <div className="log-console__action-group">
-          <Button type="button" variant="ghost" size="sm" className="log-console__button" aria-pressed={paused} onClick={() => setPaused((value) => !value)}>
-            {paused ? <Play size={15} aria-hidden="true" /> : <Pause size={15} aria-hidden="true" />}
-            {paused ? (lang === "zh" ? "继续" : "Resume") : (lang === "zh" ? "暂停" : "Pause")}
-          </Button>
-          <Button type="button" variant="ghost" size="sm" className="log-console__button" onClick={() => { setPaused(false); setRefreshVersion((value) => value + 1); }}>
-            <RefreshCw size={15} aria-hidden="true" />
-            {logsLoading || runtimeLoading ? t(lang, "refreshing") : t(lang, "refresh")}
-          </Button>
-          <Button type="button" variant="ghost" size="sm" className="log-console__button" disabled={pullLoading || !selectedService} onClick={() => void diagnosePull()}>
-            <Activity size={15} aria-hidden="true" />
-            {pullLoading ? (lang === "zh" ? "诊断中" : "Diagnosing") : (lang === "zh" ? "诊断拉取" : "Pull diagnostic")}
-          </Button>
-        </div>
-        <div className="log-console__action-group">
-          <Button type="button" variant="ghost" size="sm" className="log-console__button" aria-pressed={wrapLines} onClick={() => setWrapLines((value) => !value)}>
-            <WrapText size={15} aria-hidden="true" />
-            {lang === "zh" ? "自动折行" : "Wrap lines"}
-          </Button>
-          <Button type="button" variant="ghost" size="sm" className="log-console__button" disabled={!filteredLogs.length} onClick={() => void copyLogs()}>
-            <Copy size={15} aria-hidden="true" />
-            {copyState || (lang === "zh" ? "复制" : "Copy")}
-          </Button>
-          <Button type="button" variant="ghost" size="sm" className="log-console__button" disabled={!selectedService || Boolean(downloadState)} onClick={() => void downloadLogs()}>
-            <Download size={15} aria-hidden="true" />
-            {downloadState || (lang === "zh" ? "下载近期日志" : "Download recent")}
-          </Button>
-        </div>
-      </div>
-
-      {(runtimeEvents || pullDiagnostic) && <div className="log-console__context">
-        {runtimeEvents && <details className="log-console__disclosure" key={`runtime-${selectedService}`}>
-          <summary>
-            <ChevronDown size={15} className="log-console__chevron" aria-hidden="true" />
-            <strong>{lang === "zh" ? "运行事件" : "Runtime events"}</strong>
-            <span className={`log-console__runtime-status ${runtimeStatus === "running" ? "is-running" : ""}`}>{runtimeStatusLabel}</span>
-            <span className="log-console__summary-meta">{eventLines.length} {lang === "zh" ? "条事件 · 最近实例" : "events · latest instance"}</span>
-          </summary>
-          <div className="log-console__disclosure-body">
-            <dl className="log-console__metadata">
-              <div><dt>{lang === "zh" ? "实例" : "Instance"}</dt><dd><code>{runtimeEvents.allocId || "—"}</code></dd></div>
-              <div><dt>{lang === "zh" ? "节点" : "Node"}</dt><dd><code>{runtimeEvents.node || "—"}</code></dd></div>
-              <div className="log-console__metadata-wide"><dt>{lang === "zh" ? "镜像" : "Image"}</dt><dd><code>{runtimeEvents.image || "—"}</code></dd></div>
-            </dl>
-            <pre className="log-console__event-output" tabIndex={0} aria-label={lang === "zh" ? "运行事件全文" : "Full runtime events"}>{eventLines.map(runtimeEventLabel).join("\n") || (lang === "zh" ? "暂无运行事件" : "No runtime events yet")}</pre>
+        <div className="flex flex-wrap justify-between gap-3" aria-label={lang === "zh" ? "日志操作" : "Log actions"}>
+          <div className="flex flex-wrap items-center gap-2">
+            <Toggle variant="outline" size="sm" pressed={paused} onPressedChange={setPaused} disabled={!selectedService} aria-label={lang === "zh" ? "暂停日志跟随" : "Pause log follow"}>
+              {paused ? <Play data-icon="inline-start" /> : <Pause data-icon="inline-start" />}
+              {paused ? (lang === "zh" ? "继续" : "Resume") : (lang === "zh" ? "暂停" : "Pause")}
+            </Toggle>
+            <Button type="button" variant="outline" size="sm" disabled={!selectedService} onClick={() => { setPaused(false); setRefreshVersion((value) => value + 1); }}>
+              {logsLoading || runtimeLoading ? <Spinner aria-hidden="true" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}
+              {logsLoading || runtimeLoading ? t(lang, "refreshing") : t(lang, "refresh")}
+            </Button>
+            <Button type="button" variant="outline" size="sm" disabled={pullLoading || !selectedService} onClick={() => void diagnosePull()}>
+              {pullLoading ? <Spinner aria-hidden="true" data-icon="inline-start" /> : <Activity data-icon="inline-start" />}
+              {pullLoading ? (lang === "zh" ? "诊断中" : "Diagnosing") : (lang === "zh" ? "诊断拉取" : "Pull diagnostic")}
+            </Button>
           </div>
-        </details>}
-        {pullDiagnostic && <details className="log-console__disclosure" open={diagnosticExpanded} onToggle={(event) => setDiagnosticExpanded(event.currentTarget.open)}>
-          <summary>
-            <ChevronDown size={15} className="log-console__chevron" aria-hidden="true" />
-            <strong>{lang === "zh" ? "镜像拉取诊断" : "Image pull diagnostic"}</strong>
-            <span className={`log-console__runtime-status ${pullDiagnostic.ok ? "is-running" : ""}`}>{pullLoading ? (lang === "zh" ? "进行中" : "Running") : pullDiagnostic.ok ? (lang === "zh" ? "成功" : "Succeeded") : (lang === "zh" ? "失败" : "Failed")}</span>
-            {pullDiagnostic.exitCode !== undefined && <span className="log-console__summary-meta">exit {pullDiagnostic.exitCode}</span>}
-          </summary>
-          <div className="log-console__disclosure-body">
-            <dl className="log-console__metadata">
-              <div><dt>{lang === "zh" ? "节点" : "Node"}</dt><dd><code>{pullDiagnostic.node || "—"}</code></dd></div>
-              <div><dt>{lang === "zh" ? "任务" : "Task"}</dt><dd><code>{pullDiagnostic.taskId || "—"}</code></dd></div>
-              <div className="log-console__metadata-wide"><dt>{lang === "zh" ? "镜像" : "Image"}</dt><dd><code>{pullDiagnostic.image || "—"}</code></dd></div>
-            </dl>
-            <pre className="log-console__event-output" tabIndex={0} aria-label={lang === "zh" ? "镜像拉取诊断全文" : "Full pull diagnostic"}>{pullDiagnostic.lines.join("\n") || (lang === "zh" ? "已下发到节点，等待 docker pull 输出…" : "Task queued on node, waiting for docker pull output…")}</pre>
+          <div className="flex flex-wrap items-center gap-2">
+            <Toggle variant="outline" size="sm" pressed={wrapLines} onPressedChange={setWrapLines} aria-label={lang === "zh" ? "自动折行" : "Wrap lines"}>
+              <WrapText data-icon="inline-start" />
+              {lang === "zh" ? "自动折行" : "Wrap lines"}
+            </Toggle>
+            <Button type="button" variant="outline" size="sm" disabled={!filteredLogs.length} onClick={() => void copyLogs()}>
+              <Copy data-icon="inline-start" />
+              <span aria-live="polite">{copyState || (lang === "zh" ? "复制" : "Copy")}</span>
+            </Button>
+            <Button type="button" variant="outline" size="sm" disabled={!selectedService || Boolean(downloadState)} onClick={() => void downloadLogs()}>
+              <Download data-icon="inline-start" />
+              <span aria-live="polite">{downloadState || (lang === "zh" ? "下载近期日志" : "Download recent")}</span>
+            </Button>
           </div>
-        </details>}
-      </div>}
+        </div>
 
-      {warnings.length > 0 && <details className="log-console__warning-details">
-        <summary><Info size={15} aria-hidden="true" /><strong>{lang === "zh" ? `日志源提示 · ${warnings.length} 项` : `${warnings.length} source notices`}</strong><ChevronDown size={15} className="log-console__chevron" aria-hidden="true" /></summary>
-        <ul>{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
-      </details>}
-      {noticeMessages.length > 0 && <div className="log-console__notice" role="alert">{noticeMessages.map((message, index) => <p key={`${index}-${message}`}>{message}</p>)}</div>}
+        <Separator />
+        {(runtimeEvents || runtimeLoading || pullDiagnostic) && <Accordion multiple value={expandedContext} onValueChange={(values) => setExpandedContext(values as string[])}>
+          {(runtimeEvents || runtimeLoading) && <AccordionItem value="runtime">
+            <AccordionTrigger>
+              <span className="flex min-w-0 flex-wrap items-center gap-2">
+                <span>{lang === "zh" ? "运行事件" : "Runtime events"}</span>
+                <Badge variant={runtimeStatus === "running" ? "success" : runtimeStatus === "failed" ? "destructive" : "secondary"}>
+                  {runtimeLoading && !runtimeEvents && <Spinner aria-hidden="true" data-icon="inline-start" />}
+                  {runtimeLoading && !runtimeEvents ? (lang === "zh" ? "加载中" : "Loading") : runtimeStatusLabel}
+                </Badge>
+                <Badge variant="outline">{eventLines.length} {lang === "zh" ? "条事件" : "events"}</Badge>
+              </span>
+            </AccordionTrigger>
+            <AccordionContent className="flex flex-col gap-3">
+              {runtimeEvents ? <>
+                <Table aria-label={lang === "zh" ? "最近实例信息" : "Latest instance details"}>
+                  <TableBody>
+                    <TableRow><TableHead scope="row">{lang === "zh" ? "实例" : "Instance"}</TableHead><TableCell><code className="break-all whitespace-normal">{runtimeEvents.allocId || "—"}</code></TableCell></TableRow>
+                    <TableRow><TableHead scope="row">{lang === "zh" ? "节点" : "Node"}</TableHead><TableCell><code className="break-all whitespace-normal">{runtimeEvents.node || "—"}</code></TableCell></TableRow>
+                    <TableRow><TableHead scope="row">{lang === "zh" ? "镜像" : "Image"}</TableHead><TableCell><code className="break-all whitespace-normal">{runtimeEvents.image || "—"}</code></TableCell></TableRow>
+                  </TableBody>
+                </Table>
+                {eventLines.length ? <pre className="log-console__event-output" tabIndex={0} aria-label={lang === "zh" ? "运行事件全文" : "Full runtime events"}>{eventLines.map(runtimeEventLabel).join("\n")}</pre> : <Empty>
+                  <EmptyHeader><EmptyTitle>{lang === "zh" ? "暂无运行事件" : "No runtime events yet"}</EmptyTitle></EmptyHeader>
+                </Empty>}
+              </> : <div className="flex flex-col gap-3" role="status" aria-label={lang === "zh" ? "加载运行事件" : "Loading runtime events"}>
+                <Skeleton className="h-4 w-3/4" /><Skeleton className="h-4 w-full" /><Skeleton className="h-4 w-1/2" />
+              </div>}
+            </AccordionContent>
+          </AccordionItem>}
+          {pullDiagnostic && <AccordionItem value="diagnostic">
+            <AccordionTrigger>
+              <span className="flex min-w-0 flex-wrap items-center gap-2">
+                <span>{lang === "zh" ? "镜像拉取诊断" : "Image pull diagnostic"}</span>
+                <Badge variant={pullLoading ? "secondary" : pullDiagnostic.ok ? "success" : "destructive"}>
+                  {pullLoading && <Spinner aria-hidden="true" data-icon="inline-start" />}
+                  {pullLoading ? (lang === "zh" ? "进行中" : "Running") : pullDiagnostic.ok ? (lang === "zh" ? "成功" : "Succeeded") : (lang === "zh" ? "失败" : "Failed")}
+                </Badge>
+                {pullDiagnostic.exitCode !== undefined && <Badge variant="outline">exit {pullDiagnostic.exitCode}</Badge>}
+              </span>
+            </AccordionTrigger>
+            <AccordionContent className="flex flex-col gap-3">
+              <Table aria-label={lang === "zh" ? "镜像拉取诊断信息" : "Pull diagnostic details"}>
+                <TableBody>
+                  <TableRow><TableHead scope="row">{lang === "zh" ? "节点" : "Node"}</TableHead><TableCell><code className="break-all whitespace-normal">{pullDiagnostic.node || "—"}</code></TableCell></TableRow>
+                  <TableRow><TableHead scope="row">{lang === "zh" ? "任务" : "Task"}</TableHead><TableCell><code className="break-all whitespace-normal">{pullDiagnostic.taskId || "—"}</code></TableCell></TableRow>
+                  <TableRow><TableHead scope="row">{lang === "zh" ? "镜像" : "Image"}</TableHead><TableCell><code className="break-all whitespace-normal">{pullDiagnostic.image || "—"}</code></TableCell></TableRow>
+                </TableBody>
+              </Table>
+              {pullDiagnostic.lines.length ? <pre className="log-console__event-output" tabIndex={0} aria-label={lang === "zh" ? "镜像拉取诊断全文" : "Full pull diagnostic"}>{pullDiagnostic.lines.join("\n")}</pre> : <Empty>
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">{pullLoading ? <Spinner aria-hidden="true" /> : <Activity />}</EmptyMedia>
+                  <EmptyTitle>{pullLoading ? (lang === "zh" ? "等待镜像拉取输出" : "Waiting for pull output") : (lang === "zh" ? "暂无诊断输出" : "No diagnostic output")}</EmptyTitle>
+                </EmptyHeader>
+              </Empty>}
+            </AccordionContent>
+          </AccordionItem>}
+        </Accordion>}
 
-      <div className="log-console__stream-heading">
-        <span>{lang === "zh" ? "日志输出" : "Log output"}</span>
-        <span>{filteredLogs.length} / {logsState?.logs?.length || 0} {lang === "zh" ? "行" : "lines"}{logsState?.updatedAt ? ` · ${new Date(logsState.updatedAt * 1000).toLocaleTimeString()}` : ""}</span>
-      </div>
-      <pre ref={logTailRef} className={`log-console__viewport ${wrapLines ? "is-wrapped" : ""} ${filteredLogs.length ? "" : "is-empty"}`} tabIndex={0} aria-label={lang === "zh" ? "服务日志输出" : "Service log output"} onScroll={(event) => {
-        const tail = event.currentTarget;
-        followBottomRef.current = tail.scrollHeight - tail.scrollTop - tail.clientHeight < 48;
-      }}>{filteredLogs.join("\n") || emptyMessage}</pre>
+        {warnings.length > 0 && <Alert>
+          <Info />
+          <AlertTitle>{lang === "zh" ? `日志源提示 · ${warnings.length} 项` : `${warnings.length} source notices`}</AlertTitle>
+          <AlertDescription><ul className="flex max-h-40 list-disc flex-col gap-1 overflow-auto pl-4">{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></AlertDescription>
+        </Alert>}
+        {noticeMessages.length > 0 && <Alert variant="destructive">
+          <Info />
+          <AlertTitle>{lang === "zh" ? "日志读取异常" : "Log read error"}</AlertTitle>
+          <AlertDescription className="max-h-40 overflow-auto">{noticeMessages.map((message, index) => <p key={`${index}-${message}`}>{message}</p>)}</AlertDescription>
+        </Alert>}
 
-      <footer className="log-console__footer">
-        <span>{lang === "zh" ? `页面保留 ${MAX_LINES} 行` : `View retains ${MAX_LINES} lines`}{logsState?.droppedLines ? (lang === "zh" ? ` · 已移除 ${logsState.droppedLines} 行` : ` · ${logsState.droppedLines} older lines removed`) : ""}</span>
-        <details className="log-console__retention">
-          <summary><Info size={14} aria-hidden="true" />{lang === "zh" ? "读取与保留范围" : "Read and retention limits"}</summary>
-          <p>{lang === "zh" ? "初次读取最近约 200 行，下载最近约 500 行，均按日志源分配。历史取决于节点日志轮转，无法保证覆盖指定时间。暂停后继续将补取仍可用的日志。复制包含当前关键词筛选后的内容。" : "Initial read targets 200 recent lines; download targets 500, shared across sources. History depends on node rotation with no guaranteed time window. Resume retrieves logs still available. Copy includes the current keyword filter."}</p>
-        </details>
-      </footer>
-    </section>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span id={`${fieldId}-output`}>{lang === "zh" ? "日志输出" : "Log output"}</span>
+          <Badge variant="outline">{filteredLogs.length} / {logsState?.logs?.length || 0} {lang === "zh" ? "行" : "lines"}{logsState?.updatedAt ? ` · ${new Date(logsState.updatedAt * 1000).toLocaleTimeString()}` : ""}</Badge>
+        </div>
+        {filteredLogs.length ? <pre ref={logTailRef} className={cn("log-console__viewport", wrapLines && "is-wrapped")} tabIndex={0} aria-labelledby={`${fieldId}-output`} onScroll={(event) => {
+          const tail = event.currentTarget;
+          followBottomRef.current = tail.scrollHeight - tail.scrollTop - tail.clientHeight < 48;
+        }}>{filteredLogs.join("\n")}</pre> : <Empty className="min-h-60" role="status">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">{logsLoading ? <Spinner aria-hidden="true" /> : keyword.trim() ? <Search /> : <Terminal />}</EmptyMedia>
+            <EmptyTitle>{logsLoading ? (lang === "zh" ? "连接日志源" : "Connecting to log sources") : keyword.trim() ? (lang === "zh" ? "没有匹配的日志" : "No matching logs") : (lang === "zh" ? "暂无日志" : "No logs yet")}</EmptyTitle>
+            <EmptyDescription>{emptyMessage}</EmptyDescription>
+          </EmptyHeader>
+        </Empty>}
+      </Content>
+
+      <Footer className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-muted-foreground">{lang === "zh" ? `页面保留 ${MAX_LINES} 行` : `View retains ${MAX_LINES} lines`}{logsState?.droppedLines ? (lang === "zh" ? ` · 已移除 ${logsState.droppedLines} 行` : ` · ${logsState.droppedLines} older lines removed`) : ""}</p>
+        <Popover>
+          <PopoverTrigger render={<Button type="button" variant="ghost" size="sm" />}>
+            <Info data-icon="inline-start" />{lang === "zh" ? "读取与保留范围" : "Read and retention limits"}
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-80 max-w-[calc(100vw-2rem)]">
+            <PopoverHeader>
+              <PopoverTitle>{lang === "zh" ? "读取与保留范围" : "Read and retention limits"}</PopoverTitle>
+              <PopoverDescription>{lang === "zh" ? "初次读取最近约 200 行，下载最近约 500 行，均按日志源分配。历史取决于节点日志轮转，无法保证覆盖指定时间。暂停后继续将补取仍可用的日志。复制包含当前关键词筛选后的内容。" : "Initial read targets 200 recent lines; download targets 500, shared across sources. History depends on node rotation with no guaranteed time window. Resume retrieves logs still available. Copy includes the current keyword filter."}</PopoverDescription>
+            </PopoverHeader>
+          </PopoverContent>
+        </Popover>
+      </Footer>
+    </>
   );
-  return inline ? content : LOGS_MODAL_ROOT ? createPortal(<LogsOverlay onClose={onClose}>{content}</LogsOverlay>, LOGS_MODAL_ROOT) : null;
+  return inline ? (
+    <Card className="log-console min-w-0" aria-labelledby={`${fieldId}-title`}>{content}</Card>
+  ) : (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="log-console max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-[min(1280px,calc(100%-2rem))]" showCloseButton={false}>{content}</DialogContent>
+    </Dialog>
+  );
 }

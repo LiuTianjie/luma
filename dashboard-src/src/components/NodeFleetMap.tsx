@@ -1,16 +1,20 @@
-import { Activity, Cpu, HardDrive, MapPin, MemoryStick, Server, SquareTerminal, TerminalSquare } from "lucide-react";
+import { Activity, Cpu, MapPin, Server, SquareTerminal, TerminalSquare } from "lucide-react";
 import { localizeState } from "../i18n";
 import type { DashboardNode, DashboardService, Lang } from "../types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 function clampPercent(value?: number) {
-  if (typeof value !== "number" || Number.isNaN(value)) return 0;
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(100, value));
 }
 
 function formatPercent(value?: number) {
-  if (typeof value !== "number" || Number.isNaN(value)) return "-";
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
   return `${Math.round(value)}%`;
 }
 
@@ -44,11 +48,16 @@ function pressureOf(node: DashboardNode) {
   );
 }
 
-function pressureLabel(value: number, lang: Lang) {
+function pressureAvailable(node: DashboardNode) {
+  const metrics = node.metrics || {};
+  return [metrics.cpuPercent ?? metrics.loadPercent, metrics.memoryUsedPercent].some(value => typeof value === "number" && Number.isFinite(value));
+}
+
+function pressureLabel(value: number, lang: Lang, available: boolean) {
+  if (!available) return lang === "zh" ? "无数据" : "No data";
   if (value >= 85) return lang === "zh" ? "高压" : "hot";
   if (value >= 65) return lang === "zh" ? "偏高" : "busy";
-  if (value > 0) return lang === "zh" ? "平稳" : "steady";
-  return lang === "zh" ? "无数据" : "no data";
+  return lang === "zh" ? "平稳" : "steady";
 }
 
 function terminalReady(node: DashboardNode) {
@@ -104,20 +113,12 @@ function regionsFor(nodes: DashboardNode[]) {
     .sort((a, b) => a.region.localeCompare(b.region));
 }
 
-function Meter({ label, value, icon: Icon }: { label: string; value: number; icon: typeof Cpu }) {
+function Meter({ label, value }: { label: string; value?: number }) {
   return (
-    <div className="flex items-center gap-2">
-      <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-      <div className="min-w-0 flex-1">
-        <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-          <span>{label}</span>
-          <span className="tabular-nums">{formatPercent(value)}</span>
-        </div>
-        <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-          <div className="h-full rounded-full bg-primary" style={{ width: `${clampPercent(value)}%` }} />
-        </div>
-      </div>
-    </div>
+    <Progress value={clampPercent(value)} aria-valuetext={formatPercent(value)}>
+      <ProgressLabel>{label}</ProgressLabel>
+      <ProgressValue>{() => formatPercent(value)}</ProgressValue>
+    </Progress>
   );
 }
 
@@ -139,37 +140,42 @@ export function NodeFleetMap({
   const workloads = workloadCounts(services || []);
   const readyNodes = nodes.filter((node) => nodeHealth(node) === "good").length;
   const terminalNodes = nodes.filter(terminalReady).length;
-  const pressuredNodes = nodes.filter((node) => pressureOf(node) >= 80).length;
+  const pressuredNodes = nodes.filter((node) => pressureOf(node) >= 85).length;
   const maxPressure = nodes.reduce((max, node) => Math.max(max, pressureOf(node)), 0);
 
   return (
     <section className="flex flex-col gap-6" aria-label={zh ? "节点态势" : "Node fleet"}>
       <div className="flex flex-wrap items-center gap-2">
         {[
-          { icon: Server, value: readyNodes, label: "ready" },
-          { icon: TerminalSquare, value: terminalNodes, label: "terminal" },
+          { icon: Server, value: readyNodes, label: zh ? "在线" : "Ready" },
+          { icon: TerminalSquare, value: terminalNodes, label: zh ? "终端可用" : "Terminal" },
           { icon: Activity, value: pressuredNodes, label: zh ? "高负载" : "hot" },
-          { icon: Cpu, value: formatPercent(maxPressure), label: zh ? "峰值" : "peak" },
+          { icon: Cpu, value: formatPercent(nodes.some(pressureAvailable) ? maxPressure : undefined), label: zh ? "峰值" : "peak" },
         ].map((item) => (
-          <span key={item.label} className="inline-flex items-center gap-1.5 rounded-lg border bg-card px-2.5 py-1.5 text-xs">
-            <item.icon className="size-3.5 text-muted-foreground" />
-            <strong className="tabular-nums">{item.value}</strong>
-            <span className="text-muted-foreground">{item.label}</span>
-          </span>
+          <Badge key={item.label} variant="outline">
+            <item.icon data-icon="inline-start" />
+            <span className="tabular-nums">{item.value}</span>
+            {item.label}
+          </Badge>
         ))}
       </div>
 
       {regions.map((group) => {
         const groupReady = group.nodes.filter((node) => nodeHealth(node) === "good").length;
         const groupPressure = group.nodes.reduce((max, node) => Math.max(max, pressureOf(node)), 0);
-        const pressureTone = groupPressure >= 80 ? "destructive" : groupPressure >= 60 ? "warning" : "success";
+        const hasPressure = group.nodes.some(pressureAvailable);
+        const pressureTone = !hasPressure ? "outline" : groupPressure >= 85 ? "destructive" : groupPressure >= 65 ? "warning" : "success";
         return (
-          <section className="flex flex-col gap-3" key={group.region}>
-            <div className="flex items-center gap-2">
-              <MapPin className="size-4 text-muted-foreground" />
-              <strong className="text-sm">{group.region}</strong>
-              <span className="text-xs text-muted-foreground">{groupReady}/{group.nodes.length} {zh ? "在线" : "online"}</span>
-              <Badge variant={pressureTone} className="ml-auto">{pressureLabel(groupPressure, lang)}</Badge>
+          <section className="flex flex-col gap-4" key={group.region} aria-label={group.region}>
+            <div className="flex flex-wrap items-center gap-2">
+              <Tooltip>
+                <TooltipTrigger tabIndex={0} render={<Badge variant="secondary" className="max-w-full" />}>
+                  <MapPin data-icon="inline-start" /><span className="truncate">{group.region}</span>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs break-all">{group.region}</TooltipContent>
+              </Tooltip>
+              <span className="text-sm text-muted-foreground">{groupReady}/{group.nodes.length} {zh ? "在线" : "online"}</span>
+              <Badge variant={pressureTone} className="ml-auto">{pressureLabel(groupPressure, lang, hasPressure)}</Badge>
             </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
               {group.nodes.map((node, index) => {
@@ -179,57 +185,54 @@ export function NodeFleetMap({
                 const health = nodeHealth(node);
                 const hasTerminal = terminalReady(node);
                 const workload = workloads.get(nodeName) || { services: 0, tasks: 0 };
-                const cpu = clampPercent(metrics.cpuPercent ?? metrics.loadPercent);
-                const memory = clampPercent(metrics.memoryUsedPercent);
+                const cpu = metrics.cpuPercent ?? metrics.loadPercent;
+                const memory = metrics.memoryUsedPercent;
                 return (
-                  <article
-                    className="flex cursor-pointer flex-col gap-3 rounded-xl border bg-card p-3 text-left shadow-xs transition-colors hover:bg-muted/40"
+                  <Card
+                    size="sm"
                     key={`${node.name || "node"}-${index}`}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => onSelect(node)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        onSelect(node);
-                      }
-                    }}
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <Server className="size-4 shrink-0 text-muted-foreground" />
-                        <strong className="truncate text-sm">{nodeName}</strong>
-                      </div>
-                      <Badge variant={health === "good" ? "success" : health === "danger" ? "destructive" : "warning"}>
-                        {nodeStateLabel(node, lang)}
-                      </Badge>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-                      {node.role ? <span className="inline-flex items-center gap-1"><Server className="size-3" />{node.role}</span> : null}
-                      {node.agentOs ? <span className="inline-flex items-center gap-1"><HardDrive className="size-3" />{node.agentOs}</span> : null}
-                      {node.availability ? <span>{node.availability}</span> : null}
-                    </div>
-                    <Meter label="CPU" value={cpu} icon={Cpu} />
-                    <Meter label="MEM" value={memory} icon={MemoryStick} />
-                    <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
-                      <span>{workload.services} svc · {workload.tasks} task</span>
-                      <span className="ml-auto tabular-nums">{formatBytes(metrics.memoryTotalBytes || capacity.memoryBytes)}</span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-xs"
-                        disabled={!hasTerminal || !onTerminal}
-                        title={hasTerminal ? "Terminal" : terminalUnavailableLabel(node, lang)}
-                        aria-label={hasTerminal ? `Terminal ${node.name || ""}` : terminalUnavailableLabel(node, lang)}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onTerminal?.(node);
-                        }}
-                      >
-                        <SquareTerminal />
-                      </Button>
-                    </div>
-                  </article>
+                    <CardHeader>
+                      <CardTitle className="min-w-0">
+                        <Tooltip>
+                          <TooltipTrigger render={<Button variant="link" size="sm" className="max-w-full" aria-label={zh ? `查看节点 ${nodeName}` : `View node ${nodeName}`} onClick={() => onSelect(node)} />}>
+                            <Server data-icon="inline-start" />
+                            <span className="truncate">{nodeName}</span>
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-xs break-all">{zh ? `查看节点 ${nodeName}` : `View node ${nodeName}`}</TooltipContent>
+                        </Tooltip>
+                      </CardTitle>
+                      <CardAction className="row-span-1 max-w-32">
+                        <Badge className="max-w-full" variant={health === "good" ? "success" : health === "danger" ? "destructive" : "warning"}>
+                          <span className="truncate" title={nodeStateLabel(node, lang)}>{nodeStateLabel(node, lang)}</span>
+                        </Badge>
+                      </CardAction>
+                      <CardDescription className="col-span-full min-w-0 break-words">{[node.role, node.agentOs, node.availability].filter(Boolean).join(" · ") || "—"}</CardDescription>
+                    </CardHeader>
+                    <CardContent className="flex flex-col gap-4">
+                      <Meter label="CPU" value={cpu} />
+                      <Meter label={zh ? "内存" : "Memory"} value={memory} />
+                      <p className="text-sm text-muted-foreground">{zh ? "内存容量" : "Memory capacity"} <span className="tabular-nums">{formatBytes(metrics.memoryTotalBytes || capacity.memoryBytes)}</span></p>
+                    </CardContent>
+                    <CardFooter className="flex-wrap justify-between gap-2">
+                      <span className="text-sm text-muted-foreground">{zh ? `${workload.services} 个服务 · ${workload.tasks} 个任务` : `${workload.services} services · ${workload.tasks} tasks`}</span>
+                      <Tooltip>
+                        <TooltipTrigger render={<span tabIndex={hasTerminal && onTerminal ? undefined : 0} />}>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="icon-sm"
+                            disabled={!hasTerminal || !onTerminal}
+                            aria-label={hasTerminal ? `Terminal ${nodeName}` : terminalUnavailableLabel(node, lang)}
+                            onClick={() => onTerminal?.(node)}
+                          >
+                            <SquareTerminal data-icon="inline-start" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-xs break-all">{hasTerminal ? `Terminal ${nodeName}` : terminalUnavailableLabel(node, lang)}</TooltipContent>
+                      </Tooltip>
+                    </CardFooter>
+                  </Card>
                 );
               })}
             </div>
@@ -238,7 +241,13 @@ export function NodeFleetMap({
       })}
 
       {!nodes.length ? (
-        <p className="text-sm text-muted-foreground">{zh ? "暂无节点" : "No nodes"}</p>
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon"><Server /></EmptyMedia>
+            <EmptyTitle>{zh ? "暂无节点" : "No nodes"}</EmptyTitle>
+            <EmptyDescription>{zh ? "加入节点后，可在这里查看资源和调度状态。" : "Once a node joins, its resources and scheduling state appear here."}</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       ) : null}
     </section>
   );

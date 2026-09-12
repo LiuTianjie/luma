@@ -1,9 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 
-import { Input } from "@/components/ui/input";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Spinner } from "@/components/ui/spinner";
+import { useTopologyTheme, type TopologyTheme } from "./topologyTheme";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
-import { Search, Network, X, Maximize, Plus, Minus } from "lucide-react";
+import { Search, Network, X, Maximize, Plus, Minus, CircleAlert, Check } from "lucide-react";
 import { buildTopology, normalizePathSegments, routeElementIds } from "./trafficTopology";
 const NODE_WIDTH = 190;
 const NODE_HEIGHT = 44;
@@ -13,20 +22,17 @@ import type cytoscape from "cytoscape";
 import { t } from "../i18n";
 import { retryCertificate } from "../lifecycleApi";
 import type { Lang, TrafficPath } from "../types";
-import { Badge } from "./primitives";
 import { TopologyFullscreenButton } from "./TopologyFullscreenButton";
 
-function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[] {
-  const isDark = theme === "dark";
-  const textColor = isDark ? "#fdfcfc" : "#201d1d";
-  const nodeBg = isDark ? "#302c2c" : "#ffffff";
-  const nodeBorder = isDark ? "rgba(253, 252, 252, 0.16)" : "rgba(15, 0, 0, 0.12)";
-  const edgeColor = isDark ? "rgba(154, 152, 152, 0.4)" : "rgba(110, 110, 115, 0.5)";
-
+function getStylesheet(tokens: TopologyTheme): cytoscape.StylesheetJsonBlock[] {
+  const textColor = tokens.foreground;
+  const nodeBg = tokens.card;
+  const nodeBorder = tokens.border;
+  const edgeColor = tokens.mutedForeground;
   const domainBorder = nodeBorder;
   const proxyBorder = nodeBorder;
-  const issueBorder = "#ff3b30";
-  const targetBorder = isDark ? "#646262" : "#d3d0d0";
+  const issueBorder = tokens.destructive;
+  const targetBorder = nodeBorder;
   const destinationBorder = nodeBorder;
 
   return [
@@ -36,7 +42,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
         "background-color": nodeBg,
         "border-color": nodeBorder,
         "border-width": 1.5,
-        "font-family": 'ui-monospace, Menlo, Monaco, Consolas, monospace',
+        "font-family": tokens.fontMono,
         "font-size": 12,
         "font-weight": 500,
         "height": `${NODE_HEIGHT}px`,
@@ -55,9 +61,9 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
     { selector: "node.domain", style: { "border-width": 1, "border-color": domainBorder, "background-color": nodeBg } },
     { selector: "node.proxy", style: { "border-width": 1, "border-color": proxyBorder, "background-color": nodeBg } },
     { selector: "node.tunnel", style: { "border-color": nodeBorder } },
-    { selector: "node.target", style: { "border-color": targetBorder, "color": isDark ? "#9a9898" : "#6e6e73" } },
+    { selector: "node.target", style: { "border-color": targetBorder, "color": tokens.mutedForeground } },
     { selector: "node.destination", style: { "border-width": 1, "border-color": destinationBorder, "background-color": nodeBg, "width": `${DESTINATION_WIDTH}px` } },
-    { selector: "node.issue", style: { "border-width": 1, "border-color": issueBorder, "background-color": isDark ? "#33201f" : "#ffefee" } },
+    { selector: "node.issue", style: { "border-width": 1, "border-color": issueBorder, "background-color": tokens.muted } },
     {
       selector: "edge",
       style: {
@@ -77,16 +83,16 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
     {
       selector: "node.highlighted",
       style: {
-        "border-color": "#007aff",
+        "border-color": tokens.primary,
         "border-width": 3,
-        "background-color": isDark ? "#22303f" : "#e0eefe",
+        "background-color": tokens.accent,
       },
     },
     {
       selector: "edge.highlighted",
       style: {
-        "line-color": "#007aff",
-        "target-arrow-color": "#007aff",
+        "line-color": tokens.primary,
+        "target-arrow-color": tokens.primary,
         "width": "3px",
       },
     },
@@ -121,7 +127,8 @@ export function TrafficPaths({
   }), [paths, kind, query]);
   const selected = selectedPath ? filteredPaths.find(path => path.id === selectedPath.id && path.domain === selectedPath.domain && path.kind === selectedPath.kind) : undefined;
   const { elements, nodes, edges } = useMemo(() => buildTopology(selected ? [selected] : filteredPaths), [selected, filteredPaths]);
-  const stylesheet = useMemo(() => getStylesheet(theme), [theme]);
+  const tokens = useTopologyTheme(theme);
+  const stylesheet = useMemo(() => getStylesheet(tokens), [tokens]);
 
   useEffect(() => {
     if (cyRef) {
@@ -205,53 +212,119 @@ export function TrafficPaths({
     }
   };
 
+  const ingressItems = [{ value: "", label: zh ? "所有入口类型" : "All ingress types" }, ...kinds.map(value => ({ value, label: value }))];
+  const controls = [
+    { icon: Plus, label: zh ? "放大" : "Zoom in", action: handleZoomIn },
+    { icon: Minus, label: zh ? "缩小" : "Zoom out", action: handleZoomOut },
+    { icon: Maximize, label: zh ? "适应画布" : "Fit view", action: handleReset },
+  ];
+
   return (
     <section className="route-workspace" aria-label={t(lang, "trafficPaths")}>
-      <div className="route-summary">
-        <span><Network aria-hidden="true" />{filteredPaths.length} {zh ? "条路由" : "routes"}</span>
-        <span>{nodes.length} {zh ? "个节点" : "nodes"} · {edges.length} {zh ? "条连接" : "connections"}</span>
+      <div className="flex flex-wrap items-center gap-3">
+        <Badge variant="outline"><Network data-icon="inline-start" />{filteredPaths.length} {zh ? "条路由" : "routes"}</Badge>
+        <span className="text-sm text-muted-foreground">{nodes.length} {zh ? "个节点" : "nodes"} · {edges.length} {zh ? "条连接" : "connections"}</span>
       </div>
-      <p className="route-evidence-note">{zh ? "按路由配置与运行实例展示链路，未进行逐跳连通性探测。悬停可高亮完整路径；点击下方域名可单独查看。" : "Paths reflect route configuration and running instances, not hop-by-hop connectivity probes. Hover to trace complete paths; select a domain below to isolate one."}</p>
-      <div className="route-filters">
-        <label className="route-search"><span className="sr-only">{zh ? "搜索路由" : "Search routes"}</span><Search aria-hidden="true" /><Input value={query} onChange={event => { setQuery(event.target.value); setSelectedPath(null); }} placeholder={zh ? "搜索域名、应用、节点或地址…" : "Search domains, applications, nodes or addresses…"} /></label>
-        <label><span className="sr-only">{zh ? "入口类型" : "Ingress type"}</span><select value={kind} onChange={event => { setKind(event.target.value); setSelectedPath(null); }}><option value="">{zh ? "所有入口类型" : "All ingress types"}</option>{kinds.map(value => <option key={value} value={value}>{value}</option>)}</select></label>
-      </div>
+      <p className="text-sm text-muted-foreground">{zh ? "按路由配置与运行实例展示链路，未进行逐跳连通性探测。悬停可高亮完整路径；点击下方域名可单独查看。" : "Paths reflect route configuration and running instances, not hop-by-hop connectivity probes. Hover to trace complete paths; select a domain below to isolate one."}</p>
+      <FieldGroup className="route-filters">
+        <Field>
+          <FieldLabel htmlFor="route-search">{zh ? "搜索路由" : "Search routes"}</FieldLabel>
+          <InputGroup>
+            <InputGroupAddon><Search /></InputGroupAddon>
+            <InputGroupInput id="route-search" value={query} onChange={event => { setQuery(event.target.value); setSelectedPath(null); }} placeholder={zh ? "搜索域名、应用、节点或地址…" : "Search domains, applications, nodes or addresses…"} />
+          </InputGroup>
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="route-ingress-type">{zh ? "入口类型" : "Ingress type"}</FieldLabel>
+          <Select items={ingressItems} value={kind} onValueChange={value => { setKind(value || ""); setSelectedPath(null); }}>
+            <SelectTrigger id="route-ingress-type" className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectGroup>{ingressItems.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectGroup>
+            </SelectContent>
+          </Select>
+        </Field>
+      </FieldGroup>
+      {certMessage ? <Alert variant={certMessage.kind === "error" ? "destructive" : "default"}>
+        {certMessage.kind === "error" ? <CircleAlert /> : <Check />}
+        <AlertTitle>{certMessage.kind === "error" ? (zh ? "证书重试失败" : "Certificate retry failed") : (zh ? "已提交证书重试" : "Certificate retry submitted")}</AlertTitle>
+        <AlertDescription><p>{certMessage.routeId}</p><p>{certMessage.text}</p></AlertDescription>
+      </Alert> : null}
       {filteredPaths.length ? <>
-        <div className="topology-canvas route-map">
-          {/* A fixed zoom floor clamps fit() and clips large route graphs. */}
-          <CytoscapeComponent className="cy-topology" elements={elements} layout={{ name: "preset", fit: true, padding: 36 }} maxZoom={1.6} minZoom={0} stylesheet={stylesheet} cy={setCyRef} />
-          <div className="cy-controls" aria-label={zh ? "关系图操作" : "Diagram controls"}>
-            {selected ? <Button variant="outline" size="sm" onClick={() => setSelectedPath(null)}><X data-icon="inline-start" />{zh ? "显示全部" : "Show all"}</Button> : null}
-            <Button variant="outline" size="icon-sm" aria-label={zh ? "放大" : "Zoom in"} onClick={handleZoomIn}><Plus /></Button>
-            <Button variant="outline" size="icon-sm" aria-label={zh ? "缩小" : "Zoom out"} onClick={handleZoomOut}><Minus /></Button>
-            <Button variant="outline" size="icon-sm" aria-label={zh ? "适应画布" : "Fit view"} onClick={handleReset}><Maximize /></Button>
-            <TopologyFullscreenButton cy={cyRef} lang={lang} />
-          </div>
-          <p className="route-map-caption">{selected ? (selected.domain || selected.id) : (zh ? "入口与服务关系 · 点击下方路由查看单条路径" : "Ingress and services · Select a route below to inspect its path")}</p>
-        </div>
-        {selected ? <div className="route-path-detail" aria-label={zh ? "完整路由路径" : "Complete route path"}>
-          <strong>{selected.domain || selected.id}</strong>
-          <ol>{normalizePathSegments(selected).map((segment, index) => <li key={`${index}-${segment}`}>{segment}</li>)}</ol>
-          {(selected.destinations || []).map((destination, index) => <p key={index}>{zh ? "目标实例" : "Destination"}: {[destination.service, destination.region, destination.node, destination.address || destination.nodeAddress, destination.state].filter(Boolean).join(" · ") || (zh ? "未知" : "Unknown")}</p>)}
-        </div> : null}
-        <div className="route-table">
-          <Table>
-            <TableHeader><TableRow><TableHead>{zh ? "域名 / 路由" : "Domain / route"}</TableHead><TableHead>{zh ? "入口类型" : "Ingress type"}</TableHead><TableHead>{zh ? "目标节点" : "Destination"}</TableHead><TableHead>{zh ? "操作" : "Actions"}</TableHead></TableRow></TableHeader>
-            <TableBody>{filteredPaths.map((path, index) => {
-              const routeId = path.certificateRetry?.routeId || path.id || "";
-              const canRetry = Boolean(path.certificateRetry?.available && path.domain && routeId);
-              const destination = (path.destinations || []).map(item => [item.region, item.node].filter(Boolean).join(" / ")).filter(Boolean).join(", ");
-              return <TableRow key={`${path.id}-${path.domain}-${index}`} data-state={selected === path ? "selected" : undefined}>
-                <TableCell><button type="button" className="route-select" aria-pressed={selected === path} onClick={() => setSelectedPath(selected === path ? null : path)}>{path.domain || path.id || "—"}</button>{path.domain && path.id ? <small className="block text-muted-foreground">{path.id}</small> : null}</TableCell>
-                <TableCell><Badge value={path.kind || "unknown"} /></TableCell>
-                <TableCell>{destination || "—"}</TableCell>
-                <TableCell>{canRetry ? <Button variant="outline" size="sm" disabled={Boolean(certBusy)} onClick={() => void handleCertificateRetry(path)}>{certBusy === routeId ? (zh ? "重试中…" : "Retrying…") : (zh ? "重试证书" : "Retry certificate")}</Button> : <span className="text-muted-foreground">—</span>}{certMessage?.routeId === routeId ? <p role="status" className={`route-cert-message ${certMessage.kind}`}>{certMessage.text}</p> : null}</TableCell>
-              </TableRow>;
-            })}</TableBody>
-          </Table>
-          <div className="route-table-footer">{zh ? `显示 ${filteredPaths.length} / ${paths.length} 条路由` : `Showing ${filteredPaths.length} of ${paths.length} routes`}</div>
-        </div>
-      </> : <div className="empty-inline"><p>{paths.length ? (zh ? "没有匹配的路由。试试其他关键词或入口类型。" : "No matching routes. Try another search or ingress type.") : (zh ? "暂无路由。应用配置入口后会显示在这里。" : "No routes yet. Routes appear when an application has an ingress configured.")}</p>{paths.length ? <Button variant="outline" onClick={() => { setQuery(""); setKind(""); }}>{zh ? "清除筛选" : "Clear filters"}</Button> : null}</div>}
+        <Card>
+          <CardHeader>
+            <CardTitle>{zh ? "入口与服务关系" : "Ingress and services"}</CardTitle>
+            <CardDescription className="break-words">{selected ? (selected.domain || selected.id) : (zh ? "选择下方路由可查看单条完整路径。" : "Select a route below to inspect its complete path.")}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="topology-canvas route-map" aria-label={zh ? "路由关系图" : "Route diagram"}>
+              {/* A fixed zoom floor clamps fit() and clips large route graphs. */}
+              <CytoscapeComponent className="cy-topology" elements={elements} layout={{ name: "preset", fit: true, padding: 36 }} maxZoom={1.6} minZoom={0} stylesheet={stylesheet} cy={setCyRef} />
+              <div className="cy-controls" role="group" aria-label={zh ? "关系图操作" : "Diagram controls"}>
+                {selected ? <Button variant="outline" size="sm" onClick={() => setSelectedPath(null)}><X data-icon="inline-start" />{zh ? "显示全部" : "Show all"}</Button> : null}
+                {controls.map(({ icon: Icon, label, action }) => <Tooltip key={label}>
+                  <TooltipTrigger render={<Button variant="outline" size="icon-sm" aria-label={label} title={label} disabled={!cyRef} onClick={action} />}><Icon data-icon="inline-start" /></TooltipTrigger>
+                  <TooltipContent>{label}</TooltipContent>
+                </Tooltip>)}
+                <TopologyFullscreenButton cy={cyRef} lang={lang} />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        {selected ? <Card aria-label={zh ? "完整路由路径" : "Complete route path"}>
+          <CardHeader>
+            <CardTitle className="break-all">{selected.domain || selected.id}</CardTitle>
+            <CardDescription>{zh ? "完整路由路径" : "Complete route path"}</CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <ol className="flex flex-wrap items-center gap-2">
+              {normalizePathSegments(selected).map((segment, index, segments) => <li className="flex min-w-0 items-center gap-2" key={`${index}-${segment}`}>
+                <span className="break-all font-mono text-sm">{segment}</span>
+                {index < segments.length - 1 ? <span className="text-muted-foreground" aria-hidden="true">→</span> : null}
+              </li>)}
+            </ol>
+            <dl className="flex flex-col gap-3">
+              {(selected.destinations || []).map((destination, index) => <div className="flex flex-col gap-1" key={index}>
+                <dt className="text-sm text-muted-foreground">{zh ? "目标实例" : "Destination"}</dt>
+                <dd className="break-all text-sm">{[destination.service, destination.region, destination.node, destination.address || destination.nodeAddress, destination.state].filter(Boolean).join(" · ") || (zh ? "未知" : "Unknown")}</dd>
+              </div>)}
+            </dl>
+          </CardContent>
+        </Card> : null}
+        <Card>
+          <CardHeader>
+            <CardTitle>{zh ? "路由列表" : "Routes"}</CardTitle>
+            <CardDescription>{zh ? `显示 ${filteredPaths.length} / ${paths.length} 条路由` : `Showing ${filteredPaths.length} of ${paths.length} routes`}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Table className="min-w-160" containerProps={{ tabIndex: 0, role: "region", "aria-label": zh ? "路由列表，可横向滚动" : "Routes, horizontally scrollable" }}>
+              <TableHeader><TableRow><TableHead>{zh ? "域名 / 路由" : "Domain / route"}</TableHead><TableHead>{zh ? "入口类型" : "Ingress type"}</TableHead><TableHead>{zh ? "目标节点" : "Destination"}</TableHead><TableHead>{zh ? "操作" : "Actions"}</TableHead></TableRow></TableHeader>
+              <TableBody>{filteredPaths.map((path, index) => {
+                const routeId = path.certificateRetry?.routeId || path.id || "";
+                const canRetry = Boolean(path.certificateRetry?.available && path.domain && routeId);
+                const destination = (path.destinations || []).map(item => [item.region, item.node].filter(Boolean).join(" / ")).filter(Boolean).join(", ");
+                return <TableRow key={`${path.id}-${path.domain}-${index}`} data-state={selected === path ? "selected" : undefined}>
+                  <TableCell>
+                    <Button type="button" variant="link" size="sm" className="max-w-80" aria-pressed={selected === path} onClick={() => setSelectedPath(selected === path ? null : path)}>
+                      <span className="truncate font-mono" title={path.domain || path.id}>{path.domain || path.id || "—"}</span>
+                    </Button>
+                    {path.domain && path.id ? <span className="block max-w-80 break-all text-xs text-muted-foreground">{path.id}</span> : null}
+                  </TableCell>
+                  <TableCell><Badge variant="outline" className="max-w-40"><span className="truncate" title={path.kind || "unknown"}>{path.kind || "unknown"}</span></Badge></TableCell>
+                  <TableCell className="max-w-80 break-all whitespace-normal">{destination || "—"}</TableCell>
+                  <TableCell>{canRetry ? <Button variant="outline" size="sm" disabled={Boolean(certBusy)} onClick={() => void handleCertificateRetry(path)}>{certBusy === routeId ? <Spinner data-icon="inline-start" aria-hidden="true" /> : null}{certBusy === routeId ? (zh ? "重试中…" : "Retrying…") : (zh ? "重试证书" : "Retry certificate")}</Button> : <span className="text-muted-foreground">—</span>}</TableCell>
+                </TableRow>;
+              })}</TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      </> : <Empty>
+        <EmptyHeader>
+          <EmptyMedia variant="icon"><Network /></EmptyMedia>
+          <EmptyTitle>{paths.length ? (zh ? "没有匹配的路由" : "No matching routes") : (zh ? "暂无路由" : "No routes yet")}</EmptyTitle>
+          <EmptyDescription>{paths.length ? (zh ? "试试其他关键词或入口类型。" : "Try another search or ingress type.") : (zh ? "应用配置入口后会显示在这里。" : "Routes appear when an application has an ingress configured.")}</EmptyDescription>
+        </EmptyHeader>
+        {paths.length ? <EmptyContent><Button variant="outline" onClick={() => { setQuery(""); setKind(""); }}>{zh ? "清除筛选" : "Clear filters"}</Button></EmptyContent> : null}
+      </Empty>}
     </section>
   );
 }

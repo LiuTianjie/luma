@@ -43,22 +43,22 @@ export function Topbar({
     : t(lang, syncStatus);
 
   return (
-    <header className="console-topbar">
+    <header className="flex h-(--console-header-height) shrink-0 items-center gap-3 border-b px-4 md:px-6">
       <SidebarTrigger className="md:hidden" aria-label={lang === "zh" ? "打开导航" : "Open navigation"} />
-      {path.startsWith("/create/") && <Button variant="ghost" size="sm" onClick={() => navigate("/create")} aria-label={lang === "zh" ? "返回创建" : "Back to create"}><ArrowLeft />{lang === "zh" ? "返回" : "Back"}</Button>}
-      <Breadcrumb className="console-breadcrumb" aria-label={lang === "zh" ? "当前位置" : "Current location"}>
-        <BreadcrumbList>
+      {path.startsWith("/create/") && <Button variant="ghost" size="sm" onClick={() => navigate("/create")} aria-label={lang === "zh" ? "返回创建" : "Back to create"}><ArrowLeft data-icon="inline-start" />{lang === "zh" ? "返回" : "Back"}</Button>}
+      <Breadcrumb className="min-w-0" aria-label={lang === "zh" ? "当前位置" : "Current location"}>
+        <BreadcrumbList className="flex-nowrap">
           {applicationRoute.stack ? <>
             <BreadcrumbItem><BreadcrumbLink href={toHref("/apps")} onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return; event.preventDefault(); navigate("/apps"); }}>{lang === "zh" ? "应用" : "Applications"}</BreadcrumbLink></BreadcrumbItem>
             <BreadcrumbSeparator />
-            <BreadcrumbItem>{applicationRoute.service ? <BreadcrumbLink href={toHref(applicationPath(applicationRoute.stack))}>{applicationRoute.stack}</BreadcrumbLink> : <BreadcrumbPage>{applicationRoute.stack}</BreadcrumbPage>}</BreadcrumbItem>
-            {applicationRoute.service && <><BreadcrumbSeparator /><BreadcrumbItem><BreadcrumbPage>{applicationRoute.service}</BreadcrumbPage></BreadcrumbItem></>}
+            <BreadcrumbItem className="min-w-0">{applicationRoute.service ? <BreadcrumbLink href={toHref(applicationPath(applicationRoute.stack))} className="truncate" title={applicationRoute.stack} onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return; event.preventDefault(); navigate(applicationPath(applicationRoute.stack || "")); }}>{applicationRoute.stack}</BreadcrumbLink> : <BreadcrumbPage className="truncate" title={applicationRoute.stack}>{applicationRoute.stack}</BreadcrumbPage>}</BreadcrumbItem>
+            {applicationRoute.service && <><BreadcrumbSeparator /><BreadcrumbItem className="min-w-0"><BreadcrumbPage className="truncate" title={applicationRoute.service}>{applicationRoute.service}</BreadcrumbPage></BreadcrumbItem></>}
           </> : <>
           {child && item ? <><BreadcrumbItem><BreadcrumbLink href={toHref(ROUTE_BY_PAGE[item.id])} onClick={event => {
             if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
             event.preventDefault(); navigate(ROUTE_BY_PAGE[item.id]);
           }}>{item.label}</BreadcrumbLink></BreadcrumbItem><BreadcrumbSeparator /></> : null}
-          <BreadcrumbItem>{Icon ? <Icon className="size-4 shrink-0" aria-hidden="true" /> : null}<BreadcrumbPage>{title}</BreadcrumbPage></BreadcrumbItem>
+          <BreadcrumbItem>{Icon ? <Icon aria-hidden="true" /> : null}<BreadcrumbPage>{title}</BreadcrumbPage></BreadcrumbItem>
           </>}
 
         </BreadcrumbList>

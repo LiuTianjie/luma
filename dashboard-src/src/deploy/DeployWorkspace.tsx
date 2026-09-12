@@ -1,11 +1,15 @@
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { FieldGroup, FieldLegend, FieldSet } from "@/components/ui/field";
+import { Spinner } from "@/components/ui/spinner";
+import { DeployCheckboxField } from "./DeployFormFields";
 import "./workbench.css";
 import { Button } from "@/components/ui/button";
 
 import { PageHeader } from "../pages/PageHeader";
 import { StepLog } from "./StepLog";
-import { ArrowLeft, FileCode2, ListChecks, Rocket } from "lucide-react";
+import { ArrowLeft, ArrowRight, FileCode2, ListChecks, Rocket } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { DashboardPayload, Lang } from "../types";
 import { ComposeDeployForm } from "./ComposeDeployForm";
@@ -293,7 +297,7 @@ export function DeployWorkspace({
   useEffect(() => { setPreview(null); setHealth([]); }, [serviceYaml, sidecarYaml, composeYaml, serviceDraft.skipDns, serviceDraft.skipOrchestrator, composeDraft.skipDns, composeDraft.skipOrchestrator]);
   const allErrors = [...validationErrors, ...(submitted.error ? [submitted.error] : []), ...runtimeErrors];
   const configTitle = submitted.summary?.name || currentConfigTitle(mode, serviceDraft, composeDraft);
-  const configFacts = submitted.summary ? [submitted.summary.region, ...submitted.summary.images, ...submitted.summary.ingress] : [];
+  const configFacts = submitted.summary ? [...submitted.summary.images, ...submitted.summary.ingress] : [];
   const flowSteps = deployFlowSteps(mode, lang);
 
   const selectTemplate = (template: DeployTemplate) => {
@@ -430,110 +434,88 @@ export function DeployWorkspace({
     }
   };
 
-  return (
-    <Tabs value={editorMode} onValueChange={(value) => setEditorMode(value as "form" | "yaml")}><section className={`deploy-workspace-panel deploy-workbench ${modalTitle ? "modal-deploy-workspace" : ""} ${templateLanding ? "" : "is-form"}`.trim()}>
-      {importView ? (
-        <GithubImportPanel
-          lang={lang}
-          token={token}
-          nodes={nodes}
-          build={payload?.build}
-          regions={regions}
-          onBack={showTemplates ? () => setImportView(false) : undefined}
-          onRefresh={onRefresh}
-        />
-      ) : (
-      <>
-      {!templateLanding ? <header className="workbench-header">
-        {onClose || showTemplates ? <Button variant="outline" type="button" className="workbench-back" disabled={status !== "idle"} onClick={() => onClose ? onClose() : showTemplates ? backToTemplates() : router.navigate("/create")}>
-          <ArrowLeft size={16} aria-hidden="true" />{onClose ? (lang === "zh" ? "返回应用" : "Back to application") : showTemplates ? (lang === "zh" ? "返回模板" : "Back to templates") : (lang === "zh" ? "返回创建" : "Back to create")}
-        </Button> : null}
-        <PageHeader meta={{
-          eyebrow: "",
-          title: onClose ? (modalTitle || (lang === "zh" ? "更新应用" : "Update application")) : (lang === "zh" ? "配置并部署应用" : "Configure and deploy an application"),
-          description: modalSubtitle || (lang === "zh" ? "填写表单或编辑 YAML，校验后部署到集群。" : "Use the form or YAML, then validate and deploy to your cluster."),
-          metrics: [],
-        }} />
-        <div className="workbench-editor-toolbar">
-        <TabsList aria-label={lang === "zh" ? "编辑方式" : "Editor mode"}>
-          <TabsTrigger value="form" disabled={yamlDirty || status !== "idle"}><ListChecks aria-hidden="true" />{lang === "zh" ? "配置表单" : "Form"}</TabsTrigger>
-          <TabsTrigger value="yaml" disabled={status !== "idle"}><FileCode2 aria-hidden="true" />{lang === "zh" ? "YAML 编辑器" : "YAML editor"}</TabsTrigger>
-        </TabsList>
-          {editorMode === "yaml" ? <fieldset className="deploy-request-options" disabled={status !== "idle"}>
-            <legend>{lang === "zh" ? "部署选项" : "Deployment options"}</legend>
-            <label><Checkbox checked={mode === "service" ? serviceDraft.skipDns : composeDraft.skipDns} onCheckedChange={(checked) => mode === "service" ? setServiceDraft({ ...serviceDraft, skipDns: checked }) : setComposeDraft({ ...composeDraft, skipDns: checked })} />{lang === "zh" ? "跳过 DNS 更新" : "Skip DNS updates"}</label>
-            <label><Checkbox checked={mode === "service" ? serviceDraft.skipOrchestrator : composeDraft.skipOrchestrator} onCheckedChange={(checked) => mode === "service" ? setServiceDraft({ ...serviceDraft, skipOrchestrator: checked }) : setComposeDraft({ ...composeDraft, skipOrchestrator: checked })} />{lang === "zh" ? "跳过调度器提交" : "Skip orchestrator submission"}</label>
-          </fieldset> : null}
-        </div>
-      </header> : null}
-      {modalContext}
-      {showTemplates && templateLanding ? (
-        <>
+  return <Tabs value={editorMode} onValueChange={(value) => { if (value === "form" || value === "yaml") setEditorMode(value); }} className="min-w-0 gap-6">
+    <section className="flex min-w-0 flex-col gap-6">
+      {importView ? <GithubImportPanel lang={lang} token={token} nodes={nodes} build={payload?.build} regions={regions} onBack={showTemplates ? () => setImportView(false) : undefined} onRefresh={onRefresh} /> : <>
+        {!templateLanding ? <>
+          {onClose || showTemplates ? <Button variant="outline" type="button" className="w-fit" disabled={status !== "idle"} onClick={() => onClose ? onClose() : showTemplates ? backToTemplates() : router.navigate("/create")}>
+            <ArrowLeft data-icon="inline-start" />{onClose ? (lang === "zh" ? "返回应用" : "Back to application") : showTemplates ? (lang === "zh" ? "返回模板" : "Back to templates") : (lang === "zh" ? "返回创建" : "Back to create")}
+          </Button> : null}
+          <PageHeader meta={{
+            eyebrow: "",
+            title: onClose ? (modalTitle || (lang === "zh" ? "更新应用" : "Update application")) : (lang === "zh" ? "配置并部署应用" : "Configure and deploy an application"),
+            description: modalSubtitle || (lang === "zh" ? "填写表单或编辑 YAML，校验后部署到集群。" : "Use the form or YAML, then validate and deploy to your cluster."),
+            metrics: [],
+          }} />
+          <div className="flex flex-wrap items-start justify-between gap-6">
+            <TabsList aria-label={lang === "zh" ? "编辑方式" : "Editor mode"}>
+              <TabsTrigger value="form" disabled={yamlDirty || status !== "idle"}><ListChecks data-icon="inline-start" />{lang === "zh" ? "配置表单" : "Form"}</TabsTrigger>
+              <TabsTrigger value="yaml" disabled={status !== "idle"}><FileCode2 data-icon="inline-start" />{lang === "zh" ? "YAML 编辑器" : "YAML editor"}</TabsTrigger>
+            </TabsList>
+            {editorMode === "yaml" ? <FieldSet disabled={status !== "idle"} className="w-full sm:w-auto sm:min-w-80">
+              <FieldLegend variant="label">{lang === "zh" ? "部署选项" : "Deployment options"}</FieldLegend>
+              <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <DeployCheckboxField label={lang === "zh" ? "跳过 DNS 更新" : "Skip DNS updates"} disabled={status !== "idle"} checked={mode === "service" ? serviceDraft.skipDns : composeDraft.skipDns} onCheckedChange={(checked) => mode === "service" ? setServiceDraft({ ...serviceDraft, skipDns: checked }) : setComposeDraft({ ...composeDraft, skipDns: checked })} />
+                <DeployCheckboxField label={lang === "zh" ? "跳过调度器提交" : "Skip orchestrator submission"} disabled={status !== "idle"} checked={mode === "service" ? serviceDraft.skipOrchestrator : composeDraft.skipOrchestrator} onCheckedChange={(checked) => mode === "service" ? setServiceDraft({ ...serviceDraft, skipOrchestrator: checked }) : setComposeDraft({ ...composeDraft, skipOrchestrator: checked })} />
+              </FieldGroup>
+            </FieldSet> : null}
+          </div>
+        </> : null}
+        {modalContext}
+        {showTemplates && templateLanding ? <>
           <GithubImportEntryCard lang={lang} onOpen={() => setImportView(true)} />
           <DeployTemplates lang={lang} mode={mode} templates={DEPLOY_TEMPLATES} activeId={activeTemplateId} onModeChange={changeMode} onSelect={selectTemplate} />
-        </>
-      ) : null}
-      {templateLanding ? (
-        null
-      ) : (
-        <>
-          {editorMode === "form" ? (
-            <nav className="deploy-step-rail" aria-label={lang === "zh" ? "配置分段" : "Configuration sections"}>
-              {flowSteps.map((step, index) => (
-                <a href={`#${step.id}`} key={step.id}>
-                  <span>{String(index + 1).padStart(2, "0")}</span>
-                  <strong>{step.label}</strong>
-                  <small>{step.value}</small>
-                </a>
-              ))}
-            </nav>
-          ) : null}
-          <div className={`deploy-workspace-grid ${editorMode === "yaml" ? "yaml-active" : ""}`}>
-            <div className="deploy-config-main" inert={status !== "idle" ? true : undefined}>
-              {yamlDirty ? <div className="workbench-source-note" role="status"><div><strong>{lang === "zh" ? "使用 YAML 配置" : "Using YAML configuration"}</strong><p>{lang === "zh" ? "校验和部署均使用当前文件内容。" : "Validation and deployment use the current documents."}</p></div><Button variant="outline" type="button" disabled={status !== "idle"} onClick={async () => {
-                if (!await confirm({ title: lang === "zh" ? "恢复表单配置？" : "Restore form configuration?", body: lang === "zh" ? "这会丢弃手动 YAML 修改，使用表单当前值重新生成文件。" : "This discards manual YAML edits and regenerates documents from the form.", confirmLabel: lang === "zh" ? "恢复表单" : "Restore form" })) return;
-                setServiceYaml(serviceDraftToYaml(serviceDraft)); setComposeYaml(composeDraft.dockerComposeYaml); setSidecarYaml(composeDraftToSidecarYaml(composeDraft)); setYamlDirty(false); setEditorMode("form"); setPreview(null);
-              }}>{lang === "zh" ? "恢复表单…" : "Restore form…"}</Button></div> : null}
-              {editorMode === "form" ? (
-                mode === "service"
+        </> : null}
+        {!templateLanding ? <>
+          {editorMode === "form" ? <nav className="flex flex-wrap gap-2" aria-label={lang === "zh" ? "配置分段" : "Configuration sections"}>
+            {flowSteps.map((step, index) => <Button key={step.id} variant="outline" size="sm" nativeButton={false} render={<a href={`#${step.id}`} />}>{String(index + 1).padStart(2, "0")} {step.label}</Button>)}
+          </nav> : null}
+          <div className="deployment-workbench-grid">
+            <div className="flex min-w-0 flex-col gap-6" inert={status !== "idle" ? true : undefined}>
+              {yamlDirty ? <Alert>
+                <FileCode2 />
+                <AlertTitle>{lang === "zh" ? "使用 YAML 配置" : "Using YAML configuration"}</AlertTitle>
+                <AlertDescription>
+                  <p>{lang === "zh" ? "校验和部署均使用当前文件内容。" : "Validation and deployment use the current documents."}</p>
+                  <Button variant="secondary" type="button" className="w-fit" disabled={status !== "idle"} onClick={async () => {
+                    if (!await confirm({ title: lang === "zh" ? "恢复表单配置？" : "Restore form configuration?", body: lang === "zh" ? "这会丢弃手动 YAML 修改，使用表单当前值重新生成文件。" : "This discards manual YAML edits and regenerates documents from the form.", confirmLabel: lang === "zh" ? "恢复表单" : "Restore form" })) return;
+                    setServiceYaml(serviceDraftToYaml(serviceDraft)); setComposeYaml(composeDraft.dockerComposeYaml); setSidecarYaml(composeDraftToSidecarYaml(composeDraft)); setYamlDirty(false); setEditorMode("form"); setPreview(null);
+                  }}>{lang === "zh" ? "恢复表单…" : "Restore form…"}</Button>
+                </AlertDescription>
+              </Alert> : null}
+              <TabsContent value="form">
+                {mode === "service"
                   ? <SingleServiceDeployForm lang={lang} draft={serviceDraft} nodes={nodes} storageClasses={storageClasses} regions={regions} onChange={updateServiceDraft} />
-                  : <ComposeDeployForm lang={lang} draft={composeDraft} nodes={nodes} storageClasses={storageClasses} regions={regions} onChange={updateComposeDraft} onEditYaml={() => setEditorMode("yaml")} />
-              ) : (
-                <YamlPreviewEditor
-                  lang={lang}
-                  mode={mode}
-                  serviceYaml={serviceYaml}
-                  composeYaml={composeYaml}
-                  sidecarYaml={sidecarYaml}
+                  : <ComposeDeployForm lang={lang} draft={composeDraft} nodes={nodes} storageClasses={storageClasses} regions={regions} onChange={updateComposeDraft} onEditYaml={() => setEditorMode("yaml")} />}
+              </TabsContent>
+              <TabsContent value="yaml">
+                <YamlPreviewEditor lang={lang} mode={mode} serviceYaml={serviceYaml} composeYaml={composeYaml} sidecarYaml={sidecarYaml}
                   onServiceYamlChange={(value) => { setServiceYaml(value); setYamlDirty(true); }}
                   onComposeYamlChange={(value) => { setComposeYaml(value); setYamlDirty(true); }}
-                  onSidecarYamlChange={(value) => { setSidecarYaml(value); setYamlDirty(true); }}
-                />
-              )}
+                  onSidecarYamlChange={(value) => { setSidecarYaml(value); setYamlDirty(true); }} />
+              </TabsContent>
             </div>
             <DeploySummary lang={lang} mode={mode} serviceDraft={serviceDraft} composeDraft={composeDraft} preview={preview} steps={[]} errors={allErrors} submission={submitted.summary} health={health} />
           </div>
-          {steps.length ? <section className="workbench-progress" aria-label={lang === "zh" ? "部署进度" : "Deployment progress"}><header><h3>{lang === "zh" ? "部署进度" : "Deployment progress"}</h3><Button variant="outline" type="button" onClick={() => router.navigate(`/deployments?app=${encodeURIComponent(submitted.summary?.name || configTitle)}`)}>{lang === "zh" ? "查看交付记录 →" : "View delivery records →"}</Button></header><StepLog steps={steps} lang={lang} /></section> : null}
-          <div className="deploy-action-bar">
-            <div>
-              <strong>{yamlDirty ? (lang === "zh" ? "提交当前 YAML" : "Submit current YAML") : (lang === "zh" ? "提交当前配置" : "Submit current configuration")}</strong>
-              <span>{lang === "zh" ? <>Secret 使用 ${"{NAME}"} 引用，明文密钥请先存入 Luma Control。</> : <>Secrets must use ${"{NAME}"} references. Store plaintext secrets in Luma Control first.</>}</span>
-            </div>
-
-            <Button variant="outline" type="button" disabled={status !== "idle"} onClick={() => void runPreview()}>
-              <ListChecks size={16} aria-hidden="true" />
-              {status === "previewing" ? (lang === "zh" ? "校验中..." : "Validating...") : (lang === "zh" ? "校验" : "Validate")}
-            </Button>
-            <Button type="button" disabled={status !== "idle" || validationErrors.length> 0 || Boolean(submitted.error)} onClick={() => void runDeploy()}>
-              <Rocket size={16} aria-hidden="true" />
-              {status === "deploying" ? (lang === "zh" ? "部署中..." : "Deploying...") : (lang === "zh" ? "部署" : "Deploy")}
-            </Button>
-          </div>
-        </>
-      )}
-      </>
-      )}
+          {steps.length ? <Card className="min-w-0" aria-label={lang === "zh" ? "部署进度" : "Deployment progress"}>
+            <CardHeader><CardTitle>{lang === "zh" ? "部署进度" : "Deployment progress"}</CardTitle></CardHeader>
+            <CardContent><StepLog steps={steps} lang={lang} /></CardContent>
+            <CardFooter className="justify-end"><Button variant="outline" type="button" onClick={() => router.navigate(`/deployments?app=${encodeURIComponent(submitted.summary?.name || configTitle)}`)}>{lang === "zh" ? "查看交付记录" : "View delivery records"}<ArrowRight data-icon="inline-end" /></Button></CardFooter>
+          </Card> : null}
+          <Card>
+            <CardHeader><CardTitle>{yamlDirty ? (lang === "zh" ? "提交当前 YAML" : "Submit current YAML") : (lang === "zh" ? "提交当前配置" : "Submit current configuration")}</CardTitle><CardDescription>{lang === "zh" ? <>Secret 使用 ${"{NAME}"} 引用，明文密钥请先存入 Luma Control。</> : <>Secrets must use ${"{NAME}"} references. Store plaintext secrets in Luma Control first.</>}</CardDescription></CardHeader>
+            <CardFooter className="flex-wrap justify-end gap-3">
+              <Button variant="outline" type="button" disabled={status !== "idle"} onClick={() => void runPreview()}>
+                {status === "previewing" ? <Spinner aria-hidden="true" data-icon="inline-start" /> : <ListChecks data-icon="inline-start" />}{status === "previewing" ? (lang === "zh" ? "校验中…" : "Validating…") : (lang === "zh" ? "校验" : "Validate")}
+              </Button>
+              <Button type="button" disabled={status !== "idle" || validationErrors.length > 0 || Boolean(submitted.error)} onClick={() => void runDeploy()}>
+                {status === "deploying" ? <Spinner aria-hidden="true" data-icon="inline-start" /> : <Rocket data-icon="inline-start" />}{status === "deploying" ? (lang === "zh" ? "部署中…" : "Deploying…") : (lang === "zh" ? "部署" : "Deploy")}
+              </Button>
+            </CardFooter>
+          </Card>
+        </> : null}
+      </>}
       {confirmDialog}
-    </section></Tabs>
-  );
+    </section>
+  </Tabs>;
 }

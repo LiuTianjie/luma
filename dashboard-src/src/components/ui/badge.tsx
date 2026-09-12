@@ -19,9 +19,9 @@ const badgeVariants = cva(
           "hover:bg-muted hover:text-muted-foreground dark:hover:bg-muted/50",
         link: "text-primary underline-offset-4 hover:underline",
         warning:
-          "border-transparent bg-[oklch(0.92_0.08_75)] text-[oklch(0.47_0.13_55)] dark:bg-[oklch(0.75_0.15_70_/_0.2)] dark:text-[oklch(0.86_0.12_75)]",
+          "bg-warning text-warning-foreground",
         success:
-          "border-transparent bg-[oklch(0.92_0.06_145)] text-[oklch(0.4_0.12_145)] dark:bg-[oklch(0.63_0.17_145_/_0.2)] dark:text-[oklch(0.82_0.14_145)]",
+          "bg-success text-success-foreground",
       },
     },
     defaultVariants: {

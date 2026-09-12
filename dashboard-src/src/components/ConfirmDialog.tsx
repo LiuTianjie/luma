@@ -11,6 +11,8 @@ import {
   AlertDialogMedia,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Spinner } from "@/components/ui/spinner";
 import type { Lang } from "../types";
 
 export type ConfirmTone = "danger" | "neutral";
@@ -55,10 +57,10 @@ export function ConfirmDialog({
         </AlertDialogHeader>
         {bodyText ? null : <div className="text-sm text-muted-foreground">{request.body}</div>}
         {request.warning && bodyText ? (
-          <p className="flex items-center gap-2 text-sm text-destructive">
-            <AlertTriangle className="size-4" />
-            {request.warning}
-          </p>
+          <Alert variant="destructive">
+            <AlertTriangle aria-hidden="true" />
+            <AlertDescription>{request.warning}</AlertDescription>
+          </Alert>
         ) : null}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={busy}>{zh ? "取消" : "Cancel"}</AlertDialogCancel>
@@ -70,6 +72,7 @@ export function ConfirmDialog({
               onConfirm();
             }}
           >
+            {busy ? <Spinner aria-hidden="true" data-icon="inline-start" /> : null}
             {busy ? (zh ? "处理中…" : "Working…") : request.confirmLabel || (zh ? "确认" : "Confirm")}
           </AlertDialogAction>
         </AlertDialogFooter>

@@ -1,107 +1,16 @@
-/* Local containment: wide tables scroll within their section, identifiers wrap,
-   and forms respond to the workspace width rather than the browser width. */
+/* Workspace geometry only. Components own their surfaces, type and controls. */
 .infrastructure-workspace {
   container-type: inline-size;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 20px;
+  gap: 24px;
   min-width: 0;
   max-width: 100%;
-}
-.infrastructure-workspace :is(article, section, aside, nav, header, form, label, dl, dd, .panel-heading > div) {
-  min-width: 0;
-  max-width: 100%;
-}
-.infrastructure-workspace :is(h1, h2, h3, p, dd, .primary-cell, .code-cell, .node-tile-head, .node-tile-meta, .node-region-band > header, .route-index, .system-update-node-list, .route-sentinel-summary) {
-  overflow-wrap: anywhere;
-  word-break: normal;
-}
-.infrastructure-workspace .table-wrap {
-  width: 100%;
-  min-width: 0;
-  max-width: 100%;
-  overflow-x: auto;
-  overscroll-behavior-inline: contain;
-}
-.infrastructure-workspace .table-wrap table { min-width: 600px; }
-.infrastructure-workspace .table-wrap :is(td, th) { white-space: normal; overflow-wrap: anywhere; }
-.infrastructure-workspace .table-wrap :is(.primary-cell, .code-cell) { max-width: 32rem; white-space: normal; }
-.infrastructure-workspace .table-wrap td:first-child { max-width: 22rem; }
-.infrastructure-workspace :is(.node-region-grid, .node-tile-grid) { grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); }
-.infrastructure-workspace :is(.node-tile, .node-tile-head strong, .node-tile-meta, .node-tile-foot, .node-region-band > header > div) { min-width: 0; }
-.infrastructure-workspace :is(.node-tile-head strong, .node-tile-meta) { white-space: normal; overflow-wrap: anywhere; }
-.infrastructure-workspace :is(.node-fleet-header, .panel-heading, .system-update-heading, .node-tile-foot) { flex-wrap: wrap; gap: 12px; }
-.infrastructure-workspace .fleet-command-panel { max-width: 880px; }
-.infrastructure-workspace .command-snippet { max-width: 100%; overflow-x: auto; white-space: pre; }
-.infrastructure-workspace .region-create-form {
-  display: grid;
-  grid-template-columns: minmax(220px, 360px) minmax(180px, 260px) auto;
-  width: fit-content;
-  max-width: 100%;
-  align-items: end;
-  gap: 16px;
-}
-.infrastructure-workspace :is(input, select, textarea) { min-width: 0; max-width: 100%; box-sizing: border-box; }
-.infrastructure-workspace :is(.system-update-form, .system-update-progress-grid) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.infrastructure-workspace .system-update-form { max-width: 960px; }
-.infrastructure-workspace .system-update-actions { flex-wrap: wrap; }
-.infrastructure-workspace :is(.system-update-version, .system-update-confirm, .system-update-error, .system-update-progress-grid article, .system-update-image-progress) { min-width: 0; overflow-wrap: anywhere; }
-.infrastructure-workspace .system-update-progress-grid pre { min-width: 0; max-width: 100%; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
-.infrastructure-workspace :is(.system-update-node-list > span, .route-sentinel-summary > div > span) { min-width: 0; grid-template-columns: auto minmax(0, 1fr); }
-.infrastructure-workspace :is(.system-update-node-list small, .route-sentinel-summary small) { grid-column: 2; white-space: normal; }
-.infrastructure-workspace .node-topology-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
-.infrastructure-workspace .topology-layout { grid-template-columns: minmax(0, 1fr) minmax(220px, 0.5fr); }
-.infrastructure-workspace :is(.topology-canvas, .cy-topology) { min-width: 0; max-width: 100%; }
-.infrastructure-workspace .route-index { min-width: 0; overflow-x: auto; }
-.infrastructure-workspace .route-index-actions { flex-wrap: wrap; }
-.resource-workspace .detail-properties { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
-.resource-workspace .detail-properties :is(dt, dd) { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
-.resource-workspace .detail-page { min-width: 0; max-width: 100%; }
-@container (max-width: 760px) {
-  .infrastructure-workspace :is(.region-create-form, .system-update-form, .system-update-progress-grid, .topology-layout) { grid-template-columns: minmax(0, 1fr); }
-  .infrastructure-workspace .region-create-form button { justify-self: start; }
-  .infrastructure-workspace .route-index { max-height: 420px; overflow-y: auto; }
-  .infrastructure-workspace .system-update-version { text-align: start; }
-}
-.infrastructure-workspace :is(.governance-summary > div, .governance-policy, .governance-actions > label) { min-width: 0; }
-.infrastructure-workspace .governance-policy { max-width: 1000px; }
-@container (max-width: 760px) {
-  .infrastructure-workspace .governance-policy { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .infrastructure-workspace .governance-summary { grid-template-columns: minmax(0, 1fr); }
-}
-@container (max-width: 420px) {
-  .infrastructure-workspace .governance-policy { grid-template-columns: minmax(0, 1fr); }
-}
-.infrastructure-workspace .node-region-band > header > div {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  column-gap: 12px;
-  row-gap: 4px;
 }
 
 .network-workspace { gap: 24px; }
-.route-workspace { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.route-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; font-size: 13px; color: var(--muted-foreground); }
-.route-summary > span:first-child { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; background: var(--card); color: var(--foreground); font-weight: 500; }
-.route-summary svg { width: 14px; height: 14px; }
-.route-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 260px); gap: 12px; max-width: 1000px; }
-.route-search { position: relative; }
-.route-search > svg { position: absolute; width: 16px; height: 16px; top: 10px; left: 12px; color: var(--muted-foreground); pointer-events: none; }
-.route-search input { padding-left: 36px; background: var(--card); }
-.route-filters select { width: 100%; padding: 7px 12px; border: 1px solid var(--input); border-radius: var(--radius); background: var(--card); color: var(--foreground); }
+.route-workspace { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
+.route-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 260px); gap: 16px; max-width: 1000px; }
 .route-map { height: 320px; min-height: 320px; }
 .route-map .cy-topology { height: 100%; min-height: 0; }
-.route-map-caption { position: absolute; bottom: 0; left: 0; right: 0; margin: 0; padding: 10px 14px; font-size: 12px; color: var(--muted-foreground); background: var(--background); pointer-events: none; }
-.route-table { border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden; }
-.route-select { color: var(--primary); text-align: left; font-family: var(--font-mono); font-size: 13px; cursor: pointer; overflow-wrap: anywhere; }
-.route-select:hover { text-decoration: underline; text-underline-offset: 3px; }
-.route-select:focus-visible { outline: 2px solid var(--ring); outline-offset: 4px; border-radius: 2px; }
-.route-table-footer { border-top: 1px solid var(--border); background: var(--background); padding: 12px 16px; color: var(--muted-foreground); font-size: 12px; }
 @container (max-width: 600px) { .route-filters { grid-template-columns: minmax(0, 1fr); } }
-.route-evidence-note { margin: 0; color: var(--muted-foreground); font-size: 12px; line-height: 1.6; }
-.route-path-detail { padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); font-size: 13px; }
-.route-path-detail ol { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; padding: 0; margin: 12px 0; }
-.route-path-detail li { font-family: var(--font-mono); overflow-wrap: anywhere; }
-.route-path-detail li:not(:last-child)::after { content: "→"; margin-left: 8px; color: var(--muted-foreground); }
-.route-path-detail p { margin: 6px 0 0; color: var(--muted-foreground); overflow-wrap: anywhere; }

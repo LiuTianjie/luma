@@ -89,7 +89,7 @@ test("inline object details retain zero and false values and do not declare a mo
 test("inline shell renders its target and surface without requiring a modal portal", () => {
   const html = renderToStaticMarkup(React.createElement(TerminalDrawer, { lang: "en", inline: true, token: "test", target: { kind: "node", node: { name: "manager", region: "cn" } }, onClose() {} }));
   assert.match(html, /manager/);
-  assert.match(html, /terminal-surface/);
+  assert.match(html, /<div\b[^>]*role="region"[^>]*aria-label="Interactive terminal"/);
   assert.match(html, /End session and return/);
   assert.doesNotMatch(html, /role="dialog"|aria-modal/);
 });

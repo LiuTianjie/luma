@@ -263,6 +263,7 @@ export default defineConfig({
   } : undefined,
   publicDir: false,
   resolve: {
+    dedupe: ["react", "react-dom"],
     alias: {
       "@": path.resolve(__dirname, "src"),
     },

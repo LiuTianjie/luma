@@ -1,8 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { Boxes, MapPinned, RefreshCw, ScrollText, UsersRound, WalletCards } from "lucide-react";
-import { Badge, CodeCell, PrimaryCell, StatePill } from "../components/primitives";
+import { CodeCell, PrimaryCell, StatePill } from "../components/primitives";
 import {
   fetchLaeAdmin,
   type AdminPage,
@@ -59,7 +66,6 @@ export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
   cache.current = state;
   const requests = useRef<Partial<Record<View, AbortController>>>({});
   const loading = Boolean(state.loading[view]) || (!state.pages[view] && !state.errors[view]);
-  const error = state.errors[view] || "";
 
   const load = useCallback(async (resource: View) => {
     requests.current[resource]?.abort();
@@ -127,8 +133,91 @@ export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
     { id: "usage", label: zh ? "用量" : "Usage", icon: WalletCards },
   ];
 
+  const tables: Record<View, { headings: string[]; rows: () => ReactNode; description: string; empty: string }> = {
+    applications: {
+      headings: [zh ? "应用" : "Application", zh ? "租户" : "Tenant", zh ? "形态" : "Kind", zh ? "状态" : "State", zh ? "服务" : "Services", zh ? "卷配额" : "Volumes", zh ? "部署" : "Deployment"],
+      description: zh ? "查看各租户应用的运行状态、服务和存储配额。" : "Application state, services, and storage quotas across tenants.",
+      empty: zh ? "暂无应用" : "No applications",
+      rows: () => state.applications.map((app) => {
+        const tenant = tenantsById.get(app.tenantId);
+        return <TableRow key={app.id}>
+          <TableCell><PrimaryCell title={app.name} meta={app.slug} /></TableCell>
+          <TableCell><PrimaryCell title={tenant?.name || app.tenantId} meta={tenant?.ownerEmail || app.tenantId} /></TableCell>
+          <TableCell><Badge variant="secondary">{app.kind}</Badge></TableCell>
+          <TableCell><StatePill label={`${app.desiredState} / ${app.observedState}`} value={app.observedState} /></TableCell>
+          <TableCell>{app.serviceCount}</TableCell>
+          <TableCell>{bytes(app.requestedVolumeBytes)}</TableCell>
+          <TableCell><CodeCell value={app.currentDeploymentId || "pending"} /></TableCell>
+        </TableRow>;
+      }),
+    },
+    placements: {
+      headings: [zh ? "运行部署" : "Runtime deployment", zh ? "租户 / 应用" : "Tenant / app", zh ? "区域" : "Region", zh ? "当前节点" : "Active node", zh ? "候选" : "Candidates", zh ? "连续性" : "Continuity", zh ? "更新时间" : "Updated"],
+      description: zh ? "查看部署的区域、当前节点和调度候选。" : "Deployment regions, current nodes, and scheduling candidates.",
+      empty: zh ? "暂无运行部署" : "No runtime placements",
+      rows: () => state.placements.map((placement) => <TableRow key={placement.runtimeDeploymentRef}>
+        <TableCell><PrimaryCell title={placement.status} meta={placement.runtimeDeploymentRef} /></TableCell>
+        <TableCell><PrimaryCell title={placement.applicationRef} meta={placement.tenantRef} /></TableCell>
+        <TableCell><Badge variant="secondary">{placement.region || "unknown"}</Badge></TableCell>
+        <TableCell>{placement.activeAllocations.length ? <div className="flex flex-col gap-2">{placement.activeAllocations.map((allocation) => <PrimaryCell key={allocation.allocationId || allocation.nodeId} title={allocation.nodeName || allocation.nodeId} meta={allocation.status} />)}</div> : <StatePill label={placement.observationStatus} value={placement.observationStatus} />}</TableCell>
+        <TableCell><PrimaryCell title={`${placement.candidateNodeIds.length}`} meta={placement.candidateNodeIds.join(", ") || "-"} /></TableCell>
+        <TableCell><StatePill label={placement.continuity} value={placement.continuity} /></TableCell>
+        <TableCell>{time(placement.updatedAt ? placement.updatedAt * 1000 : null)}</TableCell>
+      </TableRow>),
+    },
+    users: {
+      headings: [zh ? "邮箱" : "Email", "ID", zh ? "状态" : "Status", zh ? "验证时间" : "Verified", zh ? "最近登录" : "Last login"],
+      description: zh ? "查看平台用户及其邮箱验证和登录状态。" : "Platform users, email verification, and login activity.",
+      empty: zh ? "暂无用户" : "No users",
+      rows: () => state.users.map((user) => <TableRow key={user.id}>
+        <TableCell><PrimaryCell title={user.email} /></TableCell>
+        <TableCell><CodeCell value={user.id} /></TableCell>
+        <TableCell><StatePill label={user.status} value={user.status === "active" ? "ready" : user.status} /></TableCell>
+        <TableCell>{time(user.emailVerifiedAt)}</TableCell>
+        <TableCell>{time(user.lastLoginAt)}</TableCell>
+      </TableRow>),
+    },
+    tenants: {
+      headings: [zh ? "租户" : "Tenant", zh ? "所有者" : "Owner", zh ? "套餐" : "Plan", zh ? "状态" : "Status", zh ? "创建时间" : "Created"],
+      description: zh ? "查看租户、所有者和当前套餐。" : "Tenant accounts, owners, and current plans.",
+      empty: zh ? "暂无租户" : "No tenants",
+      rows: () => state.tenants.map((tenant) => <TableRow key={tenant.id}>
+        <TableCell><PrimaryCell title={tenant.name} meta={tenant.slug} /></TableCell>
+        <TableCell><PrimaryCell title={tenant.ownerEmail} meta={tenant.id} /></TableCell>
+        <TableCell><Badge variant="secondary">{(tenant.plan || "unknown").toUpperCase()}</Badge></TableCell>
+        <TableCell><StatePill label={tenant.status} value={tenant.status === "active" ? "ready" : tenant.status} /></TableCell>
+        <TableCell>{time(tenant.createdAt)}</TableCell>
+      </TableRow>),
+    },
+    operations: {
+      headings: [zh ? "操作" : "Operation", zh ? "租户" : "Tenant", zh ? "目标" : "Target", zh ? "阶段" : "Phase", zh ? "状态" : "Status", zh ? "时间" : "Time"],
+      description: zh ? "查看跨租户操作及其执行阶段和结果。" : "Cross-tenant operations, execution phases, and results.",
+      empty: zh ? "暂无操作" : "No operations",
+      rows: () => state.operations.map((operation) => <TableRow key={operation.id}>
+        <TableCell><PrimaryCell title={operation.kind} meta={operation.id} /></TableCell>
+        <TableCell><CodeCell value={operation.tenantId} /></TableCell>
+        <TableCell><CodeCell value={operation.targetId} /></TableCell>
+        <TableCell>{operation.phase || "-"}</TableCell>
+        <TableCell><StatePill label={operation.errorCode || operation.status} value={operation.status} /></TableCell>
+        <TableCell>{time(operation.createdAt)}</TableCell>
+      </TableRow>),
+    },
+    usage: {
+      headings: [zh ? "租户" : "Tenant", zh ? "应用" : "Apps", zh ? "托管卷" : "Managed volumes", zh ? "上传代码" : "Stored uploads", zh ? "合计" : "Total"],
+      description: zh ? "查看各租户的应用数量、存储配额和代码占用。" : "Application counts, storage quotas, and stored code by tenant.",
+      empty: zh ? "暂无用量" : "No usage",
+      rows: () => state.usage.map((usage) => <TableRow key={usage.tenantId}>
+        <TableCell><CodeCell value={usage.tenantId} /></TableCell>
+        <TableCell>{usage.applicationCount}</TableCell>
+        <TableCell>{bytes(usage.requestedVolumeBytes)}</TableCell>
+        <TableCell>{bytes(usage.storedUploadBytes)}</TableCell>
+        <TableCell>{bytes(usage.requestedVolumeBytes + usage.storedUploadBytes)}</TableCell>
+      </TableRow>),
+    },
+  };
+
   return (
-    <>
+    <div className="flex min-w-0 flex-col gap-6">
       <PageHeader meta={{
         eyebrow: "LUMA APPLICATION ENGINE",
         title: zh ? "LAE 平台总览" : "LAE platform overview",
@@ -139,61 +228,74 @@ export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
           { label: zh ? "运行应用（当前页）" : "Running (loaded page)", value: state.pages.applications ? running : "—" },
           { label: zh ? "失败操作（当前页）" : "Failed ops (loaded page)", value: state.pages.operations ? failedOperations : "—" },
         ],
-        action: <Button variant="outline" type="button" className="page-toolbar-cta" disabled={loading} onClick={refresh}><RefreshCw size={15} className={loading ? "spin" : ""} />{zh ? "刷新" : "Refresh"}</Button>,
+        action: <Button variant="outline" type="button" size="sm" disabled={loading} onClick={refresh}>
+          {loading ? <Spinner aria-hidden="true" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}{zh ? "刷新" : "Refresh"}
+        </Button>,
       }} />
 
-      {error ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{zh ? "读取失败" : "Load failed"}</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
-      {loading && !state.pages[view] ? (
-        <div className="panel page-loading-inline" aria-busy="true">
-          <span className="skeleton skeleton-line skeleton-panel-title" />
-          <span className="skeleton skeleton-line" />
-          <span className="skeleton skeleton-line skeleton-medium" />
-          <span className="skeleton skeleton-line skeleton-wide" />
-          <p className="page-loading-label">{zh ? "加载 LAE 数据…" : "Loading LAE data…"}</p>
+      <Tabs value={view} onValueChange={(value) => { if (tabs.some((tab) => tab.id === value)) setView(value as View); }} className="min-w-0 gap-6">
+        <div className="max-w-full overflow-x-auto">
+          <TabsList aria-label={zh ? "LAE 平台资源" : "LAE platform resources"}>
+            {tabs.map(({ id, label, icon: Icon }) => (
+              <TabsTrigger key={id} value={id}>
+                <Icon data-icon="inline-start" />{label}<Badge variant="secondary">{state.pages[id]?.total ?? "—"}</Badge>
+              </TabsTrigger>
+            ))}
+          </TabsList>
         </div>
-      ) : null}
-      <section className="panel lae-admin-panel">
-        <div className="lae-admin-tabs" role="tablist" aria-label="LAE admin resources">
-          {tabs.map(({ id, label, icon: Icon }) => (
-            <Button key={id} type="button" size="sm" variant={view === id ? "secondary" : "ghost"} onClick={() => setView(id)}>
-              <Icon size={15} aria-hidden="true" />{label}<span>{state.pages[id]?.total ?? "—"}</span>
-            </Button>
-          ))}
-        </div>
-
-        {view === "applications" ? <div className="table-wrap"><table><thead><tr><th>{zh ? "应用" : "Application"}</th><th>Tenant</th><th>{zh ? "形态" : "Kind"}</th><th>{zh ? "状态" : "State"}</th><th>{zh ? "服务" : "Services"}</th><th>{zh ? "卷配额" : "Volumes"}</th><th>{zh ? "部署" : "Deployment"}</th></tr></thead><tbody>
-          {state.applications.map((app) => {
-            const tenant = tenantsById.get(app.tenantId);
-            return <tr key={app.id}><td><PrimaryCell title={app.name} meta={app.slug} /></td><td><PrimaryCell title={tenant?.name || app.tenantId} meta={tenant?.ownerEmail || app.tenantId} /></td><td><Badge value={app.kind} /></td><td><StatePill label={`${app.desiredState} / ${app.observedState}`} value={app.observedState} /></td><td>{app.serviceCount}</td><td>{bytes(app.requestedVolumeBytes)}</td><td><CodeCell value={app.currentDeploymentId || "pending"} /></td></tr>;
-          })}
-          {!state.applications.length ? <tr><td colSpan={7}>{loading ? (zh ? "读取中…" : "Loading…") : (zh ? "暂无应用" : "No applications")}</td></tr> : null}
-        </tbody></table></div> : null}
-
-        {view === "users" ? <div className="table-wrap"><table><thead><tr><th>{zh ? "邮箱" : "Email"}</th><th>ID</th><th>{zh ? "状态" : "Status"}</th><th>{zh ? "已验证" : "Verified"}</th><th>{zh ? "最近登录" : "Last login"}</th></tr></thead><tbody>
-          {state.users.map((user) => <tr key={user.id}><td><PrimaryCell title={user.email} /></td><td><CodeCell value={user.id} /></td><td><StatePill label={user.status} value={user.status === "active" ? "ready" : user.status} /></td><td>{time(user.emailVerifiedAt)}</td><td>{time(user.lastLoginAt)}</td></tr>)}
-          {!state.users.length ? <tr><td colSpan={5}>{loading ? (zh ? "读取中…" : "Loading…") : (zh ? "暂无用户" : "No users")}</td></tr> : null}
-        </tbody></table></div> : null}
-
-        {view === "placements" ? <div className="table-wrap"><table><thead><tr><th>{zh ? "运行部署" : "Runtime deployment"}</th><th>{zh ? "租户 / 应用" : "Tenant / app"}</th><th>{zh ? "区域" : "Region"}</th><th>{zh ? "当前节点" : "Active node"}</th><th>{zh ? "候选" : "Candidates"}</th><th>{zh ? "连续性" : "Continuity"}</th><th>{zh ? "更新时间" : "Updated"}</th></tr></thead><tbody>
-          {state.placements.map((placement) => <tr key={placement.runtimeDeploymentRef}><td><PrimaryCell title={placement.status} meta={placement.runtimeDeploymentRef} /></td><td><PrimaryCell title={placement.applicationRef} meta={placement.tenantRef} /></td><td><Badge value={placement.region || "unknown"} /></td><td>{placement.activeAllocations.length ? placement.activeAllocations.map((allocation) => <PrimaryCell key={allocation.allocationId || allocation.nodeId} title={allocation.nodeName || allocation.nodeId} meta={allocation.status} />) : <StatePill label={placement.observationStatus} value={placement.observationStatus} />}</td><td><PrimaryCell title={`${placement.candidateNodeIds.length}`} meta={placement.candidateNodeIds.join(", ") || "-"} /></td><td><StatePill label={placement.continuity} value={placement.continuity} /></td><td>{time(placement.updatedAt ? placement.updatedAt * 1000 : null)}</td></tr>)}
-          {!state.placements.length ? <tr><td colSpan={7}>{loading ? (zh ? "读取中…" : "Loading…") : (zh ? "暂无运行部署" : "No runtime placements")}</td></tr> : null}
-        </tbody></table></div> : null}
-
-        {view === "tenants" ? <div className="table-wrap"><table><thead><tr><th>{zh ? "租户" : "Tenant"}</th><th>{zh ? "所有者" : "Owner"}</th><th>{zh ? "套餐" : "Plan"}</th><th>{zh ? "状态" : "Status"}</th><th>{zh ? "创建时间" : "Created"}</th></tr></thead><tbody>
-          {state.tenants.map((tenant) => <tr key={tenant.id}><td><PrimaryCell title={tenant.name} meta={tenant.slug} /></td><td><PrimaryCell title={tenant.ownerEmail} meta={tenant.id} /></td><td><Badge value={(tenant.plan || "unknown").toUpperCase()} /></td><td><StatePill label={tenant.status} value={tenant.status === "active" ? "ready" : tenant.status} /></td><td>{time(tenant.createdAt)}</td></tr>)}
-          {!state.tenants.length ? <tr><td colSpan={5}>{loading ? (zh ? "读取中…" : "Loading…") : (zh ? "暂无租户" : "No tenants")}</td></tr> : null}
-        </tbody></table></div> : null}
-
-        {view === "operations" ? <div className="table-wrap"><table><thead><tr><th>{zh ? "操作" : "Operation"}</th><th>Tenant</th><th>{zh ? "目标" : "Target"}</th><th>{zh ? "阶段" : "Phase"}</th><th>{zh ? "状态" : "Status"}</th><th>{zh ? "时间" : "Time"}</th></tr></thead><tbody>
-          {state.operations.map((operation) => <tr key={operation.id}><td><PrimaryCell title={operation.kind} meta={operation.id} /></td><td><CodeCell value={operation.tenantId} /></td><td><CodeCell value={operation.targetId} /></td><td>{operation.phase || "-"}</td><td><StatePill label={operation.errorCode || operation.status} value={operation.status} /></td><td>{time(operation.createdAt)}</td></tr>)}
-          {!state.operations.length ? <tr><td colSpan={6}>{loading ? (zh ? "读取中…" : "Loading…") : (zh ? "暂无操作" : "No operations")}</td></tr> : null}
-        </tbody></table></div> : null}
-
-        {view === "usage" ? <div className="table-wrap"><table><thead><tr><th>Tenant</th><th>{zh ? "应用" : "Apps"}</th><th>{zh ? "托管卷" : "Managed volumes"}</th><th>{zh ? "上传代码" : "Stored uploads"}</th><th>{zh ? "合计" : "Total"}</th></tr></thead><tbody>
-          {state.usage.map((usage) => <tr key={usage.tenantId}><td><CodeCell value={usage.tenantId} /></td><td>{usage.applicationCount}</td><td>{bytes(usage.requestedVolumeBytes)}</td><td>{bytes(usage.storedUploadBytes)}</td><td><strong>{bytes(usage.requestedVolumeBytes + usage.storedUploadBytes)}</strong></td></tr>)}
-          {!state.usage.length ? <tr><td colSpan={5}>{loading ? (zh ? "读取中…" : "Loading…") : (zh ? "暂无用量" : "No usage")}</td></tr> : null}
-        </tbody></table></div> : null}
-      </section>
-    </>
+        {tabs.map(({ id, label, icon: Icon }) => {
+          const page = state.pages[id];
+          const resourceLoading = Boolean(state.loading[id]) || (!page && !state.errors[id]);
+          const resourceError = state.errors[id];
+          const count = state[id].length;
+          const table = tables[id];
+          return <TabsContent key={id} value={id}>
+            {id === view ? <Card>
+              <CardHeader>
+                <CardTitle>{label}</CardTitle>
+                <CardDescription>{table.description}</CardDescription>
+              </CardHeader>
+              <CardContent className="flex min-w-0 flex-col gap-4" aria-busy={resourceLoading}>
+                {resourceError ? <Alert variant="destructive">
+                  <AlertCircle />
+                  <AlertTitle>{zh ? "读取失败" : "Load failed"}</AlertTitle>
+                  <AlertDescription>
+                    <p>{resourceError}</p>
+                    <Button variant="outline" size="sm" type="button" disabled={resourceLoading} onClick={() => void load(id)}>
+                      {resourceLoading ? <Spinner aria-hidden="true" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}{zh ? "重试" : "Retry"}
+                    </Button>
+                  </AlertDescription>
+                </Alert> : null}
+                {resourceLoading && !page ? (
+                  <div className="flex flex-col gap-4" role="status" aria-label={zh ? `加载${label}…` : `Loading ${label}…`}>
+                    <Skeleton className="h-5 w-40" />
+                    <Skeleton className="h-10 w-full" />
+                    <Skeleton className="h-10 w-full" />
+                    <Skeleton className="h-10 w-3/4" />
+                    <span className="sr-only">{zh ? `加载${label}…` : `Loading ${label}…`}</span>
+                  </div>
+                ) : count ? (
+                  <Table aria-label={label} containerProps={{ tabIndex: 0, role: "region", "aria-label": zh ? `${label}，可横向滚动` : `${label}, horizontally scrollable` }}>
+                    <TableHeader><TableRow>{table.headings.map((heading) => <TableHead key={heading}>{heading}</TableHead>)}</TableRow></TableHeader>
+                    <TableBody>{table.rows()}</TableBody>
+                  </Table>
+                ) : !resourceError ? (
+                  <Empty>
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon"><Icon /></EmptyMedia>
+                      <EmptyTitle>{table.empty}</EmptyTitle>
+                      <EmptyDescription>{zh ? "此资源当前没有可显示的记录。" : "There are no records for this resource yet."}</EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
+                ) : null}
+              </CardContent>
+              {page ? <CardFooter>
+                <span>{zh ? `已显示 ${count} 条，共 ${page.total} 条` : `${count} records shown, ${page.total} total`}</span>
+              </CardFooter> : null}
+            </Card> : null}
+          </TabsContent>;
+        })}
+      </Tabs>
+    </div>
   );
 }

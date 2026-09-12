@@ -1,10 +1,14 @@
-import { ArrowRight, Plus, X } from "lucide-react";
+import { ArrowRight, ChevronsUpDown, Info, Plus, Server, X } from "lucide-react";
 import { useMemo } from "react";
-import { Badge, StatePill } from "../components/primitives";
+import { StatePill } from "../components/primitives";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { localizeState, t } from "../i18n";
 import type { DashboardNode, DashboardPayload, Lang } from "../types";
 import type { DashboardViewModel, NavPage } from "../dashboardViewModel";
@@ -72,89 +76,90 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
             onClick: () => onNavigate("observability"),
           },
         ].map((item) => (
-          <Card
-            key={item.label}
-            size="sm"
-            role="link"
-            tabIndex={0}
-            onClick={item.onClick}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                item.onClick();
-              }
-            }}
-            className="cursor-pointer transition-colors hover:bg-muted/40"
-          >
+          <Card key={item.label} size="sm">
             <CardHeader>
-              <CardDescription>{item.label}</CardDescription>
-              <CardTitle className="text-2xl font-semibold tabular-nums text-card-foreground">
-                {item.value}
-                {item.meta ? <span className="ml-1 text-sm font-normal text-muted-foreground">{item.meta}</span> : null}
-              </CardTitle>
+              <CardTitle>{item.label}</CardTitle>
+              <CardDescription>{item.hint}</CardDescription>
+              <CardAction>
+                <Tooltip>
+                  <TooltipTrigger render={<Button variant="ghost" size="icon-sm" onClick={item.onClick} aria-label={zh ? `查看${item.label}` : `View ${item.label.toLowerCase()}`} />}>
+                    <ArrowRight data-icon="inline-end" />
+                  </TooltipTrigger>
+                  <TooltipContent>{zh ? `查看${item.label}` : `View ${item.label.toLowerCase()}`}</TooltipContent>
+                </Tooltip>
+              </CardAction>
             </CardHeader>
-            <CardFooter className="text-xs text-muted-foreground">{item.hint}</CardFooter>
+            <CardContent>
+              <p className="flex items-baseline gap-2 tabular-nums">
+                <strong className="text-2xl font-semibold">{item.value}</strong>
+                {item.meta ? <span className="text-muted-foreground">{item.meta}</span> : null}
+              </p>
+            </CardContent>
           </Card>
         ))}
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(20rem,0.8fr)]" aria-label={zh ? "运维关注" : "Operations attention"}>
-        <Card>
+      <section className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(20rem,0.8fr)]" aria-label={zh ? "运维关注" : "Operations attention"}>
+        <Card className="min-w-0">
           <CardHeader>
             <CardTitle>{zh ? "需要关注" : "Needs attention"}</CardTitle>
             <CardDescription>{zh ? "按对象归组，展开查看原始诊断；归组不代表相同根因。" : "Grouped by object. Expand for original diagnostics; grouping does not imply a shared cause."}</CardDescription>
-            <CardAction><Badge value={zh ? `${groups.length} 个对象` : `${groups.length} objects`} /></CardAction>
+            <CardAction><Badge variant="secondary">{zh ? `${groups.length} 个对象` : `${groups.length} objects`}</Badge></CardAction>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             {groups.map((group) => (
-              <section className="rounded-lg border p-3" key={group.key}>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex min-w-0 flex-col gap-1">
-                    <div className="flex items-center gap-2">
-                      <StatePill value={group.severity === "critical" ? "failed" : group.severity === "warning" ? "pending" : "unknown"} label={severityLabel(group.severity)} />
-                      <strong className="truncate">{group.target}</strong>
-                    </div>
-                    <small className="text-xs text-muted-foreground">{group.app ? (zh ? "应用" : "Application") : group.node ? (zh ? "节点" : "Node") : (zh ? "诊断对象" : "Diagnostic target")}</small>
-                  </div>
-                  {group.app || group.node ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => group.node ? onSelectNode(group.node) : onNavigate("applications", { selectApp: group.app!.stack })}
-                    >
-                      {zh ? "查看详情" : "View details"}
-                      <ArrowRight data-icon="inline-end" />
-                    </Button>
-                  ) : null}
-                </div>
-                <details className="mt-2">
-                  <summary className="cursor-pointer text-sm text-muted-foreground">
-                    {zh ? `${group.issues.length} 条诊断 · 查看原始信息` : `${group.issues.length} diagnostics · view evidence`}
-                  </summary>
-                  <div className="mt-2 flex flex-col gap-2">
-                    {group.issues.map((issue, index) => (
-                      <div className="flex items-start justify-between gap-2 rounded-md bg-muted/40 p-2" key={`${issueKey(issue)}:${index}`}>
-                        <div className="min-w-0">
-                          <small className="text-xs text-muted-foreground">{severityLabel(issue.severity || "info")} · {issue.kind || "—"} · {issue.target || "—"}</small>
-                          <p className="text-sm">{issue.message || (zh ? "未提供诊断信息" : "No diagnostic message provided")}</p>
-                        </div>
+              <Card size="sm" key={group.key}>
+                <CardHeader>
+                  <CardTitle className="min-w-0 wrap-anywhere">{group.target}</CardTitle>
+                  <CardDescription>{group.app ? (zh ? "应用" : "Application") : group.node ? (zh ? "节点" : "Node") : (zh ? "诊断对象" : "Diagnostic target")}</CardDescription>
+                  <CardAction>
+                    <Badge variant={group.severity === "critical" ? "destructive" : group.severity === "warning" ? "secondary" : "outline"}>
+                      {severityLabel(group.severity)}
+                    </Badge>
+                  </CardAction>
+                </CardHeader>
+                <CardContent>
+                  <Collapsible className="flex flex-col gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <CollapsibleTrigger render={<Button variant="outline" size="sm" />}>
+                        {zh ? `${group.issues.length} 条诊断` : `${group.issues.length} diagnostics`}
+                        <ChevronsUpDown data-icon="inline-end" />
+                      </CollapsibleTrigger>
+                      {group.app || group.node ? (
                         <Button
                           variant="ghost"
-                          size="icon-xs"
-                          title={zh ? "仅在此浏览器隐藏 1 小时" : "Hide in this browser for 1 hour"}
-                          aria-label={zh ? "仅在此浏览器隐藏 1 小时" : "Hide in this browser for 1 hour"}
-                          onClick={() => dismiss(issueKey(issue))}
+                          size="sm"
+                          onClick={() => group.node ? onSelectNode(group.node) : onNavigate("applications", { selectApp: group.app!.stack })}
                         >
-                          <X />
+                          {zh ? "查看详情" : "View details"}
+                          <ArrowRight data-icon="inline-end" />
                         </Button>
+                      ) : null}
+                    </div>
+                    <CollapsibleContent>
+                      <div className="flex flex-col gap-2">
+                        {group.issues.map((issue, index) => (
+                          <Alert variant={issue.severity === "critical" ? "destructive" : "default"} key={`${issueKey(issue)}:${index}`}>
+                            <AlertTitle className="min-w-0 wrap-anywhere">{severityLabel(issue.severity || "info")} · {issue.kind || "—"} · {issue.target || "—"}</AlertTitle>
+                            <AlertDescription className="min-w-0 wrap-anywhere">{issue.message || (zh ? "未提供诊断信息" : "No diagnostic message provided")}</AlertDescription>
+                            <AlertAction>
+                              <Tooltip>
+                                <TooltipTrigger render={<Button variant="ghost" size="icon-xs" aria-label={zh ? "仅在此浏览器隐藏 1 小时" : "Hide in this browser for 1 hour"} onClick={() => dismiss(issueKey(issue))} />}>
+                                  <X data-icon="inline-start" />
+                                </TooltipTrigger>
+                                <TooltipContent>{zh ? "仅在此浏览器隐藏 1 小时" : "Hide in this browser for 1 hour"}</TooltipContent>
+                              </Tooltip>
+                            </AlertAction>
+                          </Alert>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                </details>
-              </section>
+                    </CollapsibleContent>
+                  </Collapsible>
+                </CardContent>
+              </Card>
             ))}
             {!groups.length ? (
-              <Empty className="py-8">
+              <Empty>
                 <EmptyHeader>
                   <EmptyTitle>{hiddenCount ? (zh ? "诊断已临时隐藏" : "Diagnostics hidden") : (zh ? "当前未报告诊断问题。" : "No diagnostic issues currently reported.")}</EmptyTitle>
                   <EmptyDescription>
@@ -168,14 +173,15 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
           </CardContent>
           {hiddenCount ? (
             <CardFooter>
-              <Button variant="ghost" size="sm" onClick={clear}>
-                {zh ? `本机临时隐藏 ${hiddenCount} 条 · 全部恢复` : `${hiddenCount} hidden locally · restore all`}
-              </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="secondary">{zh ? `本机临时隐藏 ${hiddenCount} 条` : `${hiddenCount} hidden locally`}</Badge>
+                <Button variant="ghost" size="sm" onClick={clear}>{zh ? "全部恢复" : "Restore all"}</Button>
+              </div>
             </CardFooter>
           ) : null}
         </Card>
 
-        <div className="flex flex-col gap-6">
+        <div className="flex min-w-0 flex-col gap-6">
           <Card>
             <CardHeader>
               <CardTitle>{zh ? "控制面" : "Control plane"}</CardTitle>
@@ -188,7 +194,7 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
                     value={readiness.nomad?.available === undefined ? "unknown" : readiness.nomad.available ? "ready" : "failed"}
                     label={readiness.nomad?.available === undefined ? (zh ? "未检查" : "Not checked") : readiness.nomad.available ? (zh ? "可连接" : "Reachable") : (zh ? "无法连接" : "Unreachable")}
                   />
-                  {readiness.nomad?.leader ? <small className="text-xs text-muted-foreground">{readiness.nomad.leader}</small> : null}
+                  {readiness.nomad?.leader ? <small className="min-w-0 max-w-full text-xs wrap-anywhere text-muted-foreground">{readiness.nomad.leader}</small> : null}
                 </div>
               </div>
               <div className="flex flex-col gap-1">
@@ -198,12 +204,13 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
                     value={readiness.dns?.ready === undefined ? "unknown" : readiness.dns.ready ? "ready" : "pending"}
                     label={readiness.dns?.ready === undefined ? (zh ? "未检查" : "Not checked") : readiness.dns.ready ? (zh ? "配置就绪" : "Configured") : (zh ? "配置不完整" : "Configuration incomplete")}
                   />
-                  {readiness.dns?.zone ? <small className="text-xs text-muted-foreground">{readiness.dns.zone}</small> : null}
+                  {readiness.dns?.zone ? <small className="min-w-0 max-w-full text-xs wrap-anywhere text-muted-foreground">{readiness.dns.zone}</small> : null}
                 </div>
               </div>
-              <p className="text-xs text-muted-foreground">
-                {zh ? "DNS 状态仅检查凭据和区域配置，尚未验证解析与公网可达性。" : "DNS status checks credentials and zone configuration only; resolution and public reachability are unverified."}
-              </p>
+              <Alert>
+                <Info />
+                <AlertDescription>{zh ? "DNS 状态仅检查凭据和区域配置，尚未验证解析与公网可达性。" : "DNS status checks credentials and zone configuration only; resolution and public reachability are unverified."}</AlertDescription>
+              </Alert>
             </CardContent>
           </Card>
 
@@ -217,9 +224,9 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
                 <TableHeader>
                   <TableRow>
                     <TableHead>{t(lang, "nodes")}</TableHead>
-                    <TableHead>CPU</TableHead>
-                    <TableHead>{zh ? "内存" : "Memory"}</TableHead>
-                    <TableHead>{zh ? "磁盘" : "Disk"}</TableHead>
+                    <TableHead className="text-right">CPU</TableHead>
+                    <TableHead className="text-right">{zh ? "内存" : "Memory"}</TableHead>
+                    <TableHead className="text-right">{zh ? "磁盘" : "Disk"}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -227,20 +234,28 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
                     <TableRow key={node.name || index}>
                       <TableCell>
                         <div className="flex flex-col gap-1">
-                          <Button variant="ghost" size="sm" className="h-auto justify-start px-0" onClick={() => onSelectNode(node)}>
-                            {node.displayName || node.name || "—"}
+                          <Button variant="link" size="sm" className="w-fit max-w-40" onClick={() => onSelectNode(node)}>
+                            <span className="truncate" title={node.displayName || node.name || "—"}>{node.displayName || node.name || "—"}</span>
                           </Button>
                           <StatePill label={localizeState(lang, node.state)} value={node.state} />
                         </div>
                       </TableCell>
-                      <TableCell>{percent(node.metrics?.cpuPercent ?? node.metrics?.loadPercent)}</TableCell>
-                      <TableCell>{percent(node.metrics?.memoryUsedPercent)}</TableCell>
-                      <TableCell>{percent(node.metrics?.diskUsedPercent)}</TableCell>
+                      <TableCell className="text-right">{percent(node.metrics?.cpuPercent ?? node.metrics?.loadPercent)}</TableCell>
+                      <TableCell className="text-right">{percent(node.metrics?.memoryUsedPercent)}</TableCell>
+                      <TableCell className="text-right">{percent(node.metrics?.diskUsedPercent)}</TableCell>
                     </TableRow>
                   ))}
                   {!nodes.length ? (
                     <TableRow>
-                      <TableCell colSpan={4}>{zh ? "暂无节点数据" : "No node data"}</TableCell>
+                      <TableCell colSpan={4} className="whitespace-normal">
+                        <Empty>
+                          <EmptyHeader>
+                            <EmptyMedia variant="icon"><Server /></EmptyMedia>
+                            <EmptyTitle>{zh ? "暂无节点数据" : "No node data"}</EmptyTitle>
+                            <EmptyDescription>{zh ? "节点加入后，这里会显示容量与运行状态。" : "Capacity and state appear here after nodes join the cluster."}</EmptyDescription>
+                          </EmptyHeader>
+                        </Empty>
+                      </TableCell>
                     </TableRow>
                   ) : null}
                 </TableBody>

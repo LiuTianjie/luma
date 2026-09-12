@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ErrorBanner } from "./components/ErrorBanner";
 import type { ApplicationUpdateRequest } from "./components/ApplicationManagementPanel";
 import { appToComposeDraft, serviceToDraft } from "./components/applicationModel";
@@ -6,9 +6,14 @@ import { LoginPanel } from "./components/LoginPanel";
 import { Topbar } from "./components/Topbar";
 import { AppRoutes, preloadPage } from "./AppRoutes";
 import { AppSidebar } from "./Sidebar";
+import { ArrowLeft, Info, SearchX, TriangleAlert } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Card, CardContent } from "@/components/ui/card";
+import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { PageHeader } from "./pages/PageHeader";
 import { Button } from "@/components/ui/button";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
-import { Toaster } from "@/components/ui/sonner";
+import { Toaster } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { nodePath, servicePath, terminalPath, updatePath, parseObjectRoute } from "./objectRoutes";
 import { ResourceDetailPage } from "./pages/ResourceDetailPage";
@@ -32,6 +37,10 @@ const EMPTY_DASHBOARD_PAYLOAD = {};
 
 export function App() {
   const router = useRouter();
+  const contentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    contentRef.current?.scrollTo({ top: 0, left: 0 });
+  }, [router.path]);
   const [lang, setLangState] = useState<Lang>(() => (localStorage.getItem(LANG_KEY) === "en" ? "en" : "zh"));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem(SIDEBAR_KEY) === "collapsed");
   const [deployTemplateLanding, setDeployTemplateLanding] = useState(true);
@@ -144,10 +153,11 @@ export function App() {
     return { ...updateRequest, deployMode: "compose", serviceDraft: undefined, composeDraft: appToComposeDraft(app) };
   }, [currentUpdateRequest]);
 
-  const updateContextNode = updateContext ? <div className="inline-banner">
-    {lang === "zh" ? "正在更新应用：" : "Updating application: "}<strong>{editName}</strong>
-    {currentUpdateRequest?.configWarning ? <span>{currentUpdateRequest.configWarning}</span> : null}
-  </div> : null;
+  const updateContextNode = updateContext ? <Alert>
+    <Info aria-hidden="true" />
+    <AlertTitle>{lang === "zh" ? "正在更新应用：" : "Updating application: "}{editName}</AlertTitle>
+    {currentUpdateRequest?.configWarning ? <AlertDescription>{currentUpdateRequest.configWarning}</AlertDescription> : null}
+  </Alert> : null;
   const openNodeDetail = (node: DashboardNode) => router.navigate(nodePath(node.name || ""));
   const openServiceDetail = (service: DashboardService) => router.navigate(servicePath(service.fullName || service.name || ""));
   const openNodeTerminal = (node: DashboardNode) => router.navigate(terminalPath("node", node.name || ""));
@@ -159,7 +169,7 @@ export function App() {
   return (
     <TooltipProvider>
       <SidebarProvider
-        className={`h-dvh min-h-0 overflow-hidden page-${activeNavPage}`}
+        className="h-dvh min-h-0 overflow-hidden"
         open={!sidebarCollapsed}
         onOpenChange={(open) => {
           setSidebarCollapsed(!open);
@@ -167,9 +177,9 @@ export function App() {
           else localStorage.removeItem(SIDEBAR_KEY);
         }}
       >
-        <a className="skip-link" href="#main">
+        <Button nativeButton={false} role="link" render={<a href="#main" />} className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50">
           {lang === "zh" ? "跳到主内容" : "Skip to main content"}
-        </a>
+        </Button>
         <AppSidebar
           lang={lang}
           clusterId={cluster?.id || vm.clusterId}
@@ -194,22 +204,26 @@ export function App() {
             />
           ) : (
             <div className="flex h-10 shrink-0 items-center px-2 md:hidden">
-              <SidebarTrigger />
+              <SidebarTrigger aria-label={lang === "zh" ? "打开导航" : "Open navigation"} />
             </div>
           )}
-          <div className={terminalTarget ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "console-content"}>
+          <div ref={contentRef} className={terminalTarget ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "console-content"}>
             {!token ? (
               <div className="flex min-h-[60vh] items-center">
                 <LoginPanel lang={lang} onSubmit={setToken} />
               </div>
             ) : (
               <div className={terminalTarget ? "flex h-full min-h-0 flex-col" : "console-page"}>
-                <ErrorBanner errors={errors} />
+                <ErrorBanner lang={lang} errors={errors} />
                 {payload || pageCanRenderWithoutDashboard ? (
                   terminalTarget ? <Suspense fallback={<PageLoading lang={lang} />}><TerminalDrawer key={router.path} lang={lang} target={terminalTarget} token={token} onClose={closeTerminal} inline /></Suspense>
                   : objectRoute && objectRoute.kind !== "update" ? (routeNode || routeService ? <ResourceDetailPage lang={lang} node={routeNode} service={routeService} services={vm.services} applicationNames={vm.applications.map(app => app.stack)} onTerminal={() => { if (routeNode) openNodeTerminal(routeNode); else if (routeService) openServiceTerminal(routeService, routeService.stack || ""); }} />
-                    : <section className="flex flex-col gap-3"><h1 className="font-heading text-2xl">{lang === "zh" ? "对象不存在或已移除" : "Object not found or removed"}</h1><Button variant="outline" onClick={() => navigate("overview")}>{lang === "zh" ? "返回总览" : "Back to overview"}</Button></section>)
-                  : editName && !updateContext ? <section className="flex flex-col gap-3"><Button variant="ghost" className="w-fit" onClick={closeUpdatePage}>{lang === "zh" ? "← 返回应用" : "← Back to application"}</Button><h1 className="font-heading text-2xl">{lang === "zh" ? "更新应用" : "Update application"} · {editName}</h1>{updateError ? <><p role="alert">{updateError}</p><Button variant="outline" onClick={() => setUpdateAttempt(value => value + 1)}>{lang === "zh" ? "重试读取配置" : "Retry loading config"}</Button></> : !vm.applications.some(app => app.stack === editName) ? <p>{lang === "zh" ? "应用不存在或已移除" : "Application not found or removed"}</p> : <PageLoading lang={lang} />}</section>
+                    : <Card><CardContent><Empty><EmptyHeader><EmptyMedia variant="icon"><SearchX /></EmptyMedia><EmptyTitle role="heading" aria-level={1}>{lang === "zh" ? "对象不存在或已移除" : "Object not found or removed"}</EmptyTitle></EmptyHeader><Button variant="outline" onClick={() => navigate("overview")}>{lang === "zh" ? "返回总览" : "Back to overview"}</Button></Empty></CardContent></Card>)
+                  : editName && !updateContext ? <>
+                    <PageHeader meta={{ eyebrow: "", title: `${lang === "zh" ? "更新应用" : "Update application"} · ${editName}`, description: "", metrics: [], action: <Button variant="outline" onClick={closeUpdatePage}><ArrowLeft data-icon="inline-start" />{lang === "zh" ? "返回应用" : "Back to application"}</Button> }} />
+                    {updateError ? <Alert variant="destructive"><TriangleAlert aria-hidden="true" /><AlertTitle>{lang === "zh" ? "无法读取配置" : "Could not load configuration"}</AlertTitle><AlertDescription><p>{updateError}</p><Button variant="outline" onClick={() => setUpdateAttempt(value => value + 1)}>{lang === "zh" ? "重试读取配置" : "Retry loading config"}</Button></AlertDescription></Alert>
+                      : !vm.applications.some(app => app.stack === editName) ? <Card><CardContent><Empty><EmptyHeader><EmptyTitle>{lang === "zh" ? "应用不存在或已移除" : "Application not found or removed"}</EmptyTitle></EmptyHeader></Empty></CardContent></Card> : <PageLoading lang={lang} />}
+                  </>
                   : <AppRoutes
                     page={resolvedPage}
                     lang={lang}
@@ -239,7 +253,7 @@ export function App() {
             )}
           </div>
         </SidebarInset>
-        <Toaster theme={theme} />
+        <Toaster />
       </SidebarProvider>
     </TooltipProvider>
   );

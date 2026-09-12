@@ -1,4 +1,4 @@
-import { FileQuestion } from "lucide-react";
+import { ArrowLeft, FileQuestion } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import type { Lang } from "../types";
@@ -11,11 +11,14 @@ export function NotFound({ lang, onHome }: { lang: Lang; onHome: () => void }) {
         <EmptyMedia variant="icon">
           <FileQuestion />
         </EmptyMedia>
-        <EmptyTitle>{zh ? "页面不存在" : "Page not found"}</EmptyTitle>
+        <EmptyTitle role="heading" aria-level={1}>{zh ? "页面不存在" : "Page not found"}</EmptyTitle>
         <EmptyDescription>{zh ? "这个路径没有对应的控制台页面。" : "This path does not match a dashboard page."}</EmptyDescription>
       </EmptyHeader>
       <EmptyContent>
-        <Button variant="outline" onClick={onHome}>{zh ? "返回总览" : "Back to overview"}</Button>
+        <Button variant="outline" onClick={onHome}>
+          <ArrowLeft data-icon="inline-start" />
+          {zh ? "返回总览" : "Back to overview"}
+        </Button>
       </EmptyContent>
     </Empty>
   );

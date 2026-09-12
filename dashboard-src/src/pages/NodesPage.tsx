@@ -1,8 +1,10 @@
 import { useState } from "react";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, CircleAlert, Server } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Empty, EmptyContent, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { NodeFleetMap } from "../components/NodeFleetMap";
 import { RegionPanel } from "../components/RegionPanel";
 import { NodeTopology } from "../components/NodeTopology";
@@ -71,6 +73,7 @@ export function NodesPage({
 
   const copyCommand = async () => {
     setCopyError(false);
+    setCopied(false);
     try {
       await navigator.clipboard.writeText(command);
       setCopied(true);
@@ -100,7 +103,13 @@ export function NodesPage({
         }}
       />
 
-      {section === "unknown" && <div className="empty-inline"><p>{zh ? "此基础设施页面不存在。" : "This infrastructure page does not exist."}</p><Button type="button" onClick={() => navigate("/fleet")}>{zh ? "返回节点列表" : "Back to nodes"}</Button></div>}
+      {section === "unknown" && <Empty>
+        <EmptyHeader>
+          <EmptyMedia variant="icon"><Server /></EmptyMedia>
+          <EmptyTitle>{zh ? "此基础设施页面不存在。" : "This infrastructure page does not exist."}</EmptyTitle>
+        </EmptyHeader>
+        <EmptyContent><Button type="button" onClick={() => navigate("/fleet")}>{zh ? "返回节点列表" : "Back to nodes"}</Button></EmptyContent>
+      </Empty>}
       {section === "nodes" && <NodeFleetMap lang={lang} nodes={vm.nodes} services={vm.services} onSelect={onSelectNode} onTerminal={onTerminal} />}
       {section === "regions" && <RegionPanel lang={lang} token={token} regions={vm.regions} nodes={vm.nodes} onRefresh={onRefresh} />}
 
@@ -108,7 +117,7 @@ export function NodesPage({
         <Card>
           <CardHeader>
             <CardTitle>{zh ? "在目标机器上执行" : "Run on the target host"}</CardTitle>
-            <CardDescription>
+            <CardDescription className="col-span-full">
               {zh
               ? joinTokenAvailable
                 ? "命令已包含当前集群的节点加入 Token 和可用区域。把 <region> 或当前区域按需调整，把 <node-name> 换成节点名后在目标机器执行。"
@@ -117,7 +126,7 @@ export function NodesPage({
                 ? "The command includes this cluster's node join token and an available region. Adjust the region if needed and replace <node-name> with the host name."
                 : "Control did not return a node join token. Refresh the Dashboard; if it remains missing, update the Manager control plane first."}
             </CardDescription>
-            <CardAction>
+            <CardAction className="row-span-1">
               <Button variant="outline" size="sm" disabled={!joinTokenAvailable} onClick={() => void copyCommand()}>
                 {copied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
                 {copied ? (zh ? "已复制" : "Copied") : (zh ? "复制命令" : "Copy command")}
@@ -125,7 +134,7 @@ export function NodesPage({
             </CardAction>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
-            {copyError ? <p role="status">{zh ? "无法自动复制，请选择下面的命令手动复制。" : "Could not copy automatically. Select and copy the command below."}</p> : null}
+            {copyError ? <Alert variant="destructive"><CircleAlert /><AlertTitle>{zh ? "复制失败" : "Copy failed"}</AlertTitle><AlertDescription>{zh ? "无法自动复制，请选择下面的命令手动复制。" : "Could not copy automatically. Select and copy the command below."}</AlertDescription></Alert> : null}
             <pre className="overflow-auto rounded-lg bg-muted p-3 font-mono text-sm"><code>{command || (zh ? "等待控制面返回真实 Token…" : "Waiting for Control to return the real token…")}</code></pre>
           </CardContent>
         </Card>

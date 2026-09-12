@@ -21,7 +21,7 @@ export function BuilderPage({
   const nodes = payload.nodes || [];
 
   return (
-      <section className="builder-page">
+      <section className="min-w-0">
         <GithubImportPanel
           lang={lang}
           token={token}

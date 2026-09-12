@@ -4,8 +4,9 @@ const path = require("node:path");
 const Module = require("node:module");
 const test = require("node:test");
 const ts = require("typescript");
-const React = require("react");
-const { renderToStaticMarkup } = require("react-dom/server");
+const projectRequire = Module.createRequire(path.resolve(__dirname, "../../package.json"));
+const React = projectRequire("react");
+const { renderToStaticMarkup } = projectRequire("react-dom/server");
 let route = "/registry";
 const longName = "very-long-resource-".repeat(12);
 const digest = `sha256:${"a".repeat(64)}`;
@@ -37,7 +38,7 @@ function load(filename) {
       const resolved = [base, `${base}.ts`, `${base}.tsx`].find((file) => fs.existsSync(file) && fs.statSync(file).isFile());
       if (resolved) return load(resolved);
     }
-    return require(name);
+    return projectRequire(name);
   };
   mod._compile(ts.transpileModule(fs.readFileSync(filename, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.ReactJSX } }).outputText, filename);
   cache.set(filename, mod.exports);
@@ -60,7 +61,7 @@ test("credentials retain full long names, scope and rotation actions inside thei
   assert.ok(html.includes(longName));
   assert.match(html, /tabindex="0" role="region" aria-label="Secrets, horizontally scrollable"/);
   assert.match(html, /Rotate/);
-  assert.match(html, /write-only/);
+  assert.match(html, /write-only/i);
   assert.match(html, /settings-workspace/);
 });
 
@@ -74,14 +75,17 @@ test("registry inventory exposes real storage usage and does not turn failed col
   assert.match(html, /Registry storage by month/);
   assert.match(html, /2026-08/);
   assert.match(html, /2\.0 GB/);
-  assert.match(html, /height:0%/);
+  // Zero-byte months remain in the accessible data table instead of being hidden.
+  assert.match(html, /2026-09/);
+  assert.match(html, /0 B/);
+  assert.match(html, /data-slot="chart"/);
   registryUsage = { error: "node agent restarted before task completion" };
   html = renderToStaticMarkup(React.createElement(RegistryPage, { lang: "zh", token: "test" }));
   assert.match(html, /镜像仓库容量/);
   assert.match(html, /暂不可用/);
   assert.match(html, /重新采集/);
   assert.match(html, /暂无法显示月度分布/);
-  const capacity = html.match(/<section class="registry-usage-grid"[\s\S]*?<\/section>/)[0];
+  const capacity = html.match(/<section[^>]*aria-label="镜像仓库容量"[\s\S]*?<\/section>/)[0];
   assert.ok(!capacity.includes("0 B"));
   assert.ok(!html.includes("node agent restarted before task completion"));
   registryUsage = {};

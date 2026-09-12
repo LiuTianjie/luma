@@ -1,8 +1,20 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Maximize2, Minimize2 } from "lucide-react";
 import type { Lang } from "../types";
 import { SelectControl } from "./primitives";
 import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Spinner } from "@/components/ui/spinner";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import "./ObservabilityPanel.css";
 
 const VIEWS = [
@@ -58,7 +70,10 @@ function logsExploreSrc(app: string): string {
           queries: [
             {
               refId: "A",
-              datasource: { type: "victoriametrics-logs-datasource", uid: "victorialogs" },
+              datasource: {
+                type: "victoriametrics-logs-datasource",
+                uid: "victorialogs",
+              },
               queryType: "instant",
               expr,
               maxLines: 1000,
@@ -72,7 +87,11 @@ function logsExploreSrc(app: string): string {
 }
 
 function dashboardSrc(uid: string, app: string): string {
-  const params = new URLSearchParams({ orgId: "1", kiosk: "tv", autofitpanels: "true" });
+  const params = new URLSearchParams({
+    orgId: "1",
+    kiosk: "tv",
+    autofitpanels: "true",
+  });
   if (app) params.set("var-app", app);
   return `/grafana/d/${uid}?${params.toString()}`;
 }
@@ -92,18 +111,41 @@ export function ObserveAppsPanel({
   lockedView?: boolean;
 }) {
   const zh = lang === "zh";
+  const container = useRef<HTMLDivElement>(null);
+  const fieldId = useId();
   const [expanded, setExpanded] = useState(false);
+  const [loadedSrc, setLoadedSrc] = useState("");
+  const [fullscreenError, setFullscreenError] = useState("");
   useEffect(() => {
-    if (!expanded) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setExpanded(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [expanded]);
+    const onFullscreenChange = () =>
+      setExpanded(document.fullscreenElement === container.current);
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () =>
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
+  const toggleFullscreen = async () => {
+    setFullscreenError("");
+    try {
+      if (document.fullscreenElement === container.current)
+        await document.exitFullscreen();
+      else await container.current?.requestFullscreen();
+    } catch {
+      setFullscreenError(
+        zh
+          ? "浏览器未能进入全屏，请在当前页面继续查看。"
+          : "The browser could not enter fullscreen. Continue in the current view.",
+      );
+    }
+  };
   const [view, setView] = useState<(typeof VIEWS)[number]["id"]>(initialView);
   const [app, setApp] = useState(initialApp.replace(/[^a-zA-Z0-9._-]/g, ""));
-  const names = [...new Set(applicationNames.filter(Boolean))].sort();
+  useEffect(() => {
+    setView(initialView);
+  }, [initialView]);
+  useEffect(() => {
+    setApp(initialApp.replace(/[^a-zA-Z0-9._-]/g, ""));
+  }, [initialApp]);
+  const names = [...new Set([...applicationNames, app].filter(Boolean))].sort();
   const current = VIEWS.find((item) => item.id === view) || VIEWS[0];
   const src =
     view === "traces"
@@ -113,50 +155,113 @@ export function ObserveAppsPanel({
         : view === "grafana"
           ? "/grafana/?orgId=1"
           : dashboardSrc(current.uid, app);
-  const showAppFilter = view === "http" || view === "nomad" || view === "nodes" || view === "traces" || view === "logs";
+  const showAppFilter = view !== "grafana";
   return (
-    <div className={`metrics-workspace grafana-embed${expanded ? " grafana-embed--expanded" : ""}`}>
-      <div className="history-toolbar grafana-toolbar">
-        {lockedView ? <span>{app} · {zh ? current.zh : current.en}</span> : <div className="flex flex-wrap gap-1" role="tablist" aria-label={zh ? "Grafana 面板" : "Grafana dashboards"}>
-          {VIEWS.map((item) => (
+    <Card ref={container} className="grafana-embed min-w-0">
+      <CardHeader>
+        <CardTitle>
+          {lockedView && app ? `${app} · ` : ""}
+          {zh ? current.zh : current.en}
+        </CardTitle>
+        <CardDescription>
+          {loadedSrc !== src ? (
+            <span role="status" className="flex items-center gap-2">
+              <Spinner aria-hidden="true" />
+              {zh ? "正在加载观测面板…" : "Loading observability dashboard…"}
+            </span>
+          ) : zh ? (
+            "Grafana 观测面板"
+          ) : (
+            "Grafana observability dashboard"
+          )}
+        </CardDescription>
+        {document.fullscreenEnabled && (
+          <CardAction>
             <Button
-              key={item.id}
               type="button"
+              variant="outline"
               size="sm"
-              variant={view === item.id ? "secondary" : "ghost"}
-              role="tab"
-              aria-selected={view === item.id}
-              onClick={() => setView(item.id)}
+              aria-pressed={expanded}
+              onClick={() => void toggleFullscreen()}
             >
-              {zh ? item.zh : item.en}
+              {expanded ? (
+                <Minimize2 data-icon="inline-start" />
+              ) : (
+                <Maximize2 data-icon="inline-start" />
+              )}
+              {expanded
+                ? zh
+                  ? "退出全屏"
+                  : "Exit fullscreen"
+                : zh
+                  ? "全屏"
+                  : "Fullscreen"}
             </Button>
-          ))}
-        </div>}
-        {showAppFilter && !lockedView ? (
-          <SelectControl
-            className="grafana-app-filter w-56 min-w-0"
-            ariaLabel={zh ? "按应用筛选" : "Filter by app"}
-            value={app}
-            onChange={setApp}
-            options={[
-              { value: "", label: zh ? "全部应用" : "All apps" },
-              ...names.map((name) => ({ value: name, label: name })),
-            ]}
-          />
-        ) : null}
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="grafana-expand-button"
-          aria-pressed={expanded}
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
-          {expanded ? (zh ? "还原" : "Restore") : (zh ? "放大" : "Expand")}
-        </Button>
-      </div>
-      <iframe key={src} title={zh ? current.zh : current.en} src={src} allow="fullscreen" />
-    </div>
+          </CardAction>
+        )}
+      </CardHeader>
+      <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
+        {!lockedView && (
+          <FieldGroup className="flex flex-col flex-wrap lg:flex-row lg:items-end">
+            <Field className="min-w-0 lg:flex-1">
+              <FieldLabel id={`${fieldId}-views`}>
+                {zh ? "视图" : "View"}
+              </FieldLabel>
+              <ToggleGroup
+                variant="outline"
+                value={[view]}
+                onValueChange={(values) => {
+                  if (values[0])
+                    setView(values[0] as (typeof VIEWS)[number]["id"]);
+                }}
+                aria-labelledby={`${fieldId}-views`}
+                className="flex-wrap"
+                spacing={1}
+              >
+                {VIEWS.map((item) => (
+                  <ToggleGroupItem key={item.id} value={item.id}>
+                    {zh ? item.zh : item.en}
+                  </ToggleGroupItem>
+                ))}
+              </ToggleGroup>
+            </Field>
+            {showAppFilter && (
+              <Field className="lg:w-56">
+                <FieldLabel htmlFor={`${fieldId}-app`}>
+                  {zh ? "应用" : "Application"}
+                </FieldLabel>
+                <SelectControl
+                  id={`${fieldId}-app`}
+                  className="min-w-0"
+                  value={app}
+                  onChange={setApp}
+                  options={[
+                    { value: "", label: zh ? "全部应用" : "All apps" },
+                    ...names.map((name) => ({ value: name, label: name })),
+                  ]}
+                />
+              </Field>
+            )}
+          </FieldGroup>
+        )}
+        {fullscreenError && (
+          <Alert>
+            <AlertTitle>
+              {zh ? "全屏不可用" : "Fullscreen unavailable"}
+            </AlertTitle>
+            <AlertDescription>{fullscreenError}</AlertDescription>
+          </Alert>
+        )}
+        <iframe
+          key={src}
+          title={zh ? current.zh : current.en}
+          src={src}
+          allow="fullscreen"
+          className="min-h-0 w-full flex-1 border-0"
+          aria-busy={loadedSrc !== src}
+          onLoad={() => setLoadedSrc(src)}
+        />
+      </CardContent>
+    </Card>
   );
 }

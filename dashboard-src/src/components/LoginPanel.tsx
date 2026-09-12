@@ -1,7 +1,7 @@
-import { FormEvent, useId, useState } from "react";
+import { type FormEvent, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { t } from "../i18n";
 import type { Lang } from "../types";
@@ -9,46 +9,54 @@ import lumaLogoMark from "../assets/luma-logo-mark.png";
 
 export function LoginPanel({ lang, onSubmit }: { lang: Lang; onSubmit: (token: string) => void }) {
   const [token, setToken] = useState("");
+  const [submitted, setSubmitted] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
   const fieldId = useId();
   const zh = lang === "zh";
+  const invalid = submitted && !token.trim();
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!token.trim()) return;
+    setSubmitted(true);
+    if (!token.trim()) {
+      inputRef.current?.focus();
+      return;
+    }
     onSubmit(token);
   };
 
   return (
-    <Card className="mx-auto w-full max-w-md">
+    <Card className="mx-auto w-full max-w-md" aria-labelledby={`${fieldId}-title`}>
       <CardHeader>
-        <div className="flex items-center gap-3">
-          <div className="flex size-9 items-center justify-center overflow-hidden rounded-lg bg-muted">
-            <img src={lumaLogoMark} alt="" width={24} height={24} />
-          </div>
-          <div className="flex flex-col gap-1">
-            <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{t(lang, "readonly")}</p>
-            <CardTitle>{t(lang, "loginTitle")}</CardTitle>
-          </div>
-        </div>
-        <CardDescription>{t(lang, "loginCopy")}</CardDescription>
+        <CardDescription>{t(lang, "readonly")}</CardDescription>
+        <CardTitle id={`${fieldId}-title`} role="heading" aria-level={1}>{t(lang, "loginTitle")}</CardTitle>
+        <CardAction><img src={lumaLogoMark} alt="Luma" className="size-9" width={36} height={36} /></CardAction>
       </CardHeader>
       <CardContent>
-        <form onSubmit={submit}>
+        <form noValidate onSubmit={submit}>
           <FieldGroup>
-            <Field>
+            <Field data-invalid={invalid}>
               <FieldLabel htmlFor={fieldId}>{zh ? "管理 Token" : "Management token"}</FieldLabel>
               <Input
+                ref={inputRef}
                 id={fieldId}
+                aria-describedby={invalid ? `${fieldId}-description ${fieldId}-error` : `${fieldId}-description`}
+                aria-invalid={invalid}
                 autoComplete="current-password"
                 name="management-token"
                 onChange={(event) => setToken(event.target.value)}
-                placeholder={zh ? "luma_…" : "luma_…"}
+                placeholder="luma_…"
+                required
                 spellCheck={false}
                 type="password"
                 value={token}
               />
+              <FieldDescription id={`${fieldId}-description`}>{t(lang, "loginCopy")}</FieldDescription>
+              {invalid ? <FieldError id={`${fieldId}-error`}>{zh ? "请输入管理 Token。" : "Enter a management token."}</FieldError> : null}
             </Field>
-            <Button type="submit">{t(lang, "openStatus")}</Button>
+            <Field>
+              <Button type="submit">{t(lang, "openStatus")}</Button>
+            </Field>
           </FieldGroup>
         </form>
       </CardContent>

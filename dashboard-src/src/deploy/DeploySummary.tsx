@@ -1,3 +1,9 @@
+import { AlertCircle, CheckCircle2 } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { StepLog } from "./StepLog";
 import type { SubmissionSummary } from "./submissionSummary";
 import type { Lang } from "../types";
 import type { ComposeDeploymentDraft, DeployMode, DeployPreviewResult, DeployStep, DeploymentHealth, ServiceManifestDraft } from "./types";
@@ -48,63 +54,39 @@ export function DeploySummary({
     : preview
       ? (zh ? "已校验" : "Validated")
       : (zh ? "草稿" : "Draft");
-  return (
-    <aside className="deploy-summary">
-      <div className={`deploy-summary-card primary ${errors.length ? "blocked" : preview ? "ready" : "draft"}`}>
-        <div className="deploy-summary-hero">
-          <span className="deploy-summary-indicator" aria-hidden="true" />
-          <div>
-            <p className="eyebrow">{lang === "zh" ? "部署摘要" : "Deployment summary"}</p>
-            <h3>{submission?.name || (mode === "service" ? serviceDraft.name : composeDraft.name)}</h3>
-          </div>
-          <b>{summaryState}</b>
-        </div>
-        <dl className="deploy-summary-list">
-          <div><dt>{zh ? "类型" : "Type"}</dt><dd>{mode === "service" ? (zh ? "单服务" : "Single service") : (zh ? "Compose 应用" : "Compose app")}</dd></div>
-          <div><dt>{zh ? "调度" : "Placement"}</dt><dd>{submission ? compact([submission.region, `${submission.services.length} ${zh ? "个服务" : "services"}`]) : mode === "service" ? compact([serviceDraft.region, serviceDraft.node]) : compact([composeDraft.region, `${composeDraft.services.length} ${zh ? "个服务" : "services"}`])}</dd></div>
-          <div><dt>{zh ? "入口" : "Ingress"}</dt><dd>{(submission?.ingress || publicTargets).length ? (submission?.ingress || publicTargets).join(", ") : (zh ? "内部服务" : "Internal only")}</dd></div>
-          <div><dt>{zh ? "存储" : "Storage"}</dt><dd>{(submission?.volumes || storage).length ? (submission?.volumes || storage).join(", ") : (zh ? "无托管卷" : "No managed volumes")}</dd></div>
-        </dl>
-      </div>
-      {preview ? (
-        <div className="deploy-summary-card">
-          <h3>{zh ? "校验结果" : "Validation result"}</h3>
-          <dl>
-            <div><dt>{zh ? "生成产物" : "Artifacts"}</dt><dd>{preview.artifacts?.length || 0}</dd></div>
-            <div><dt>{zh ? "提示" : "Warnings"}</dt><dd>{previewWarnings.length}</dd></div>
-            <div><dt>{zh ? "初始化动作" : "Init actions"}</dt><dd>{requirementGroups.flatMap((group) => group?.init || []).join(", ") || (zh ? "无" : "None")}</dd></div>
-          </dl>
-          {preview.artifacts?.length ? preview.artifacts.map((artifact) => (
-            <p key={`${artifact.kind}-${artifact.path}`}>{artifact.kind}: {artifact.path}</p>
-          )) : null}
-          {previewWarnings.map((warning, index) => <p key={`${warning}-${index}`}>{warning}</p>)}
-          {requirementFailures.length ? <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3"><strong>{zh ? "部署前置条件" : "Deployment prerequisites"}</strong>{requirementFailures.map((check, index) => <p key={`${check.kind}-${index}`}>{check.kind}: {check.detail || (check.missing || []).join(", ") || (zh ? "未满足" : "not ready")}</p>)}</div> : <p className="mt-3 text-emerald-700">{zh ? "部署前置条件已满足" : "Deployment prerequisites are ready"}</p>}
-        </div>
-      ) : null}
-      {health?.length ? (
-        <div className="deploy-summary-card">
-          <h3>{zh ? "交付健康" : "Delivery health"}</h3>
-          {health.map((item, index) => <div className="deploy-step" key={`${item.target || item.kind || "health"}-${index}`}><span className={`deploy-step-status ${item.status || ""}`}>{item.status || "unknown"}</span><strong className="deploy-step-name">{item.target || item.kind || (zh ? "服务" : "Service")}</strong><small className="deploy-step-message">{item.message || "-"}</small></div>)}
-        </div>
-      ) : null}
-      {errors.length ? (
-        <div className="deploy-summary-card errors">
-          <h3>{zh ? "校验错误" : "Validation errors"}</h3>
-          {errors.map((error) => <p key={error}>{error}</p>)}
-        </div>
-      ) : null}
-      {steps.length ? (
-        <div className="deploy-summary-card deploy-steps">
-          <h3>{zh ? "部署步骤" : "Deploy steps"}</h3>
-          {steps.map((step, index) => (
-            <div className={`deploy-step ${step.status || ""}`} key={`${step.name || step.status}-${index}`}>
-              <span className="deploy-step-status">{step.status || "-"}</span>
-              <strong className="deploy-step-name">{step.name || (step.status === "done" ? "Done" : "Event")}</strong>
-              {step.message ? <small className="deploy-step-message">{step.message}</small> : null}
-            </div>
-          ))}
-        </div>
-      ) : null}
-    </aside>
-  );
+  const summaryRows = [
+    [zh ? "类型" : "Type", mode === "service" ? (zh ? "单服务" : "Single service") : (zh ? "Compose 应用" : "Compose app")],
+    [zh ? "调度" : "Placement", submission ? compact([submission.region, `${submission.services.length} ${zh ? "个服务" : "services"}`]) : mode === "service" ? compact([serviceDraft.region, serviceDraft.node]) : compact([composeDraft.region, `${composeDraft.services.length} ${zh ? "个服务" : "services"}`])],
+    [zh ? "入口" : "Ingress", (submission?.ingress || publicTargets).length ? (submission?.ingress || publicTargets).join(", ") : (zh ? "内部服务" : "Internal only")],
+    [zh ? "存储" : "Storage", (submission?.volumes || storage).length ? (submission?.volumes || storage).join(", ") : (zh ? "无托管卷" : "No managed volumes")],
+  ];
+  return <aside className="flex min-w-0 flex-col gap-6 lg:sticky lg:top-6" aria-label={zh ? "部署摘要" : "Deployment summary"}>
+    <Card className="min-w-0">
+      <CardHeader>
+        <CardTitle>{zh ? "部署摘要" : "Deployment summary"}</CardTitle>
+        <CardDescription className="wrap-anywhere">{submission?.name || (mode === "service" ? serviceDraft.name : composeDraft.name)}</CardDescription>
+        <CardAction><Badge variant={errors.length ? "destructive" : "secondary"}>{summaryState}</Badge></CardAction>
+      </CardHeader>
+      <CardContent><Table><TableBody>{summaryRows.map(([label, value]) => <TableRow key={label}><TableHead scope="row" className="w-20 align-top">{label}</TableHead><TableCell className="whitespace-normal wrap-anywhere">{value}</TableCell></TableRow>)}</TableBody></Table></CardContent>
+    </Card>
+    {preview ? <Card className="min-w-0">
+      <CardHeader><CardTitle>{zh ? "校验结果" : "Validation result"}</CardTitle></CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <Table><TableBody>
+          <TableRow><TableHead scope="row">{zh ? "生成产物" : "Artifacts"}</TableHead><TableCell>{preview.artifacts?.length || 0}</TableCell></TableRow>
+          <TableRow><TableHead scope="row">{zh ? "提示" : "Warnings"}</TableHead><TableCell>{previewWarnings.length}</TableCell></TableRow>
+          <TableRow><TableHead scope="row">{zh ? "初始化动作" : "Init actions"}</TableHead><TableCell className="whitespace-normal wrap-anywhere">{requirementGroups.flatMap((group) => group?.init || []).join(", ") || (zh ? "无" : "None")}</TableCell></TableRow>
+        </TableBody></Table>
+        {preview.artifacts?.length ? <ul className="flex list-disc flex-col gap-2 pl-4">{preview.artifacts.map((artifact) => <li className="wrap-anywhere" key={`${artifact.kind}-${artifact.path}`}>{artifact.kind}: {artifact.path}</li>)}</ul> : null}
+        {previewWarnings.length ? <Alert><AlertCircle /><AlertTitle>{zh ? "校验提示" : "Validation warnings"}</AlertTitle><AlertDescription><ul className="flex list-disc flex-col gap-2 pl-4">{previewWarnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}</ul></AlertDescription></Alert> : null}
+        {requirementFailures.length ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{zh ? "部署前置条件未满足" : "Deployment prerequisites are not ready"}</AlertTitle><AlertDescription><ul className="flex list-disc flex-col gap-2 pl-4">{requirementFailures.map((check, index) => <li key={`${check.kind}-${index}`}>{check.kind}: {check.detail || (check.missing || []).join(", ") || (zh ? "未满足" : "not ready")}</li>)}</ul></AlertDescription></Alert> : <Alert><CheckCircle2 /><AlertTitle>{zh ? "部署前置条件已满足" : "Deployment prerequisites are ready"}</AlertTitle></Alert>}
+      </CardContent>
+    </Card> : null}
+    {health?.length ? <Card className="min-w-0">
+      <CardHeader><CardTitle>{zh ? "交付健康" : "Delivery health"}</CardTitle></CardHeader>
+      <CardContent><Table><TableHeader><TableRow><TableHead>{zh ? "目标" : "Target"}</TableHead><TableHead>{zh ? "状态" : "Status"}</TableHead></TableRow></TableHeader><TableBody>{health.map((item, index) => <TableRow key={`${item.target || item.kind || "health"}-${index}`}><TableCell className="whitespace-normal wrap-anywhere"><div className="flex flex-col gap-1"><span>{item.target || item.kind || (zh ? "服务" : "Service")}</span><span className="text-muted-foreground">{item.message || "-"}</span></div></TableCell><TableCell><Badge variant={["failed", "error", "unhealthy"].includes(item.status || "") ? "destructive" : "secondary"}>{item.status || "unknown"}</Badge></TableCell></TableRow>)}</TableBody></Table></CardContent>
+    </Card> : null}
+    {errors.length ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{zh ? "校验错误" : "Validation errors"}</AlertTitle><AlertDescription><ul className="flex list-disc flex-col gap-2 pl-4">{errors.map((error, index) => <li key={`${index}-${error}`}>{error}</li>)}</ul></AlertDescription></Alert> : null}
+    {steps.length ? <Card className="min-w-0"><CardHeader><CardTitle>{zh ? "部署步骤" : "Deploy steps"}</CardTitle></CardHeader><CardContent><StepLog steps={steps} lang={lang} /></CardContent></Card> : null}
+  </aside>;
 }

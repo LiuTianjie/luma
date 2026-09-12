@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { AriaAttributes, ReactNode } from "react";
 import { Badge as UiBadge } from "@/components/ui/badge";
 import {
   Select,
@@ -24,6 +24,8 @@ export function SelectControl({
   disabled = false,
   ariaLabel,
   className = "",
+  id,
+  ...accessibility
 }: {
   value: string;
   options: SelectOption[];
@@ -32,6 +34,10 @@ export function SelectControl({
   disabled?: boolean;
   ariaLabel?: string;
   className?: string;
+  id?: string;
+  "aria-describedby"?: string;
+  "aria-labelledby"?: string;
+  "aria-invalid"?: AriaAttributes["aria-invalid"];
 }) {
   const emptyValue = "__empty__";
   const encode = (item: string) => (item === "" ? emptyValue : item);
@@ -50,7 +56,7 @@ export function SelectControl({
       disabled={disabled}
       items={items}
     >
-      <SelectTrigger aria-label={ariaLabel} className={cn("w-full min-w-40", className)}>
+      <SelectTrigger id={id} aria-label={ariaLabel} {...accessibility} className={cn("w-full min-w-0", className)}>
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent alignItemWithTrigger={false} side="bottom">
@@ -69,8 +75,8 @@ export function SelectControl({
 export function PrimaryCell({ title, meta }: { title: string; meta?: string }) {
   return (
     <span className="flex min-w-0 flex-col gap-0.5">
-      <strong className="truncate text-sm font-medium">{title || "-"}</strong>
-      {meta && meta !== title ? <small className="truncate text-xs text-muted-foreground">{meta}</small> : null}
+      <strong title={title} className="truncate text-sm font-medium">{title || "-"}</strong>
+      {meta && meta !== title ? <small title={meta} className="truncate text-xs text-muted-foreground">{meta}</small> : null}
     </span>
   );
 }
@@ -84,7 +90,7 @@ export function BadgeGroup({ children }: { children: ReactNode }) {
 }
 
 export function CodeCell({ value }: { value: string }) {
-  return <code className="font-mono text-xs break-all">{value}</code>;
+  return <code className="block max-w-full font-mono text-xs whitespace-normal break-all">{value}</code>;
 }
 
 export function StatePill({ label, value }: { label: string; value?: string }) {

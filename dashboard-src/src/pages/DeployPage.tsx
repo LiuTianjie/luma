@@ -9,6 +9,7 @@ import type { DeploymentConfig } from "../deploymentConfigApi";
 import type { DashboardViewModel } from "../dashboardViewModel";
 import { PageHeader } from "./PageHeader";
 import { Card, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 
 export type DeployUpdateContext = {
   deployMode: DeployMode;
@@ -58,31 +59,15 @@ export function DeployPage({
       ].map((item) => {
         const Icon = item.icon;
         return (
-          <Card
-            key={item.path}
-            role="button"
-            tabIndex={0}
-            className="h-full cursor-pointer text-left transition-colors hover:bg-muted/50"
-            onClick={() => navigate(item.path)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                navigate(item.path);
-              }
-            }}
-          >
+          <Card key={item.path} className="h-full min-w-0">
             <CardHeader>
-              <div className="mb-2 flex size-9 items-center justify-center rounded-lg bg-muted text-foreground">
-                <Icon />
-              </div>
               <CardTitle>{item.title}</CardTitle>
               <CardDescription>{item.description}</CardDescription>
             </CardHeader>
-            <CardFooter>
-              <span className="inline-flex items-center gap-1 text-sm font-medium">
-                {zh ? "继续" : "Continue"}
-                <ArrowRight />
-              </span>
+            <CardFooter className="mt-auto">
+              <Button variant="outline" onClick={() => navigate(item.path)} aria-label={`${zh ? "选择" : "Choose"} ${item.title}`}>
+                <Icon data-icon="inline-start" />{zh ? "继续" : "Continue"}<ArrowRight data-icon="inline-end" />
+              </Button>
             </CardFooter>
           </Card>
         );
