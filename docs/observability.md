@@ -24,7 +24,7 @@ is local debug only. Alerts evaluate in vmalert/Alertmanager. Control SQLite
 is not on this path. Trace and log storage retain 7 days; metric retention is
 configured independently.
 
-Deploy from `observe/` with `luma build local . --platform linux/amd64 --env .env`.
+Deploy from `observe/` with `luma build local . --platform linux/amd64`. First deploy does not require secrets; add Feishu later with scoped secrets if needed.
 Refresh Traefik after the current CLI includes the loopback metrics/OTLP flags
 so RED rules have a scrape target. Operators look at Dashboard → Observability → Apps.
 The charts are per Luma app (Traefik HTTP rate, 5xx and p90/p95/p99 latency + Nomad health), not each container's `/metrics`. Traefik histogram buckets are `0.05,0.1,0.25,0.5,1,2.5,5,10` seconds so those quantiles are distinguishable.

@@ -337,9 +337,25 @@ constraint {
 
 Nomad 节点身份是稳定的 UUID。节点离开集群后用同一个 Luma 节点名重新 join，`meta.luma_node_name` 不变，固定节点服务约束仍然有效；不用手工把 Docker hostname 写进 manifest。
 
-### 普通服务使用 storageClass
+### 普通服务使用本地卷
 
-单服务 manifest 也可以把任意 named volume 交给控制面注册的 storageClass。`volumes` 仍然是容器挂载声明；顶层 `storage` 只描述这些 named volume 应该落到哪个基础设施存储服务的哪个子目录：
+新的持久化原生服务用 named volume 或 bind mount。Control 在首次部署前记录归属节点，后续更新钉在该节点；可写持久化挂载要求 `replicas: 1`。不要为新应用注册 storage class 或 NFS。
+
+```yaml
+name: home-db
+image: postgres:16
+region: home
+exposure: none
+replicas: 1
+volumes:
+  - home-db-data:/var/lib/postgresql/data
+```
+
+Compose sidecar 把宿主机路径写在 `volumes.<name>.local.path`，见 [compose-storage.md](compose-storage.md)。
+
+### 旧 storageClass（仅迁移）
+
+已有 NFS 部署仍可用顶层 `storage` 指向控制面登记的 class。`volumes` 仍是容器挂载声明；`storage` 只描述这些 named volume 落到哪个旧存储服务的哪个子目录。新文件不要再写这块。
 
 ```yaml
 name: home-db
@@ -355,16 +371,7 @@ storage:
     accessMode: ReadWriteOnce
 ```
 
-`storageClass` 本身由 manager 维护，例如：
-
-```bash
-luma storage set db-storage \
-  --node home-nas \
-  --path /srv/luma \
-  --region home
-```
-
-`storageClass` 是统一的存储服务引用。无论挂载目标是 PostgreSQL/MySQL 数据目录、上传目录还是普通应用状态目录，Luma 都按同一套 storage service 解析和挂载；它只校验 storageClass 是否存在、region/node 是否允许、跨 Region 是否可达。
+`luma storage list` / `check` / `apply` / `remove` 继续管理这些遗留 class。切换后端必须验证 `adopted: true` 或声明 `initialize: empty`。
 
 ### 需要代理的 worker
 

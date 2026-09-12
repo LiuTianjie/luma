@@ -17,7 +17,7 @@ Luma Control 负责认证和编排，将清单渲染为 Nomad jobspec，直接�
 CI runner 应安装已发布的软件包，而不是运行 Shell 安装程序：
 
 ```bash
-python -m pip install "luma-infra==0.1.360"
+python -m pip install "luma-infra==0.1.361"
 ```
 
 软件包名称是 `luma-infra`，安装后的命令仍为 `luma`。
@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 安装固定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.360 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.361 sh
 ```
 
 从开发检出目录运行：
@@ -65,7 +65,7 @@ CI 可将 Luma 作为无状态控制面客户端使用，无需 SSH、Docker、C
 PR 校验：
 
 ```bash
-python -m pip install "luma-infra==0.1.360"
+python -m pip install "luma-infra==0.1.361"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -77,7 +77,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 主分支或发布部署：
 
 ```bash
-python -m pip install "luma-infra==0.1.360"
+python -m pip install "luma-infra==0.1.361"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -226,7 +226,7 @@ luma registry remove ghcr.io
 luma registry serve --node build-1
 ```
 
-`luma registry serve` 在有 `docker-build` 能力的节点部署 `registry:2`，并为所有就绪的非 Manager Linux 节点配置 `insecure-registries`，使其能通过 Tailscale 拉取构建镜像。BuildKit 和目标节点都使用可达的 Builder Tailscale 端点 `<build-node-tailscale-host>:5000`；不要再配置已移除的 `localhost:5000` 推送端点。可选参数：`--port` 默认 `5000`，`--storage-class` 默认 `local`，`--image` 默认 `registry:2`，`--name` 默认 `luma-registry`，`--timeout` 默认 `1800`。完整源码到镜像流程见[使用手册](how-to-use-luma.md)的仓库导入章节。
+`luma registry serve` 在有 `docker-build` 能力的节点部署 `registry:2`，并为所有就绪的非 Manager Linux 节点配置 `insecure-registries`，使其能通过 Tailscale 拉取构建镜像。BuildKit 和目标节点都使用可达的 Builder Tailscale 端点 `<build-node-tailscale-host>:5000`；不要再配置已移除的 `localhost:5000` 推送端点。可选参数：`--port` 默认 `5000`，`--storage-class` 为可选遗留 class（省略则用节点本地 Docker volume），`--image` 默认 `registry:2`，`--name` 默认 `luma-registry`，`--timeout` 默认 `1800`。完整源码到镜像流程见[使用手册](how-to-use-luma.md)的仓库导入章节。
 
 同一控制面也提供网页控制台：
 
@@ -306,7 +306,7 @@ luma update --control-url https://luma.example.com --token <node-join-token>
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.360 --timeout 900
+luma update fleet --install-ref v0.1.361 --timeout 900
 luma update fleet --include-manager
 ```
 
@@ -521,7 +521,6 @@ region: cn
 exposure: none
 resources:
   limits:
-    cpus: "0.50"
     memory: 512M
   reservations:
     cpus: "0.10"

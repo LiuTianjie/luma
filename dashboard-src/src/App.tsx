@@ -52,7 +52,19 @@ export function App() {
   const dashboardQuery = dashboardQueryForRoute(dashboardScope, router.path, router.search);
   const { token, payload, cluster, errors, syncStatus, lastUpdated, setToken, signOut, loadDashboard } = useDashboardData(dashboardScope, dashboardQuery);
   const { mode: themeMode, theme, setMode: setThemeMode } = useTheme();
-  const vm = useMemo(() => createDashboardViewModel(payload), [payload]);
+  const [laeAdminAvailable, setLaeAdminAvailable] = useState(false);
+  useEffect(() => {
+    if (!token) {
+      setLaeAdminAvailable(false);
+      return;
+    }
+    const available = payload?.readiness?.laeAdmin?.available;
+    if (typeof available === "boolean") setLaeAdminAvailable(available);
+  }, [payload, token]);
+  const vm = useMemo(
+    () => ({ ...createDashboardViewModel(payload), laeAdminAvailable }),
+    [payload, laeAdminAvailable],
+  );
 
   const objectRoute = parseObjectRoute(router.path);
   const editName = objectRoute?.kind === "update" ? objectRoute.name : "";

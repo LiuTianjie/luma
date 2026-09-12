@@ -43,7 +43,7 @@ luma compose deploy luma.compose.yml --dry-run
 luma compose deploy luma.compose.yml
 ```
 
-Storage services are registered in Luma Control with `luma storage set`; compose deployments only reference them by name. Luma Control rejects deployment-side storage class definitions, and backend switches require either verified `adopted: true` or `initialize: empty`. Storage ownership, local node pins, and NFS storage classes are described in `docs/compose-storage.md`.
+New persistent Compose and native deployments use local storage on the deployment node. Put host paths in `luma.compose.yml` as `volumes.<name>.local.path`; native services use named volumes or bind mounts. Do not register NFS or a storage class for a new app. Legacy `storageClass` references remain usable during migration; Control still rejects non-empty `storageClasses` in submitted sidecars, and backend switches need verified `adopted: true` or `initialize: empty`. See [compose-storage.md](compose-storage.md).
 
 ## Update Image Tag
 

@@ -7,7 +7,7 @@
 | `name` | yes | string | Service name. Luma slugifies it for stack, service, route, and deployment records. |
 | `image` | required unless `build` is set | string | Prebuilt container image. With Builder Registry configured, Luma copies external/private images into the internal cache and deploys the verified internal digest. For Repository Import, omit `image` and use `build:` so Luma can inject the built internal-registry image. |
 | `build` | no | map | Source-to-image build for `luma import` / Dashboard Repository Import. Subfields: `build.context` (default `.`), `build.dockerfile` (default `Dockerfile`), `build.platform` (default `linux/amd64`), and optional `build.repo` to override the internal image repository path. When present, `image` may be omitted. Not used by plain `luma deploy`. |
-| `region` | yes | `cn` / `global` / `home` | Runtime placement region. |
+| `region` | yes | `cn` / `global` / `home` or a custom region | Runtime placement region. Custom regions from `luma region create` only allow `exposure: none` unless later extended. |
 | `engine` | no | `nomad` | Orchestrator override. Omit to inherit the cluster default. |
 | `node` | no | string | Luma node name from `luma node join --name`; control-plane deploy resolves it to a node-meta placement constraint and keeps the region constraint. Stable across node restarts. Do not use Docker hostnames for normal pins. |
 | `exposure` | recommended | `none` / `cn-edge` / `external-edge` / `tailscale-relay` / `tcp-relay` / `cloudflare-tunnel` | Access mode. Use explicit exposure in new files. |
@@ -422,7 +422,6 @@ region: cn
 exposure: none
 resources:
   limits:
-    cpus: "0.50"
     memory: 512M
   reservations:
     cpus: "0.10"
@@ -524,7 +523,7 @@ CI:
 
 ```bash
 # Verify this version is published before installing.
-python -m pip install "luma-infra==0.1.360"
+python -m pip install "luma-infra==0.1.361"
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 luma validate service.yaml --format json
@@ -565,8 +564,7 @@ luma service remove <name> --delete-storage
 - Does `domain` match the actual user-facing hostname?
 - Is `port` the container's internal port?
 - Is `region` compatible with `exposure`?
-- If `node` is set, does it match a registered Luma node name and the selected region?
-- If `node` is set, does it match a registered Luma node name and the selected region? (Node identity is stable across restarts, so a rejoined node keeps its pin.)
+- If `node` is set, does it match a registered Luma node name and the selected region? Node identity is stable across restarts, so a rejoined node keeps its pin.
 - Are secrets represented as `${ENV_NAME}` and supplied through `--env .env` or scoped `luma secret set --scope <app>`?
 - Are private registry credentials stored with `luma registry login` instead of YAML/env?
 - Does the image include a meaningful tag? If not, remember that Luma resolves mutable tags to digests during deploy.

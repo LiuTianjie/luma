@@ -42,7 +42,7 @@ export function buildNavGroups(lang: Lang, vm: DashboardViewModel): NavGroup[] {
       { id: "setup", icon: WandSparkles, label: zh ? "首次安装" : "First install", detail: zh ? "配置依赖并验证集群" : "Configure dependencies and verify the cluster" },
     ] },
     { key: "platform", label: zh ? "平台管理" : "Platform", items: [
-      { id: "lae", icon: CloudCog, label: "LAE", detail: zh ? "用户、租户与应用平台" : "Users, tenants and application platform" },
+      ...(vm.laeAdminAvailable ? [{ id: "lae" as const, icon: CloudCog, label: "LAE", detail: zh ? "用户、租户与应用平台" : "Users, tenants and application platform" }] : []),
       { id: "credentials", icon: Settings, label: zh ? "设置" : "Settings", detail: zh ? "凭据与集群管理" : "Credentials and cluster administration", children: [
         { href: "/settings/secrets", label: zh ? "密钥" : "Secrets", detail: zh ? "管理控制面密钥" : "Manage control-plane secrets" },
         { href: "/settings/registries", label: zh ? "镜像仓库凭据" : "Registry credentials", detail: zh ? "私有镜像拉取凭据" : "Private image pull credentials" },

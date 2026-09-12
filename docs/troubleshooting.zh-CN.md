@@ -14,6 +14,25 @@ cp .env.example .env
 $EDITOR .env
 ```
 
+## 首次 bootstrap manager 失败 {#first-manager-bootstrap-failed}
+
+Bootstrap 可重复执行。失败步骤会打印 `[fail] <标题>: <原因>` 和 `Fix:`。修好对应层后重跑同一条命令：
+
+```bash
+luma bootstrap manager --domain luma.example.com
+```
+
+| 失败步骤 | 常见原因 | 修复 |
+| --- | --- | --- |
+| Install Docker | 没有 sudo，或访问不了 Docker 镜像源 | 修好 sudo/网络后重跑 bootstrap |
+| Install Nomad binary / CNI | 访问不了 HashiCorp 下载 | 国内 manager 配置 `EGRESS_SUBSCRIPTION_URL` 后重跑 |
+| Install and connect Tailscale | 缺 auth key，或未登录 Tailscale | `luma tailscale connect` |
+| Deploy Traefik / Luma control | Nomad 未就绪，或 control 镜像拉不下来 | `nomad job status traefik` / `nomad job status luma-control`；国内默认 GHCR 不要用 `--skip-egress` |
+| Sync control DNS | Cloudflare token、zone 或 `LUMA_DNS_EDGE_TARGET` | 修正 `.env` / 交互输入后重跑 bootstrap |
+| Deploy egress | 订阅 URL 或镜像源 | `luma egress setup` |
+
+控制面起来后用 `luma doctor` 看 Control 连通性和节点就绪。不要靠配置 `LUMA_LAE_*` 来恢复首次安装；LAE 是可选项。
+
 ## 无法安装本地 CLI {#local-cli-cannot-be-installed}
 
 运行：

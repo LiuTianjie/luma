@@ -43,7 +43,7 @@ luma compose deploy luma.compose.yml --dry-run
 luma compose deploy luma.compose.yml
 ```
 
-存储服务通过 `luma storage set` 注册到 Control，Compose 仅按名称引用。Control 拒绝部署侧定义 storage class；切换后端必须验证 `adopted: true` 或声明 `initialize: empty`。存储所有权、本地节点固定和 NFS class 见 `docs/compose-storage.md`。
+新的持久化 Compose 和原生服务使用部署节点本地存储。在 `luma.compose.yml` 里用 `volumes.<name>.local.path`；原生服务用 named volume 或 bind mount。不要为新应用注册 NFS 或 storage class。迁移期间仍可使用旧的 `storageClass` 引用；Control 仍拒绝 sidecar 里的非空 `storageClasses`，切换后端需要已验证的 `adopted: true` 或 `initialize: empty`。详见 [compose-storage.md](compose-storage.md)。
 
 ## 更新镜像标签 {#update-image-tag}
 

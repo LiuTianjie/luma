@@ -4,6 +4,8 @@
 
 [Console guide](docs/dashboard-guide.md) · [Website maintenance](docs/website.md)
 
+After the first manager is up, deploy `templates/hello-world.yml` (or Dashboard → Create application → **hello-world first install**) to prove Nomad scheduling. Cloudflare extras, Tailscale, egress, registry, and LAE are optional and not required for that smoke service.
+
 Luma is a small self-hosted deployment control plane built on HashiCorp Nomad. It drives the Nomad HTTP API to execute deployments, uses Traefik for HTTP/HTTPS ingress, Cloudflare for DNS, and a `luma` CLI that can run from any authenticated client machine.
 
 It is meant for turning a few scattered servers into region-aware deployment targets:
@@ -76,7 +78,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.360"
+python -m pip install "luma-infra==0.1.361"
 ```
 
 Install without cloning the repository:
@@ -94,7 +96,7 @@ Managed-runtime identity, dependency-source policy and read-only `luma doctor --
 Install a tagged release:
 
 ```bash
-export LUMA_INSTALL_REF=v0.1.360
+export LUMA_INSTALL_REF=v0.1.361
 curl -fsSL "https://raw.githubusercontent.com/LiuTianjie/luma/$LUMA_INSTALL_REF/scripts/install-luma.sh" -o /tmp/install-luma.sh && sh /tmp/install-luma.sh
 ```
 
@@ -132,9 +134,16 @@ The uninstall script does not remove Docker, Nomad, Traefik, Luma Control, deplo
 
 ## First Manager
 
-Run this on the manager server:
+Run this on the manager server. You do not need a git checkout; a curl-installed CLI is enough. Missing values are prompted interactively and saved to `~/.luma.config.json`.
 
 ```bash
+luma bootstrap manager --domain luma.example.com
+```
+
+If you prefer a file:
+
+```bash
+# only if you have a repository checkout
 cp .env.example .env
 $EDITOR .env
 luma bootstrap manager --domain luma.example.com
@@ -164,88 +173,7 @@ EGRESS_SUBSCRIPTION_URL=...
 | `TAILSCALE_AUTHKEY` | Needed for private/home/tailscale-relay nodes | Lets servers join your tailnet. Not required for an ordinary single public manager or ordinary public services. |
 | `LUMA_SUDO_PASSWORD` | Only when sudo needs a password | Local fallback password for sudo commands. It stays in the local user config and is not distributed to clients. |
 
-### Manager-side LAE Control files
-
-When Luma Control serves LAE, keep Builder and Runtime identities in separate
-private files on the manager. The Nomad job mounts `/opt/luma/control`; every
-principal, broker, and admin file passed to the job must therefore live below
-that directory. Files must be regular, non-symlink files readable only by the
-owner (`0600` is recommended). Token contents are read by Luma Control at
-runtime and are never rendered into the Nomad Job or Control state database.
-
-Create one token file per identity, then create the two principal files. A
-`tokenFile` is a file in the same directory as its principal file:
-
-```json
-{
-  "lae-builder": {
-    "tokenFile": "lae-builder.token",
-    "tenantRefs": ["*"],
-    "applicationRefs": ["*"]
-  }
-}
-```
-
-Save that as `/opt/luma/control/lae-builder-principals.json`. Save the Runtime
-configuration separately as `/opt/luma/control/lae-runtime-principals.json`:
-
-```json
-{
-  "lae-runtime": {
-    "tokenFile": "lae-runtime.token",
-    "tenantRefs": ["*"],
-    "applicationRefs": ["*"],
-    "builderPrincipalRefs": ["lae-builder"],
-    "scopes": [
-      "runtime:volumes:prepare",
-      "runtime:deployments:write",
-      "runtime:deployments:read",
-      "runtime:logs",
-      "runtime:metrics",
-      "runtime:secrets:issue"
-    ]
-  }
-}
-```
-
-Install all four files privately and configure the manager's `.env` before
-`luma bootstrap manager` or `luma update manager`:
-
-```bash
-sudo install -d -m 700 /opt/luma/control
-sudo chmod 600 \
-  /opt/luma/control/lae-builder.token \
-  /opt/luma/control/lae-runtime.token \
-  /opt/luma/control/lae-builder-principals.json \
-  /opt/luma/control/lae-runtime-principals.json
-
-LUMA_LAE_SERVICE_PRINCIPALS_FILE=/opt/luma/control/lae-builder-principals.json
-LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE=/opt/luma/control/lae-runtime-principals.json
-```
-
-Optional credential/object brokers and the LAE super-admin proxy use the same
-file-only pattern:
-
-```bash
-LUMA_CREDENTIAL_BROKER_URL=https://lae-api.internal/v1/internal/credential-leases/redeem
-LUMA_CREDENTIAL_BROKER_TIMEOUT_SECONDS=5
-LUMA_CREDENTIAL_BROKER_TOKEN_FILE=/opt/luma/control/lae-broker.token
-
-LUMA_OBJECT_SOURCE_BROKER_URL=https://lae-api.internal/v1/internal/object-source-leases/redeem
-LUMA_OBJECT_SOURCE_BROKER_TIMEOUT_SECONDS=5
-# Optional when it intentionally reuses LUMA_CREDENTIAL_BROKER_TOKEN_FILE:
-LUMA_OBJECT_SOURCE_BROKER_TOKEN_FILE=/opt/luma/control/lae-object-broker.token
-
-LUMA_LAE_ADMIN_API_URL=https://lae-api.internal
-LUMA_LAE_ADMIN_TIMEOUT_SECONDS=8
-LUMA_LAE_ADMIN_TOKEN_FILE=/opt/luma/control/lae-admin.token
-```
-
-Only the documented HTTPS URLs, bounded timeouts, and file paths are copied
-into the `luma-control` Job. Inline legacy variables such as
-`LUMA_LAE_SERVICE_TOKEN` and `LUMA_LAE_*_PRINCIPALS_JSON` remain available for
-direct/local compatibility but are deliberately not forwarded by manager
-bootstrap; production Nomad managers should use the file configuration above.
+LAE (the multi-tenant application engine) is **optional** and is not part of first install. Leave every `LUMA_LAE_*` setting empty unless you are deliberately running LAE. See [docs/lae/](docs/lae/).
 
 You can skip editing `.env` and run `luma bootstrap manager --domain ...` directly. When local values are missing, the CLI explains each value and prompts interactively.
 
@@ -257,14 +185,18 @@ Use `--skip-egress` only when the control image registry is directly reachable, 
 luma bootstrap manager --domain luma.example.com --skip-egress
 ```
 
-Bootstrap installs/checks Docker, installs and starts the Nomad server, deploys Traefik and Luma Control as Nomad jobs, configures the firewall, and sets up egress when requested. It prints a management token and a node join token.
+Bootstrap installs/checks Docker, installs and starts the Nomad server, deploys Traefik and Luma Control as Nomad jobs, configures the firewall, and sets up egress when requested. It prints a management token, a node join token, the dashboard URL, and the hello-world next step.
 
-If one layer fails, re-run bootstrap or repair only that layer:
+If a step fails, it prints `[fail]` plus a `Fix:` line. Re-run the same bootstrap command after addressing that layer, or repair only that layer:
 
 ```bash
+luma bootstrap manager --domain luma.example.com
 luma egress setup
 luma tailscale connect
+luma doctor
 ```
+
+Then open `https://luma.example.com/dashboard/`, paste the management token, and deploy **hello-world first install** from Applications → Create application. That path does not need extra DNS, Tailscale, registry, or LAE.
 
 The default control API image is `ghcr.io/liutianjie/luma-control:latest`. For predictable upgrades, prefer a published immutable tag and set `LUMA_CONTROL_IMAGE=ghcr.io/<you>/luma-control:<tag>` before bootstrap/update, or set `defaults.images.lumaControl` in `luma.yaml`. Luma fails if the configured control image cannot be pulled. When egress is enabled, Luma configures the Docker daemon proxy before pulling default GHCR control images.
 
@@ -350,7 +282,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.360"
+python -m pip install "luma-infra==0.1.361"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -362,12 +294,11 @@ luma deploy status.yaml --format ndjson --timeout 3000
 
 CI clients do not need SSH, Docker, Cloudflare, Nomad, or persistent files under `~/.config/luma`.
 
-When application services share a small manager, set explicit resource limits:
+When application services share a small manager, set explicit resource limits. CPU uses `reservations.cpus` as an elastic scheduling share; `limits.cpus` is ignored.
 
 ```yaml
 resources:
   limits:
-    cpus: "0.50"
     memory: 512M
   reservations:
     cpus: "0.10"

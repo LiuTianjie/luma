@@ -22,6 +22,9 @@ export type Readiness = {
     checkedAt?: number;
     checks?: Record<string, { status?: string; required?: boolean; detail?: string }>;
   };
+  laeAdmin?: {
+    available?: boolean;
+  };
 };
 
 export type NodeMetrics = {

@@ -24,7 +24,7 @@ Required local tools are Python 3.9+ and curl or wget. Docker is only needed on 
 
 ## 2. Prepare The Manager Node
 
-Run the first bootstrap directly on the full manager node. Add the server to `luma.yaml` so DNS targets and labels can be derived:
+Run the first bootstrap directly on the full manager node. A curl-installed CLI is enough; you do not need a `luma.yaml` yet. Optional: add the server to `luma.yaml` so DNS targets and labels can be derived:
 
 ```yaml
 nodes:
@@ -116,6 +116,8 @@ Node join token: ...
 ```
 
 Keep the management token and node join token private.
+
+The same output prints the dashboard URL. Open it, paste the management token, then deploy **hello-world first install** from Applications → Create application. That smoke service needs no extra DNS, Tailscale, registry, or LAE. If a step printed `[fail]`, follow its `Fix:` line and rerun the same bootstrap command; `luma egress setup`, `luma tailscale connect`, and `luma doctor` repair individual layers.
 
 Luma exposes only two user-facing tokens:
 

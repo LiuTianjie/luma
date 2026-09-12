@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { AlertCircle, CheckCircle2, Cloud, KeyRound, Network, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertCircle, CheckCircle2, Cloud, Info, KeyRound, Network, RefreshCw, ShieldCheck } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -94,6 +94,9 @@ export function SetupPage({ lang, token, readiness, onRefresh }: { lang: Lang; t
 
   const setupReadiness = readiness?.setup || {};
   const configuredCount = useMemo(() => integrationDefinitions.filter(({ id }) => setupReadiness[id]?.configured).length, [setupReadiness]);
+  const requiredItems = useMemo(() => integrationDefinitions.filter(({ id }) => setupReadiness[id]?.required), [setupReadiness]);
+  const requiredCount = requiredItems.length;
+  const requiredReadyCount = requiredItems.filter(({ id }) => setupReadiness[id]?.configured).length;
 
   const update = (key: keyof SetupForm, value: string) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -166,12 +169,17 @@ export function SetupPage({ lang, token, readiness, onRefresh }: { lang: Lang; t
       <PageHeader meta={{
         eyebrow: zh ? "平台初始化" : "Platform setup",
         title: zh ? "首次安装" : "First install",
-        description: zh ? "配置 Luma 运行所需的外部依赖，然后验证控制面与节点是否可以工作。" : "Configure the external dependencies Luma needs, then verify that Control and the nodes are ready.",
-        metrics: [{ label: zh ? "已就绪" : "Ready", value: readiness ? `${configuredCount}/${integrationDefinitions.length}` : "-" }],
+        description: zh ? "Cloudflare 和 ACME 用于控制面 HTTPS 与公开服务。Tailscale、出网代理和内部 Registry 都是可选的，不影响先部署 hello-world。" : "Cloudflare and ACME cover Control HTTPS and public services. Tailscale, egress, and the builder registry are optional and not required to deploy hello-world.",
+        metrics: [{ label: zh ? "已配置" : "Configured", value: readiness ? `${configuredCount}/${integrationDefinitions.length}` : "-" }, { label: zh ? "必填" : "Required", value: readiness ? `${requiredReadyCount}/${requiredCount}` : "-" }],
       }} />
 
       {error ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{zh ? "保存或验证失败" : "Save or verification failed"}</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
       {notice ? <Alert role="status"><CheckCircle2 /><AlertDescription>{notice}</AlertDescription></Alert> : null}
+      <Alert>
+        <Info />
+        <AlertTitle>{zh ? "先验证调度，再配可选依赖" : "Prove scheduling before optional extras"}</AlertTitle>
+        <AlertDescription>{zh ? "打开 应用 → 创建应用，选择 “hello-world 首装验证”。它不需要 DNS、Tailscale 或 Registry。公开 HTTPS 服务再回来补 Cloudflare。" : "Open Applications → Create application and choose “hello-world first install”. It needs no DNS, Tailscale, or registry. Come back here for Cloudflare before a public HTTPS service."}</AlertDescription>
+      </Alert>
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5" aria-label={zh ? "依赖状态" : "Dependency status"}>
         {integrationDefinitions.map(({ id, zh: labelZh, en: labelEn, icon: Icon }) => {

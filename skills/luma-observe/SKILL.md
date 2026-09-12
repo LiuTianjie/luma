@@ -6,7 +6,7 @@ description: Deploy and operate the independent Luma application observability s
 # luma-observe
 
 Application alerts live in the optional `observe/` Compose stack, not in Luma Control.
-Deploy it with Luma (`luma build local observe`). Control keeps working if it is absent.
+Deploy it from that directory with `luma build local . --platform linux/amd64`. Control keeps working if it is absent.
 Do not add log scanners, OTLP receivers, or app 5xx rules to Control.
 
 The current release does not have an "enable observability" toggle that installs
@@ -26,9 +26,9 @@ Do not use this skill for Dashboard node CPU/disk presets, Nomad job YAML for or
 
 ## Invariants
 
-- Pin the stack to the Traefik node (`node: manager` on this cluster).
+- Control pins the stack to the registered manager (Traefik/Control node) on deploy and rewrites sidecar `node`/`region`. `observe/luma.compose.yml` values such as `node: manager` are a local-render fallback only; do not assume the manager is named `manager`.
 - Every Compose service uses `network_mode: host` and `exposure: none`.
-- Collectors bind `127.0.0.1` only. Control uses host networking to read VictoriaMetrics at `127.0.0.1:8428`. Never publish 4318/8082/8428/9428/3100 on eth0 or Tailscale.
+- Collectors bind `127.0.0.1` only. Control uses host networking to read VictoriaMetrics at `127.0.0.1:8428`. Never publish 4318/8082/8428/9428/3100 on eth0 or the public NIC. Port 4319 is the manager Tailscale mesh OTLP listener with a Control-issued bearer token; do not bind it on the public NIC.
 - After observe is deployed, look at Dashboard → Observability → Apps. It embeds Grafana at `/grafana` on the Control domain.
 - Alert evaluation is vmalert + Alertmanager + optional Feishu webhook.
 - Auto-instrumentation is automatic after observe is deployed: Control injects official OTel env vars into later app jobs. Do not create a Luma telemetry SDK.

@@ -2,6 +2,15 @@
 
 The console is available at `https://<control-domain>/dashboard/`. Sign in with a management token on a trusted device. It shares the same Control API as the CLI.
 
+## First hour after bootstrap
+
+1. Open `/dashboard/` and paste the management token from bootstrap.
+2. Create **hello-world first install** (Applications → Create application). It is internal (`exposure: none`) and does not need extra DNS, Tailscale, registry, or LAE.
+3. Use **First install** only for remaining cluster extras: Cloudflare zone details, Tailscale, egress, or a builder registry. A skipped optional check is not a failed install.
+4. After hello-world is healthy, create a public service with `cn-edge` / `external-edge`.
+
+LAE (the multi-tenant engine) is optional. The console hides it until Control has an LAE admin endpoint. First install does not configure it.
+
 ## Choose a workspace
 
 | Workspace | What you can do |

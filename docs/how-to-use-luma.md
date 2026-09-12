@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.360 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.361 sh
 ```
 
 For local development from a checkout:
@@ -48,18 +48,13 @@ This does not remove Docker, Nomad, Traefik, Luma Control, deployed services, or
 
 If `python3` is missing, the installer prints the package command for macOS or Ubuntu/Debian. Local Docker is optional; it is only used to validate rendered jobspec files before deployment.
 
-Create `.env`:
-
-```bash
-cp .env.example .env
-$EDITOR .env
-```
-
-Luma loads `.env` automatically. Shell exports win over `.env`, so CI or one-off commands can override local values.
+A checkout can keep secrets in `.env` (`cp .env.example .env`). A curl-installed CLI does not need that file: bootstrap and `luma node join` prompt for missing values. Luma also loads `.env` automatically when present. Shell exports win over `.env`, so CI or one-off commands can override local values.
 
 ## 2. Configure `luma.yaml`
 
-`luma.yaml` is the only project config file Luma needs.
+Skip this file for the first manager. `luma bootstrap manager --domain luma.example.com` works from a curl-installed CLI: it prompts for missing secrets, infers the Cloudflare zone from the control domain when needed, and writes `/opt/luma/luma.yaml` on the manager.
+
+Create a local `luma.yaml` later when you want to pin node public IPs, extra nodes, or image mirrors. It is the project config file Luma uses for those overrides:
 
 ```yaml
 project: example
@@ -160,11 +155,14 @@ To intentionally skip egress during first bootstrap, only do this when the contr
 luma bootstrap manager --domain luma.example.com --skip-egress
 ```
 
-The bootstrap output includes a management token and a node join token. Use the management token on client machines:
+The bootstrap output includes a management token, a node join token, and the dashboard URL. Open `https://luma.example.com/dashboard/`, paste the management token, then deploy **hello-world first install**. That smoke service does not need extra DNS, Tailscale, registry, or LAE.
+
+Use the management token on client machines:
 
 ```bash
 luma login https://luma.example.com --token <management-token>
 luma context list
+luma deploy templates/hello-world.yml
 ```
 
 Use the node join token on additional servers:
@@ -392,14 +390,14 @@ luma node list                 # 找到要用作构建节点的节点名，例�
 luma registry serve --node build-1
 ```
 
-它会把 `registry:2` 部署到 `build-1`（默认 `5000` 端口、带持久化卷、仅 Tailscale 内网可达），并遍历非 manager 的就绪 Linux 节点配置 `insecure-registries`，让它们能经 Tailscale 内网从这个 registry 拉镜像。构建节点本机推送走 `localhost:5000`，跨节点拉取走 `<build-1-tailscale-host>:5000`。
+它会把 `registry:2` 部署到 `build-1`（默认 `5000` 端口、节点本地卷、仅 Tailscale 内网可达），并遍历非 manager 的就绪 Linux 节点配置 `insecure-registries`，让它们能经 Tailscale 内网从这个 registry 拉镜像。BuildKit 推送和目标节点拉取都走 `<build-1-tailscale-host>:5000`；不要再用 `localhost:5000` 作为 `pushHost`（在 BuildKit 容器里那是容器自己）。随后用 `luma build config` 把 `registryHost` 和 `pushHost` 都设成这个 Tailscale 端点。
 
 从 `0.1.162` 起，CLI 会先完成 Docker daemon 配置、再创建 registry allocation；重复写入相同的 `insecure-registries` 也不会重启 Docker。这个顺序避免首次启用 registry 时由 Docker 重启打断刚创建的 Nomad CNI 网络。
 
 可选 flag：
 
 - `--port <n>`：registry 监听端口，默认 `5000`。
-- `--storage-class <name>`：registry 数据卷用的 storageClass，默认 `local`（本地节点卷）；要把镜像数据放到 NFS 等共享存储时指定已声明的 storageClass。
+- `--storage-class <name>`：可选的遗留 storageClass；省略时使用节点本地 Docker volume。不要为新 registry 注册 NFS class。
 - `--image <ref>`：registry 镜像，默认 `registry:2`。
 - `--name <svc>`：服务名，默认 `luma-registry`。
 - `--timeout <seconds>`：等待部署响应的秒数，默认 `1800`。

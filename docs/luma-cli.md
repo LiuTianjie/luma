@@ -17,7 +17,7 @@ Luma Control is the authentication and orchestration layer. It renders the manif
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.360"
+python -m pip install "luma-infra==0.1.361"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -34,7 +34,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.360 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.361 sh
 ```
 
 Development checkout:
@@ -65,7 +65,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.360"
+python -m pip install "luma-infra==0.1.361"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -77,7 +77,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.360"
+python -m pip install "luma-infra==0.1.361"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -237,7 +237,7 @@ Deploy an in-cluster registry for source-to-image builds:
 luma registry serve --node build-1
 ```
 
-`luma registry serve` deploys a `registry:2` service on a `docker-build`-capable node and wires `insecure-registries` into every non-manager ready Linux node so they can pull built images over the Tailscale network. BuildKit and target nodes both use the reachable Builder Tailscale endpoint `<build-node-tailscale-host>:5000`; do not configure the removed `localhost:5000` push endpoint. Optional flags: `--port` (default `5000`), `--storage-class` (data volume storageClass, default `local`), `--image` (default `registry:2`), `--name` (default `luma-registry`), `--timeout` (default `1800`). See the repository-import walkthrough in [how-to-use-luma.md](how-to-use-luma.md) for the full source-to-image flow.
+`luma registry serve` deploys a `registry:2` service on a `docker-build`-capable node and wires `insecure-registries` into every non-manager ready Linux node so they can pull built images over the Tailscale network. BuildKit and target nodes both use the reachable Builder Tailscale endpoint `<build-node-tailscale-host>:5000`; do not configure the removed `localhost:5000` push endpoint. Optional flags: `--port` (default `5000`), `--storage-class` (optional legacy class; omit to use a node-local Docker volume), `--image` (default `registry:2`), `--name` (default `luma-registry`), `--timeout` (default `1800`). See the repository-import walkthrough in [how-to-use-luma.md](how-to-use-luma.md) for the full source-to-image flow.
 
 The same control plane also serves a read-only Web status panel:
 
@@ -317,7 +317,7 @@ Update every registered node that has a ready node agent:
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.360 --timeout 900
+luma update fleet --install-ref v0.1.361 --timeout 900
 luma update fleet --include-manager
 ```
 
@@ -581,7 +581,6 @@ region: cn
 exposure: none
 resources:
   limits:
-    cpus: "0.50"
     memory: 512M
   reservations:
     cpus: "0.10"

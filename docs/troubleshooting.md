@@ -14,6 +14,25 @@ cp .env.example .env
 $EDITOR .env
 ```
 
+## First manager bootstrap failed
+
+Bootstrap is idempotent. A failed step prints `[fail] <title>: <cause>` and a `Fix:` line. Address that layer, then rerun the same command:
+
+```bash
+luma bootstrap manager --domain luma.example.com
+```
+
+| Failed step | Typical cause | Repair |
+| --- | --- | --- |
+| Install Docker | no sudo, or the host cannot reach Docker mirrors | fix sudo/network, rerun bootstrap |
+| Install Nomad binary / CNI | HashiCorp downloads blocked | set `EGRESS_SUBSCRIPTION_URL` on a mainland manager, rerun |
+| Install and connect Tailscale | missing auth key, or Tailscale not logged in | `luma tailscale connect` |
+| Deploy Traefik / Luma control | Nomad not ready, or the control image cannot be pulled | `nomad job status traefik` / `nomad job status luma-control`; for GHCR on a mainland host do not use `--skip-egress` |
+| Sync control DNS | Cloudflare token, zone, or `LUMA_DNS_EDGE_TARGET` | fix `.env` / prompts, rerun bootstrap |
+| Deploy egress | subscription URL or image mirror | `luma egress setup` |
+
+`luma doctor` reports Control reachability and node readiness after the API is up. Do not configure `LUMA_LAE_*` to recover a first install; LAE is optional.
+
 ## Local CLI cannot be installed
 
 Run:

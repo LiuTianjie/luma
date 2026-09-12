@@ -73,7 +73,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.360"
+python -m pip install "luma-infra==0.1.361"
 ```
 
 Install without cloning the repository:
@@ -88,7 +88,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.360 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.361 sh
 ```
 
 Develop from source:
@@ -125,9 +125,16 @@ The uninstall script does not remove Docker, Nomad, Traefik, Luma Control, deplo
 
 ## First Manager
 
-Run this on the manager server:
+Run this on the manager server. You do not need a git checkout; a curl-installed CLI is enough. Missing values are prompted interactively and saved to `~/.luma.config.json`.
 
 ```bash
+luma bootstrap manager --domain luma.example.com
+```
+
+If you prefer a file:
+
+```bash
+# only if you have a repository checkout
 cp .env.example .env
 $EDITOR .env
 luma bootstrap manager --domain luma.example.com
@@ -161,14 +168,18 @@ Use `--skip-egress` only when the control image registry is directly reachable, 
 luma bootstrap manager --domain luma.example.com --skip-egress
 ```
 
-Bootstrap installs/checks Docker, installs and starts the Nomad server, deploys Traefik and Luma Control as Nomad jobs, configures the firewall, and sets up egress when requested. It prints a management token and a node join token.
+Bootstrap installs/checks Docker, installs and starts the Nomad server, deploys Traefik and Luma Control as Nomad jobs, configures the firewall, and sets up egress when requested. It prints a management token, a node join token, the dashboard URL, and the hello-world next step.
 
-If one layer fails, re-run bootstrap or repair only that layer:
+If a step fails, it prints `[fail]` plus a `Fix:` line. Re-run the same bootstrap command after addressing that layer, or repair only that layer:
 
 ```bash
+luma bootstrap manager --domain luma.example.com
 luma egress setup
 luma tailscale connect
+luma doctor
 ```
+
+Then open `https://luma.example.com/dashboard/`, paste the management token, and deploy **hello-world first install**. LAE is optional and is not part of first install.
 
 The default control API image is `ghcr.io/liutianjie/luma-control:latest`. For predictable upgrades, prefer a published immutable tag and set `LUMA_CONTROL_IMAGE=ghcr.io/<you>/luma-control:<tag>` before bootstrap/update, or set `defaults.images.lumaControl` in `luma.yaml`. Luma fails if the configured control image cannot be pulled. When egress is enabled, Luma configures the Docker daemon proxy before pulling default GHCR control images.
 
@@ -252,7 +263,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.360"
+python -m pip install "luma-infra==0.1.361"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -264,12 +275,11 @@ luma deploy status.yaml --format ndjson --timeout 1800
 
 CI clients do not need SSH, Docker, Cloudflare, Nomad, or persistent files under `~/.config/luma`.
 
-When application services share a small manager, set explicit resource limits:
+When application services share a small manager, set explicit resource limits. CPU uses `reservations.cpus` as an elastic scheduling share; `limits.cpus` is ignored.
 
 ```yaml
 resources:
   limits:
-    cpus: "0.50"
     memory: 512M
   reservations:
     cpus: "0.10"
@@ -354,20 +364,19 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 | [docs/release.md](docs/release.md) | publishing tags, installer, and control image releases. |
 | [docs/agent-skill.md](docs/agent-skill.md) | Installation and usage guide for the Luma and LAE agent skills. |
 | [docs/lae/README.md](docs/lae/README.md) | LAE product design, CLI/Skill contract, and validation status. |
-| [docs/compose-storage.md](docs/compose-storage.md) | Multi-service Docker Compose deployment and NFS/local storage class setup and migration. |
+| [docs/compose-storage.md](docs/compose-storage.md) | Multi-service Compose deployment, deployment-node local storage, and legacy NFS migration. |
 
 ## Agent Skill
 
 Agents can use [skills/luma-deployment-yaml](skills/luma-deployment-yaml) for Luma deploy YAML, and [lae/skills/lae-deploy](lae/skills/lae-deploy) for tenant `lae` CLI workflows. See [docs/agent-skill.md](docs/agent-skill.md) for Claude/Cursor (`~/.claude/skills`) and Codex (`~/.codex/skills`) install steps.
 
-From this checkout:
+Install or update the Luma skills from this checkout (LAE is separate):
 
 ```bash
 for dest in ~/.claude/skills ~/.codex/skills; do
-  mkdir -p "$dest"
-  rm -rf "$dest/luma-deployment-yaml" "$dest/lae-deploy"
-  cp -R skills/luma-deployment-yaml "$dest/"
-  cp -R lae/skills/lae-deploy "$dest/"
+  mkdir -p "$dest/luma-deployment-yaml" "$dest/luma-observe"
+  cp -R skills/luma-deployment-yaml/. "$dest/luma-deployment-yaml/"
+  cp -R skills/luma-observe/. "$dest/luma-observe/"
 done
 ```
 

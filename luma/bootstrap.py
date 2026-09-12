@@ -1518,7 +1518,13 @@ def _bootstrap_node_nomad(
             )
             _deploy_nomad_job(remote, job, "traefik")
             return _wait_nomad_job(remote, "traefik")
-        _step(results, emit, "Deploy Traefik (Nomad)", _deploy_traefik_nomad)
+        _step(
+            results,
+            emit,
+            "Deploy Traefik (Nomad)",
+            _deploy_traefik_nomad,
+            fix="Check `nomad job status traefik` and Traefik logs, then rerun `luma bootstrap manager --domain <control-domain>`.",
+        )
 
     if run_egress and "egress" in roles:
         def _deploy_egress_nomad() -> str:
@@ -1526,7 +1532,13 @@ def _bootstrap_node_nomad(
             job = render_egress_job(image=_egress_image(config))
             _deploy_nomad_job(remote, job, "egress")
             return _wait_nomad_job(remote, "egress")
-        _step(results, emit, "Deploy egress (Nomad)", _deploy_egress_nomad)
+        _step(
+            results,
+            emit,
+            "Deploy egress (Nomad)",
+            _deploy_egress_nomad,
+            fix="Set EGRESS_SUBSCRIPTION_URL if image pulls fail, then run `luma egress setup` or rerun bootstrap without --skip-egress.",
+        )
 
     return results
 
@@ -1595,7 +1607,13 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
     manager_node_name = _remember_local_manager_node(state, node, profile, remote)
     state["nomadAddr"] = str(state.get("nomadAddr") or "http://127.0.0.1:4646")
     _step(results, emit, "Prefetch Luma control image", lambda: _prefetch_control_image_for_manager_refresh(remote, config, state=state))
-    _step(results, emit, "Sync control DNS", lambda: sync_control_dns(config, domain))
+    _step(
+        results,
+        emit,
+        "Sync control DNS",
+        lambda: sync_control_dns(config, domain),
+        fix="Check CLOUDFLARE_API_TOKEN, zone access, and LUMA_DNS_EDGE_TARGET, then rerun `luma bootstrap manager`.",
+    )
     cutover = {"pending": False}
     def install_state() -> str:
         result = install_control_state(remote, state, overwrite=overwrite_control_state, secret_names=_manager_secret_names(config))
@@ -1911,7 +1929,13 @@ def install_nomad_node(
     remote = LocalExecutor()
     results: list[str] = []
     if install_docker_first:
-        _step(results, emit, "Install Docker", lambda: install_docker(remote))
+        _step(
+            results,
+            emit,
+            "Install Docker",
+            lambda: install_docker(remote),
+            fix="Ensure sudo works and the host can reach the Docker apt/yum mirrors, then rerun bootstrap or `luma node join`.",
+        )
     _step(
         results,
         emit,
@@ -1971,7 +1995,13 @@ def install_nomad_node(
             return "Nomad binary already installed"
         return "Nomad binary installed"
 
-    _step(results, emit, "Install Nomad binary", _install_binary)
+    _step(
+        results,
+        emit,
+        "Install Nomad binary",
+        _install_binary,
+        fix="If HashiCorp downloads fail, set EGRESS_SUBSCRIPTION_URL on a mainland manager and rerun bootstrap.",
+    )
 
     def _write_config() -> str:
         cfg_b64 = base64.b64encode(install["config"].encode("utf-8")).decode("ascii")
@@ -2029,8 +2059,20 @@ def install_nomad_node(
             )
         return "Nomad agent started"
 
-    _step(results, emit, "Start Nomad agent", _start_service)
-    _step(results, emit, "Verify Nomad node", lambda: verify_local_nomad_node(remote, http_addrs=[tailscale_ip]))
+    _step(
+        results,
+        emit,
+        "Start Nomad agent",
+        _start_service,
+        fix="Inspect `journalctl -u nomad` (or launchd on macOS), then rerun bootstrap/`luma node join`.",
+    )
+    _step(
+        results,
+        emit,
+        "Verify Nomad node",
+        lambda: verify_local_nomad_node(remote, http_addrs=[tailscale_ip]),
+        fix="Wait for Nomad to listen on the Tailscale IP, then rerun the same command. `luma doctor` reports node readiness.",
+    )
     return results
 
 

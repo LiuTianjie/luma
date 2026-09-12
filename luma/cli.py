@@ -211,7 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.360 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.361 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -490,7 +490,7 @@ def build_parser() -> argparse.ArgumentParser:
     build_config.add_argument("--node", action="append", dest="nodes", default=[], help="Declared builder node; repeat for multiple builders")
     build_config.add_argument("--default-node", default="", help="Default builder node for luma import")
     build_config.add_argument("--registry-host", default="", help="Registry host that target nodes pull from, for example 100.66.177.70:5000")
-    build_config.add_argument("--push-host", default="", help="Registry host used from the builder itself, usually localhost:5000")
+    build_config.add_argument("--push-host", default="", help="Registry host BuildKit pushes to; use the builder Tailscale endpoint, not localhost:5000")
     build_config.add_argument("--direct-egress-node", action="append", dest="direct_egress_nodes", default=None, help="Builder node with reliable direct internet access; repeat for multiple nodes")
     build_config.add_argument("--clear-direct-egress", action="store_true", help="Clear the direct-egress builder node list")
     _add_control_arguments(build_config)
@@ -1897,6 +1897,16 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
         print(f"Cluster: {state['clusterId']}")
         print(f"Management token: {state['deployToken']}")
         print(f"Node join token: {state['joinToken']}")
+        print(f"Dashboard: {control_url.rstrip('/')}/dashboard/")
+        print("Next:")
+        print("  1. Open the dashboard and paste the management token")
+        print("  2. Applications → Create application → hello-world first install")
+        print("     (internal smoke service; no extra DNS, Tailscale, or registry)")
+        print("  3. Optional later: Dashboard → First install for Cloudflare extras, Tailscale, egress, or registry")
+        print("If a step failed, fix the printed cause and rerun:")
+        print(f"  luma bootstrap manager --domain {args.domain}")
+        print("Layer repair: luma egress setup | luma tailscale connect | luma doctor")
+        print("LAE is optional and is not part of first install.")
         print("Join additional nodes:")
         for label, command in _node_join_examples(control_url, str(state["joinToken"])):
             print(f"  {label}: {command}")

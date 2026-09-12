@@ -33,6 +33,8 @@ ingress 完成 consent-bound task credential 后才能启用。
 
 ## 1. 当前结论
 
+普通 Luma 首次安装**不要**配置本节的 principal / broker 文件。LAE 是可选产品，默认关闭；Dashboard 在未配置管理入口时不显示 LAE 菜单。
+
 LAE 的发布不是一次 `compose up`，而是四个有顺序的发布单元：
 
 1. 固定 Git commit，发布与它绑定的 Luma Control `sha-<short-sha>` 镜像；

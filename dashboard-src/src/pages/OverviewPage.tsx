@@ -52,6 +52,20 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
         ),
       }} />
 
+      {vm.applications.length === 0 ? (
+        <Alert>
+          <Info />
+          <AlertTitle>{zh ? "下一步：部署 hello-world" : "Next: deploy hello-world"}</AlertTitle>
+          <AlertDescription>{zh ? "集群里还没有应用。用 “hello-world 首装验证” 确认 Nomad 调度即可，不必先配 Tailscale、Registry 或 LAE。" : "No applications yet. Use “hello-world first install” to prove Nomad scheduling. Tailscale, registry, and LAE are not required."}</AlertDescription>
+          <AlertAction>
+            <Button size="sm" onClick={() => onNavigate("deploy")}>
+              <Plus data-icon="inline-start" />
+              {zh ? "创建应用" : "Create application"}
+            </Button>
+          </AlertAction>
+        </Alert>
+      ) : null}
+
       <section className="grid gap-4 md:grid-cols-3" aria-label={zh ? "集群运行摘要" : "Cluster summary"}>
         {[
           {

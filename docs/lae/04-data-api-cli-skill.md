@@ -569,6 +569,7 @@ build-plan(sourceSnapshotId, sourceSnapshotDigest, signedBuildPlan, credentialLe
 ### 14.1 命令面
 
 ```text
+lae version
 lae doctor
 lae login [--token-stdin]
 lae whoami
@@ -576,13 +577,14 @@ lae whoami
 lae apps create --name <name> --slug <slug> --idempotency-key <key>
 lae inspect --app <id> --repo <https-url> --ref <ref> --idempotency-key <key>
 lae inspect-file --app <id> --file <artifact.html|artifact.zip> --idempotency-prefix <prefix>
+lae config show --app <id> --analysis <id>
 lae deploy --app <id> --analysis <id> --environment-version <version> --idempotency-key <key>
 lae deploy --app <id> --analysis <update-analysis> --environment-version <version> \
   --confirm-change PUBLIC_ROUTE_CHANGE --confirm-change SERVICE_REMOVAL \
   --idempotency-key <key>
 lae operation show|watch|cancel <operation-id>
 
-lae apps list|show|logs|metrics <app>
+lae apps list|show|deployments|logs|metrics <app>
 lae apps check-update|suspend|resume|restart <app> --idempotency-key <key>
 lae apps rollback <app> [--deployment <id>] --idempotency-key <key>
 lae apps delete <app> --yes --idempotency-key <key>
@@ -602,10 +604,10 @@ lae billing checkout --plan pro --interval month
 
 - 所有 list/show/inspect/deploy 支持 JSON；长任务支持 NDJSON。
 - JSON stdout 只输出协议，进度/诊断写 stderr 或 NDJSON event。
-- `--non-interactive` 下缺少输入立即返回稳定错误，不打开浏览器或 prompt。
-- secret 通过 stdin、env 或 OS keychain；不接受明文命令行参数。
-- `--idempotency-key` 可显式传入；默认由 CLI 为同一次命令持久化。
-- watch 输出包含 operation ID 和 cursor，断线后自动 resume。
+- Agent 必须提供全部必填 flag。缺少输入立即返回稳定错误，不打开浏览器或 prompt。当前 CLI 没有 `--non-interactive` 开关。
+- secret 通过 stdin、`LAE_DEPLOY_TOKEN` 或 OS keychain；不接受明文命令行参数。stdin 占用时必须用环境变量提供 deploy token。
+- mutation 的 `--idempotency-key`（`inspect-file` 用 `--idempotency-prefix`）是必填的。同一 key 只用于相同 method/route/principal/body 的重试，CLI 不会自动生成或持久化。
+- watch 输出包含 operation ID 和 cursor，断线后用 `operation watch --after <cursor>` resume。
 
 建议退出码：
 
@@ -626,7 +628,7 @@ lae billing checkout --plan pro --interval month
 Skill 至少包含：
 
 1. 检测 CLI 是否安装与当前登录态。
-2. `register/login` 的人机边界和 token 安全说明。
+2. Web 注册/登录与 deploy-token 创建的人机边界：CLI 只有 `login --token-stdin` 校验，不持久化明文 token；没有 `lae register` / `lae tokens`。
 3. `inspect`，读取结构化 blocker/required env/Compose topology。
 4. 安全收集 env：让用户在终端/Web 中输入，不要求在对话中粘贴 secret。
 5. `deploy --format ndjson` 与 operation resume。

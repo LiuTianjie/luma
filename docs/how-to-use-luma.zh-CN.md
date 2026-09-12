@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 安装特定标签：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.360 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.361 sh
 ```
 
 从检出目录进行本地开发：
@@ -48,18 +48,13 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninst
 
 没有 `python3` 时，安装程序会显示 macOS 或 Ubuntu/Debian 的安装命令。客户端 Docker 是可选的，仅用于部署前校验渲染的 jobspec。
 
-创建 `.env`：
-
-```bash
-cp .env.example .env
-$EDITOR .env
-```
-
-Luma 自动加载 `.env`，Shell 已导出变量优先，方便 CI 或单次命令覆盖本地值。
+有仓库 checkout 时可以把 secret 放进 `.env`（`cp .env.example .env`）。只用 curl 安装 CLI 时不必有这个文件：bootstrap 和 `luma node join` 会询问缺的值。存在 `.env` 时 Luma 会自动加载；Shell 已导出变量优先，方便 CI 或单次命令覆盖。
 
 ## 2. 配置 `luma.yaml` {#2-configure-lumayaml}
 
-`luma.yaml` 是 Luma 唯一需要的项目配置文件。
+第一台 manager **不必**先写这个文件。`luma bootstrap manager --domain luma.example.com` 可以直接用 curl 安装的 CLI：缺的 secret 会询问，必要时从控制面域名推断 Cloudflare zone，并在 manager 上写出 `/opt/luma/luma.yaml`。
+
+以后若要固定节点公网 IP、增加节点或镜像源，再写本地 `luma.yaml`。它是这些覆盖项的项目配置文件：
 
 ```yaml
 project: example
@@ -160,11 +155,14 @@ luma egress setup
 luma bootstrap manager --domain luma.example.com --skip-egress
 ```
 
-初始化输出管理令牌和节点加入令牌。客户端使用管理令牌：
+初始化会输出管理令牌、节点加入令牌和 Dashboard 地址。打开 `https://luma.example.com/dashboard/`，粘贴管理令牌，然后部署 **hello-world 首装验证**。该冒烟服务不需要额外 DNS、Tailscale、Registry 或 LAE。
+
+客户端使用管理令牌：
 
 ```bash
 luma login https://luma.example.com --token <management-token>
 luma context list
+luma deploy templates/hello-world.yml
 ```
 
 新增服务器使用节点加入令牌：
@@ -391,14 +389,14 @@ luma node list                 # 找到要用作构建节点的节点名，例�
 luma registry serve --node build-1
 ```
 
-它会把 `registry:2` 部署到 `build-1`（默认 `5000` 端口、带持久化卷、仅 Tailscale 内网可达），并遍历非 manager 的就绪 Linux 节点配置 `insecure-registries`，让它们能经 Tailscale 内网从这个 registry 拉镜像。构建节点本机推送走 `localhost:5000`，跨节点拉取走 `<build-1-tailscale-host>:5000`。
+它会把 `registry:2` 部署到 `build-1`（默认 `5000` 端口、节点本地卷、仅 Tailscale 内网可达），并遍历非 manager 的就绪 Linux 节点配置 `insecure-registries`，让它们能经 Tailscale 内网从这个 registry 拉镜像。BuildKit 推送和目标节点拉取都走 `<build-1-tailscale-host>:5000`；不要再用 `localhost:5000` 作为 `pushHost`（在 BuildKit 容器里那是容器自己）。随后用 `luma build config` 把 `registryHost` 和 `pushHost` 都设成这个 Tailscale 端点。
 
 从 `0.1.162` 起，CLI 会先完成 Docker daemon 配置、再创建 registry allocation；重复写入相同的 `insecure-registries` 也不会重启 Docker。这个顺序避免首次启用 registry 时由 Docker 重启打断刚创建的 Nomad CNI 网络。
 
 可选 flag：
 
 - `--port <n>`：registry 监听端口，默认 `5000`。
-- `--storage-class <name>`：registry 数据卷用的 storageClass，默认 `local`（本地节点卷）；要把镜像数据放到 NFS 等共享存储时指定已声明的 storageClass。
+- `--storage-class <name>`：可选的遗留 storageClass；省略时使用节点本地 Docker volume。不要为新 registry 注册 NFS class。
 - `--image <ref>`：registry 镜像，默认 `registry:2`。
 - `--name <svc>`：服务名，默认 `luma-registry`。
 - `--timeout <seconds>`：等待部署响应的秒数，默认 `1800`。

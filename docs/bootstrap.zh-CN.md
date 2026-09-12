@@ -17,7 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 
 ## 2. 准备 Manager 节点 {#2-prepare-the-manager-node}
 
-首次初始化应直接在完整的 Manager 节点上执行。将服务器添加到 `luma.yaml`，以便推导 DNS 目标与标签：
+首次初始化应直接在完整的 Manager 节点上执行。curl 安装的 CLI 即可，不必先有 `luma.yaml`。可选：把服务器写进 `luma.yaml`，以便推导 DNS 目标与标签：
 
 ```yaml
 nodes:
@@ -107,6 +107,8 @@ Node join token: ...
 ```
 
 请妥善保管管理令牌和节点加入令牌。
+
+同一段输出会打印 Dashboard 地址。打开后粘贴管理令牌，在 **应用 → 创建应用** 部署 **hello-world 首装验证**。该冒烟服务不需要额外 DNS、Tailscale、Registry 或 LAE。若某步打印了 `[fail]`，按 `Fix:` 修好后重跑同一条 bootstrap；`luma egress setup`、`luma tailscale connect`、`luma doctor` 可修单层。
 
 Luma 只向用户提供两类令牌：
 

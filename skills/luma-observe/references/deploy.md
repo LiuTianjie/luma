@@ -5,7 +5,7 @@
 | Path | Role |
 | --- | --- |
 | `observe/docker-compose.yml` | Collector, VictoriaMetrics, vmalert, Alertmanager, nomad-exporter, Feishu webhook |
-| `observe/luma.compose.yml` | `region: cn`, pin `manager`, local volume `/srv/luma/data/luma-observe/victoria` |
+| `observe/luma.compose.yml` | Local-render fallback (`region: cn`, `node: manager`). Control rewrites node/region to the registered manager and injects Grafana's public URL. |
 | `luma/nomad_render.py` | Traefik loopback Prometheus + OTLP flags |
 
 ## Loopback ports on manager

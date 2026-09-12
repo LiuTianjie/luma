@@ -8,7 +8,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-import { Boxes, MapPinned, RefreshCw, ScrollText, UsersRound, WalletCards } from "lucide-react";
+import { Boxes, CloudCog, MapPinned, RefreshCw, ScrollText, UsersRound, WalletCards } from "lucide-react";
 import { CodeCell, PrimaryCell, StatePill } from "../components/primitives";
 import {
   fetchLaeAdmin,
@@ -54,6 +54,10 @@ function time(value?: string | number | null): string {
   if (!value) return "-";
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? "-" : parsed.toLocaleString();
+}
+
+function isLaeUnavailable(message?: string) {
+  return /LAE admin API is unavailable/i.test(message || "");
 }
 
 export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
@@ -123,6 +127,7 @@ export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
 
   const running = useMemo(() => state.applications.filter((app) => app.observedState === "running").length, [state.applications]);
   const failedOperations = useMemo(() => state.operations.filter((operation) => operation.status === "failed").length, [state.operations]);
+  const unavailable = isLaeUnavailable(state.errors[view]);
   const tenantsById = useMemo(() => new Map(state.tenants.map((tenant) => [tenant.id, tenant])), [state.tenants]);
   const tabs: Array<{ id: View; label: string; icon: typeof Boxes }> = [
     { id: "applications", label: zh ? "应用" : "Apps", icon: Boxes },
@@ -221,7 +226,9 @@ export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
       <PageHeader meta={{
         eyebrow: "LUMA APPLICATION ENGINE",
         title: zh ? "LAE 平台总览" : "LAE platform overview",
-        description: zh ? "跨租户查看用户、应用、运行状态与资源用量。敏感凭据和值不会进入此视图。" : "Cross-tenant users, applications, runtime state and usage. Credentials and secret values never enter this view.",
+        description: unavailable
+          ? (zh ? "LAE 是可选能力，默认不随首次安装启用。当前集群没有配置 LAE 管理入口。" : "LAE is optional and is not part of first install. This cluster has no LAE admin endpoint configured.")
+          : (zh ? "跨租户查看用户、应用、运行状态与资源用量。敏感凭据和值不会进入此视图。" : "Cross-tenant users, applications, runtime state and usage. Credentials and secret values never enter this view."),
         metrics: [
           { label: zh ? "用户" : "Users", value: state.pages.users?.total ?? "—" },
           { label: zh ? "租户" : "Tenants", value: state.pages.tenants?.total ?? "—" },
@@ -233,7 +240,21 @@ export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
         </Button>,
       }} />
 
-      <Tabs value={view} onValueChange={(value) => { if (tabs.some((tab) => tab.id === value)) setView(value as View); }} className="min-w-0 gap-6">
+      {unavailable ? (
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon"><CloudCog /></EmptyMedia>
+            <EmptyTitle>{zh ? "未启用 LAE" : "LAE is not enabled"}</EmptyTitle>
+            <EmptyDescription>
+              {zh
+                ? "开箱安装只需要 Luma Control、Traefik 和 Nomad。要接入多租户 LAE，请按 docs/lae/ 单独配置后再刷新。"
+                : "A first Luma install only needs Control, Traefik, and Nomad. Enable LAE later from docs/lae/, then refresh."}
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : null}
+
+      {unavailable ? null : <Tabs value={view} onValueChange={(value) => { if (tabs.some((tab) => tab.id === value)) setView(value as View); }} className="min-w-0 gap-6">
         <div className="max-w-full overflow-x-auto">
           <TabsList aria-label={zh ? "LAE 平台资源" : "LAE platform resources"}>
             {tabs.map(({ id, label, icon: Icon }) => (
@@ -295,7 +316,7 @@ export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
             </Card> : null}
           </TabsContent>;
         })}
-      </Tabs>
+      </Tabs>}
     </div>
   );
 }

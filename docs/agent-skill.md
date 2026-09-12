@@ -22,6 +22,7 @@ Luma 与 LAE 技能独立维护。下面的默认安装只更新 Luma 技能，�
 
 - **SKILL.md**：独立 observe 栈边界、部署命令、loopback 约束。
 - **references/deploy.md**：端口、流量和后续 OTel 约定。
+- **references/instrumentation.md**：应用侧官方 OpenTelemetry 接入，没有 Luma SDK。
 
 [`lae/skills/lae-deploy`](../lae/skills/lae-deploy)：
 
@@ -79,7 +80,7 @@ Install the skill from https://github.com/LiuTianjie/luma/tree/main/skills/luma-
 2. 校验 Compose sidecar  
    「检查一下我的 `luma.compose.yml` 是否符合 Luma 调度和存储规范。」
 3. 从现有 Compose 写 sidecar  
-   「已有 `docker-compose.yml`，帮我写 `luma.compose.yml`，把 `pg-data` 绑到 `cn-nfs`。」
+   「已有 `docker-compose.yml`，帮我写 `luma.compose.yml`，把 `pg-data` 放到部署节点本地路径 `/srv/luma/data/app-stack/pg-data`。」
 4. 回滚准备度  
    「review 这个部署文件，确认镜像 tag、存储和 Compose sidecar 是否适合生产回滚。」
 5. 沿用构建部署方式
@@ -102,7 +103,7 @@ Install the skill from https://github.com/LiuTianjie/luma/tree/main/skills/luma-
 1. **域与端口**：公开 `exposure` 必须有 `domain` 和 `port`。
 2. **节点固定**：`node` 使用 `luma node join --name` 的 Luma 节点名，不要用 Docker hostname。
 3. **端口语义**：`port` 是容器端口；`tailscale-relay` / `tcp-relay` 的 `publishPort` 是目标节点 host 端口。
-4. **存储类**：sidecar 不要定义非空 `storageClasses`；用 `luma storage set` 在控制面注册，sidecar 只引用名称。
-5. **region 与存储**：服务 `region` 必须落在所引用 `storageClass` 的可达 regions 内。
+4. **本地存储**：新持久化部署用部署节点本地卷或 bind mount。Compose sidecar 写 `volumes.<name>.local.path`；不要为新应用注册 NFS / storage class。Control 在提交前记录首个 owner，后续更新钉在该节点。
+5. **旧 storage class**：只用于迁移/排障已有 NFS 引用。sidecar 不要定义非空 `storageClasses`。无 running allocation 也不等于没有数据。
 6. **镜像与 secret**：registry token 不进 YAML；用 `luma registry login`。`proxy: true` 不是镜像拉取代理。有 Builder Registry 时，预构建镜像先拷进内部 registry 再部署。
 7. **回滚**：`luma rollback` 是 Nomad job 运行态回滚，不回写 Git/manifest，也不恢复卷数据。
