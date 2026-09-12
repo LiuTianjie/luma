@@ -19022,6 +19022,27 @@ def _resolve_application_terminal_target(state: Dict[str, Any], service: str) ->
     }
 
 
+def _terminal_agent_identity(token: str, node_name: str, node_id: str) -> str:
+    # Terminal authentication needs config and current nodes, never build/task
+    # history. Reconnecting agents otherwise materialize all historical rows.
+    state = load_dashboard_state()
+    canonical_name, _record = _require_node_agent_token_entry(state, token, node_name, node_id=node_id)
+    return canonical_name
+
+
+def _terminal_browser_target(token: str, node_name: str, service: str) -> tuple[str, Dict[str, str] | None]:
+    state = load_dashboard_state()
+    require_token(state, token, token_type="deploy")
+    if service:
+        target = _resolve_application_terminal_target(state, service)
+        return target["node"], target
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    entry = _node_record_entry_for_name_or_id(nodes, node_name)
+    if entry is None:
+        raise LumaError(f"node is not registered: {node_name}")
+    return entry[0], None
+
+
 class _TerminalSession:
     def __init__(self, session_id: str, node_name: str, browser: WebSocket, agent: "_TerminalAgentConnection"):
         self.id = session_id
@@ -19094,17 +19115,11 @@ class TerminalBroker:
             self._pending_auth_for_loop().release()
         container_target: Dict[str, str] | None = None
         try:
-            state = load_state()
-            require_token(state, token, token_type="deploy")
-            if requested_service:
-                container_target = _resolve_application_terminal_target(state, requested_service)
-                node_name = container_target["node"]
-            else:
-                nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-                entry = _node_record_entry_for_name_or_id(nodes, requested_node)
-                if entry is None:
-                    raise LumaError(f"node is not registered: {requested_node}")
-                node_name = entry[0]
+            # SQLite and Nomad calls must not hold up unrelated HTTP requests
+            # on the ASGI event loop while a terminal connection is opening.
+            node_name, container_target = await run_in_threadpool(
+                _terminal_browser_target, token, requested_node, requested_service,
+            )
         except LumaError as exc:
             try:
                 await websocket.send_json({"type": "error", "message": str(exc)})
@@ -19188,8 +19203,9 @@ class TerminalBroker:
         finally:
             self._pending_auth_for_loop().release()
         try:
-            state = load_state()
-            canonical_node_name, _record = _require_node_agent_token_entry(state, token, node_name, node_id=node_id)
+            canonical_node_name = await run_in_threadpool(
+                _terminal_agent_identity, token, node_name, node_id,
+            )
         except LumaError:
             await websocket.close(code=1008)
             return

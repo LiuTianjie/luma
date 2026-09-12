@@ -98,3 +98,63 @@ test('dashboard deduplicates refreshes, aborts old scope, ignores stale response
     assert.equal(independent.payload, null);
   } finally { runner.close(); Object.assign(global, previous); }
 });
+
+test('recent pages render immediately on return while refreshing, with expiry and token isolation', async () => {
+  const previous = { window: global.window, document: global.document, localStorage: global.localStorage, fetch: global.fetch };
+  const originalNow = Date.now;
+  let now = 1000;
+  Date.now = () => now;
+  const calls = [];
+  global.window = { location: { hostname: 'example.com' }, setTimeout() { return 1; }, clearTimeout() {} };
+  global.document = { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
+  global.localStorage = { getItem: () => 'token', setItem() {}, removeItem() {} };
+  global.fetch = (url, options) => new Promise(resolve => calls.push({ url, options, resolve }));
+  const runner = hookRunner();
+  const complete = async (view, payload) => {
+    const request = view.loadDashboard();
+    calls.at(-1).resolve({ ok: true, text: async () => JSON.stringify(payload) });
+    await request;
+  };
+  try {
+    await complete(runner.render('applications'), { services: [{ name: 'cached-app' }] });
+    await complete(runner.render('fleet'), { nodes: [{ name: 'cached-node' }] });
+    const returning = runner.render('applications');
+    assert.equal(returning.payload.services[0].name, 'cached-app');
+    assert.equal(calls.at(-1).url, '/v1/dashboard?scope=applications');
+    await complete(returning, { services: [{ name: 'fresh-app' }] });
+    assert.equal(runner.render('applications').payload.services[0].name, 'fresh-app');
+    await complete(runner.render('fleet'), { nodes: [{ name: 'node' }] });
+    assert.equal(runner.render('applications', 'q=different').payload, null, 'a different filter cannot restore the previous page');
+    runner.render('none');
+    now += 60001;
+    const expired = runner.render('applications');
+    assert.equal(expired.payload, null, 'old pages must return to a loading state');
+    await complete(expired, { services: [{ name: 'fresh-app' }] });
+    runner.render('none').setToken('other-token');
+    assert.equal(runner.render('applications').payload, null, 'credentials cannot reuse the old account snapshot');
+    assert.equal(calls.at(-1).options.headers.Authorization, 'Bearer other-token');
+  } finally {
+    runner.close(); Date.now = originalNow; Object.assign(global, previous);
+  }
+});
+
+test('a rejected credential clears all saved pages', async () => {
+  const previous = { window: global.window, document: global.document, localStorage: global.localStorage, fetch: global.fetch };
+  const calls = [];
+  global.window = { location: { hostname: 'example.com' }, setTimeout() { return 1; }, clearTimeout() {} };
+  global.document = { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
+  global.localStorage = { getItem: () => 'token', setItem() {}, removeItem() {} };
+  global.fetch = (url, options) => new Promise(resolve => calls.push({ url, options, resolve }));
+  const runner = hookRunner();
+  try {
+    const apps = runner.render('applications');
+    const request = apps.loadDashboard();
+    calls[0].resolve({ ok: true, text: async () => JSON.stringify({ services: [{ name: 'app' }] }) });
+    await request;
+    const nodes = runner.render('fleet');
+    const rejected = nodes.loadDashboard();
+    calls[1].resolve({ ok: false, status: 401, text: async () => JSON.stringify({ error: 'unauthorized' }) });
+    await rejected;
+    assert.equal(runner.render('applications').payload, null);
+  } finally { runner.close(); Object.assign(global, previous); }
+});

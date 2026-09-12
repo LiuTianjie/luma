@@ -13,18 +13,23 @@ const loadDeploymentsPage = () => import("./pages/DeploymentsPage").then((module
 const loadDeployPage = () => import("./pages/DeployPage").then((module) => ({ default: module.DeployPage }));
 const loadCredentialsPage = () => import("./pages/CredentialsPage").then((module) => ({ default: module.CredentialsPage }));
 const loadSetupPage = () => import("./pages/SetupPage").then((module) => ({ default: module.SetupPage }));
+const loadNodesPage = () => import("./pages/NodesPage").then((module) => ({ default: module.NodesPage }));
+const loadLaeAdminPage = () => import("./pages/LaeAdminPage").then((module) => ({ default: module.LaeAdminPage }));
+const loadObservabilityPage = () => import("./pages/ObservabilityPage").then((module) => ({ default: module.ObservabilityPage }));
+const loadStoragePage = () => import("./pages/StoragePage").then((module) => ({ default: module.StoragePage }));
+const loadRegistryPage = () => import("./pages/RegistryPage").then((module) => ({ default: module.RegistryPage }));
 const ApplicationsPage = lazy(loadApplicationsPage);
 const BuilderPage = lazy(loadBuilderPage);
 const DeploymentsPage = lazy(loadDeploymentsPage);
 const DeployPage = lazy(loadDeployPage);
 const CredentialsPage = lazy(loadCredentialsPage);
 const SetupPage = lazy(loadSetupPage);
-const NodesPage = lazy(() => import("./pages/NodesPage").then((module) => ({ default: module.NodesPage })));
-const LaeAdminPage = lazy(() => import("./pages/LaeAdminPage").then((module) => ({ default: module.LaeAdminPage })));
+const NodesPage = lazy(loadNodesPage);
+const LaeAdminPage = lazy(loadLaeAdminPage);
 const NotFound = lazy(() => import("./pages/NotFound").then((module) => ({ default: module.NotFound })));
-const ObservabilityPage = lazy(() => import("./pages/ObservabilityPage").then((module) => ({ default: module.ObservabilityPage })));
-const StoragePage = lazy(() => import("./pages/StoragePage").then((module) => ({ default: module.StoragePage })));
-const RegistryPage = lazy(() => import("./pages/RegistryPage").then((module) => ({ default: module.RegistryPage })));
+const ObservabilityPage = lazy(loadObservabilityPage);
+const StoragePage = lazy(loadStoragePage);
+const RegistryPage = lazy(loadRegistryPage);
 
 export type AppRoutesProps = {
   page: ResolvedPage;
@@ -60,8 +65,13 @@ export function preloadPage(page: NavPage): void {
     : page === "applications" ? loadApplicationsPage
     : page === "builder" ? loadBuilderPage
     : page === "deploy" ? loadDeployPage
+    : page === "nodes" ? loadNodesPage
+    : page === "lae" ? loadLaeAdminPage
+    : page === "observability" ? loadObservabilityPage
+    : page === "storage" ? loadStoragePage
+    : page === "registry" ? loadRegistryPage
     : null;
-  if (loader) void loader();
+  if (loader) void loader().catch(() => {});
 }
 
 // Resolve the current page to its view. When an update request is active it takes over

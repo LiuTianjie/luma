@@ -4,14 +4,22 @@ import type { DashboardPayload, SyncStatus } from "./types";
 
 const TOKEN_KEY = "luma.dashboard.deployToken";
 const REFRESH_MS = 30000;
+const SNAPSHOT_TTL_MS = 60000;
+const SNAPSHOT_LIMIT = 8;
 const isDev = typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
+type Snapshot = { token: string; identity: string; payload: DashboardPayload; updatedAt: number };
 
 export function useDashboardData(scope: DashboardScope = "full", query = "") {
   const [token, setTokenState] = useState(() => localStorage.getItem(TOKEN_KEY) || (isDev ? "dev-token" : ""));
   // List filters retain their mounted view while refreshing; different objects do not.
   const identity = scope === "application" ? `${scope}:${query}` : scope;
-  const [snapshot, setSnapshot] = useState<{ token: string; identity: string; payload: DashboardPayload } | null>(null);
-  const payload = snapshot?.token === token && snapshot.identity === identity ? snapshot.payload : null;
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const cacheRef = useRef(new Map<string, Snapshot>());
+  const cacheKey = `${scope}?${query}`;
+  const cached = cacheRef.current.get(cacheKey);
+  const recent = cached?.token === token && Date.now() - cached.updatedAt <= SNAPSHOT_TTL_MS ? cached : null;
+  const visibleSnapshot = snapshot?.token === token && snapshot.identity === identity ? snapshot : recent;
+  const payload = visibleSnapshot?.payload || null;
   const requestRef = useRef<{ controller: AbortController; promise: Promise<void> } | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(token ? "refreshing" : "notConnected");
@@ -24,6 +32,7 @@ export function useDashboardData(scope: DashboardScope = "full", query = "") {
 
   const setToken = useCallback((nextToken: string) => {
     const trimmed = nextToken.trim();
+    cacheRef.current.clear();
     setTokenState(trimmed);
     if (trimmed) localStorage.setItem(TOKEN_KEY, trimmed);
     else localStorage.removeItem(TOKEN_KEY);
@@ -62,9 +71,17 @@ export function useDashboardData(scope: DashboardScope = "full", query = "") {
         }
         if (!response.ok) throw new Error(nextPayload.error || `HTTP ${response.status}`);
         if (generation !== generationRef.current) return;
-        setSnapshot({ token, identity, payload: nextPayload as DashboardPayload });
+        const updatedAt = Date.now();
+        const nextSnapshot = { token, identity, payload: nextPayload as DashboardPayload, updatedAt };
+        for (const [key, value] of cacheRef.current) {
+          if (value.token !== token || updatedAt - value.updatedAt > SNAPSHOT_TTL_MS) cacheRef.current.delete(key);
+        }
+        cacheRef.current.delete(cacheKey);
+        cacheRef.current.set(cacheKey, nextSnapshot);
+        if (cacheRef.current.size > SNAPSHOT_LIMIT) cacheRef.current.delete(cacheRef.current.keys().next().value!);
+        setSnapshot(nextSnapshot);
         setErrors(nextPayload.errors || []);
-        setLastUpdated(new Date());
+        setLastUpdated(new Date(updatedAt));
         setSyncStatus("updated");
       } catch (error) {
         if (generation !== generationRef.current) return;
@@ -73,6 +90,7 @@ export function useDashboardData(scope: DashboardScope = "full", query = "") {
         if (/unauthorized|bearer token/i.test(message)) {
           pollingHaltedRef.current = true;
           setSyncStatus("tokenRejected");
+          cacheRef.current.clear();
           setSnapshot(null);
         } else {
           setSyncStatus("unavailable");
@@ -86,7 +104,7 @@ export function useDashboardData(scope: DashboardScope = "full", query = "") {
     });
     requestRef.current = { controller, promise };
     return promise;
-  }, [token, scope, query, identity]);
+  }, [token, scope, query, identity, cacheKey]);
 
   // Self-rescheduling poll loop: the next tick is booked once the previous fetch
   // settles, success or failure, so a transient error (Control restart during
@@ -95,7 +113,7 @@ export function useDashboardData(scope: DashboardScope = "full", query = "") {
   // Only a rejected token halts the loop, until the token changes.
   useEffect(() => {
     setErrors([]);
-    setLastUpdated(null);
+    setLastUpdated(recent ? new Date(recent.updatedAt) : null);
     setSyncStatus(!token ? "notConnected" : scope === "none" ? "updated" : "refreshing");
     if (!token || scope === "none") return;
     pollingHaltedRef.current = false;

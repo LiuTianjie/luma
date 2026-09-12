@@ -85,6 +85,14 @@ export function App() {
     || resolvedPage === "observability";
 
   useEffect(() => {
+    if (!token || resolvedPage === "notfound" || (objectRoute && objectRoute.kind !== "update")) return;
+    // Start lazy code and data together, including direct links and keyboard
+    // navigation. Waiting for payload before mounting AppRoutes adds a second
+    // network wait to every cold page that needs a Dashboard snapshot.
+    preloadPage(editName ? "deploy" : resolvedPage);
+  }, [token, resolvedPage, objectRoute?.kind, editName]);
+
+  useEffect(() => {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
   }, [lang]);
 
