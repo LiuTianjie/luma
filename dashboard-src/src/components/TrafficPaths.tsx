@@ -14,6 +14,7 @@ import { t } from "../i18n";
 import { retryCertificate } from "../lifecycleApi";
 import type { Lang, TrafficPath } from "../types";
 import { Badge } from "./primitives";
+import { TopologyFullscreenButton } from "./TopologyFullscreenButton";
 
 function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[] {
   const isDark = theme === "dark";
@@ -217,12 +218,14 @@ export function TrafficPaths({
       </div>
       {filteredPaths.length ? <>
         <div className="topology-canvas route-map">
-          <CytoscapeComponent className="cy-topology" elements={elements} layout={{ name: "preset", fit: true, padding: 36 }} maxZoom={1.6} minZoom={0.35} stylesheet={stylesheet} cy={setCyRef} />
+          {/* A fixed zoom floor clamps fit() and clips large route graphs. */}
+          <CytoscapeComponent className="cy-topology" elements={elements} layout={{ name: "preset", fit: true, padding: 36 }} maxZoom={1.6} minZoom={0} stylesheet={stylesheet} cy={setCyRef} />
           <div className="cy-controls" aria-label={zh ? "关系图操作" : "Diagram controls"}>
             {selected ? <Button variant="outline" size="sm" onClick={() => setSelectedPath(null)}><X data-icon="inline-start" />{zh ? "显示全部" : "Show all"}</Button> : null}
             <Button variant="outline" size="icon-sm" aria-label={zh ? "放大" : "Zoom in"} onClick={handleZoomIn}><Plus /></Button>
             <Button variant="outline" size="icon-sm" aria-label={zh ? "缩小" : "Zoom out"} onClick={handleZoomOut}><Minus /></Button>
             <Button variant="outline" size="icon-sm" aria-label={zh ? "适应画布" : "Fit view"} onClick={handleReset}><Maximize /></Button>
+            <TopologyFullscreenButton cy={cyRef} lang={lang} />
           </div>
           <p className="route-map-caption">{selected ? (selected.domain || selected.id) : (zh ? "入口与服务关系 · 点击下方路由查看单条路径" : "Ingress and services · Select a route below to inspect its path")}</p>
         </div>

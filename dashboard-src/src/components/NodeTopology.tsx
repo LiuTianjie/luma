@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { TopologyFullscreenButton } from "./TopologyFullscreenButton";
 
 import dagre from "dagre";
 import CytoscapeComponent from "react-cytoscapejs";
@@ -346,7 +347,8 @@ export function NodeTopology({
           elements={topology.elements}
           layout={{ name: "preset", fit: true, padding: 48 }}
           maxZoom={1.6}
-          minZoom={0.35}
+          // Allow fit() to include every node even in large clusters.
+          minZoom={0}
           stylesheet={stylesheet}
           cy={(cy) => setCyRef(cy)}
         />
@@ -355,6 +357,7 @@ export function NodeTopology({
           <Button variant="outline" size="icon-sm" aria-label="Zoom in" className="cy-control-btn" onClick={handleZoomIn} type="button" title="Zoom In">+</Button>
           <Button variant="outline" size="icon-sm" aria-label="Zoom out" className="cy-control-btn" onClick={handleZoomOut} type="button" title="Zoom Out">-</Button>
           <Button variant="outline" size="icon-sm" aria-label="Reset view" className="cy-control-btn" onClick={handleReset} type="button" title="Reset View">0</Button>
+          <TopologyFullscreenButton cy={cyRef} lang={lang} />
         </div>
       </div>
     </section>

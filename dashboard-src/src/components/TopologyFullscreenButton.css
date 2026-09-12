@@ -1,0 +1,13 @@
+.topology-canvas:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background-color: var(--background);
+}
+
+.topology-canvas:fullscreen .cy-topology {
+  height: 100%;
+  min-height: 0;
+}
