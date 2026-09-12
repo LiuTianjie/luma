@@ -5,19 +5,20 @@ import {
   Clock3,
   Database,
   HardDrive,
-  Play,
+  Info,
   RefreshCw,
-  RotateCcw,
   Search,
   Settings2,
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { CodeCell, SelectControl, StatePill } from "../components/primitives";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -27,17 +28,13 @@ import {
   fetchRegistryInventory,
   previewRegistryDeletion,
   purgeRegistryManifests,
-  registryDeletionAction,
-  registryGc,
   saveRegistryPolicy,
-  type RegistryDeletion,
   type RegistryInventory,
   type RegistryManifest,
   type RegistryPolicy,
 } from "../registryManagementApi";
 import type { Lang } from "../types";
 import { useRouter, toHref } from "../router";
-import { useConfirm } from "../components/ConfirmDialog";
 import { findRegistryImage } from "../registryDetail";
 import { PageHeader } from "./PageHeader";
 
@@ -77,25 +74,11 @@ function statusLabel(status: string | undefined, zh: boolean) {
   return zh ? pair[0] : pair[1];
 }
 
-function deletionStatusLabel(status: string, zh: boolean) {
-  const labels: Record<string, [string, string]> = {
-    queued: ["等待执行", "Queued"],
-    deleting: ["删除中", "Deleting"],
-    deleted_pending_gc: ["可恢复 · 待 GC", "Recoverable · GC pending"],
-    restored: ["已恢复", "Restored"],
-    gc_completed: ["已回收", "Reclaimed"],
-    canceled: ["已取消", "Canceled"],
-    failed: ["失败", "Failed"],
-    failed_recoverable: ["失败 · 可恢复", "Failed · Recoverable"],
-  };
-  const pair = labels[status] || [status, status];
-  return zh ? pair[0] : pair[1];
-}
-
 export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
   const zh = lang === "zh";
   const { path, search, navigate } = useRouter();
-  const section = path.split("/")[2] || "inventory";
+  const routeSection = path.split("/")[2] || "inventory";
+  const section = routeSection === "cleanup" ? "inventory" : routeSection;
   const showPolicy = section === "policy";
   const setShowPolicy = (value: boolean) => navigate(value ? "/registry/policy" : "/registry");
   const detailKey = new URLSearchParams(search).get("image") || "";
@@ -107,15 +90,25 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const { confirm, element: confirmDialog } = useConfirm(lang);
   const [notice, setNotice] = useState("");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [preview, setPreview] = useState<Awaited<ReturnType<typeof previewRegistryDeletion>> | null>(null);
   const [policy, setPolicy] = useState<RegistryPolicy>(DEFAULT_POLICY);
+  const [purgeElapsed, setPurgeElapsed] = useState(0);
+  const inventoryRequest = useRef(0);
+
+  useEffect(() => {
+    if (busy !== "purge") return;
+    const started = Date.now();
+    setPurgeElapsed(0);
+    const timer = window.setInterval(() => setPurgeElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [busy]);
 
   const load = useCallback(async (refresh = false, offset = 0, append = false) => {
+    const request = ++inventoryRequest.current;
     setLoading(true);
     setError("");
     try {
@@ -125,6 +118,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
         query,
         status: filter,
       });
+      if (request !== inventoryRequest.current) return;
       setInventory((current) => append && current ? {
         ...next,
         entries: [...(current.entries || []), ...(next.entries || [])],
@@ -137,9 +131,9 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
         });
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (request === inventoryRequest.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (request === inventoryRequest.current) setLoading(false);
     }
   }, [filter, query, token]);
 
@@ -197,6 +191,12 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
   const monthlyMax = Math.max(...monthly.map((item) => Number(item.bytes || 0)), 1);
 
   const selectionItems = (inventory?.entries || []).filter((item) => selected.has(keyFor(item)));
+  const deletionRepositories = new Map<string, RegistryManifest[]>();
+  for (const item of preview?.selected || []) {
+    const images = deletionRepositories.get(item.repository) || [];
+    images.push(item);
+    deletionRepositories.set(item.repository, images);
+  }
 
   const toggle = (item: RegistryManifest) => {
     const key = keyFor(item);
@@ -216,6 +216,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
       const result = await previewRegistryDeletion(token, selectionItems.map(({ repository, digest }) => ({ repository, digest })));
       setPreview(result);
       navigate("/registry/delete");
+      window.scrollTo({ top: 0, behavior: "instant" });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -234,33 +235,27 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
         token,
         preview.selected.map(({ repository, digest }) => ({ repository, digest })),
       );
+      const purged = new Set((result.purged || preview.selected).map(keyFor));
+      setInventory((current) => current ? {
+        ...current,
+        entries: (current.entries || []).filter((item) => !purged.has(keyFor(item))),
+      } : current);
       setPreview(null);
-      navigate("/registry/cleanup");
+      navigate("/registry");
+      window.scrollTo({ top: 0, behavior: "instant" });
       setSelected(new Set());
       setNotice(
         result.sharedLayersOnly
           ? (zh
-            ? `已删除 ${result.manifestCount || 0} 个 manifest，回收了 ${result.collectedBlobs || 0} 个 blob，但磁盘占用没有下降：这些镜像的 layer 全部与保留的镜像共享。`
-            : `Deleted ${result.manifestCount || 0} manifest(s) and collected ${result.collectedBlobs || 0} blob(s), but disk usage did not drop: every layer is shared with images that remain.`)
+            ? `已删除 ${preview.selected.length} 个镜像。共享层仍被其他镜像使用，未释放额外空间。`
+            : `Deleted ${preview.selected.length} images. Shared layers are still in use, so no additional space was reclaimed.`)
           : (zh
-            ? `已删除 ${result.manifestCount || 0} 个 manifest，释放 ${formatBytes(result.reclaimedBytes)}。`
-            : `Deleted ${result.manifestCount || 0} manifest(s); reclaimed ${formatBytes(result.reclaimedBytes)}.`),
+            ? `已删除 ${preview.selected.length} 个镜像，释放 ${formatBytes(result.reclaimedBytes)}。`
+            : `Deleted ${preview.selected.length} images; reclaimed ${formatBytes(result.reclaimedBytes)}.`),
       );
-      await load(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy("");
-    }
-  };
-
-  const runDeletionAction = async (deletion: RegistryDeletion, action: "cancel" | "execute" | "restore", force = false) => {
-    setBusy(`${action}-${deletion.id}`);
-    setError("");
-    try {
-      await registryDeletionAction(token, deletion.id, action, force);
-      setNotice(zh ? "Registry 操作已完成。" : "Registry operation completed.");
-      await load(false);
+      // Deletion already updated the server snapshot. Read it without a full
+      // rescan, and release the action immediately while that small request runs.
+      void load(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -284,55 +279,27 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
     }
   };
 
-  const runGc = async (execute: boolean) => {
-    if (execute) {
-      const ok = await confirm({
-        title: zh ? "执行垃圾回收？" : "Run garbage collection?",
-        body: zh
-          ? <p>未被任何 manifest 引用的 blob 会被永久删除，不可恢复，也没有备份。Registry 在回收期间会短暂停止，推送和拉取会失败。</p>
-          : <p>Blobs no longer referenced by any manifest are deleted permanently — this cannot be undone and there is no backup. The registry stops briefly during the sweep, so pushes and pulls fail in that window.</p>,
-        warning: zh
-          ? "会绕过 gcGraceDays 保护期立即回收。"
-          : "Runs immediately, bypassing the gcGraceDays grace period.",
-        confirmLabel: zh ? "执行 GC" : "Run GC",
-      });
-      if (!ok) return;
-    }
-    setBusy(execute ? "gc" : "gc-preview");
-    setError("");
-    try {
-      // force: the operator clicked deliberately, so the gcGraceDays recovery
-      // window should not keep the button inert for days.
-      const result = await registryGc(token, execute, execute);
-      const payload = (execute ? result.result : result.preview) || {};
-      setNotice(
-        execute
-          ? (zh ? `GC 完成，释放 ${formatBytes(Number(payload.reclaimedBytes || 0))}。` : `GC completed; reclaimed ${formatBytes(Number(payload.reclaimedBytes || 0))}.`)
-          : (zh ? `GC 预检完成：${Number(payload.eligibleBlobs || 0)} 个 blob 可回收。` : `GC preview: ${Number(payload.eligibleBlobs || 0)} blobs are eligible.`),
-      );
-      await load(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy("");
-    }
-  };
-
   return (
     <div className="registry-workspace">
       <PageHeader
         meta={{
           eyebrow: zh ? "镜像生命周期" : "Image lifecycle",
-          title: zh ? "Registry 镜像管理" : "Registry image management",
-          description: zh
-            ? "按 digest 追踪引用，选中镜像即可一步删除并回收磁盘空间。"
-            : "Track references by digest, then delete images and reclaim disk space in one step.",
-          metrics: [
+          title: section === "delete" ? (zh ? "删除镜像" : "Delete images") : (zh ? "Registry 镜像管理" : "Registry image management"),
+          description: section === "delete"
+            ? (zh ? "核对清理范围与影响后，确认执行。" : "Review the cleanup scope and impact before confirming.")
+            : zh
+            ? "查看镜像与引用情况，选择需要清理的镜像即可删除。"
+            : "Review images and their references, then select images to delete.",
+          metrics: section === "delete" ? (preview ? [
+            { label: zh ? "选中镜像" : "Images", value: preview.selected?.length || 0 },
+            { label: zh ? "标签" : "Tags", value: preview.selected?.reduce((count, item) => count + (item.tags?.length || 0), 0) || 0 },
+            { label: zh ? "逻辑体积" : "Logical size", value: formatBytes(preview.logicalBytes) },
+          ] : []) : [
             { label: zh ? "仓库" : "Repositories", value: summary.repositoryCount || 0 },
             { label: "Tags", value: summary.tagCount || 0 },
             { label: zh ? "候选" : "Candidates", value: summary.candidateCount || 0 },
           ],
-          action: (
+          action: section === "delete" ? undefined : (
             <div className="registry-header-actions">
               <Button variant="outline" type="button" disabled={loading || !!busy} onClick={() => { void load(true).then(() => setDetailRevision((value) => value + 1)); }}>
                 <RefreshCw size={15} className={loading ? "spin" : ""} /> {zh ? "重新扫描" : "Rescan"}
@@ -388,7 +355,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
           </Alert>
         ) : null}
 
-        {section === "inventory" || section === "cleanup" ? <>
+        {section === "inventory" ? <>
         <section className="registry-usage-grid" aria-label={zh ? "镜像仓库容量" : "Registry storage usage"}>
           <article className={`registry-usage-card disk-${diskTone}`}>
             <div><HardDrive size={20} /><span>{zh ? "宿主磁盘" : "Host filesystem"}</span></div>
@@ -494,7 +461,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
             <Tabs value={filter} onValueChange={(value) => setFilter(String(value))}><TabsList aria-label={zh ? "镜像保护状态" : "Image protection status"}>
               {["all", "protected", "retained", "candidate", "unknown"].map((value) => <TabsTrigger key={value} value={value}>{value === "all" ? (zh ? "全部" : "All") : statusLabel(value, zh)}</TabsTrigger>)}
             </TabsList></Tabs>
-            <Button variant="destructive" type="button" disabled={!selected.size || !!busy} onClick={() => void openDeletePreview()}><Trash2 size={15} /> {zh ? `删除并回收 ${selected.size} 项` : `Delete and reclaim ${selected.size}`}</Button>
+            <Button variant="destructive" type="button" disabled={!selected.size || !!busy} onClick={() => void openDeletePreview()}><Trash2 size={15} /> {zh ? `删除镜像${selected.size ? `（${selected.size}）` : ""}` : `Delete images${selected.size ? ` (${selected.size})` : ""}`}</Button>
           </div>
           <div className="table-wrap registry-table-wrap" tabIndex={0} role="region" aria-label={zh ? "镜像列表，可横向滚动" : "Image inventory, horizontally scrollable"}>
             <table className="registry-table">
@@ -518,38 +485,6 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
           {inventory?.page?.hasMore ? <div className="registry-load-more"><Button variant="outline" type="button" disabled={loading || !!busy} onClick={() => void load(false, (inventory.page?.offset || 0) + (inventory.page?.limit || REGISTRY_PAGE_SIZE), true)}>{loading ? (zh ? "加载中…" : "Loading…") : (zh ? `加载更多（已显示 ${entries.length} / ${inventory.page.total || 0}）` : `Load more (${entries.length} / ${inventory.page.total || 0})`)}</Button></div> : null}
         </section> : null}
 
-        {section === "cleanup" ? <section className="registry-lifecycle-grid">
-          <article className="panel registry-queue-panel">
-            <div className="panel-heading"><div><p className="eyebrow">Cleanup queue</p><h2>{zh ? "清理队列" : "Cleanup queue"}</h2></div><Clock3 size={18} /></div>
-            <div className="registry-queue-list">
-              {(inventory?.deletions || []).map((deletion) => <div className="registry-queue-row" key={deletion.id}>
-                <span><strong>{deletion.manifests?.[0]?.repository || deletion.id}</strong><small>{deletion.manifests?.length || 0} manifests · {formatBytes(deletion.logicalBytes)}</small><small>{deletion.message}</small></span>
-                <span><StatePill label={deletionStatusLabel(deletion.status, zh)} value={deletion.status.startsWith("failed") ? "failed" : deletion.status === "deleted_pending_gc" ? "warning" : deletion.status === "gc_completed" || deletion.status === "restored" ? "ready" : "pending"} /><small>{formatTimestamp(deletion.updatedAt || deletion.createdAt, lang)}</small></span>
-                <div>
-                  {deletion.status === "queued" ? <><Button variant="outline" type="button" disabled={!!busy} onClick={() => void runDeletionAction(deletion, "cancel")}>{zh ? "取消" : "Cancel"}</Button><Button variant="destructive" type="button" disabled={!!busy || Number(deletion.notBefore || 0)> Date.now() / 1000} onClick={() => void runDeletionAction(deletion, "execute")}>{zh ? "执行" : "Execute"}</Button></> : null}
-                  {deletion.status === "deleted_pending_gc" || deletion.status === "failed_recoverable" ? <Button variant="outline" type="button" disabled={!!busy} onClick={() => void runDeletionAction(deletion, "restore")}><RotateCcw size={14} /> {zh ? "恢复" : "Restore"}</Button> : null}
-                </div>
-              </div>)}
-              {!(inventory?.deletions || []).length ? <div className="registry-empty-state"><Boxes size={22} /><span>{zh ? "清理队列为空" : "Cleanup queue is empty"}</span></div> : null}
-            </div>
-          </article>
-          <article className="panel registry-gc-panel">
-            <div className="panel-heading"><div><p className="eyebrow">Garbage collection</p><h2>{zh ? "空间回收" : "Space reclamation"}</h2></div><Database size={18} /></div>
-            <p>{zh ? "上面的「删除并回收」已经自动完成回收，这里只用于处理保留策略自动删除后待回收的记录，或手动清理历史遗留的无引用 blob。" : "\"Delete and reclaim\" above already reclaims space. This panel is for records left pending by automatic policy enforcement, or to sweep unreferenced blobs left over from earlier deletions."}</p>
-            <div className="registry-gc-actions">
-              <Button variant="outline" type="button" disabled={!!busy} onClick={() => void runGc(false)}>
-                <Search size={15} /> {busy === "gc-preview" ? (zh ? "预检中…" : "Previewing…") : (zh ? "GC 预检" : "Preview GC")}
-              </Button>
-              <Button variant="destructive" type="button"
-
- disabled={!!busy || !(inventory?.deletions || []).some((item) => item.status === "deleted_pending_gc")}
-                onClick={() => void runGc(true)}
-              >
-                <Play size={15} /> {busy === "gc" ? (zh ? "回收中…" : "Reclaiming…") : (zh ? "执行 GC" : "Run GC")}
-              </Button>
-            </div>
-          </article>
-        </section> : null}
       </main>
 
       {section === "image" ? <section className="panel registry-image-detail">
@@ -569,65 +504,75 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
       </section> : null}
       {section === "delete" && !preview ? <section className="panel registry-image-detail"><h2>{zh ? "重新选择清理范围" : "Select cleanup scope"}</h2><p>{zh ? "为确保清理范围准确，刷新页面后需要重新选择镜像并分析。" : "After refreshing, select images and preview again to confirm the exact cleanup scope."}</p><Button type="button" onClick={() => navigate("/registry")}>{zh ? "返回镜像列表" : "Back to images"}</Button></section> : null}
       {section === "delete" && preview ? (
-          <section className="panel registry-delete-page" aria-labelledby="registry-delete-title">
-            <div className="registry-dialog-icon"><Trash2 size={22} /></div>
-            <h2 id="registry-delete-title">{zh ? "删除并回收空间" : "Delete and reclaim space"}</h2>
-            <p>
-              {zh
-                ? `将删除 ${preview.selected?.length || 0} 个顶层 manifest 与 ${preview.dependentManifests?.length || 0} 个仅由它们引用的平台 manifest，然后立即回收其 blob。指向同一 digest 的 tag 会一起删除。`
-                : `Deletes ${preview.selected?.length || 0} root manifests plus ${preview.dependentManifests?.length || 0} platform manifests referenced only by them, then reclaims their blobs immediately. Every tag pointing to the same digest is deleted together.`}
-            </p>
-            <div className="table-wrap" tabIndex={0} role="region" aria-label={zh ? "待删除镜像，可横向滚动" : "Selected images, horizontally scrollable"}><table><thead><tr><th>{zh ? "选中镜像" : "Selected image"}</th><th>Digest</th><th>Tags</th></tr></thead><tbody>{preview.selected?.map((item) => <tr key={keyFor(item)}><td>{item.repository}</td><td><CodeCell value={item.digest} /></td><td>{item.tags?.join(", ") || "—"}</td></tr>)}</tbody></table></div>
-            <div className="registry-dialog-summary">
-              <span>
-                <strong>{preview.selected?.reduce((count, item) => count + (item.tags?.length || 0), 0) || 0}</strong>
-                <small>tags</small>
-              </span>
-              <span>
-                <strong>{formatBytes(preview.logicalBytes)}</strong>
-                <small>{zh ? "预计释放" : "expected"}</small>
-              </span>
-              <span>
-                <strong>{zh ? "不可恢复" : "Permanent"}</strong>
-                <small>{zh ? "无备份" : "no backup"}</small>
-              </span>
-            </div>
-            <div className="registry-dialog-blocked">
-              <AlertTriangle size={16} />
-              {zh
-                ? "Registry 会短暂停止以完成删除与回收，期间无法推送或拉取镜像。删除后不可恢复。"
-                : "Registry stops briefly to delete and reclaim; pushes and pulls fail during that window. This cannot be undone."}
-            </div>
-            {preview.risks?.length ? (
-              <div className="registry-dialog-blocked">
-                <AlertTriangle size={16} />
+          <Card className="registry-delete-page" aria-labelledby="registry-delete-title" aria-busy={busy === "purge"}>
+            <CardHeader>
+              <CardTitle id="registry-delete-title">{zh ? "清理范围" : "Cleanup scope"}</CardTitle>
+              <CardDescription>
                 {zh
-                  ? `${preview.risks.length} 项仍被运行中或可回滚的服务引用。删除后这些服务重启或回滚时会拉不到镜像。`
-                  : `${preview.risks.length} item(s) are still referenced by running or rollback-eligible services. Deleting them breaks restart and rollback for those services.`}
+                  ? `将删除以下 ${preview.selected?.length || 0} 个镜像及其全部标签，并清理不再使用的镜像数据。`
+                  : `Delete the ${preview.selected?.length || 0} images below and all their tags, then remove their unused image data.`}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-4">
+              <div className="registry-delete-table" tabIndex={0} role="region" aria-label={zh ? "待删除镜像，可横向滚动" : "Selected images, horizontally scrollable"}>
+                <Table>
+                  <TableHeader><TableRow>
+                    <TableHead>{zh ? "标签" : "Tags"}</TableHead>
+                    <TableHead>{zh ? "镜像摘要" : "Digest"}</TableHead>
+                    <TableHead>{zh ? "逻辑体积" : "Logical size"}</TableHead>
+                  </TableRow></TableHeader>
+                  {[...deletionRepositories].map(([repository, images]) => (
+                    <TableBody key={repository}>
+                      <TableRow><TableHead colSpan={3} scope="rowgroup"><span className="flex items-center gap-2"><Boxes aria-hidden="true" className="size-4 shrink-0" /><span>{repository}</span><Badge variant="secondary">{images.length}</Badge></span></TableHead></TableRow>
+                      {images.map((item) => <TableRow key={keyFor(item)}>
+                        <TableCell><span className="flex flex-wrap gap-1">{item.tags?.length ? item.tags.map((tag) => <Badge key={tag} variant="outline">{tag}</Badge>) : <span className="text-muted-foreground">{zh ? "无标签" : "Untagged"}</span>}</span></TableCell>
+                        <TableCell><code className="block truncate font-mono text-xs" title={item.digest}>{item.digest}</code></TableCell>
+                        <TableCell>{formatBytes(item.logicalBytes)}</TableCell>
+                      </TableRow>)}
+                    </TableBody>
+                  ))}
+                </Table>
               </div>
-            ) : null}
-            {preview.blocked?.length ? (
-              <div className="registry-dialog-blocked">
-                <AlertTriangle size={16} />
-                {zh
-                  ? `${preview.blocked.length} 项因不存在或批量范围过大而无法处理。`
-                  : `${preview.blocked.length} items cannot be processed because they are missing or the batch is too large.`}
-              </div>
-            ) : null}
-            <div className="registry-dialog-actions">
+              <Alert>
+                <Info />
+                <AlertTitle>{zh ? "释放空间以清理结果为准" : "Freed space is measured after cleanup"}</AlertTitle>
+                <AlertDescription>{zh ? "其他镜像仍在使用的共享层会保留。清理完成后将显示实际释放空间。" : "Layers still used by other images are retained. Actual reclaimed space is shown when cleanup completes."}</AlertDescription>
+              </Alert>
+              <Alert variant="destructive">
+                <AlertTriangle />
+                <AlertTitle>{zh ? "删除后无法恢复" : "Deletion is permanent"}</AlertTitle>
+                <AlertDescription>{zh ? "此操作不创建备份。删除与回收期间 Registry 暂停服务，无法推送或拉取镜像。" : "No backup is created. The registry is unavailable for pushes and pulls during deletion and reclamation."}</AlertDescription>
+              </Alert>
+              {preview.risks?.length ? <Alert variant="destructive">
+                <AlertTriangle />
+                <AlertTitle>{zh ? "存在引用风险" : "Referenced images are included"}</AlertTitle>
+                <AlertDescription>{zh ? "部分镜像仍有服务引用，或引用扫描不完整。删除后，相关服务重启或回滚时可能无法拉取镜像。" : "Some images remain referenced, or reference scanning is incomplete. Affected services may fail to pull their image on restart or rollback."}</AlertDescription>
+              </Alert> : null}
+              {preview.blocked?.length ? <Alert variant="destructive">
+                <AlertTriangle />
+                <AlertTitle>{zh ? "当前范围无法执行" : "This selection cannot be processed"}</AlertTitle>
+                <AlertDescription>{zh ? `${preview.blocked.length} 项因镜像不存在或批量范围过大而无法处理，请返回调整。` : `${preview.blocked.length} items are missing or exceed the batch limit. Go back to adjust the selection.`}</AlertDescription>
+              </Alert> : null}
+              {busy === "purge" ? <Alert role="status">
+                <RefreshCw className="animate-spin" />
+                <AlertTitle>{zh ? "正在删除镜像" : "Deleting images"}</AlertTitle>
+                <AlertDescription>{zh ? `已等待 ${purgeElapsed} 秒。正在删除镜像并清理空间，完成后会自动返回列表。` : `Elapsed: ${purgeElapsed}s. Deleting images and freeing space; you will return to the list when complete.`}</AlertDescription>
+              </Alert> : null}
+            </CardContent>
+            <CardFooter className="flex-wrap justify-end gap-2">
               <Button variant="outline" type="button" disabled={!!busy} onClick={() => { setPreview(null); navigate("/registry"); }}>
-                {zh ? "返回" : "Back"}
+                {zh ? "取消" : "Cancel"}
               </Button>
               <Button variant="destructive" type="button" disabled={!preview.allowed || !!busy} onClick={() => void purgeSelection()}>
+                {busy === "purge" ? <RefreshCw data-icon="inline-start" className="animate-spin" /> : <Trash2 data-icon="inline-start" />}
                 {busy === "purge"
-                  ? (zh ? "删除并回收中…" : "Deleting and reclaiming…")
-                  : (zh ? "确认删除并回收" : "Delete and reclaim")}
+                  ? (zh ? "正在删除…" : "Deleting…")
+                  : (zh ? "确认删除" : "Delete images")}
               </Button>
-            </div>
-          </section>
+            </CardFooter>
+          </Card>
 
       ) : null}
-      {confirmDialog}
     </div>
   );
 }

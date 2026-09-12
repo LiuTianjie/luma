@@ -244,6 +244,9 @@ class RegistryHttpClient:
         # A retried maintenance window may encounter manifests deleted before a
         # previous attempt failed. Treat absence as the desired end state.
         self.request("DELETE", _manifest_path(repository, validate_digest(digest)), expected=(202, 404))
+        # An accepted delete is not proof that the reference disappeared. Check
+        # the exact digest before allowing maintenance to report success.
+        self.request("HEAD", _manifest_path(repository, digest), accept=MANIFEST_ACCEPT, expected=(404,))
 
     def put_manifest(self, repository: str, tag: str, manifest: bytes, media_type: str) -> str:
         response = self.request(

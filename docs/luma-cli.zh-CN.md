@@ -17,7 +17,7 @@ Luma Control 负责认证和编排，将清单渲染为 Nomad jobspec，直接�
 CI runner 应安装已发布的软件包，而不是运行 Shell 安装程序：
 
 ```bash
-python -m pip install "luma-infra==0.1.357"
+python -m pip install "luma-infra==0.1.358"
 ```
 
 软件包名称是 `luma-infra`，安装后的命令仍为 `luma`。
@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 安装固定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.357 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.358 sh
 ```
 
 从开发检出目录运行：
@@ -65,7 +65,7 @@ CI 可将 Luma 作为无状态控制面客户端使用，无需 SSH、Docker、C
 PR 校验：
 
 ```bash
-python -m pip install "luma-infra==0.1.357"
+python -m pip install "luma-infra==0.1.358"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -77,7 +77,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 主分支或发布部署：
 
 ```bash
-python -m pip install "luma-infra==0.1.357"
+python -m pip install "luma-infra==0.1.358"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -306,7 +306,7 @@ luma update --control-url https://luma.example.com --token <node-join-token>
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.357 --timeout 900
+luma update fleet --install-ref v0.1.358 --timeout 900
 luma update fleet --include-manager
 ```
 

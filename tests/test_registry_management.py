@@ -3,7 +3,10 @@ from __future__ import annotations
 import copy
 import gzip
 import json
+import tempfile
 import unittest
+from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -11,6 +14,7 @@ from luma.cli import build_parser
 from luma.control import server as control_server
 from luma.errors import LumaError
 from luma.registry_management import (
+    RegistryHttpClient,
     RegistryResponse,
     apply_protection,
     collect_state_image_references,
@@ -79,6 +83,22 @@ class FakeRegistryClient:
 
 
 class RegistryInventoryTests(unittest.TestCase):
+    def test_delete_verifies_absence_instead_of_trusting_acceptance(self) -> None:
+        for delete_status, head_status in ((202, 404), (404, 404), (202, 200), (202, 401)):
+            with self.subTest(delete=delete_status, head=head_status):
+                responses = [
+                    nullcontext(SimpleNamespace(status=status, headers={}, read=lambda: b""))
+                    for status in (delete_status, head_status)
+                ]
+                with patch("luma.registry_management.urllib.request.urlopen", side_effect=responses) as request:
+                    client = RegistryHttpClient("https://registry.internal")
+                    if head_status == 404:
+                        client.delete_manifest("acme/api", DIGEST_A)
+                    else:
+                        with self.assertRaisesRegex(LumaError, f"HTTP {head_status} for HEAD"):
+                            client.delete_manifest("acme/api", DIGEST_A)
+                self.assertEqual([call.args[0].method for call in request.call_args_list], ["DELETE", "HEAD"])
+
     def test_validators_and_managed_references_are_strict(self) -> None:
         self.assertEqual(validate_repository("Acme/API"), "acme/api")
         self.assertEqual(validate_digest(DIGEST_A), DIGEST_A)
@@ -206,8 +226,17 @@ class RegistryInventoryTests(unittest.TestCase):
 
 
 class RegistryControlTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.snapshot_dir = Path(directory.name)
+        state_path = patch.object(control_server, "state_dir", return_value=self.snapshot_dir)
+        state_path.start()
+        self.addCleanup(state_path.stop)
+
     def tearDown(self) -> None:
         control_server._REGISTRY_SCAN_CACHE.clear()
+        control_server._REGISTRY_SCAN_EPOCHS.clear()
         control_server._REGISTRY_BACKGROUND_SCAN_THREADS.clear()
 
     @patch.object(control_server.time, "time", return_value=1_800_000_000)
@@ -487,6 +516,7 @@ class RegistryControlTests(unittest.TestCase):
         }
         inventory.return_value = {
             "protectionComplete": True,
+            "summary": {"repositoryCount": 2},
             "entries": [
                 {
                     "repository": "acme/api",
@@ -498,6 +528,8 @@ class RegistryControlTests(unittest.TestCase):
                 }
             ],
         }
+        retained = {"repository": "acme/worker", "digest": DIGEST_A, "tags": ["latest", "stable"], "protectionStatus": "protected"}
+        inventory.return_value["entries"].append(retained)
 
         def mutate(callback):
             return callback(state)
@@ -509,7 +541,7 @@ class RegistryControlTests(unittest.TestCase):
                 "operation": "gc",
                 "steps": [
                     {"operation": "delete", "deleted": [{"repository": "acme/api", "digest": DIGEST_A}], "beforeBytes": 10240},
-                    {"operation": "gc", "eligibleBlobs": 3, "beforeBytes": 10240, "afterBytes": 6144},
+                    {"operation": "gc", "eligibleBlobs": 3, "beforeBytes": 10240, "afterBytes": 6144, "storage": {"volumeBytes": 6144}},
                 ],
             }
             result = control_server.handle_registry_purge(
@@ -529,6 +561,35 @@ class RegistryControlTests(unittest.TestCase):
         # The cached snapshot is reused; a purge must not pay for a full rescan.
         self.assertFalse(inventory.call_args.kwargs["refresh"])
         self.assertEqual(state["registryManagement"]["audit"][-1]["action"], "manifests-purged")
+        saved = json.loads((self.snapshot_dir / "registry-inventory.json").read_text())["result"]
+        self.assertEqual(saved["entries"], [retained])
+        self.assertEqual(saved["summary"], {"repositoryCount": 2, "manifestCount": 1, "tagCount": 2, "protectedCount": 1, "retainedCount": 0, "candidateCount": 0, "unknownCount": 0})
+        self.assertEqual(saved["usage"], {"volumeBytes": 6144})
+        self.assertFalse(saved["scanPending"])
+        self.assertEqual(control_server._REGISTRY_SCAN_CACHE["registry.internal"]["result"]["entries"], [retained])
+
+    def test_overlapping_scan_cannot_restore_purged_images(self) -> None:
+        spec = {"host": "registry.internal", "node": "builder"}
+        stale_inventory = {"entries": [{"repository": "acme/api", "digest": DIGEST_A, "tags": ["old"]}]}
+        state = {"registryManagement": {}}
+
+        def refresh(_state, _spec):
+            control_server._registry_snapshot_after_purge(
+                spec, stale_inventory, [{"repository": "acme/api", "digest": DIGEST_A}], {"volumeBytes": 512}
+            )
+            return stale_inventory
+
+        with patch.object(control_server, "_managed_registry_spec", return_value=spec), patch.object(
+            control_server, "_registry_nomad_references", return_value=([], True, "")
+        ), patch.object(control_server, "_refresh_registry_inventory", side_effect=refresh), patch.object(
+            control_server, "_mutate_control_state", side_effect=lambda callback: callback(state)
+        ):
+            with self.assertRaisesRegex(LumaError, "changed during inventory scan"):
+                control_server._registry_inventory_for_state(state, refresh=True)
+        self.assertEqual(control_server._REGISTRY_SCAN_CACHE[spec["host"]]["result"]["entries"], [])
+        saved = json.loads((self.snapshot_dir / "registry-inventory.json").read_text())["result"]
+        self.assertEqual(saved["entries"], [])
+        self.assertEqual(saved["usage"]["volumeBytes"], 512)
 
     @patch.object(control_server, "_managed_registry_spec")
     @patch.object(control_server, "_registry_inventory_for_state")
@@ -946,6 +1007,34 @@ class RegistryControlTests(unittest.TestCase):
 
         self.assertIn("REGISTRY_STORAGE_DELETE_ENABLED=true", captured[0])
         self.assertEqual(result["reclaimedBytes"], 6144)
+
+    def test_gc_marking_burst_does_not_backlog_progress_requests(self) -> None:
+        from luma import agent as luma_agent
+
+        progress = []
+        important = ["blob eligible for deletion: sha256:x", "warning: storage inspection"]
+
+        def stream(_command, *, on_line, **_kwargs):
+            for _ in range(10000):
+                on_line(f"acme/api: marking blob {LAYER_A}")
+            for line in important:
+                on_line(line)
+            return SimpleNamespace(code=0, output="\n".join(important))
+
+        with patch.object(luma_agent, "_docker_binary", return_value="/usr/bin/docker"), patch.object(
+            luma_agent, "node_agent_os", return_value="linux"
+        ), patch.object(luma_agent.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")), patch.object(
+            luma_agent, "inspect_registry_storage", side_effect=[{"volumeBytes": 10240}, {"volumeBytes": 4096}]
+        ), patch.object(luma_agent, "_run_process_streaming", side_effect=stream), patch.object(
+            luma_agent.time, "monotonic", return_value=1
+        ):
+            result = luma_agent.registry_maintenance(
+                volume_name="vol", image="registry:2", operation="gc", manifests=[], progress=progress.append
+            )
+        self.assertLess(len(progress), 10)
+        self.assertEqual([event["line"] for event in progress if event["type"] == "output"], important)
+        self.assertEqual(result["reclaimedBytes"], 6144)
+        self.assertEqual(result["eligibleBlobs"], 1)
 
     def test_gc_refuses_to_report_success_when_nothing_shrank(self) -> None:
         from luma import agent as luma_agent

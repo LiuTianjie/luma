@@ -69,8 +69,16 @@
 .settings-workspace :is(input, .luma-select) { min-width: 0; width: 100%; max-width: 100%; }
 .registry-workspace .registry-image-detail > code { display: block; white-space: pre-wrap; }
 .registry-workspace .registry-image-detail dd { margin-inline-start: 0; }
-.registry-workspace .registry-delete-page table { min-width: 540px; }
-.registry-workspace .registry-delete-page :is(.registry-dialog-actions, .registry-dialog-summary) { flex-wrap: wrap; }
+.registry-workspace .registry-delete-page table { min-width: 560px; }
+.registry-workspace .registry-delete-table { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; }
+.registry-workspace .registry-delete-table [data-slot="table-container"] { overflow: visible; }
+.registry-workspace .registry-delete-table:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.registry-workspace .registry-delete-table thead th:first-child { width: 25%; }
+.registry-workspace .registry-delete-table thead th:last-child { width: 120px; }
+.registry-workspace .registry-delete-table :is(th, td) { padding: 10px 14px; }
+.registry-workspace .registry-delete-table :is(th:last-child:not([colspan]), td:last-child) { text-align: right; }
+.registry-workspace .registry-delete-table th[scope="rowgroup"] { background: var(--muted); }
+.registry-workspace .registry-delete-table td code { white-space: nowrap; }
 .settings-workspace .credentials-table { width: 100%; min-width: 520px; table-layout: fixed; }
 .settings-workspace .credentials-table :is(td:last-child, th:last-child) { width: 124px; }
 .settings-workspace .credentials-table td button { margin-block: 2px; }

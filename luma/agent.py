@@ -2542,15 +2542,34 @@ def registry_maintenance(
     command.append("/etc/docker/registry/config.yml")
     if progress:
         progress({"type": "status", "message": "Scanning Registry blob reachability"})
+    marked_references = 0
+    last_mark_report = time.monotonic()
+
+    def report_gc_output(line: str) -> None:
+        nonlocal marked_references, last_mark_report
+        if not progress:
+            return
+        if re.search(r": marking (?:manifest|blob|configuration)\s", line):
+            marked_references += 1
+            now = time.monotonic()
+            if now - last_mark_report < 1:
+                return
+            last_mark_report = now
+            progress({"type": "status", "message": f"Registry GC inspected {marked_references} references"})
+            return
+        progress({"type": "output", "line": line})
+
     result = _run_process_streaming(
         command,
         timeout=3600,
-        on_line=(lambda line: progress({"type": "output", "line": line}) if progress else None),
+        on_line=report_gc_output,
         heartbeat_interval=30,
         heartbeat_message="Registry garbage collection is still running",
     )
     if result.code != 0:
         raise LumaError(f"registry garbage collection failed: {result.output[-2000:]}")
+    if progress:
+        progress({"type": "status", "message": "Registry collection finished; verifying reclaimed disk space"})
     after = inspect_registry_storage(volume_name=volume_name)
     eligible = len(re.findall(r"blob eligible for deletion", result.output, re.IGNORECASE))
     before_bytes = int(before.get("volumeBytes") or 0)

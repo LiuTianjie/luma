@@ -306,6 +306,7 @@ _CONTROL_IMAGE_PREPARE_THREADS: dict[str, threading.Thread] = {}
 _REGISTRY_SCAN_LOCK = threading.RLock()
 _REGISTRY_CACHE_LOCK = threading.RLock()
 _REGISTRY_SCAN_CACHE: dict[str, Any] = {}
+_REGISTRY_SCAN_EPOCHS: dict[str, int] = {}
 _REGISTRY_BACKGROUND_SCAN_THREADS: dict[str, threading.Thread] = {}
 _REGISTRY_MAINTENANCE_LOCK = threading.RLock()
 _REGISTRY_AUTOMATION_LOCK = threading.RLock()
@@ -9897,10 +9898,11 @@ def _registry_inventory_page(
 def _invalidate_registry_scan(host: str) -> None:
     with _REGISTRY_CACHE_LOCK:
         _REGISTRY_SCAN_CACHE.pop(str(host), None)
-    try:
-        (state_dir() / "registry-inventory.json").unlink(missing_ok=True)
-    except OSError:
-        pass
+        _REGISTRY_SCAN_EPOCHS[str(host)] = _REGISTRY_SCAN_EPOCHS.get(str(host), 0) + 1
+        try:
+            (state_dir() / "registry-inventory.json").unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _managed_registry_spec(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -10079,6 +10081,8 @@ def _registry_inventory_for_state(state: Dict[str, Any], *, refresh: bool = Fals
         return result
 
     with _REGISTRY_SCAN_LOCK:
+        with _REGISTRY_CACHE_LOCK:
+            scan_epoch = _REGISTRY_SCAN_EPOCHS.get(cache_key, 0)
         inventory = _refresh_registry_inventory(state, spec)
         references = collect_state_image_references(state, str(spec["host"]))
         nomad_references, complete, nomad_error = _registry_nomad_references(state, spec)
@@ -10093,13 +10097,15 @@ def _registry_inventory_for_state(state: Dict[str, Any], *, refresh: bool = Fals
         result["referenceError"] = nomad_error
         result["scanPending"] = False
         with _REGISTRY_CACHE_LOCK:
+            if scan_epoch != _REGISTRY_SCAN_EPOCHS.get(cache_key, 0):
+                raise LumaError("Registry changed during inventory scan; retry the scan")
             _REGISTRY_SCAN_CACHE[cache_key] = {
                 "cachedAt": int(time.time()),
                 "result": copy.deepcopy(result),
             }
+            _persist_registry_scan(spec, result)
     result["deletions"] = _registry_deletion_public_list(management["deletions"])
     result["audit"] = [dict(item) for item in management["audit"][-100:] if isinstance(item, dict)]
-    _persist_registry_scan(spec, result)
     return result
 
 
@@ -10828,6 +10834,38 @@ def handle_registry_gc(token: str, *, execute: bool, force: bool = False) -> Dic
         return {"result": result, "completedDeletionIds": completed_ids}
 
 
+def _registry_snapshot_after_purge(
+    spec: Dict[str, Any], inventory: Dict[str, Any], targets: list[Dict[str, str]], storage: Dict[str, Any],
+) -> None:
+    """Apply the verified deletion result without another registry-wide scan."""
+    removed = {(item["repository"], item["digest"]) for item in targets}
+    result = copy.deepcopy(inventory)
+    entries = [
+        item for item in result.get("entries") or []
+        if (str(item.get("repository") or ""), str(item.get("digest") or "")) not in removed
+    ]
+    result["entries"] = entries
+    summary = result.setdefault("summary", {})
+    summary["manifestCount"] = len(entries)
+    summary["tagCount"] = sum(len(item.get("tags") or []) for item in entries)
+    for status in ("protected", "retained", "candidate", "unknown"):
+        summary[f"{status}Count"] = sum(item.get("protectionStatus") == status for item in entries)
+    if storage:
+        result["usage"] = copy.deepcopy(storage)
+    result["scanPending"] = False
+    cache_key = str(spec["host"])
+    with _REGISTRY_CACHE_LOCK:
+        # A scan that started before this result must not resurrect removed rows.
+        _REGISTRY_SCAN_EPOCHS[cache_key] = _REGISTRY_SCAN_EPOCHS.get(cache_key, 0) + 1
+        _REGISTRY_SCAN_CACHE[cache_key] = {"cachedAt": int(time.time()), "result": result}
+        try:
+            _persist_registry_scan(spec, result)
+        except (OSError, LumaError) as exc:
+            # The deletion and disk verification already succeeded. A failure
+            # to save the inventory must not invite another destructive retry.
+            print(f"Registry inventory snapshot save failed after purge: {exc}", file=sys.stderr, flush=True)
+
+
 def handle_registry_purge(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     """Delete manifests and reclaim their blobs in one operation.
 
@@ -10914,6 +10952,10 @@ def handle_registry_purge(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
             management["audit"] = management["audit"][-500:]
 
         _mutate_control_state(mutate)
+        _registry_snapshot_after_purge(
+            spec, inventory, targets,
+            gc_step.get("storage") if isinstance(gc_step.get("storage"), dict) else {},
+        )
         return {
             "purged": targets,
             "manifestCount": len(targets),
