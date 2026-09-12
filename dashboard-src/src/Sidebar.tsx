@@ -63,7 +63,7 @@ export function AppSidebar({
 
   return (
     <Sidebar collapsible="icon" variant="sidebar" >
-      <SidebarHeader className="h-(--console-header-height) justify-center">
+      <SidebarHeader className="h-(--console-header-height) justify-center px-5 group-data-[collapsible=icon]:px-2">
         <div className="flex min-w-0 items-center gap-2 group-data-[collapsible=icon]:justify-center">
           <img src={lumaLogoMark} alt="" className="size-6 shrink-0 group-data-[collapsible=icon]:hidden" />
           <div className="flex min-w-0 flex-1 items-baseline gap-2 group-data-[collapsible=icon]:hidden"><strong className="text-lg font-semibold">Luma</strong><span className="truncate text-xs text-muted-foreground">{t(lang, "title")}</span></div>
@@ -71,14 +71,14 @@ export function AppSidebar({
         </div>
       </SidebarHeader>
       <SidebarContent>
-        <div className="flex min-w-0 items-center gap-2 px-4 py-3 text-xs group-data-[collapsible=icon]:hidden">
+        <div className="flex min-w-0 items-center gap-2 px-5 pt-4 text-xs group-data-[collapsible=icon]:hidden">
           <span className="shrink-0 text-muted-foreground">{t(lang, "cluster")}</span><code className="truncate" title={clusterId} translate="no">{clusterId}</code>
         </div>
         {groups.map((group) => (
-          <SidebarGroup key={group.key}>
+          <SidebarGroup key={group.key} className="px-3 pt-4 pb-2 group-data-[collapsible=icon]:px-2">
             {group.label ? <SidebarGroupLabel>{group.label}</SidebarGroupLabel> : null}
             <SidebarGroupContent>
-              <SidebarMenu>
+              <SidebarMenu className="gap-1">
                 {group.items.map((item) => {
                   const Icon = item.icon;
                   const showValue = typeof item.value === "number";
@@ -88,6 +88,7 @@ export function AppSidebar({
                     <SidebarMenuItem key={item.id}>
                       <SidebarMenuButton
                         isActive={active}
+                        className="h-10"
                         aria-label={item.label}
                         tooltip={tip}
                         render={
@@ -110,7 +111,7 @@ export function AppSidebar({
                       </SidebarMenuButton>
                       {showValue ? <SidebarMenuBadge className="group-data-[collapsible=icon]:hidden">{item.value}</SidebarMenuBadge> : null}
                       {item.children?.length && active ? (
-                        <SidebarMenuSub>
+                        <SidebarMenuSub className="py-1">
                           {item.children.map((child) => {
                             const activeChild = child.href === "/fleet"
                               ? path === child.href
@@ -118,7 +119,8 @@ export function AppSidebar({
                             return (
                               <SidebarMenuSubItem key={child.href}>
                                 <SidebarMenuSubButton
-                                  size="sm"
+                                  size="md"
+                                  className="h-9"
                                   isActive={activeChild}
                                   title={child.detail}
                                   render={<a href={toHref(child.href)} aria-current={activeChild ? "page" : undefined} />}
@@ -144,12 +146,12 @@ export function AppSidebar({
           </SidebarGroup>
         ))}
       </SidebarContent>
-      <SidebarFooter>
+      <SidebarFooter className="gap-3 p-3 group-data-[collapsible=icon]:p-2">
         <Separator />
-        <SidebarMenu>
+        <SidebarMenu className="gap-1">
           <SidebarMenuItem>
             <DropdownMenu>
-              <DropdownMenuTrigger render={<SidebarMenuButton tooltip={lang === "zh" ? "偏好" : "Preferences"} />}>
+              <DropdownMenuTrigger render={<SidebarMenuButton className="h-10" tooltip={lang === "zh" ? "偏好" : "Preferences"} />}>
                 <Settings2 data-icon="inline-start" aria-hidden="true" />
                 <span>{lang === "zh" ? "偏好" : "Preferences"}</span>
               </DropdownMenuTrigger>
@@ -177,7 +179,7 @@ export function AppSidebar({
             </DropdownMenu>
           </SidebarMenuItem>
           <SidebarMenuItem>
-            <SidebarMenuButton onClick={onSignOut} tooltip={t(lang, "signOut")}>
+            <SidebarMenuButton className="h-10" onClick={onSignOut} tooltip={t(lang, "signOut")}>
               <LogOut data-icon="inline-start" aria-hidden="true" /><span>{t(lang, "signOut")}</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
