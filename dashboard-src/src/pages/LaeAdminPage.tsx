@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 
 import { Boxes, MapPinned, RefreshCw, ScrollText, UsersRound, WalletCards } from "lucide-react";
@@ -20,16 +20,21 @@ import { AlertCircle } from "lucide-react";
 
 type View = "applications" | "placements" | "users" | "tenants" | "operations" | "usage";
 type ResourceState = {
+  token: string;
   users: LaeAdminUser[];
   tenants: LaeAdminTenant[];
   applications: LaeAdminApplication[];
   operations: LaeAdminOperation[];
   placements: LaeAdminPlacement[];
   usage: LaeAdminUsage[];
-  pages: Record<View, AdminPage>;
+  pages: Partial<Record<View, AdminPage>>;
+  loading: Partial<Record<View, boolean>>;
+  errors: Partial<Record<View, string>>;
 };
 
-const emptyPage = { limit: 100, offset: 0, total: 0 };
+function emptyState(token: string): ResourceState {
+  return { token, users: [], tenants: [], applications: [], operations: [], placements: [], usage: [], pages: {}, loading: {}, errors: {} };
+}
 
 function bytes(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0 B";
@@ -47,53 +52,68 @@ function time(value?: string | number | null): string {
 export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
   const zh = lang === "zh";
   const [view, setView] = useState<View>("applications");
-  const [state, setState] = useState<ResourceState>({
-    users: [], tenants: [], applications: [], operations: [], placements: [], usage: [],
-    pages: { users: emptyPage, tenants: emptyPage, applications: emptyPage, placements: emptyPage, operations: emptyPage, usage: emptyPage },
-  });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [snapshot, setState] = useState<ResourceState>(() => emptyState(token));
+  // A changed login must never render rows or counters from the previous token.
+  const state = snapshot.token === token ? snapshot : emptyState(token);
+  const cache = useRef(state);
+  cache.current = state;
+  const requests = useRef<Partial<Record<View, AbortController>>>({});
+  const loading = Boolean(state.loading[view]) || (!state.pages[view] && !state.errors[view]);
+  const error = state.errors[view] || "";
 
-  const load = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true);
-    setError("");
+  const load = useCallback(async (resource: View) => {
+    requests.current[resource]?.abort();
+    const controller = new AbortController();
+    requests.current[resource] = controller;
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
+    const current = () => requests.current[resource] === controller;
+    setState((previous) => {
+      const next = previous.token === token ? previous : emptyState(token);
+      return { ...next, loading: { ...next.loading, [resource]: true }, errors: { ...next.errors, [resource]: "" } };
+    });
     try {
-      const [users, tenants, applications, placements, operations, usage] = await Promise.all([
-        fetchLaeAdmin<{ users: LaeAdminUser[]; page: AdminPage }>("users", token, signal),
-        fetchLaeAdmin<{ tenants: LaeAdminTenant[]; page: AdminPage }>("tenants", token, signal),
-        fetchLaeAdmin<{ applications: LaeAdminApplication[]; page: AdminPage }>("applications", token, signal),
-        fetchLaeAdmin<{ placements: LaeAdminPlacement[]; page: AdminPage }>("placements", token, signal),
-        fetchLaeAdmin<{ operations: LaeAdminOperation[]; page: AdminPage }>("operations", token, signal),
-        fetchLaeAdmin<{ usage: LaeAdminUsage[]; page: AdminPage }>("usage", token, signal),
-      ]);
-      setState({
-        users: users.users || [], tenants: tenants.tenants || [], applications: applications.applications || [],
-        placements: placements.placements || [], operations: operations.operations || [], usage: usage.usage || [],
-        // `page` is declared non-optional but comes off the wire, so a response
-        // that omits it made `pages.users.total` throw and blanked the whole page.
-        // Fall back to emptyPage the same way the initial state does.
-        pages: {
-          users: users.page || emptyPage,
-          tenants: tenants.page || emptyPage,
-          applications: applications.page || emptyPage,
-          placements: placements.page || emptyPage,
-          operations: operations.page || emptyPage,
-          usage: usage.page || emptyPage,
-        },
+      const result = await fetchLaeAdmin<Partial<ResourceState> & { page?: AdminPage }>(resource, token, controller.signal);
+      if (!current() || controller.signal.aborted) return;
+      const rows = result[resource] || [];
+      setState((previous) => previous.token !== token ? previous : {
+        ...previous,
+        [resource]: rows,
+        pages: { ...previous.pages, [resource]: result.page || { limit: 100, offset: 0, total: rows.length } },
       });
     } catch (caught) {
-      if (caught instanceof DOMException && caught.name === "AbortError") return;
-      setError(caught instanceof Error ? caught.message : String(caught));
+      if (!current()) return;
+      setState((previous) => previous.token !== token ? previous : {
+        ...previous,
+        errors: { ...previous.errors, [resource]: controller.signal.aborted ? (lang === "zh" ? "请求超时，请重试。" : "Request timed out. Try again.") : caught instanceof Error ? caught.message : String(caught) },
+      });
     } finally {
-      if (!signal?.aborted) setLoading(false);
+      window.clearTimeout(timeout);
+      if (current()) {
+        delete requests.current[resource];
+        setState((previous) => previous.token !== token ? previous : { ...previous, loading: { ...previous.loading, [resource]: false } });
+      }
     }
-  }, [token]);
+  }, [token, lang]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    void load(controller.signal);
-    return () => controller.abort();
-  }, [load]);
+    if (!cache.current.pages[view]) void load(view);
+    // Tenant names enrich app rows independently; their latency never holds the
+    // application response or the visible table behind a Promise.all barrier.
+    if (view === "applications" && !cache.current.pages.tenants) void load("tenants");
+    return () => {
+      const canceled = Object.keys(requests.current) as View[];
+      for (const resource of canceled) requests.current[resource]?.abort();
+      requests.current = {};
+      setState((previous) => previous.token !== token ? previous : {
+        ...previous, loading: { ...previous.loading, ...Object.fromEntries(canceled.map((resource) => [resource, false])) },
+      });
+    };
+  }, [load, token, view]);
+
+  const refresh = () => {
+    void load(view);
+    if (view === "applications") void load("tenants");
+  };
 
   const running = useMemo(() => state.applications.filter((app) => app.observedState === "running").length, [state.applications]);
   const failedOperations = useMemo(() => state.operations.filter((operation) => operation.status === "failed").length, [state.operations]);
@@ -114,16 +134,16 @@ export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
         title: zh ? "LAE 平台总览" : "LAE platform overview",
         description: zh ? "跨租户查看用户、应用、运行状态与资源用量。敏感凭据和值不会进入此视图。" : "Cross-tenant users, applications, runtime state and usage. Credentials and secret values never enter this view.",
         metrics: [
-          { label: zh ? "用户" : "Users", value: state.pages.users.total },
-          { label: zh ? "租户" : "Tenants", value: state.pages.tenants.total },
-          { label: zh ? "运行应用" : "Running", value: `${running}/${state.pages.applications.total}` },
-          { label: zh ? "失败操作" : "Failed ops", value: failedOperations },
+          { label: zh ? "用户" : "Users", value: state.pages.users?.total ?? "—" },
+          { label: zh ? "租户" : "Tenants", value: state.pages.tenants?.total ?? "—" },
+          { label: zh ? "运行应用（当前页）" : "Running (loaded page)", value: state.pages.applications ? running : "—" },
+          { label: zh ? "失败操作（当前页）" : "Failed ops (loaded page)", value: state.pages.operations ? failedOperations : "—" },
         ],
-        action: <Button variant="outline" type="button" className="page-toolbar-cta" disabled={loading} onClick={() => void load()}><RefreshCw size={15} className={loading ? "spin" : ""} />{zh ? "刷新" : "Refresh"}</Button>,
+        action: <Button variant="outline" type="button" className="page-toolbar-cta" disabled={loading} onClick={refresh}><RefreshCw size={15} className={loading ? "spin" : ""} />{zh ? "刷新" : "Refresh"}</Button>,
       }} />
 
       {error ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{zh ? "读取失败" : "Load failed"}</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
-      {loading && !state.applications.length && !state.users.length ? (
+      {loading && !state.pages[view] ? (
         <div className="panel page-loading-inline" aria-busy="true">
           <span className="skeleton skeleton-line skeleton-panel-title" />
           <span className="skeleton skeleton-line" />
@@ -132,11 +152,11 @@ export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
           <p className="page-loading-label">{zh ? "加载 LAE 数据…" : "Loading LAE data…"}</p>
         </div>
       ) : null}
-      <section className="panel lae-admin-panel" hidden={loading && !state.applications.length && !state.users.length}>
+      <section className="panel lae-admin-panel">
         <div className="lae-admin-tabs" role="tablist" aria-label="LAE admin resources">
           {tabs.map(({ id, label, icon: Icon }) => (
             <Button key={id} type="button" size="sm" variant={view === id ? "secondary" : "ghost"} onClick={() => setView(id)}>
-              <Icon size={15} aria-hidden="true" />{label}<span>{state.pages[id].total}</span>
+              <Icon size={15} aria-hidden="true" />{label}<span>{state.pages[id]?.total ?? "—"}</span>
             </Button>
           ))}
         </div>

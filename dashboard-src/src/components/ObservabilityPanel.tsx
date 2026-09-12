@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { localizeState } from "../i18n";
-import { fetchMetricsHistory } from "../metricsApi";
-import type { ActualResourceValues, DashboardNode, DashboardService, Lang, MetricsHistoryPayload, ResourceValues } from "../types";
+import { historyKey, type HistoryState, type HistoryTarget } from "../metricsApi";
+import { useMetricsHistories } from "../useMetricsHistories";
+import type { ActualResourceValues, DashboardNode, DashboardService, Lang, ResourceValues } from "../types";
 import { Badge, SelectControl, StatePill } from "./primitives";
 import { Button } from "@/components/ui/button";
 import { Field, FieldLabel } from "@/components/ui/field";
@@ -10,59 +11,6 @@ import "./ObservabilityPanel.css";
 import { useRouter, useSearchParams } from "../router";
 
 const HISTORY_WINDOWS = [900, 3600, 21600];
-const HISTORY_REFRESH_MS = 30000;
-
-type HistoryTarget = { kind: "node" | "service"; name: string };
-
-function historyKey(kind: "node" | "service", name: string) {
-  return `${kind}:${name}`;
-}
-
-type HistoryState = { payload?: MetricsHistoryPayload; error?: string };
-
-/** Schedule the next batch only after completion; abort on navigation or timeout. */
-function useMetricsHistories(token: string, targets: HistoryTarget[], historyWindow: number) {
-  const [refresh, setRefresh] = useState(0);
-  useEffect(() => { const reload = () => setRefresh((n) => n + 1); window.addEventListener("luma:refresh", reload); return () => window.removeEventListener("luma:refresh", reload); }, []);
-  const [histories, setHistories] = useState<Record<string, HistoryState>>({});
-  const signature = JSON.stringify(targets.map((item) => [item.kind, item.name]).sort());
-
-  useEffect(() => {
-    setHistories({});
-    if (!token || !targets.length) return;
-    let cancelled = false;
-    let timer: number | undefined;
-    let controller: AbortController;
-    const load = async () => {
-      controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 20000);
-      const entries = await Promise.all(targets.map(async (target) => {
-        const key = historyKey(target.kind, target.name);
-        try {
-          const payload = await fetchMetricsHistory({ token, ...target, window: historyWindow, signal: controller.signal });
-          return [key, { payload }] as const;
-        } catch (error) {
-          return [key, { error: error instanceof Error ? error.message : String(error) }] as const;
-        }
-      }));
-      window.clearTimeout(timeout);
-      if (cancelled) return;
-      setHistories((previous) => Object.fromEntries(entries.map(([key, next]) => [
-        key, "error" in next ? { payload: previous[key]?.payload, error: next.error } : next,
-      ])));
-      timer = window.setTimeout(() => void load(), HISTORY_REFRESH_MS);
-    };
-    void load();
-    return () => {
-      cancelled = true;
-      controller?.abort();
-      window.clearTimeout(timer);
-    };
-    // The signature includes every target; do not restart on dashboard object refresh.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, signature, historyWindow, refresh]);
-  return histories;
-}
 
 function HistoryStatus({ lang, state }: { lang: Lang; state?: HistoryState }) {
   if (!state) return <small className="history-status">{lang === "zh" ? "正在读取历史…" : "Loading history…"}</small>;

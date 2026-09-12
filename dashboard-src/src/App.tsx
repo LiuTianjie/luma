@@ -20,6 +20,7 @@ import { PageLoading } from "./pages/PageLoading";
 import { createDashboardViewModel, type NavPage } from "./dashboardViewModel";
 import type { TerminalSessionTarget } from "./components/TerminalDrawer";
 import type { DashboardNode, DashboardService, Lang, SyncStatus } from "./types";
+import { dashboardScopeForPage, dashboardQueryForRoute } from "./dashboardScope";
 import { useDashboardData } from "./useDashboardData";
 import { useTheme } from "./useTheme";
 
@@ -37,7 +38,10 @@ export function App() {
   const [updateRequest, setUpdateRequest] = useState<ApplicationUpdateRequest | null>(null);
   const [updateError, setUpdateError] = useState("");
   const [updateAttempt, setUpdateAttempt] = useState(0);
-  const { token, payload, errors, syncStatus, lastUpdated, setToken, signOut, loadDashboard } = useDashboardData();
+  const resolvedPage = pageForPath(router.path);
+  const dashboardScope = dashboardScopeForPage(resolvedPage, router.path);
+  const dashboardQuery = dashboardQueryForRoute(dashboardScope, router.path, router.search);
+  const { token, payload, cluster, errors, syncStatus, lastUpdated, setToken, signOut, loadDashboard } = useDashboardData(dashboardScope, dashboardQuery);
   const { mode: themeMode, theme, setMode: setThemeMode } = useTheme();
   const vm = useMemo(() => createDashboardViewModel(payload), [payload]);
 
@@ -64,12 +68,13 @@ export function App() {
     return () => { active = false; };
   }, [editName, token, currentUpdateRequest, payload, vm.applications, updateAttempt]);
 
-  const resolvedPage = pageForPath(router.path);
   const activeNavPage: NavPage = resolvedPage === "notfound" ? "overview" : resolvedPage;
   // These pages fetch their own data and can render while the overview payload
   // is still in flight. Keeping this gate narrow avoids making their first paint
   // wait on nodes, services, metrics, and issue history.
-  const pageCanRenderWithoutDashboard = resolvedPage === "deployments"
+  const pageCanRenderWithoutDashboard = dashboardScope === "none"
+    || resolvedPage === "notfound"
+    || resolvedPage === "deployments"
     || resolvedPage === "credentials"
     || resolvedPage === "setup"
     || resolvedPage === "registry"
@@ -159,8 +164,9 @@ export function App() {
         </a>
         <AppSidebar
           lang={lang}
-          clusterId={vm.clusterId}
+          clusterId={cluster?.id || vm.clusterId}
           vm={vm}
+          showFleetSummary={["full", "overview", "fleet", "network", "metrics"].includes(payload?.scope || "")}
           activeNavPage={activeNavPage}
           onNavigate={navigate}
           onPrefetch={preloadPage}

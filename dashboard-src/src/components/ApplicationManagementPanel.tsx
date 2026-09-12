@@ -2,9 +2,10 @@ import { ApplicationSecrets } from "./ApplicationSecrets";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ApplicationProperties, ApplicationVersionEntry } from "./ApplicationProperties";
 import "./ApplicationManagementPanel.css";
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { Copy, FileText, History, Loader2, MoreHorizontal, Pencil, RotateCw, Search, Settings2, SquareTerminal } from "lucide-react";
 import { fetchDeploymentConfig, type DeploymentConfig } from "../deploymentConfigApi";
+import { apiGet } from "../apiClient";
 import { localizeState, t } from "../i18n";
 import { fetchServiceHistory, restartApplication, rollbackService, updateApplicationStream } from "../lifecycleApi";
 import { formatTimestamp } from "../format";
@@ -77,6 +78,7 @@ export function ApplicationManagementPanel({
   lang,
   token,
   payload,
+  applications,
   onRefresh,
   onUpdateApplication,
   onNavigateToDeployments,
@@ -87,6 +89,7 @@ export function ApplicationManagementPanel({
   lang: Lang;
   token: string;
   payload: DashboardPayload | null;
+  applications: Application[];
   onRefresh: () => Promise<void> | void;
   onUpdateApplication?: (request: ApplicationUpdateRequest) => void;
   onNavigateToDeployments?: () => void;
@@ -98,7 +101,7 @@ export function ApplicationManagementPanel({
   const route = parseApplicationPath(path);
   const tab = route.tab;
   const { confirm, element: confirmDialog } = useConfirm(lang);
-  const applications = useMemo(() => groupApplications(payload?.services || []), [payload?.services]);
+  const applicationPage = !selectedStack ? payload?.applicationPage : undefined;
   // Resolve against each fresh snapshot; URL state drives selection and browser back.
   const selected = applications.find((app) => app.stack === selectedStack) || null;
   const setSelected = (app: Application | null) => onSelectApplication(app?.stack || null);
@@ -125,14 +128,30 @@ export function ApplicationManagementPanel({
     const params = new URLSearchParams(search);
     return { query: params.get("q") || "", status: params.get("status") || "all", region: params.get("region") || "all" };
   }, [search]);
-  const setFilters = (update: (current: ApplicationFilterState) => ApplicationFilterState) => {
+  const setFilters = useCallback((update: (current: ApplicationFilterState) => ApplicationFilterState) => {
     const next = update(filters);
     const params = new URLSearchParams(search);
     for (const [key, value] of [["q", next.query], ["status", next.status], ["region", next.region]]) {
       if (value && value !== "all") params.set(key, value);
       else params.delete(key);
     }
+    params.delete("offset");
     navigate(`${path}${params.size ? `?${params}` : ""}`, { replace: true });
+  }, [filters, search, path, navigate]);
+  const [searchQuery, setSearchQuery] = useState(filters.query);
+  useEffect(() => { setSearchQuery(filters.query); }, [filters.query]);
+  useEffect(() => {
+    if (searchQuery === filters.query) return;
+    const timer = window.setTimeout(() => setFilters((current) => ({ ...current, query: searchQuery })), 250);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery, filters.query, setFilters]);
+  const changePage = (offset: number) => {
+    if (!applicationPage) return;
+    const params = new URLSearchParams(search);
+    if (offset > 0) params.set("offset", String(offset));
+    else params.delete("offset");
+    params.set("limit", String(applicationPage.limit));
+    navigate(`${path}?${params}`);
   };
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -141,9 +160,10 @@ export function ApplicationManagementPanel({
   // activate it from the touch pointer release as well.
   const touchCardActivation = useRef(false);
   const touchCardStart = useRef<{ x: number; y: number } | null>(null);
-  const statusOptions = useMemo(() => [...new Set(applications.map((app) => app.status).filter(Boolean))].sort(), [applications]);
-  const regionOptions = useMemo(() => [...new Set(applications.flatMap((app) => app.regions).filter(Boolean))].sort(), [applications]);
+  const statusOptions = useMemo(() => applicationPage?.statuses ?? [...new Set(applications.map((app) => app.status).filter(Boolean))].sort(), [applicationPage?.statuses, applications]);
+  const regionOptions = useMemo(() => applicationPage?.regions ?? [...new Set(applications.flatMap((app) => app.regions).filter(Boolean))].sort(), [applicationPage?.regions, applications]);
   const filteredApplications = useMemo(() => {
+    if (applicationPage) return applications;
     const query = filters.query.trim().toLowerCase();
     return applications.filter((app) => {
       const matchesStatus = filters.status === "all" || app.status === filters.status;
@@ -156,7 +176,7 @@ export function ApplicationManagementPanel({
       ].join(" ").toLowerCase();
       return matchesStatus && matchesRegion && (!query || haystack.includes(query));
     });
-  }, [applications, filters]);
+  }, [applications, filters, applicationPage]);
 
   useEffect(() => {
     if (!openMenu) return;
@@ -205,14 +225,32 @@ export function ApplicationManagementPanel({
     setDeploymentConfigFor("");
     setSelected(app);
   };
+  const runtimeAppForUpdate = async (app: Application): Promise<Application> => {
+    if (!applicationPage) return app;
+    // Summary pages deliberately omit volumes and other deployment details.
+    // Fetch the complete application before inferring an editable manifest.
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
+    try {
+      const detail = await apiGet<DashboardPayload>(`/v1/dashboard?scope=application&app=${encodeURIComponent(app.stack)}`, token, controller.signal);
+      const runtimeApp = groupApplications(detail.services || []).find((item) => item.stack === app.stack);
+      if (!runtimeApp) throw new Error(lang === "zh" ? `无法读取 ${app.stack} 的完整运行配置，请刷新后重试。` : `Could not read the complete runtime configuration for ${app.stack}. Refresh and try again.`);
+      return runtimeApp;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  };
   const openUpdate = async (app: Application) => {
     setActionError("");
     setActionSteps([]);
     setConfigBusy(app.stack);
-    setSelected(app);
+    // Keep this component mounted while configuration, confirmation and the
+    // update stream run; list-to-detail navigation changes the data scope.
     let gitUpdateStarted = false;
+    let configLoaded = false;
     try {
       const config = await fetchDeploymentConfig({ token, name: app.stack });
+      configLoaded = true;
       if (config.gitSource) {
         const source = config.gitSource.repository || config.gitSource.repoUrl || config.sourceName || app.stack;
         const ref = config.gitSource.ref;
@@ -233,7 +271,6 @@ export function ApplicationManagementPanel({
         setConfigBusy("");
         gitUpdateStarted = true;
         setUpdatingApp(app.stack);
-        navigate(applicationPath(app.stack, "overview"));
         let failed = "";
         await updateApplicationStream({ token, name: app.stack }, (step) => {
           setActionSteps((current) => [...current, step]);
@@ -248,18 +285,24 @@ export function ApplicationManagementPanel({
         setActionError(lang === "zh" ? "当前页面未配置更新应用入口。" : "This page does not have an update-application entry configured.");
         return;
       }
-      onUpdateApplication({ app, deploymentConfig: config });
+      const updateApp = config.manifest || config.composeContent ? app : await runtimeAppForUpdate(app);
+      onUpdateApplication({ app: updateApp, deploymentConfig: config });
     } catch (error) {
       const message = String(error instanceof Error ? error.message : error);
-      if (gitUpdateStarted || !onUpdateApplication) {
+      if (gitUpdateStarted || configLoaded || !onUpdateApplication) {
         setActionError(message);
       } else {
-        onUpdateApplication({
-          app,
-          configWarning: lang === "zh"
-            ? `未读取到已登记部署配置，已从当前运行状态反推；提交前请重点核对 YAML。${message ? ` (${message})` : ""}`
-            : `Could not load a registered deployment config, so the form was inferred from current runtime state. Review the YAML carefully before submitting.${message ? ` (${message})` : ""}`,
-        });
+        try {
+          const updateApp = await runtimeAppForUpdate(app);
+          onUpdateApplication({
+            app: updateApp,
+            configWarning: lang === "zh"
+              ? `未读取到已登记部署配置，已从当前运行状态反推；提交前请重点核对 YAML。${message ? ` (${message})` : ""}`
+              : `Could not load a registered deployment config, so the form was inferred from current runtime state. Review the YAML carefully before submitting.${message ? ` (${message})` : ""}`,
+          });
+        } catch (runtimeError) {
+          setActionError(String(runtimeError instanceof Error ? runtimeError.message : runtimeError));
+        }
       }
     } finally {
       setConfigBusy("");
@@ -691,8 +734,8 @@ export function ApplicationManagementPanel({
               <Search />
             </InputGroupAddon>
             <InputGroupInput
-              value={filters.query}
-              onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))}
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
               placeholder={lang === "zh" ? "搜索应用、域名、镜像" : "Search app, domain, image"}
             />
           </InputGroup>
@@ -720,8 +763,8 @@ export function ApplicationManagementPanel({
           />
         </Field>
         <div className="application-filter-count">
-          <strong>{filteredApplications.length}</strong>
-          <span>{lang === "zh" ? ` / ${applications.length} 个应用` : ` / ${applications.length} apps`}</span>
+          <strong>{applicationPage?.total ?? filteredApplications.length}</strong>
+          <span>{lang === "zh" ? ` / ${applicationPage?.counts.total ?? applications.length} 个应用` : ` / ${applicationPage?.counts.total ?? applications.length} apps`}</span>
         </div>
       </div>
       <div className="table-wrap">
@@ -829,7 +872,17 @@ export function ApplicationManagementPanel({
           </article>
         )) : <div className="empty-inline">{t(lang, "noApplications")}</div>}
       </div>
-
+      {applicationPage ? <nav className="flex flex-wrap items-center justify-between gap-3" aria-label={lang === "zh" ? "应用分页" : "Application pagination"}>
+        <p className="text-sm text-muted-foreground" aria-live="polite">
+          {lang === "zh"
+            ? `显示 ${filteredApplications.length ? applicationPage.offset + 1 : 0}–${filteredApplications.length ? applicationPage.offset + filteredApplications.length : 0} / ${applicationPage.total} 个应用`
+            : `Showing ${filteredApplications.length ? applicationPage.offset + 1 : 0}–${filteredApplications.length ? applicationPage.offset + filteredApplications.length : 0} of ${applicationPage.total} apps`}
+        </p>
+        <div className="flex gap-2">
+          <Button variant="outline" type="button" disabled={applicationPage.offset <= 0} onClick={() => changePage(Math.max(0, applicationPage.offset - applicationPage.limit))}>{lang === "zh" ? "上一页" : "Previous"}</Button>
+          <Button variant="outline" type="button" disabled={!applicationPage.hasMore} onClick={() => changePage(applicationPage.offset + applicationPage.limit)}>{lang === "zh" ? "下一页" : "Next"}</Button>
+        </div>
+      </nav> : null}
       </> : null}
       {detailPage}
       {confirmDialog}

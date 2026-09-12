@@ -1,3 +1,4 @@
+import { fetchAlertTab } from "../alertingApi";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
 
@@ -69,25 +70,22 @@ export function AlertingPanel({ lang, token, tab, nodeNames = [], applicationNam
       controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 15000);
       try {
-        const [nextOverview, nextPresets, nextRules, nextChannels, nextIncidents, nextDeliveries] = await Promise.all([
-          getAlerting<AlertOverview>("overview", token, controller.signal),
-          getAlerting<AlertPage<AlertPreset>>("presets", token, controller.signal),
-          getAlerting<AlertPage<AlertRule>>("rules", token, controller.signal),
-          getAlerting<AlertPage<AlertChannel>>("channels", token, controller.signal),
-          getAlerting<AlertPage<AlertIncident>>(`incidents?limit=50${filter ? `&status=${filter}` : ""}`, token, controller.signal),
-          getAlerting<AlertPage<AlertDelivery>>("deliveries?limit=50", token, controller.signal),
-        ]);
+        const next = await fetchAlertTab(tab, token, filter, controller.signal);
         if (cancelled) return;
-        setOverview(nextOverview); setPresets(nextPresets.items.map((preset) => localizeAlertPreset(preset, zh))); setRules(nextRules.items); setChannels(nextChannels.items);
-        // An expanded page is a stable browsing snapshot until explicit refresh/filter change.
-        if (!expanded) { setIncidents(nextIncidents); setDeliveries(nextDeliveries); }
+        setOverview(next.overview);
+        if (next.presets) setPresets(next.presets.items.map((preset) => localizeAlertPreset(preset, zh)));
+        if (next.rules) setRules(next.rules.items);
+        if (next.channels) setChannels(next.channels.items);
+        // Expanded history remains a browsing snapshot until explicit refresh.
+        if (!expanded && next.incidents) setIncidents(next.incidents);
+        if (!expanded && next.deliveries) setDeliveries(next.deliveries);
         setLoaded(true); setError("");
       } catch (err) { if (!cancelled) setError(err instanceof Error ? err.message : String(err)); }
       finally { window.clearTimeout(timeout); if (!cancelled) timer = window.setTimeout(() => void load(), 15000); }
     };
     void load();
     return () => { cancelled = true; controller?.abort(); window.clearTimeout(timer); };
-  }, [token, filter, refresh, expanded, zh]);
+  }, [token, tab, filter, refresh, expanded, zh]);
 
   useEffect(() => { scope.current += 1; actionController.current?.abort(); setDetail(undefined); setActionError(""); setRule(null); setChannel(null); setSecret(""); }, [tab, token, filter, path]);
   useEffect(() => {

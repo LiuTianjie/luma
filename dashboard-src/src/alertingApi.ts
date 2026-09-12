@@ -62,3 +62,16 @@ export function alertEventLabel(kind: string, zh: boolean): string {
   const labels: Record<string, [string, string]> = { test: ["渠道测试", "Channel test"], firing: ["告警触发", "Alert fired"], resolved: ["恢复", "Recovered"], repeat: ["重复提醒", "Repeat reminder"], pending: ["等待持续条件", "Pending duration"], acknowledged: ["人工确认", "Acknowledged"], rule_deleted: ["规则删除", "Rule deleted"], rule_changed: ["规则变更", "Rule changed"], rule_disabled: ["规则停用", "Rule disabled"] };
   return labels[kind]?.[zh ? 0 : 1] || kind;
 }
+
+// Each tab has independent data needs; hidden tables must not delay its load.
+export async function fetchAlertTab(tab: AlertTab, token: string, filter: string, signal?: AbortSignal) {
+  const [overview, presets, rules, channels, incidents, deliveries] = await Promise.all([
+    getAlerting<AlertOverview>("overview", token, signal),
+    tab === "rules" ? getAlerting<AlertPage<AlertPreset>>("presets", token, signal) : undefined,
+    tab === "rules" ? getAlerting<AlertPage<AlertRule>>("rules", token, signal) : undefined,
+    tab !== "alerts" ? getAlerting<AlertPage<AlertChannel>>("channels", token, signal) : undefined,
+    tab === "alerts" ? getAlerting<AlertPage<AlertIncident>>(`incidents?limit=50${filter ? `&status=${encodeURIComponent(filter)}` : ""}`, token, signal) : undefined,
+    tab === "notifications" ? getAlerting<AlertPage<AlertDelivery>>("deliveries?limit=50", token, signal) : undefined,
+  ]);
+  return { overview, presets, rules, channels, incidents, deliveries };
+}

@@ -1,0 +1,165 @@
+{
+  "captured_at": "2026-09-12T10:09:13.337405+00:00",
+  "target": "currently deployed control plane from the existing CLI context",
+  "local_changes_deployed": false,
+  "method": "Two sequential authenticated GET samples per endpoint; no browser, mutation, inventory refresh, scan, or upgrade. Each request uses a 20 second socket timeout and accepts gzip. Durations include network round trip and full body read; neither page rendering nor statistical percentiles are measured.",
+  "samples": [
+    {
+      "path": "/v1/health",
+      "sample": 1,
+      "headers_ms": 2890.98,
+      "status": 200,
+      "total_ms": 2891.34,
+      "wire_bytes": 307,
+      "content_encoding": "gzip",
+      "decoded_bytes": 522,
+      "array_counts": {},
+      "version": "0.1.355"
+    },
+    {
+      "path": "/v1/health",
+      "sample": 2,
+      "headers_ms": 2443.72,
+      "status": 200,
+      "total_ms": 2444.0,
+      "wire_bytes": 307,
+      "content_encoding": "gzip",
+      "decoded_bytes": 522,
+      "array_counts": {},
+      "version": "0.1.355"
+    },
+    {
+      "path": "/v1/dashboard",
+      "sample": 1,
+      "headers_ms": 3157.88,
+      "status": 200,
+      "total_ms": 3445.15,
+      "wire_bytes": 12718,
+      "content_encoding": "gzip",
+      "decoded_bytes": 108265,
+      "array_counts": {
+        "nodes": 10,
+        "regions": 3,
+        "services": 61
+      }
+    },
+    {
+      "path": "/v1/dashboard",
+      "sample": 2,
+      "headers_ms": 4273.71,
+      "status": 200,
+      "total_ms": 4533.3,
+      "wire_bytes": 12717,
+      "content_encoding": "gzip",
+      "decoded_bytes": 108267,
+      "array_counts": {
+        "nodes": 10,
+        "regions": 3,
+        "services": 61
+      }
+    },
+    {
+      "path": "/v1/control-resources",
+      "sample": 1,
+      "headers_ms": 2075.77,
+      "status": 200,
+      "total_ms": 2076.13,
+      "wire_bytes": 2125,
+      "content_encoding": "gzip",
+      "decoded_bytes": 12268,
+      "array_counts": {
+        "registries": 2,
+        "storageClasses": 0
+      }
+    },
+    {
+      "path": "/v1/control-resources",
+      "sample": 2,
+      "headers_ms": 1834.8,
+      "status": 200,
+      "total_ms": 1843.67,
+      "wire_bytes": 2132,
+      "content_encoding": "gzip",
+      "decoded_bytes": 12268,
+      "array_counts": {
+        "registries": 2,
+        "storageClasses": 0
+      }
+    },
+    {
+      "path": "/v1/history?limit=50",
+      "sample": 1,
+      "headers_ms": 3439.52,
+      "status": 200,
+      "total_ms": 3523.53,
+      "wire_bytes": 1749,
+      "content_encoding": "gzip",
+      "decoded_bytes": 19325,
+      "array_counts": {
+        "items": 50
+      }
+    },
+    {
+      "path": "/v1/history?limit=50",
+      "sample": 2,
+      "headers_ms": 3765.83,
+      "status": 200,
+      "total_ms": 3857.54,
+      "wire_bytes": 1749,
+      "content_encoding": "gzip",
+      "decoded_bytes": 19325,
+      "array_counts": {
+        "items": 50
+      }
+    },
+    {
+      "path": "/v1/registry/inventory?limit=50",
+      "sample": 1,
+      "headers_ms": 8761.04,
+      "status": 200,
+      "total_ms": 10359.65,
+      "wire_bytes": 25290,
+      "content_encoding": "gzip",
+      "decoded_bytes": 128015,
+      "array_counts": {
+        "repositories": 175
+      }
+    },
+    {
+      "path": "/v1/registry/inventory?limit=50",
+      "sample": 2,
+      "headers_ms": 6072.2,
+      "status": 200,
+      "total_ms": 6425.42,
+      "wire_bytes": 25290,
+      "content_encoding": "gzip",
+      "decoded_bytes": 128015,
+      "array_counts": {
+        "repositories": 175
+      }
+    },
+    {
+      "path": "/v1/alerting/overview",
+      "sample": 1,
+      "headers_ms": 5538.68,
+      "status": 200,
+      "total_ms": 5538.99,
+      "wire_bytes": 154,
+      "content_encoding": "gzip",
+      "decoded_bytes": 163,
+      "array_counts": {}
+    },
+    {
+      "path": "/v1/alerting/overview",
+      "sample": 2,
+      "headers_ms": 2398.64,
+      "status": 200,
+      "total_ms": 2398.94,
+      "wire_bytes": 154,
+      "content_encoding": "gzip",
+      "decoded_bytes": 163,
+      "array_counts": {}
+    }
+  ],
+  "authentication": "existing CLI context"
+}

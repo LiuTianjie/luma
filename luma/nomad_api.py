@@ -11,12 +11,16 @@ call, and rendered jobs carry Update.AutoRevert so a failed deploy rolls back on
 its own.
 """
 
+import copy
+import hashlib
 import json
 import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Mapping
 
@@ -29,6 +33,16 @@ from .errors import LumaError
 # a false timeout while Nomad is still converging a valid rollout.
 NOMAD_ROLLOUT_TIMEOUT_SECONDS = 2700.0
 NOMAD_ROLLOUT_POLL_INTERVAL_SECONDS = 1.0
+
+# Specs are immutable at a JobModifyIndex; running state and allocations are
+# deliberately never cached. Keep both the lifetime and memory cost bounded.
+NOMAD_SUMMARY_READ_TIMEOUT_SECONDS = 5.0
+NOMAD_SUMMARY_ENRICH_TIMEOUT_SECONDS = 10.0
+NOMAD_JOB_SPEC_CACHE_TTL_SECONDS = 300.0
+NOMAD_JOB_SPEC_CACHE_MAX_ENTRIES = 256
+NOMAD_JOB_SPEC_CACHE_MAX_ENTRY_BYTES = 128 * 1024
+_job_spec_cache: OrderedDict[tuple[str, str, str, str], tuple[tuple[str, int], float, Dict[str, Any]]] = OrderedDict()
+_job_spec_cache_lock = threading.Lock()
 
 
 class NomadRolloutError(LumaError):
@@ -859,7 +873,7 @@ def nomad_status_summary(config: LumaConfig, state: Dict[str, Any]) -> Dict[str,
     (region / luma_node_name); the dashboard merges those from Control's
     registered-node records by hostname instead.
     """
-    client = NomadApi(nomad_addr(config, state), token=_token(state))
+    client = _summary_client(config, state)
     try:
         leader = client.request("GET", "/v1/status/leader")
         nodes = client.request("GET", "/v1/nodes")
@@ -893,7 +907,67 @@ def nomad_status_summary(config: LumaConfig, state: Dict[str, Any]) -> Dict[str,
     return {"available": True, "leader": leader_addr, "nodes": items}
 
 
-def nomad_services_summary(config: LumaConfig, state: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _summary_client(config: LumaConfig, state: Dict[str, Any]) -> "NomadApi":
+    client = NomadApi(nomad_addr(config, state), token=_token(state))
+    client.READ_TIMEOUT = NOMAD_SUMMARY_READ_TIMEOUT_SECONDS
+    return client
+
+
+def _service_jobs(client: "NomadApi", job_ids: set[str] | None = None) -> List[Dict[str, Any]]:
+    path = "/v1/jobs?meta=true"
+    if job_ids is not None:
+        if not job_ids:
+            return []
+        if len(job_ids) == 1:
+            path += "&prefix=" + _q(next(iter(job_ids)))
+    try:
+        jobs = client.request("GET", path)
+    except LumaError:
+        return []
+    if not isinstance(jobs, list):
+        return []
+    service_jobs = [
+        job for job in jobs
+        if isinstance(job, dict)
+        and str(job.get("Type") or "") in {"service", ""}
+        and str(job.get("ID") or job.get("Name") or "")
+        and (job_ids is None or str(job.get("ID") or job.get("Name") or "") in job_ids)
+    ]
+    context = _job_cache_context(client)
+    if context:
+        present = {(str(job.get("Namespace") or "default"), str(job.get("ID") or job.get("Name") or "")) for job in service_jobs}
+        with _job_spec_cache_lock:
+            for key in list(_job_spec_cache):
+                if key[:2] == context and (job_ids is None or key[3] in job_ids) and key[2:] not in present:
+                    _job_spec_cache.pop(key, None)
+    return service_jobs
+
+
+def _job_stub_summary(job: Dict[str, Any]) -> Dict[str, Any]:
+    job_id = str(job.get("ID") or job.get("Name") or "")
+    meta = job.get("Meta") if isinstance(job.get("Meta"), dict) else {}
+    return {
+        "name": str(job.get("Name") or job_id),
+        "jobId": job_id,
+        "region": str(meta.get("luma.region") or ""),
+        "compose": str(meta.get("luma.compose") or "").lower() == "true",
+        "managedBy": "lae" if str(meta.get("luma.lae") or "").lower() == "true" else "",
+    }
+
+
+def nomad_service_directory(config: LumaConfig, state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Identity-only application selectors, using one jobs-list request."""
+    items = [_job_stub_summary(job) for job in _service_jobs(_summary_client(config, state))]
+    items.sort(key=lambda item: item["name"])
+    return items
+
+
+def nomad_services_summary(
+    config: LumaConfig,
+    state: Dict[str, Any],
+    *,
+    job_ids: set[str] | None = None,
+) -> List[Dict[str, Any]]:
     """Service list from Nomad jobs.
 
     Returns job summaries enriched with task-level details when the Nomad
@@ -901,23 +975,17 @@ def nomad_services_summary(config: LumaConfig, state: Dict[str, Any]) -> List[Di
     tasks, so dashboard consumers need the task shape to render per-service
     exposure, logs, and storage correctly.
     """
-    client = NomadApi(nomad_addr(config, state), token=_token(state))
-    try:
-        jobs = client.request("GET", "/v1/jobs?meta=true")
-    except LumaError:
+    client = _summary_client(config, state)
+    service_jobs = _service_jobs(client, job_ids)
+    if not service_jobs:
         return []
-    if not isinstance(jobs, list):
-        return []
-    service_jobs = [
-        job
-        for job in jobs
-        if isinstance(job, dict)
-        and str(job.get("Type") or "") in {"service", ""}
-        and str(job.get("ID") or job.get("Name") or "")
-    ]
-    allocations_by_job = _allocations_by_job(client)
-    job_ids = [str(job.get("ID") or job.get("Name") or "") for job in service_jobs]
-    details = _job_details_by_id(client, job_ids)
+    # A detail page must not scan every allocation in the cluster. Full list
+    # consumers still use one bulk allocation request, with bounded fallback.
+    deadline = time.monotonic() + NOMAD_SUMMARY_ENRICH_TIMEOUT_SECONDS
+    allocations_by_job = _allocations_by_job(client) if job_ids is None else None
+    if allocations_by_job is None:
+        allocations_by_job = _job_allocations_by_id(client, service_jobs, deadline=deadline)
+    details = _job_details_by_id(client, service_jobs, deadline=deadline)
     out: List[Dict[str, Any]] = []
     for j in service_jobs:
         job_id = str(j.get("ID") or j.get("Name") or "")
@@ -926,17 +994,10 @@ def nomad_services_summary(config: LumaConfig, state: Dict[str, Any]) -> List[Di
         for grp in summary.values():
             if isinstance(grp, dict):
                 running += int(grp.get("Running") or 0)
-        meta = j.get("Meta") if isinstance(j.get("Meta"), dict) else {}
         item: Dict[str, Any] = {
-            "name": str(j.get("Name") or job_id),
-            "jobId": job_id,
+            **_job_stub_summary(j),
             "status": str(j.get("Status") or ""),
             "running": running,
-            "region": str(meta.get("luma.region") or ""),
-            "compose": str(meta.get("luma.compose") or "").lower() == "true",
-            "managedBy": "lae"
-            if str(meta.get("luma.lae") or "").lower() == "true"
-            else "",
         }
         detail = details.get(job_id) or {}
         if isinstance(detail, dict):
@@ -946,13 +1007,7 @@ def nomad_services_summary(config: LumaConfig, state: Dict[str, Any]) -> List[Di
                 item["compose"] = str(detail_meta.get("luma.compose") or item.get("compose") or "").lower() == "true"
                 if str(detail_meta.get("luma.lae") or "").lower() == "true":
                     item["managedBy"] = "lae"
-        if allocations_by_job is None:
-            try:
-                allocations = client.request("GET", f"/v1/job/{_q(job_id)}/allocations")
-            except LumaError:
-                allocations = []
-        else:
-            allocations = allocations_by_job.get(job_id, [])
+        allocations = allocations_by_job.get(job_id, [])
         tasks = _job_task_summaries(
             job_id,
             detail if isinstance(detail, dict) else {},
@@ -986,22 +1041,115 @@ def _allocations_by_job(client: "NomadApi") -> Dict[str, List[Any]] | None:
     return grouped
 
 
-def _job_details_by_id(client: "NomadApi", job_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Fetch job specs concurrently. TaskGroups are not on the jobs list stub."""
-    details: Dict[str, Dict[str, Any]] = {}
-    if not job_ids:
-        return details
+def _job_path(job: Dict[str, Any], suffix: str = "") -> str:
+    path = f"/v1/job/{_q(str(job.get('ID') or job.get('Name') or ''))}{suffix}"
+    namespace = str(job.get("Namespace") or "default")
+    if namespace != "default":
+        path += "?namespace=" + _q(namespace)
+    return path
 
-    def fetch(job_id: str) -> tuple[str, Dict[str, Any]]:
+
+def _job_allocations_by_id(
+    client: "NomadApi", jobs: List[Dict[str, Any]], *, deadline: float | None = None,
+) -> Dict[str, List[Any]]:
+    def fetch(job: Dict[str, Any]) -> tuple[str, List[Any]]:
+        job_id = str(job.get("ID") or job.get("Name") or "")
+        if deadline is not None and time.monotonic() >= deadline:
+            return job_id, []
         try:
-            payload = client.request("GET", f"/v1/job/{_q(job_id)}")
+            payload = client.request("GET", _job_path(job, "/allocations"))
+        except LumaError:
+            payload = []
+        return job_id, payload if isinstance(payload, list) else []
+
+    if not jobs:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(8, len(jobs))) as pool:
+        return dict(pool.map(fetch, jobs))
+
+
+def _job_cache_context(client: "NomadApi") -> tuple[str, str] | None:
+    # In-memory only; never retain the ACL secret in a cache key. Lightweight
+    # test/custom clients without connection identity simply bypass caching.
+    address = getattr(client, "api_url", "")
+    token = getattr(client, "token", None)
+    if not isinstance(address, str) or not address or not isinstance(token, str):
+        return None
+    return address.rstrip("/"), hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _job_revision(job: Dict[str, Any]) -> tuple[str, int] | None:
+    for field in ("JobModifyIndex", "ModifyIndex"):
+        value = _positive_index(job.get(field))
+        if value:
+            return field, value
+    return None
+
+
+def _dashboard_job_spec(payload: Dict[str, Any]) -> Dict[str, Any]:
+    # Cache only fields read by task summaries, excluding task environment,
+    # templates and other potentially large/sensitive deployment inputs.
+    groups = []
+    for group in payload.get("TaskGroups") or []:
+        if not isinstance(group, dict):
+            continue
+        tasks = []
+        for task in group.get("Tasks") or []:
+            if not isinstance(task, dict):
+                continue
+            config = task.get("Config") if isinstance(task.get("Config"), dict) else {}
+            tasks.append({
+                "Name": task.get("Name"),
+                "Config": {key: config[key] for key in ("image", "ports", "mount") if key in config},
+                "Resources": task.get("Resources"),
+            })
+        groups.append({key: group[key] for key in ("Name", "Count", "Networks", "Services") if key in group} | {"Tasks": tasks})
+    return copy.deepcopy({"Meta": payload.get("Meta"), "TaskGroups": groups})
+
+
+def _job_details_by_id(
+    client: "NomadApi", jobs: List[Dict[str, Any]], *, deadline: float | None = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Reuse only revision-matched specs; live jobs/allocations stay uncached."""
+    details: Dict[str, Dict[str, Any]] = {}
+    if not jobs:
+        return details
+    context = _job_cache_context(client)
+
+    def fetch(job: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+        job_id = str(job.get("ID") or job.get("Name") or "")
+        revision = _job_revision(job)
+        key = (*context, str(job.get("Namespace") or "default"), job_id) if context else None
+        if key:
+            with _job_spec_cache_lock:
+                cached = _job_spec_cache.get(key)
+                if cached and revision and cached[0] == revision and cached[1] > time.monotonic():
+                    _job_spec_cache.move_to_end(key)
+                    return job_id, copy.deepcopy(cached[2])
+                _job_spec_cache.pop(key, None)
+        if deadline is not None and time.monotonic() >= deadline:
+            return job_id, {}
+        try:
+            payload = client.request("GET", _job_path(job))
         except LumaError:
             return job_id, {}
-        return job_id, payload if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict):
+            return job_id, {}
+        detail = _dashboard_job_spec(payload)
+        # A concurrent deploy can change the spec between list and detail GET.
+        # Use the fetched spec for this response, but never label it with the
+        # older list revision or serve stale detail after a failed re-fetch.
+        if key and revision and _job_revision(payload) == revision and len(json.dumps(detail).encode("utf-8")) <= NOMAD_JOB_SPEC_CACHE_MAX_ENTRY_BYTES:
+            with _job_spec_cache_lock:
+                _job_spec_cache[key] = (revision, time.monotonic() + NOMAD_JOB_SPEC_CACHE_TTL_SECONDS, copy.deepcopy(detail))
+                _job_spec_cache.move_to_end(key)
+                while len(_job_spec_cache) > NOMAD_JOB_SPEC_CACHE_MAX_ENTRIES:
+                    _job_spec_cache.popitem(last=False)
+        return job_id, detail
 
-    workers = min(8, len(job_ids))
+    workers = min(8, len(jobs))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for job_id, detail in pool.map(fetch, job_ids):
+        for job_id, detail in pool.map(fetch, jobs):
             details[job_id] = detail
     return details
 

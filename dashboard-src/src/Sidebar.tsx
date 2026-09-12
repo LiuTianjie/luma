@@ -32,6 +32,7 @@ export function AppSidebar({
   lang,
   clusterId,
   vm,
+  showFleetSummary = true,
   activeNavPage,
   onNavigate,
   onPrefetch,
@@ -43,6 +44,7 @@ export function AppSidebar({
   lang: Lang;
   clusterId: string;
   vm: DashboardViewModel;
+  showFleetSummary?: boolean;
   activeNavPage: NavPage;
   onNavigate: (page: NavPage) => void;
   onPrefetch?: (page: NavPage) => void;
@@ -155,7 +157,7 @@ export function AppSidebar({
           </div>
           <Button variant="ghost" size="sm" className="flex-1 justify-start group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:flex-none group-data-[collapsible=icon]:justify-center" onClick={onSignOut} title={t(lang, "signOut")}><LogOut data-icon="inline-start" /><span className="group-data-[collapsible=icon]:hidden">{t(lang, "signOut")}</span></Button>
         </div>
-        <div className="flex flex-col gap-1.5 rounded-lg bg-sidebar-accent px-3 py-3 text-xs group-data-[collapsible=icon]:hidden">
+        {showFleetSummary && <div className="flex flex-col gap-1.5 rounded-lg bg-sidebar-accent px-3 py-3 text-xs group-data-[collapsible=icon]:hidden">
           <span className="text-muted-foreground">{lang === "zh" ? "就绪节点" : "Ready nodes"}</span>
           <strong className="text-sm font-medium">
             {vm.activeNodes}
@@ -166,7 +168,7 @@ export function AppSidebar({
               ? `${Math.max(0, vm.services.length - vm.healthyServices)} 个服务异常`
               : `${Math.max(0, vm.services.length - vm.healthyServices)} services need attention`}
           </span>
-        </div>
+        </div>}
       </SidebarFooter>
     </Sidebar>
   );

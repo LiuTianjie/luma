@@ -104,7 +104,7 @@ from ..local_storage import (
     service_persistent_mounts,
     storage_owner_from_job,
 )
-from ..nomad_api import NomadApi, NomadRolloutError, deploy_to_nomad, remove_from_nomad, revert_job, job_versions, nomad_addr, nomad_status_summary, nomad_services_summary
+from ..nomad_api import NomadApi, NomadRolloutError, deploy_to_nomad, remove_from_nomad, revert_job, job_versions, nomad_addr, nomad_status_summary, nomad_services_summary, nomad_service_directory
 from ..nomad_render import EDGE_EXPOSURES, render_nomad_job, render_compose_job, resource_policy_warnings
 from ..observe_instrument import OBSERVE_STACK, manager_tailscale_ip, mint_otlp_token, otlp_mesh_endpoint
 from ..registry import (
@@ -185,6 +185,8 @@ from ..lae_admin_proxy import (
     load_lae_admin_proxy_config,
 )
 from .. import __version__
+from .dashboard_queries import SCOPES as DASHBOARD_SCOPES, service_summary as _dashboard_service_summary, application_page as _dashboard_application_page
+from .metrics_api import handle_metrics_history_batch
 from .metrics import history_metadata, load_history, load_history_snapshot, record_samples, retention_seconds, sustained_breach
 from .observe import handle_observe_apps
 from .monitoring import CONTENT_TYPE as METRICS_CONTENT_TYPE, peer_is_loopback, render_metrics, require_metrics_token
@@ -626,9 +628,12 @@ def _normalize_container_stats_for_engine(
     return _container_stats(normalized)
 
 
-def _nomad_allocation_service_index(config: Any, state: Dict[str, Any]) -> dict[str, Dict[str, str]]:
+def _nomad_allocation_service_index(config: Any, state: Dict[str, Any], *, job_id: str = "") -> dict[str, Dict[str, str]]:
     try:
-        allocations = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or "")).request("GET", "/v1/allocations")
+        client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+        client.READ_TIMEOUT = 5
+        path = f"/v1/job/{urllib.parse.quote(job_id, safe='')}/allocations" if job_id else "/v1/allocations"
+        allocations = client.request("GET", path)
     except Exception:
         return {}
     if not isinstance(allocations, list):
@@ -3259,9 +3264,26 @@ def _invalidate_setup_checks(state: Dict[str, Any], *kinds: str) -> None:
         item["detail"] = "configuration changed; run setup check again"
 
 
-def handle_dashboard(token: str) -> Dict[str, Any]:
+def _dashboard_query(raw_query: str) -> Dict[str, Any]:
+    query = {key: values[0] for key, values in urllib.parse.parse_qs(raw_query).items()}
+    return {"scope": query.get("scope", "full"), "app": query.get("app", ""), "query": query}
+
+
+def handle_dashboard(token: str, *, scope: str = "full", app: str = "", query: Dict[str, str] | None = None) -> Dict[str, Any]:
     state = load_dashboard_state()
     require_token(state, token, token_type="deploy")
+    if scope not in DASHBOARD_SCOPES:
+        raise LumaError("unknown dashboard scope")
+    if scope == "application" and (not app or len(app) > 256):
+        raise LumaError("application scope requires an app name of at most 256 characters")
+    # Validate pagination before any expensive upstream work.
+    if scope == "applications":
+        _dashboard_application_page([], query or {})
+    needs_services = scope in {"full", "overview", "applications", "application", "fleet", "network", "storage", "metrics"}
+    needs_status = scope in {"full", "overview", "application", "nodes", "setup", "deploy", "fleet", "network", "metrics"}
+    needs_stats = scope in {"full", "overview", "application", "metrics"}
+    needs_routes = scope in {"full", "applications", "application", "network"}
+
     _apply_state_secrets(state)
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
@@ -3276,30 +3298,44 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
     errors: list[str] = []
 
     engine = _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        status_future = pool.submit(nomad_status_summary, config, state)
-        services_future = pool.submit(nomad_services_summary, config, state)
-        nomad_summary = status_future.result()
-        nomad_services = services_future.result()
-    raw_nodes = nomad_summary.get("nodes", [])
-    if not isinstance(raw_nodes, list):
-        raw_nodes = []
+    deployment_index = _dashboard_deployment_service_index(state) if needs_services else ({}, set())
     registered_nodes = _registered_nodes_summary(
         state.get("nodes") if isinstance(state.get("nodes"), dict) else {},
     )
+    # Node/setup consumers must not fan out to every job, allocation and route.
+    # For the full view, resource lookup is independent of job/status lookup.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        status_future = pool.submit(nomad_status_summary, config, state) if needs_status else None
+        services_future = (
+            pool.submit(nomad_services_summary, config, state, job_ids={app}) if scope == "application"
+            else pool.submit(nomad_services_summary, config, state) if needs_services
+            else pool.submit(nomad_service_directory, config, state) if scope == "directory" else None
+        )
+        stats_future = pool.submit(
+            _service_stats_by_name, registered_nodes, config=config, state=state,
+            compose_stacks=deployment_index[1], **({"job_id": app} if scope == "application" else {}),
+        ) if needs_stats else None
+        nomad_summary = status_future.result() if status_future else {}
+        nomad_services = services_future.result() if services_future else []
+        service_stats = stats_future.result() if stats_future else {}
+    raw_nodes = nomad_summary.get("nodes", [])
+    if not isinstance(raw_nodes, list):
+        raw_nodes = []
     nodes = _dashboard_nodes(registered_nodes, raw_nodes, terminal_nodes=TERMINAL_BROKER.connected_nodes())
 
-    route_files = _dashboard_route_files(config, config_path, errors)
-    deployment_index = _dashboard_deployment_service_index(state)
+    route_files = _dashboard_route_files(config, config_path, errors) if needs_routes else {}
     services = _dashboard_nomad_services(nomad_services, route_files, state=state, deployment_index=deployment_index)
-    service_stats = _service_stats_by_name(registered_nodes, config=config, state=state, compose_stacks=deployment_index[1])
-    for service in services:
-        _attach_service_actual_resources(service, service_stats.get(str(service.get("fullName") or ""), []))
-    traffic_paths = _dashboard_traffic_paths(services, route_files, dns_target)
-    storage = _dashboard_storage(services, _storage_classes_summary(state))
+    if scope == "directory":
+        services = [{"name": item.get("jobId") or item.get("name"), "stack": item.get("jobId") or item.get("name"), "managedBy": item.get("managedBy", "")} for item in nomad_services]
+    if needs_stats:
+        for service in services:
+            _attach_service_actual_resources(service, service_stats.get(str(service.get("fullName") or ""), []))
+    traffic_paths = _dashboard_traffic_paths(services, route_files, dns_target) if scope in {"full", "network"} else []
+    storage = _dashboard_storage(services, _storage_classes_summary(state)) if scope in {"full", "storage", "deploy", "application"} else {}
     public_services = [_public_dashboard_service(item) for item in services]
-    issues = _dashboard_issues(nodes, public_services)
-    issues.extend(_registry_dashboard_issues(state))
+    issues = _dashboard_issues(nodes, public_services) if scope in {"full", "overview"} else []
+    if scope in {"full", "overview"}:
+        issues.extend(_registry_dashboard_issues(state))
     issues.sort(key=lambda item: (0 if item.get("severity") == "critical" else 1, str(item.get("target") or "")))
 
     lae_admin_available = _lae_admin_proxy_available()
@@ -3349,7 +3385,7 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
     # to a fake token.
     join_token = _ensure_dashboard_join_token(state)
 
-    return {
+    payload = {
         "cluster": {
             "id": str(state.get("clusterId") or ""),
             "version": __version__,
@@ -3373,6 +3409,30 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
         "issues": issues,
         "errors": errors,
     }
+    fields = {
+        "overview": {"readiness", "nodes", "services", "issues"},
+        "nodes": {"readiness", "nodes", "nodeJoin", "regions", "build"},
+        "setup": {"readiness", "regions", "build"},
+        "deploy": {"nodes", "regions", "build", "storage"},
+        "directory": {"nodes", "services"},
+        "applications": {"services"},
+        "application": {"services", "nodes", "regions", "storage", "build"},
+        "fleet": {"nodes", "services", "nodeJoin", "regions"},
+        "network": {"nodes", "services", "trafficPaths"},
+        "storage": {"storage"},
+        "metrics": {"nodes", "services"},
+    }
+    if scope in {"overview", "fleet", "network"}:
+        payload["services"] = [_dashboard_service_summary(item, placement=scope != "overview") for item in public_services]
+    if scope == "directory":
+        payload["nodes"] = [{"name": node["name"]} for node in nodes]
+    if scope == "applications":
+        payload["services"], payload["applicationPage"] = _dashboard_application_page(public_services, query or {})
+    if scope != "full":
+        keep = fields[scope] | {"cluster", "errors", "applicationPage"}
+        payload = {key: value for key, value in payload.items() if key in keep}
+    payload["scope"] = scope
+    return payload
 
 
 def handle_dashboard_setup_configure(token: str, body: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -8033,7 +8093,7 @@ def handle_prometheus_metrics(token: str | None, *, allow_unauthenticated: bool 
 
 
 def handle_metrics_history(token: str, kind: str, name: str, *, window: int = 3600) -> Dict[str, Any]:
-    require_token(load_state(), token, token_type="deploy")
+    require_token(load_auth_state(), token, token_type="deploy")
     if kind not in {"node", "service"}:
         raise LumaError("kind must be node or service")
     if not str(name or "").strip():
@@ -9823,7 +9883,7 @@ def _registry_inventory_page(
         ]
     total = len(entries)
     page_entries = entries if limit == 0 else entries[offset:offset + limit]
-    page = copy.deepcopy(result)
+    page = copy.deepcopy({key: value for key, value in result.items() if key != "entries"})
     page["entries"] = copy.deepcopy(page_entries)
     page["page"] = {
         "offset": offset,
@@ -10068,13 +10128,13 @@ def _start_registry_background_scan(cache_key: str) -> None:
 
 
 def handle_registry_inventory(token: str, *, refresh: bool = False) -> Dict[str, Any]:
-    state = load_state()
+    state = load_state() if refresh else load_auth_state()
     require_token(state, token, token_type="deploy")
     return _registry_inventory_for_state(state, refresh=refresh)
 
 
 def handle_registry_policy_get(token: str) -> Dict[str, Any]:
-    state = load_state()
+    state = load_auth_state()
     require_token(state, token, token_type="deploy")
     management = _registry_management_state(state)
     return {"policy": dict(management["policy"])}
@@ -16772,6 +16832,7 @@ def _service_stats_by_name(
     config: Any | None = None,
     state: Dict[str, Any] | None = None,
     compose_stacks: set[str] | None = None,
+    job_id: str = "",
 ) -> dict[str, list[Dict[str, Any]]]:
     result: dict[str, list[Dict[str, Any]]] = {}
     allocation_index: dict[str, Dict[str, str]] | None = None
@@ -16779,7 +16840,7 @@ def _service_stats_by_name(
         cfg = config or load_config(_control_config_path())
         defaults = getattr(cfg, "defaults", {})
         if str(defaults.get("engine") or "nomad") == "nomad":
-            allocation_index = _nomad_allocation_service_index(cfg, state if isinstance(state, dict) else {})
+            allocation_index = _nomad_allocation_service_index(cfg, state if isinstance(state, dict) else {}, **({"job_id": job_id} if job_id else {}))
         else:
             allocation_index = {}
     except Exception:
@@ -19407,7 +19468,13 @@ class ControlHandler(BaseHTTPRequestHandler):
             if parsed_path == "/v1/registry/inventory":
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 refresh = str((query.get("refresh") or [""])[0]).lower() in {"1", "true", "yes"}
-                self._json(200, handle_registry_inventory(token, refresh=refresh))
+                try:
+                    offset = int(str((query.get("offset") or ["0"])[0]))
+                    limit = int(str((query.get("limit") or ["0"])[0]))
+                except ValueError as exc:
+                    raise LumaError("registry inventory offset and limit must be integers") from exc
+                self._json(200, _registry_inventory_page(handle_registry_inventory(token, refresh=refresh),
+                    offset=offset, limit=limit, query=str((query.get("q") or [""])[0]), status=str((query.get("status") or [""])[0])))
                 return
             if parsed_path == "/v1/registry/policy":
                 self._json(200, handle_registry_policy_get(token))
@@ -19534,7 +19601,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 self._bytes(200, handle_prometheus_metrics(token).encode("utf-8"), METRICS_CONTENT_TYPE, headers={"Cache-Control": "no-store"})
                 return
             if parsed_path == "/v1/dashboard":
-                self._json(200, handle_dashboard(token))
+                self._json(200, handle_dashboard(token, **_dashboard_query(urllib.parse.urlparse(self.path).query)))
                 return
             if parsed_path == "/v1/dashboard/logs":
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -19873,6 +19940,9 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/v1/builds/config":
                 self._json(200, handle_build_config_set(token, body))
+                return
+            if self.path == "/v1/dashboard/metrics/history/batch":
+                self._json(200, handle_metrics_history_batch(token, body))
                 return
             if self.path == "/v1/dashboard/setup/configure":
                 self._json(200, handle_dashboard_setup_configure(token, body))
@@ -20605,7 +20675,7 @@ async def _asgi_authenticated_get(request: Request) -> Response:
         if parsed_path == "/v1/metrics":
             return Response(await run_in_threadpool(handle_prometheus_metrics, token), headers={"Content-Type": METRICS_CONTENT_TYPE, "Cache-Control": "no-store"})
         if parsed_path == "/v1/dashboard":
-            return _json_response(200, await run_in_threadpool(handle_dashboard, token))
+            return _json_response(200, await run_in_threadpool(handle_dashboard, token, **_dashboard_query(request.url.query)))
         if parsed_path == "/v1/dashboard/logs":
             service = str(request.query_params.get("service") or "")
             since = str(request.query_params.get("since") or "")
@@ -20940,6 +21010,7 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/secrets/remove": handle_secret_remove,
             "/v1/regions": handle_region_create,
             "/v1/regions/remove": handle_region_remove,
+            "/v1/dashboard/metrics/history/batch": handle_metrics_history_batch,
             "/v1/git-providers": handle_git_provider_set,
             "/v1/git-providers/remove": handle_git_provider_remove,
             "/v1/registries": handle_registry_set,

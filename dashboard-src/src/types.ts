@@ -216,6 +216,12 @@ export type DashboardRegion = {
 };
 
 export type DashboardPayload = {
+  scope?: string;
+  applicationPage?: {
+    offset: number; limit: number; total: number; hasMore: boolean;
+    counts: { total: number; healthy: number; degraded: number; failed: number };
+    statuses: string[]; regions: string[];
+  };
   nodeJoin?: DashboardNodeJoin;
   cluster?: {
     id?: string;
