@@ -169,7 +169,7 @@ BUNDLE_DIR=<private-validation-bundle-directory>
 8. 当前 validation 的 PostgreSQL、MinIO 与本地快照位于 manager 本地盘，已解除 NFS 对平台启动和重启的耦合；仍必须补齐磁盘容量/损坏告警、PostgreSQL PITR、对象与快照异机复制，并完成整机丢失 restore drill。
 9. PostgreSQL PITR、MinIO/registry/volume backup+restore、容量告警、引用安全 GC、独立观测栈和租户 runtime 真实纵向 E2E 尚未完成；当前平台 10 service、DNS/TLS/route 和基础用户/Git 分析冒烟已经通过。生产还缺专用 `lae-core`、至少两个专用 runtime runner、真实可用 SMTP 凭据和真实微信/支付宝等 payment provider；mock 不能进入 production。
 10. Runtime/server-side policy 仍需在真实节点证明 read-only rootfs、cap drop、no-new-privileges、PID/ephemeral disk、管理网/metadata/Tailscale 阻断和滥用治理，不能只依赖 Compose 表面字段。
-11. lifecycle API/Worker、结构化 update-check、更新/失败保旧、回滚、删除保卷和日志/指标已有代码、自动化测试与 PostgreSQL 17 集成证据；placement admin 精确审计视图也已实现。两者仍需真实 Luma validation 场景验收。以 [实施状态](../../../docs/lae/08-implementation-status.md) 为准。
+11. lifecycle API/Worker、结构化 update-check、更新/失败保旧、回滚、删除保卷和日志/指标已有代码、自动化测试与 PostgreSQL 17 集成证据；placement admin 精确审计视图也已实现。两者仍需真实 Luma validation 场景验收。验收须以当前环境的实际操作结果为准。
 
 这些门禁未清零前，只允许进行结构校验、镜像构建验证和隔离 validation 演练，不执行 production live deploy。
 

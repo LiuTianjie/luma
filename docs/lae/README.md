@@ -1,7 +1,6 @@
 # Luma Application Engine（LAE）产品与工程设计
 
-> 状态：validation delivery v1.0。仓库包版本以 [pyproject.toml](../../pyproject.toml) 为准；本页记录历史验收状态。2026-07-15 冻结点为 Luma `v0.1.258`，当时 Control/manager 与在线节点 `bot/builder/lab/m4/tecent` 已收敛；`gaojiu` 离线、`blg` 按要求未触碰、`aly` 为历史节点。LAE 10 个平台 service 当时在 `manager` 本地盘运行 exact ref `6c718c61b2dae421078c92a2b2542d6a9b2e960c`（Nomad v11）。live 拓扑以 `luma status` 和 [最终交付说明](./13-final-handoff.md) 为准，不要把冻结点版本号当成永远当前。
-> 日期：2026-07-15（冻结）；文档修订 2026-09-05
+> 仓库包版本以 [pyproject.toml](../../pyproject.toml) 为准；当前运行拓扑以 `luma status` 的实时结果为准。
 > 目标：在 Luma 之上建设面向普通用户和 AI Agent 的多租户应用部署平台；LAE 自身及其依赖全部由 Luma 部署和管理。
 
 ## 1. 结论先行
@@ -57,7 +56,7 @@ LAE 不能只是给现有 Luma Dashboard 增加注册页。正确边界是：
 - 现有认证只有一枚全局 management token 和一枚 node join token；`control.json` 是单集群状态文件，不是多租户数据库。
 - scoped secret、Git token 和 registry password 当前会进入控制面状态；这不满足公网多租户密钥隔离要求。
 - 部署写操作当前由进程内全局锁串行化；它可以支撑低并发运维，但不能直接当作公共平台并发执行层。
-- Luma Core 本身没有 LAE 的文件上传、用户/RBAC、套餐、支付、邮件、应用 suspend/resume 或租户级审计语义；这些能力由 LAE 代码提供，但仍需按 [实施状态](./08-implementation-status.md) 分别完成 validation/production 验收。Luma 的公网多租户 namespace enforcement 仍是硬门槛。
+- Luma Core 本身没有 LAE 的文件上传、用户/RBAC、套餐、支付、邮件、应用 suspend/resume 或租户级审计语义；这些能力由 LAE 代码提供，但仍需分别完成 validation/production 验收。Luma 的公网多租户 namespace enforcement 仍是硬门槛。
 
 因此，现有 Luma 适合作为 LAE 的执行底座，但不适合直接暴露给租户。
 
@@ -104,12 +103,9 @@ LAE 不能只是给现有 Luma Dashboard 增加注册页。正确边界是：
 - [05 安全、套餐、支付与运维](./05-security-billing-operations.md)：多租户安全、配额、计费、支付、SLO、备份和合规。
 - [06 分阶段并行研发计划](./06-delivery-plan.md)：协议先行、工作流拆分、验收门槛和研发协作方式。
 - [07 开放决策](./07-open-decisions.md)：需要产品负责人确认的问题、默认值和影响范围。
-- [08 实施状态与验收证据](./08-implementation-status.md)：逐项需求、研发状态、权威证据和发布门槛。
 - [09 用户使用指南](./09-user-guide.md)：Web、CLI 与 Agent Skill 的注册、诊断、配置、部署、观测、生命周期和计费流程。
 - [10 运维与排障 SOP](./10-operations-troubleshooting-sop.md)：值班检查、Luma/LAE/Builder/Runtime/placement、数据恢复、密钥轮换与 GC。
 - [11 部署、升级与回退](./11-deployment-and-upgrade.md)：不可变 release、manager/fleet 顺序、显式 validation sidecar、验收与回退点。
-- [12 原始需求—实现—证据矩阵](./12-requirements-evidence-matrix.md)：逐条映射原始 14 项需求、后续澄清、代码证据、live 证据和剩余门槛。
-- [13 validation 最终交付说明](./13-final-handoff.md)：入口、已交付范围、实际拓扑、发布基线、操作顺序与 production gate。
 
 ## 7. 名词与状态源
 

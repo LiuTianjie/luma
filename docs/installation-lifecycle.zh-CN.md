@@ -69,4 +69,4 @@ Control 未返回 agent 凭据时，`luma node join` 不再报告完成。本地
 
 ## 尚未覆盖 {#not-yet-covered}
 
-切换中途监督器崩溃恢复、公开接管/修复、控制台生命周期 UI、稳定版本默认解析、Builder/Registry 验证、Manager 维护门禁和 observe/备份标准化仍由 `standard-path-remediation-plan-2026-09-09.md` 跟踪。不能仅凭候选准备测试就判断可安全进行真实升级。
+切换中途监督器崩溃恢复、公开接管/修复、控制台生命周期 UI、稳定版本默认解析、Builder/Registry 验证、Manager 维护门禁和 observe/备份标准化仍待完成。不能仅凭候选准备测试就判断可安全进行真实升级。

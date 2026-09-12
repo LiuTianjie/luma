@@ -2,7 +2,7 @@
 
 > 文档版本：2026-07-15<br>
 > 适用对象：LAE Web 用户、`lae` CLI 用户，以及代表用户调用 CLI 的 AI Agent<br>
-> 发布状态：代码能力说明，不代表生产 GA。真实可用性以 [实施状态与验收证据](./08-implementation-status.md) 和平台状态页为准。
+> 发布状态：代码能力说明，不代表生产 GA。真实可用性以当前环境验收结果和平台状态页为准。
 
 ## 1. 先理解三个边界
 
@@ -547,4 +547,4 @@ Lite、Pro、Ultra 限制类别包括应用数、service/route 数、上传和�
 - production 真实 SMTP、微信/支付宝 payment provider、套餐 usage ledger；
 - 专用 production `lae-core`、至少两个专用 runner、独立 PostgreSQL/artifact storage 与恢复演练，以及 dedicated builder 隔离、滥用治理和公开运营合规。
 
-逐项当前证据以 [08 实施状态](./08-implementation-status.md) 为唯一进度清单，设计文档或本指南中的流程不替代 validation/production 验收。
+设计文档或本指南中的流程不替代 validation/production 验收。

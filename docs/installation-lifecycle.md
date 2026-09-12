@@ -136,5 +136,5 @@ do not find `target.json` keep the previous in-process service refresh.
 Crash recovery of a supervisor that died mid-switch, public adoption/repair,
 Dashboard lifecycle UI, stable-release default resolution, builder/registry
 validation, manager maintenance gates and observe/backup standardization remain
-tracked in `standard-path-remediation-plan-2026-09-09.md`. No live upgrade should
+open. No live upgrade should
 be justified by candidate-preparation tests alone.

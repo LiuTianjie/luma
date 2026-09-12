@@ -23,3 +23,7 @@ node_modules/
 
 # Generated GitHub Pages artifact
 _site/
+
+# Local investigation notes and audit artifacts
+/.local-notes/
+/docs/research/

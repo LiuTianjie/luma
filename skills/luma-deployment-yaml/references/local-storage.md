@@ -37,5 +37,3 @@ An application with no running allocations can still own data. For user-authoriz
 - Remove unused classes only after checking dependencies. Class removal is not proof of host shutdown; a node-agent operation may be skipped while the class still disappears from Control.
 - Stop and disable the NFS service on reachable hosts after client mounts are gone. Verify both inactive/disabled status and empty exports. Retain source data and configuration backups separately from live exports.
 - Do not call an offline host cleaned. Report its remaining host-level work separately from the verified online state. Never relocate its database into a new empty volume to make the inventory look healthy.
-
-For the dated production execution record, see [2026-09-05 local-storage migration](https://github.com/LiuTianjie/luma/blob/main/docs/local-storage-migration-2026-09-05.md). Treat that record as historical evidence and recheck live state before another operation.

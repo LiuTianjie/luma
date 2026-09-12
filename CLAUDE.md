@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 本仓库包含两层产品：
 
 1. **Luma**：面向 HashiCorp Nomad 的轻量自托管部署控制面。Python CLI（`luma`）从任意已认证的客户端运行，通过 Luma Control 渲染并提交 Nomad job，用 Traefik 做 HTTP/HTTPS/TCP 入口，用 Cloudflare 管理 DNS。Python 包名为 `luma-infra`，发布到 PyPI。
-2. **LAE（Luma Application Engine，`lae/` 目录）**：建在 Luma 之上的多租户 ToC 应用托管平台（面向普通用户和 AI Agent）。Luma 是基础设施控制面/超管底座；LAE 负责用户/租户/应用/诊断/构建/部署任务/配额/计费/审计。设计与现状的权威来源是 `docs/lae/`（尤其 `08-implementation-status.md` 完成度表、`13-final-handoff.md` 交接现状、`07-open-decisions.md` 已确认决策）。
+2. **LAE（Luma Application Engine，`lae/` 目录）**：建在 Luma 之上的多租户 ToC 应用托管平台（面向普通用户和 AI Agent）。Luma 是基础设施控制面/超管底座；LAE 负责用户/租户/应用/诊断/构建/部署任务/配额/计费/审计。设计与现状的权威来源是 `docs/lae/`（尤其 `07-open-decisions.md` 已确认决策）。
 
 Luma 调用链：`客户端 -> Luma Control -> Nomad API -> Nomad client -> docker driver -> container`
 
@@ -134,3 +134,7 @@ LAE 另有三类**服务端 principal**（不是用户 token，全部从 0600 �
 ## 文档
 
 `docs/` 下文档大多为中文，是设计意图的权威来源。改对应模块前先读相关文档：`architecture.md`（region 模型）、`deployment-yaml.md` / `compose-storage.md`（manifest 字段）、`exposure-model.md`（六种 exposure）、`secrets.md`（token/secret 模型）、`bootstrap.md`、`operations.md`（rollback/restart/remove 语义）、`release.md`（发布流程）。**LAE 相关一律以 `docs/lae/` 为准**。`site/` 是 GitHub Pages 静态站，由 `.github/workflows/pages.yml` 部署。
+
+## Local investigation artifacts
+
+Keep page audits, investigation reports, request baselines, validation evidence, and handoff notes in the Git-ignored `.local-notes/` directory. Do not commit them or link to them from published documentation or release notes. Keep `docs/` for maintained product and developer documentation.

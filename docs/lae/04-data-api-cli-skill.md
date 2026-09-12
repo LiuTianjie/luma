@@ -562,7 +562,7 @@ build-plan(sourceSnapshotId, sourceSnapshotDigest, signedBuildPlan, credentialLe
 
 `lae-agent`/Worker 只签发一次性 credential lease 并编排任务。Luma builder 在 task lease 时换取 tenant source credential、拉取/校验源码、分析或构建并推送 image；不得把用户 PAT 写入当前全局 Luma Git provider state。Luma 把 task 绑定到鉴权得到的 service principal，并按该 principal 的 tenant/application scope 校验 payload；读取、事件和取消操作也必须由原 principal 执行。`build-plan` 必须接受 LAE 显式生成的多服务 build specs，不能要求用户仓库包含 Luma 文件。
 
-上述协议、scoped principal、rootless executor、credential/object lease、snapshot binding、显式多 service BuildPlan、幂等/cursor/cancel、Runtime API、生命周期 Worker 与稳定错误已具备代码和自动化测试，生命周期 PostgreSQL 17 migration-backed 集成也已通过。公网多租户剩余门禁集中在真实 principal/registry/storage 配置、专用 builder/runner 隔离与 egress、tenant registry/cache/GC、完整配额/审计/reconciliation、真实 Luma lifecycle E2E、备份恢复及 validation/chaos；以 [实施状态](./08-implementation-status.md) 为准。
+上述协议、scoped principal、rootless executor、credential/object lease、snapshot binding、显式多 service BuildPlan、幂等/cursor/cancel、Runtime API、生命周期 Worker 与稳定错误已具备代码和自动化测试，生命周期 PostgreSQL 17 migration-backed 集成也已通过。公网多租户剩余门禁集中在真实 principal/registry/storage 配置、专用 builder/runner 隔离与 egress、tenant registry/cache/GC、完整配额/审计/reconciliation、真实 Luma lifecycle E2E、备份恢复及 validation/chaos；验收须以当前环境的实际操作结果为准。
 
 ## 14. LAE CLI
 

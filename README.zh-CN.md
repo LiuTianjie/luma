@@ -1,6 +1,5 @@
 # Luma
 
-GTM 首次安装与可用性路线图见：[Luma GTM 首装计划](docs/luma-gtm-readiness-plan.md)。
 
 首次安装可先用 `templates/hello-world.yml` 验证节点、Nomad 调度和服务健康，再按需在 Dashboard 的“首次安装向导”配置 Cloudflare、Tailscale、egress 或 Registry。
 

@@ -506,8 +506,7 @@ curl --fail --silent --show-error \
 curl --fail --silent --show-error --output /dev/null \
 ```
 
-然后按 [实施状态](./08-implementation-status.md) 和
-[运维 SOP](./10-operations-troubleshooting-sop.md) 完成 email、HTML/ZIP、
+然后按 [运维 SOP](./10-operations-troubleshooting-sop.md) 完成 email、HTML/ZIP、
 public/private Git、单 HTTP、Compose 多 HTTP、volume、环境变量、update-check、
 stop/restart/rollback/delete、CLI/Skill、无容量、节点故障、路由/TLS 和恢复 E2E。
 Nomad allocation `running` 或单个 HTTP 200 都不是完整验收。
