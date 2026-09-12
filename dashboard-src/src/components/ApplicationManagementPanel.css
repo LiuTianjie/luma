@@ -67,8 +67,8 @@
 .app-management-panel .application-filter-bar {
   grid-template-columns: minmax(240px, 1fr) 180px 180px auto;
   gap: 16px;
-  margin-bottom: 8px;
-  padding-bottom: 20px;
+  margin-bottom: 0;
+  padding-bottom: 0;
 }
 .app-management-panel .application-filter-bar label { gap: 8px; }
 .app-management-panel .application-search-control {
@@ -146,3 +146,40 @@
 .app-management-panel .app-table th:last-child,
 .app-management-panel .app-table td:last-child { width: 190px; text-align: right; }
 .app-management-panel .app-table :is(th, td) { padding-left: 12px; padding-right: 12px; }
+
+.application-overview-card { border: 1px solid var(--border); border-radius: 8px; box-shadow: none; gap: 12px; }
+.application-overview-card [data-slot="card-title"] { font-size: 14px; font-weight: 600; }
+.application-overview-card [data-slot="card-content"] { font-size: 13px; line-height: 1.6; }
+.application-overview-card .application-access-list { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+.application-overview-card .application-access-list p { margin: 0; color: var(--muted-foreground); font-size: 13px; }
+.application-overview-card .application-access-list a { font-size: 13px; color: var(--primary); overflow-wrap: anywhere; }
+.application-overview-card .application-diagnostics-list { display: grid; gap: 12px; }
+.application-overview-row { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 16px; align-items: baseline; }
+.application-overview-row + .application-overview-row { border-top: 1px solid var(--border); padding-top: 12px; }
+.application-overview-row > span { color: var(--muted-foreground); }
+.application-overview-row p { margin: 0; font-size: 13px; }
+
+.application-config-card { border: 1px solid var(--border); border-radius: var(--radius); box-shadow: none; padding: 0; gap: 0; overflow: hidden; }
+.application-config-header { display: flex; align-items: center; justify-content: space-between; gap: 12px 20px; flex-wrap: wrap; padding: 16px; }
+.application-config-header h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.application-config-header > div { min-width: 0; }
+.application-config-meta { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 6px; color: var(--muted-foreground); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.application-config-meta code { font-family: inherit; font-size: inherit; }
+.application-config-actions { flex-shrink: 0; }
+.application-config-switch { padding: 0 16px 12px; }
+.application-config-notice { padding: 0 16px 12px; margin: 0; font-size: 12px; color: var(--muted-foreground); }
+
+.application-config-workspace { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.application-config-workspace > .deployment-config-code { margin: 0; border-radius: var(--radius); }
+
+.application-versions-card { border: 1px solid var(--border); border-radius: var(--radius); box-shadow: none; gap: 16px; }
+.application-versions-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.application-versions-header [data-slot="card-title"] { font-size: 14px; font-weight: 600; }
+.application-versions-header p { margin: 6px 0 0; color: var(--muted-foreground); font-size: 12px; }
+.application-versions-card [data-slot="alert"] { border-radius: var(--radius-md); }
+.version-error-details { margin-top: 8px; font-size: 12px; }
+.version-error-details summary { cursor: pointer; }
+.version-error-details p { margin: 8px 0 0; overflow-wrap: anywhere; }
+.application-versions-empty { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 28px 12px; font-size: 13px; color: var(--muted-foreground); }
+.application-versions-empty svg { width: 18px; height: 18px; }
+.application-versions-empty p { margin: 0; }

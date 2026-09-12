@@ -133,7 +133,7 @@ export function AlertingPanel({ lang, token, tab, nodeNames = [], applicationNam
 
   return <div className={`alerting-panel${editor ? " is-editor" : ""}`}>
     {editor ? <Button type="button" variant="outline" size="sm" className="mb-3 w-fit" onClick={() => navigate(basePath)}>{zh ? "返回列表" : "Back to list"}</Button> : null}
-    <div className="mb-4 flex flex-wrap items-center justify-between gap-2"><p className="text-sm text-muted-foreground">{zh ? "后台每轮检查规则；关闭页面后继续运行。页面每 15 秒刷新。" : "Rules run in the background, even when this page is closed. Refreshes every 15 seconds."}</p><Button type="button" variant="outline" size="sm" onClick={refreshNow} disabled={busy}>{zh ? "刷新" : "Refresh"}</Button></div>
+
     {error ? (
       <Alert variant="destructive" className="mb-4">
         <AlertCircle />
@@ -158,7 +158,7 @@ export function AlertingPanel({ lang, token, tab, nodeNames = [], applicationNam
     ) : null}
     {!loaded && !error && <div className="panel alert-empty">{zh ? "正在读取告警配置与状态…" : "Loading alert configuration and status…"}</div>}
     {loaded && overview && <>
-      {!editor && <section className="panel">
+      {!editor && tab === "alerts" && <section className="panel">
         <div className="alert-toolbar"><h2>{zh ? "告警引擎" : "Alert engine"}</h2><p className="text-sm text-muted-foreground">{zh ? "最近检查" : "Last evaluation"} · {stamp(overview.lastEvaluatedAt, zh)}</p></div>
         <div className="alert-summary"><span><strong>{overview.counts.firing}</strong>{zh ? "触发中" : "firing"}</span><span><strong>{overview.counts.pending}</strong>{zh ? "等待持续条件" : "pending duration"}</span><span><strong>{overview.enabledRules}</strong>{zh ? "启用规则" : "enabled rules"}</span></div>
         {!overview.lastEvaluatedAt && <p className="alert-muted">{zh ? "尚未完成后台检查，请留意后续刷新。" : "No background evaluation has completed yet."}</p>}
@@ -299,5 +299,6 @@ export function AlertingPanel({ lang, token, tab, nodeNames = [], applicationNam
         {!editor && <section className="panel"><h2>{zh ? "通知发送记录" : "Delivery history"}</h2><small>{zh ? "排队不代表发送成功；失败原因与重试时间会在这里更新。发送失败时请检查机器人是否已入群、消息权限是否已发布。" : "Queued does not mean sent. Failures and retry times appear here. If delivery fails, check that the bot is in the group and message permissions are published."}</small><div className="alert-table-scroll"><table className="alert-table"><thead><tr><th>{zh ? "渠道 / 类型" : "Channel / kind"}</th><th>{zh ? "状态" : "State"}</th><th>{zh ? "时间 / 尝试" : "Time / attempts"}</th><th>{zh ? "详情" : "Details"}</th></tr></thead><tbody>{deliveries.items.map((item) => <tr key={item.id}><td>{channels.find((c) => c.id === item.channelId)?.name || item.channelId}<small>{alertEventLabel(item.kind, zh)}</small></td><td><Badge status={item.status} zh={zh} /></td><td>{stamp(item.sentAt || item.createdAt, zh)}<small>{item.attempts} {zh ? "次尝试" : "attempts"}</small></td><td className="alert-delivery-error">{item.lastError || "—"}{item.status !== "sent" && !!item.nextAttemptAt && <small>{zh ? "下次尝试" : "Next attempt"} · {stamp(item.nextAttemptAt, zh)}</small>}<small>{item.id}</small></td></tr>)}</tbody></table></div>{!deliveries.items.length && <div className="alert-empty">{zh ? "暂无发送记录。添加渠道后可发送一条测试消息。" : "No deliveries yet. Add a channel and send a test message."}</div>}{deliveries.nextCursor && <Button variant="outline" disabled={busy} onClick={() => void act(async (signal) => { const page = await getAlerting<AlertPage<AlertDelivery>>(`deliveries?limit=50&cursor=${encodeURIComponent(deliveries.nextCursor!)}`, token, signal); setDeliveries((old) => ({ ...page, items: mergeAlertPages(old.items, page.items) })); setExpanded(true); }, undefined, false)}>{zh ? "加载更多" : "Load more"}</Button>}</section>}
       </>}
     </>}
+    {!editor && <div className="alert-refresh-footer"><span>{zh ? "每 15 秒自动刷新" : "Refreshes every 15 seconds"}</span><Button type="button" variant="ghost" size="sm" onClick={refreshNow} disabled={busy}>{zh ? "刷新" : "Refresh"}</Button></div>}
   </div>;
 }

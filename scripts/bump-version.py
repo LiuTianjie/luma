@@ -24,6 +24,13 @@ VERSION_REFERENCE_FILES = [
     ROOT / "skills" / "luma-deployment-yaml" / "SKILL.md",
     ROOT / "skills" / "luma-deployment-yaml" / "references" / "manifest-reference.md",
 ]
+# Keep published Chinese examples on the same release as their source guides.
+VERSION_REFERENCE_FILES += [
+    path.with_name(path.stem + ".zh-CN.md")
+    for path in list(VERSION_REFERENCE_FILES)
+    if path.suffix == ".md" and path.with_name(path.stem + ".zh-CN.md").is_file()
+    and path.with_name(path.stem + ".zh-CN.md") not in VERSION_REFERENCE_FILES
+]
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 VERSION_REFERENCE_PATTERNS = [
     re.compile(r"(luma-infra==)\d+\.\d+\.\d+"),

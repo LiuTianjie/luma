@@ -79,3 +79,29 @@
   column-gap: 12px;
   row-gap: 4px;
 }
+
+.network-workspace { gap: 24px; }
+.route-workspace { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.route-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; font-size: 13px; color: var(--muted-foreground); }
+.route-summary > span:first-child { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; background: var(--card); color: var(--foreground); font-weight: 500; }
+.route-summary svg { width: 14px; height: 14px; }
+.route-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 260px); gap: 12px; max-width: 1000px; }
+.route-search { position: relative; }
+.route-search > svg { position: absolute; width: 16px; height: 16px; top: 10px; left: 12px; color: var(--muted-foreground); pointer-events: none; }
+.route-search input { padding-left: 36px; background: var(--card); }
+.route-filters select { width: 100%; padding: 7px 12px; border: 1px solid var(--input); border-radius: var(--radius); background: var(--card); color: var(--foreground); }
+.route-map { height: 320px; min-height: 320px; }
+.route-map .cy-topology { height: 100%; min-height: 0; }
+.route-map-caption { position: absolute; bottom: 0; left: 0; right: 0; margin: 0; padding: 10px 14px; font-size: 12px; color: var(--muted-foreground); background: var(--background); pointer-events: none; }
+.route-table { border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden; }
+.route-select { color: var(--primary); text-align: left; font-family: var(--font-mono); font-size: 13px; cursor: pointer; overflow-wrap: anywhere; }
+.route-select:hover { text-decoration: underline; text-underline-offset: 3px; }
+.route-select:focus-visible { outline: 2px solid var(--ring); outline-offset: 4px; border-radius: 2px; }
+.route-table-footer { border-top: 1px solid var(--border); background: var(--background); padding: 12px 16px; color: var(--muted-foreground); font-size: 12px; }
+@container (max-width: 600px) { .route-filters { grid-template-columns: minmax(0, 1fr); } }
+.route-evidence-note { margin: 0; color: var(--muted-foreground); font-size: 12px; line-height: 1.6; }
+.route-path-detail { padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); font-size: 13px; }
+.route-path-detail ol { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; padding: 0; margin: 12px 0; }
+.route-path-detail li { font-family: var(--font-mono); overflow-wrap: anywhere; }
+.route-path-detail li:not(:last-child)::after { content: "→"; margin-left: 8px; color: var(--muted-foreground); }
+.route-path-detail p { margin: 6px 0 0; color: var(--muted-foreground); overflow-wrap: anywhere; }

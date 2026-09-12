@@ -20,3 +20,6 @@ node_modules/
 # shadcn CLI may emit a nested package.json; dashboard deps live in the repo root.
 /dashboard-src/package.json
 /dashboard-src/package-lock.json
+
+# Generated GitHub Pages artifact
+_site/

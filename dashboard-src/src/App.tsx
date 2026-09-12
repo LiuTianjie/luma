@@ -164,22 +164,18 @@ export function App() {
           activeNavPage={activeNavPage}
           onNavigate={navigate}
           onPrefetch={preloadPage}
-          onRefresh={() => void refreshPage()}
           onSignOut={signOut}
           themeMode={themeMode}
           onThemeModeChange={setThemeMode}
           onLangChange={setLang}
         />
         <SidebarInset id="main" tabIndex={-1} className="min-h-svh overflow-hidden">
-          {token && !terminalTarget && activeNavPage === "overview" && !objectRoute && !editName ? (
+          {token && !terminalTarget ? (
             <Topbar
+              vm={vm}
+              activeNavPage={activeNavPage}
               lang={lang}
               lastUpdated={lastUpdated}
-              themeMode={themeMode}
-              onLangChange={setLang}
-              onThemeModeChange={setThemeMode}
-              onRefresh={() => void refreshPage()}
-              onSignOut={signOut}
               syncStatus={visibleStatus}
             />
           ) : (
@@ -187,13 +183,13 @@ export function App() {
               <SidebarTrigger />
             </div>
           )}
-          <div className={terminalTarget ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "min-h-0 flex-1 overflow-auto p-4 sm:p-6"}>
+          <div className={terminalTarget ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "console-content"}>
             {!token ? (
               <div className="flex min-h-[60vh] items-center">
                 <LoginPanel lang={lang} onSubmit={setToken} />
               </div>
             ) : (
-              <div className={terminalTarget ? "flex h-full min-h-0 flex-col" : "flex flex-col gap-6"}>
+              <div className={terminalTarget ? "flex h-full min-h-0 flex-col" : "console-page"}>
                 <ErrorBanner errors={errors} />
                 {payload || pageCanRenderWithoutDashboard ? (
                   terminalTarget ? <Suspense fallback={<PageLoading lang={lang} />}><TerminalDrawer key={router.path} lang={lang} target={terminalTarget} token={token} onClose={closeTerminal} inline /></Suspense>

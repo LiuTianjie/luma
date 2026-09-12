@@ -1,231 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 
-import dagre from "dagre";
+import { Input } from "@/components/ui/input";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
+import { Search, Network, X, Maximize, Plus, Minus } from "lucide-react";
+import { buildTopology, normalizePathSegments, routeElementIds } from "./trafficTopology";
+const NODE_WIDTH = 190;
+const NODE_HEIGHT = 44;
+const DESTINATION_WIDTH = 220;
 import CytoscapeComponent from "react-cytoscapejs";
 import type cytoscape from "cytoscape";
 import { t } from "../i18n";
 import { retryCertificate } from "../lifecycleApi";
-import type { Lang, TrafficDestination, TrafficPath } from "../types";
-import { Badge, PrimaryCell } from "./primitives";
-
-type TopologyNode = {
-  id: string;
-  label: string;
-  meta: string;
-  kind: string;
-  routes: number;
-  x: number;
-  y: number;
-};
-
-type TopologyEdge = {
-  id: string;
-  source: string;
-  target: string;
-  label: string;
-  kind: string;
-};
-
-const NODE_WIDTH = 190;
-const NODE_HEIGHT = 68;
-const DESTINATION_WIDTH = 220;
-
-function normalizePathSegments(path: TrafficPath) {
-  const segments = (path.segments || []).filter(Boolean);
-  const kind = path.kind || "";
-  const domain = (path.domain || "").trim();
-  const publicPrefix = domain ? [domain] : [];
-  if (path.destinations?.length) return filterDestinationSegments([...publicPrefix, ...segments], path.destinations);
-  if (kind === "cn-edge" || kind === "external-edge") return [...publicPrefix, ...segments.slice(0, 4)];
-  if (kind === "cloudflare-tunnel") return [...publicPrefix, ...segments.slice(0, 3)];
-  if (kind === "tailscale-relay" || kind === "tcp-relay") return [...publicPrefix, ...segments];
-  return segments.slice(0, 2);
-}
-
-function filterDestinationSegments(segments: string[], destinations: TrafficDestination[]) {
-  const destinationValues = new Set<string>();
-  destinations.forEach((destination) => {
-    [destination.address, destination.node, destination.nodeAddress].forEach((value) => {
-      if (value) destinationValues.add(value);
-    });
-  });
-  const filtered = segments.filter((segment) => {
-    if (destinationValues.has(segment)) return false;
-    return !Array.from(destinationValues).some((value) => value && segment.includes(value));
-  });
-  return filtered.length ? filtered : segments;
-}
-
-function classifySegment(segment: string) {
-  const value = segment.toLowerCase();
-  if (/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(segment) && !value.includes("cloudflare")) return { kind: "domain", meta: "Public domain" };
-  if (value.includes("cloudflare")) return { kind: "edge", meta: "Cloudflare" };
-  if (value.includes("traefik")) return { kind: "proxy", meta: "Ingress proxy" };
-  if (value.includes("tailscale") || value.includes("cloudflared")) return { kind: "tunnel", meta: "Private bridge" };
-  if (value.includes("client/internal")) return { kind: "internal", meta: "Internal client" };
-  if (value.includes("missing") || value.includes("unresolved") || value.includes("no running")) return { kind: "issue", meta: "Needs attention" };
-  if (/^https?:\/\//.test(value) || /^\d{1,3}(\.\d{1,3}){3}/.test(value)) return { kind: "target", meta: "Network target" };
-  return { kind: "service", meta: "Nomad job" };
-}
-
-function destinationLabel(destination: TrafficDestination) {
-  const region = destination.region || "unknown";
-  const node = destination.node || "unresolved";
-  const address = destination.address || destination.nodeAddress || "";
-  return ["Destination", `${region} / ${node}`, address].filter(Boolean).join("\n");
-}
-
-function destinationMeta(destination: TrafficDestination) {
-  const state = destination.state || "unknown";
-  const service = destination.service || "";
-  return [state, service].filter(Boolean).join(" · ");
-}
-
-function buildTopology(paths: TrafficPath[]): {
-  elements: cytoscape.ElementDefinition[];
-  nodes: TopologyNode[];
-  edges: TopologyEdge[];
-} {
-  const nodeData = new Map<string, Omit<TopologyNode, "x" | "y" | "routes" | "routesLabel">>();
-  const routeCounts = new Map<string, Set<string>>();
-  const segmentIds = new Map<string, string>();
-  const edges: TopologyEdge[] = [];
-
-  const addRouteCount = (id: string, routeLabel: string) => {
-    const routeSet = routeCounts.get(id) || new Set<string>();
-    routeSet.add(routeLabel);
-    routeCounts.set(id, routeSet);
-  };
-
-  const getSegmentId = (segment: string) => {
-    const key = segment.trim() || "unknown";
-    const existing = segmentIds.get(key);
-    if (existing) return existing;
-    const nextId = `n-${segmentIds.size + 1}`;
-    segmentIds.set(key, nextId);
-    return nextId;
-  };
-
-  const getDestinationId = (pathIndex: number, destinationIndex: number, destination: TrafficDestination) => {
-    const routeKey = destination.service || destination.address || destination.node || "destination";
-    const nodeKey = destination.node || destination.nodeAddress || destination.address || destinationIndex;
-    return `d-${pathIndex}-${destinationIndex}-${routeKey}-${nodeKey}`;
-  };
-
-  const addSegmentNode = (segment: string, routeLabel: string) => {
-    const id = getSegmentId(segment);
-    const classification = classifySegment(segment);
-    addRouteCount(id, routeLabel);
-
-    let nodeLabel = segment;
-    if (classification.kind === "domain") nodeLabel = `Domain\n${segment}`;
-    else if (classification.kind === "edge") nodeLabel = `Edge\n${segment}`;
-    else if (classification.kind === "proxy") nodeLabel = `Proxy\n${segment}`;
-    else if (classification.kind === "tunnel") nodeLabel = `Tunnel\n${segment}`;
-    else if (classification.kind === "internal") nodeLabel = `Client\n${segment}`;
-    else if (classification.kind === "issue") nodeLabel = `Issue\n${segment}`;
-    else if (classification.kind === "target") nodeLabel = `Target\n${segment}`;
-    else nodeLabel = `Nomad\n${segment}`;
-
-    if (!nodeData.has(id)) {
-      nodeData.set(id, {
-        id,
-        label: nodeLabel,
-        meta: classification.meta,
-        kind: classification.kind,
-      });
-    }
-    return id;
-  };
-
-  paths.forEach((path, pathIndex) => {
-    const routeLabel = path.domain || path.id || `route-${pathIndex + 1}`;
-    const segments = normalizePathSegments(path);
-    let lastSegmentId = "";
-
-    segments.forEach((segment, segmentIndex) => {
-      const id = addSegmentNode(segment, routeLabel);
-      lastSegmentId = id;
-      const nextSegment = segments[segmentIndex + 1];
-      if (!nextSegment) return;
-      edges.push({
-        id: `e-${pathIndex}-${segmentIndex}`,
-        source: id,
-        target: getSegmentId(nextSegment),
-        label: "",
-        kind: path.kind || "unknown",
-      });
-    });
-
-    (path.destinations || []).forEach((destination, destinationIndex) => {
-      const id = getDestinationId(pathIndex, destinationIndex, destination);
-      addRouteCount(id, routeLabel);
-      if (!nodeData.has(id)) {
-        nodeData.set(id, {
-          id,
-          label: destinationLabel(destination),
-          meta: destinationMeta(destination),
-          kind: destination.state === "unresolved" ? "issue" : "destination",
-        });
-      }
-      if (lastSegmentId) {
-        edges.push({
-          id: `e-${pathIndex}-destination-${destinationIndex}`,
-          source: lastSegmentId,
-          target: id,
-          label: "",
-          kind: path.kind || "unknown",
-        });
-      }
-    });
-  });
-
-  const graph = new dagre.graphlib.Graph();
-  graph.setDefaultEdgeLabel(() => ({}));
-  graph.setGraph({ rankdir: "LR", nodesep: 48, ranksep: 120, marginx: 40, marginy: 40 });
-
-  nodeData.forEach((node) => graph.setNode(node.id, { width: node.kind === "destination" ? DESTINATION_WIDTH : NODE_WIDTH, height: NODE_HEIGHT }));
-  edges.forEach((edge) => graph.setEdge(edge.source, edge.target));
-  dagre.layout(graph);
-
-  const nodes = Array.from(nodeData.values()).map((node) => {
-    const positioned = graph.node(node.id);
-    const count = routeCounts.get(node.id)?.size || 1;
-    return {
-      ...node,
-      routes: count,
-      x: positioned.x,
-      y: positioned.y,
-    };
-  });
-
-  const elements: cytoscape.ElementDefinition[] = [
-    ...nodes.map((node) => ({
-      data: {
-        id: node.id,
-        label: node.label,
-        meta: node.meta,
-        kind: node.kind,
-        routes: `${node.routes} route${node.routes === 1 ? "" : "s"}`,
-      },
-      classes: node.kind,
-      position: { x: node.x, y: node.y },
-    })),
-    ...edges.map((edge) => ({
-      data: {
-        id: edge.id,
-        source: edge.source,
-        target: edge.target,
-        label: edge.label,
-        kind: edge.kind,
-      },
-      classes: edge.kind,
-    })),
-  ];
-
-  return { elements, nodes, edges };
-}
+import type { Lang, TrafficPath } from "../types";
+import { Badge } from "./primitives";
 
 function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[] {
   const isDark = theme === "dark";
@@ -234,11 +22,11 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
   const nodeBorder = isDark ? "rgba(253, 252, 252, 0.16)" : "rgba(15, 0, 0, 0.12)";
   const edgeColor = isDark ? "rgba(154, 152, 152, 0.4)" : "rgba(110, 110, 115, 0.5)";
 
-  const domainBorder = "#30d158";
-  const proxyBorder = "#007aff";
+  const domainBorder = nodeBorder;
+  const proxyBorder = nodeBorder;
   const issueBorder = "#ff3b30";
   const targetBorder = isDark ? "#646262" : "#d3d0d0";
-  const destinationBorder = "#ff9f0a";
+  const destinationBorder = nodeBorder;
 
   return [
     {
@@ -252,7 +40,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
         "font-weight": 500,
         "height": `${NODE_HEIGHT}px`,
         "label": "data(label)",
-        "padding": "16px",
+        "padding": "10px",
         "shape": "round-rectangle",
         "text-halign": "center",
         "text-max-width": "160px",
@@ -263,30 +51,26 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
       },
     },
     { selector: "node.edge", style: { "border-color": nodeBorder } },
-    { selector: "node.domain", style: { "border-width": 2.5, "border-color": domainBorder, "background-color": isDark ? "#1e2a20" : "#ecfdf0" } },
-    { selector: "node.proxy", style: { "border-width": 2.5, "border-color": proxyBorder, "background-color": isDark ? "#1c2733" : "#eaf3ff" } },
+    { selector: "node.domain", style: { "border-width": 1, "border-color": domainBorder, "background-color": nodeBg } },
+    { selector: "node.proxy", style: { "border-width": 1, "border-color": proxyBorder, "background-color": nodeBg } },
     { selector: "node.tunnel", style: { "border-color": nodeBorder } },
     { selector: "node.target", style: { "border-color": targetBorder, "color": isDark ? "#9a9898" : "#6e6e73" } },
-    { selector: "node.destination", style: { "border-width": 2.5, "border-color": destinationBorder, "background-color": isDark ? "#2e2717" : "#fff7e8", "width": `${DESTINATION_WIDTH}px` } },
-    { selector: "node.issue", style: { "border-width": 2.5, "border-color": issueBorder, "background-color": isDark ? "#33201f" : "#ffefee" } },
+    { selector: "node.destination", style: { "border-width": 1, "border-color": destinationBorder, "background-color": nodeBg, "width": `${DESTINATION_WIDTH}px` } },
+    { selector: "node.issue", style: { "border-width": 1, "border-color": issueBorder, "background-color": isDark ? "#33201f" : "#ffefee" } },
     {
       selector: "edge",
       style: {
-        "curve-style": "taxi",
-        "taxi-direction": "horizontal",
-        "taxi-turn": 20,
+        "curve-style": "bezier",
         "line-color": edgeColor,
         "target-arrow-color": edgeColor,
         "target-arrow-shape": "triangle",
-        "width": "1.8px",
+        "width": "1px",
       },
     },
-    { selector: "edge.cn-edge, edge.external-edge", style: { "line-color": "#007aff", "target-arrow-color": "#007aff" } },
-    { selector: "edge.tailscale-relay, edge.tcp-relay, edge.cloudflare-tunnel", style: { "line-color": "#30d158", "target-arrow-color": "#30d158" } },
     {
       selector: ".dimmed",
       style: {
-        "opacity": 0.15,
+        "opacity": 0.35,
       },
     },
     {
@@ -325,7 +109,17 @@ export function TrafficPaths({
   const [certBusy, setCertBusy] = useState("");
   const [certMessage, setCertMessage] = useState<{ routeId: string; kind: "ok" | "error"; text: string } | null>(null);
 
-  const { elements, nodes, edges } = useMemo(() => buildTopology(paths), [paths]);
+  const zh = lang === "zh";
+  const [query, setQuery] = useState("");
+  const [kind, setKind] = useState("");
+  const [selectedPath, setSelectedPath] = useState<TrafficPath | null>(null);
+  const kinds = useMemo(() => [...new Set(paths.map(path => path.kind || "unknown"))].sort(), [paths]);
+  const filteredPaths = useMemo(() => paths.filter(path => {
+    const text = [path.id, path.domain, ...(path.segments || []), ...(path.destinations || []).flatMap(destination => [destination.node, destination.region, destination.service, destination.address])].join(" ").toLowerCase();
+    return (!kind || (path.kind || "unknown") === kind) && text.includes(query.trim().toLowerCase());
+  }), [paths, kind, query]);
+  const selected = selectedPath ? filteredPaths.find(path => path.id === selectedPath.id && path.domain === selectedPath.domain && path.kind === selectedPath.kind) : undefined;
+  const { elements, nodes, edges } = useMemo(() => buildTopology(selected ? [selected] : filteredPaths), [selected, filteredPaths]);
   const stylesheet = useMemo(() => getStylesheet(theme), [theme]);
 
   useEffect(() => {
@@ -337,32 +131,34 @@ export function TrafficPaths({
   useEffect(() => {
     if (!cyRef) return;
 
-    const handleMouseOver = (event: any) => {
-      const target = event.target;
-      if (target.isNode()) {
-        cyRef.elements().addClass("dimmed");
-        target.removeClass("dimmed").addClass("highlighted");
-
-        const connectedEdges = target.connectedEdges();
-        connectedEdges.removeClass("dimmed").addClass("highlighted");
-
-        const connectedNodes = target.neighborhood().nodes();
-        connectedNodes.removeClass("dimmed").addClass("highlighted");
-      }
+    const resetHighlight = () => cyRef.elements().removeClass("dimmed highlighted");
+    const handleMouseOver = (event: cytoscape.EventObject) => {
+      resetHighlight();
+      const ids = new Set(routeElementIds(elements, event.target.id()));
+      if (!ids.size) return;
+      cyRef.elements().addClass("dimmed");
+      cyRef.elements().filter(element => ids.has(element.id())).removeClass("dimmed").addClass("highlighted");
     };
-
-    const handleMouseOut = () => {
-      cyRef.elements().removeClass("dimmed").removeClass("highlighted");
-    };
-
-    cyRef.on("mouseover", "node", handleMouseOver);
-    cyRef.on("mouseout", "node", handleMouseOut);
-
+    cyRef.on("mouseover", "node, edge", handleMouseOver);
+    cyRef.on("mouseout", "node, edge", resetHighlight);
+    const container = cyRef.container();
+    container?.addEventListener("pointerleave", resetHighlight);
+    resetHighlight();
     return () => {
-      cyRef.off("mouseover", "node", handleMouseOver);
-      cyRef.off("mouseout", "node", handleMouseOut);
+      cyRef.off("mouseover", "node, edge", handleMouseOver);
+      cyRef.off("mouseout", "node, edge", resetHighlight);
+      container?.removeEventListener("pointerleave", resetHighlight);
     };
-  }, [cyRef]);
+  }, [cyRef, elements]);
+
+  useEffect(() => {
+    if (!cyRef || cyRef.destroyed()) return;
+    const frame = requestAnimationFrame(() => { cyRef.resize(); cyRef.fit(undefined, 36); });
+    const container = cyRef.container();
+    const observer = new ResizeObserver(() => { if (!cyRef.destroyed()) { cyRef.resize(); cyRef.fit(undefined, 36); } });
+    if (container) observer.observe(container);
+    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
+  }, [cyRef, elements]);
 
   const handleZoomIn = () => {
     if (cyRef) {
@@ -409,70 +205,50 @@ export function TrafficPaths({
   };
 
   return (
-    <section className="panel path-panel" id="section-5">
-      <div className="panel-heading">
-        <div>
-          <p className="eyebrow">{t(lang, "pathsEyebrow")}</p>
-          <h2>{t(lang, "trafficPaths")}</h2>
-        </div>
-        <span>{nodes.length} nodes / {edges.length} links</span>
+    <section className="route-workspace" aria-label={t(lang, "trafficPaths")}>
+      <div className="route-summary">
+        <span><Network aria-hidden="true" />{filteredPaths.length} {zh ? "条路由" : "routes"}</span>
+        <span>{nodes.length} {zh ? "个节点" : "nodes"} · {edges.length} {zh ? "条连接" : "connections"}</span>
       </div>
-      {paths.length ? (
-        <div className="topology-layout">
-          <div className="topology-canvas">
-            <CytoscapeComponent
-              className="cy-topology"
-              elements={elements}
-              layout={{ name: "preset", fit: true, padding: 48 }}
-              maxZoom={1.6}
-              minZoom={0.35}
-              stylesheet={stylesheet}
-              cy={(cy) => setCyRef(cy)}
-            />
-
-            <div className="cy-controls" aria-label="Topology controls">
-              <Button variant="outline" size="icon-sm" aria-label="Zoom in" className="cy-control-btn" onClick={handleZoomIn} type="button" title="Zoom In">+</Button>
-              <Button variant="outline" size="icon-sm" aria-label="Zoom out" className="cy-control-btn" onClick={handleZoomOut} type="button" title="Zoom Out">-</Button>
-              <Button variant="outline" size="icon-sm" aria-label="Reset view" className="cy-control-btn" onClick={handleReset} type="button" title="Reset View">0</Button>
-            </div>
+      <p className="route-evidence-note">{zh ? "按路由配置与运行实例展示链路，未进行逐跳连通性探测。悬停可高亮完整路径；点击下方域名可单独查看。" : "Paths reflect route configuration and running instances, not hop-by-hop connectivity probes. Hover to trace complete paths; select a domain below to isolate one."}</p>
+      <div className="route-filters">
+        <label className="route-search"><span className="sr-only">{zh ? "搜索路由" : "Search routes"}</span><Search aria-hidden="true" /><Input value={query} onChange={event => { setQuery(event.target.value); setSelectedPath(null); }} placeholder={zh ? "搜索域名、应用、节点或地址…" : "Search domains, applications, nodes or addresses…"} /></label>
+        <label><span className="sr-only">{zh ? "入口类型" : "Ingress type"}</span><select value={kind} onChange={event => { setKind(event.target.value); setSelectedPath(null); }}><option value="">{zh ? "所有入口类型" : "All ingress types"}</option>{kinds.map(value => <option key={value} value={value}>{value}</option>)}</select></label>
+      </div>
+      {filteredPaths.length ? <>
+        <div className="topology-canvas route-map">
+          <CytoscapeComponent className="cy-topology" elements={elements} layout={{ name: "preset", fit: true, padding: 36 }} maxZoom={1.6} minZoom={0.35} stylesheet={stylesheet} cy={setCyRef} />
+          <div className="cy-controls" aria-label={zh ? "关系图操作" : "Diagram controls"}>
+            {selected ? <Button variant="outline" size="sm" onClick={() => setSelectedPath(null)}><X data-icon="inline-start" />{zh ? "显示全部" : "Show all"}</Button> : null}
+            <Button variant="outline" size="icon-sm" aria-label={zh ? "放大" : "Zoom in"} onClick={handleZoomIn}><Plus /></Button>
+            <Button variant="outline" size="icon-sm" aria-label={zh ? "缩小" : "Zoom out"} onClick={handleZoomOut}><Minus /></Button>
+            <Button variant="outline" size="icon-sm" aria-label={zh ? "适应画布" : "Fit view"} onClick={handleReset}><Maximize /></Button>
           </div>
-          <aside className="route-index" aria-label={t(lang, "trafficPaths")}>
-            {paths.map((path, index) => {
-              const destinations = path.destinations || [];
-              const routeId = path.certificateRetry?.routeId || path.id || "";
-              const certificateRetryAvailable = Boolean(path.certificateRetry?.available && path.domain && routeId);
-              const destinationSummary = destinations
-                .map((destination) => [destination.region, destination.node].filter(Boolean).join(" / "))
-                .filter(Boolean)
-                .join(", ");
-              return (
-                <article key={`${path.id || "path"}-${index}`}>
-                  <PrimaryCell meta={destinationSummary || path.domain || t(lang, "noPublicDomain")} title={path.id || "-"} />
-                  <div className="route-index-actions">
-                    <Badge value={path.kind || "unknown"} />
-                    {certificateRetryAvailable ? (
-                      <Button variant="outline" type="button"
-
- disabled={Boolean(certBusy)}
- onClick={() => void handleCertificateRetry(path)}
-                      >
-                        {certBusy === routeId
-                          ? (lang === "zh" ? "重试中..." : "Retrying...")
-                          : (lang === "zh" ? "重试证书" : "Retry cert")}
-                      </Button>
-                    ) : null}
-                  </div>
-                  {certMessage?.routeId === routeId ? (
-                    <small className={`route-cert-message ${certMessage.kind}`}>{certMessage.text}</small>
-                  ) : null}
-                </article>
-              );
-            })}
-          </aside>
+          <p className="route-map-caption">{selected ? (selected.domain || selected.id) : (zh ? "入口与服务关系 · 点击下方路由查看单条路径" : "Ingress and services · Select a route below to inspect its path")}</p>
         </div>
-      ) : (
-        <div className="topology-empty">{t(lang, "missing")}</div>
-      )}
+        {selected ? <div className="route-path-detail" aria-label={zh ? "完整路由路径" : "Complete route path"}>
+          <strong>{selected.domain || selected.id}</strong>
+          <ol>{normalizePathSegments(selected).map((segment, index) => <li key={`${index}-${segment}`}>{segment}</li>)}</ol>
+          {(selected.destinations || []).map((destination, index) => <p key={index}>{zh ? "目标实例" : "Destination"}: {[destination.service, destination.region, destination.node, destination.address || destination.nodeAddress, destination.state].filter(Boolean).join(" · ") || (zh ? "未知" : "Unknown")}</p>)}
+        </div> : null}
+        <div className="route-table">
+          <Table>
+            <TableHeader><TableRow><TableHead>{zh ? "域名 / 路由" : "Domain / route"}</TableHead><TableHead>{zh ? "入口类型" : "Ingress type"}</TableHead><TableHead>{zh ? "目标节点" : "Destination"}</TableHead><TableHead>{zh ? "操作" : "Actions"}</TableHead></TableRow></TableHeader>
+            <TableBody>{filteredPaths.map((path, index) => {
+              const routeId = path.certificateRetry?.routeId || path.id || "";
+              const canRetry = Boolean(path.certificateRetry?.available && path.domain && routeId);
+              const destination = (path.destinations || []).map(item => [item.region, item.node].filter(Boolean).join(" / ")).filter(Boolean).join(", ");
+              return <TableRow key={`${path.id}-${path.domain}-${index}`} data-state={selected === path ? "selected" : undefined}>
+                <TableCell><button type="button" className="route-select" aria-pressed={selected === path} onClick={() => setSelectedPath(selected === path ? null : path)}>{path.domain || path.id || "—"}</button>{path.domain && path.id ? <small className="block text-muted-foreground">{path.id}</small> : null}</TableCell>
+                <TableCell><Badge value={path.kind || "unknown"} /></TableCell>
+                <TableCell>{destination || "—"}</TableCell>
+                <TableCell>{canRetry ? <Button variant="outline" size="sm" disabled={Boolean(certBusy)} onClick={() => void handleCertificateRetry(path)}>{certBusy === routeId ? (zh ? "重试中…" : "Retrying…") : (zh ? "重试证书" : "Retry certificate")}</Button> : <span className="text-muted-foreground">—</span>}{certMessage?.routeId === routeId ? <p role="status" className={`route-cert-message ${certMessage.kind}`}>{certMessage.text}</p> : null}</TableCell>
+              </TableRow>;
+            })}</TableBody>
+          </Table>
+          <div className="route-table-footer">{zh ? `显示 ${filteredPaths.length} / ${paths.length} 条路由` : `Showing ${filteredPaths.length} of ${paths.length} routes`}</div>
+        </div>
+      </> : <div className="empty-inline"><p>{paths.length ? (zh ? "没有匹配的路由。试试其他关键词或入口类型。" : "No matching routes. Try another search or ingress type.") : (zh ? "暂无路由。应用配置入口后会显示在这里。" : "No routes yet. Routes appear when an application has an ingress configured.")}</p>{paths.length ? <Button variant="outline" onClick={() => { setQuery(""); setKind(""); }}>{zh ? "清除筛选" : "Clear filters"}</Button> : null}</div>}
     </section>
   );
 }

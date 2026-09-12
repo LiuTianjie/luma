@@ -70,3 +70,9 @@
   .alerting-panel .alert-toolbar > label { flex-wrap:wrap; }
   .alerting-panel .alert-details { padding:16px; }
 }
+
+.observe-workspace .alerting-panel { gap: 16px; }
+.observe-workspace .alerting-panel .panel { padding: 18px 20px; }
+.observe-workspace .alerting-panel h2 { font-size: 14px; font-weight: 600; }
+.observe-workspace .alerting-panel .alert-muted { font-size: 13px; margin: 8px 0 14px; }
+.alert-refresh-footer { display: flex; justify-content: flex-end; align-items: center; gap: 12px; font-size: 12px; color: var(--muted-foreground); }

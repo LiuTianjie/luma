@@ -49,11 +49,16 @@ const { TerminalDrawer } = load("components/TerminalDrawer.tsx");
 const props = { lang: "en", token: "test", theme: "light", controlVersion: "1", vm: { nodes: [], services: [], regions: [], trafficPaths: [], storageClasses: [], storageVolumes: [], storageWarnings: [] }, onSelectNode() {}, onTerminal() {}, onRefresh() {} };
 
 test("fleet opens at inventory and preserves independent region, network, and maintenance destinations", () => {
-  for (const [url, expected] of [["/fleet", ["NodeFleetMap"]], ["/fleet/regions", ["RegionPanel"]], ["/fleet/network", ["TrafficPaths", "NodeTopology"]], ["/fleet/maintenance", ["SystemUpdatePanel"]], ["/fleet/join", []]]) {
+  for (const [url, expected] of [["/fleet", ["NodeFleetMap"]], ["/fleet/regions", ["RegionPanel"]], ["/fleet/network", ["TrafficPaths"]], ["/fleet/maintenance", ["SystemUpdatePanel"]], ["/fleet/join", []]]) {
     route = url;
     const html = renderToStaticMarkup(React.createElement(NodesPage, props));
     const rendered = [...html.matchAll(/data-capability="([^"]+)"/g)].map((match) => match[1]);
     assert.deepEqual(rendered, expected, url);
+    if (url === "/fleet/network") {
+      assert.match(html, /role="tablist"[^>]*aria-label="Network views"|aria-label="Network views"[^>]*role="tablist"/);
+      assert.match(html, />Routes<\/button>/);
+      assert.match(html, />Node topology<\/button>/);
+    }
     if (url === "/fleet/join") {
       assert.doesNotMatch(html, /<node-join-token>/);
       assert.match(html, /Control did not return a node join token/);

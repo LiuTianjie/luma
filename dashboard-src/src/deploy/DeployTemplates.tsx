@@ -1,4 +1,8 @@
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
+import { Search, ArrowRight } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
+import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
 import type { Lang } from "../types";
@@ -91,7 +95,6 @@ export function DeployTemplates({
   lang,
   mode,
   templates,
-  activeId,
   onModeChange,
   onSelect,
 }: {
@@ -102,96 +105,29 @@ export function DeployTemplates({
   onModeChange: (mode: DeployMode) => void;
   onSelect: (template: DeployTemplate) => void;
 }) {
-  const visibleTemplates = templates.filter((template) => template.mode === mode);
-  const featuredTemplate = visibleTemplates.find((template) => template.id === activeId) || visibleTemplates[0];
-  const secondaryTemplates = visibleTemplates.filter((template) => template.id !== featuredTemplate?.id);
-
-  const renderFacts = (template: DeployTemplate) => (
-    templateFacts(template, lang).map((fact) => (
-      <span key={`${fact.label}-${fact.value}`}>
-        <em>{fact.label}</em>
-        <b>{fact.value}</b>
-      </span>
-    ))
-  );
-
-  return (
-    <div className="deploy-gallery-container">
-      <div className="deploy-gallery-header-row">
-        <div>
-          <p className="eyebrow">{lang === "zh" ? "模板库" : "Template library"}</p>
-          <div className="deploy-gallery-title-line">
-            <h3>{lang === "zh" ? "选择模板后编辑配置" : "Select a template, then edit config"}</h3>
-            <div className="deploy-mode-switch-block" aria-label={lang === "zh" ? "模板类型" : "Template type"}>
-              <span>{lang === "zh" ? "模板类型" : "Template type"}</span>
-              <div className="deploy-mode-switch-pill">
-                <Button type="button"
- size="sm"
- variant={mode === "service" ? "secondary" : "ghost"}
- onClick={() => onModeChange("service")}
-                >
-                  {lang === "zh" ? "单服务" : "Service"}
-                </Button>
-                <Button type="button"
- size="sm"
- variant={mode === "compose" ? "secondary" : "ghost"}
- onClick={() => onModeChange("compose")}
-                >
-                  Compose
-                </Button>
-              </div>
-            </div>
-          </div>
-          <span>{lang === "zh" ? "选择模板后，可在配置页面调整表单和 YAML。" : "Choose a template, then edit its form and YAML on the configuration page."}</span>
-        </div>
-      </div>
-
-      <div className="deploy-gallery-showcase">
-        {featuredTemplate ? (
-          <button type="button"
- className={`template-feature-card ${activeId === featuredTemplate.id ? "active" : ""}`}
- onClick={() => onSelect(featuredTemplate)}
-            style={{ "--template-accent": logoFor(featuredTemplate).accent } as CSSProperties}
-          >
-            <div className="template-feature-visual" aria-hidden="true">
-              <BrandIcon template={featuredTemplate} />
-              <span>{featuredTemplate.mode === "compose" ? "Compose" : lang === "zh" ? "单服务" : "Service"}</span>
-            </div>
-            <div className="template-feature-copy">
-              <p className="eyebrow">{lang === "zh" ? "当前模板" : "Selected template"}</p>
-              <h3>{deployTemplateName(featuredTemplate, lang)}</h3>
-              <p>{deployTemplateDescription(featuredTemplate, lang)}</p>
-            </div>
-            <div className="template-feature-facts">
-              {renderFacts(featuredTemplate)}
-            </div>
-            <span className="template-feature-action">{lang === "zh" ? "使用并进入配置" : "Use and configure"} →</span>
-          </button>
-        ) : null}
-
-        <div className="deploy-gallery-grid">
-          {secondaryTemplates.map((template) => (
-            <button type="button"
- className={`deploy-gallery-card ${activeId === template.id ? "active" : ""}`}
- key={template.id}
- onClick={() => onSelect(template)}
-              style={{ "--template-accent": logoFor(template).accent } as CSSProperties}
-            >
-              <div className="template-card-top">
-                <BrandIcon template={template} />
-                <span className="template-card-action">{lang === "zh" ? "使用" : "Use"} →</span>
-              </div>
-              <div className="template-card-info">
-                <strong className="template-card-name">{deployTemplateName(template, lang)}</strong>
-                <span className="template-card-desc">{deployTemplateDescription(template, lang)}</span>
-              </div>
-              <div className="template-card-facts">
-                {renderFacts(template)}
-              </div>
-            </button>
-          ))}
-        </div>
-      </div>
+  const [query, setQuery] = useState("");
+  const zh = lang === "zh";
+  const modeTemplates = templates.filter((template) => template.mode === mode);
+  const visibleTemplates = modeTemplates.filter((template) => `${deployTemplateName(template, lang)} ${deployTemplateDescription(template, lang)} ${template.service?.image || ""}`.toLowerCase().includes(query.trim().toLowerCase()));
+  return <section className="template-catalog" aria-label={zh ? "模板库" : "Template library"}>
+    <div className="template-catalog-heading"><h2>{zh ? "选择模板" : "Choose a template"}</h2><span>{zh ? "选择后可调整配置，再进行部署。" : "Customize the configuration before deploying."}</span></div>
+    <div className="template-catalog-toolbar">
+      <Tabs value={mode} onValueChange={(value) => onModeChange(value as DeployMode)}>
+        <TabsList aria-label={zh ? "模板类型" : "Template type"}>
+          <TabsTrigger value="service">{zh ? "单服务" : "Service"}<span className="template-count">{templates.filter(t => t.mode === "service").length}</span></TabsTrigger>
+          <TabsTrigger value="compose">Compose<span className="template-count">{templates.filter(t => t.mode === "compose").length}</span></TabsTrigger>
+        </TabsList>
+      </Tabs>
+      <div className="template-search"><Search aria-hidden="true" /><Input value={query} onChange={event => setQuery(event.target.value)} aria-label={zh ? "搜索模板" : "Search templates"} placeholder={zh ? "搜索名称、镜像或用途…" : "Search name, image or use…"} /></div>
     </div>
-  );
+    <div className="template-catalog-grid">
+      {visibleTemplates.map(template => <Card key={template.id} className="template-catalog-card">
+        <div className="template-catalog-identity"><BrandIcon template={template} /><h3>{deployTemplateName(template, lang)}</h3></div>
+        <p className="template-catalog-description">{deployTemplateDescription(template, lang)}</p>
+        <dl className="template-catalog-facts">{templateFacts(template, lang).map(fact => <div key={fact.label}><dt>{fact.label}</dt><dd title={fact.value}>{fact.value}</dd></div>)}</dl>
+        <div className="template-catalog-action"><Button variant="outline" size="sm" onClick={() => onSelect(template)} aria-label={`${zh ? "使用模板" : "Use template"} ${deployTemplateName(template, lang)}`}>{zh ? "使用模板" : "Use template"}<ArrowRight /></Button></div>
+      </Card>)}
+    </div>
+    {visibleTemplates.length === 0 && <div className="template-catalog-empty"><Search aria-hidden="true" /><strong>{zh ? "没有匹配的模板" : "No matching templates"}</strong><p>{zh ? "试试其他关键词，或切换模板类型。" : "Try another keyword or template type."}</p><Button variant="outline" size="sm" onClick={() => setQuery("")}>{zh ? "清空搜索" : "Clear search"}</Button></div>}
+  </section>;
 }

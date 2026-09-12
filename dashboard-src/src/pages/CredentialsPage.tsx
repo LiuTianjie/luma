@@ -1,3 +1,4 @@
+import { CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import "./resourceWorkspaces.css";
 import { Input } from "@/components/ui/input";
 
@@ -194,16 +195,21 @@ export function CredentialsPage({
   }, [token, vm.storageClasses]);
 
   useEffect(() => {
+    if (activeTab === "maintenance") {
+      setState(current => ({ ...current, loading: false }));
+      return;
+    }
     const controller = new AbortController();
     void refresh(controller.signal);
     return () => controller.abort();
-  }, [refresh]);
+  }, [refresh, activeTab]);
 
   useEffect(() => {
+    if (activeTab === "maintenance") return;
     const onRefresh = () => void refresh();
     window.addEventListener("luma:refresh", onRefresh);
     return () => window.removeEventListener("luma:refresh", onRefresh);
-  }, [refresh]);
+  }, [refresh, activeTab]);
 
   useEffect(() => {
     const params = new URLSearchParams(search);
@@ -380,7 +386,7 @@ export function CredentialsPage({
         }}
       />
 
-      {state.error ? (
+      {state.error && activeTab !== "maintenance" ? (
         <Alert variant="destructive">
           <AlertCircle />
           <AlertTitle>{zh ? "读取失败" : "Load failed"}</AlertTitle>
@@ -589,13 +595,12 @@ export function CredentialsPage({
             </div>
           ) : null}
           {activeTab === "maintenance" ? (
-            <div className="flex flex-col gap-4 p-6">
-              <div>
-                <p className="eyebrow">{zh ? "控制面维护" : "Control-plane maintenance"}</p>
-                <h2>{zh ? "维护操作" : "Maintenance actions"}</h2>
-                <p className="text-sm text-muted-foreground">{zh ? "维护和升级操作请从基础设施菜单的“系统维护”进入；这里保留入口说明，避免出现空白页面。" : "Open Infrastructure → Maintenance for upgrades and route checks. This page keeps the settings entry explicit instead of showing an empty panel."}</p>
-              </div>
-              <Button type="button" className="w-fit" onClick={() => navigate("/fleet/maintenance")}>{zh ? "打开系统维护" : "Open system maintenance"}</Button>
+            <div className="flex flex-col gap-4">
+              <CardHeader className="p-0">
+                <CardTitle className="text-sm font-semibold">{zh ? "系统维护" : "System maintenance"}</CardTitle>
+                <CardDescription className="text-sm">{zh ? "管理控制面与节点升级，检查路由并查看任务结果。" : "Manage control-plane and node upgrades, check routes, and review task results."}</CardDescription>
+              </CardHeader>
+              <CardContent className="p-0"><Button type="button" size="sm" onClick={() => navigate("/fleet/maintenance")}>{zh ? "打开系统维护" : "Open system maintenance"}</Button></CardContent>
             </div>
           ) : null}
         </article>

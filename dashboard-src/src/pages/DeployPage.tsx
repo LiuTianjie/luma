@@ -99,14 +99,12 @@ export function DeployPage({
         <PageHeader
           meta={{
             eyebrow: zh ? "部署工作台" : "Deploy workspace",
-            title: title,
+            title: zh ? "从模板创建" : "Create from a template",
+            metrics: [],
             description: zh
-              ? "模板、表单和 YAML 收敛在一个流程内，先校验再部署。"
-              : "Templates, forms, and YAML stay in one flow with validation before deploy.",
-            metrics: [
-              { label: zh ? "单服务" : "Service", value: vm.deployServiceTemplates },
-              { label: "Compose", value: vm.deployComposeTemplates },
-            ],
+              ? "选择应用模板，按需调整配置并部署到集群。"
+              : "Choose an application template, customize it, and deploy to your cluster.",
+
           }}
         />
       ) : null}

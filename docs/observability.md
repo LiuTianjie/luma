@@ -3,6 +3,11 @@
 Luma exposes node/container samples, current task queues, resource history, runtime events, persistent alerts and resumable application logs. These observations are not a measurement of end-user availability. Public-route verification during deploy/restart remains a separate capability.
 
 
+## Console navigation
+
+Observability has separate pages for alert incidents, application monitoring, resource metrics, logs, alert rules and notification channels. Each uses its own compact page title. The engine summary belongs to alert incidents; notification channels focus on channel configuration and delivery history. Built-in alert pages refresh every 15 seconds, and resource history refreshes every 30 seconds. See the [console guide](dashboard-guide.md) for UI workflows and the distinction between route relationships and connectivity probes.
+
+
 ## Application alerts (`luma-observe`)
 
 Control dashboards show node/container samples. Live allocation tails remain

@@ -3,7 +3,7 @@ import { AlertCircle, CheckCircle2, Cloud, KeyRound, Network, RefreshCw, ShieldC
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldDescription, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { configureSetup, runSetupChecks, setBuildConfig, type SetupCheckPayload } from "../setupApi";
@@ -191,11 +191,11 @@ export function SetupPage({ lang, token, readiness, onRefresh }: { lang: Lang; t
         </Card>
 
         <Card className="xl:col-span-2">
-          <CardFooter className="flex flex-wrap gap-3">
+          <CardContent className="flex flex-wrap gap-3">
             <Button type="submit" disabled={busy !== ""}>{busy === "save" ? (zh ? "保存中…" : "Saving…") : (zh ? "保存配置" : "Save configuration")}</Button>
             <Button type="button" variant="outline" disabled={busy !== ""} onClick={() => void verify()}><RefreshCw data-icon="inline-start" />{busy === "check" ? (zh ? "验证中…" : "Checking…") : (zh ? "立即验证依赖" : "Verify dependencies")}</Button>
             <p className="basis-full text-xs text-muted-foreground">{zh ? "空白字段不会覆盖已有 Secret；敏感值只写入不回显。" : "Blank fields do not overwrite existing secrets; sensitive values are write-only."}</p>
-          </CardFooter>
+          </CardContent>
         </Card>
       </form>
 

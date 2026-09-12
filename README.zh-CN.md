@@ -6,6 +6,8 @@ GTM 首次安装与可用性路线图见：[Luma GTM 首装计划](docs/luma-gtm
 
 [English](README.md) | [中文](README.zh-CN.md)
 
+[控制台指南](docs/dashboard-guide.md) · [官网维护说明](docs/website.md)
+
 Luma 是一个面向小型自托管集群的部署控制面：底层用 HashiCorp Nomad 运行服务，通过 Nomad HTTP API 执行部署，用 Traefik 暴露 HTTP/HTTPS，用 Cloudflare 管理 DNS，并提供一个可以在任意客户端使用的 `luma` CLI。
 
 它的目标不是替代 Kubernetes，而是让几台分散的服务器变成可以按区域部署的运行环境：
@@ -88,7 +90,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 安装指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.352 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.353 sh
 ```
 
 从源码开发：

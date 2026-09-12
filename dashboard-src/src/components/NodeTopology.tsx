@@ -22,7 +22,7 @@ type GraphEdge = {
 };
 
 const NODE_WIDTH = 190;
-const NODE_HEIGHT = 68;
+const NODE_HEIGHT = 44;
 
 function serviceTitle(service: DashboardService) {
   return service.stack ? `${service.stack}/${service.name || "-"}` : service.name || "-";
@@ -151,7 +151,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
   const hostBorder = isDark ? "#646262" : "#d3d0d0";
   
   const serviceBorder = isDark ? "rgba(48, 209, 88, 0.35)" : "rgba(48, 209, 88, 0.3)";
-  const exposedBorder = "#30d158";
+  const exposedBorder = nodeBorder;
   
   return [
     {
@@ -165,7 +165,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
         "font-weight": 500,
         "height": `${NODE_HEIGHT}px`,
         "label": "data(label)",
-        "padding": "16px",
+        "padding": "10px",
         "shape": "round-rectangle",
         "text-halign": "center",
         "text-max-width": "160px",
@@ -180,7 +180,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
       style: {
         "border-width": 2,
         "border-color": leaderBorder,
-        "background-color": isDark ? "#26221f" : "#f5f1ea",
+        "background-color": nodeBg,
         "font-weight": 700,
       },
     },
@@ -189,14 +189,14 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
       style: {
         "border-width": 1.5,
         "border-color": isDark ? "rgba(253,252,252,0.28)" : "rgba(15,0,0,0.2)",
-        "background-color": isDark ? "#242020" : "#f2efef",
+        "background-color": nodeBg,
         "shape": "round-rectangle",
       },
     },
     {
       selector: "node.leader",
       style: {
-        "border-width": 2.5,
+        "border-width": 1.5,
         "border-color": leaderBorder,
         "background-color": isDark ? "#1c2733" : "#eaf3ff",
       },
@@ -219,17 +219,15 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
     {
       selector: "node.exposedService",
       style: {
-        "border-width": 2.5,
+        "border-width": 1.5,
         "border-color": exposedBorder,
-        "background-color": isDark ? "#1e2a20" : "#ecfdf0",
+        "background-color": nodeBg,
       },
     },
     {
       selector: "edge",
       style: {
-        "curve-style": "taxi",
-        "taxi-direction": "horizontal",
-        "taxi-turn": 20,
+        "curve-style": "bezier",
         "line-color": edgeColor,
         "target-arrow-color": edgeColor,
         "target-arrow-shape": "triangle",

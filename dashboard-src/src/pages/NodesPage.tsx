@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Check, Copy } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { NodeFleetMap } from "../components/NodeFleetMap";
@@ -138,10 +139,14 @@ export function NodesPage({
         onRefresh={onRefresh}
       />}
 
-      {section === "network" && <div className="node-topology-split">
-        <TrafficPaths lang={lang} paths={vm.trafficPaths} theme={theme} token={token} onRefresh={onRefresh} />
-        <NodeTopology lang={lang} nodes={vm.nodes} services={vm.services} theme={theme} />
-      </div>}
+      {section === "network" && <Tabs defaultValue="routes" className="network-workspace">
+        <TabsList aria-label={zh ? "网络视图" : "Network views"}>
+          <TabsTrigger value="routes">{zh ? "路由" : "Routes"}</TabsTrigger>
+          <TabsTrigger value="nodes">{zh ? "节点拓扑" : "Node topology"}</TabsTrigger>
+        </TabsList>
+        <TabsContent value="routes"><TrafficPaths lang={lang} paths={vm.trafficPaths} theme={theme} token={token} onRefresh={onRefresh} /></TabsContent>
+        <TabsContent value="nodes"><NodeTopology lang={lang} nodes={vm.nodes} services={vm.services} theme={theme} /></TabsContent>
+      </Tabs>}
     </div>
   );
 }

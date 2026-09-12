@@ -61,3 +61,34 @@
   .grafana-embed .grafana-toolbar { align-items: stretch; }
   .grafana-view-switch { width: 100%; overflow-x: auto; }
 }
+
+/* Shared metric cards: values and their history stay together. */
+.metrics-workspace .service-history-charts { grid-template-columns: 1fr; gap: 12px; }
+.metrics-workspace .service-history-charts > .metric-history-card {
+  display: grid; grid-template-columns: 148px minmax(0, 1fr); align-items: center;
+  padding: 12px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--card);
+}
+.metrics-workspace .metric-history-value h3 { margin: 0 0 4px; font-size: 13px; font-weight: 400; color: var(--muted-foreground); }
+.metric-history-value strong { display: block; font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: -.6px; font-variant-numeric: tabular-nums; }
+.metric-history-value small { display: block; margin-top: 6px; color: var(--muted-foreground); font-size: 11px; }
+.metric-plot { position: relative; min-width: 0; --chart-line: #91baff; }
+.dark .metric-plot { --chart-line: #6b9ee8; }
+.metric-plot .trend-axis-label { fill: var(--muted-foreground); font-size: 11px; font-family: inherit; font-variant-numeric: tabular-nums; }
+.metric-plot .trend-chart { display: block; outline-offset: 2px; border-radius: 4px; }
+.metric-tooltip { position: absolute; width: 180px; padding: 10px 12px; background: var(--card); border: 1px solid var(--border); border-radius: 7px; box-shadow: 0 3px 12px #00000012; pointer-events: none; font-size: 12px; z-index: 1; }
+.metric-tooltip time { display: block; margin-bottom: 8px; font-weight: 500; }
+.metric-tooltip > div, .metric-tooltip span { display: flex; align-items: center; gap: 7px; }
+.metric-tooltip > div { justify-content: space-between; }
+.metric-tooltip i { width: 9px; height: 9px; border-radius: 50%; }
+.metrics-workspace .metric-plot .trend-chart-empty { background: transparent; color: var(--muted-foreground); font-size: 12px; }
+.metrics-workspace .metrics-summary { gap: 16px 32px; padding: 8px 0 16px; }
+.metrics-workspace .metrics-summary strong { font-size: 18px; font-weight: 500; }
+@media (max-width: 640px) {
+  .metrics-workspace .service-history-charts > .metric-history-card { grid-template-columns: minmax(0, 1fr); padding: 14px 10px 8px; }
+  .metric-history-value { padding-left: 8px; margin-bottom: 8px; }
+  .metric-history-value small { display: none; }
+}
+
+.metrics-workspace .metrics-summary { align-items: center; gap: 12px 28px; }
+.metrics-workspace .metrics-summary > span { min-width: 0; }
+.metrics-workspace .metrics-summary > .metrics-summary-caption { color: var(--muted-foreground); }

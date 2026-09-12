@@ -1,0 +1,88 @@
+# 系统架构 {#architecture}
+
+`infra-stacks` 的目标是用一个轻量控制面管理多台服务器上的容器服务，同时保持清晰的 region 边界。底层编排是 HashiCorp Nomad，调度单元是 job / group / task / allocation。
+
+## 总体原则 {#_1}
+
+- 国内用户入口只走备案域名和国内 Traefik。
+- `cn` 是主要业务服务区域，承载公开 Web/API、数据库、Redis、Traefik 和 Luma Control。
+- `global` 是外网能力区域，承载 AI 网关、外网 API 调用、爬虫、代理和 worker。
+- `home` 是非核心区域，承载备份、内部工具和低频测试任务。
+- Luma Control 是统一控制面，部署直连 Nomad HTTP API。
+- 应用级 HTTP/调度告警走独立 `luma-observe`（与 Traefik 同机、仅 loopback），不进入 Control。
+- Nomad server 跑在 manager 上，其余节点是 Nomad client；client 用 `meta`（region / luma_node_name / ingress / egress）声明身份。
+- Tailscale 是控制面私网，也是 `tailscale-relay` 的显式数据通道。
+- `cn-edge` / `external-edge` 通过 Traefik 标签（Nomad provider service tags）接入域名和 HTTPS。
+- `tailscale-relay` 通过 Traefik file provider 转发到 home 节点的 Tailscale 地址。
+- `cloudflare-tunnel` 通过 Cloudflare Tunnel 暴露，不经过国内 Traefik。
+- 跨 region 调用优先走队列，不建议国内 API 实时强依赖海外 HTTP。
+
+## 架构图 {#_2}
+
+```mermaid
+flowchart LR
+  user["国内用户"] --> dns["备案域名 DNS"]
+  dns --> traefik["国内公网入口 Traefik"]
+
+  subgraph cn["region=cn"]
+    traefik --> web["Web / API 服务"]
+    web --> queue["Queue / Redis / MQ"]
+    control["Luma Control + Nomad server"]
+  end
+
+  subgraph global["region=global"]
+    worker["外网 worker"]
+    gateway["AI 网关 / 外网代理"]
+  end
+
+  subgraph home["region=home"]
+    backup["备份 / 内部工具 / 测试服务"]
+  end
+
+  queue --> worker
+  dns --> cf["Cloudflare Tunnel"]
+  cf --> home_tool["home tool"]
+  traefik --> home_panel["home panel via Tailscale"]
+  global_dns["global.example.com"] --> gateway
+  worker --> internet["OpenAI / GitHub / 外网 API"]
+  gateway --> internet
+  control --> cn
+  control --> global
+  control --> home
+  tailscale["Tailscale 控制面 / relay"] --- cn
+  tailscale --- global
+  tailscale --- home
+```
+
+调用链：`客户端 CLI → Luma Control → Nomad API (/v1/jobs) → Nomad client → docker driver → 容器`。Luma Control 把 manifest 文本发给自己，服务端渲染成 Nomad jobspec 后直接经 Nomad HTTP API 部署，部署进度以 NDJSON 事件流回传。
+
+## Region 职责 {#region}
+
+### cn {#cn}
+
+`cn` 是默认生产业务区域。国内公开服务、核心 API、数据库、Redis、Traefik 和 Luma Control 默认部署在这里。备案域名 DNS 指向国内入口节点，由 Traefik 统一接收公网请求。manager 节点同时跑 Nomad server。
+
+### global {#global}
+
+`global` 是外网能力池，不是海外用户入口。它用于需要访问外网资源的服务，例如 AI 调用、GitHub API、外网爬虫和代理。公开但低频的外网能力可以使用 `external-edge` 模式，让 DNS 指向海外/global edge。
+
+核心高频 API 不应默认使用 `external-edge`，因为它会把国内用户请求链路拉长并引入跨 region 可用性依赖。
+
+### home {#home}
+
+`home` 是非核心区域。家庭网络、电力、上行带宽、路由器和光猫稳定性不如云服务器，所以默认只运行备份、内部工具和测试服务。它不参与核心公网服务调度。
+
+如果确实要把 home 服务暴露给公网，使用显式模式：
+
+- `tailscale-relay`: 国内 Traefik 通过 Tailscale 转发到 home。
+- `cloudflare-tunnel`: Cloudflare Tunnel 直接连接 home 服务。
+
+## 网络边界 {#_3}
+
+默认公开入口由国内 Traefik 负责。Nomad 不强制 overlay：Linux 节点用 docker bridge 网络 + 端口映射，Traefik 通过 Nomad provider 发现服务的 service tags；Mac 节点（OrbStack）用 docker host 网络模式。跨服务器的管理、内部访问和非公开工具优先使用 Tailscale 私网。
+
+Tailscale 不承载默认业务数据面。只有 `exposure: tailscale-relay` 的服务会让用户请求经过 Tailscale。
+
+Luma Control 是默认控制面，部署直连 Nomad HTTP API（`/v1/jobs`）。Nomad server 跑在 manager 上，Nomad agent 的 `bind_addr` 是 `0.0.0.0`，HTTP API（`4646`）/ RPC（`4647`）/ Serf（`4648`）的 advertise 地址使用 Tailscale IP。访问边界依赖主机防火墙：Luma 管理的 UFW 规则仅在 `tailscale0` 接口放行这些端口；不能把 advertise 地址当作监听限制。非 UFW 主机和云安全组需配置等效规则，详见 [操作手册的网络端口说明](operations.md#required-network-ports)。
+
+client 失联时本地 allocation 凭 `max_client_disconnect` 继续运行，恢复后自动重连。

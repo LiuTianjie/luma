@@ -1,3 +1,5 @@
+import { Checkbox } from "@/components/ui/checkbox";
+import { Field, FieldContent, FieldLabel, FieldDescription } from "@/components/ui/field";
 import type { DashboardNode, DashboardStorageClass, Lang } from "../types";
 import type { ComposeDeploymentDraft, ComposeServiceDraft, ComposeVolumeDraft, Exposure, KeyValueRow, Region } from "./types";
 import { clearNodeIfIncompatible, EXPOSURES, exposureOptionLabel, hasReadyNodeInRegion, nodesForRegion, regionChoices, requiredRegionForExposure, regionOptionLabel } from "./options";
@@ -234,20 +236,8 @@ export function ComposeDeployForm({
       <section className="deploy-config-section" id="compose-advanced">
         <header><span>05</span><h3>{zh ? "部署开关" : "Deploy options"}</h3></header>
         <div className="deploy-switch-grid">
-          <label className="deploy-toggle">
-            <input type="checkbox" checked={draft.skipDns} onChange={(event) => patch({ skipDns: event.target.checked })} />
-            <div>
-              <strong>{zh ? "跳过 DNS" : "Skip DNS"}</strong>
-              <span>{zh ? "部署时不自动在 Cloudflare 上同步更新域名解析记录" : "Do not automatically sync Cloudflare DNS records during deploy."}</span>
-            </div>
-          </label>
-          <label className="deploy-toggle">
-            <input type="checkbox" checked={draft.skipOrchestrator} onChange={(event) => patch({ skipOrchestrator: event.target.checked })} />
-            <div>
-              <strong>{zh ? "跳过编排器" : "Skip orchestrator"}</strong>
-              <span>{zh ? "只写入配置和路由，不提交 Nomad 部署" : "Write configuration and routes without submitting the Nomad deploy."}</span>
-            </div>
-          </label>
+          <Field orientation="horizontal"><Checkbox id="ComposeDeployForm-skipDns" checked={draft.skipDns} onCheckedChange={(checked) => patch({ skipDns: checked })} /><FieldContent><FieldLabel htmlFor="ComposeDeployForm-skipDns">{zh ? "跳过 DNS" : "Skip DNS"}</FieldLabel><FieldDescription>{zh ? "部署时不自动在 Cloudflare 上同步更新域名解析记录" : "Do not automatically sync Cloudflare DNS records during deploy."}</FieldDescription></FieldContent></Field>
+          <Field orientation="horizontal"><Checkbox id="ComposeDeployForm-skipOrchestrator" checked={draft.skipOrchestrator} onCheckedChange={(checked) => patch({ skipOrchestrator: checked })} /><FieldContent><FieldLabel htmlFor="ComposeDeployForm-skipOrchestrator">{zh ? "跳过编排器" : "Skip orchestrator"}</FieldLabel><FieldDescription>{zh ? "只写入配置和路由，不提交 Nomad 部署" : "Write configuration and routes without submitting the Nomad deploy."}</FieldDescription></FieldContent></Field>
         </div>
       </section>
     </div>

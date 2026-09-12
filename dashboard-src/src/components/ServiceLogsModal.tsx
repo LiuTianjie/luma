@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 
-import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 
 import { createPortal } from "react-dom";
 import { Activity, ChevronDown, Copy, Download, Info, Pause, Play, RefreshCw, Search, Terminal, WrapText, X } from "lucide-react";
@@ -584,10 +584,10 @@ export function ServiceLogsModal({
         </div>
         <label className="log-console__field log-console__search-field">
           <span>{lang === "zh" ? "搜索当前日志" : "Search current logs"}</span>
-          <span className="log-console__search">
-            <Search size={16} aria-hidden="true" />
-            <Input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder={lang === "zh" ? "输入关键词" : "Filter by keyword"} />
-          </span>
+          <InputGroup>
+            <InputGroupAddon><Search size={16} aria-hidden="true" /></InputGroupAddon>
+            <InputGroupInput value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder={lang === "zh" ? "输入关键词" : "Filter by keyword"} />
+          </InputGroup>
         </label>
       </div>
 

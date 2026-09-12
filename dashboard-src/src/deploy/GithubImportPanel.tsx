@@ -617,7 +617,7 @@ export function GithubImportEntryCard({ lang, onOpen }: { lang: Lang; onOpen: ()
   const zh = lang === "zh";
   return (
     <Card
-      className="cursor-pointer transition-colors hover:bg-muted/50"
+      className="template-repository-entry cursor-pointer transition-colors hover:bg-muted/50"
       role="button"
       tabIndex={0}
       onClick={onOpen}
@@ -633,7 +633,7 @@ export function GithubImportEntryCard({ lang, onOpen }: { lang: Lang; onOpen: ()
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium">{zh ? "仓库导入" : "Repository import"}</p>
           <p className="text-sm text-muted-foreground">
-            {zh ? "选择 Git provider 账户和仓库，自动构建并部署" : "Choose a Git provider account and repo, then build and deploy"}
+            {zh ? "从已连接的 Git 仓库构建并部署应用" : "Build and deploy an application from a connected Git repository"}
           </p>
         </div>
         <span className="text-sm text-muted-foreground">{zh ? "打开" : "Open"} →</span>

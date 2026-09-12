@@ -1,3 +1,5 @@
+import { Checkbox } from "@/components/ui/checkbox";
+import { Field, FieldContent, FieldLabel, FieldDescription } from "@/components/ui/field";
 import type { DashboardNode, DashboardStorageClass, Lang } from "../types";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -92,7 +94,7 @@ export function SingleServiceDeployForm({
             <small>{zh ? "有持久化卷时，首次部署后自动固定节点，更新与重启继续使用原数据。" : "Persistent volumes pin the first deployment node. Updates and restarts reuse its data."}</small>
           </label>
           <label><span>{zh ? "副本" : "Replicas"}</span><Input type="number" min={1} value={draft.replicas} onChange={(event) => patch({ replicas: Number(event.target.value || 1) })} /></label>
-          <label className="deploy-toggle"><input type="checkbox" checked={draft.proxy} onChange={(event) => patch({ proxy: event.target.checked })} /><span>{zh ? "启用 egress proxy" : "Enable egress proxy"}</span></label>
+          <label className="deploy-toggle"><Checkbox checked={draft.proxy} onCheckedChange={(checked) => patch({ proxy: checked })} /><span>{zh ? "启用 egress proxy" : "Enable egress proxy"}</span></label>
         </div>
       </section>
       <section className="deploy-config-section" id="deploy-network">
@@ -186,13 +188,14 @@ export function SingleServiceDeployForm({
           )) : <p className="deploy-muted">{zh ? "还没有声明命名卷。需要持久化配置或数据时添加一个卷。" : "No named volumes yet. Add one when configuration or data should persist."}</p>}
         </div>
         <div className="deploy-env-editor">
-          <div>
+          <div className="deploy-env-heading">
             <strong>{zh ? "环境变量" : "Environment variables"}</strong>
-            <div>
+            <div className="flex flex-wrap gap-2">
               <Button type="button" variant="outline" size="sm" onClick={() => patch({ env: [...draft.env, { id: `env-${Date.now()}`, key: "", value: "", kind: "plain" }] })}>{zh ? "添加变量" : "Add variable"}</Button>
               <Button type="button" variant="outline" size="sm" onClick={() => patch({ env: [...draft.env, { id: `env-secret-${Date.now()}`, key: "", value: "", kind: "secret" }] })}>{zh ? "添加密钥引用" : "Add secret reference"}</Button>
             </div>
           </div>
+          {draft.env.length === 0 && <p className="deploy-muted">{zh ? "暂无环境变量，可添加变量或引用已保存的密钥。" : "No environment variables. Add a variable or reference a saved secret."}</p>}
           {draft.env.map((row) => (
             <div className="deploy-env-row compose-env-row" key={row.id}>
               <Input value={row.key} onChange={(event) => updateEnv(row.id, { key: event.target.value })} placeholder="NAME" />
@@ -214,20 +217,8 @@ export function SingleServiceDeployForm({
       <section className="deploy-config-section" id="deploy-advanced">
         <header><span>04</span><h3>{zh ? "部署开关" : "Deploy options"}</h3></header>
         <div className="deploy-switch-grid">
-          <label className="deploy-toggle">
-            <input type="checkbox" checked={draft.skipDns} onChange={(event) => patch({ skipDns: event.target.checked })} />
-            <div>
-              <strong>{zh ? "跳过 DNS" : "Skip DNS"}</strong>
-              <span>{zh ? "部署时不自动在 Cloudflare 上同步更新域名解析记录" : "Do not automatically sync Cloudflare DNS records during deploy."}</span>
-            </div>
-          </label>
-          <label className="deploy-toggle">
-            <input type="checkbox" checked={draft.skipOrchestrator} onChange={(event) => patch({ skipOrchestrator: event.target.checked })} />
-            <div>
-              <strong>{zh ? "跳过编排器" : "Skip orchestrator"}</strong>
-              <span>{zh ? "只写入配置和路由，不提交 Nomad 部署" : "Write configuration and routes without submitting the Nomad deploy."}</span>
-            </div>
-          </label>
+          <Field orientation="horizontal"><Checkbox id="SingleServiceDeployForm-skipDns" checked={draft.skipDns} onCheckedChange={(checked) => patch({ skipDns: checked })} /><FieldContent><FieldLabel htmlFor="SingleServiceDeployForm-skipDns">{zh ? "跳过 DNS" : "Skip DNS"}</FieldLabel><FieldDescription>{zh ? "部署时不自动在 Cloudflare 上同步更新域名解析记录" : "Do not automatically sync Cloudflare DNS records during deploy."}</FieldDescription></FieldContent></Field>
+          <Field orientation="horizontal"><Checkbox id="SingleServiceDeployForm-skipOrchestrator" checked={draft.skipOrchestrator} onCheckedChange={(checked) => patch({ skipOrchestrator: checked })} /><FieldContent><FieldLabel htmlFor="SingleServiceDeployForm-skipOrchestrator">{zh ? "跳过编排器" : "Skip orchestrator"}</FieldLabel><FieldDescription>{zh ? "只写入配置和路由，不提交 Nomad 部署" : "Write configuration and routes without submitting the Nomad deploy."}</FieldDescription></FieldContent></Field>
         </div>
       </section>
     </div>

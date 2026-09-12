@@ -1,7 +1,8 @@
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ApplicationProperties, ApplicationVersionEntry } from "./ApplicationProperties";
 import "./ApplicationManagementPanel.css";
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { FileText, History, Loader2, MoreHorizontal, Pencil, RotateCw, Search, Settings2, SquareTerminal } from "lucide-react";
+import { Copy, FileText, History, Loader2, MoreHorizontal, Pencil, RotateCw, Search, Settings2, SquareTerminal } from "lucide-react";
 import { fetchDeploymentConfig, type DeploymentConfig } from "../deploymentConfigApi";
 import { localizeState, t } from "../i18n";
 import { fetchServiceHistory, restartApplication, rollbackService, updateApplicationStream } from "../lifecycleApi";
@@ -22,14 +23,7 @@ import { Field, FieldLabel } from "@/components/ui/field";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertCircle } from "lucide-react";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@/components/ui/breadcrumb";
+
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
@@ -54,6 +48,7 @@ type RollbackState = {
   error: string;
   message: string;
   busyVersion: number | null;
+  errorKind?: "load" | "rollback";
 };
 
 
@@ -331,6 +326,7 @@ export function ApplicationManagementPanel({
         app: app.stack,
         versions: [],
         loading: false,
+        errorKind: "load",
         error: String(error instanceof Error ? error.message : error),
         message: "",
         busyVersion: null,
@@ -366,6 +362,7 @@ export function ApplicationManagementPanel({
         ? {
           ...current,
           loading: false,
+          errorKind: "rollback",
           error: String(error instanceof Error ? error.message : error),
           message: "",
           busyVersion: null,
@@ -404,30 +401,11 @@ export function ApplicationManagementPanel({
   }, [selected?.stack, tab, token, detailRefresh]);
   const activeServices = route.service ? selected?.services.filter((service) => (service.fullName || service.name) === route.service) || [] : selected?.services || [];
   const detailPage = selected ? (
-      <section className="flex flex-col gap-6" aria-labelledby="application-detail-title">
-        <Breadcrumb>
-          <BreadcrumbList>
-            <BreadcrumbItem>
-              <BreadcrumbLink
-                render={<a href={toHref("/apps")} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); setSelected(null); }} />}
-              >
-                {lang === "zh" ? "应用" : "Applications"}
-              </BreadcrumbLink>
-            </BreadcrumbItem>
-            <BreadcrumbSeparator />
-            <BreadcrumbItem>
-              <BreadcrumbPage>{selected.stack}</BreadcrumbPage>
-            </BreadcrumbItem>
-            {route.service ? <>
-              <BreadcrumbSeparator />
-              <BreadcrumbItem><BreadcrumbPage>{route.service}</BreadcrumbPage></BreadcrumbItem>
-            </> : null}
-          </BreadcrumbList>
-        </Breadcrumb>
+      <section className="application-detail-layout flex flex-col gap-4" aria-labelledby="application-detail-title">
+
         <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex min-w-0 flex-col gap-1">
-            <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{lang === "zh" ? "应用详情" : "Application"}</p>
-            <h1 id="application-detail-title" className="font-heading text-2xl font-medium tracking-tight">{selected.stack}</h1>
+            <h1 id="application-detail-title" className="font-heading text-xl font-semibold tracking-tight">{selected.stack}</h1>
             <p className="text-sm text-muted-foreground">{serviceCountLabel(selected.services.length)} · {replicaLabel(selected.running, selected.desired)}</p>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -455,10 +433,10 @@ export function ApplicationManagementPanel({
             ))}
           </TabsList>
         </Tabs>
-        <div className="flex flex-col gap-8">
+        <div className={`flex flex-col ${tab === "overview" ? "gap-4" : "gap-8"}`}>
           {tab === "overview" ? <>
-          <section className="flex flex-col gap-3">
-            <h2 className="text-sm font-medium">{lang === "zh" ? "运行状态" : "Runtime"}</h2>
+          <Card className="application-overview-card">
+            <CardHeader><CardTitle>{lang === "zh" ? "运行状态" : "Runtime"}</CardTitle></CardHeader><CardContent>
             <ApplicationProperties items={[
               { label: t(lang, "status"), value: <StatePill value={selected.status} label={localizeState(lang, selected.status)} /> },
               { label: t(lang, "replicas"), value: `${selected.running}/${selected.desired}` },
@@ -466,9 +444,9 @@ export function ApplicationManagementPanel({
               { label: t(lang, "nodes"), value: selected.nodes.join(", ") || "-" },
               { label: t(lang, "exposure"), value: selected.exposure },
             ]} />
-          </section>
-          <section className="flex flex-col gap-3">
-            <h2 className="text-sm font-medium">{t(lang, "accessAddress")}</h2>
+          </CardContent></Card>
+          <Card className="application-overview-card">
+            <CardHeader><CardTitle>{t(lang, "accessAddress")}</CardTitle></CardHeader><CardContent>
             <div className="application-access-list">
               {applicationEndpoints(selected.services).length ? applicationEndpoints(selected.services).map((endpoint) => (
                 endpoint.href
@@ -476,16 +454,17 @@ export function ApplicationManagementPanel({
                   : <span className="application-tcp-address" key={endpoint.address}><Badge value="TCP" /><CodeCell value={endpoint.address} /></span>
               )) : <p>{t(lang, "internalOnly")}</p>}
             </div>
-          </section>
+          </CardContent></Card>
           </> : null}
           {tab === "versions" && selectedRollback ? (
-            <section className="application-detail-section version-history-section">
-              <div className="version-history-heading">
-                <h2 className="text-sm font-medium">{t(lang, "versions")}</h2>
-                <Button variant="outline" type="button" disabled={selectedRollback.loading || selectedRollback.busyVersion !== null} onClick={() => void loadVersions(selected)}>{selectedRollback.loading ? t(lang, "loadingHistory") : t(lang, "refresh")}</Button>
-              </div>
+            <Card className="application-versions-card">
+              <CardHeader className="application-versions-header">
+                <div><CardTitle>{lang === "zh" ? "版本历史" : "Version history"}</CardTitle><p>{lang === "zh" ? "查看已部署版本，或回滚到历史版本。" : "Review deployed versions or roll back to an earlier version."}</p></div>
+                <Button variant="outline" size="sm" type="button" disabled={selectedRollback.loading || selectedRollback.busyVersion !== null} onClick={() => void loadVersions(selected)}>{selectedRollback.loading ? t(lang, "loadingHistory") : t(lang, "refresh")}</Button>
+              </CardHeader>
+              <CardContent>
               {selectedRollback.message ? <div className="rollback-message">{selectedRollback.message}</div> : null}
-              {selectedRollback.error ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{lang === "zh" ? "回滚失败" : "Rollback failed"}</AlertTitle><AlertDescription>{selectedRollback.error}</AlertDescription></Alert> : null}
+              {selectedRollback.error ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{selectedRollback.errorKind === "rollback" ? (lang === "zh" ? "回滚失败" : "Rollback failed") : (lang === "zh" ? "无法加载版本历史" : "Could not load version history")}</AlertTitle><AlertDescription><p>{lang === "zh" ? "请求未能完成，请稍后重试。" : "The request could not be completed. Please try again."}</p><details className="version-error-details"><summary>{lang === "zh" ? "错误详情" : "Error details"}</summary><p>{selectedRollback.error}</p></details></AlertDescription></Alert> : null}
               {selectedRollback.loading ? (
                 <p className="deployment-config-empty">{t(lang, "loadingHistory")}</p>
               ) : selectedRollback.versions.length ? (
@@ -515,32 +494,32 @@ export function ApplicationManagementPanel({
                     );
                   })}
                 </div>
-              ) : (
-                <p className="deployment-config-empty">{t(lang, "noVersionHistory")}</p>
-              )}
-            </section>
+              ) : !selectedRollback.error ? (
+                <div className="application-versions-empty"><History aria-hidden="true" /><p>{t(lang, "noVersionHistory")}</p></div>
+              ) : null}
+              </CardContent>
+            </Card>
           ) : null}
           {tab === "config" && !selectedConfig ? <div className="empty-inline">{configBusy ? t(lang, "loadingConfig") : t(lang, "noDeploymentConfig")}<Button variant="outline" type="button" onClick={() => void openConfig(selected)}>{t(lang, "refresh")}</Button></div> : null}
           {tab === "config" && selectedConfig ? (
-            <section className="application-detail-section deployment-config-section">
-              <div className="deployment-config-heading">
+            <section className="application-config-workspace">
+            <Card className="application-config-card">
+              <CardHeader className="application-config-header">
                 <div>
                   <h2 className="text-sm font-medium">{t(lang, "deploymentConfig")}</h2>
-                  <span>{t(lang, "source")}: {selectedConfig.sourceName || "-"} · {t(lang, "lastUpdated")}: {formatTimestamp(selectedConfig.updatedAt)}</span>
+                  <div className="application-config-meta"><span>{t(lang, "source")}: <code>{selectedConfig.sourceName || "-"}</code></span><span>{t(lang, "lastUpdated")}: {formatTimestamp(selectedConfig.updatedAt)}</span></div>
                 </div>
-                <div className="deployment-config-tabs">
+                <div className="application-config-actions">
                   <Button type="button" variant="outline" size="sm" disabled={!selectedConfigContent} onClick={() => {
                     setConfigCopyNotice("");
                     void Promise.resolve().then(() => navigator.clipboard.writeText(selectedConfigContent || "")).then(() => setConfigCopyNotice(lang === "zh" ? "已复制完整配置" : "Full configuration copied")).catch(() => setConfigCopyNotice(lang === "zh" ? "复制失败，请在配置区域选择并复制" : "Copy failed; select and copy the configuration below"));
-                  }}>{lang === "zh" ? "复制配置" : "Copy configuration"}</Button>
-                  {selectedConfigTabs.map((tab) => (
-                    <Button type="button" size="sm" variant={configTab === tab ? "secondary" : "ghost"} key={tab} onClick={() => { setConfigTab(tab); setConfigCopyNotice(""); }}>
-                      {tab === "compose" ? t(lang, "composeFile") : t(lang, "lumaManifest")}
-                    </Button>
-                  ))}
+                  }}><Copy aria-hidden="true" />{lang === "zh" ? "复制配置" : "Copy configuration"}</Button>
                 </div>
-              </div>
-              {configCopyNotice ? <p role="status">{configCopyNotice}</p> : null}
+              </CardHeader>
+              {selectedConfigTabs.length > 1 && <Tabs className="application-config-switch" value={configTab} onValueChange={(value) => { setConfigTab(value as typeof configTab); setConfigCopyNotice(""); }}><TabsList aria-label={lang === "zh" ? "配置文件" : "Configuration file"}>{selectedConfigTabs.map(item => <TabsTrigger key={item} value={item}>{item === "compose" ? t(lang, "composeFile") : t(lang, "lumaManifest")}</TabsTrigger>)}</TabsList></Tabs>}
+
+              {configCopyNotice ? <p className="application-config-notice" role="status">{configCopyNotice}</p> : null}
+            </Card>
               {selectedConfigContent ? (
                 <pre tabIndex={0} aria-label={t(lang, "deploymentConfig")} className="deployment-config-code"><code>{selectedConfigContent}</code></pre>
               ) : (
@@ -605,8 +584,8 @@ export function ApplicationManagementPanel({
               ))}
             </div>
           </section> : null}
-          {tab === "overview" ? <section className="flex flex-col gap-3">
-            <h2 className="text-sm font-medium">{lang === "zh" ? "存储与诊断" : "Storage and diagnostics"}</h2>
+          {tab === "overview" ? <Card className="application-overview-card">
+            <CardHeader><CardTitle>{lang === "zh" ? "存储与诊断" : "Storage and diagnostics"}</CardTitle></CardHeader><CardContent>
             <div className="application-diagnostics-list">
               {selectedVolumes.length ? selectedVolumes.map((volume, index) => (
                 <article className="application-volume-entry" key={`${volume.name}-${volume.storageClass}-${volume.node}-${index}`}>
@@ -616,10 +595,10 @@ export function ApplicationManagementPanel({
                     { label: lang === "zh" ? "存储类 / 节点" : "Storage class / node", value: volume.storageClass || volume.node || "-" },
                   ]} />
                 </article>
-              )) : <p>{lang === "zh" ? "未发现应用卷" : "No application volumes found"}</p>}
-              {selectedDiagnostics.length ? selectedDiagnostics.map((item) => <p key={item}>{item}</p>) : <p>{lang === "zh" ? "暂无诊断告警" : "No diagnostic warnings"}</p>}
+              )) : <div className="application-overview-row"><span>{lang === "zh" ? "存储卷" : "Volumes"}</span><p className="text-muted-foreground">{lang === "zh" ? "未发现应用卷" : "No application volumes found"}</p></div>}
+              <div className="application-overview-row"><span>{lang === "zh" ? "诊断" : "Diagnostics"}</span><div>{selectedDiagnostics.length ? selectedDiagnostics.map((item) => <p key={item}>{item}</p>) : <p className="text-muted-foreground">{lang === "zh" ? "暂无诊断告警" : "No diagnostic warnings"}</p>}</div></div>
             </div>
-          </section> : null}
+          </CardContent></Card> : null}
           {tab === "logs" ? <ServiceLogsModal key={selected.stack} inline lang={lang} token={token} services={selected.services} initialServiceName={new URLSearchParams(search).get("service") || selected.services.find((service) => service.fullName)?.fullName || ""} onClose={() => navigate(applicationPath(selected.stack, "overview"))} /> : null}
           {tab === "metrics" ? <ObservabilityPanel key={selected.stack} lang={lang} token={token} services={selected.services} nodes={[]} /> : null}
         </div>
@@ -687,7 +666,7 @@ export function ApplicationManagementPanel({
   };
 
   return (
-    <div className="app-management-panel flex flex-col gap-6" id="section-1">
+    <div className="app-management-panel flex flex-col gap-3" id="section-1">
       {selectedStack && !selected ? (
         <Alert>
           <AlertCircle />

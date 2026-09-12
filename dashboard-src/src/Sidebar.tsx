@@ -6,6 +6,8 @@ import {
   SidebarGroupContent,
   SidebarGroupLabel,
   SidebarHeader,
+  SidebarTrigger,
+  useSidebar,
   SidebarMenu,
   SidebarMenuBadge,
   SidebarMenuButton,
@@ -13,11 +15,9 @@ import {
   SidebarMenuSub,
   SidebarMenuSubButton,
   SidebarMenuSubItem,
-  SidebarTrigger,
 } from "@/components/ui/sidebar";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { LogOut, RefreshCw, Settings2, Monitor, Moon, Sun } from "lucide-react";
+import { LogOut, Settings2, Monitor, Moon, Sun } from "lucide-react";
 import { useState } from "react";
 import type { ThemeMode } from "./useTheme";
 import { buildNavGroups, type NavGroup } from "./navItems";
@@ -35,7 +35,6 @@ export function AppSidebar({
   activeNavPage,
   onNavigate,
   onPrefetch,
-  onRefresh,
   onSignOut,
   themeMode,
   onThemeModeChange,
@@ -47,12 +46,14 @@ export function AppSidebar({
   activeNavPage: NavPage;
   onNavigate: (page: NavPage) => void;
   onPrefetch?: (page: NavPage) => void;
-  onRefresh: () => void;
   onSignOut: () => void;
   themeMode: ThemeMode;
   onThemeModeChange: (mode: ThemeMode) => void;
   onLangChange: (lang: Lang) => void;
 }) {
+  const { open, openMobile, isMobile } = useSidebar();
+  const expanded = isMobile ? openMobile : open;
+  const toggleLabel = lang === "zh" ? (expanded ? "收起侧边栏" : "展开侧边栏") : (expanded ? "Collapse sidebar" : "Expand sidebar");
   const groups: NavGroup[] = buildNavGroups(lang, vm);
   const { path, navigate: navigatePath } = useRouter();
   const activeWorkspace = ["builder", "deploy"].includes(activeNavPage) ? "deployments"
@@ -60,24 +61,18 @@ export function AppSidebar({
   const [preferencesOpen, setPreferencesOpen] = useState(false);
 
   return (
-    <Sidebar collapsible="icon" variant="sidebar">
+    <Sidebar collapsible="icon" variant="sidebar" className="console-sidebar">
       <SidebarHeader>
-        <div className="flex items-center gap-2 px-2 py-2 group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:px-1">
-          <div className="flex size-8 items-center justify-center overflow-hidden rounded-lg bg-sidebar-accent">
-            <img src={lumaLogoMark} alt="" className="size-5" />
-          </div>
-          <div className="flex min-w-0 flex-1 flex-col group-data-[collapsible=icon]:hidden">
-            <span className="truncate text-xs text-muted-foreground">Luma</span>
-            <strong className="truncate text-sm font-medium">{t(lang, "title")}</strong>
-          </div>
-          <SidebarTrigger className="ml-auto shrink-0 group-data-[collapsible=icon]:ml-0" />
-        </div>
-        <div className="flex min-w-0 items-center gap-2 px-2 pb-2 group-data-[collapsible=icon]:hidden">
-          <span className="text-xs text-muted-foreground">{t(lang, "cluster")}</span>
-          <Badge variant="outline" className="min-w-0 max-w-full truncate font-mono" translate="no">{clusterId}</Badge>
+        <div className="console-brand">
+          <img src={lumaLogoMark} alt="" />
+          <div className="console-brand-copy"><strong>Luma</strong><span>{t(lang, "title")}</span></div>
+          <SidebarTrigger className="console-sidebar-toggle" aria-label={toggleLabel} title={toggleLabel} aria-expanded={expanded} />
         </div>
       </SidebarHeader>
       <SidebarContent>
+        <div className="console-cluster">
+          <span>{t(lang, "cluster")}</span><code translate="no">{clusterId}</code>
+        </div>
         {groups.map((group) => (
           <SidebarGroup key={group.key} className="p-3">
             {group.label ? <SidebarGroupLabel className="h-8 px-2">{group.label}</SidebarGroupLabel> : null}
@@ -152,13 +147,12 @@ export function AppSidebar({
             <Button variant="ghost" size="sm" className="w-full justify-start group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:justify-center" title={lang === "zh" ? "偏好" : "Preferences"} onClick={() => setPreferencesOpen((open) => !open)} aria-expanded={preferencesOpen}><Settings2 data-icon="inline-start" /><span className="group-data-[collapsible=icon]:hidden">{lang === "zh" ? "偏好" : "Preferences"}</span></Button>
             {preferencesOpen ? <div className="absolute bottom-full left-0 z-50 mb-2 w-56 rounded-lg border bg-popover p-2 text-sm text-popover-foreground shadow-md group-data-[collapsible=icon]:left-10">
               <p className="px-2 py-1 text-xs font-medium text-muted-foreground">{lang === "zh" ? "外观" : "Appearance"}</p>
-              {([["system", Monitor], ["light", Sun], ["dark", Moon]] as const).map(([mode, Icon]) => <button type="button" key={mode} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent" aria-pressed={themeMode === mode} onClick={() => onThemeModeChange(mode)}><Icon className="size-4" />{mode === "system" ? (lang === "zh" ? "跟随系统" : "Follow system") : mode === "light" ? (lang === "zh" ? "日间模式" : "Light mode") : (lang === "zh" ? "夜间模式" : "Dark mode")}</button>)}
+              {([["system", Monitor], ["light", Sun], ["dark", Moon]] as const).map(([mode, Icon]) => <button type="button" key={mode} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent" aria-pressed={themeMode === mode} onClick={() => { onThemeModeChange(mode); setPreferencesOpen(false); }}><Icon className="size-4" />{mode === "system" ? (lang === "zh" ? "跟随系统" : "Follow system") : mode === "light" ? (lang === "zh" ? "日间模式" : "Light mode") : (lang === "zh" ? "夜间模式" : "Dark mode")}</button>)}
               <div className="my-2 border-t" />
               <p className="px-2 py-1 text-xs font-medium text-muted-foreground">{lang === "zh" ? "语言" : "Language"}</p>
-              {([["zh", "中文"], ["en", "English"]] as const).map(([value, label]) => <button type="button" key={value} className="flex w-full items-center rounded-md px-2 py-1.5 text-left hover:bg-accent" aria-pressed={lang === value} onClick={() => onLangChange(value)}>{label}</button>)}
+              {([["zh", "中文"], ["en", "English"]] as const).map(([value, label]) => <button type="button" key={value} className="flex w-full items-center rounded-md px-2 py-1.5 text-left hover:bg-accent" aria-pressed={lang === value} onClick={() => { onLangChange(value); setPreferencesOpen(false); }}>{label}</button>)}
             </div> : null}
           </div>
-          <Button variant="ghost" size="sm" className="flex-1 justify-start group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:flex-none group-data-[collapsible=icon]:justify-center" onClick={onRefresh} title={t(lang, "refresh")}><RefreshCw data-icon="inline-start" /><span className="group-data-[collapsible=icon]:hidden">{t(lang, "refresh")}</span></Button>
           <Button variant="ghost" size="sm" className="flex-1 justify-start group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:flex-none group-data-[collapsible=icon]:justify-center" onClick={onSignOut} title={t(lang, "signOut")}><LogOut data-icon="inline-start" /><span className="group-data-[collapsible=icon]:hidden">{t(lang, "signOut")}</span></Button>
         </div>
         <div className="flex flex-col gap-1.5 rounded-lg bg-sidebar-accent px-3 py-3 text-xs group-data-[collapsible=icon]:hidden">

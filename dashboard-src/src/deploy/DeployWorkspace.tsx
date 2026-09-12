@@ -1,6 +1,9 @@
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Checkbox } from "@/components/ui/checkbox";
 import "./workbench.css";
 import { Button } from "@/components/ui/button";
 
+import { PageHeader } from "../pages/PageHeader";
 import { StepLog } from "./StepLog";
 import { ArrowLeft, FileCode2, ListChecks, Rocket } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -243,8 +246,8 @@ export function DeployWorkspace({
   const regions = regionChoices(payload?.regions || [], nodes);
 
   useEffect(() => {
-    onTemplateLandingChange?.(templateLanding);
-  }, [onTemplateLandingChange, templateLanding]);
+    onTemplateLandingChange?.(templateLanding && !importView);
+  }, [onTemplateLandingChange, templateLanding, importView]);
 
   useEffect(() => {
     if (!initialMode && !initialServiceDraft && !initialComposeDraft && !initialServiceYaml && !initialSidecarYaml && !initialComposeYaml) return;
@@ -428,7 +431,7 @@ export function DeployWorkspace({
   };
 
   return (
-    <section className={`deploy-workspace-panel deploy-workbench ${modalTitle ? "modal-deploy-workspace" : ""} ${templateLanding ? "" : "is-form"}`.trim()}>
+    <Tabs value={editorMode} onValueChange={(value) => setEditorMode(value as "form" | "yaml")}><section className={`deploy-workspace-panel deploy-workbench ${modalTitle ? "modal-deploy-workspace" : ""} ${templateLanding ? "" : "is-form"}`.trim()}>
       {importView ? (
         <GithubImportPanel
           lang={lang}
@@ -442,14 +445,26 @@ export function DeployWorkspace({
       ) : (
       <>
       {!templateLanding ? <header className="workbench-header">
-        <Button variant="outline" type="button" className="workbench-back" disabled={status !== "idle"} onClick={() => onClose ? onClose() : showTemplates ? backToTemplates() : router.navigate("/create")}>
+        {onClose || showTemplates ? <Button variant="outline" type="button" className="workbench-back" disabled={status !== "idle"} onClick={() => onClose ? onClose() : showTemplates ? backToTemplates() : router.navigate("/create")}>
           <ArrowLeft size={16} aria-hidden="true" />{onClose ? (lang === "zh" ? "返回应用" : "Back to application") : showTemplates ? (lang === "zh" ? "返回模板" : "Back to templates") : (lang === "zh" ? "返回创建" : "Back to create")}
-        </Button>
-        <div className="workbench-title"><div><p className="eyebrow">{lang === "zh" ? "应用配置" : "Application configuration"}</p><h1>{modalTitle || (lang === "zh" ? "创建应用" : "Create application")}</h1><p>{modalSubtitle || (lang === "zh" ? "编辑配置，校验后提交到当前集群。" : "Edit the configuration, validate it, then submit to this cluster.")}</p></div><span className="workbench-kind">{mode === "service" ? (lang === "zh" ? "单服务" : "Single service") : "Compose"}</span></div>
-        <nav className="deploy-editor-tabs" aria-label={lang === "zh" ? "编辑方式" : "Editor mode"}>
-          <Button type="button" variant={editorMode === "form" ? "secondary" : "ghost"} aria-current={editorMode === "form" ? "page" : undefined} disabled={yamlDirty || status !== "idle"} onClick={() => setEditorMode("form")}><ListChecks size={16} aria-hidden="true" />{lang === "zh" ? "配置表单" : "Form"}</Button>
-          <Button type="button" variant={editorMode === "yaml" ? "secondary" : "ghost"} aria-current={editorMode === "yaml" ? "page" : undefined} disabled={status !== "idle"} onClick={() => setEditorMode("yaml")}><FileCode2 size={16} aria-hidden="true" />{lang === "zh" ? "YAML 编辑器" : "YAML editor"}</Button>
-        </nav>
+        </Button> : null}
+        <PageHeader meta={{
+          eyebrow: "",
+          title: onClose ? (modalTitle || (lang === "zh" ? "更新应用" : "Update application")) : (lang === "zh" ? "配置并部署应用" : "Configure and deploy an application"),
+          description: modalSubtitle || (lang === "zh" ? "填写表单或编辑 YAML，校验后部署到集群。" : "Use the form or YAML, then validate and deploy to your cluster."),
+          metrics: [],
+        }} />
+        <div className="workbench-editor-toolbar">
+        <TabsList aria-label={lang === "zh" ? "编辑方式" : "Editor mode"}>
+          <TabsTrigger value="form" disabled={yamlDirty || status !== "idle"}><ListChecks aria-hidden="true" />{lang === "zh" ? "配置表单" : "Form"}</TabsTrigger>
+          <TabsTrigger value="yaml" disabled={status !== "idle"}><FileCode2 aria-hidden="true" />{lang === "zh" ? "YAML 编辑器" : "YAML editor"}</TabsTrigger>
+        </TabsList>
+          {editorMode === "yaml" ? <fieldset className="deploy-request-options" disabled={status !== "idle"}>
+            <legend>{lang === "zh" ? "部署选项" : "Deployment options"}</legend>
+            <label><Checkbox checked={mode === "service" ? serviceDraft.skipDns : composeDraft.skipDns} onCheckedChange={(checked) => mode === "service" ? setServiceDraft({ ...serviceDraft, skipDns: checked }) : setComposeDraft({ ...composeDraft, skipDns: checked })} />{lang === "zh" ? "跳过 DNS 更新" : "Skip DNS updates"}</label>
+            <label><Checkbox checked={mode === "service" ? serviceDraft.skipOrchestrator : composeDraft.skipOrchestrator} onCheckedChange={(checked) => mode === "service" ? setServiceDraft({ ...serviceDraft, skipOrchestrator: checked }) : setComposeDraft({ ...composeDraft, skipOrchestrator: checked })} />{lang === "zh" ? "跳过调度器提交" : "Skip orchestrator submission"}</label>
+          </fieldset> : null}
+        </div>
       </header> : null}
       {modalContext}
       {showTemplates && templateLanding ? (
@@ -459,13 +474,7 @@ export function DeployWorkspace({
         </>
       ) : null}
       {templateLanding ? (
-        <div className="template-gallery-footer">
-          <div>
-            <strong>{lang === "zh" ? "模板只会填充配置，不会自动部署。" : "Templates only prefill configuration. Nothing deploys automatically."}</strong>
-            <span>{lang === "zh" ? "点击模板卡片后进入表单页面，可随时切换 YAML 视图。" : "Click a template to continue to the form page, where YAML view remains available."}</span>
-          </div>
-          <Button variant="outline" type="button" onClick={() => selectTemplate(firstTemplate(mode))}>{lang === "zh" ? "使用当前推荐" : "Use recommended"}</Button>
-        </div>
+        null
       ) : (
         <>
           {editorMode === "form" ? (
@@ -479,11 +488,6 @@ export function DeployWorkspace({
               ))}
             </nav>
           ) : null}
-          {editorMode === "yaml" ? <fieldset className="deploy-request-options" disabled={status !== "idle"}>
-            <legend>{lang === "zh" ? "部署选项" : "Deployment options"}</legend>
-            <label><input type="checkbox" checked={mode === "service" ? serviceDraft.skipDns : composeDraft.skipDns} onChange={(event) => mode === "service" ? setServiceDraft({ ...serviceDraft, skipDns: event.target.checked }) : setComposeDraft({ ...composeDraft, skipDns: event.target.checked })} />{lang === "zh" ? "跳过 DNS 更新" : "Skip DNS updates"}</label>
-            <label><input type="checkbox" checked={mode === "service" ? serviceDraft.skipOrchestrator : composeDraft.skipOrchestrator} onChange={(event) => mode === "service" ? setServiceDraft({ ...serviceDraft, skipOrchestrator: event.target.checked }) : setComposeDraft({ ...composeDraft, skipOrchestrator: event.target.checked })} />{lang === "zh" ? "跳过调度器提交" : "Skip orchestrator submission"}</label>
-          </fieldset> : null}
           <div className={`deploy-workspace-grid ${editorMode === "yaml" ? "yaml-active" : ""}`}>
             <div className="deploy-config-main" inert={status !== "idle" ? true : undefined}>
               {yamlDirty ? <div className="workbench-source-note" role="status"><div><strong>{lang === "zh" ? "使用 YAML 配置" : "Using YAML configuration"}</strong><p>{lang === "zh" ? "校验和部署均使用当前文件内容。" : "Validation and deployment use the current documents."}</p></div><Button variant="outline" type="button" disabled={status !== "idle"} onClick={async () => {
@@ -530,6 +534,6 @@ export function DeployWorkspace({
       </>
       )}
       {confirmDialog}
-    </section>
+    </section></Tabs>
   );
 }
