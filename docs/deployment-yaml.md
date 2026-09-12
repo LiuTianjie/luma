@@ -93,7 +93,7 @@ Compose 部署也渲染同样的 Nomad `update` 基线策略。对没有 `publis
 
 ## 常用模板
 
-### 国内公开 API
+### 国内公开 API {#api}
 
 ```yaml
 name: api
@@ -284,7 +284,7 @@ dashboard 的「创建应用」页顶部也有「仓库导入」入口，可选�
 | `dockerfile` | `Dockerfile` | Dockerfile 路径（仓库内相对路径）。 |
 | `platform` | `linux/amd64` | `docker buildx build --platform` 的目标平台。 |
 
-### 海外 worker
+### 海外 worker {#worker}
 
 ```yaml
 name: fetch-worker
@@ -306,7 +306,7 @@ constraint {
 }
 ```
 
-### 指定部署到某个节点
+### 指定部署到某个节点 {#_6}
 
 如果服务必须固定在某台机器上，例如有本地磁盘状态、只想跑在家里的 Mac mini、或临时调试某个 worker，可以使用 `node`：
 
@@ -337,7 +337,7 @@ constraint {
 
 Nomad 节点身份是稳定的 UUID。节点离开集群后用同一个 Luma 节点名重新 join，`meta.luma_node_name` 不变，固定节点服务约束仍然有效；不用手工把 Docker hostname 写进 manifest。
 
-### 普通服务使用本地卷
+### 普通服务使用本地卷 {#local-volume}
 
 新的持久化原生服务用 named volume 或 bind mount。Control 在首次部署前记录归属节点，后续更新钉在该节点；可写持久化挂载要求 `replicas: 1`。不要为新应用注册 storage class 或 NFS。
 
@@ -353,7 +353,7 @@ volumes:
 
 Compose sidecar 把宿主机路径写在 `volumes.<name>.local.path`，见 [compose-storage.md](compose-storage.md)。
 
-### 旧 storageClass（仅迁移）
+### 旧 storageClass（仅迁移） {#storageclass}
 
 已有 NFS 部署仍可用顶层 `storage` 指向控制面登记的 class。`volumes` 仍是容器挂载声明；`storage` 只描述这些 named volume 落到哪个旧存储服务的哪个子目录。新文件不要再写这块。
 
@@ -373,7 +373,7 @@ storage:
 
 `luma storage list` / `check` / `apply` / `remove` 继续管理这些遗留 class。切换后端必须验证 `adopted: true` 或声明 `initialize: empty`。
 
-### 需要代理的 worker
+### 需要代理的 worker {#worker_1}
 
 如果服务运行时需要通过 Luma egress proxy 访问外网，声明 `proxy: true`。不要为了使用默认代理手写 `networks: [egress]` 或 `HTTP_PROXY` / `HTTPS_PROXY`；Luma 会自动渲染这些字段。如果你显式写了同名 env，Luma 会保留你的值。
 
@@ -402,7 +402,7 @@ constraint {
 }
 ```
 
-### 小机器资源限制
+### 小机器资源限制 {#_7}
 
 如果 manager 只有 2c2g，并且业务服务也部署在 manager 上，建议给每个非核心服务显式设置资源边界。CPU 只通过 `reservations.cpus` 声明调度份额，运行时可使用空闲 CPU，不设独立硬上限。`limits.memory` 是内存硬上限，`reservations.memory` 是调度预留量。未填 CPU 预留时使用 100 MHz；只填内存上限时预留 `min(256 MiB, 上限)`。旧 `limits.cpus` 会明确告警并忽略，不再预占调度额度；它不是可执行的 CPU 硬上限：
 
@@ -425,7 +425,7 @@ resources:
 
 控制面升级只改变后续生成的 Job；已有服务需要重新部署才生效，不需要批量升级 worker。
 
-### 家里内部服务
+### 家里内部服务 {#_8}
 
 ```yaml
 name: backup-job
@@ -435,7 +435,7 @@ exposure: none
 replicas: 1
 ```
 
-### 家里服务通过 Tailscale Relay 暴露
+### 家里服务通过 Tailscale Relay 暴露 {#tailscale-relay}
 
 ```yaml
 name: home-panel
@@ -461,7 +461,7 @@ relay:
   url: http://home-1.your-tailnet.ts.net:8080
 ```
 
-### 公开 TCP 服务
+### 公开 TCP 服务 {#tcp}
 
 服务 manifest：
 
@@ -480,7 +480,7 @@ replicas: 1
 Luma 会把 DNS 指到公网 edge，自动确保 Traefik 监听 `tcp-3306` entrypoint，并写入 Traefik TCP route。`domain` 用于 DNS；普通 MySQL 连接无法提供 HTTP Host 或可靠起始 SNI，所以同一个发布端口一次只应给一个 TCP 服务使用。
 `publishPort` 是目标 task 节点上的宿主机端口，并会在 Nomad bridge 模式下映射到容器 `port`。如果同一台机器已有本机容器或非 Luma 服务占用 `3306`，请选择其它端口并同步调整客户端连接端口或入口配置。Mac/OrbStack 节点不支持这种映射，需省略 `publishPort` 并使用容器真实监听端口。
 
-### Cloudflare Tunnel 服务
+### Cloudflare Tunnel 服务 {#cloudflare-tunnel}
 
 ```yaml
 name: home-tool
