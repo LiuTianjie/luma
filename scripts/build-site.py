@@ -16,7 +16,7 @@ import markdown
 ROOT = Path(__file__).resolve().parents[1]
 GUIDES = [('dashboard-guide', 'Console guide'), ('how-to-use-luma', 'Operating manual'), ('bootstrap', 'Install & bootstrap'), ('architecture', 'Architecture'), ('concepts', 'Core concepts'), ('deployment-yaml', 'Deployment YAML'), ('compose-storage', 'Compose & storage'), ('observability', 'Observability'), ('secrets', 'Secrets & credentials'), ('luma-cli', 'CLI reference'), ('troubleshooting', 'Troubleshooting'), ('ai-agent-skills', 'AI Agent Skills')]
 
-ZH_LABELS = ['控制台指南', '使用手册', '安装与初始化', '系统架构', '核心概念', '部署 YAML', 'Compose 与存储', '可观测性', '密钥与凭据', 'CLI 命令参考', '故障排查', 'AI Agent Skills']
+ZH_LABELS = ['控制台指南', '使用手册', '安装与初始化', '系统架构', '核心概念', '部署 YAML', 'Compose 与存储', '可观测', '密钥与凭据', 'CLI 命令参考', '故障排查', 'AI Agent Skills']
 
 def chinese_source(source):
     # Explicit translations or original Chinese prose; ignore command/help blocks.

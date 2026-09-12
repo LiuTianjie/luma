@@ -178,7 +178,7 @@ def feishu_alert_card(
         subtitle_parts = [p for p in (f"集群 `{_plain(cluster, 80)}`" if cluster else '', f"事件 #{incident_id}" if incident_id not in ('', None) else '') if p]
         if subtitle_parts:
             elements.append({'tag': 'div', 'text': {'tag': 'lark_md', 'content': ' · '.join(subtitle_parts)}})
-    elements.append({'tag': 'note', 'elements': [{'tag': 'plain_text', 'content': 'Dashboard → 可观测性 → 告警中心'}]})
+    elements.append({'tag': 'note', 'elements': [{'tag': 'plain_text', 'content': 'Dashboard → 可观测 → 告警中心'}]})
     return {
         'config': {'wide_screen_mode': True},
         'header': {

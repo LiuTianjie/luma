@@ -195,9 +195,33 @@ export function ObservabilityPanel({ lang, token, nodes, services, mode = "metri
     </div>
     {!valid ? <div className="panel">{zh ? "该对象不存在或当前没有可用对象，请重新选择。" : "This target is unavailable. Select another target."}</div> : <section className="panel">
       <div className="panel-heading"><h2>{kind === "node" && node ? nodeTitle(node) : service ? serviceTitle(service) : selected}</h2><StatePill label={localizeState(lang, node?.state || service?.status)} value={node?.state || service?.status} /></div>
-      {kind === "node" && node ? <><p>{nodeMeta(node).join(" · ")}</p><div className="metrics-summary" aria-label={zh ? "当前快照" : "Current snapshot"}><span className="metrics-summary-caption"><small>{zh ? "当前快照" : "Current snapshot"}</small></span><span><small>CPU</small><strong>{formatPercent(node.metrics?.cpuPercent ?? node.metrics?.loadPercent)}</strong></span><span><small>{zh ? "内存" : "Memory"}</small><strong>{formatPercent(node.metrics?.memoryUsedPercent)}</strong><small>{formatBytes(node.metrics?.memoryTotalBytes || node.capacity?.memoryBytes)}</small></span><span><small>{zh ? "磁盘可用" : "Disk available"}</small><strong>{formatBytes(node.metrics?.diskAvailableBytes)}</strong><small>{node.metrics?.metricsPath}</small></span></div></> : service && <><p>{zh ? "实际用量" : "Actual usage"} <Badge value={actualText(service.resources?.actual)} /> · {zh ? "限制" : "Limit"} {resourceText(service.resources?.limits)} · {zh ? "预留" : "Reservation"} {resourceText(service.resources?.reservations)}</p><div className="badge-group">{(service.tasks || []).map((task, index) => <StatePill key={task.id || index} label={`${task.node || "—"} ${localizeState(lang, task.state)} ${formatPercent(task.cpuPercent)}`} value={task.state} />)}</div></>}
-      <HistoryStatus lang={lang} state={history} />
-      {retention && <small>{zh ? "历史保留" : "History retention"} · {Math.round(retention / 60)} min</small>}
+      {kind === "node" && node ? <div className="node-snapshot">
+        <div className="node-snapshot-heading">
+          <span>{nodeMeta(node).map((value) => localizeState(lang, value)).join(" · ")}</span>
+          <span>{zh ? "当前快照" : "Current snapshot"}</span>
+        </div>
+        <dl className="node-snapshot-grid" aria-label={zh ? "当前快照" : "Current snapshot"}>
+          <div>
+            <dt>CPU</dt>
+            <dd>{formatPercent(node.metrics?.cpuPercent ?? node.metrics?.loadPercent)}</dd>
+            <small>{zh ? "当前使用率" : "Current utilization"}</small>
+          </div>
+          <div>
+            <dt>{zh ? "内存" : "Memory"}</dt>
+            <dd>{formatPercent(node.metrics?.memoryUsedPercent)}</dd>
+            <small>{zh ? "总量 " : "Total "}{formatBytes(node.metrics?.memoryTotalBytes ?? node.capacity?.memoryBytes)}</small>
+          </div>
+          <div>
+            <dt>{zh ? "磁盘可用" : "Disk available"}</dt>
+            <dd>{formatBytes(node.metrics?.diskAvailableBytes)}</dd>
+            <small title={node.metrics?.metricsPath}>{node.metrics?.metricsPath || "—"}</small>
+          </div>
+        </dl>
+      </div> : service && <><p>{zh ? "实际用量" : "Actual usage"} <Badge value={actualText(service.resources?.actual)} /> · {zh ? "限制" : "Limit"} {resourceText(service.resources?.limits)} · {zh ? "预留" : "Reservation"} {resourceText(service.resources?.reservations)}</p><div className="badge-group">{(service.tasks || []).map((task, index) => <StatePill key={task.id || index} label={`${task.node || "—"} ${localizeState(lang, task.state)} ${formatPercent(task.cpuPercent)}`} value={task.state} />)}</div></>}
+      <div className="metrics-history-meta">
+        <HistoryStatus lang={lang} state={history} />
+        {retention ? <small>{zh ? "历史保留" : "History retention"} · {Math.round(retention / 60)} min</small> : null}
+      </div>
       <div className="service-history-charts">{(kind === "node" ? [["cpuPercent", "CPU", formatPercent], ["memoryUsedPercent", zh ? "内存" : "Memory", formatPercent], ["diskUsedPercent", zh ? "磁盘" : "Disk", formatPercent], ["inodesUsedPercent", "Inodes", formatPercent]] : [["cpuPercent", "CPU", formatPercent], ["memoryUsageBytes", zh ? "内存" : "Memory", formatBytes]]).map(([key, label, formatter]) => {
         const samples = series[key as string] || [];
         const format = formatter as (value: number) => string;

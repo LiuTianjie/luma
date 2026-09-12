@@ -204,7 +204,7 @@ def _notify(conn,rule,incident,kind,now,cluster):
     label = {'firing':'告警触发','resolved':'告警恢复','reminder':'告警持续'}[kind]
     value = '无新鲜数据' if incident['no_data'] else f"{incident['value']:g}"
     threshold = f"{rule['threshold']:g}"
-    fallback = f"Luma {label} · {rule['name']}\n集群：{cluster}\n对象：{incident['target']}\n级别：{rule['severity']}\n当前值：{value}；阈值：{threshold}\n事件编号：{incident['id']}\n请在 Dashboard → 可观测性 → 告警中心查看。"
+    fallback = f"Luma {label} · {rule['name']}\n集群：{cluster}\n对象：{incident['target']}\n级别：{rule['severity']}\n当前值：{value}；阈值：{threshold}\n事件编号：{incident['id']}\n请在 Dashboard → 可观测 → 告警中心查看。"
     text = alert_outbox_text(
         kind=kind,
         fallback=fallback,

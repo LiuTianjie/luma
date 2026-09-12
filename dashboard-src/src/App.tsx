@@ -146,7 +146,7 @@ export function App() {
   return (
     <TooltipProvider>
       <SidebarProvider
-        className={`min-h-svh page-${activeNavPage}`}
+        className={`h-dvh min-h-0 overflow-hidden page-${activeNavPage}`}
         open={!sidebarCollapsed}
         onOpenChange={(open) => {
           setSidebarCollapsed(!open);
@@ -169,7 +169,7 @@ export function App() {
           onThemeModeChange={setThemeMode}
           onLangChange={setLang}
         />
-        <SidebarInset id="main" tabIndex={-1} className="min-h-svh overflow-hidden">
+        <SidebarInset id="main" tabIndex={-1} className="h-full min-h-0 min-w-0 overflow-hidden">
           {token && !terminalTarget ? (
             <Topbar
               vm={vm}

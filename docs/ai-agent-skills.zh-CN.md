@@ -1,6 +1,6 @@
 # AI Agent Skills {#ai-agent-skills}
 
-Luma 提供两个面向 AI 编码助手的 Skill，包含项目专用的部署与可观测性工作流、参考资料和校验规则。Skill 安装在助手中，不安装到运行中的集群。
+Luma 提供两个面向 AI 编码助手的 Skill，包含项目专用的部署与可观测工作流、参考资料和校验规则。Skill 安装在助手中，不安装到运行中的集群。
 
 ## 部署工作流 {#deployment-workflows}
 
@@ -12,7 +12,7 @@ Luma 提供两个面向 AI 编码助手的 Skill，包含项目专用的部署�
 
 > 检查这个 Compose 项目，生成 Luma 旁车配置并校验。沿用现有部署方式，持久化数据使用本地存储。
 
-## 应用可观测性 {#application-observability}
+## 应用可观测 {#application-observability}
 
 [`luma-observe`](../skills/luma-observe/) 帮助部署和维护可选的独立可观测栈，涵盖 Traefik 请求指标、Nomad 实例失败、OTLP 采集和通知发送。
 
@@ -46,5 +46,5 @@ cp -R skills/luma-observe/. ~/.claude/skills/luma-observe/
 
 - [部署 YAML](deployment-yaml.md)
 - [Compose 与本地存储](compose-storage.md)
-- [可观测性](observability.md)
+- [可观测](observability.md)
 - [部署工作流记录](../skills/luma-deployment-yaml/references/deployment-workflow.md)

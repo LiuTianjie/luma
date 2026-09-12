@@ -34,7 +34,7 @@ See [Deployment YAML](deployment-yaml.md) for the schema and [Compose & storage]
 An application's tabs keep the same object context while switching between overview, services and instances, logs, metrics, configuration, and version history.
 
 - **Overview** presents runtime status, placement, access addresses, storage and diagnostics.
-- **Logs** supports service/instance selection, filtering, pause, wrapping, copy and download. Runtime events and pull diagnostics are separate from application output.
+- **Logs** offers application-filtered VictoriaLogs search and Tempo traces in Grafana, with an expand/restore button. These views require observability services. **Live logs** retains Control-backed service/instance output, filtering, pause, wrapping, copy and download; opening logs from a specific service selects this view directly. Runtime events and pull diagnostics are separate from application output.
 - **Configuration** shows the registered deployment source and update time, with a copy action. A file switch appears when more than one configuration is available.
 - **Versions** separates loading failures from an empty history and from rollback failures. A rollback requires confirmation and changes the running deployment.
 
@@ -57,3 +57,9 @@ Built-in resource monitoring and optional application-level observability have d
 ## Preview versus a live cluster
 
 The public website's console illustrations use example names and values. Local development fixtures are useful for checking layout and interactions; neither a website illustration nor a local preview establishes production health. Verify live behavior against your own Control instance.
+
+## Application secrets
+
+Open Applications → select an application → Secrets to manage its scoped secrets. Add or rotate a value without leaving application details; values are write-only. Configuration references to stored global secrets are labeled separately. Use Manage global value for shared changes, or set an application override to leave other applications unchanged. If configuration cannot be loaded, only saved application secrets are listed.
+
+Saving a secret updates Control storage. Existing instances do not receive the new value automatically: update/redeploy the application to apply it. A saved secret is not proof that an external credential has been rotated or that the running application has adopted it.

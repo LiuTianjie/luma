@@ -22,7 +22,7 @@ export function buildNavGroups(lang: Lang, vm: DashboardViewModel): NavGroup[] {
       { id: "overview", icon: LayoutDashboard, label: zh ? "总览" : "Overview", value: issues || null, detail: zh ? "运行概况与待处理事项" : "Operations and attention queue" },
       { id: "applications", icon: Boxes, label: zh ? "应用" : "Applications", detail: zh ? "服务、实例、终端与生命周期" : "Services, instances, terminal and lifecycle" },
       { id: "deployments", icon: ScrollText, label: zh ? "交付" : "Delivery", detail: zh ? "构建、部署与任务记录" : "Builds, deployments and tasks" },
-      { id: "observability", icon: Activity, label: zh ? "可观测性" : "Observability", detail: zh ? "指标、日志与告警" : "Metrics, logs and alerts", children: [
+      { id: "observability", icon: Activity, label: zh ? "可观测" : "Observability", detail: zh ? "指标、日志与告警" : "Metrics, logs and alerts", children: [
         { href: "/observe", label: zh ? "告警事件" : "Incidents", detail: zh ? "当前触发与历史告警" : "Active and historical incidents" },
         { href: "/observe/apps", label: zh ? "应用" : "Apps", detail: zh ? "按应用查看请求与日志" : "Requests and logs by app" },
         { href: "/observe/metrics", label: zh ? "资源指标" : "Metrics", detail: zh ? "节点与服务资源曲线" : "Node and service metrics" },

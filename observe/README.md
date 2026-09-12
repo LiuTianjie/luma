@@ -20,13 +20,13 @@ App names are the Luma stack/job names already in Nomad. Deploying observe
 maps Traefik routers onto those names. Existing apps do not need a redeploy,
 extra YAML, or an SDK.
 
-After it is deployed, look in Luma Dashboard → 可观测性 → 应用.
+After it is deployed, look in Luma Dashboard → 可观测 → 应用.
 That tab embeds Grafana at `/grafana` on the Control domain. Luma writes
 the Traefik route; you do not add a second domain. Do not open Grafana on
 Tailscale or port 3000.
 
 It does not evaluate alerts inside Control. Allocation stdout/stderr is
-shipped to VictoriaLogs by observe, not by Control. Dashboard → 可观测性 → 日志
+shipped to VictoriaLogs by observe, not by Control. Dashboard → 可观测 → 日志
 opens Grafana Explore. `luma service logs` and the application-detail live tail
 still go to Nomad through Control and are not a 15-day archive.
 Deploying this stack is the observability component: later Luma app deploys

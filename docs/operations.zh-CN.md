@@ -1,6 +1,6 @@
 # 运维操作 {#operations}
 
-资源历史、可恢复日志、磁盘采样、告警和认证 Prometheus 抓取见[可观测性](./observability.md)。单 Manager SQLite、历史保留、备份和恢复见[控制面存储与恢复](./control-storage.md)。
+资源历史、可恢复日志、磁盘采样、告警和认证 Prometheus 抓取见[可观测](./observability.md)。单 Manager SQLite、历史保留、备份和恢复见[控制面存储与恢复](./control-storage.md)。
 
 Luma Control 是 Manager 上的自托管 API，管理令牌、节点注册、DNS、job 渲染和 Nomad 部署调用。`luma deploy` 与 Control 通信，不通过 SSH 部署。底层使用 HashiCorp Nomad，部署单位为 Nomad job。
 

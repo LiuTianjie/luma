@@ -42,7 +42,7 @@
 | 镜像查询/分页、详情、引用保护 | `/registry` | `/registry`、`/registry/image?image=...` | 代码核对 | 跨页镜像详情、缺失/错误状态 |
 | 镜像保留策略、删除预览、GC/恢复队列 | Registry 混排及删除弹窗 | `/registry/policy`、`/registry/delete`、`/registry/cleanup` | 原 API 处理器保留；清理用预览中的选中项 | 测试镜像预览、删除、恢复/GC；刷新清理页要求重选 |
 | 节点/服务历史指标、时间窗、采样断点 | `/observe?tab=metrics` 全量铺陈 | `/observe/metrics` 对象选择；应用 `/apps/:stack/metrics` | 代码核对；按选中对象加载历史 | 对象、时间窗、无数据与断点 |
-| 告警事件、确认、时间线 | 可观测性告警 Tab | `/observe`、`/observe/incidents/:id` | 代码核对 | 真实事件、确认、详情刷新 |
+| 告警事件、确认、时间线 | 可观测告警 Tab | `/observe`、`/observe/incidents/:id` | 代码核对 | 真实事件、确认、详情刷新 |
 | 告警规则新增/编辑/删除 | 规则 Tab 内联表单 | `/observe/rules`、`/observe/rules/:id`、`/observe/rules/new` | 代码核对 | 规则保存、选择对象、校验、删除 |
 | 飞书渠道、密钥保留、测试通知 | 通知 Tab 内联表单 | `/observe/channels`、`/observe/channels/:id`、`/observe/channels/new` | 代码核对 | 保存、脱敏、显式测试发送和错误 |
 | Secret/Registry 凭据管理 | 凭据页面侧表单 | `/settings/secrets`、`/settings/registries`、各自 `/new` | 代码核对 | 新增、轮换、删除、密钥不回显 |

@@ -16,7 +16,8 @@ import {
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { CodeCell, SelectControl, StatePill } from "../components/primitives";
 import { Button } from "@/components/ui/button";
-import { Toggle } from "@/components/ui/toggle";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -185,7 +186,12 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
   const allVisibleSelected = selectable.length > 0 && selectable.every((item) => selected.has(keyFor(item)));
   const summary = inventory?.summary || {};
   const usage = inventory?.usage || {};
+  const hasUsage = !usage.error;
+  const hasDiskPercent = hasUsage && usage.filesystemUsePercent != null;
   const diskPercent = Number(usage.filesystemUsePercent || 0);
+  const unavailable = zh ? "暂不可用" : "Unavailable";
+  const usageBytes = (value: number | undefined) => hasUsage && value != null ? formatBytes(value) : unavailable;
+  const usageInterrupted = usage.error === "node agent restarted before task completion";
   const diskTone = diskPercent >= (policy.emergencyPercent || 92) ? "critical" : diskPercent >= (policy.criticalPercent || 85) ? "warning" : "healthy";
   const monthly = (usage.monthlyBlobs || []).slice(-6);
   const monthlyMax = Math.max(...monthly.map((item) => Number(item.bytes || 0)), 1);
@@ -364,7 +370,12 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
           <Alert>
             <AlertTriangle />
             <AlertTitle>{zh ? "容量数据暂不可用" : "Storage data unavailable"}</AlertTitle>
-            <AlertDescription>{usage.error}</AlertDescription>
+            <AlertDescription>
+              {usageInterrupted
+                ? (zh ? "节点 agent 在容量采集完成前重启，本次扫描未取得容量数据。镜像清单仍可查看；节点恢复后可重新扫描。" : "The node agent restarted before storage inspection completed. Image inventory remains available; rescan after the node recovers.")
+                : usage.error}
+            </AlertDescription>
+            <AlertAction><Button type="button" variant="outline" size="sm" disabled={loading || !!busy} onClick={() => void load(true)}>{zh ? "重新采集" : "Retry scan"}</Button></AlertAction>
           </Alert>
         ) : null}
         {notice ? (
@@ -377,17 +388,17 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
           </Alert>
         ) : null}
 
-        {section === "cleanup" ? <>
-        <section className="registry-usage-grid">
+        {section === "inventory" || section === "cleanup" ? <>
+        <section className="registry-usage-grid" aria-label={zh ? "镜像仓库容量" : "Registry storage usage"}>
           <article className={`registry-usage-card disk-${diskTone}`}>
             <div><HardDrive size={20} /><span>{zh ? "宿主磁盘" : "Host filesystem"}</span></div>
-            <strong>{diskPercent ? `${diskPercent}%` : "-"}</strong>
-            <small>{zh ? `可用 ${formatBytes(usage.filesystemAvailableBytes)}` : `${formatBytes(usage.filesystemAvailableBytes)} available`}</small>
-            <i style={{ "--registry-meter": `${Math.min(diskPercent, 100)}%` } as CSSProperties} />
+            <strong>{hasDiskPercent ? `${diskPercent}%` : unavailable}</strong>
+            <small>{zh ? `可用 ${usageBytes(usage.filesystemAvailableBytes)}` : `${usageBytes(usage.filesystemAvailableBytes)} available`}</small>
+            {hasDiskPercent ? <i style={{ "--registry-meter": `${Math.min(diskPercent, 100)}%` } as CSSProperties} /> : null}
           </article>
           <article className="registry-usage-card">
             <div><Database size={20} /><span>{zh ? "镜像数据卷" : "Registry volume"}</span></div>
-            <strong>{formatBytes(usage.volumeBytes)}</strong>
+            <strong>{usageBytes(usage.volumeBytes)}</strong>
             <small>{inventory?.registry?.volumeName || "-"}</small>
           </article>
           <article className="registry-usage-card">
@@ -402,7 +413,18 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
           </article>
         </section>
 
-        {monthly.length ? <section className="panel registry-growth-panel"><div><p className="eyebrow">Blob growth</p><h2>{zh ? "近月写入分布" : "Recent blob writes"}</h2><small>{zh ? "按 blob 文件最后修改月份统计，用于观察增长趋势。" : "Grouped by blob file modification month to expose growth trends."}</small></div><div className="registry-growth-bars">{monthly.map((item) => <span key={item.month}><i style={{ height: `${Math.max((Number(item.bytes || 0) / monthlyMax) * 100, 4)}%` }} /><strong>{formatBytes(item.bytes)}</strong><small>{item.month}</small></span>)}</div></section> : null}
+        <Card>
+          <CardHeader>
+            <CardTitle>{zh ? "Registry 存储月度分布" : "Registry storage by month"}</CardTitle>
+            <CardDescription>{zh ? "现存 Blob 按文件最后修改月份汇总，展示最近 6 个有数据的月份；不是每月总容量快照。" : "Existing blobs grouped by file modification month, showing the latest six populated months; not historical capacity snapshots."}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {hasUsage && monthly.length ? <div className="registry-growth-bars">{monthly.map((item) => <span key={item.month}><i aria-hidden="true" style={{ height: `${(Number(item.bytes || 0) / monthlyMax) * 100}%` }} /><strong>{formatBytes(item.bytes)}</strong><small>{item.month}</small></span>)}</div>
+              : <p className="text-sm text-muted-foreground">{usage.error
+                ? (zh ? "容量采集失败，暂无法显示月度分布。请重新采集后查看。" : "Storage collection failed. Retry the scan to load monthly data.")
+                : (zh ? "暂无月度数据，重新扫描后显示存储分布。" : "No monthly data yet. Rescan to load the storage distribution.")}</p>}
+          </CardContent>
+        </Card>
 
         </> : null}
 
@@ -469,9 +491,9 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
               </InputGroupAddon>
               <InputGroupInput value={query} onChange={(event) => setQuery(event.target.value)} placeholder={zh ? "搜索仓库、tag 或 digest" : "Search repository, tag, or digest"} />
             </InputGroup>
-            <div className="registry-filters">
-              {["all", "protected", "retained", "candidate", "unknown"].map((value) => <Toggle type="button" key={value} size="sm" variant="outline" pressed={filter === value} onPressedChange={(pressed) => { if (pressed) setFilter(value); }}>{value === "all" ? (zh ? "全部" : "All") : statusLabel(value, zh)}</Toggle>)}
-            </div>
+            <Tabs value={filter} onValueChange={(value) => setFilter(String(value))}><TabsList aria-label={zh ? "镜像保护状态" : "Image protection status"}>
+              {["all", "protected", "retained", "candidate", "unknown"].map((value) => <TabsTrigger key={value} value={value}>{value === "all" ? (zh ? "全部" : "All") : statusLabel(value, zh)}</TabsTrigger>)}
+            </TabsList></Tabs>
             <Button variant="destructive" type="button" disabled={!selected.size || !!busy} onClick={() => void openDeletePreview()}><Trash2 size={15} /> {zh ? `删除并回收 ${selected.size} 项` : `Delete and reclaim ${selected.size}`}</Button>
           </div>
           <div className="table-wrap registry-table-wrap" tabIndex={0} role="region" aria-label={zh ? "镜像列表，可横向滚动" : "Image inventory, horizontally scrollable"}>

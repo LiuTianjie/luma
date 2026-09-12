@@ -1,3 +1,4 @@
+import { ApplicationSecrets } from "./ApplicationSecrets";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ApplicationProperties, ApplicationVersionEntry } from "./ApplicationProperties";
 import "./ApplicationManagementPanel.css";
@@ -11,7 +12,7 @@ import type { DeployStep } from "../deploy/types";
 import type { DashboardPayload, DashboardService, Lang, ServiceVersion } from "../types";
 import { groupApplications, serviceRuntimeStatus, type Application } from "./applicationModel";
 import { applicationEndpoints } from "./applicationEndpoints";
-import { ServiceLogsModal } from "./ServiceLogsModal";
+import { ApplicationLogs } from "./ApplicationLogs";
 import { useRouter, toHref } from "../router";
 import { StepLog } from "../deploy/StepLog";
 import { ObservabilityPanel } from "./ObservabilityPanel";
@@ -434,6 +435,7 @@ export function ApplicationManagementPanel({
           </TabsList>
         </Tabs>
         <div className={`flex flex-col ${tab === "overview" ? "gap-4" : "gap-8"}`}>
+          {tab === "secrets" ? <ApplicationSecrets key={selected.stack} app={selected.stack} token={token} lang={lang} onUpdate={() => void openUpdate(selected)} /> : null}
           {tab === "overview" ? <>
           <Card className="application-overview-card">
             <CardHeader><CardTitle>{lang === "zh" ? "运行状态" : "Runtime"}</CardTitle></CardHeader><CardContent>
@@ -599,7 +601,7 @@ export function ApplicationManagementPanel({
               <div className="application-overview-row"><span>{lang === "zh" ? "诊断" : "Diagnostics"}</span><div>{selectedDiagnostics.length ? selectedDiagnostics.map((item) => <p key={item}>{item}</p>) : <p className="text-muted-foreground">{lang === "zh" ? "暂无诊断告警" : "No diagnostic warnings"}</p>}</div></div>
             </div>
           </CardContent></Card> : null}
-          {tab === "logs" ? <ServiceLogsModal key={selected.stack} inline lang={lang} token={token} services={selected.services} initialServiceName={new URLSearchParams(search).get("service") || selected.services.find((service) => service.fullName)?.fullName || ""} onClose={() => navigate(applicationPath(selected.stack, "overview"))} /> : null}
+          {tab === "logs" ? <ApplicationLogs key={`${selected.stack}:${search}`} app={selected.stack} lang={lang} token={token} services={selected.services} initialServiceName={new URLSearchParams(search).get("service") || ""} onClose={() => navigate(applicationPath(selected.stack, "overview"))} /> : null}
           {tab === "metrics" ? <ObservabilityPanel key={selected.stack} lang={lang} token={token} services={selected.services} nodes={[]} /> : null}
         </div>
       </section>

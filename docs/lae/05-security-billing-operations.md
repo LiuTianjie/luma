@@ -248,7 +248,7 @@ PAID/FULFILLED -> REFUND_PENDING -> REFUNDED | REFUND_FAILED
 - 模板版本化，链接短时签名，邮件中不包含 deploy token/secret。
 - 供应商未就绪时允许 mock，但注册页面明确测试环境，不伪造真实送达。
 
-## 13. 可观测性
+## 13. 可观测
 
 ### 13.1 Correlation
 

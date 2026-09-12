@@ -50,6 +50,7 @@
 
 .grafana-embed { max-width: none; height: calc(100vh - 168px); min-height: 560px; grid-template-rows: auto 1fr; }
 .grafana-embed .grafana-toolbar { align-items: center; gap: 8px; }
+.grafana-embed .grafana-expand-button { margin-left: auto; flex-shrink: 0; }
 .grafana-view-switch { display:flex; gap:4px; }
 .grafana-view-switch button[aria-selected="true"] { color: var(--text); border-bottom: 2px solid var(--accent); }
 .grafana-embed .grafana-app-filter { width: auto; min-width: 140px; max-width: 220px; }
@@ -61,6 +62,17 @@
   .grafana-embed .grafana-toolbar { align-items: stretch; }
   .grafana-view-switch { width: 100%; overflow-x: auto; }
 }
+
+/* Resize in place so Grafana retains its current query, trace and scroll state. */
+.grafana-embed.grafana-embed--expanded {
+  position: fixed; inset: 0; z-index: 50;
+  width: 100%; height: 100dvh; min-height: 0; max-width: none;
+  margin: 0; padding: 12px; gap: 12px;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--background); overflow: hidden;
+}
+.grafana-embed--expanded iframe { min-height: 0; height: 100%; border-radius: 8px; }
+.application-logs .grafana-embed { margin-top: 0; }
 
 /* Shared metric cards: values and their history stay together. */
 .metrics-workspace .service-history-charts { grid-template-columns: 1fr; gap: 12px; }
@@ -92,3 +104,18 @@
 .metrics-workspace .metrics-summary { align-items: center; gap: 12px 28px; }
 .metrics-workspace .metrics-summary > span { min-width: 0; }
 .metrics-workspace .metrics-summary > .metrics-summary-caption { color: var(--muted-foreground); }
+
+.node-snapshot { margin: 12px 0 16px; }
+.node-snapshot-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-bottom: 12px; color: var(--muted-foreground); font-size: 12px; }
+.node-snapshot-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; padding: 16px 0; border-block: 1px solid var(--border); }
+.node-snapshot-grid > div { min-width: 0; padding: 0 24px; border-left: 1px solid var(--border); }
+.node-snapshot-grid > div:first-child { padding-left: 0; border-left: 0; }
+.node-snapshot-grid dt { color: var(--muted-foreground); font-size: 12px; }
+.node-snapshot-grid dd { margin: 6px 0; color: var(--foreground); font-size: 24px; font-weight: 600; letter-spacing: -.5px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.node-snapshot-grid small { display: block; font-size: 12px; color: var(--muted-foreground); overflow-wrap: anywhere; }
+.metrics-history-meta { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; color: var(--muted-foreground); font-size: 12px; }
+.metrics-history-meta small { font-size: inherit; }
+@media (max-width: 640px) {
+  .node-snapshot-grid > div { padding-inline: 12px; }
+  .node-snapshot-grid dd { font-size: 20px; }
+}
