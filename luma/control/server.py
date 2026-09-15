@@ -8528,9 +8528,15 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                 config, state, node_name=node_name
             )
     nomad_drained = False
+    nomad_drain_skipped = "shared_manager_identity" if shared_manager_identity else ""
     if nomad_node_id:
-        _drain_nomad_node_for_unregister(config, state, node_name=node_name, node_id=nomad_node_id)
-        nomad_drained = True
+        skip_reason = _drain_nomad_node_for_unregister(
+            config, state, node_name=node_name, node_id=nomad_node_id
+        )
+        if skip_reason:
+            nomad_drain_skipped = skip_reason
+        else:
+            nomad_drained = True
     def mutate(state: Dict[str, Any]) -> None:
         require_control_node_token(state, token)
         nodes = state.get("nodes")
@@ -8553,9 +8559,7 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "registeredRemoved": registered_removed,
         "nomadDrained": nomad_drained,
         "nomadNodeId": nomad_node_id,
-        "nomadDrainSkipped": (
-            "shared_manager_identity" if shared_manager_identity else ""
-        ),
+        "nomadDrainSkipped": nomad_drain_skipped,
         "message": message,
     }
 
@@ -8619,22 +8623,41 @@ def _nomad_node_name_matches_unregister(node: Dict[str, Any], node_name: str) ->
     return node_name in values
 
 
-def _drain_nomad_node_for_unregister(config: Any, state: Dict[str, Any], *, node_name: str, node_id: str) -> None:
+def _nomad_node_not_found_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    if "nomad api error 404" in message:
+        return True
+    return "nomad api" in message and "node not found" in message
+
+
+def _drain_nomad_node_for_unregister(config: Any, state: Dict[str, Any], *, node_name: str, node_id: str) -> str:
     client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
-    client.request(
-        "POST",
-        f"/v1/node/{urllib.parse.quote(node_id, safe='')}/drain",
-        {
-            "DrainSpec": {"Deadline": 0, "IgnoreSystemJobs": True},
-            "MarkEligible": False,
-            "Meta": {"message": f"removed by Luma node remove: {node_name}"},
-        },
-    )
-    client.request(
-        "POST",
-        f"/v1/node/{urllib.parse.quote(node_id, safe='')}/eligibility",
-        {"Eligibility": "ineligible"},
-    )
+    encoded_id = urllib.parse.quote(node_id, safe="")
+    try:
+        client.request(
+            "POST",
+            f"/v1/node/{encoded_id}/drain",
+            {
+                "DrainSpec": {"Deadline": 0, "IgnoreSystemJobs": True},
+                "MarkEligible": False,
+                "Meta": {"message": f"removed by Luma node remove: {node_name}"},
+            },
+        )
+    except LumaError as exc:
+        if _nomad_node_not_found_error(exc):
+            return "nomad_node_not_found"
+        raise
+    try:
+        client.request(
+            "POST",
+            f"/v1/node/{encoded_id}/eligibility",
+            {"Eligibility": "ineligible"},
+        )
+    except LumaError as exc:
+        if _nomad_node_not_found_error(exc):
+            return ""
+        raise
+    return ""
 
 
 def _load_service_manifest(manifest: str) -> ServiceSpec:

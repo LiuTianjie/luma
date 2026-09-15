@@ -209,7 +209,7 @@ sudo rm -f /opt/luma/routes/<service>.yml
 luma node remove <node-name>
 ```
 
-Manager Control 删除 Luma 注册并排空匹配 client（`PUT /v1/node/<id>/drain`），死亡 client 随后由 Nomad 自动回收。适用于已本地退出的旧节点、失败加入或退役工作/家庭机器。Manager/Nomad server 受保护，不能用此命令删除。
+Manager Control 删除 Luma 注册并排空匹配 client（`PUT /v1/node/<id>/drain`），死亡 client 随后由 Nomad 自动回收。如果 Nomad 对该 ID 返回 404 或 `node not found`，Control 会跳过 drain（`nomadDrainSkipped: nomad_node_not_found`）并继续删除 Luma 注册记录。网络错误、鉴权失败或 Nomad 不可用仍会让删除失败。适用于已本地退出的旧节点、失败加入或退役工作/家庭机器。Manager/Nomad server 受保护，不能用此命令删除。
 
 Nomad 身份是稳定 UUID，同名退出并重新加入的机器保留 `meta.luma_node_name`，固定服务无需刷新 NodeID。清单保持按 Luma 节点名固定，不要换成 Docker 主机名。
 

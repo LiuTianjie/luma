@@ -6467,6 +6467,143 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
+    def test_node_unregister_deletes_luma_record_when_nomad_node_is_gone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "luma.yaml"
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(config_path))
+            try:
+                config_path.write_text(
+                    yaml.safe_dump({"defaults": {"engine": "nomad", "nomadAddr": "http://nomad.example"}}),
+                    encoding="utf-8",
+                )
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "blg": {
+                        "region": "home",
+                        "status": "labeled",
+                        "displayName": "blg",
+                        "nodeId": "stale-node-id",
+                        "nomadNodeId": "stale-node-id",
+                        "labels": {"luma.node.name": "blg", "luma.node.id": "stale-node-id", "region": "home"},
+                    }
+                }
+                save_state(state)
+                nomad = Mock()
+                nomad.request.side_effect = LumaError("Nomad API error 404: node not found")
+                with patch("luma.control.server.NomadApi", return_value=nomad):
+                    result = handle_node_unregister(state["deployToken"], {"nodeName": "blg"})
+
+                self.assertTrue(result["removed"])
+                self.assertTrue(result["registeredRemoved"])
+                self.assertFalse(result["nomadDrained"])
+                self.assertEqual(result["nomadNodeId"], "stale-node-id")
+                self.assertEqual(result["nomadDrainSkipped"], "nomad_node_not_found")
+                self.assertEqual(result["message"], "Node removed: blg")
+                nomad.request.assert_called_once()
+                self.assertEqual(
+                    nomad.request.call_args.args[:2],
+                    ("POST", "/v1/node/stale-node-id/drain"),
+                )
+                self.assertNotIn("blg", load_state().get("nodes", {}))
+            finally:
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_node_unregister_skips_drain_when_nomad_reports_node_not_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "luma.yaml"
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(config_path))
+            try:
+                config_path.write_text(
+                    yaml.safe_dump({"defaults": {"engine": "nomad", "nomadAddr": "http://nomad.example"}}),
+                    encoding="utf-8",
+                )
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "stale-home": {
+                        "region": "home",
+                        "displayName": "stale-home",
+                        "nomadNodeId": "gone-id",
+                    }
+                }
+                save_state(state)
+                nomad = Mock()
+                nomad.request.side_effect = LumaError("Nomad API error 400: node not found")
+                with patch("luma.control.server.NomadApi", return_value=nomad):
+                    result = handle_node_unregister(state["deployToken"], {"nodeName": "stale-home"})
+
+                self.assertTrue(result["removed"])
+                self.assertFalse(result["nomadDrained"])
+                self.assertEqual(result["nomadDrainSkipped"], "nomad_node_not_found")
+                self.assertNotIn("stale-home", load_state().get("nodes", {}))
+            finally:
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_node_unregister_still_fails_when_nomad_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "luma.yaml"
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(config_path))
+            try:
+                config_path.write_text(
+                    yaml.safe_dump({"defaults": {"engine": "nomad", "nomadAddr": "http://nomad.example"}}),
+                    encoding="utf-8",
+                )
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "blg": {
+                        "region": "home",
+                        "displayName": "blg",
+                        "nomadNodeId": "stale-node-id",
+                    }
+                }
+                save_state(state)
+                nomad = Mock()
+                nomad.request.side_effect = LumaError(
+                    "Nomad API unavailable at http://nomad.example: Connection refused. "
+                    "Check that the Nomad agent is running and nomadAddr is reachable "
+                    "from the luma-control container."
+                )
+                with patch("luma.control.server.NomadApi", return_value=nomad):
+                    with self.assertRaisesRegex(LumaError, "Nomad API unavailable"):
+                        handle_node_unregister(state["deployToken"], {"nodeName": "blg"})
+                self.assertIn("blg", load_state().get("nodes", {}))
+            finally:
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_node_unregister_still_fails_when_nomad_auth_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "luma.yaml"
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(config_path))
+            try:
+                config_path.write_text(
+                    yaml.safe_dump({"defaults": {"engine": "nomad", "nomadAddr": "http://nomad.example"}}),
+                    encoding="utf-8",
+                )
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "blg": {
+                        "region": "home",
+                        "displayName": "blg",
+                        "nomadNodeId": "stale-node-id",
+                    }
+                }
+                save_state(state)
+                nomad = Mock()
+                nomad.request.side_effect = LumaError("Nomad API error 403: Permission denied")
+                with patch("luma.control.server.NomadApi", return_value=nomad):
+                    with self.assertRaisesRegex(LumaError, "Nomad API error 403"):
+                        handle_node_unregister(state["deployToken"], {"nodeName": "blg"})
+                self.assertIn("blg", load_state().get("nodes", {}))
+            finally:
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
     def test_deployment_resolves_luma_node_name_to_nomad_meta_constraint(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

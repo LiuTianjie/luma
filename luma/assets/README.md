@@ -73,7 +73,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.361"
+python -m pip install "luma-infra==0.1.362"
 ```
 
 Install without cloning the repository:
@@ -88,7 +88,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.361 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.362 sh
 ```
 
 Develop from source:
@@ -236,7 +236,7 @@ luma node exit
 
 By default it drains the local Nomad client and removes local Luma runtime state under `/opt/luma`, while keeping Tailscale and Docker image/volume cache. Add `--endpoint <control-url> --token <management-token-or-node-join-token>` to unregister the Luma node name from the control plane during exit. Add `--tailscale` to also log out of Tailscale. Add `--prune-docker` only when you intentionally want to remove unused Docker cache and volumes.
 
-To remove a node from the control plane and the cluster, run `luma node remove <name>` from any logged-in client. The manager deletes the Luma registration and drains the matching Nomad client; manager nodes (Nomad servers) are protected.
+To remove a node from the control plane and the cluster, run `luma node remove <name>` from any logged-in client. The manager deletes the Luma registration and drains the matching Nomad client. If Nomad no longer has that node, Control still deletes the Luma record. Manager nodes (Nomad servers) are protected.
 
 ## Deploy Services
 
@@ -263,7 +263,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.361"
+python -m pip install "luma-infra==0.1.362"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"

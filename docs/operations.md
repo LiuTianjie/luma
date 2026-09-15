@@ -209,7 +209,7 @@ From any logged-in client:
 luma node remove <node-name>
 ```
 
-The request is handled by Luma Control on the manager. It deletes the Luma node registration and drains the matching Nomad client (`PUT /v1/node/<id>/drain`); a dead client is then garbage-collected by Nomad automatically. Use this for stale nodes that already left locally, failed joins, or decommissioned worker/home machines. Manager nodes (Nomad servers) are protected and must not be removed through this command.
+The request is handled by Luma Control on the manager. It deletes the Luma node registration and drains the matching Nomad client (`PUT /v1/node/<id>/drain`); a dead client is then garbage-collected by Nomad automatically. If Nomad returns 404 or `node not found` for that ID, Control skips drain (`nomadDrainSkipped: nomad_node_not_found`) and still deletes the Luma registration. Network, auth, and Nomad-unavailable errors still fail the remove. Use this for stale nodes that already left locally, failed joins, or decommissioned worker/home machines. Manager nodes (Nomad servers) are protected and must not be removed through this command.
 
 Because the Nomad node identity is a stable UUID, a worker/home machine that leaves and rejoins with the same Luma node name keeps the same `meta.luma_node_name`, so services pinned by Luma node name do not need a NodeID refresh. Keep manifests pinned by Luma node name; do not replace them with Docker hostnames.
 

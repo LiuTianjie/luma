@@ -211,7 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.361 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.362 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -1401,6 +1401,9 @@ def cmd_node(args: argparse.Namespace) -> int:
         endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
         result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).unregister_node(node_name=args.name)
         print(result.get("message", f"Node removed: {args.name}"))
+        skipped = str(result.get("nomadDrainSkipped") or "").strip()
+        if skipped:
+            print(f"Nomad drain skipped: {skipped}")
         return 0
     if args.node_command == "status":
         endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
