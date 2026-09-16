@@ -5569,7 +5569,14 @@ class ControlApiTests(unittest.TestCase):
         recent_task = state["agentTasks"]["recent-done"]
         self.assertEqual(len(recent_task["progress"]), AGENT_TASK_PROGRESS_LIMIT)
         self.assertEqual(recent_task["progress"][0]["line"], "200")
+        self.assertEqual(recent_task["progressOffset"], 200)
         self.assertEqual(len(recent_task["message"]), 4000)
+
+        with patch("luma.control.server.AGENT_TASK_PROGRESS_LIMIT", 50):
+            _prune_agent_tasks(state, now=now)
+        self.assertEqual(len(recent_task["progress"]), 50)
+        self.assertEqual(recent_task["progress"][0]["line"], "450")
+        self.assertEqual(recent_task["progressOffset"], 450)
 
     def test_agent_idle_long_poll_persists_only_initial_heartbeat(self):
         from luma.control import database as control_database
@@ -9864,7 +9871,7 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
     def test_node_agent_progress_appends_lines_to_running_task(self):
-        from luma.control.server import handle_node_agent_progress
+        from luma.control.server import _agent_task_progress_snapshot, handle_node_agent_progress
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -9881,8 +9888,14 @@ class ControlApiTests(unittest.TestCase):
                     "action": "diagnose-docker-pull",
                     "status": "running",
                     "payload": {"image": "ghcr.io/acme/api:latest"},
+                    "progress": [{"type": "output", "line": f"existing-{index}"} for index in range(300)],
                 }
                 save_state(current)
+
+                initial, cursor, status, _, _ = _agent_task_progress_snapshot("task-pull", 0)
+                self.assertEqual(len(initial), 300)
+                self.assertEqual(cursor, 300)
+                self.assertEqual(status, "running")
 
                 result = handle_node_agent_progress(
                     issued["agentToken"],
@@ -9891,8 +9904,26 @@ class ControlApiTests(unittest.TestCase):
 
                 self.assertEqual(result["taskId"], "task-pull")
                 task = load_state()["agentTasks"]["task-pull"]
-                self.assertEqual(task["progress"][0]["line"], "Downloading")
+                self.assertEqual(len(task["progress"]), 300)
+                self.assertEqual(task["progressOffset"], 1)
+                self.assertEqual(task["progress"][-1]["line"], "Downloading")
                 self.assertNotIn("registryAuth", json.dumps(task))
+
+                appended, cursor, status, _, _ = _agent_task_progress_snapshot("task-pull", cursor)
+                self.assertEqual([event["line"] for event in appended], ["Downloading"])
+                self.assertEqual(cursor, 301)
+                self.assertEqual(status, "running")
+                repeated, repeated_cursor, _, _, _ = _agent_task_progress_snapshot("task-pull", cursor)
+                self.assertEqual(repeated, [])
+                self.assertEqual(repeated_cursor, cursor)
+
+                handle_node_agent_progress(
+                    issued["agentToken"],
+                    {"nodeName": "blg", "nodeId": "node-1", "taskId": "task-pull", "events": [{"type": "output", "line": "Extracting"}]},
+                )
+                continued, continued_cursor, _, _, _ = _agent_task_progress_snapshot("task-pull", cursor)
+                self.assertEqual([event["line"] for event in continued], ["Extracting"])
+                self.assertEqual(continued_cursor, 302)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -15047,7 +15078,11 @@ class GithubImportTests(unittest.TestCase):
                         "nodeName": "builder",
                         "action": "build-image",
                         "status": "succeeded",
-                        "progress": [{"type": "output", "line": "Buildx builder is missing; recreating it"}],
+                        "progressOffset": 2,
+                        "progress": [
+                            {"type": "output", "line": "Buildx builder is missing; recreating it"},
+                            {"type": "output", "line": "final build output"},
+                        ],
                         "result": {"image": "100.66.177.70:5000/acme/app:abc123"},
                     }
                 }
@@ -15057,11 +15092,41 @@ class GithubImportTests(unittest.TestCase):
                 result = _wait_node_agent_task("task-1", "builder", "build-image", timeout=1, progress=lambda event: events.append(event))
 
                 self.assertEqual(result["image"], "100.66.177.70:5000/acme/app:abc123")
-                self.assertEqual(events[0]["name"], "Build image")
-                self.assertEqual(events[0]["status"], "progress")
-                self.assertIn("recreating", events[0]["message"])
+                self.assertEqual([event["name"] for event in events], ["Build image"] * 3)
+                self.assertTrue(all(event["status"] == "progress" for event in events))
+                self.assertIn("discarded", events[0]["message"])
+                self.assertIn("recreating", events[1]["message"])
+                self.assertEqual(events[2]["message"], "final build output")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_node_agent_build_progress_continues_after_retained_window_rolls(self):
+        from luma.control.server import _wait_node_agent_task
+
+        original = [{"type": "output", "line": f"line-{index}"} for index in range(300)]
+        completed = {
+            "id": "task-1",
+            "status": "succeeded",
+            "progressOffset": 1,
+            "progress": original[1:] + [{"type": "output", "line": "line-300"}],
+            "result": {"image": "100.66.177.70:5000/acme/app:abc123"},
+        }
+        events: list[dict[str, str]] = []
+
+        with patch(
+            "luma.control.state.load_entity",
+            side_effect=[{"id": "task-1", "status": "running", "progress": original}, completed],
+        ), patch("luma.control.server.time.sleep"):
+            result = _wait_node_agent_task(
+                "task-1",
+                "builder",
+                "build-image",
+                timeout=1,
+                progress=lambda event: events.append(event),
+            )
+
+        self.assertEqual(result["image"], "100.66.177.70:5000/acme/app:abc123")
+        self.assertEqual([event["message"] for event in events], [f"line-{index}" for index in range(301)])
 
     def test_build_deploy_expands_owner_repo_shortcut_to_github_url(self):
         from luma.control.server import handle_build_deploy

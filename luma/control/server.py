@@ -2133,6 +2133,7 @@ def _prune_agent_tasks(state: Dict[str, Any], *, now: int | None = None) -> None
             continue
         progress = task.get("progress") if isinstance(task.get("progress"), list) else []
         if len(progress) > progress_limit:
+            task["progressOffset"] = max(int(task.get("progressOffset") or 0), 0) + len(progress) - progress_limit
             task["progress"] = progress[-progress_limit:]
         if task.get("message"):
             task["message"] = str(task.get("message"))[:BUILD_RUN_MESSAGE_LIMIT]
@@ -2992,7 +2993,10 @@ def handle_node_agent_progress(token: str, body: Dict[str, Any]) -> Dict[str, An
         stored_events = [sanitize_builder_task_progress_event(event) for event in events] if builder_task is not None else events
         progress = task.get("progress") if isinstance(task.get("progress"), list) else []
         progress.extend(stored_events)
-        task["progress"] = progress[-max(int(AGENT_TASK_PROGRESS_LIMIT), 50) :]
+        progress_limit = max(int(AGENT_TASK_PROGRESS_LIMIT), 50)
+        dropped = max(len(progress) - progress_limit, 0)
+        task["progressOffset"] = max(int(task.get("progressOffset") or 0), 0) + dropped
+        task["progress"] = progress[-progress_limit:]
         task["updatedAt"] = int(time.time())
         if builder_task is not None and not _builder_task_terminal(str(builder_task.get("status") or "")):
             for event in stored_events:
@@ -3069,6 +3073,7 @@ def _queue_node_agent_task(
             "action": action,
             "payload": dict(payload),
             "progress": [],
+            "progressOffset": 0,
             "status": "queued",
             "createdAt": now,
             "updatedAt": now,
@@ -3109,13 +3114,11 @@ def _wait_node_agent_task(
             raise LumaError(f"node agent task receipt missing on {node_name}: {task_id}")
         status = "missing"
         if isinstance(task, dict):
-            task_progress = task.get("progress") if isinstance(task.get("progress"), list) else []
-            safe_cursor = min(max(cursor, 0), len(task_progress))
-            for event in [item for item in task_progress[safe_cursor:] if isinstance(item, dict)]:
+            task_progress, cursor = _agent_task_progress_since(task, cursor)
+            for event in task_progress:
                 line = str(event.get("line") or event.get("message") or "").strip()
                 if line:
                     _emit_progress(progress, {"name": _agent_task_progress_step_name(action), "status": "progress", "message": line})
-            cursor = len(task_progress)
             status = str(task.get("status") or "")
             if status == "succeeded":
                 result = task.get("result") if isinstance(task.get("result"), dict) else {}
@@ -7295,6 +7298,7 @@ def handle_builder_task_create(
             "builderTaskId": builder_task_id,
             "requiredCapabilitiesAny": list(_builder_task_capabilities(kind)),
             "progress": [],
+            "progressOffset": 0,
             "status": "queued",
             "createdAt": now,
             "updatedAt": now,
@@ -8042,16 +8046,33 @@ def _service_pull_diagnostics_result(started: Dict[str, Any], result: Dict[str, 
     }
 
 
+def _agent_task_progress_since(task: Dict[str, Any], cursor: int) -> tuple[list[Dict[str, Any]], int]:
+    """Read a retained progress window using an absolute, monotonically increasing cursor."""
+    progress = task.get("progress") if isinstance(task.get("progress"), list) else []
+    offset = max(int(task.get("progressOffset") or 0), 0)
+    next_cursor = offset + len(progress)
+    requested = max(int(cursor or 0), 0)
+    events: list[Dict[str, Any]] = []
+    if requested < offset:
+        events.append(
+            {
+                "type": "warning",
+                "line": f"{offset - requested} earlier progress event(s) were discarded before this consumer could read them",
+            }
+        )
+    start = min(max(requested - offset, 0), len(progress))
+    events.extend(event for event in progress[start:] if isinstance(event, dict))
+    return events, max(requested, next_cursor)
+
+
 def _agent_task_progress_snapshot(task_id: str, cursor: int) -> tuple[list[Dict[str, Any]], int, str, Dict[str, Any], str]:
     state = load_state()
     task = (state.get("agentTasks") if isinstance(state.get("agentTasks"), dict) else {}).get(task_id)
     if not isinstance(task, dict):
         return [], cursor, "missing", {}, "agent task not found"
-    progress = task.get("progress") if isinstance(task.get("progress"), list) else []
-    safe_cursor = min(max(int(cursor or 0), 0), len(progress))
-    events = [event for event in progress[safe_cursor:] if isinstance(event, dict)]
+    events, next_cursor = _agent_task_progress_since(task, cursor)
     result = task.get("result") if isinstance(task.get("result"), dict) else {}
-    return events, len(progress), str(task.get("status") or ""), result, str(task.get("message") or "")
+    return events, next_cursor, str(task.get("status") or ""), result, str(task.get("message") or "")
 
 
 def _builder_storage_public_task(task: Dict[str, Any]) -> Dict[str, Any]:
