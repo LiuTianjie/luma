@@ -17,7 +17,7 @@ Luma Control is the authentication and orchestration layer. It renders the manif
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.363"
+python -m pip install "luma-infra==0.1.364"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -34,7 +34,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.363 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.364 sh
 ```
 
 Development checkout:
@@ -65,7 +65,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.363"
+python -m pip install "luma-infra==0.1.364"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -77,7 +77,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.363"
+python -m pip install "luma-infra==0.1.364"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -317,7 +317,7 @@ Update every registered node that has a ready node agent:
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.363 --timeout 900
+luma update fleet --install-ref v0.1.364 --timeout 900
 luma update fleet --include-manager
 ```
 
@@ -446,6 +446,8 @@ luma service history --id RECORD_ID --kind deployment --limit 50 --format json
 luma build list --app public-cn-service --status failed --limit 50 --format json
 luma build logs BUILD_ID --limit 50 --format json
 ```
+
+Once a build ID is accepted, transient connection failures resume waiting for that same task until the original `--timeout` deadline; stopping the wait does not cancel the server build. Queries and read-only workflow checks make at most three attempts; authentication, certificate and response-format errors fail immediately. Build and deployment submissions are not automatically replayed. When Control provides event positions, the wait fetches only new events; older Control versions retain full pagination.
 
 `service history [NAME]` searches Control records across builds and deployment
 attempts. Filters include kind (`build` or `deployment`), source (`build`, `cli`

@@ -226,6 +226,17 @@ def get_history(kind: str, record_id: str, query: Mapping[str, Any] | None = Non
     cursor = _decode_cursor(query.get("cursor"), scope=scope)
     if cursor and (not _integer(cursor.get("after")) or not _integer(cursor.get("through")) or cursor["after"] > cursor["through"]):
         raise LumaError("invalid history cursor")
+    resume_after = -1
+    if "after" in query:
+        value = query["after"]
+        try:
+            resume_after = int(value)
+            if isinstance(value, bool) or str(value) != str(resume_after) or not -1 <= resume_after <= 9223372036854775807:
+                raise ValueError
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise LumaError("after must be an integer position at least -1") from exc
+        if cursor:
+            raise LumaError("after cannot be combined with cursor")
     internal_kind, stream = KINDS[kind], "events" if kind == "build" else "steps"
     with transaction(immediate=False) as conn:
         ensure_initialized(conn)
@@ -233,7 +244,7 @@ def get_history(kind: str, record_id: str, query: Mapping[str, Any] | None = Non
         if row is None:
             raise LumaError(f"{kind} history record not found: {record_id}")
         through = cursor["through"] if cursor else int(conn.execute("SELECT COALESCE(MAX(position),-1) FROM control_events WHERE kind=? AND entity_id=? AND stream=?", (internal_kind, record_id, stream)).fetchone()[0])
-        after = cursor["after"] if cursor else -1
+        after = cursor["after"] if cursor else resume_after
         steps = conn.execute("SELECT position,payload FROM control_events WHERE kind=? AND entity_id=? AND stream=? AND position>? AND position<=? ORDER BY position LIMIT ?", (internal_kind, record_id, stream, after, through, limit + 1)).fetchall()
     has_more = len(steps) > limit
     steps = steps[:limit]
@@ -247,7 +258,8 @@ def get_history(kind: str, record_id: str, query: Mapping[str, Any] | None = Non
     else:
         record = {key: value for key, value in data.items() if key != "steps"}
     return {"item": _summary(row), "record": record, "events": [_payload(step) for step in steps],
-            "page": {"limit": limit, "nextCursor": next_cursor, "hasMore": has_more}}
+            "page": {"limit": limit, "nextCursor": next_cursor, "hasMore": has_more,
+                     "resumeAfter": steps[-1]["position"] if steps else after}}
 
 
 def get_build(record_id: str, query: Mapping[str, Any] | None = None) -> dict[str, Any]:

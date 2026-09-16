@@ -4043,6 +4043,7 @@ class CliTests(unittest.TestCase):
         response = MagicMock()
         response.headers = {"Content-Encoding": "gzip"}
         response.read.return_value = gzip.compress(b'{"summary":{"repositoryCount":12}}')
+        response.read1.side_effect = [response.read.return_value, b""]
         response.__enter__.return_value = response
         with patch("urllib.request.urlopen", return_value=response) as urlopen:
             payload = client.registry_inventory()
@@ -4101,7 +4102,7 @@ class CliTests(unittest.TestCase):
         with patch("urllib.request.urlopen", side_effect=TimeoutError("read timed out")), self.assertRaises(LumaError) as raised:
             client.deploy(manifest="name: api\nimage: nginx\nregion: cn\nexposure: none\n", source_name="service.yaml", timeout=42)
 
-        self.assertIn("control API timed out after 42s", str(raised.exception))
+        self.assertIn("control API timed out after", str(raised.exception))
         self.assertIn("/v1/deployments", str(raised.exception))
         self.assertIn("manager may still be applying", str(raised.exception))
 
@@ -4109,6 +4110,7 @@ class CliTests(unittest.TestCase):
         client = ControlClient("https://luma.example.com", "secret")
         response = MagicMock()
         response.read.return_value = b'{"ok": true}'
+        response.read1.side_effect = [response.read.return_value, b"", response.read.return_value, b""]
         response.__enter__.return_value = response
         with patch("urllib.request.urlopen", return_value=response) as urlopen:
             client.build_deploy(
@@ -4131,6 +4133,7 @@ class CliTests(unittest.TestCase):
         client = ControlClient("https://luma.example.com", "secret")
         response = MagicMock()
         response.read.return_value = b'{"run":{"id":"build-1","status":"canceling"}}'
+        response.read1.side_effect = [response.read.return_value, b""]
         response.__enter__.return_value = response
         with patch("urllib.request.urlopen", return_value=response) as urlopen:
             result = client.cancel_build("build-1")
@@ -4144,9 +4147,11 @@ class CliTests(unittest.TestCase):
         client = ControlClient("https://luma.example.com", "secret")
         health_response = MagicMock()
         health_response.read.return_value = b'{"capabilities":["build-proxy-mode-v1"]}'
+        health_response.read1.side_effect = [health_response.read.return_value, b""]
         health_response.__enter__.return_value = health_response
         build_response = MagicMock()
         build_response.read.return_value = b'{"ok":true}'
+        build_response.read1.side_effect = [build_response.read.return_value, b""]
         build_response.__enter__.return_value = build_response
 
         with patch("urllib.request.urlopen", side_effect=[health_response, build_response]) as urlopen:
@@ -4162,6 +4167,7 @@ class CliTests(unittest.TestCase):
         client = ControlClient("https://luma.example.com", "secret")
         response = MagicMock()
         response.read.return_value = b'{"capabilities":[]}'
+        response.read1.side_effect = [response.read.return_value, b""]
         response.__enter__.return_value = response
         with patch("urllib.request.urlopen", return_value=response), self.assertRaisesRegex(
             LumaError, "update the manager"
@@ -4172,12 +4178,13 @@ class CliTests(unittest.TestCase):
         client = ControlClient("https://luma.example.com", "secret")
         response = MagicMock()
         response.read.return_value = b'{"ok": true}'
+        response.read1.side_effect = [response.read.return_value, b""]
         response.__enter__.return_value = response
         with patch("urllib.request.urlopen", return_value=response) as urlopen:
             client.label_node(node_name="orbstack", region="home", registered_name="mac-mini-gaojiu", node_id="node-id")
 
         timeout = urlopen.call_args.kwargs["timeout"]
-        self.assertGreaterEqual(timeout, 120)
+        self.assertAlmostEqual(timeout, 120, delta=1)
 
     def test_secret_set_sends_value_to_control_plane(self):
         with tempfile.TemporaryDirectory() as tmp:

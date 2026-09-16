@@ -17,7 +17,7 @@ Luma Control 负责认证和编排，将清单渲染为 Nomad jobspec，直接�
 CI runner 应安装已发布的软件包，而不是运行 Shell 安装程序：
 
 ```bash
-python -m pip install "luma-infra==0.1.363"
+python -m pip install "luma-infra==0.1.364"
 ```
 
 软件包名称是 `luma-infra`，安装后的命令仍为 `luma`。
@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 安装固定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.363 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.364 sh
 ```
 
 从开发检出目录运行：
@@ -65,7 +65,7 @@ CI 可将 Luma 作为无状态控制面客户端使用，无需 SSH、Docker、C
 PR 校验：
 
 ```bash
-python -m pip install "luma-infra==0.1.363"
+python -m pip install "luma-infra==0.1.364"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -77,7 +77,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 主分支或发布部署：
 
 ```bash
-python -m pip install "luma-infra==0.1.363"
+python -m pip install "luma-infra==0.1.364"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -306,7 +306,7 @@ luma update --control-url https://luma.example.com --token <node-join-token>
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.363 --timeout 900
+luma update fleet --install-ref v0.1.364 --timeout 900
 luma update fleet --include-manager
 ```
 
@@ -413,6 +413,8 @@ luma service history --id RECORD_ID --kind deployment --limit 50 --format json
 luma build list --app public-cn-service --status failed --limit 50 --format json
 luma build logs BUILD_ID --limit 50 --format json
 ```
+
+获得构建 ID 后，CLI 遇到暂时断连会继续等待同一任务，直到原有 `--timeout` 截止；停止等待不会取消服务端构建。普通查询和只读 workflow 校验最多尝试 3 次，认证、证书及响应格式错误立即报错；构建和部署提交不会自动重发。新版 Control 返回日志位置后，等待过程只拉取新增事件，旧版 Control 仍使用完整分页。
 
 `service history [NAME]` 搜索构建及部署记录。可按类型（`build`/`deployment`）、来源（`build`/`cli`/`dashboard`）、状态、应用、`--since` 和 `--until` 筛选。时间接受 Unix 秒或带时区的 RFC3339。默认每页 50，最多 100；保持其他筛选不变，把返回的 `nextCursor` 作为 `--cursor`。JSON 包含 `limit`、`nextCursor`、`hasMore`，文本模式将续页信息写到 stderr。分页读取更多已保留记录，不增加保留期。
 

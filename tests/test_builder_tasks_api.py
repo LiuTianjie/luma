@@ -246,6 +246,7 @@ class BuilderTaskApiTests(unittest.TestCase):
         response = MagicMock()
         response.read.return_value = b'{"task":{"id":"builder-1"}}'
         response.__enter__.return_value = response
+        response.read1.side_effect = [response.read.return_value, b"", response.read.return_value, b""]
         with patch("urllib.request.urlopen", return_value=response) as urlopen:
             client.create_builder_task(self._body(), idempotency_key="idem-client")
         request = urlopen.call_args.args[0]

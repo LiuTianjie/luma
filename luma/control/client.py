@@ -5,14 +5,20 @@ import http.client
 import json
 import socket
 import ssl
+import threading
+import zlib
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, BinaryIO, Dict, Iterator
 
-from ..errors import LumaError
+from ..errors import ControlRequestError, LumaError
 from ..repo_paths import normalize_repo_relative_path
+
+
+class _InvalidControlResponse(LumaError):
+    """The response arrived, but its representation is invalid."""
 
 
 class ControlClient:
@@ -29,6 +35,9 @@ class ControlClient:
         self.insecure = insecure
         self.resolve_ip = resolve_ip
         self._host_header = parsed.netloc
+        # A resolver or socket may outlive the caller deadline. Bound these
+        # workers per client so repeated outages cannot grow threads unbounded.
+        self._request_slots = threading.BoundedSemaphore(4)
 
     def request(
         self,
@@ -39,27 +48,131 @@ class ControlClient:
         timeout: int = 30,
         headers: Dict[str, str] | None = None,
     ) -> Dict[str, Any]:
-        with self._open(method, path, body, timeout=timeout, headers=headers) as response:
-            raw_bytes = response.read()
+        # Only reads and the explicitly read-only workflow check are replayable.
+        # A lost response to a build/deploy submission does not prove rejection.
+        safe = method.upper() in {"GET", "HEAD"} or (
+            method.upper() == "POST" and path == "/v1/workflows/check"
+        )
+        started = time.monotonic()
+        deadline = started + timeout
+        for attempt in range(1, 4 if safe else 2):
+            try:
+                return self._request_before_deadline(method, path, body, deadline=deadline, headers=headers)
+            except (LumaError, OSError, http.client.HTTPException) as exc:
+                if isinstance(exc, _InvalidControlResponse):
+                    raise
+                cause = exc.__cause__ if isinstance(exc, LumaError) else exc
+                if isinstance(cause, urllib.error.URLError) and not isinstance(cause, urllib.error.HTTPError):
+                    cause = cause.reason
+                transient = (
+                    isinstance(cause, urllib.error.HTTPError) and cause.code in {408, 429, 502, 503, 504}
+                ) or (
+                    isinstance(cause, (OSError, http.client.HTTPException))
+                    and not isinstance(cause, urllib.error.HTTPError)
+                    and (not isinstance(cause, ssl.SSLError) or isinstance(cause, ssl.SSLEOFError))
+                )
+                if not transient:
+                    raise
+                delay = 0.5 * 2 ** (attempt - 1)
+                if not safe or attempt == 3 or time.monotonic() + delay >= deadline:
+                    route = urllib.parse.urlsplit(path).path
+                    raise ControlRequestError(
+                        f"{exc} [{method.upper()} {route}; attempts={attempt}; "
+                        f"elapsed={time.monotonic() - started:.1f}s]"
+                    ) from exc
+                time.sleep(delay)
+        raise AssertionError("unreachable")
+
+    def _request_before_deadline(self, method, path, body, *, deadline, headers):
+        # Socket timeouts measure inactivity, not elapsed request time (including
+        # DNS, TLS, headers and body). Wait on a bounded daemon worker instead.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not self._request_slots.acquire(timeout=remaining):
+            raise TimeoutError("control API request deadline exceeded")
+        completed = threading.Event()
+        result = []
+
+        def perform():
+            try:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("control API request deadline exceeded")
+                result.append((True, self._request_once(
+                    method, path, body, timeout=remaining, headers=headers, deadline=deadline,
+                )))
+            except BaseException as exc:
+                result.append((False, exc))
+            finally:
+                self._request_slots.release()
+                completed.set()
+
+        worker = threading.Thread(target=perform, daemon=True, name="luma-control-request")
+        try:
+            worker.start()
+        except BaseException:
+            self._request_slots.release()
+            raise
+        if not completed.wait(max(0, deadline - time.monotonic())):
+            # Never replay a mutation: a timed-out request may have reached the
+            # server. The worker owns and eventually closes its response.
+            raise TimeoutError("control API request deadline exceeded")
+        success, value = result[0]
+        if not success:
+            raise value
+        if time.monotonic() >= deadline:
+            raise TimeoutError("control API request deadline exceeded")
+        return value
+
+    def _request_once(
+        self,
+        method: str,
+        path: str,
+        body: Dict[str, Any] | None = None,
+        *,
+        timeout: float = 30,
+        headers: Dict[str, str] | None = None,
+        deadline: float | None = None,
+    ) -> Dict[str, Any]:
+        with self._open(method, path, body, timeout=timeout, headers=headers, deadline=deadline) as response:
+            raw_bytes = self._read_response(response, deadline)
             content_encoding = response.headers.get("Content-Encoding")
             if isinstance(content_encoding, str) and content_encoding.lower() == "gzip":
                 try:
                     raw_bytes = gzip.decompress(raw_bytes)
-                except OSError as exc:
-                    raise LumaError("control API returned invalid gzip data") from exc
+                except (OSError, EOFError, zlib.error) as exc:
+                    raise _InvalidControlResponse("control API returned invalid gzip data") from exc
             raw = raw_bytes.decode("utf-8", errors="replace")
         if not raw:
             return {}
         try:
             payload = json.loads(raw)
         except ValueError as exc:
-            raise LumaError(
+            raise _InvalidControlResponse(
                 "control API returned a non-JSON response "
                 "(is the endpoint pointed at the Luma control plane?)"
             ) from exc
         if not isinstance(payload, dict):
-            raise LumaError("control API returned invalid JSON")
+            raise _InvalidControlResponse("control API returned invalid JSON")
         return payload
+
+    @staticmethod
+    def _read_response(response, deadline):
+        chunks = []
+        # read1 returns available bytes without waiting to fill a large buffer,
+        # allowing abandoned slow responses to close promptly.
+        read = getattr(response, "read1", None)
+        if read is None:
+            return response.read()
+        while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("control API request deadline exceeded")
+            chunk = read(65536)
+            if not chunk:
+                remaining = getattr(response, "length", None)
+                if isinstance(remaining, int) and remaining > 0:
+                    raise http.client.IncompleteRead(b"".join(chunks), remaining)
+                return b"".join(chunks)
+            chunks.append(chunk)
 
     def stream(
         self,
@@ -106,6 +219,7 @@ class ControlClient:
         *,
         timeout: int = 30,
         headers: Dict[str, str] | None = None,
+        deadline: float | None = None,
     ) -> Any:
         data = json.dumps(body or {}).encode("utf-8") if body is not None else None
         request_headers = {
@@ -132,7 +246,8 @@ class ControlClient:
                 kwargs["context"] = ssl._create_unverified_context()
             return urllib.request.urlopen(req, **kwargs)
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
+            with exc:
+                detail = self._read_response(exc, deadline).decode("utf-8", errors="replace")
             if exc.code == 404 and path == "/v1/nodes/agent-token":
                 raise LumaError(
                     "control API does not support node-agent credentials yet. "
@@ -835,8 +950,8 @@ class ControlClient:
             {"message": str(message)},
         )
 
-    def get_build(self, build_id: str, *, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
-        return self.request("GET", self._query_path(f"/v1/builds/{urllib.parse.quote(build_id, safe='')}", query))
+    def get_build(self, build_id: str, *, query: Dict[str, Any] | None = None, timeout: float = 30) -> Dict[str, Any]:
+        return self.request("GET", self._query_path(f"/v1/builds/{urllib.parse.quote(build_id, safe='')}", query), timeout=timeout)
 
     def retry_build(self, build_id: str, *, timeout: int = 2400, env_secrets: Dict[str, str] | None = None) -> Dict[str, Any]:
         body: Dict[str, Any] = {}
@@ -1118,7 +1233,7 @@ class ControlClient:
         )
 
 def _timeout_message(path: str, timeout: int) -> str:
-    message = f"control API timed out after {timeout}s waiting for {path}"
+    message = f"control API timed out after {timeout:g}s waiting for {path}"
     if path == "/v1/deployments":
         message += (
             "; the manager may still be applying the deployment. "

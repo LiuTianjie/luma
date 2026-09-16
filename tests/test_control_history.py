@@ -43,6 +43,34 @@ class ControlHistoryTests(unittest.TestCase):
         with database.transaction() as conn:
             database.write_state(conn, self.state)
 
+    def test_live_resume_reads_only_new_events_after_frozen_pages(self):
+        run = self.build("live", status="running", events=205)
+        self.migrate()
+        first = history.get_build("live", {"limit": 100})
+        self.assertEqual(first["eventsPage"]["resumeAfter"], 99)
+        run["events"].append({"message": "new while paging"})
+        self.write()
+        second = history.get_build("live", {"limit": 100, "cursor": first["eventsPage"]["nextCursor"]})
+        third = history.get_build("live", {"limit": 100, "cursor": second["eventsPage"]["nextCursor"]})
+        self.assertEqual(third["eventsPage"]["resumeAfter"], 204)
+        new = history.get_build("live", {"after": 204})
+        self.assertEqual([x["message"] for x in new["run"]["events"]], ["new while paging"])
+        self.assertEqual(new["eventsPage"]["resumeAfter"], 205)
+        empty = history.get_build("live", {"after": 205})
+        self.assertEqual(empty["run"]["events"], [])
+        self.assertEqual(empty["eventsPage"]["resumeAfter"], 205)
+        run["status"] = "succeeded"
+        run["events"].append({"message": "done"})
+        self.write()
+        final = history.get_build("live", {"after": 205})
+        self.assertEqual(final["run"]["status"], "succeeded")
+        self.assertEqual(final["run"]["events"], [{"message": "done"}])
+        for invalid in [-2, True, "1.0", "bad", 9223372036854775808]:
+            with self.subTest(invalid=invalid), self.assertRaises(LumaError):
+                history.get_build("live", {"after": invalid})
+        with self.assertRaises(LumaError):
+            history.get_build("live", {"after": 0, "cursor": first["eventsPage"]["nextCursor"]})
+
     def test_unified_cursor_orders_timestamp_id_kind_ties_and_freezes_insert_watermark(self):
         self.build("same", 100)
         self.deployment("same", 100)

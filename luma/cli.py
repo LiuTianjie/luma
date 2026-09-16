@@ -32,7 +32,7 @@ from .control.context import list_contexts, load_context, load_current_context, 
 from .control.state import is_initialized as control_state_is_initialized, load_state, new_state, state_path
 from .agent import DEFAULT_AGENT_CONFIG, _current_install_layout, install_node_agent, run_node_agent, run_terminal_supervisor
 from .envfile import load_env_file, parse_env_file
-from .errors import LumaError
+from .errors import ControlRequestError, LumaError
 from .io import dump_yaml, write_yaml
 from .installer import luma_installer_command
 from .installation import runtime_record, installer_environment, installation_diagnostics
@@ -211,7 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.363 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.364 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -3285,9 +3285,43 @@ def _wait_for_queued_build(args: argparse.Namespace, client: ControlClient, resu
         raise LumaError("Control accepted queued work without a build run ID")
     deadline = time.monotonic() + args.timeout
     seen = 0
+    resume_after: int | None = None
+    page_cursor: str | None = None
+    failures = 0
     last_state = None
+
+    def emit(event: Dict[str, Any]) -> None:
+        if _output_format(args) == "ndjson":
+            _print_json({"type": "event", **event})
+        elif not _quiet(args):
+            _print_deploy_step(event)
+
+    def timeout_error() -> LumaError:
+        return LumaError(f"Stopped waiting for {build_id}; the server task continues. Use luma build logs {build_id} or luma build cancel {build_id}")
+
     while True:
-        detail = client.get_build(build_id, query={"limit": 100})
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise timeout_error()
+        query: Dict[str, Any] = {"limit": 100}
+        if page_cursor:
+            query["cursor"] = page_cursor
+        elif resume_after is not None:
+            query["after"] = resume_after
+        try:
+            detail = client.get_build(build_id, query=query, timeout=min(30, remaining))
+        except ControlRequestError as exc:
+            failures += 1
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise timeout_error() from exc
+            delay = min(2 ** min(failures - 1, 4), remaining)
+            emit({"name": "Project deployment queue", "status": "reconnecting",
+                  "message": f"Connection interrupted; continuing to wait for {build_id} in {delay:g}s: {exc}",
+                  "buildRunId": build_id, "retryInSeconds": delay})
+            time.sleep(delay)
+            continue
+        failures = 0
         run = detail.get("run") or {}
         state = (run.get("status"), run.get("queuePosition"), run.get("waitingFor"))
         if state != last_state:
@@ -3296,30 +3330,44 @@ def _wait_for_queued_build(args: argparse.Namespace, client: ControlClient, resu
                 message += f"; queue position {state[1] or 1}"
                 if state[2]:
                     message += f"; waiting for {state[2]}"
-            event = {"name": "Project deployment queue", "status": "start", "message": message, "buildRunId": build_id}
-            if _output_format(args) == "ndjson":
-                _print_json({"type": "event", **event})
-            elif not _quiet(args):
-                _print_deploy_step(event)
+            emit({"name": "Project deployment queue", "status": "start", "message": message, "buildRunId": build_id})
             last_state = state
+        page = detail.get("eventsPage") or {}
         events = list(run.get("events") or [])
-        cursor = (detail.get("eventsPage") or {}).get("nextCursor")
-        while cursor:
-            page = client.get_build(build_id, query={"limit": 100, "cursor": cursor})
-            events.extend((page.get("run") or {}).get("events") or [])
-            cursor = (page.get("eventsPage") or {}).get("nextCursor")
-        for event in events[seen:]:
-            if _output_format(args) == "ndjson":
-                _print_json({"type": "event", **event})
-            elif not _quiet(args):
-                _print_deploy_step(event)
-        seen = len(events)
+        if isinstance(page.get("resumeAfter"), int):
+            for event in events:
+                emit(event)
+            resume_after = page["resumeAfter"]
+            page_cursor = page.get("nextCursor")
+            if page_cursor:
+                continue
+            # A terminal state can become visible while draining a frozen page.
+            # Fetch once past its last event before returning, so final output is not lost.
+            if events and state[0] in {"succeeded", "failed", "canceled"} and not run.get("queueExecuting"):
+                continue
+        else:
+            # Older Control versions provide frozen pagination, but no live cursor.
+            cursor = page.get("nextCursor")
+            try:
+                while cursor:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise timeout_error()
+                    detail_page = client.get_build(build_id, query={"limit": 100, "cursor": cursor}, timeout=min(30, remaining))
+                    events.extend((detail_page.get("run") or {}).get("events") or [])
+                    cursor = (detail_page.get("eventsPage") or {}).get("nextCursor")
+            except ControlRequestError as exc:
+                emit({"name": "Project deployment queue", "status": "reconnecting",
+                      "message": f"Connection interrupted; continuing to wait for {build_id}: {exc}", "buildRunId": build_id})
+                time.sleep(min(2, max(0, deadline - time.monotonic())))
+                continue
+            for event in events[seen:]:
+                emit(event)
+            seen = len(events)
         if state[0] == "succeeded" and not run.get("queueExecuting"):
             return {**(run.get("result") or {}), "buildRunId": build_id}
         if state[0] in {"failed", "canceled"} and not run.get("queueExecuting"):
             raise LumaError(f"Build {build_id} {state[0]}: {run.get('message') or 'see build history'}")
-        if time.monotonic() >= deadline:
-            raise LumaError(f"Stopped waiting for {build_id}; the server task continues. Use luma build logs {build_id} or luma build cancel {build_id}")
         time.sleep(min(2, max(0, deadline - time.monotonic())))
 
 
