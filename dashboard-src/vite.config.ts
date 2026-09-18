@@ -256,11 +256,15 @@ export default defineConfig({
   root: __dirname,
   // Opt-in local integration: existing infrastructure fixtures remain mocked,
   // while durable history/alerts/governance run against an isolated Control.
-  server: process.env.LUMA_DEV_CONTROL_URL ? {
-    proxy: {
-      "^/v1/(history|alerting|governance)(/|\\?|$)": { target: process.env.LUMA_DEV_CONTROL_URL, changeOrigin: true },
-    },
-  } : undefined,
+  server: {
+    port: Number(process.env.PORT) || 5173,
+    strictPort: Boolean(process.env.PORT),
+    ...(process.env.LUMA_DEV_CONTROL_URL ? {
+      proxy: {
+        "^/v1/(history|alerting|governance)(/|\\?|$)": { target: process.env.LUMA_DEV_CONTROL_URL, changeOrigin: true },
+      },
+    } : {}),
+  },
   publicDir: false,
   resolve: {
     dedupe: ["react", "react-dom"],

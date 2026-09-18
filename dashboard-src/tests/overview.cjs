@@ -46,3 +46,12 @@ test("disk pressure is included when prioritizing node capacity", () => {
   assert.equal(nodePressure({ metrics: { cpuPercent: 0, loadPercent: 99, memoryUsedPercent: 10, diskUsedPercent: 96 } }), 96);
   assert.equal(nodePressure({}), 0);
 });
+
+test("overview labels platform services that are excluded from the application list", () => {
+  const issues = [{ kind: "service-pending", target: "egress_mihomo", severity: "warning", message: "Pending" }];
+  const groups = groupOverviewIssues(issues, [], [], [{ stack: "egress", name: "mihomo", fullName: "egress_mihomo" }]);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].platform, true);
+  assert.equal(groups[0].target, "egress");
+  assert.equal(groups[0].service.fullName, "egress_mihomo");
+});

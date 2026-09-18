@@ -1,18 +1,27 @@
 import type { Application } from "../components/applicationModel";
-import type { DashboardIssue, DashboardNode } from "../types";
+import type { DashboardIssue, DashboardNode, DashboardService } from "../types";
+
+const SYSTEM_STACKS = new Set(["traefik", "egress", "luma-control"]);
 
 export type OverviewIssueGroup = {
   key: string;
   target: string;
   app?: Application;
   node?: DashboardNode;
+  service?: DashboardService;
+  platform: boolean;
   severity: string;
   issues: DashboardIssue[];
 };
 const severityRank = (severity?: string) => severity === "critical" ? 0 : severity === "warning" ? 1 : 2;
 
+function isPlatformService(service: DashboardService) {
+  const stack = service.stack || service.name || "";
+  return SYSTEM_STACKS.has(stack) || stack.startsWith("luma-storage") || service.name === "cloudflared" || Boolean(service.managedBy);
+}
+
 /** Group only by explicit object identity. Similar error text is not a causal relationship. */
-export function groupOverviewIssues(issues: DashboardIssue[], applications: Application[], nodes: DashboardNode[]): OverviewIssueGroup[] {
+export function groupOverviewIssues(issues: DashboardIssue[], applications: Application[], nodes: DashboardNode[], services: DashboardService[] = []): OverviewIssueGroup[] {
   const groups = new Map<string, OverviewIssueGroup>();
   for (const issue of issues) {
     const node = issue.kind === "agent" || issue.kind?.startsWith("node-")
@@ -21,8 +30,20 @@ export function groupOverviewIssues(issues: DashboardIssue[], applications: Appl
       ? applications.filter((item) => item.stack === issue.target || item.services.some((service) => (service.fullName || service.name) === issue.target)) : [];
     // Ambiguous short service names must not link to an arbitrary application.
     const app = matches.length === 1 ? matches[0] : undefined;
-    const key = node ? `node:${node.name}` : app ? `app:${app.stack}` : `issue:${issue.kind || ""}:${issue.target || ""}`;
-    const group = groups.get(key) || { key, target: node?.name || app?.stack || issue.target || issue.kind || "—", app, node, severity: issue.severity || "info", issues: [] };
+    const service = !app && (issue.kind === "deployment" || issue.kind?.startsWith("service-"))
+      ? services.find((item) => item.stack === issue.target || (item.fullName || item.name) === issue.target)
+      : undefined;
+    const key = node ? `node:${node.name}` : app ? `app:${app.stack}` : service ? `service:${service.fullName || service.name}` : `issue:${issue.kind || ""}:${issue.target || ""}`;
+    const group = groups.get(key) || {
+      key,
+      target: node?.displayName || node?.name || app?.stack || service?.stack || service?.name || issue.target || issue.kind || "—",
+      app,
+      node,
+      service,
+      platform: Boolean(service && isPlatformService(service)),
+      severity: issue.severity || "info",
+      issues: [],
+    };
     group.issues.push(issue);
     if (severityRank(issue.severity) < severityRank(group.severity)) group.severity = issue.severity || "info";
     groups.set(key, group);
