@@ -1,5 +1,9 @@
 # Architecture
 
+Go implementation boundaries and staged replacement gates are maintained in
+[Go architecture and migration](go-architecture.md). The Python Control and
+Agent remain active while the Go CLI/deployment slice is being verified.
+
 `infra-stacks` 的目标是用一个轻量控制面管理多台服务器上的容器服务，同时保持清晰的 region 边界。底层编排是 HashiCorp Nomad，调度单元是 job / group / task / allocation。
 
 ## 总体原则

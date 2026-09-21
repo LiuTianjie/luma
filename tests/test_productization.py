@@ -12370,6 +12370,7 @@ class ControlApiTests(unittest.TestCase):
                     "manager",
                     "prepare-managed-volume-path",
                     {"root": "/srv/luma/lae/staging/postgres", "relative": "v1", "preserveExisting": True},
+                    required_capability="managed-volume-path",
                 )
                 self.assertEqual(result["applied"][0]["path"], "/srv/luma/lae/staging/postgres/v1")
                 self.assertEqual(result["applied"][0]["node"], "manager")

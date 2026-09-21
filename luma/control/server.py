@@ -487,6 +487,19 @@ def _update_agent_heartbeat(
     metrics = body.get("metrics")
     container_stats = body.get("containerStats")
     diagnostics = body.get("diagnostics")
+    supported_actions = body.get("supportedActions")
+    if "supportedActions" in body:
+        if not isinstance(supported_actions, list) or len(supported_actions) > 100 or any(
+            not isinstance(value, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,79}", value)
+            for value in supported_actions
+        ):
+            raise LumaError("supportedActions must be a list of agent action names")
+        agent["supportedActions"] = sorted(set(supported_actions))
+    elif isinstance(capabilities, list):
+        # Legacy agents predate action negotiation. Clear a previous Go-agent
+        # restriction on a full Python heartbeat, retaining capability gates.
+        # Completion requests carry identity/outcome only and must preserve it.
+        agent.pop("supportedActions", None)
     normalized_container_stats: list[Dict[str, Any]] = []
     agent.update(
         {
@@ -2550,6 +2563,9 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                     continue
                 if task.get("nodeName") != canonical_node_name or task.get("status") != "queued":
                     continue
+                supported_actions = _node_agent_record(record).get("supportedActions")
+                if isinstance(supported_actions, list) and task.get("action") not in supported_actions:
+                    continue
                 required_capabilities_raw = task.get("requiredCapabilitiesAny")
                 required_capabilities = tuple(
                     str(value).strip()
@@ -3058,6 +3074,9 @@ def _queue_node_agent_task(
         record = _node_record_for_name(nodes, node_name)
         if record is None:
             raise LumaError(f"Luma node is not registered: {node_name}")
+        supported_actions = _node_agent_record(record).get("supportedActions")
+        if isinstance(supported_actions, list) and action not in supported_actions:
+            raise LumaError(f"node agent on {node_name} does not support action: {action}")
         if not _node_agent_is_ready(record, required_capability=required_capability):
             agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
             raise LumaError(
@@ -14844,6 +14863,7 @@ def _prepare_local_volume_path(volume: ComposeVolumeSpec, state: Dict[str, Any])
             node_name,
             "prepare-managed-volume-path",
             {"root": root, "relative": relative, "preserveExisting": True},
+            required_capability="managed-volume-path",
         )
         return {
             "volume": volume.name,
@@ -14901,6 +14921,7 @@ def _prepare_managed_volume_path(storage_class: StorageClassSpec, sub_path: str,
             storage_class.node,
             "prepare-managed-volume-path",
             {"root": storage_class.path, "relative": str(relative)},
+            required_capability="managed-volume-path",
         )
         return {
             "storageClass": storage_class.name,
@@ -15121,6 +15142,7 @@ def _remove_managed_volume_path(storage_class: StorageClassSpec, sub_path: str, 
             storage_class.node,
             "remove-managed-volume-path",
             {"root": storage_class.path, "relative": str(relative)},
+            required_capability="managed-volume-path",
         )
         return {
             **item,

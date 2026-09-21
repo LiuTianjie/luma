@@ -11,4 +11,5 @@ npm run build:dashboard
 python -m unittest discover -s tests -p 'test_*.py'
 node --experimental-strip-types --test tests/dashboard/*.test.mjs
 node --test dashboard-src/tests/*.cjs
+bash scripts/check-go.sh
 git diff --check

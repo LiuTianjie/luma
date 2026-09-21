@@ -16,6 +16,10 @@ on:
       - luma/**
       - tests/**
       - scripts/**
+      - cmd/**
+      - internal/**
+      - go.mod
+      - go.sum
       - docs/luma-cli-reference.md
       - .github/workflows/control-image.yml
   workflow_dispatch:
@@ -48,6 +52,11 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
       - name: Install validation dependencies
         run: |

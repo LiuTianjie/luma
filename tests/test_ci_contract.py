@@ -27,6 +27,9 @@ class SourceGateTests(unittest.TestCase):
                     if any("bash scripts/check-luma.sh" in step.get("run", "") for step in steps):
                         validation_jobs.append(job)
                 self.assertEqual(len(validation_jobs), 1)
+                go_setup = [step for step in validation_jobs[0]["steps"] if step.get("uses", "").startswith("actions/setup-go@")]
+                self.assertEqual(len(go_setup), 1, "shared source gate requires Go")
+                self.assertEqual(go_setup[0]["with"]["go-version-file"], "go.mod")
         workflow = yaml.load((ROOT / ".github/workflows/ci.yml").read_text(), Loader=yaml.BaseLoader)
         self.assertIn("pull_request", workflow["on"])
         self.assertEqual(workflow["permissions"], {"contents": "read"})

@@ -32,6 +32,11 @@ jobs:
           node-version: "22"
           cache: npm
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
       - name: Install validation dependencies
         run: |
           python -m pip install -e ".[test]"
@@ -39,3 +44,28 @@ jobs:
 
       - name: Validate sources
         run: bash scripts/check-luma.sh
+
+  go-binaries:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, darwin]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build migration CLI, Agent and Control
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          bash scripts/build-go.sh .local-notes/go-bin/luma-go
+          bash scripts/build-go.sh .local-notes/go-bin/luma-agent luma-agent
+          bash scripts/build-go.sh .local-notes/go-bin/luma-control luma-control
+          tar -C .local-notes/go-bin -czf "$RUNNER_TEMP/luma-go.tar.gz" luma-go luma-agent luma-control
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luma-go-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: ${{ runner.temp }}/luma-go.tar.gz

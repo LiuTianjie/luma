@@ -6,10 +6,12 @@ Additional Control subsystems can use ``transaction`` for their own tables.
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
 import os
 import secrets
 import sqlite3
+import stat
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -21,6 +23,42 @@ DATABASE_FILE = "control.sqlite3"
 SCHEMA_VERSION = 1
 ENTITY_KINDS = frozenset({"nodes", "agentTasks", "builderTasks", "builderTaskIdempotency", "builderSourceSnapshots", "buildRuns", "deploymentEvents"})
 EVENT_STREAMS = ("events", "progress", "steps")
+
+
+class _ControlConnection(sqlite3.Connection):
+    """Keep the migration writer guard for this connection's entire lifetime."""
+
+    _writer_guard = None
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            guard, self._writer_guard = self._writer_guard, None
+            if guard is not None:
+                guard.close()  # closing the descriptor releases its shared flock
+
+
+def _shared_writer_guard(directory: Path):
+    """Python connections coexist, but not with the exclusive Go Control writer.
+
+    Acquire before opening SQLite: even schema initialization must be fenced.
+    Never unlink the lock file, which would create two independent lock inodes.
+    """
+    fd = os.open(directory / "control-writer.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    guard = os.fdopen(fd, "r+b")
+    try:
+        metadata = os.fstat(guard.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
+            raise LumaError("Control writer lock must be a private regular file")
+        try:
+            fcntl.flock(guard.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise LumaError("Control state is in use by the Go writer; stop it before starting Python Control") from exc
+        return guard
+    except BaseException:
+        guard.close()
+        raise
 
 
 def database_path() -> Path:
@@ -66,14 +104,16 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 def connect(path: Path | None = None) -> sqlite3.Connection:
     path = Path(path or database_path())
     path.parent.mkdir(parents=True, exist_ok=True)
+    guard = _shared_writer_guard(path.parent)
     # Create with restrictive mode before SQLite opens it, including under a
     # permissive process umask. WAL/SHM inherit the main database permissions.
-    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
-    os.close(fd)
-    _private(path)
     conn = None
     try:
-        conn = sqlite3.connect(path, timeout=30, isolation_level=None)
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        os.close(fd)
+        _private(path)
+        conn = sqlite3.connect(path, timeout=30, isolation_level=None, factory=_ControlConnection)
+        conn._writer_guard = guard
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA foreign_keys=ON")
@@ -83,9 +123,11 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
         for suffix in ("-wal", "-shm"):
             _private(Path(str(path) + suffix))
         return conn
-    except (sqlite3.Error, ValueError, LumaError) as exc:
+    except (sqlite3.Error, ValueError, OSError, LumaError) as exc:
         if conn is not None:
             conn.close()
+        else:
+            guard.close()
         if isinstance(exc, LumaError):
             raise
         raise LumaError(f"cannot open control database {path}: {exc}") from exc

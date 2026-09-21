@@ -1,5 +1,10 @@
 # 系统架构 {#architecture}
 
+Go 重写的模块边界、依赖方向和分阶段替换条件见
+[Go 架构与迁移说明](go-architecture.md)。当前 Go 已实现单服务与 Compose 部署链路、
+env 文件和工作流记录/重跑，并拆出部署、region、storage 与外部适配模块。
+Control 和 Agent 仍使用 Python，后续按模块验证后切换。
+
 `infra-stacks` 的目标是用一个轻量控制面管理多台服务器上的容器服务，同时保持清晰的 region 边界。底层编排是 HashiCorp Nomad，调度单元是 job / group / task / allocation。
 
 ## 总体原则 {#_1}
