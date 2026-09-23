@@ -17,7 +17,7 @@ Luma Control is the authentication and orchestration layer. It renders the manif
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.365"
+python -m pip install "luma-infra==0.1.366"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -34,7 +34,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.365 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.366 sh
 ```
 
 Development checkout:
@@ -65,7 +65,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.365"
+python -m pip install "luma-infra==0.1.366"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -77,7 +77,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.365"
+python -m pip install "luma-infra==0.1.366"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -317,7 +317,7 @@ Update every registered node that has a ready node agent:
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.365 --timeout 900
+luma update fleet --install-ref v0.1.366 --timeout 900
 luma update fleet --include-manager
 ```
 
@@ -644,15 +644,34 @@ builds a multi-platform image. An explicit `--platform` is accepted only when
 it covers every resolved target architecture.
 
 With a Control advertising `build-queue-v1`, the CLI automatically submits
-Repository Import and `build retry` to a persistent per-project FIFO. Local
-builds may build and upload concurrently using unique Control-assigned tags;
-**after upload**, their deployment joins the same FIFO. Queue order is submission
-order (upload completion for local builds), not local build start order. Only
-one queued operation per repository project runs at a time; unrelated projects
-can use other worker slots, subject to existing Builder capacity and runtime
-deployment locking. A failed or canceled attempt does not discard later work.
+Repository Import and `build retry` to a persistent queue scoped by repository,
+Git ref and deployment target (selected Compose sidecar or manifest name). Thus
+`main` and `dev` never supersede or lock each other's builds, even when they use
+the same sidecar path. `refs/heads/main` and `main` identify the same branch;
+an omitted ref uses a separate `HEAD` scope. Within a known target, the latest
+submission cancels older queued attempts and requests cancellation of the active
+attempt. Its successor starts only after both the Control worker and remote
+child have stopped. Imports whose target is not known yet retain FIFO ordering
+within their repository/ref. Local requests record the checked-out branch
+(or the commit when HEAD is detached). Local builds may build and upload
+concurrently using unique Control-assigned tags;
+**after upload**, their deployment joins the same queue. Queue order is submission
+order (upload completion for local builds), not local build start order.
+Remote Builders also use a unique image tag for each attempt, so builds of the
+same Git commit with different deployment settings cannot overwrite each other.
 
-The CLI displays the build ID, queue position and blocking task while waiting.
+Control claims the oldest eligible request. A busy/offline Builder keeps its
+requests queued without occupying Control execution slots, so other Builders
+and completed local uploads can proceed. Each current node agent executes one
+task at a time; its slot is available again when image building finishes, while
+Control continues deployment. Control defaults to 4 execution slots, configurable
+with `LUMA_BUILD_QUEUE_CONCURRENCY` (1–32). Raising this limit does not create
+parallel image builds on a single serial agent. Final runtime mutations still
+use the existing global deployment lock to protect shared routes and storage;
+a canceled build exits promptly while waiting for that lock.
+
+The CLI displays the build ID, position at the blocking resource, blocking task
+and reason (same branch/target, busy/offline Builder or full Control capacity).
 `--timeout` bounds the client wait; closing the CLI after acceptance does not
 cancel the server task. Inspect it with `luma build logs <id>` or cancel a waiting
 task with `luma build cancel <id>`. Queued requests survive Control restart.

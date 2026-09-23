@@ -17,7 +17,7 @@ Luma Control 负责认证和编排，将清单渲染为 Nomad jobspec，直接�
 CI runner 应安装已发布的软件包，而不是运行 Shell 安装程序：
 
 ```bash
-python -m pip install "luma-infra==0.1.365"
+python -m pip install "luma-infra==0.1.366"
 ```
 
 软件包名称是 `luma-infra`，安装后的命令仍为 `luma`。
@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 安装固定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.365 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.366 sh
 ```
 
 从开发检出目录运行：
@@ -65,7 +65,7 @@ CI 可将 Luma 作为无状态控制面客户端使用，无需 SSH、Docker、C
 PR 校验：
 
 ```bash
-python -m pip install "luma-infra==0.1.365"
+python -m pip install "luma-infra==0.1.366"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -77,7 +77,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 主分支或发布部署：
 
 ```bash
-python -m pip install "luma-infra==0.1.365"
+python -m pip install "luma-infra==0.1.366"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -306,7 +306,7 @@ luma update --control-url https://luma.example.com --token <node-join-token>
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.365 --timeout 900
+luma update fleet --install-ref v0.1.366 --timeout 900
 luma update fleet --include-manager
 ```
 
@@ -566,9 +566,13 @@ luma build local . --env .env
 
 `luma build local` 根据检出目录的 `origin` 推导项目身份（没有 origin 时用 `--repo-url`），在 Control 预留项目，通过本地 Docker Buildx 构建，推送到与 `luma import` 相同的 `owner/repository` 命名空间，再走正常部署。电脑必须能访问 `build.registryHost`，认证仓库需先 Docker 登录。支持单服务清单和 Compose sidecar，以及 `--compose-sidecar`、`--platform`、`--context`、`--dockerfile`。可用 `--builder <name>` 复用支持所需平台或仓库/镜像配置的本地 Buildx builder。`--proxy <url>` 为本地基础镜像和 Dockerfile 网络访问指定 HTTP 代理，内部仓库保留在 `NO_PROXY`。本地构建和 Builder 导入都根据目标节点或区域内就绪节点推导容器架构：Darwin/ARM 构建 `linux/arm64`，同时有 amd64 与 arm64 的区域构建多平台镜像。显式 `--platform` 必须覆盖全部已解析目标架构。
 
-Control 声明 `build-queue-v1` 后，CLI 自动将仓库导入和 `build retry` 提交到每项目持久化 FIFO。本地构建使用 Control 分配的唯一标签，可并发构建上传；**上传完成后**，部署加入同一 FIFO。队列按提交顺序（本地构建为上传完成顺序），而非本地构建开始顺序。同一仓库项目一次只执行一个排队操作；其他项目可使用其他槽位，但仍受 Builder 容量和运行时部署锁约束。失败或取消不会丢弃后续任务。
+Control 声明 `build-queue-v1` 后，CLI 自动将仓库导入和 `build retry` 提交到按“仓库 + Git ref + 部署目标（选定的 Compose 文件或 manifest 名称）”区分的持久化队列。`main` 和 `dev` 即使使用同一个 Compose 文件，也不会互相取消或占用对方的构建锁。`refs/heads/main` 与 `main` 视为同一分支；未指定 ref 时使用独立的 `HEAD` 范围。同一已知目标采用最新提交优先：等待中的旧任务立即取消，运行中的旧任务收到取消请求，确认 Control 执行线程和远端子任务退出后才启动新任务。尚未识别目标的仓库导入，在同一仓库/ref 内保留 FIFO。本地请求记录当前检出分支（分离 HEAD 时记录 commit），使用 Control 分配的唯一标签，可并发构建上传；**上传完成后**，部署加入队列。队列按提交顺序（本地构建为上传完成顺序），而非本地构建开始顺序。
 
-等待时 CLI 显示构建 ID、队列位置及阻塞任务。`--timeout` 只限制客户端等待，服务端接受后关闭 CLI 不会取消任务。用 `luma build logs <id>` 查看，用 `luma build cancel <id>` 取消等待任务。队列可跨 Control 重启保留；被中断的活动任务明确标为失败，不自动重放部署副作用，重试前先检查运行时。未完成上传的本地构建仍依赖调用者电脑。每次尝试的环境值只在排队/执行期间存入私有 Control 状态，与其他尝试和公开构建历史隔离。
+远程 Builder 也为每次构建生成独立镜像标签，避免同一个 Git commit 使用不同部署配置时互相覆盖。
+
+Control 领取最早的可执行任务。繁忙或离线 Builder 的请求保留在队列中，不提前占用执行槽位，其他 Builder 和已完成本地上传的任务可以继续工作。当前每个节点 Agent 一次执行一个任务；镜像构建结束后便释放该节点的槽位，Control 可以同时继续部署。Control 默认有 4 个执行槽位，可通过 `LUMA_BUILD_QUEUE_CONCURRENCY` 设置为 1–32；增加这个值不会让单个串行 Agent 同时构建多个镜像。最终运行时变更仍使用现有的全局部署锁保护共享路由和存储；构建在等待该锁期间也能及时响应取消。
+
+等待时 CLI 显示构建 ID、当前阻塞资源上的队列位置、阻塞任务及原因（同分支/目标仍在执行、Builder 繁忙或离线、Control 槽位已满）。`--timeout` 只限制客户端等待，服务端接受后关闭 CLI 不会取消任务。用 `luma build logs <id>` 查看，用 `luma build cancel <id>` 取消等待任务。队列可跨 Control 重启保留；被中断的活动任务明确标为失败，不自动重放部署副作用，重试前先检查运行时。未完成上传的本地构建仍依赖调用者电脑。每次尝试的环境值只在排队/执行期间存入私有 Control 状态，与其他尝试和公开构建历史隔离。
 
 旧 Control 保留之前的活动构建冲突即失败限制，需同时升级 Control 和 CLI 才能排队。预构建镜像的 `deploy` 和 `compose deploy` 仍使用同步运行时锁。镜像超出预留项目仓库/标签范围的本地上传仍会被拒绝。
 

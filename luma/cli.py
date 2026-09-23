@@ -211,7 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.365 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.366 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -3323,13 +3323,19 @@ def _wait_for_queued_build(args: argparse.Namespace, client: ControlClient, resu
             continue
         failures = 0
         run = detail.get("run") or {}
-        state = (run.get("status"), run.get("queuePosition"), run.get("waitingFor"))
+        state = (run.get("status"), run.get("queuePosition"), run.get("waitingFor"), run.get("waitReason"), run.get("waitingForNode"))
         if state != last_state:
             message = f"Build {build_id}: {state[0]}"
             if state[0] == "queued":
                 message += f"; queue position {state[1] or 1}"
                 if state[2]:
                     message += f"; waiting for {state[2]}"
+                reasons = {"target": "same branch/target is still active", "builder": "builder is busy",
+                           "builder-offline": "builder is offline", "capacity": "Control execution slots are full"}
+                if state[3] in reasons:
+                    message += "; " + reasons[state[3]]
+                if state[4]:
+                    message += f" ({state[4]})"
             emit({"name": "Project deployment queue", "status": "start", "message": message, "buildRunId": build_id})
             last_state = state
         page = detail.get("eventsPage") or {}
@@ -3728,6 +3734,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         prepare_body: Dict[str, Any] = {
             "repoUrl": metadata["repoUrl"],
             "sourceRevision": metadata["revision"],
+            "ref": metadata.get("ref", ""),
             **target,
         }
         for key, value in {

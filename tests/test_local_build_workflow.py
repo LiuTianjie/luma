@@ -1,4 +1,5 @@
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,6 +23,7 @@ from luma.local_build import (
     _expose_local_docker_runtime,
     build_and_push_local_source,
     local_deployment_target,
+    local_source_metadata,
 )
 
 
@@ -85,6 +87,20 @@ class LocalBuildWorkflowTests(unittest.TestCase):
         )
         self.assertNotEqual(second["run"]["id"], build_id)
         self.assertEqual(second["upload"]["repository"], "acme/app")
+
+    def test_local_metadata_preserves_branch_across_dirty_commits(self):
+        def git(*args):
+            return subprocess.run(['git', '-C', str(self.root), *args], check=True, capture_output=True, text=True)
+        git('init', '-b', 'main')
+        git('-c', 'user.name=Luma Test', '-c', 'user.email=luma@example.com', 'commit', '--allow-empty', '-m', 'fixture')
+        main = local_source_metadata(self.root, repo_url='https://github.com/acme/app.git')
+        git('checkout', '-b', 'dev')
+        dev = local_source_metadata(self.root, repo_url='https://github.com/acme/app.git')
+        self.assertEqual((main['ref'], dev['ref']), ('main', 'dev'))
+        self.assertEqual(main['revision'], dev['revision'])
+        git('checkout', '--detach')
+        detached = local_source_metadata(self.root, repo_url='https://github.com/acme/app.git')
+        self.assertEqual(detached['ref'], git('rev-parse', 'HEAD').stdout.strip())
 
     def test_cli_exposes_local_build_as_a_build_subcommand(self):
         args = build_parser().parse_args(

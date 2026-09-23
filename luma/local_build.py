@@ -88,9 +88,10 @@ def local_source_metadata(source: Path, *, repo_url: str = "") -> Dict[str, str]
     if not resolved_repo_url:
         raise LumaError("cannot infer the project repository; pass --repo-url or configure git remote origin")
     revision = _git_output(root, "rev-parse", "HEAD")
+    ref = _git_output(root, "symbolic-ref", "--quiet", "--short", "HEAD") or revision
     if revision and _git_output(root, "status", "--porcelain"):
         revision += "-dirty"
-    return {"path": str(root), "repoUrl": resolved_repo_url, "revision": revision}
+    return {"path": str(root), "repoUrl": resolved_repo_url, "revision": revision, "ref": ref}
 
 
 def local_deployment_target(

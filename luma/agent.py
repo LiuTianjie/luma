@@ -4005,6 +4005,10 @@ def build_image(
         if cancel_event is not None and cancel_event.is_set():
             raise BuilderTaskCanceled("build-image task canceled")
         sha = gitops.head_commit(src)
+        # A commit can be built with different refs, sidecars, arguments or
+        # platforms while a previous deployment still resolves its image.
+        # Each attempt owns its tag; keep the real Git SHA in source metadata.
+        image_tag = f"{sha}-{secrets.token_hex(8)}"
 
         docker_config = Path(workdir) / "docker-config"
         _write_docker_auth_config(docker_config, _auth_for_host(registry_auth, push_host))
@@ -4016,7 +4020,7 @@ def build_image(
             else _find_luma_deployment_manifest(src)
         )
         if deployment_manifest and deployment_manifest[0] == "compose":
-            return _build_compose_images(
+            result = _build_compose_images(
                 src=src,
                 sidecar_path=deployment_manifest[1],
                 docker=docker,
@@ -4024,13 +4028,15 @@ def build_image(
                 registry_host=registry_host,
                 push_host=push_host,
                 repo=repo,
-                sha=sha,
+                sha=image_tag,
                 proxy=proxy or "",
                 build_timeout=build_timeout,
                 payload=payload,
                 progress=progress,
                 cancel_event=cancel_event,
             )
+            result["sha"] = sha
+            return result
 
         manifest_path = deployment_manifest[1] if deployment_manifest else None
         manifest_text = manifest_path.read_text(encoding="utf-8") if manifest_path else ""
@@ -4087,7 +4093,7 @@ def build_image(
             push_host=push_host,
             registry_host=registry_host,
             repo=repo,
-            sha=sha,
+            sha=image_tag,
             context_dir=context_dir,
             dockerfile_path=dockerfile_path,
             platform=platform,

@@ -106,9 +106,10 @@ class DeployWorkflowTests(unittest.TestCase):
     def test_first_local_build_records_after_completion(self):
         self.client.prepare_local_build.return_value = {'run': {'id': 'local-id'}, 'upload': {'registryHost': 'builder:5000', 'repository': 'acme/app', 'tag': 'abc', 'platform': 'linux/amd64'}}
         self.client.complete_local_build.return_value = {'service': 'app', 'image': 'builder:5000/acme/app:abc'}
-        with patch('luma.local_build.local_source_metadata', return_value={'path': str(self.root), 'repoUrl': 'https://github.com/acme/app.git', 'revision': 'abc'}), patch('luma.local_build.build_and_push_local_source', return_value={'image': 'builder:5000/acme/app:abc'}):
+        with patch('luma.local_build.local_source_metadata', return_value={'path': str(self.root), 'repoUrl': 'https://github.com/acme/app.git', 'revision': 'abc', 'ref': 'dev'}), patch('luma.local_build.build_and_push_local_source', return_value={'image': 'builder:5000/acme/app:abc'}):
             code, _, error, _ = self.invoke('build', 'local', '.')
         self.assertEqual(code, 0, error)
+        self.assertEqual(self.client.prepare_local_build.call_args.args[0]['ref'], 'dev')
         saved = handle_workflow_get(self.token, 'app')['workflow']
         self.assertEqual(saved['recipe']['method'], 'local-build')
         self.assertEqual(saved['repoKey'], 'github.com/acme/app')

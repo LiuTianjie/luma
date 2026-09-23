@@ -545,6 +545,7 @@ class ControlClient:
             "version": version,
             "capabilities": capabilities or [],
             "waitSeconds": max(timeout - 5, 1),
+            "activeTaskId": "",  # This endpoint is polled only by the idle serial agent.
         }
         if metrics:
             body["metrics"] = metrics

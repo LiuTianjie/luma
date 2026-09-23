@@ -15410,7 +15410,51 @@ class GithubImportTests(unittest.TestCase):
             )
 
         self.assertIn("name: nested-app", result["manifest"])
-        self.assertEqual(result["image"], "100.66.177.70:5000/acme/app:abc123")
+        self.assertRegex(result["image"], r"^100\.66\.177\.70:5000/acme/app:abc123-[a-f0-9]{16}$")
+
+    def test_remote_build_attempts_do_not_overwrite_same_commit_images(self):
+        from luma.agent import build_image
+
+        for kind in ("service", "compose"):
+            with self.subTest(kind=kind):
+                def fake_clone(_url, dest, **_kwargs):
+                    dest.mkdir(parents=True)
+                    (dest / "Dockerfile").write_text("FROM busybox\n", encoding="utf-8")
+                    if kind == "compose":
+                        (dest / "luma.compose.yml").write_text(
+                            "name: app\ncompose: docker-compose.yml\nregion: cn\n", encoding="utf-8"
+                        )
+                        (dest / "docker-compose.yml").write_text(
+                            "services:\n  web:\n    build: .\n    image: acme/app:local\n"
+                            "  worker:\n    image: acme/app:local\n", encoding="utf-8"
+                        )
+                    else:
+                        (dest / ".luma.yml").write_text(
+                            "name: app\nimage: placeholder\nregion: cn\nexposure: none\n", encoding="utf-8"
+                        )
+
+                with patch("luma.gitops.clone", side_effect=fake_clone), patch(
+                    "luma.gitops.head_commit", return_value="abc123"
+                ), patch("luma.agent._docker_binary", return_value="docker"), patch(
+                    "luma.agent._docker_buildx_available", return_value=True
+                ), patch("luma.agent._ensure_buildx_builder", return_value="luma-builder"), patch(
+                    "luma.agent._run_process_streaming", return_value=Mock(code=0, output="pushed\n")
+                ) as build:
+                    results = [build_image({
+                        "repoUrl": "https://github.com/acme/app", "ref": ref,
+                        "registryHost": "registry:5000", "pushHost": "registry:5000", "repo": "acme/app",
+                    }) for ref in ("main", "dev", "main")]
+
+                self.assertEqual(len({result["image"] for result in results}), 3)
+                for result, call in zip(results, build.call_args_list):
+                    self.assertEqual(result["sha"], "abc123")
+                    self.assertRegex(result["image"], r"^registry:5000/acme/app:abc123-[a-f0-9]{16}$")
+                    command = call.args[0]
+                    self.assertEqual(command[command.index("-t") + 1], result["image"])
+                    if kind == "compose":
+                        services = yaml.safe_load(result["composeContent"])["services"]
+                        self.assertEqual(services["web"]["image"], result["image"])
+                        self.assertEqual(services["worker"]["image"], result["image"])
 
     def test_build_image_prefers_root_manifest_over_nested_compose_manifest(self):
         from luma.agent import build_image
@@ -15483,7 +15527,7 @@ class GithubImportTests(unittest.TestCase):
         compose = yaml.safe_load(result["composeContent"])
         self.assertEqual(result["kind"], "compose")
         self.assertIn("name: app-stack", result["manifest"])
-        self.assertEqual(compose["services"]["web"]["image"], "100.66.177.70:5000/acme/app:abc123")
+        self.assertRegex(compose["services"]["web"]["image"], r"^100\.66\.177\.70:5000/acme/app:abc123-[a-f0-9]{16}$")
         self.assertNotIn("build", compose["services"]["web"])
         self.assertEqual(compose["services"]["redis"]["image"], "redis:7-alpine")
 
@@ -15613,7 +15657,8 @@ class GithubImportTests(unittest.TestCase):
             )
 
         compose = yaml.safe_load(result["composeContent"])
-        expected = "100.66.177.70:5000/acme/app:abc123"
+        expected = result["image"]
+        self.assertRegex(expected, r"^100\.66\.177\.70:5000/acme/app:abc123-[a-f0-9]{16}$")
         self.assertEqual(compose["services"]["web"]["image"], expected)
         self.assertEqual(compose["services"]["worker"]["image"], expected)
         self.assertEqual(
@@ -15654,7 +15699,7 @@ class GithubImportTests(unittest.TestCase):
         compose = yaml.safe_load(result["composeContent"])
         self.assertEqual(result["kind"], "compose")
         self.assertIn("name: app-stack", result["manifest"])
-        self.assertEqual(compose["services"]["web"]["image"], "100.66.177.70:5000/acme/app:abc123")
+        self.assertRegex(compose["services"]["web"]["image"], r"^100\.66\.177\.70:5000/acme/app:abc123-[a-f0-9]{16}$")
         self.assertNotIn("build", compose["services"]["web"])
 
     def test_build_image_rejects_ambiguous_same_priority_luma_manifests(self):

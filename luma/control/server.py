@@ -323,8 +323,20 @@ _CONTROL_PROCESS_INSTANCE_ID = f"control-{secrets.token_hex(16)}"
 def _serialize_deploy(func: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        with _DEPLOY_LOCK:
+        body = kwargs.get("body") or (args[1] if len(args) > 1 and isinstance(args[1], dict) else {})
+        source = body.get("gitSource") if isinstance(body, dict) else None
+        build_id = str(source.get("buildRunId") or "") if isinstance(source, dict) else ""
+        while True:
+            if build_id and _build_run_cancel_requested(build_id):
+                raise LumaError("build canceled while waiting for runtime deployment")
+            if _DEPLOY_LOCK.acquire(timeout=0.25):
+                break
+        try:
+            if build_id and _build_run_cancel_requested(build_id):
+                raise LumaError("build canceled while waiting for runtime deployment")
             return func(*args, **kwargs)
+        finally:
+            _DEPLOY_LOCK.release()
 
     return wrapper
 
@@ -481,6 +493,7 @@ def _update_agent_heartbeat(
     *,
     config: Any | None = None,
     state: Dict[str, Any] | None = None,
+    observed_at: float | None = None,
 ) -> list[Dict[str, Any]]:
     agent = _node_agent_record(record)
     capabilities = body.get("capabilities")
@@ -500,8 +513,15 @@ def _update_agent_heartbeat(
         }
     )
     if isinstance(body.get("activeTaskId"), str):
-        agent["activeTaskId"] = body["activeTaskId"].strip()
-        agent["activeTaskObservedAt"] = int(time.time())
+        active_id = body["activeTaskId"].strip()
+        receipt = (state.get("agentTasks") or {}).get(active_id) if state is not None else None
+        # A busy heartbeat can arrive after its completion report and even
+        # after the next lease. It must not replace a newer ownership view.
+        if not isinstance(receipt, dict) or receipt.get("status") not in {"succeeded", "failed", "canceled", "timeout"}:
+            agent["activeTaskId"] = active_id
+            # Waiting for the database must not turn an older idle request
+            # into fresh proof that a subsequently timed-out child exited.
+            agent["activeTaskObservedAt"] = int(observed_at if observed_at is not None else time.time())
     if isinstance(metrics, dict):
         agent["metrics"] = _agent_metrics(metrics)
         agent["metricsCollectedAt"] = int(time.time())
@@ -1803,7 +1823,8 @@ def _sanitize_git_source(source: Dict[str, Any]) -> Dict[str, Any]:
     return cleaned
 
 
-def _expire_stale_local_build_runs(runs: Dict[str, Any], now: int) -> None:
+def _expire_stale_local_build_runs(runs: Dict[str, Any], now: int) -> bool:
+    changed = False
     active_values = getattr(runs, "active_values", None)
     candidates = active_values({"running", "canceling"}) if callable(active_values) else runs.values()
     for run in candidates:
@@ -1819,26 +1840,42 @@ def _expire_stale_local_build_runs(runs: Dict[str, Any], now: int) -> None:
             run["message"] = "local build lease expired before upload completed"
             run["updatedAt"] = now
             run["completedAt"] = now
+            changed = True
+    return changed
 
 
 def _require_build_project_available(
-    runs: Dict[str, Any], project_key: str, *, current_run_id: str = ""
+    runs: Dict[str, Any],
+    project_key: str,
+    *,
+    current_run_id: str = "",
+    source: str = "",
+    body: Dict[str, Any] | None = None,
+    queue_state: Dict[str, Any] | None = None,
 ) -> None:
-    if not project_key:
+    from .build_queue import _current_runs, _identity, identities_conflict, queue_identity
+    incoming = queue_identity(
+        {"projectKey": project_key, "source": source, "request": body or {}},
+        body,
+    )
+    if not incoming:
         return
     active_values = getattr(runs, "active_values", None)
     candidates = (
         ((str(run.get("id") or ""), run) for run in active_values({"queued", "running", "canceling", "finalizing"}))
         if callable(active_values) else runs.items()
     )
+    if queue_state is not None:
+        candidates = ((run["id"], run) for run in _current_runs(queue_state))
     for run_id, run in candidates:
         if str(run_id) == current_run_id or not isinstance(run, dict):
             continue
-        if str(run.get("projectKey") or "") != project_key:
+        existing = _identity(queue_state, run) if queue_state is not None else queue_identity(run)
+        if not identities_conflict(existing, incoming):
             continue
-        if str(run.get("status") or "") in {"queued", "running", "canceling", "finalizing"}:
+        if run.get("queueExecuting") or str(run.get("status") or "") in {"queued", "running", "canceling", "finalizing"}:
             raise LumaError(
-                f"project {project_key} already has an active build: {run_id}; "
+                f"deployment target already has an active build: {run_id}; "
                 "wait for it to finish or cancel it before starting another build"
             )
 
@@ -1867,7 +1904,9 @@ def _create_build_run(
             if str(parent.get("status") or "") in {"queued", "running", "canceling", "finalizing"}:
                 raise LumaError("an active build cannot be retried; wait for it to finish or cancel it first")
         if queued_work is None and not (mode == "local" and body.get("queue") is True):
-            _require_build_project_available(runs, project_key)
+            _require_build_project_available(runs, project_key, source=source, body=body, queue_state=state)
+        from .build_queue import queue_identity
+        ident = queue_identity({"projectKey": project_key, "source": source, "request": body}, body)
         runs[run_id] = {
             "id": run_id,
             "status": "running",
@@ -1881,6 +1920,9 @@ def _create_build_run(
             "createdAt": now,
             "updatedAt": now,
         }
+        if ident:
+            runs[run_id]["queueKey"] = ident
+            runs[run_id]["queueIdentityVersion"] = 2
         if queued_work is not None:
             from .build_queue import attach
             attach(state, runs[run_id], "remote", queued_work)
@@ -1929,6 +1971,10 @@ def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | No
             return
         current_status = str(run.get("status") or "")
         if current_status in {"succeeded", "failed", "canceled"}:
+            # A failure progress event can precede executor cleanup. Finish its
+            # history timestamps without resurrecting or changing the outcome.
+            if not run.get("completedAt"):
+                run.update(completedAt=now, updatedAt=now)
             return
         final_status = "canceled" if current_status in {"canceling", "canceled"} and status != "canceled" else status
         run["status"] = final_status
@@ -2182,6 +2228,7 @@ def _reconcile_interrupted_agent_tasks(
     active_task_id: str,
     *,
     now: int | None = None,
+    observed_at: float | None = None,
 ) -> None:
     """Fail running tasks that the node agent no longer owns.
 
@@ -2197,6 +2244,10 @@ def _reconcile_interrupted_agent_tasks(
 
     now = int(time.time()) if now is None else now
     tasks = _agent_tasks(state)
+    active_receipt = tasks.get(active_task_id)
+    if isinstance(active_receipt, dict) and active_receipt.get("status") in {"succeeded", "failed", "canceled", "timeout"}:
+        return  # Delayed heartbeat from the previous task is not a restart.
+    active_leased_at = int(active_receipt.get("leasedAt") or 0) if isinstance(active_receipt, dict) else 0
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     for task_id, task in tasks.items():
         task_node_name = str(task.get("nodeName") or "") if isinstance(task, dict) else ""
@@ -2208,10 +2259,11 @@ def _reconcile_interrupted_agent_tasks(
             or canonical_task_node != node_name
             or str(task.get("status") or "") != "running"
             or task_id == active_task_id
+            or (observed_at is not None and leased_at >= int(observed_at))
             or (
-                not active_task_id
-                and leased_at > 0
-                and now - leased_at < max(int(AGENT_TASK_HANDOFF_GRACE_SECONDS), 1)
+                leased_at > 0
+                and (now - leased_at < max(int(AGENT_TASK_HANDOFF_GRACE_SECONDS), 1)
+                     or active_leased_at > 0 and leased_at >= active_leased_at)
             )
         ):
             continue
@@ -2507,6 +2559,7 @@ def _enrich_builder_analyze_lease(
 
 
 def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    observed_at = time.time()
     node_name = str(body.get("nodeName") or "").strip()
     node_id = str(body.get("nodeId") or "").strip()
     if not node_name:
@@ -2531,7 +2584,7 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                 _prune_agent_tasks(state)
                 _prune_build_runs(state)
                 normalized_container_stats = _update_agent_heartbeat(
-                    record, body, config=config, state=state
+                    record, body, config=config, state=state, observed_at=observed_at
                 )
                 # Idle serial agents poll this endpoint instead of the busy
                 # heartbeat endpoint. Their lease heartbeat therefore proves
@@ -2540,10 +2593,18 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                     state,
                     canonical_node_name,
                     str(body.get("activeTaskId") or "").strip(),
+                    observed_at=observed_at,
                 )
                 changed = True
             tasks = _agent_tasks(state)
             now = int(time.time())
+            # Concurrent/abandoned long polls may reach the same serial agent.
+            # Reserve its single slot transactionally, including handoff time.
+            active_values = getattr(tasks, "active_values", None)
+            running = active_values({"running"}) if callable(active_values) else tasks.values()
+            if any(isinstance(task, dict) and task.get("nodeName") == canonical_node_name
+                   and task.get("status") == "running" for task in running):
+                return None, changed
             for task_id in sorted(tasks):
                 task = tasks.get(task_id)
                 if not isinstance(task, dict):
@@ -2703,6 +2764,7 @@ def handle_node_agent_readiness(token: str, body: Dict[str, Any]) -> Dict[str, A
 
 
 def handle_node_agent_heartbeat(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    observed_at = time.time()
     node_name = str(body.get("nodeName") or "").strip()
     node_id = str(body.get("nodeId") or "").strip()
     if not node_name:
@@ -2719,11 +2781,12 @@ def handle_node_agent_heartbeat(token: str, body: Dict[str, Any]) -> Dict[str, A
         entry = _node_record_entry_for_name_or_id(nodes, node_name, node_id)
         canonical_node_name = entry[0] if entry else node_name
         record = _require_node_agent_token(state, token, node_name, node_id=node_id)
-        normalized_container_stats = _update_agent_heartbeat(record, body, config=config, state=state)
+        normalized_container_stats = _update_agent_heartbeat(record, body, config=config, state=state, observed_at=observed_at)
         _reconcile_interrupted_agent_tasks(
             state,
             canonical_node_name,
             str(body.get("activeTaskId") or "").strip(),
+            observed_at=observed_at,
         )
 
     _mutate_control_state(mutate)
@@ -3082,7 +3145,7 @@ def _queue_node_agent_task(
             run = _build_runs(current).get(build_run_id)
             if not isinstance(run, dict):
                 raise LumaError(f"build run not found: {build_run_id}")
-            if str(run.get("status") or "") in {"canceling", "canceled"}:
+            if run.get("cancelRequestedAt") or str(run.get("status") or "") in {"canceling", "canceled", "failed"}:
                 raise LumaError("build canceled")
             task["buildRunId"] = build_run_id
             run["agentTaskId"] = task_id
@@ -7722,7 +7785,7 @@ def _build_run_agent_task(
 def _build_run_cancel_requested(build_id: str) -> bool:
     from .state import load_entity
     run = load_entity("buildRuns", build_id)
-    return isinstance(run, dict) and str(run.get("status") or "") in {"canceling", "canceled"}
+    return isinstance(run, dict) and (bool(run.get("cancelRequestedAt")) or str(run.get("status") or "") in {"canceling", "canceled", "failed"})
 
 
 def handle_build_run_cancel(
@@ -7743,7 +7806,7 @@ def handle_build_run_cancel(
         if run_status in {"succeeded", "failed", "canceled"}:
             return _build_run_public(run), True
         if run_status == "canceling":
-            from .build_queue import discard
+            from .build_queue import _request_stop
             run.update(
                 status="canceled",
                 message="Canceled after operator retry",
@@ -7751,10 +7814,9 @@ def handle_build_run_cancel(
                 canceledAt=now,
                 completedAt=now,
                 updatedAt=now,
-                queueOwnerReleased=True,
             )
-            run.setdefault("queueOwnerReleasedAt", now)
-            discard(current, run)
+            # Repeating cancel is not proof that the worker or child exited.
+            _request_stop(current, run, now)
             return _build_run_public(run), False
         if run_status == "queued":
             from .build_queue import discard
@@ -13483,16 +13545,12 @@ def _reject_control_maintenance(state: Dict[str, Any]) -> None:
 
 
 def _active_build_blockers(state: Dict[str, Any]) -> list[str]:
-    runs = _build_runs(state)
+    from .build_queue import _current_runs
     statuses = {"queued", "running", "canceling", "finalizing"}
-    values = getattr(runs, "active_values", None)
-    items = list(values(statuses)) if callable(values) else [
-        run for run in runs.values()
-        if isinstance(run, dict) and str(run.get("status") or "") in statuses
-    ]
     return [
         str(run.get("id") or run.get("name") or "build")
-        for run in items if isinstance(run, dict)
+        for run in _current_runs(state)
+        if run.get("queueExecuting") or run.get("status") in statuses
     ]
 
 
