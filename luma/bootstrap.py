@@ -20,15 +20,13 @@ from .egress import ensure_mihomo_direct_domains, minimal_mihomo_config_from_url
 from .errors import LumaError
 from .io import dump_yaml, load_yaml
 from .local import LocalExecutor
-from .profiles import PROFILES, Profile
+from .profiles import Profile
 from .registry import image_uses_mutable_latest_tag, registry_host_from_image
 from .remote import RemoteExecutor
 
 
 ROOT = "/opt/luma"
-CONTROL_ENV_FILE = f"{ROOT}/control/control.env"
 TRAEFIK_DNS_TOKEN_FILE = f"{ROOT}/traefik/cloudflare-dns-token"
-CONTROL_ENV_FILE_MAX_BYTES = 64 * 1024
 DEFAULT_TRAEFIK_IMAGE = "docker.1panel.live/library/traefik:v3.6"
 DEFAULT_EGRESS_IMAGE = "docker.1panel.live/metacubex/mihomo:latest"
 DEFAULT_CONTROL_IMAGE = "ghcr.io/liutianjie/luma-control:latest"
@@ -147,177 +145,6 @@ def _control_image(config: LumaConfig) -> str:
     )
 
 
-def _parse_control_environment_file(content: bytes) -> dict[str, str]:
-    """Parse the persisted Control environment without shell evaluation.
-
-    The file is intentionally a small, strict ``NAME=value`` format.  It is
-    not a shell script: comments, ``export``, quoting, substitutions and
-    continuation lines are rejected instead of being interpreted.
-    """
-
-    from .nomad_render import CONTROL_JOB_ENV_ALLOWLIST, control_job_environment
-
-    if len(content) > CONTROL_ENV_FILE_MAX_BYTES:
-        raise LumaError("Luma Control environment file is too large")
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError:
-        raise LumaError("Luma Control environment file must be UTF-8") from None
-    if "\0" in text or "\r" in text:
-        raise LumaError("Luma Control environment file contains invalid characters")
-
-    parsed: dict[str, str] = {}
-    for line_number, line in enumerate(text.split("\n"), start=1):
-        if not line:
-            continue
-        match = re.fullmatch(r"([A-Z][A-Z0-9_]*)=(.*)", line)
-        if match is None:
-            raise LumaError(
-                f"Luma Control environment file has an invalid line at {line_number}"
-            )
-        name, value = match.groups()
-        if name not in CONTROL_JOB_ENV_ALLOWLIST:
-            raise LumaError(
-                f"Luma Control environment file key is not allowlisted: {name}"
-            )
-        if name in parsed:
-            raise LumaError(
-                f"Luma Control environment file has a duplicate key: {name}"
-            )
-        if not value:
-            raise LumaError(
-                f"Luma Control environment file value is empty: {name}"
-            )
-        parsed[name] = value
-
-    # Reuse the renderer's per-key validation and normalization so persisted
-    # settings have exactly the same contract as invocation-time settings.
-    return control_job_environment(parsed)
-
-
-def install_control_environment(
-    values: Mapping[str, str],
-    *,
-    path: Path = Path(CONTROL_ENV_FILE),
-) -> dict[str, str]:
-    """Merge validated non-secret Control settings into the manager file.
-
-    This is used by the root-owned node agent during a managed Control update.
-    The fixed destination and strict allowlist prevent the update API from
-    becoming an arbitrary file-write or secret-persistence primitive.
-    """
-
-    from .nomad_render import CONTROL_JOB_ENV_ALLOWLIST, control_job_environment
-
-    if not isinstance(values, Mapping):
-        raise LumaError("controlEnvironment must be an object")
-    supplied = {str(name): str(value) for name, value in values.items()}
-    unknown = sorted(set(supplied) - CONTROL_JOB_ENV_ALLOWLIST)
-    if unknown:
-        raise LumaError(f"controlEnvironment key is not allowlisted: {unknown[0]}")
-    if any(not value for value in supplied.values()):
-        raise LumaError("controlEnvironment values must not be empty")
-    updates = control_job_environment(supplied)
-
-    current: dict[str, str] = {}
-    if path.exists() or path.is_symlink():
-        metadata = path.lstat()
-        if path.is_symlink() or not path.is_file():
-            raise LumaError("Luma Control environment file must be a regular file")
-        if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o777 not in {0o400, 0o600}:
-            raise LumaError("Luma Control environment file ownership or mode is invalid")
-        if metadata.st_size > CONTROL_ENV_FILE_MAX_BYTES:
-            raise LumaError("Luma Control environment file is too large")
-        current = _parse_control_environment_file(path.read_bytes())
-
-    merged = {**current, **updates}
-    content = "".join(f"{name}={merged[name]}\n" for name in sorted(merged)).encode()
-    if len(content) > CONTROL_ENV_FILE_MAX_BYTES:
-        raise LumaError("Luma Control environment file is too large")
-
-    directory = path.parent
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    directory_metadata = directory.lstat()
-    if (
-        directory.is_symlink()
-        or not directory.is_dir()
-        or directory_metadata.st_uid != os.geteuid()
-        or directory_metadata.st_mode & 0o022
-    ):
-        raise LumaError("Luma Control environment directory is not private")
-    temporary = directory / f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
-    try:
-        descriptor = os.open(
-            temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-            0o600,
-        )
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        directory_descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return merged
-
-
-def _persisted_control_environment(
-    remote: Executor,
-    path: str = CONTROL_ENV_FILE,
-) -> dict[str, str]:
-    """Read the manager-owned Control environment after remote file checks."""
-
-    quoted_path = shlex.quote(path)
-    output = remote.sudo(
-        "set -euo pipefail; "
-        f"path={quoted_path}; "
-        "directory=${path%/*}; "
-        "[ ! -L \"$directory\" ] && [ -d \"$directory\" ] || { printf '%s\\n' "
-        "'Luma Control environment directory must be a real directory' >&2; exit 73; }; "
-        "directory_meta=$(stat -c '%u:%a' -- \"$directory\"); "
-        "directory_uid=${directory_meta%%:*}; directory_mode=${directory_meta#*:}; "
-        "[ \"$directory_uid\" = 0 ] && [ $((8#$directory_mode & 022)) -eq 0 ] || { "
-        "printf '%s\\n' 'Luma Control environment directory is not private' >&2; exit 73; }; "
-        "if [ ! -e \"$path\" ] && [ ! -L \"$path\" ]; then "
-        "printf '%s\\n' __LUMA_CONTROL_ENV_MISSING__; exit 0; fi; "
-        "[ ! -L \"$path\" ] || { printf '%s\\n' "
-        "'Luma Control environment file must not be a symlink' >&2; exit 73; }; "
-        "[ -f \"$path\" ] || { printf '%s\\n' "
-        "'Luma Control environment path must be a regular file' >&2; exit 73; }; "
-        "meta=$(stat -c '%u:%a:%s' -- \"$path\"); "
-        "uid=${meta%%:*}; rest=${meta#*:}; mode=${rest%%:*}; size=${rest#*:}; "
-        "[ \"$uid\" = 0 ] || { printf '%s\\n' "
-        "'Luma Control environment file must be owned by root' >&2; exit 73; }; "
-        "case \"$mode\" in 400|600) ;; *) printf '%s\\n' "
-        "'Luma Control environment file mode must be 0400 or 0600' >&2; exit 73;; esac; "
-        f"[ \"$size\" -le {CONTROL_ENV_FILE_MAX_BYTES} ] || {{ printf '%s\\n' "
-        "'Luma Control environment file is too large' >&2; exit 73; }; "
-        "base64 \"$path\" | tr -d '\\n'; printf '\\n'"
-    )
-    # Executors return text.  Treat an unconfigured test double like a missing
-    # optional file, while real executors can only return ``str`` here.
-    if not isinstance(output, str):
-        return {}
-    output = output.strip()
-    # Empty output is accepted as "not installed" for executor compatibility;
-    # the real command always emits either the marker or one base64 line.
-    if not output or output == "__LUMA_CONTROL_ENV_MISSING__":
-        return {}
-    if "\n" in output:
-        raise LumaError("Luma Control environment file reader returned invalid output")
-    try:
-        content = base64.b64decode(output, validate=True)
-    except (ValueError, binascii.Error):
-        raise LumaError("Luma Control environment file reader returned invalid data") from None
-    return _parse_control_environment_file(content)
-
-
 def _pull_image(remote: Executor, image: str) -> str:
     exists = _last_command_value(_docker(remote, f"docker image inspect {shlex.quote(image)} >/dev/null 2>&1 && echo yes || echo no"))
     if exists == "yes":
@@ -359,25 +186,12 @@ def deploy_control_stack(
     if engine != "nomad":
         raise LumaError("Nomad is the only supported deployment engine")
 
-    from .nomad_render import CONTROL_JOB_ENV_ALLOWLIST, render_control_job
+    from .nomad_render import render_control_job
 
     node = node_name or local_host_name()
-    # The manager-owned file survives CLI/process updates.  The current
-    # invocation is intentionally authoritative, which permits an operator to
-    # rotate or override one setting without first rewriting the persisted
-    # file.  Both sources are independently restricted to the Control Job
-    # allowlist and validated by render_control_job.
-    control_environment = _persisted_control_environment(remote)
-    invocation_environment = {
-        name: str(os.environ[name])
-        for name in CONTROL_JOB_ENV_ALLOWLIST
-        if str(os.environ.get(name) or "")
-    }
-    control_environment.update(invocation_environment)
     job_json = render_control_job(
         image=deploy_image,
         node_name=node,
-        control_environment=control_environment,
         allow_auto_revert=allow_auto_revert,
     )
     _step(results, emit, "Check Nomad tmpfs compatibility", lambda: _nomad_tmpfs_compat_status(remote))

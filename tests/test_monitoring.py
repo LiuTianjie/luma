@@ -1,10 +1,6 @@
 import os
 import tempfile
-import threading
 import unittest
-import urllib.error
-import urllib.request
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,7 +9,7 @@ from starlette.testclient import TestClient
 
 from luma import agent
 from luma.control import database, monitoring, server
-from luma.control.state import init_state, load_state, save_state
+from luma.control.state import init_state
 from luma.errors import LumaError
 
 
@@ -116,34 +112,12 @@ class MonitoringEndpointTests(unittest.TestCase):
             self.assertEqual(client.get("/v1/metrics", headers={"Authorization": "Bearer invalid"}).status_code, 401)
             self.assertEqual(client.get("/v1/metrics", headers={"Authorization": "Bearer " + self.state["deployToken"]}).status_code, 200)
 
-    def test_legacy_http_endpoint_has_same_auth_and_content(self):
-        httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.ControlHandler)
-        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-        thread.start()
-        try:
-            url = f"http://127.0.0.1:{httpd.server_port}/v1/metrics"
-            request = urllib.request.Request(url, headers={"Authorization": "Bearer " + self.token})
-            with urllib.request.urlopen(request, timeout=3) as response:
-                self.assertEqual(response.status, 200)
-                self.assertIn(b"luma_control_info", response.read())
-        finally:
-            httpd.shutdown()
-            httpd.server_close()
-            thread.join(3)
 
     def test_loopback_scrape_does_not_need_a_token(self):
-        httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.ControlHandler)
-        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-        thread.start()
-        try:
-            url = f"http://127.0.0.1:{httpd.server_port}/v1/metrics"
-            with urllib.request.urlopen(url, timeout=3) as response:
-                self.assertEqual(response.status, 200)
-                self.assertIn(b"luma_control_info", response.read())
-        finally:
-            httpd.shutdown()
-            httpd.server_close()
-            thread.join(3)
+        with TestClient(server.create_app(), client=("127.0.0.1", 50000)) as client:
+            response = client.get("/v1/metrics")
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("luma_control_info", response.text)
 
     def test_invalid_token_file_fails_closed(self):
         self.token_file.chmod(0o644)

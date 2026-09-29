@@ -3,7 +3,7 @@ import json
 import os
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from luma.control import metrics, metrics_api
 from luma.control.state import init_state
@@ -87,7 +87,7 @@ class MetricsBatchTests(unittest.TestCase):
             self.assertTrue(all(item["payload"]["window"] == 60 for item in result["results"]))
             read.assert_called_once()
 
-    def test_batch_route_has_asgi_and_legacy_parity_including_auth_and_limits(self):
+    def test_batch_route_enforces_auth_and_limits(self):
         from luma.control import server
 
         path = "/v1/dashboard/metrics/history/batch"
@@ -97,22 +97,13 @@ class MetricsBatchTests(unittest.TestCase):
             (self.token, {"targets": [{}] * 33}, 400),
         ]:
             with self.subTest(status=status):
-                handler = server.ControlHandler.__new__(server.ControlHandler)
-                handler.path = path
-                handler.headers = {"Authorization": f"Bearer {token}"}
-                handler._read_json = Mock(return_value=body)
-                handler._json = Mock()
-                handler._error = Mock()
-                handler.do_POST()
-                received = handler._json if status == 200 else handler._error
-                self.assertEqual(received.call_args.args[0], status)
                 request = server.Request({"type": "http", "method": "POST", "path": path,
                     "query_string": b"", "headers": [(b"authorization", f"Bearer {token}".encode())]})
                 request._body = json.dumps(body).encode()
                 response = asyncio.run(server._asgi_authenticated_post(request))
                 self.assertEqual(response.status_code, status)
                 if status == 200:
-                    self.assertEqual(json.loads(response.body)["results"], handler._json.call_args.args[1]["results"])
+                    self.assertEqual(len(json.loads(response.body)["results"]), 1)
 
 
 if __name__ == "__main__":

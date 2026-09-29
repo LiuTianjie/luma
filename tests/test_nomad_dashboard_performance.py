@@ -169,13 +169,12 @@ class NomadDashboardPerformanceTests(unittest.TestCase):
 
     def test_directory_reads_only_jobs_list_and_preserves_selector_metadata(self):
         fake = FakeApi(jobs=[job_stub("z"), job_stub("a")])
-        fake.jobs[0]["Meta"]["luma.lae"] = "true"
         with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
             rows = nomad_api.nomad_service_directory(self.config, {})
         self.assertEqual(fake.calls, ["/v1/jobs?meta=true"])
         self.assertEqual(rows, [
-            {"name": "a", "jobId": "a", "region": "cn", "compose": True, "managedBy": ""},
-            {"name": "z", "jobId": "z", "region": "cn", "compose": True, "managedBy": "lae"},
+            {"name": "a", "jobId": "a", "region": "cn", "compose": True},
+            {"name": "z", "jobId": "z", "region": "cn", "compose": True},
         ])
 
     def test_expired_enrichment_deadline_stops_queued_requests_but_allows_cache(self):

@@ -23,14 +23,6 @@ Use this reference for persistent deployments, NFS retirement, and recovery of o
 
 `luma storage migrate` only prints a manual plan. For a local destination, supply an explicit deployment/local node. It does not copy data or stop applications. `--delete-storage` is not part of a migration.
 
-## LAE Runtime Boundary
-
-For new LAE applications, unset `LUMA_LAE_RUNTIME_STORAGE_CLASS` or set it to `local`. Local host paths are derived from authenticated tenant/application identities under `/srv/luma/data/lae/tenants/`; do not accept arbitrary client host paths. Durable volume bindings retain the selected node ID before directory preparation and submission.
-
-Existing volume references retain their recorded backend when the global default changes. A default change is not migration. Inspect the current application, runtime revision, volumeRefs, job metadata and actual source before changing bindings.
-
-An application with no running allocations can still own data. For user-authorized deletion, use the supported lifecycle operation with the intended retain/delete policy. If an orphan's original storage class or platform row is already missing, first establish ownership and absence of other consumers, then perform narrowly scoped administrative cleanup with a backup and read-back. Do not recreate NFS just to satisfy an obsolete configuration or treat one authorized app deletion as permission to delete all historical applications.
-
 ## Retiring NFS
 
 - Inventory current jobs, stopped applications, LAE volume bindings, Docker NFS options and host mounts. Historical references may need preservation for recovery even after current workloads stop using NFS.

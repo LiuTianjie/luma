@@ -5,7 +5,7 @@ import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress
 import { cn } from "@/lib/utils";
 import { pageForPath } from "../routes";
 import { useRouter } from "../router";
-const pageIcons = { overview: LayoutDashboard, applications: Boxes, deployments: ScrollText, deploy: Package, builder: Package, nodes: ServerCog, storage: HardDrive, registry: Database, observability: Activity, credentials: Settings, setup: WandSparkles, lae: CloudCog, notfound: undefined };
+const pageIcons = { overview: LayoutDashboard, applications: Boxes, deployments: ScrollText, deploy: Package, builder: Package, nodes: ServerCog, storage: HardDrive, registry: Database, observability: Activity, credentials: Settings, setup: WandSparkles, notfound: undefined };
 
 export type PageMetric = {
   label: string;

@@ -106,7 +106,7 @@ luma bootstrap manager --domain luma.example.com
 
 CLI 会交互式补齐配置、准备运行环境、初始化 SQLite，并输出控制台地址、**管理令牌**和**节点加入令牌**。请妥善保管这两个令牌。
 
-如果 Manager 需要代理才能拉取默认 GHCR 镜像，请在初始化前配置 `EGRESS_SUBSCRIPTION_URL`，中国大陆服务器尤其需要确认这一点。第一台 Manager 的基础工作负载不依赖 Tailscale、Builder Registry 或可选的 LAE 应用引擎。主机与网络配置详见[初始化指南](docs/bootstrap.zh-CN.md)。
+如果 Manager 需要代理才能拉取默认 GHCR 镜像，请在初始化前配置 `EGRESS_SUBSCRIPTION_URL`，中国大陆服务器尤其需要确认这一点。第一台 Manager 的基础工作负载不依赖 Tailscale 或 Builder Registry。主机与网络配置详见[初始化指南](docs/bootstrap.zh-CN.md)。
 
 ### 3. 部署第一个服务
 
@@ -234,7 +234,7 @@ luma node join https://luma.example.com \
 | [核心概念](docs/concepts.zh-CN.md) | [入口模型](docs/exposure-model.zh-CN.md) |
 | [密钥管理](docs/secrets.zh-CN.md) | [CLI 参考](docs/luma-cli-reference.zh-CN.md) |
 | [故障排查](docs/troubleshooting.zh-CN.md) | [Control 存储与恢复](docs/control-storage.zh-CN.md) |
-| [Agent 技能](docs/agent-skill.md) | [可选的 LAE 应用引擎](docs/lae/README.md) |
+| [Agent 技能](docs/agent-skill.md) | |
 
 ## 开发与贡献
 

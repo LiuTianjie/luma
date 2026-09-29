@@ -181,7 +181,7 @@ class RegistryInventoryTests(unittest.TestCase):
         )
         self.assertEqual(result["entries"][0]["protectionStatus"], "protected")
 
-    def test_state_references_cover_deployments_builds_runtime_and_tasks(self) -> None:
+    def test_state_references_cover_deployments_builds_and_tasks(self) -> None:
         state = {
             "deployments": {
                 "services": {
@@ -192,15 +192,12 @@ class RegistryInventoryTests(unittest.TestCase):
             "buildRuns": {
                 "run-1": {"status": "succeeded", "result": {"image": "registry.internal/acme/api:build"}},
             },
-            "laeRuntime": {
-                "deployments": {"runtime-1": {"status": "ready", "images": ["registry.internal/acme/api:runtime"]}},
-            },
             "agentTasks": {
                 "task-1": {"status": "running", "payload": {"image": "registry.internal/acme/api:task"}},
             },
         }
         references = collect_state_image_references(state, "registry.internal")
-        self.assertEqual({item["kind"] for item in references}, {"deployment", "build", "lae", "agent-task"})
+        self.assertEqual({item["kind"] for item in references}, {"deployment", "build", "agent-task"})
 
     def test_policy_bounds_and_threshold_order(self) -> None:
         policy = normalize_policy({})

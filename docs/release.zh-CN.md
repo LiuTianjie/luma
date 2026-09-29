@@ -45,7 +45,7 @@ git push origin main
 手动发布标签绑定具体提交，不会给功能分支添加 `latest`，也不会改变现有的 `main-*` 或发布标签渠道。候选引用推送后再运行工作流，并验证已完成运行的 `headSha` 与准备安装的提交一致：
 
 ```bash
-BRANCH=codex/lae-foundation
+BRANCH=<candidate-branch>
 git fetch origin "$BRANCH"
 FULL_SHA="$(git rev-parse "origin/$BRANCH^{commit}")"
 SHORT_SHA="$(printf '%s' "$FULL_SHA" | cut -c1-7)"

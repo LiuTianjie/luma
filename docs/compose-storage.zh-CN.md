@@ -73,12 +73,6 @@ luma compose deploy luma.compose.yml --format ndjson
 
 应用设置保留在标准 Compose 文件中。旁车清单承载区域、暴露方式、路由及存储配置。路由字段参见[部署 YAML](deployment-yaml.md)。
 
-## LAE 运行时 {#lae-runtime}
-
-`LUMA_LAE_RUNTIME_STORAGE_CLASS` 未设置或为 `local` 时，LAE 默认使用内部本地存储。宿主机路径根据已认证的租户和应用身份生成，位于 `/srv/luma/data/lae/tenants/` 下；API 调用者不能提供任意宿主机路径。卷绑定会在数据准备和任务提交前记录归属节点 ID。重试和后续发布继续使用该节点。
-
-即使全局默认值改变，已有 LAE 卷引用仍保留记录的存储后端。将环境变量设为 `local` 不会迁移旧 NFS 数据。迁移期间仍支持显式指定此前配置的 NFS 类。
-
 ## 迁移现有 NFS 数据 {#migrate-existing-nfs-data}
 
 更换后端不会自动复制数据。先检查实际运行的挂载：旧配置可能与早期渲染器实际挂载的内容不同。记录应用节点、源目录或 Docker 卷、数字用户与组归属、权限、数据大小及当前任务和配置。

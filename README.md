@@ -106,7 +106,7 @@ luma bootstrap manager --domain luma.example.com
 
 The CLI prompts for missing values, provisions the runtime, initializes SQLite, and prints the dashboard URL, **management token**, and **node join token**. Keep both tokens private.
 
-If the manager needs a proxy to pull the default GHCR image, configure `EGRESS_SUBSCRIPTION_URL` before bootstrap. This is especially relevant on mainland China hosts. Tailscale, a Builder Registry, and the optional LAE application engine are not prerequisites for the first single-manager workload. See the [bootstrap guide](docs/bootstrap.md) for network and host setup.
+If the manager needs a proxy to pull the default GHCR image, configure `EGRESS_SUBSCRIPTION_URL` before bootstrap. This is especially relevant on mainland China hosts. Tailscale and a Builder Registry are not prerequisites for the first single-manager workload. See the [bootstrap guide](docs/bootstrap.md) for network and host setup.
 
 ### 3. Run the first workload
 
@@ -234,7 +234,7 @@ Rollback restores a Nomad job version; it does not restore application data. Use
 | [Concepts](docs/concepts.md) | [Exposure model](docs/exposure-model.md) |
 | [Secrets](docs/secrets.md) | [CLI reference](docs/luma-cli-reference.md) |
 | [Troubleshooting](docs/troubleshooting.md) | [Control storage and recovery](docs/control-storage.md) |
-| [Agent skills](docs/agent-skill.md) | [Optional LAE application engine](docs/lae/README.md) |
+| [Agent skills](docs/agent-skill.md) | |
 
 ## Development and contributions
 

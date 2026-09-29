@@ -78,12 +78,6 @@ Reusing the same deployment name updates its existing job and storage owner. Cha
 
 Application settings remain in the standard Compose file. The sidecar carries region, exposure, routing and storage. See [deployment-yaml.md](deployment-yaml.md) for routing fields.
 
-## LAE Runtime
-
-LAE defaults to internal local storage when `LUMA_LAE_RUNTIME_STORAGE_CLASS` is unset or `local`. The host path is generated from the authenticated tenant and application identities under `/srv/luma/data/lae/tenants/`; API callers cannot supply arbitrary host paths. The volume binding records the owning node ID before data preparation and job submission. Retries and later releases stay on that node.
-
-Existing LAE volume references retain their recorded backend even when the global default changes. Setting the environment variable to `local` does not migrate old NFS data. An explicit previously configured NFS class remains supported during migration.
-
 ## Migrate Existing NFS Data
 
 Backend changes do not copy data automatically. First inspect the actual running mount: old configuration may differ from what an earlier renderer mounted. Record the application node, source directory or Docker volume, numeric ownership, permissions, data size and current job/configuration.

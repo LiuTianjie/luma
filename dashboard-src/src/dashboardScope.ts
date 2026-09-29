@@ -4,7 +4,7 @@ export type DashboardScope = "full" | "overview" | "applications" | "application
 
 export function dashboardScopeForPage(page: ResolvedPage, path = ""): DashboardScope {
   switch (page) {
-    case "deployments": case "registry": case "credentials": case "lae": case "notfound": return "none";
+    case "deployments": case "registry": case "credentials": case "notfound": return "none";
     case "overview": return "overview";
     case "applications":
       if (/^\/apps\/[^/]+/.test(path)) return "application";

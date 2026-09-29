@@ -56,7 +56,7 @@ the candidate ref is pushed, and verify that the completed run's `headSha`
 matches the commit you intend to install:
 
 ```bash
-BRANCH=codex/lae-foundation
+BRANCH=<candidate-branch>
 git fetch origin "$BRANCH"
 FULL_SHA="$(git rev-parse "origin/$BRANCH^{commit}")"
 SHORT_SHA="$(printf '%s' "$FULL_SHA" | cut -c1-7)"
@@ -139,9 +139,7 @@ nomad job history -p luma-control
 ```
 
 Also record a known-good Git install ref, normally the current release tag, as
-`PREVIOUS_INSTALL_REF`. Then run the candidate update on the manager. Keep the
-LAE Control environment exported in the same shell when this is an LAE-aware
-Control rollout:
+`PREVIOUS_INSTALL_REF`. Then run the candidate update on the manager:
 
 ```bash
 FULL_SHA=<verified-40-character-commit>

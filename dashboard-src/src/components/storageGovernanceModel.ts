@@ -26,5 +26,5 @@ export function storageTaskFinished(status: string): boolean {
 
 export function storageCategory(id: string, fallback: string, zh: boolean): string {
   if (!zh) return fallback;
-  return ({ database: "Manager 数据库", databaseWal: "SQLite 写入日志", databaseShm: "SQLite 共享内存", legacyConfig: "迁移前配置快照", metrics: "本地指标历史", migrationBackups: "迁移备份", builder: "Builder 源码与分析产物", registry: "Registry 镜像", buildkit: "BuildKit 缓存", trivy: "Trivy 缓存", volumes: "应用数据卷" } as Record<string, string>)[id] || fallback;
+  return ({ database: "Manager 数据库", databaseWal: "SQLite 写入日志", databaseShm: "SQLite 共享内存", legacyConfig: "迁移前配置快照", metrics: "本地指标历史", migrationBackups: "迁移备份", registry: "Registry 镜像", buildkit: "BuildKit 缓存", volumes: "应用数据卷" } as Record<string, string>)[id] || fallback;
 }

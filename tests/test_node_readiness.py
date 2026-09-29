@@ -1,10 +1,5 @@
 import copy
-import json
-import threading
-import time
 import unittest
-import urllib.request
-from http.server import ThreadingHTTPServer
 from unittest.mock import Mock, patch
 from starlette.testclient import TestClient
 
@@ -85,19 +80,3 @@ class JoinReadinessTests(unittest.TestCase):
             self.assertEqual(response.status_code, 401, response.text)
         finally:
             client.close()
-
-    def test_legacy_route_has_same_read_only_result(self):
-        httpd = ThreadingHTTPServer(('127.0.0.1', 0), server.ControlHandler)
-        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-        thread.start()
-        before = copy.deepcopy(self.state)
-        try:
-            request = urllib.request.Request(f'http://127.0.0.1:{httpd.server_port}/v1/node-agent/readiness',
-                data=json.dumps(self.body).encode(), headers={'Authorization': 'Bearer ' + self.token, 'Content-Type': 'application/json'})
-            with urllib.request.urlopen(request, timeout=3) as response:
-                self.assertFalse(json.load(response)['ready'])
-            self.assertEqual(self.state, before)
-        finally:
-            httpd.shutdown()
-            httpd.server_close()
-            thread.join(3)

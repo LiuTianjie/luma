@@ -8,7 +8,6 @@ export type PageId =
   | "deploy"
   | "builder"
   | "deployments"
-  | "lae"
   | "observability"
   | "storage"
   | "registry"
@@ -44,7 +43,6 @@ export type DashboardViewModel = {
   deployServiceTemplates: number;
   deployComposeTemplates: number;
   healthScore: number;
-  laeAdminAvailable: boolean;
 };
 
 function readyNode(node: DashboardNode) {
@@ -102,6 +100,5 @@ export function createDashboardViewModel(payload: DashboardPayload | null): Dash
     deployServiceTemplates: DEPLOY_TEMPLATES.filter((template) => template.mode === "service").length,
     deployComposeTemplates: DEPLOY_TEMPLATES.filter((template) => template.mode === "compose").length,
     healthScore: healthScore(activeNodes, nodes.length, healthyServices, services.length, counts),
-    laeAdminAvailable: Boolean(payload?.readiness?.laeAdmin?.available),
   };
 }

@@ -81,12 +81,10 @@ type SecretGroup = {
 };
 
 const GLOBAL_SECRET_GROUPS = [
-  { id: "platform", prefixes: ["LAE_", "LUMA_"], zh: "Luma / LAE", en: "Luma / LAE", zhDescription: "平台控制面与应用引擎", enDescription: "Platform control plane and application engine" },
-  { id: "ai", prefixes: ["ARK_", "OPENAI_", "ANTHROPIC_", "DEEPSEEK_", "ITOOL_TECH_ARK_"], zh: "AI 模型", en: "AI models", zhDescription: "模型、推理服务与 Agent", enDescription: "Models, inference services, and agents" },
-  { id: "source", prefixes: ["CODEX_GITEA_", "GITEA_", "GITHUB_", "GITLAB_"], zh: "代码与仓库", en: "Source control", zhDescription: "Git Provider、Webhook 与仓库访问", enDescription: "Git providers, webhooks, and repository access" },
+  { id: "platform", prefixes: ["LUMA_"], zh: "Luma", en: "Luma", zhDescription: "平台控制面", enDescription: "Platform control plane" },
+  { id: "ai", prefixes: ["ARK_", "OPENAI_", "ANTHROPIC_", "DEEPSEEK_"], zh: "AI 模型", en: "AI models", zhDescription: "模型、推理服务与 Agent", enDescription: "Models, inference services, and agents" },
+  { id: "source", prefixes: ["GITEA_", "GITHUB_", "GITLAB_"], zh: "代码与仓库", en: "Source control", zhDescription: "Git Provider、Webhook 与仓库访问", enDescription: "Git providers, webhooks, and repository access" },
   { id: "network", prefixes: ["CLOUDFLARE_", "TAILSCALE_", "TRAEFIK_"], zh: "网络与域名", en: "Network and DNS", zhDescription: "边缘网络、DNS 与流量入口", enDescription: "Edge network, DNS, and ingress" },
-  { id: "granary", prefixes: ["GRANARY_"], zh: "Granary", en: "Granary", zhDescription: "Granary 服务与数据层", enDescription: "Granary services and data layer" },
-  { id: "itool", prefixes: ["ITOOL_TECH_"], zh: "iTool.tech", en: "iTool.tech", zhDescription: "iTool.tech 产品与支付配置", enDescription: "iTool.tech product and billing config" },
   { id: "delivery", prefixes: ["SMTP_", "MAIL_", "EMAIL_", "WECHAT_", "ALIPAY_", "STRIPE_"], zh: "通知与支付", en: "Delivery and billing", zhDescription: "邮件、通知与支付渠道", enDescription: "Email, notifications, and payment channels" },
 ] as const;
 

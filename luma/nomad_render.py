@@ -22,15 +22,13 @@ import json
 import math
 import re
 import urllib.parse
-from pathlib import PurePosixPath
 from typing import Any, Dict, List, Mapping, Sequence
 
 from .config import LumaConfig
 from .compose import render_storage_class_volume, resolve_storage_mounts
 from .errors import LumaError
 from .observe_instrument import OBSERVE_STACK, apply_env as apply_observe_env, pin_observe_placement
-from .registry import normalize_registry_host
-from .service import ServiceSpec, slugify, tcp_entrypoint_name, tcp_relay_publish_port
+from .service import ServiceSpec, slugify
 
 # Nomad requires CPU (MHz) and MemoryMB on every task. These match Nomad's own
 # defaults so an unspecified manifest behaves like a small container.
@@ -79,217 +77,6 @@ HOST_PORT_EXPOSURES = {"tailscale-relay", "tcp-relay"}
 NOMAD_TAILSCALE_META_KEY = "luma_tailscale_ip"
 NOMAD_TAILSCALE_SERVICE_ADDRESS = f"${{meta.{NOMAD_TAILSCALE_META_KEY}}}"
 NOMAD_LOCAL_HOST_SERVICE_ADDRESS = "__luma_nomad_host__"
-
-CONTROL_JOB_FILE_ENV_NAMES = frozenset(
-    {
-        "LUMA_LAE_SERVICE_PRINCIPALS_FILE",
-        "LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE",
-        "LUMA_CREDENTIAL_BROKER_TOKEN_FILE",
-        "LUMA_OBJECT_SOURCE_BROKER_TOKEN_FILE",
-        "LUMA_LAE_ADMIN_TOKEN_FILE",
-        "LUMA_LAE_PLAN_SIGNING_KEYS_FILE",
-    }
-)
-CONTROL_JOB_URL_ENV_NAMES = frozenset(
-    {
-        "LUMA_CREDENTIAL_BROKER_URL",
-        "LUMA_OBJECT_SOURCE_BROKER_URL",
-        "LUMA_LAE_ADMIN_API_URL",
-    }
-)
-CONTROL_JOB_TIMEOUT_ENV_NAMES = frozenset(
-    {
-        "LUMA_CREDENTIAL_BROKER_TIMEOUT_SECONDS",
-        "LUMA_OBJECT_SOURCE_BROKER_TIMEOUT_SECONDS",
-        "LUMA_LAE_ADMIN_TIMEOUT_SECONDS",
-    }
-)
-CONTROL_JOB_LAE_CONFIG_ENV_NAMES = frozenset(
-    {
-        "LUMA_BUILDER_ANALYZE_IMAGE_DIGEST",
-        "LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY",
-        "LUMA_LAE_BUILDER_ALLOW_BASIC_REGISTRY",
-        "LUMA_LAE_BUILDER_REGISTRY_INSECURE",
-        "LUMA_LAE_BUILDER_EXTERNAL_REGISTRIES_JSON",
-        "LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON",
-        "LUMA_LAE_RUNTIME_STORAGE_CLASS",
-        "LUMA_LAE_RUNTIME_VERIFY_TIMEOUT_SECONDS",
-    }
-)
-CONTROL_JOB_ENV_ALLOWLIST = frozenset(
-    {
-        *CONTROL_JOB_FILE_ENV_NAMES,
-        *CONTROL_JOB_URL_ENV_NAMES,
-        *CONTROL_JOB_TIMEOUT_ENV_NAMES,
-        *CONTROL_JOB_LAE_CONFIG_ENV_NAMES,
-    }
-)
-
-
-def _control_job_file_path(value: str) -> str:
-    candidate = value.strip()
-    if (
-        candidate != value
-        or not candidate
-        or len(candidate) > 1024
-        or any(character in candidate for character in ("\0", "\n", "\r"))
-    ):
-        raise LumaError("Luma Control file path is invalid")
-    path = PurePosixPath(candidate)
-    raw_parts = candidate.split("/")
-    if (
-        not path.is_absolute()
-        or path == PurePosixPath("/opt/luma/control")
-        or path.parts[:4] != ("/", "opt", "luma", "control")
-        or any(part in {"", ".", ".."} for part in raw_parts[1:])
-    ):
-        raise LumaError(
-            "Luma Control file paths must stay within /opt/luma/control"
-        )
-    return candidate
-
-
-def _control_job_https_url(name: str, value: str) -> str:
-    candidate = value.strip()
-    if (
-        candidate != value
-        or not candidate
-        or len(candidate) > 2048
-        or any(character in candidate for character in ("\0", "\n", "\r", " ", "\t"))
-    ):
-        raise LumaError(f"{name} must be a closed HTTPS URL")
-    try:
-        parsed = urllib.parse.urlsplit(candidate)
-        port = parsed.port
-    except ValueError:
-        raise LumaError(f"{name} must be a closed HTTPS URL") from None
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-        or port is not None and not 1 <= port <= 65535
-        or name == "LUMA_LAE_ADMIN_API_URL" and parsed.path not in {"", "/"}
-    ):
-        raise LumaError(f"{name} must be a closed HTTPS URL")
-    return candidate.rstrip("/") if parsed.path == "/" else candidate
-
-
-def _control_job_timeout(name: str, value: str) -> str:
-    candidate = value.strip()
-    try:
-        timeout = float(candidate)
-    except (TypeError, ValueError):
-        raise LumaError(f"{name} is invalid") from None
-    minimum = 1.0 if name == "LUMA_LAE_ADMIN_TIMEOUT_SECONDS" else 0.1
-    if (
-        candidate != value
-        or not candidate
-        or len(candidate) > 32
-        or not math.isfinite(timeout)
-        or not minimum <= timeout <= 30.0
-    ):
-        raise LumaError(f"{name} is invalid")
-    return candidate
-
-
-def _control_job_lae_config(name: str, value: str) -> str:
-    """Validate non-secret LAE policy values copied into Luma Control."""
-
-    candidate = value.strip()
-    if candidate != value or not candidate or len(candidate) > 4096:
-        raise LumaError(f"{name} is invalid")
-    if name == "LUMA_BUILDER_ANALYZE_IMAGE_DIGEST":
-        if re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", candidate) is None:
-            raise LumaError(f"{name} must be an immutable image digest")
-        return candidate
-    if name in {
-        "LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY",
-        "LUMA_LAE_BUILDER_ALLOW_BASIC_REGISTRY",
-        "LUMA_LAE_BUILDER_REGISTRY_INSECURE",
-    }:
-        if candidate not in {"0", "1"}:
-            raise LumaError(f"{name} must be 0 or 1")
-        return candidate
-    if name == "LUMA_LAE_BUILDER_EXTERNAL_REGISTRIES_JSON":
-        try:
-            registries = json.loads(candidate)
-        except json.JSONDecodeError:
-            raise LumaError(f"{name} is invalid") from None
-        if (
-            not isinstance(registries, list)
-            or len(registries) > 32
-            or any(not isinstance(item, str) for item in registries)
-        ):
-            raise LumaError(f"{name} is invalid")
-        try:
-            normalized = [normalize_registry_host(item) for item in registries]
-        except LumaError:
-            raise LumaError(f"{name} is invalid") from None
-        if (
-            normalized != registries
-            or len(set(normalized)) != len(normalized)
-            or normalized != sorted(normalized)
-        ):
-            raise LumaError(f"{name} must be a sorted exact registry list")
-        return json.dumps(normalized, separators=(",", ":"), ensure_ascii=True)
-    if name == "LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON":
-        try:
-            nodes = json.loads(candidate)
-        except json.JSONDecodeError:
-            raise LumaError(f"{name} is invalid") from None
-        if (
-            not isinstance(nodes, list)
-            or not nodes
-            or len(nodes) > 64
-            or any(not isinstance(item, str) for item in nodes)
-            or len(nodes) != len(set(nodes))
-            or nodes != sorted(nodes)
-            or any(
-                re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", item)
-                is None
-                for item in nodes
-            )
-        ):
-            raise LumaError(f"{name} must be a sorted exact node list")
-        return json.dumps(nodes, separators=(",", ":"), ensure_ascii=True)
-    if name == "LUMA_LAE_RUNTIME_STORAGE_CLASS":
-        if re.fullmatch(r"[a-z][a-z0-9-]{0,62}", candidate) is None:
-            raise LumaError(f"{name} is invalid")
-        return candidate
-    if name == "LUMA_LAE_RUNTIME_VERIFY_TIMEOUT_SECONDS":
-        try:
-            timeout = int(candidate)
-        except ValueError:
-            raise LumaError(f"{name} is invalid") from None
-        if str(timeout) != candidate or not 30 <= timeout <= 3600:
-            raise LumaError(f"{name} is invalid")
-        return candidate
-    raise LumaError(f"{name} is not an allowlisted LAE Control setting")
-
-
-
-def control_job_environment(values: Mapping[str, str] | None) -> Dict[str, str]:
-    """Return the only host values allowed into the luma-control Nomad task."""
-
-    result: Dict[str, str] = {}
-    source = values or {}
-    for name in sorted(CONTROL_JOB_ENV_ALLOWLIST):
-        raw = source.get(name)
-        if raw is None or str(raw) == "":
-            continue
-        value = str(raw)
-        if name in CONTROL_JOB_FILE_ENV_NAMES:
-            result[name] = _control_job_file_path(value)
-        elif name in CONTROL_JOB_URL_ENV_NAMES:
-            result[name] = _control_job_https_url(name, value)
-        elif name in CONTROL_JOB_TIMEOUT_ENV_NAMES:
-            result[name] = _control_job_timeout(name, value)
-        else:
-            result[name] = _control_job_lae_config(name, value)
-    return result
 
 
 def uses_traefik_tags(service: ServiceSpec) -> bool:
@@ -468,7 +255,6 @@ def _resolve_env_value(value: Any, *, secrets: Mapping[str, str] | None = None, 
         return v
 
     return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", repl, str(value))
-
 
 
 def _compose_host_network(services: Dict[str, Any], deployment: Any) -> bool:
@@ -837,7 +623,6 @@ def render_control_job(
     *,
     image: str,
     node_name: str,
-    control_environment: Mapping[str, str] | None = None,
     allow_auto_revert: bool = True,
     as_json: bool = True,
 ) -> str | Dict[str, Any]:
@@ -855,7 +640,6 @@ def render_control_job(
         "DOCKER_API_VERSION": "1.44",
         "LUMA_CONTROL_CONFIG": "/opt/luma/luma.yaml",
         "LUMA_CONTROL_STATE_DIR": "/opt/luma/control",
-        **control_job_environment(control_environment),
     }
     environment.setdefault("LUMA_OBSERVE_URL", "http://127.0.0.1:8428")
     job = {

@@ -100,26 +100,19 @@ class DashboardScopeTests(unittest.TestCase):
         self.stats.assert_called_once()
         self.routes.assert_not_called()
 
-    def test_sync_and_asgi_routes_pass_scope_app_and_pagination(self):
+    def test_route_passes_scope_app_and_pagination(self):
         import asyncio
         import json
-        from unittest.mock import Mock
         query = "scope=applications&offset=50&limit=25&q=a%26b"
         with patch.object(server, "handle_dashboard", return_value={"scope": "applications"}) as dashboard:
-            handler = server.ControlHandler.__new__(server.ControlHandler)
-            handler.path = "/v1/dashboard?" + query
-            handler.headers = {"Authorization": "Bearer token"}
-            handler._json = Mock()
-            handler.do_GET()
-            legacy_kwargs = dashboard.call_args.kwargs
             request = server.Request({"type": "http", "method": "GET", "path": "/v1/dashboard", "query_string": query.encode(), "headers": [(b"authorization", b"Bearer token")]})
             response = asyncio.run(server._asgi_authenticated_get(request))
             self.assertEqual(response.status_code, 200)
             self.assertEqual(json.loads(response.body), {"scope": "applications"})
-            self.assertEqual(dashboard.call_args.kwargs, legacy_kwargs)
-            self.assertEqual(legacy_kwargs["query"]["q"], "a&b")
-            self.assertEqual(legacy_kwargs["query"]["offset"], "50")
-            self.assertEqual(legacy_kwargs["scope"], "applications")
+            kwargs = dashboard.call_args.kwargs
+            self.assertEqual(kwargs["query"]["q"], "a&b")
+            self.assertEqual(kwargs["query"]["offset"], "50")
+            self.assertEqual(kwargs["scope"], "applications")
 
     def test_overview_preserves_service_memory_diagnostic(self):
         service = {"name": "app", "fullName": "app", "stack": "app", "status": "running", "running": 1, "desired": 1}

@@ -90,33 +90,13 @@ class StorageGovernanceTests(unittest.TestCase):
         second = governance.storage_inventory(now=self.now + 3600)
         components = {item['id']: item for item in second['components']}
         self.assertEqual(components['metrics']['growthBytes'], 5)
-        self.assertIsNone(components['builder']['bytes'])
+        self.assertIsNone(components['registry']['bytes'])
         self.assertIsNone(components['volumes']['bytes'])
         self.assertNotIn('secret', json.dumps(second))
         self.assertFalse(second['policy']['automaticDeletion'])
 
-    def test_builder_reference_digest_coverage_and_active_barrier(self):
-        digest = 'sha256:' + 'a' * 64
-        state = {'clusterId': 'test', '_storageReferenceCoverage': True, 'builderSourceSnapshots': {'s': {'digest': digest}}, 'agentTasks': {'self': {'status': 'running'}, 'build': {'status': 'running', 'node': 'builder'}}}
-        manifest = governance.builder_reference_manifest(state, 'builder', exclude_task_id='self', now=self.now)
-        self.assertEqual(manifest['protectedDigests'], [digest])
-        self.assertTrue(manifest['blockedReasons'])
-        del state['agentTasks']['build']
-        manifest = governance.builder_reference_manifest(state, 'builder', exclude_task_id='self', now=self.now)
-        self.assertFalse(manifest['blockedReasons'])
-        self.assertFalse(governance.builder_reference_manifest({})['coverageComplete'])
 
-    def test_prior_governance_inventory_never_turns_orphans_into_references(self):
-        digest = 'sha256:' + 'b' * 64
-        state = {'clusterId': 'test', '_storageReferenceCoverage': True, 'agentTasks': {'inventory': {'action': 'builder-storage', 'status': 'succeeded', 'result': {'files': [{'digest': digest}]}, 'payload': {'references': {'protectedDigests': [digest]}}}}}
-        manifest = governance.builder_reference_manifest(state, now=self.now)
-        self.assertFalse(manifest['protectedDigests'])
-        self.assertFalse(manifest['blockedReasons'])
-        self.assertFalse(governance.builder_reference_manifest({'clusterId': 'test'})['coverageComplete'])
 
-    def test_timed_out_builds_are_terminal_and_other_nodes_do_not_block(self):
-        state = {'clusterId': 'test', '_storageReferenceCoverage': True, 'builderTasks': {'finished': {'status': 'timed_out'}}, 'agentTasks': {'expired': {'status': 'timeout'}}, 'buildRuns': {'other': {'status': 'running', 'buildNode': 'other'}}}
-        self.assertFalse(governance.builder_reference_manifest(state, 'builder')['blockedReasons'])
 
     def test_identical_previews_reuse_plan_and_metadata_expires(self):
         self.seed(buildRuns={'old': self.run_record('old')})

@@ -29,21 +29,16 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping
 
 from . import __version__
-from .builder_build_executor import build_plan, builder_build_available
-from .builder_executor import (
-    BuilderCleanupFailed,
-    BuilderTaskCanceled,
-    analyze_source,
-    builder_analyze_available,
-    open_builder_analysis_artifact,
-)
 from .errors import LumaError
-from .builder_storage import execution_guard as builder_storage_execution_guard
 from .installer import luma_installer_command
 from .installation import runtime_record, installer_environment
 from .local import LocalExecutor, LocalResult
 from .registry_management import RegistryHttpClient, validate_digest, validate_repository
 from .service import slugify
+
+class TaskCanceled(LumaError):
+    """Raised when Control has requested cancellation of a running task."""
+
 
 DEFAULT_AGENT_CONFIG = Path("/opt/luma/node-agent/agent.json")
 DEFAULT_BUILDX_CONFIG = Path.home() / ".local" / "state" / "luma" / "buildx"
@@ -155,19 +150,9 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
         return []
     if _docker_buildx_available():
         capabilities.append("docker-build")
-    if builder_analyze_available(os_value):
-        # Do not advertise the aggregate builder-task-v1 capability: this node
-        # implements analyze-source only.  build-plan gets its own executor and
-        # capability when that code genuinely exists.
-        capabilities.append("builder-analyze-v1")
-        capabilities.append("builder-artifact-export-v1")
-        capabilities.append("builder-storage-v1")
-    if builder_build_available(os_value):
-        # build-plan has a separate, stricter rootless BuildKit + supply-chain
-        # gate.  Never advertise the aggregate builder-task-v1 capability.
-        capabilities.append("builder-build-v1")
     if os_value == "linux" and _crane_binary():
-        # The hardened LAE Builder setup installs crane. Control uses this
+        # Builders with crane installed can copy images registry-to-registry.
+        # Control uses this
         # narrow capability to cache its own release image in the internal
         # registry before a manager rollout, avoiding a dockerd -> GHCR
         # dependency during the short control-plane replacement window.
@@ -1570,54 +1555,13 @@ def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dic
         # network error while reporting SUCCESS must not be caught and inverted
         # into a "failed" report after the host mutation already happened.
         try:
-            if str(task.get("action") or "") == "export-builder-artifact":
-                if cancel_event.is_set():
-                    raise BuilderTaskCanceled("builder artifact export canceled")
-                with builder_storage_execution_guard():
-                    export = open_builder_analysis_artifact(
-                        task.get("payload") if isinstance(task.get("payload"), dict) else {},
-                        cancel_event=cancel_event,
-                    )
-                    try:
-                        payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
-                        response = client.upload_builder_artifact(
-                            lease_id=str(payload.get("leaseId") or ""),
-                            node_name=node_name,
-                            node_id=node_id,
-                            stream=export.stream,
-                            media_type=export.media_type,
-                            digest=export.digest,
-                            size_bytes=export.size_bytes,
-                            timeout=60,
-                        )
-                        if response != {
-                            "leaseId": str(payload.get("leaseId") or ""),
-                            "accepted": True,
-                        }:
-                            raise LumaError("builder artifact upload was not accepted")
-                        result = {
-                            "leaseId": str(payload.get("leaseId") or ""),
-                            "digest": export.digest,
-                            "sizeBytes": export.size_bytes,
-                            "message": "builder artifact exported",
-                        }
-                    finally:
-                        export.close()
-            else:
-                result = execute_agent_task(
-                    task,
-                    config_path=config_path,
-                    progress=progress_reporter.submit,
-                    cancel_event=cancel_event,
-                )
-        except BuilderCleanupFailed:
-            report_result(
-                status="failed",
-                message="builder sandbox cleanup failed",
-                result={},
+            result = execute_agent_task(
+                task,
+                config_path=config_path,
+                progress=progress_reporter.submit,
+                cancel_event=cancel_event,
             )
-            return False
-        except BuilderTaskCanceled as exc:
+        except TaskCanceled as exc:
             report_result(
                 status="canceled",
                 message=str(exc),
@@ -1626,25 +1570,16 @@ def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dic
             return False
         except Exception as exc:
             status = "canceled" if cancel_event.is_set() else "failed"
-            action = str(task.get("action") or "")
-            if action == "analyze-source":
-                failure_message = "builder analyze-source failed"
-            elif action == "build-plan":
-                failure_message = "builder build-plan failed"
-            elif action == "export-builder-artifact":
-                failure_message = "builder artifact export failed"
-            else:
-                failure_message = str(exc)
             report_result(
                 status=status,
-                message="builder task canceled" if status == "canceled" else failure_message,
+                message="agent task canceled" if status == "canceled" else str(exc),
                 result={},
             )
             return False
         if cancel_event.is_set():
             report_result(
                 status="canceled",
-                message="builder task canceled",
+                message="agent task canceled",
                 result={},
             )
             return False
@@ -2238,13 +2173,6 @@ def execute_agent_task(
     progress: Callable[[Dict[str, Any]], None] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> Dict[str, Any]:
-    action = str(task.get("action") or "")
-    if action == "builder-storage":
-        from .builder_storage import execute_builder_storage
-        return execute_builder_storage(task.get("payload") if isinstance(task.get("payload"), dict) else {})
-    if action in {"analyze-source", "build-plan"}:
-        with builder_storage_execution_guard():
-            return _execute_agent_task_impl(task, config_path=config_path, progress=progress, cancel_event=cancel_event)
     return _execute_agent_task_impl(task, config_path=config_path, progress=progress, cancel_event=cancel_event)
 
 
@@ -2328,11 +2256,6 @@ def _execute_agent_task_impl(
             install_ref=str(payload.get("installRef") or ""),
             control_image=str(payload.get("controlImage") or ""),
             domain=str(payload.get("domain") or ""),
-            control_environment=(
-                payload.get("controlEnvironment")
-                if isinstance(payload.get("controlEnvironment"), dict)
-                else {}
-            ),
             watchdog_peers=[
                 str(value)
                 for value in payload.get("tailscaleWatchdogPeers") or []
@@ -2387,10 +2310,6 @@ def _execute_agent_task_impl(
         )
     if action == "build-image":
         return build_image(payload, progress=progress, cancel_event=cancel_event)
-    if action == "analyze-source":
-        return analyze_source(payload, progress=progress, cancel_event=cancel_event)
-    if action == "build-plan":
-        return build_plan(payload, progress=progress, cancel_event=cancel_event)
     if action == "configure-insecure-registry":
         return configure_insecure_registry(registry=_required(payload, "registry"))
     if action == "join-nomad":
@@ -3661,7 +3580,7 @@ def _docker_buildx_build(
 
     result = run_build()
     if result.code == 130 or (cancel_event is not None and cancel_event.is_set()):
-        raise BuilderTaskCanceled("build-image task canceled")
+        raise TaskCanceled("build-image task canceled")
     if result.code == 124:
         raise LumaError(f"docker buildx build timed out after {build_timeout}s")
     if result.code != 0 and _buildx_missing_builder_error(result.output or "", builder):
@@ -3880,7 +3799,7 @@ def _build_compose_images(
     single_build = len(build_services) == 1
     for service_name, service_body, spec in build_services:
         if cancel_event is not None and cancel_event.is_set():
-            raise BuilderTaskCanceled("build-image task canceled")
+            raise TaskCanceled("build-image task canceled")
         context_rel = str(payload.get("context") or spec.get("context") or ".").strip() or "."
         context_dir = _safe_repo_path_from(compose_path.parent, src, context_rel)
         dockerfile_rel = str(payload.get("dockerfile") or spec.get("dockerfile") or "Dockerfile").strip() or "Dockerfile"
@@ -3999,11 +3918,11 @@ def build_image(
 
     with tempfile.TemporaryDirectory(prefix="luma-build-") as workdir:
         if cancel_event is not None and cancel_event.is_set():
-            raise BuilderTaskCanceled("build-image task canceled")
+            raise TaskCanceled("build-image task canceled")
         src = Path(workdir) / "src"
         gitops.clone(repo_url, src, ref=ref, proxy=proxy, token=git_token, username=git_username)
         if cancel_event is not None and cancel_event.is_set():
-            raise BuilderTaskCanceled("build-image task canceled")
+            raise TaskCanceled("build-image task canceled")
         sha = gitops.head_commit(src)
         # A commit can be built with different refs, sidecars, arguments or
         # platforms while a previous deployment still resolves its image.
@@ -4653,7 +4572,6 @@ def start_manager_control_update(
     install_ref: str,
     control_image: str,
     domain: str,
-    control_environment: Mapping[str, str] | None = None,
     watchdog_peers: list[str] | tuple[str, ...] = (),
 ) -> Dict[str, Any]:
     if node_agent_os() != "linux" or not shutil.which("systemd-run"):
@@ -4685,13 +4603,6 @@ def start_manager_control_update(
             ).returncode == 0
             if active:
                 raise LumaError(f"manager update already running: {current_id}")
-    installed_control_environment: dict[str, str] = {}
-    if control_environment:
-        from .bootstrap import install_control_environment
-
-        installed_control_environment = install_control_environment(
-            control_environment
-        )
     update_id = f"manager-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
     unit = f"luma-{update_id}"
     log_path = root / f"{update_id}.log"
@@ -4736,7 +4647,6 @@ def start_manager_control_update(
             "controlImage": safe_image,
             "domain": safe_domain,
             "createdAt": int(time.time()),
-            "controlEnvironmentKeys": sorted(installed_control_environment),
         },
     )
     wrapper = (

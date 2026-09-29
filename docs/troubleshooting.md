@@ -31,7 +31,7 @@ luma bootstrap manager --domain luma.example.com
 | Sync control DNS | Cloudflare token, zone, or `LUMA_DNS_EDGE_TARGET` | fix `.env` / prompts, rerun bootstrap |
 | Deploy egress | subscription URL or image mirror | `luma egress setup` |
 
-`luma doctor` reports Control reachability and node readiness after the API is up. Do not configure `LUMA_LAE_*` to recover a first install; LAE is optional.
+`luma doctor` reports Control reachability and node readiness after the API is up.
 
 ## Local CLI cannot be installed
 

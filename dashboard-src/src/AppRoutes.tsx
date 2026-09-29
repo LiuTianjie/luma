@@ -14,7 +14,6 @@ const loadDeployPage = () => import("./pages/DeployPage").then((module) => ({ de
 const loadCredentialsPage = () => import("./pages/CredentialsPage").then((module) => ({ default: module.CredentialsPage }));
 const loadSetupPage = () => import("./pages/SetupPage").then((module) => ({ default: module.SetupPage }));
 const loadNodesPage = () => import("./pages/NodesPage").then((module) => ({ default: module.NodesPage }));
-const loadLaeAdminPage = () => import("./pages/LaeAdminPage").then((module) => ({ default: module.LaeAdminPage }));
 const loadObservabilityPage = () => import("./pages/ObservabilityPage").then((module) => ({ default: module.ObservabilityPage }));
 const loadStoragePage = () => import("./pages/StoragePage").then((module) => ({ default: module.StoragePage }));
 const loadRegistryPage = () => import("./pages/RegistryPage").then((module) => ({ default: module.RegistryPage }));
@@ -25,7 +24,6 @@ const DeployPage = lazy(loadDeployPage);
 const CredentialsPage = lazy(loadCredentialsPage);
 const SetupPage = lazy(loadSetupPage);
 const NodesPage = lazy(loadNodesPage);
-const LaeAdminPage = lazy(loadLaeAdminPage);
 const NotFound = lazy(() => import("./pages/NotFound").then((module) => ({ default: module.NotFound })));
 const ObservabilityPage = lazy(loadObservabilityPage);
 const StoragePage = lazy(loadStoragePage);
@@ -66,7 +64,6 @@ export function preloadPage(page: NavPage): void {
     : page === "builder" ? loadBuilderPage
     : page === "deploy" ? loadDeployPage
     : page === "nodes" ? loadNodesPage
-    : page === "lae" ? loadLaeAdminPage
     : page === "observability" ? loadObservabilityPage
     : page === "storage" ? loadStoragePage
     : page === "registry" ? loadRegistryPage
@@ -138,9 +135,6 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
       break;
     case "nodes":
       content = <NodesPage lang={lang} vm={vm} theme={theme} token={token} nodeJoin={payload.nodeJoin} controlVersion={payload.cluster?.version || ""} onSelectNode={props.onSelectNode} onTerminal={props.onTerminal} onRefresh={props.onRefresh} />;
-      break;
-    case "lae":
-      content = <LaeAdminPage lang={lang} token={token} />;
       break;
     case "observability":
       content = <ObservabilityPage lang={lang} token={token} vm={vm} />;

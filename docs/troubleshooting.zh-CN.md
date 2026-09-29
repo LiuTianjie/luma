@@ -31,7 +31,7 @@ luma bootstrap manager --domain luma.example.com
 | Sync control DNS | Cloudflare token、zone 或 `LUMA_DNS_EDGE_TARGET` | 修正 `.env` / 交互输入后重跑 bootstrap |
 | Deploy egress | 订阅 URL 或镜像源 | `luma egress setup` |
 
-控制面起来后用 `luma doctor` 看 Control 连通性和节点就绪。不要靠配置 `LUMA_LAE_*` 来恢复首次安装；LAE 是可选项。
+控制面起来后用 `luma doctor` 看 Control 连通性和节点就绪。
 
 ## 无法安装本地 CLI {#local-cli-cannot-be-installed}
 

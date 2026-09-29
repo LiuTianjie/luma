@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import io
 import json
 import unittest
 from unittest.mock import Mock, patch
@@ -271,19 +270,11 @@ class LogReaderTests(unittest.TestCase):
         context.__exit__.assert_called_once()
 
 
-
 class DashboardLogEndpointTests(unittest.TestCase):
-    def test_snapshot_query_selectors_have_asgi_legacy_parity(self):
+    def test_snapshot_query_selectors_are_forwarded(self):
         query = 'service=app&tail=99&allocation=a1&previous=true&cursor=resume'
         expected = {'tail': 99, 'since': '', 'allocation': 'a1', 'previous': True, 'cursor': 'resume'}
         with patch.object(server, 'handle_dashboard_logs', return_value={'logs': []}) as logs:
-            handler = server.ControlHandler.__new__(server.ControlHandler)
-            handler.path = '/v1/dashboard/logs?' + query
-            handler.headers = {'Authorization': 'Bearer secret'}
-            handler._json = Mock()
-            handler.do_GET()
-            self.assertEqual(logs.call_args.args, ('secret', 'app'))
-            self.assertEqual(logs.call_args.kwargs, expected)
             request = server.Request({'type': 'http', 'method': 'GET', 'path': '/v1/dashboard/logs',
                                       'query_string': query.encode(), 'headers': [(b'authorization', b'Bearer secret')]})
             response = asyncio.run(server._asgi_authenticated_get(request))
@@ -291,14 +282,8 @@ class DashboardLogEndpointTests(unittest.TestCase):
             self.assertEqual(logs.call_args.args, ('secret', 'app'))
             self.assertEqual(logs.call_args.kwargs, expected)
 
-    def test_temporary_discovery_outage_is_503_in_both_http_stacks(self):
+    def test_temporary_discovery_outage_is_503(self):
         with patch.object(server, 'handle_dashboard_logs', side_effect=LogUnavailable('upstream unavailable')):
-            handler = server.ControlHandler.__new__(server.ControlHandler)
-            handler.path = '/v1/dashboard/logs?service=app'
-            handler.headers = {'Authorization': 'Bearer secret'}
-            handler._error = Mock()
-            handler.do_GET()
-            self.assertEqual(handler._error.call_args.args[0], 503)
             request = server.Request({'type': 'http', 'method': 'GET', 'path': '/v1/dashboard/logs',
                                       'query_string': b'service=app', 'headers': [(b'authorization', b'Bearer secret')]})
             self.assertEqual(asyncio.run(server._asgi_authenticated_get(request)).status_code, 503)
@@ -355,33 +340,6 @@ class DashboardLogEndpointTests(unittest.TestCase):
                     await anext(iterator)
         asyncio.run(check())
 
-    def test_legacy_handler_streams_later_bytes_and_stops_on_broken_pipe(self):
-        client = FakeNomad()
-        reader = LogReader(client, 'app', 'web', 'app')
-        reader._read_bytes = client.read
-        buffer = io.BytesIO()
-        count = 0
-        def write(data):
-            nonlocal count
-            event = json.loads(data)
-            if event.get('status') == 'heartbeat':
-                count += 1
-                if count == 2:
-                    raise BrokenPipeError()
-                client.files['alloc/logs/web.stdout.0'] += b'later\n'
-            buffer.write(data)
-        handler = server.ControlHandler.__new__(server.ControlHandler)
-        handler.wfile = Mock(write=write)
-        handler.connection = Mock()
-        handler.send_response = Mock()
-        handler.send_header = Mock()
-        handler.end_headers = Mock()
-        with patch.object(server, '_dashboard_log_reader', return_value=reader), patch.object(server.time, 'sleep'):
-            handler._stream_service_logs('token', 'app', '', 120)
-        events = [json.loads(line) for line in buffer.getvalue().splitlines()]
-        self.assertEqual([e['line'] for e in events if 'line' in e], ['ready', 'later'])
-        self.assertTrue(handler.close_connection)
-        handler.connection.settimeout.assert_called_once_with(15)
 
 
 if __name__ == '__main__':

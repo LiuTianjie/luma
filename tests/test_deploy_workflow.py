@@ -5,10 +5,7 @@ import io
 import json
 import os
 import tempfile
-import threading
 import unittest
-import urllib.request
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -16,7 +13,7 @@ from starlette.testclient import TestClient
 
 from luma.cli import build_parser, main
 from luma.control.client import ControlClient
-from luma.control.server import ControlHandler, create_app
+from luma.control.server import create_app
 from luma.control.state import init_state, load_state, mutate_state
 from luma.control.workflows import handle_workflow_check, handle_workflow_get, handle_workflow_record
 from luma.deploy_workflow import make_recipe, validate_recipe
@@ -291,30 +288,6 @@ class DeployWorkflowTests(unittest.TestCase):
             self.assertEqual(response.json()['status'], 'match')
             self.assertIn('deployment-workflow-v1', client.get('/v1/health').json()['capabilities'])
 
-    def test_legacy_http_routes_check_and_save_workflows(self):
-        server = ThreadingHTTPServer(('127.0.0.1', 0), ControlHandler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            def request(path, body=None):
-                req = urllib.request.Request(
-                    f'http://127.0.0.1:{server.server_port}' + path,
-                    data=json.dumps(body).encode() if body is not None else None,
-                    headers={'Authorization': f'Bearer {self.token}', 'Content-Type': 'application/json'},
-                )
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    return json.load(response)
-
-            recipe = self.recipe('import', 'acme/app')
-            self.assertEqual(request('/v1/workflows/check', {'recipe': recipe})['status'], 'unrecorded')
-            request('/v1/workflows', {'name': 'app', 'recipe': recipe})
-            self.assertEqual(request('/v1/workflows/app')['workflow']['name'], 'app')
-            self.assertEqual(len(request('/v1/workflows')['workflows']), 1)
-            self.assertEqual(request('/v1/workflows/check', {'recipe': recipe})['status'], 'match')
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=2)
 
     def test_old_control_fails_with_upgrade_instruction(self):
         client = ControlClient('https://control.example', 'token')

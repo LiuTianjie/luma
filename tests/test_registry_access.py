@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from luma.errors import LumaError
-from luma.registry_access import REGISTRY_SETUP_SCRIPT, configure_join_registries, join_insecure_registries
+from luma.registry_access import REGISTRY_SETUP_SCRIPT, configure_join_registries, join_insecure_registries, registry_host_allows_http
 
 HOST = "100.66.177.70:5000"
 
@@ -183,3 +183,20 @@ class RegistryJoinIntegrationTests(unittest.TestCase):
         stream = Mock()
         _print_json({'type': 'event'}, file=stream)
         stream.flush.assert_called_once()
+
+
+class RegistryHttpFallbackTests(unittest.TestCase):
+    def test_recorded_transport_wins(self):
+        state = {"managedRegistryTransports": {"registry.example.com": "http", HOST: "https"}}
+        self.assertTrue(registry_host_allows_http(state, "registry.example.com"))
+        self.assertFalse(registry_host_allows_http(state, HOST))
+
+    def test_private_mesh_and_loopback_registries_allow_http(self):
+        for host in (HOST, "127.0.0.1:5000", "localhost:5000", "10.0.0.5:5000"):
+            with self.subTest(host=host):
+                self.assertTrue(registry_host_allows_http({}, host))
+
+    def test_public_hostnames_require_tls(self):
+        for host in ("ghcr.io", "registry.example.com:5000", "8.8.8.8:5000"):
+            with self.subTest(host=host):
+                self.assertFalse(registry_host_allows_http({}, host))

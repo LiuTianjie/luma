@@ -12,7 +12,6 @@ import time
 import unittest
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict
 from unittest.mock import MagicMock, Mock, call, patch
@@ -52,8 +51,6 @@ from luma.bootstrap import (
     _parse_nomad_version,
     _resolve_control_image,
     _traefik_ports,
-    bootstrap_node,
-    bootstrap_manager_local,
     configure_firewall,
     configure_public_port_guards,
     configure_tailscale_watchdog,
@@ -62,7 +59,6 @@ from luma.bootstrap import (
     _merge_control_config,
     install_docker,
     install_nomad_node,
-    local_host_name,
     refresh_manager_control_local,
     setup_tailscale,
     sync_nomad_tailscale_service_metadata,
@@ -70,7 +66,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _DEPLOY_LOCK, _ensure_compose_exposure_supported_on_nodes, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _tcp_relay_ports_needing_ingress_refresh, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_git_provider_list, handle_git_provider_refs, handle_git_provider_remove, handle_git_provider_repositories, handle_git_provider_set, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_remove, handle_secret_set, handle_service_history, handle_service_pull_diagnostics, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_registry_image_digest, resolve_service_image, resolve_service_node_pin
+from luma.control.server import _DEPLOY_LOCK, _ensure_compose_exposure_supported_on_nodes, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _tcp_relay_ports_needing_ingress_refresh, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_git_provider_list, handle_git_provider_refs, handle_git_provider_remove, handle_git_provider_repositories, handle_git_provider_set, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_remove, handle_secret_set, handle_service_history, handle_service_pull_diagnostics, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_registry_image_digest, resolve_service_image, resolve_service_node_pin
 from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
@@ -78,7 +74,7 @@ from luma.egress import ensure_mihomo_direct_domains, minimal_mihomo_config_from
 from luma.errors import LumaError
 from luma.local import LocalExecutor
 from luma.profiles import PROFILES
-from luma.registry import DEFAULT_DOCKER_REGISTRY, registry_host_from_image, registry_provider_type
+from luma.registry import DEFAULT_DOCKER_REGISTRY, registry_host_from_image
 from luma.service import ServiceSpec, load_service
 from luma.cli import _node_join_examples, _run_with_wait_heartbeat, build_parser, exit_local_node, main
 from luma.userconfig import configured_keys, ensure_interactive_config, load_user_config
@@ -2895,7 +2891,7 @@ class CliTests(unittest.TestCase):
     def test_linux_managed_nfs_prepare_reuses_identical_export_path(self):
         from luma.agent import _linux_prepare_nfs_command
 
-        command = _linux_prepare_nfs_command("lae-staging-runtime-nfs", "/srv/luma")
+        command = _linux_prepare_nfs_command("staging-runtime-nfs", "/srv/luma")
         self.assertIn("glob.glob('/etc/exports.d/luma-*.exports')", command)
         self.assertIn("if export_line in lines", command)
         self.assertIn("target.unlink(missing_ok=True)", command)
@@ -2904,7 +2900,7 @@ class CliTests(unittest.TestCase):
     def test_managed_volume_path_is_writable_by_arbitrary_container_uid(self):
         from luma.agent import _volume_path_command
 
-        command = _volume_path_command("/srv/luma/lae/tenant/app/volume")
+        command = _volume_path_command("/srv/luma/tenant/app/volume")
 
         self.assertIn("install -d -m 0777", command)
         self.assertIn("chmod 0777", command)
@@ -4566,84 +4562,6 @@ class NomadBootstrapTests(unittest.TestCase):
         self.assertNotIn("[start] Ensure control image pull egress", "\n".join(progress))
         self.assertIn(f'"image": "{digest_image}"', submitted["job"])
 
-    def test_control_stack_deploy_forwards_only_lae_control_allowlist(self):
-        image = "ghcr.io/liutianjie/luma-control@sha256:" + "a" * 64
-        config = LumaConfig(
-            {
-                "defaults": {
-                    "engine": "nomad",
-                    "images": {"lumaControl": image},
-                }
-            },
-            None,
-        )
-        remote = Mock()
-        submitted = {}
-        canary = "inline-manager-secret-must-not-enter-nomad-job"
-
-        def capture_job(_remote, job_json, job_id):
-            submitted["job"] = json.loads(job_json)
-            submitted["jobId"] = job_id
-            return f"Nomad job deployed: {job_id}"
-
-        environment = {
-            "LUMA_LAE_SERVICE_PRINCIPALS_FILE": "/opt/luma/control/lae-builder-principals.json",
-            "LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE": "/opt/luma/control/lae-runtime-principals.json",
-            "LUMA_CREDENTIAL_BROKER_URL": "https://broker.internal/v1/redeem",
-            "LUMA_CREDENTIAL_BROKER_TOKEN_FILE": "/opt/luma/control/broker.token",
-            "LUMA_OBJECT_SOURCE_BROKER_URL": "https://broker.internal/v1/objects",
-            "LUMA_LAE_ADMIN_API_URL": "https://lae-api.internal",
-            "LUMA_LAE_ADMIN_TOKEN_FILE": "/opt/luma/control/lae-admin.token",
-            "LUMA_LAE_SERVICE_TOKEN": canary,
-            "LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_JSON": json.dumps(
-                {"runtime": {"token": canary}}
-            ),
-            "LUMA_CREDENTIAL_BROKER_TOKEN": canary,
-            "UNRELATED_MANAGER_SECRET": canary,
-        }
-        with patch.dict(os.environ, environment, clear=True), patch(
-            "luma.bootstrap._ensure_control_image",
-            return_value=f"Control image pulled: {image}",
-        ), patch(
-            "luma.bootstrap._nomad_tmpfs_compat_status",
-            return_value="Nomad tmpfs compatibility ok",
-        ), patch(
-            "luma.bootstrap._deploy_nomad_job",
-            side_effect=capture_job,
-        ), patch(
-            "luma.bootstrap._wait_nomad_job",
-            return_value="Nomad job running: luma-control",
-        ):
-            deploy_control_stack(
-                remote,
-                config,
-                "luma.example.com",
-                require_pull_egress=False,
-                node_name="manager-1",
-            )
-
-        self.assertEqual(submitted["jobId"], "luma-control")
-        task_environment = submitted["job"]["Job"]["TaskGroups"][0]["Tasks"][0]["Env"]
-        self.assertEqual(
-            task_environment["LUMA_LAE_SERVICE_PRINCIPALS_FILE"],
-            "/opt/luma/control/lae-builder-principals.json",
-        )
-        self.assertEqual(
-            task_environment["LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE"],
-            "/opt/luma/control/lae-runtime-principals.json",
-        )
-        self.assertEqual(
-            task_environment["LUMA_CREDENTIAL_BROKER_TOKEN_FILE"],
-            "/opt/luma/control/broker.token",
-        )
-        for forbidden in (
-            "LUMA_LAE_SERVICE_TOKEN",
-            "LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_JSON",
-            "LUMA_CREDENTIAL_BROKER_TOKEN",
-            "UNRELATED_MANAGER_SECRET",
-        ):
-            self.assertNotIn(forbidden, task_environment)
-        self.assertNotIn(canary, json.dumps(submitted["job"], sort_keys=True))
 
     def test_manager_control_refresh_updates_ingress_without_recreating_other_core_stacks(self):
         config = LumaConfig(
@@ -4991,7 +4909,6 @@ class ControlApiTests(unittest.TestCase):
     def test_manager_update_handler_uses_manager_agent_transient_update_capability(self):
         from luma.control.server import handle_manager_update_start
 
-        analyzer = "100.66.177.70:5000/lae/agent-runner@sha256:" + "a" * 64
 
         state = {
             "clusterId": "luma-test",
@@ -5036,9 +4953,6 @@ class ControlApiTests(unittest.TestCase):
                 "management-token",
                 {
                     "installRef": "v0.1.173",
-                    "controlEnvironment": {
-                        "LUMA_BUILDER_ANALYZE_IMAGE_DIGEST": analyzer
-                    },
                 },
             )
 
@@ -5048,44 +4962,10 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["required_capability"], "manager-update-v1")
         self.assertEqual(run.call_args.args[3]["domain"], "luma.example.com")
         self.assertEqual(
-            run.call_args.args[3]["controlEnvironment"],
-            {"LUMA_BUILDER_ANALYZE_IMAGE_DIGEST": analyzer},
-        )
-        self.assertEqual(
             run.call_args.args[3]["tailscaleWatchdogPeers"],
             ["100.69.154.50"],
         )
 
-    def test_manager_control_environment_is_validated_merged_and_persisted(self):
-        from luma.bootstrap import install_control_environment
-
-        first_digest = "100.66.177.70:5000/lae/agent-runner@sha256:" + "a" * 64
-        second_digest = "100.66.177.70:5000/lae/agent-runner@sha256:" + "b" * 64
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "control" / "control.env"
-            installed = install_control_environment(
-                {
-                    "LUMA_BUILDER_ANALYZE_IMAGE_DIGEST": first_digest,
-                    "LUMA_LAE_RUNTIME_STORAGE_CLASS": "runtime-nfs",
-                },
-                path=path,
-            )
-            self.assertEqual(
-                installed["LUMA_BUILDER_ANALYZE_IMAGE_DIGEST"], first_digest
-            )
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-
-            merged = install_control_environment(
-                {"LUMA_BUILDER_ANALYZE_IMAGE_DIGEST": second_digest}, path=path
-            )
-            self.assertEqual(
-                merged,
-                {
-                    "LUMA_BUILDER_ANALYZE_IMAGE_DIGEST": second_digest,
-                    "LUMA_LAE_RUNTIME_STORAGE_CLASS": "runtime-nfs",
-                },
-            )
-            self.assertNotIn("export ", path.read_text(encoding="utf-8"))
 
     def test_agent_mirrors_control_image_with_proxy_and_verifies_digest(self):
         from luma.agent import mirror_control_image
@@ -5217,22 +5097,18 @@ class ControlApiTests(unittest.TestCase):
                 "pushHost": "100.66.177.70:5000",
             }
         }
-        old_insecure = _set_env("LUMA_LAE_BUILDER_REGISTRY_INSECURE", "1")
-        try:
-            with patch(
-                "luma.control.server._require_build_node", return_value="builder"
-            ), patch(
-                "luma.control.server._run_node_agent_task",
-                return_value={"digest": digest},
-            ) as task:
-                result = _cache_runtime_image_on_builder(
-                    LumaConfig({}, None),
-                    state,
-                    "ghcr.io/acme/private-api:latest",
-                    platform="linux/amd64",
-                )
-        finally:
-            _restore_env("LUMA_LAE_BUILDER_REGISTRY_INSECURE", old_insecure)
+        with patch(
+            "luma.control.server._require_build_node", return_value="builder"
+        ), patch(
+            "luma.control.server._run_node_agent_task",
+            return_value={"digest": digest},
+        ) as task:
+            result = _cache_runtime_image_on_builder(
+                LumaConfig({}, None),
+                state,
+                "ghcr.io/acme/private-api:latest",
+                platform="linux/amd64",
+            )
 
         self.assertEqual(result["builderNode"], "builder")
         self.assertTrue(result["cached"])
@@ -5327,7 +5203,6 @@ class ControlApiTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
-            old_insecure = _set_env("LUMA_LAE_BUILDER_REGISTRY_INSECURE", "1")
             try:
                 save_state(
                     {
@@ -5397,7 +5272,6 @@ class ControlApiTests(unittest.TestCase):
                 self.assertIn("copying layers", current["log"])
                 self.assertNotIn("proxy", current["plan"])
             finally:
-                _restore_env("LUMA_LAE_BUILDER_REGISTRY_INSECURE", old_insecure)
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
     def test_async_fleet_update_persists_node_progress_and_recovers_by_id(self):
@@ -9935,69 +9809,6 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_dashboard_handler_serves_static_assets_and_rejects_missing_token(self):
-        server = ThreadingHTTPServer(("127.0.0.1", 0), ControlHandler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        base = f"http://127.0.0.1:{server.server_address[1]}"
-        try:
-            with urllib.request.urlopen(base + "/dashboard/", timeout=5) as response:
-                self.assertEqual(response.status, 200)
-                index_body = response.read()
-                self.assertIn("Luma · 控制台".encode("utf-8"), index_body)
-                self.assertEqual(response.headers["Cache-Control"], "no-cache")
-            main_script = re.search(rb'<script[^>]+src="(/dashboard/[^\"]+\.js)"', index_body)
-            self.assertIsNotNone(main_script)
-            script_request = urllib.request.Request(
-                base + main_script.group(1).decode("utf-8"),
-                headers={"Accept-Encoding": "gzip"},
-            )
-            with urllib.request.urlopen(script_request, timeout=5) as response:
-                self.assertEqual(response.status, 200)
-                self.assertEqual(response.headers["Content-Encoding"], "gzip")
-                self.assertEqual(response.headers["Cache-Control"], "public, max-age=31536000, immutable")
-                self.assertIn(b"/v1/dashboard", gzip.decompress(response.read()))
-            image_name = next(asset_path("dashboard").glob("*.png")).name
-            with urllib.request.urlopen(base + f"/dashboard/{image_name}", timeout=5) as response:
-                self.assertEqual(response.status, 200)
-                self.assertEqual(response.headers.get_content_type(), "image/png")
-                self.assertGreater(len(response.read()), 0)
-            # A deep client-side route falls back to index.html (SPA routing) with 200.
-            with urllib.request.urlopen(base + "/dashboard/apps/granary", timeout=5) as response:
-                self.assertEqual(response.status, 200)
-                self.assertEqual(response.headers.get_content_type(), "text/html")
-                self.assertIn("Luma · 控制台".encode("utf-8"), response.read())
-            # An unknown asset path still 404s as JSON, not HTML.
-            with self.assertRaises(urllib.error.HTTPError) as missing_asset:
-                urllib.request.urlopen(base + "/dashboard/does-not-exist.js", timeout=5)
-            self.assertEqual(missing_asset.exception.code, 404)
-            missing_asset_body = missing_asset.exception.read()
-            self.assertNotIn("Luma · 控制台".encode("utf-8"), missing_asset_body)
-            self.assertEqual(json.loads(missing_asset_body.decode("utf-8"))["error"], "not found")
-            with self.assertRaises(urllib.error.HTTPError) as raised:
-                urllib.request.urlopen(base + "/v1/dashboard", timeout=5)
-            self.assertEqual(raised.exception.code, 401)
-            error_payload = json.loads(raised.exception.read().decode("utf-8"))
-            self.assertEqual(error_payload["error"], "missing bearer token")
-            self.assertEqual(error_payload["errorInfo"]["code"], "luma_error")
-            self.assertEqual(error_payload["errorInfo"]["message"], "missing bearer token")
-            self.assertTrue(error_payload["requestId"].startswith("req-"))
-            missing_request = urllib.request.Request(
-                base + "/v1/missing",
-                data=b"{}",
-                headers={"Content-Type": "application/json", "Authorization": "Bearer token"},
-                method="POST",
-            )
-            with self.assertRaises(urllib.error.HTTPError) as missing:
-                urllib.request.urlopen(missing_request, timeout=5)
-            self.assertEqual(missing.exception.code, 404)
-            missing_payload = json.loads(missing.exception.read().decode("utf-8"))
-            self.assertEqual(missing_payload["errorInfo"]["code"], "not_found")
-            self.assertEqual(missing_payload["error"], "not found")
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=5)
 
     def test_asgi_app_serves_dashboard_health_and_rejects_missing_token(self):
         from starlette.testclient import TestClient
@@ -10019,6 +9830,11 @@ class ControlApiTests(unittest.TestCase):
                     self.assertEqual(main_asset.headers["content-encoding"], "gzip")
                     self.assertEqual(main_asset.headers["cache-control"], "public, max-age=31536000, immutable")
                     self.assertIn("/v1/dashboard", main_asset.text)
+                    image_name = next(asset_path("dashboard").glob("*.png")).name
+                    image = client.get(f"/dashboard/{image_name}")
+                    self.assertEqual(image.status_code, 200)
+                    self.assertEqual(image.headers["content-type"], "image/png")
+                    self.assertGreater(len(image.content), 0)
                     # A deep client-side route falls back to index.html (SPA routing).
                     deep = client.get("/dashboard/apps/granary/logs")
                     self.assertEqual(deep.status_code, 200)
@@ -11281,7 +11097,7 @@ class ControlApiTests(unittest.TestCase):
                     result = handle_storage_set(
                         state["deployToken"],
                         {
-                            "name": "lae-staging-runtime-nfs",
+                            "name": "staging-runtime-nfs",
                             "node": "builder",
                             "path": "/srv/luma",
                             "regions": ["cn"],
@@ -11292,7 +11108,7 @@ class ControlApiTests(unittest.TestCase):
                 prepare.assert_not_called()
                 self.assertEqual(result["storageHost"]["prepared"], "host NFS export reused")
                 self.assertEqual(result["storageHost"]["reusedFrom"], "builder-registry-nfs")
-                saved = load_state()["storageClasses"]["lae-staging-runtime-nfs"]
+                saved = load_state()["storageClasses"]["staging-runtime-nfs"]
                 self.assertEqual(saved["exportName"], "builder-registry-nfs")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -11309,7 +11125,7 @@ class ControlApiTests(unittest.TestCase):
                         "node": "builder",
                         "path": "/srv/luma",
                     },
-                    "lae-staging-runtime-nfs": {
+                    "staging-runtime-nfs": {
                         "provider": "nfs",
                         "mode": "managed",
                         "node": "builder",
@@ -11328,11 +11144,11 @@ class ControlApiTests(unittest.TestCase):
                     remove_export.assert_not_called()
                     self.assertEqual(
                         first["storageHost"]["export"],
-                        "retained: shared by lae-staging-runtime-nfs",
+                        "retained: shared by staging-runtime-nfs",
                     )
 
                     second = handle_storage_remove(
-                        state["deployToken"], {"name": "lae-staging-runtime-nfs"}
+                        state["deployToken"], {"name": "staging-runtime-nfs"}
                     )
                     self.assertEqual(remove_export.call_count, 1)
                     removed_spec = remove_export.call_args.args[0]
@@ -11643,7 +11459,6 @@ class ControlApiTests(unittest.TestCase):
                         "action": "prepare-managed-nfs-host",
                         "payload": {},
                         "status": "running",
-                        "builderTaskId": "builder-orphan",
                         "buildRunId": "run-orphan",
                     },
                     "task-waiting": {
@@ -11660,14 +11475,6 @@ class ControlApiTests(unittest.TestCase):
                         "payload": {},
                         "status": "running",
                     },
-                }
-                current["builderTasks"] = {
-                    "builder-orphan": {
-                        "id": "builder-orphan",
-                        "kind": "build-plan",
-                        "status": "running",
-                        "events": [],
-                    }
                 }
                 current["buildRuns"] = {
                     "run-orphan": {
@@ -11701,11 +11508,6 @@ class ControlApiTests(unittest.TestCase):
                 )
                 self.assertTrue(saved["task-orphan"]["completedAt"])
                 recovered = load_state()
-                self.assertEqual(recovered["builderTasks"]["builder-orphan"]["status"], "failed")
-                self.assertEqual(
-                    recovered["builderTasks"]["builder-orphan"]["message"],
-                    "builder task interrupted by node agent restart",
-                )
                 self.assertEqual(recovered["buildRuns"]["run-orphan"]["status"], "failed")
                 self.assertEqual(
                     recovered["buildRuns"]["run-orphan"]["message"],
@@ -12351,7 +12153,7 @@ class ControlApiTests(unittest.TestCase):
                         "region": "cn",
                         "volumes": {
                             "pg-data": {
-                                "local": {"node": "manager", "path": "/srv/luma/lae/staging/postgres/v1"}
+                                "local": {"node": "manager", "path": "/srv/luma/staging/postgres/v1"}
                             }
                         },
                     }
@@ -12369,9 +12171,9 @@ class ControlApiTests(unittest.TestCase):
                     unittest.mock.ANY,
                     "manager",
                     "prepare-managed-volume-path",
-                    {"root": "/srv/luma/lae/staging/postgres", "relative": "v1", "preserveExisting": True},
+                    {"root": "/srv/luma/staging/postgres", "relative": "v1", "preserveExisting": True},
                 )
-                self.assertEqual(result["applied"][0]["path"], "/srv/luma/lae/staging/postgres/v1")
+                self.assertEqual(result["applied"][0]["path"], "/srv/luma/staging/postgres/v1")
                 self.assertEqual(result["applied"][0]["node"], "manager")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)

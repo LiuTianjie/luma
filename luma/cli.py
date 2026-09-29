@@ -1909,7 +1909,6 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
         print("If a step failed, fix the printed cause and rerun:")
         print(f"  luma bootstrap manager --domain {args.domain}")
         print("Layer repair: luma egress setup | luma tailscale connect | luma doctor")
-        print("LAE is optional and is not part of first install.")
         print("Join additional nodes:")
         for label, command in _node_join_examples(control_url, str(state["joinToken"])):
             print(f"  {label}: {command}")

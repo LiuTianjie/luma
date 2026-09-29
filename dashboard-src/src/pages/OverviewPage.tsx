@@ -68,7 +68,7 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
         <Alert>
           <Info />
           <AlertTitle>{zh ? "下一步：部署 hello-world" : "Next: deploy hello-world"}</AlertTitle>
-          <AlertDescription>{zh ? "集群里还没有应用。用 “hello-world 首装验证” 确认 Nomad 调度即可，不必先配 Tailscale、Registry 或 LAE。" : "No applications yet. Use “hello-world first install” to prove Nomad scheduling. Tailscale, registry, and LAE are not required."}</AlertDescription>
+          <AlertDescription>{zh ? "集群里还没有应用。用 “hello-world 首装验证” 确认 Nomad 调度即可，不必先配 Tailscale 或 Registry。" : "No applications yet. Use “hello-world first install” to prove Nomad scheduling. Tailscale and a registry are not required."}</AlertDescription>
           <AlertAction>
             <Button size="sm" onClick={() => onNavigate("deploy")}>
               <Plus data-icon="inline-start" />

@@ -71,48 +71,6 @@ def _digests(value: Any) -> set[str]:
     return result
 
 
-def builder_reference_manifest(state: dict[str, Any], node_name: str = "", *, exclude_task_id: str = "", now: float | None = None) -> dict[str, Any]:
-    """Keep every recorded digest, including retries and current/rollback config.
-
-    Old orphan files are candidates only when the complete logical Manager state
-    was supplied. No age-based expiration of source snapshot bindings is assumed.
-    """
-    reasons = []
-    reference_state = dict(state)
-    for collection in ("agentTasks", "builderTasks", "buildRuns"):
-        records = state.get(collection)
-        if isinstance(records, dict):
-            reference_state[collection] = {key: task for key, task in records.items() if str(key) != exclude_task_id and not (isinstance(task, dict) and task.get("action") == "builder-storage")}
-    protected = _digests(reference_state)
-    for collection in ("builderTasks", "agentTasks", "buildRuns"):
-        records = state.get(collection, {})
-        if not isinstance(records, dict):
-            reasons.append(f"{collection} reference collection is malformed")
-            continue
-        for task_id, task in records.items():
-            if str(task_id) == exclude_task_id:
-                continue
-            if not isinstance(task, dict):
-                reasons.append(f"{collection} contains malformed task metadata")
-                continue
-            assigned = str(task.get("nodeName") or task.get("builderNode") or task.get("buildNode") or task.get("node") or "")
-            if node_name and assigned and node_name != assigned:
-                continue
-            action = str(task.get("action") or task.get("kind") or "")
-            if action == "builder-storage":
-                continue
-            if str(task.get("status") or "").lower() not in TERMINAL:
-                reasons.append("Active or retryable tasks protect the builder store")
-    for name in ("builderSourceSnapshots", "deployments"):
-        if name in state and not isinstance(state[name], dict):
-            reasons.append(f"{name} reference collection is malformed")
-    required = ("builderTasks", "agentTasks", "buildRuns", "builderSourceSnapshots", "deployments")
-    complete = bool(state.get("clusterId")) and (state.get("_storageReferenceCoverage") is True or all(name in state for name in required))
-    if not complete:
-        reasons.append("Full Manager reference inventory was not supplied")
-    return {"protectedDigests": sorted(protected), "coverageComplete": complete and not any("malformed" in reason for reason in reasons), "collectedAt": time.time() if now is None else now, "blockedReasons": sorted(set(reasons))}
-
-
 def storage_inventory(state: dict[str, Any] | None = None, *, now: float | None = None) -> dict[str, Any]:
     now = time.time() if now is None else now
     root = state_dir()
@@ -133,7 +91,7 @@ def storage_inventory(state: dict[str, Any] | None = None, *, now: float | None 
         backup_bytes += path.stat().st_size
         backup_count += 1
     components.append({"id": "migrationBackups", "label": "Migration backups", "location": "manager", "bytes": backup_bytes, "status": "measured", "fileCount": backup_count})
-    for key, label, reason in (("builder", "Builder source / analysis artifacts", "Run an inventory task on the builder Agent"), ("registry", "Registry images", "Separate registry retention and garbage collection capability"), ("buildkit", "BuildKit cache", "Not measured by the Manager"), ("trivy", "Trivy cache", "Not measured by the Manager"), ("volumes", "Application volumes", "Outside Luma history cleanup scope")):
+    for key, label, reason in (("registry", "Registry images", "Separate registry retention and garbage collection capability"), ("buildkit", "BuildKit cache", "Not measured by the Manager"), ("volumes", "Application volumes", "Outside Luma history cleanup scope")):
         components.append({"id": key, "label": label, "location": "external", "bytes": None, "status": "unknown", "reason": reason})
     with database.transaction() as conn:
         database.ensure_initialized(conn)
@@ -166,10 +124,10 @@ def _references(conn) -> set[str]:
             for child in item:
                 visit(child)
     for row in conn.execute("SELECT kind,status,payload FROM control_entities WHERE kind NOT IN ('buildRuns','deploymentEvents')"):
-        if row["kind"] in {"agentTasks", "builderTasks"} and row["status"] in TERMINAL:
+        if row["kind"] == "agentTasks" and row["status"] in TERMINAL:
             continue
         visit(json.loads(row["payload"]))
-    for row in conn.execute("SELECT payload FROM control_config WHERE key IN ('deployments','laeRuntime','build')"):
+    for row in conn.execute("SELECT payload FROM control_config WHERE key IN ('deployments','build')"):
         visit(json.loads(row[0]))
     # Active history items can retain IDs of predecessors that they retry.
     for row in conn.execute("SELECT payload FROM control_entities WHERE kind IN ('buildRuns','deploymentEvents') AND status NOT IN (" + ",".join("?" for _ in TERMINAL) + ")", tuple(TERMINAL)):

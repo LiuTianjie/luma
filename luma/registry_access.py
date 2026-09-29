@@ -35,6 +35,29 @@ def join_insecure_registries(state: dict[str, Any]) -> list[str]:
     return sorted(hosts)
 
 
+def registry_host_allows_http(state: dict[str, Any], host: str) -> bool:
+    """Whether image copies to this managed registry may fall back to HTTP.
+
+    An explicitly recorded managed transport wins. Otherwise only registries on
+    loopback, private or Tailscale addresses (builder-local and mesh registries)
+    may use HTTP; public hostnames always require TLS.
+    """
+    normalized = normalize_registry_host(host)
+    transport = (state.get("managedRegistryTransports") or {}).get(normalized)
+    if transport in {"http", "https"}:
+        return transport == "http"
+    if normalized in join_insecure_registries(state):
+        return True
+    address = normalized.rpartition(":")[0] or normalized
+    if address == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(address.strip("[]"))
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private or ip in ipaddress.ip_network("100.64.0.0/10")
+
+
 def configure_join_registries(registries: list[str], *, executor: Any, os_name: str) -> str:
     """Configure only Linux's Docker driver; macOS Nomad nodes use exec."""
     if not isinstance(registries, list):

@@ -52,19 +52,7 @@ export function App() {
   const dashboardQuery = dashboardQueryForRoute(dashboardScope, router.path, router.search);
   const { token, payload, cluster, errors, syncStatus, lastUpdated, setToken, signOut, loadDashboard } = useDashboardData(dashboardScope, dashboardQuery);
   const { mode: themeMode, theme, setMode: setThemeMode } = useTheme();
-  const [laeAdminAvailable, setLaeAdminAvailable] = useState(false);
-  useEffect(() => {
-    if (!token) {
-      setLaeAdminAvailable(false);
-      return;
-    }
-    const available = payload?.readiness?.laeAdmin?.available;
-    if (typeof available === "boolean") setLaeAdminAvailable(available);
-  }, [payload, token]);
-  const vm = useMemo(
-    () => ({ ...createDashboardViewModel(payload), laeAdminAvailable }),
-    [payload, laeAdminAvailable],
-  );
+  const vm = useMemo(() => createDashboardViewModel(payload), [payload]);
 
   const objectRoute = parseObjectRoute(router.path);
   const editName = objectRoute?.kind === "update" ? objectRoute.name : "";
@@ -99,7 +87,6 @@ export function App() {
     || resolvedPage === "credentials"
     || resolvedPage === "setup"
     || resolvedPage === "registry"
-    || resolvedPage === "lae"
     // Observability has its own alerting/metrics requests. Do not make its
     // first paint wait for the large fleet snapshot; the snapshot only fills
     // optional node/app filters after it arrives.

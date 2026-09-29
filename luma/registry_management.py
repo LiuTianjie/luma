@@ -502,14 +502,6 @@ def collect_state_image_references(state: Mapping[str, Any], registry_host: str)
         for image in _image_values(run.get("result")):
             add(image, kind="build", source=f"build:{run_id}:{status}")
 
-    runtime = state.get("laeRuntime") if isinstance(state.get("laeRuntime"), Mapping) else {}
-    runtime_deployments = runtime.get("deployments") if isinstance(runtime.get("deployments"), Mapping) else {}
-    for runtime_ref, record in runtime_deployments.items():
-        if not isinstance(record, Mapping) or str(record.get("status") or "") in {"deleted"}:
-            continue
-        for image in _all_strings(record.get("images")):
-            add(image, kind="lae", source=f"lae:{runtime_ref}:{record.get('status') or 'unknown'}")
-
     tasks = state.get("agentTasks") if isinstance(state.get("agentTasks"), Mapping) else {}
     for task_id, task in tasks.items():
         if not isinstance(task, Mapping) or str(task.get("status") or "") not in {"queued", "running"}:

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
 
-import { AlertCircle, ChevronDown, Database, HardDrive, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertCircle, ChevronDown, Database, RefreshCw, ShieldCheck } from "lucide-react";
 import type { Lang } from "../types";
-import { executeHistoryCleanup, getHistoryCleanupPlan, getStorageInventory, getStoragePolicy, getStorageTask, previewHistoryCleanup, saveStoragePolicy, startStorageTask, type HistoryCleanupPreview, type StorageInventory, type StorageOperation, type StoragePolicy, type StorageResult, type StorageTask } from "../storageGovernanceApi";
-import { cleanupPlanGate, storageBytes, storageCategory, storageTaskFinished, storageTime } from "./storageGovernanceModel";
+import { executeHistoryCleanup, getHistoryCleanupPlan, getStorageInventory, getStoragePolicy, previewHistoryCleanup, saveStoragePolicy, type HistoryCleanupPreview, type StorageInventory, type StoragePolicy } from "../storageGovernanceApi";
+import { cleanupPlanGate, storageBytes, storageCategory, storageTime } from "./storageGovernanceModel";
 import { useConfirm } from "./ConfirmDialog";
 import { SelectControl } from "./primitives";
 import { Button } from "@/components/ui/button";
@@ -26,9 +26,6 @@ export function StorageGovernancePanel({ lang, token }: { lang: Lang; token: str
   const [policy, setPolicy] = useState<StoragePolicy | null>(null);
   const [dirty, setDirty] = useState(false);
   const [plan, setPlan] = useState<HistoryCleanupPreview | null>(null);
-  const [node, setNode] = useState("");
-  const [task, setTask] = useState<StorageTask | null>(null);
-  const [result, setResult] = useState<StorageResult | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("load");
@@ -50,49 +47,16 @@ export function StorageGovernancePanel({ lang, token }: { lang: Lang; token: str
     let live = true; setBusy("load"); setError("");
     void run(async (signal) => Promise.all([getStorageInventory(token, signal), getStoragePolicy(token, signal)])).then(([next, settings]) => {
       if (!live) return; setInventory(next); setPolicy(settings); setDirty(false);
-      setNode((previous) => next.builders?.some((item) => item.name === previous) ? previous : next.builders?.[0]?.name || "");
     }).catch((cause) => { if (live) setError(String(cause instanceof Error ? cause.message : cause)); }).finally(() => { if (live) setBusy(""); });
     return () => { live = false; };
   }, [token, revision]);
-  useEffect(() => {
-    if (!task || storageTaskFinished(task.status)) return;
-    let live = true, timer: number | undefined;
-    const poll = async () => {
-      try {
-        const next = await run((signal) => getStorageTask(token, task.id, signal));
-        if (!live) return;
-        setTask(next.task);
-        if (next.task.result) setResult(next.task.result);
-        setError("");
-        if (storageTaskFinished(next.task.status)) {
-          if (["failed", "error", "cancelled", "expired"].includes(next.task.status)) setError(next.task.error || next.task.message || txt("任务未成功完成", "Task did not complete successfully"));
-          return;
-        }
-      } catch (cause) { if (!live) return; setError(`${txt("任务状态读取失败，正在重试：", "Task status unavailable; retrying: ")}${cause instanceof Error ? cause.message : cause}`); }
-      timer = window.setTimeout(poll, 3000);
-    };
-    timer = window.setTimeout(poll, 1000);
-    return () => { live = false; window.clearTimeout(timer); };
-  }, [token, task?.id, Boolean(task && storageTaskFinished(task.status))]);
   const action = async (key: string, fn: (signal: AbortSignal) => Promise<void>) => {
     setBusy(key); setError(""); setMessage("");
     try { await run(fn); } catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { if (mounted.current) setBusy(""); }
   };
-  const taskRunning = Boolean(task && !storageTaskFinished(task.status));
-  const remote = async (operation: StorageOperation) => {
-    if (["quarantine", "restore", "purge"].includes(operation)) {
-      const verb = operation === "quarantine" ? txt("移入隔离区", "Quarantine") : operation === "purge" ? txt("永久删除", "Permanently delete") : txt("恢复文件", "Restore files");
-      if (!await confirm({ title: verb, body: <>{node} · {result?.planId}<p>{operation === "quarantine" ? txt("只处理此预览计划中的文件，宽限期内可以恢复。服务器会再次检查引用与运行中构建。", "Only files in this reviewed plan are moved. They can be restored during the grace period. The server rechecks references and running builds.") : operation === "purge" ? txt("删除隔离区中已过宽限期的文件，无法撤销。", "Delete quarantined files after the grace period. This cannot be undone.") : txt("把此计划隔离的文件恢复到原位置；冲突会由服务器拦截。", "Restore files quarantined by this plan. The server blocks path conflicts.")}</p></>, confirmLabel: verb, tone: operation === "restore" ? "neutral" : "danger" })) return;
-    }
-    await action("remote", async (signal) => {
-      const next = await startStorageTask(token, { node, operation, ...(operation === "inventory" || operation === "preview" ? {} : { planId: result?.planId, confirmed: true }) }, signal);
-      setTask(next.task); if (next.task.result) setResult(next.task.result); else if (["inventory", "preview"].includes(operation)) setResult(null);
-    });
-  };
   const gateText = (gate: string) => ({ missing: txt("需要先生成预览", "Generate a preview first"), blocked: txt("存在保护条件，当前不可清理", "Protected conditions block cleanup"), expired: txt("计划已过期，请重新预览", "Plan expired; generate a new preview"), grace: txt("宽限期内，尚不可执行", "Grace period active; execution unavailable"), ready: txt("计划可执行，服务器会再次校验", "Plan ready; server revalidates before execution") }[gate]);
   const historyGate = cleanupPlanGate(plan, now);
-  const remoteGate = cleanupPlanGate(result, now);
   const policyFields = [
     { key: "summaryDays", label: txt("构建 / 部署摘要（天）", "Build / deploy summaries (days)"), min: 7, max: 3650 },
     { key: "detailDays", label: txt("详细事件 / 日志（天）", "Detailed events / logs (days)"), min: 1, max: policy?.summaryDays || 3650 },
@@ -127,7 +91,7 @@ export function StorageGovernancePanel({ lang, token }: { lang: Lang; token: str
             <div className="flex min-w-0 flex-col gap-2"><dt className="text-sm text-muted-foreground">{txt("统计时间", "Measured at")}</dt><dd>{date(inventory.measuredAt)}</dd></div>
             <div className="flex min-w-0 flex-col gap-2"><dt className="text-sm text-muted-foreground">{txt("最近备份", "Latest backup")}</dt><dd>{date(inventory.backup?.latestAt)}</dd></div>
           </dl>
-          <p className="text-sm text-muted-foreground">{txt("此合计只包含已测量项。未知不代表 0；远端 Builder 与 Registry 需要分别盘点。", "This total includes measured components only. Unknown does not mean zero; remote builders and registries require separate inventory.")}</p>
+          <p className="text-sm text-muted-foreground">{txt("此合计只包含已测量项。未知不代表 0；Registry 需要单独盘点。", "This total includes measured components only. Unknown does not mean zero; the registry is inventoried separately.")}</p>
           {inventory.components.length ? <Table containerProps={{ tabIndex: 0, role: "region", "aria-label": txt("存储占用，可横向滚动", "Storage usage, horizontally scrollable") }} className="min-w-[720px]">
             <TableHeader><TableRow><TableHead>{txt("类别 / 位置", "Category / location")}</TableHead><TableHead>{txt("占用", "Usage")}</TableHead><TableHead>{txt("增长", "Growth")}</TableHead><TableHead>{txt("可回收", "Reclaimable")}</TableHead><TableHead>{txt("测量范围", "Measurement scope")}</TableHead></TableRow></TableHeader>
             <TableBody>{inventory.components.map((item) => <TableRow key={item.id}>
@@ -149,7 +113,7 @@ export function StorageGovernancePanel({ lang, token }: { lang: Lang; token: str
             {policyFields.map((field) => <Field key={field.key} data-disabled={Boolean(busy)} data-invalid={invalidPolicyField(field)}><FieldLabel htmlFor={`storage-policy-${field.key}`}>{field.label}</FieldLabel><Input id={`storage-policy-${field.key}`} type="number" required disabled={Boolean(busy)} min={field.min} max={field.max} step={1} value={policy[field.key]} aria-invalid={invalidPolicyField(field)} aria-describedby={invalidPolicyField(field) ? `storage-policy-${field.key}-error` : undefined} onChange={(event) => { setPolicy({ ...policy, [field.key]: Number(event.target.value) }); setDirty(true); setPlan(null); }} />{invalidPolicyField(field) ? <FieldError id={`storage-policy-${field.key}-error`}>{txt(`请输入 ${field.min}–${field.max} 之间的整数。`, `Enter an integer between ${field.min} and ${field.max}.`)}</FieldError> : null}</Field>)}
           </FieldGroup>
           {dirty ? <Alert><AlertCircle /><AlertTitle>{txt("策略尚未保存", "Unsaved policy changes")}</AlertTitle><AlertDescription>{txt("保存后才能生成新的清理预览。", "Save before generating a new cleanup preview.")}</AlertDescription></Alert> : null}
-          <FieldDescription>{txt("策略不会自动删除数据，清理需人工预览和确认。Builder 的保留边界由 Agent 单独校验。", "Policies do not delete automatically. Cleanup requires a reviewed preview and confirmation. Builder retention is validated separately by its agent.")}</FieldDescription>
+          <FieldDescription>{txt("策略不会自动删除数据，清理需人工预览和确认。", "Policies do not delete automatically. Cleanup requires a reviewed preview and confirmation.")}</FieldDescription>
           <div className="flex flex-wrap gap-2"><Button type="submit" disabled={Boolean(busy) || policyInvalid}>{busy === "policy" ? <Spinner aria-hidden="true" data-icon="inline-start" /> : null}{txt("保存策略", "Save policy")}</Button><Button variant="outline" type="button" disabled={Boolean(busy) || dirty} onClick={() => void action("preview", async (signal) => setPlan(await previewHistoryCleanup(token, signal)))}>{busy === "preview" ? <Spinner aria-hidden="true" data-icon="inline-start" /> : null}{txt("预览历史清理", "Preview history cleanup")}</Button></div>
         </form> : busy === "load" ? loadingPlaceholder : <Empty><EmptyHeader><EmptyTitle>{txt("策略尚不可用", "Retention policy unavailable")}</EmptyTitle></EmptyHeader></Empty>}
         {inventory?.historyPlans?.some((item) => item.status === "preview") ? <FieldGroup><Field className="max-w-md" data-disabled={Boolean(busy)}><FieldLabel htmlFor="storage-history-plan">{txt("重新打开保留的清理计划", "Reopen a saved cleanup plan")}</FieldLabel><SelectControl id="storage-history-plan" ariaLabel={txt("重新打开保留的清理计划", "Reopen a saved cleanup plan")} disabled={Boolean(busy)} value={plan?.planId || ""} onChange={(value) => { if (value) void action("plan", async (signal) => setPlan(await getHistoryCleanupPlan(token, value, signal))); }} options={[{ value: "", label: txt("选择计划", "Select a plan") }, ...inventory.historyPlans.filter((item) => item.status === "preview").map((item) => ({ value: item.planId, label: `${item.planId.slice(0, 12)} · ${date(item.eligibleAfter)}` }))]} /></Field></FieldGroup> : null}
@@ -169,26 +133,5 @@ export function StorageGovernancePanel({ lang, token }: { lang: Lang; token: str
       </CardContent>
     </Card>
 
-    <Card aria-busy={taskRunning || busy === "remote"}>
-      <CardHeader><CardTitle>{txt("远端产物盘点与回收", "Remote artifact inventory and reclamation")}</CardTitle><CardDescription>{txt("盘点在 Builder 后台运行。先预览，再隔离，宽限期后才能永久删除；运行中构建及不完整引用会阻止清理。", "Inventory runs in the builder background. Preview, then quarantine, then delete after the grace period. Running builds and incomplete references block cleanup.")}</CardDescription></CardHeader>
-      <CardContent className="flex min-w-0 flex-col gap-6">
-        <FieldGroup><Field className="max-w-md" data-disabled={taskRunning || Boolean(busy) || !inventory?.builders?.length}><FieldLabel htmlFor="storage-builder-node">{txt("Builder 节点", "Builder node")}</FieldLabel><SelectControl id="storage-builder-node" ariaLabel={txt("Builder 节点", "Builder node")} disabled={taskRunning || Boolean(busy) || !inventory?.builders?.length} value={node} onChange={(value) => { setNode(value); setTask(null); setResult(null); }} options={[{ value: "", label: txt("选择节点", "Select node") }, ...(inventory?.builders || []).map((builder) => ({ value: builder.name, label: builder.status ? `${builder.name} · ${builder.status}` : builder.name }))]} /></Field></FieldGroup>
-        <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={!node || Boolean(busy) || taskRunning} onClick={() => void remote("inventory")}>{txt("盘点占用", "Inspect usage")}</Button><Button type="button" disabled={!node || Boolean(busy) || taskRunning} onClick={() => void remote("preview")}>{txt("生成清理预览", "Preview cleanup")}</Button></div>
-        {inventory?.builderTasks?.some((item) => item.nodeName === node && item.result?.planId) ? <FieldGroup><Field className="max-w-md" data-disabled={Boolean(busy) || taskRunning}><FieldLabel htmlFor="storage-builder-plan">{txt("重新打开 Builder 计划", "Reopen a builder plan")}</FieldLabel><SelectControl id="storage-builder-plan" ariaLabel={txt("重新打开 Builder 计划", "Reopen a builder plan")} disabled={Boolean(busy) || taskRunning} value={task?.id || ""} onChange={(value) => { const saved = inventory.builderTasks?.find((item) => item.id === value); if (saved) { setTask(saved); setResult(saved.result || null); } }} options={[{ value: "", label: txt("选择计划任务", "Select a plan task") }, ...inventory.builderTasks.filter((item) => item.nodeName === node && item.result?.planId).map((item) => ({ value: item.id, label: `${item.result?.planId?.slice(0, 12)} · ${item.result?.operation} · ${date(item.updatedAt)}` }))]} /></Field></FieldGroup> : null}
-        {busy === "load" && !inventory ? loadingPlaceholder : !inventory?.builders?.length ? <Empty><EmptyHeader><EmptyMedia variant="icon"><HardDrive /></EmptyMedia><EmptyTitle>{txt("暂无可盘点的 Builder 节点", "No builder nodes available")}</EmptyTitle><EmptyDescription>{txt("注册并更新 Agent 后刷新。", "Register and update the agent, then refresh.")}</EmptyDescription></EmptyHeader></Empty> : null}
-        {busy === "remote" ? <Alert role="status"><Spinner aria-hidden="true" /><AlertTitle>{txt("正在提交操作", "Submitting operation")}</AlertTitle></Alert> : null}
-        {task ? <Alert role="status">{taskRunning ? <Spinner aria-hidden="true" /> : <HardDrive />}<AlertTitle className="flex flex-wrap items-center gap-2">{txt("后台任务", "Background task")}<Badge variant={taskRunning ? "secondary" : ["failed", "error", "cancelled", "expired"].includes(task.status) ? "destructive" : "outline"}>{task.status}</Badge></AlertTitle><AlertDescription><code className="break-all">{task.id}</code>{taskRunning ? <p>{txt("正在自动刷新任务状态。", "Task status refreshes automatically.")}</p> : null}</AlertDescription></Alert> : null}
-        {result ? <Card size="sm">
-          <CardHeader><CardTitle>{txt("盘点结果", "Inventory result")}</CardTitle>{result.planId ? <CardDescription><code className="break-all">{result.planId}</code></CardDescription> : null}</CardHeader>
-          <CardContent className="flex min-w-0 flex-col gap-4">
-            <dl className="grid gap-4 md:grid-cols-3"><div className="flex flex-col gap-1"><dt className="text-sm text-muted-foreground">{txt("总占用", "Total")}</dt><dd>{bytes(result.totalBytes)}</dd></div><div className="flex flex-col gap-1"><dt className="text-sm text-muted-foreground">{txt("保护占用", "Protected")}</dt><dd>{bytes(result.protectedBytes)}</dd></div><div className="flex flex-col gap-1"><dt className="text-sm text-muted-foreground">{txt("可回收", "Reclaimable")}</dt><dd>{bytes(result.reclaimableBytes)}</dd></div></dl>
-            {result.message ? <p className="text-sm text-muted-foreground">{result.message}</p> : null}
-            {result.planId || result.blockedReasons?.length ? <Alert variant={remoteGate === "blocked" ? "destructive" : "default"}><AlertCircle /><AlertTitle>{gateText(remoteGate)}</AlertTitle><AlertDescription>{result.planId ? <><p>{txt("计划过期", "Plan expires")} {date(result.expiresAt)}</p><p>{txt("可永久删除时间", "Purge after")} {date(result.eligibleAfter)}</p></> : null}{result.blockedReasons?.map((reason) => <p key={reason}>{reason}</p>)}</AlertDescription></Alert> : null}
-            {result.files?.length ? <Collapsible className="flex min-w-0 flex-col gap-3"><CollapsibleTrigger render={<Button type="button" variant="outline" className="self-start" />}><ChevronDown data-icon="inline-start" />{txt("文件明细", "File details")} ({result.files.length}{result.fileCount ? ` / ${result.fileCount}` : ""})</CollapsibleTrigger><CollapsibleContent className="flex min-w-0 flex-col gap-3"><Table containerProps={{ tabIndex: 0, role: "region", "aria-label": txt("产物文件明细，可横向滚动", "Artifact files, horizontally scrollable") }} className="min-w-[560px]"><TableHeader><TableRow><TableHead>{txt("路径", "Path")}</TableHead><TableHead>{txt("占用", "Bytes")}</TableHead><TableHead>{txt("状态", "Status")}</TableHead></TableRow></TableHeader><TableBody>{result.files.slice(0, 200).map((file, index) => <TableRow key={`${file.path}-${index}`}><TableCell><code>{file.path}</code></TableCell><TableCell>{bytes(file.bytes)}</TableCell><TableCell><Badge variant="outline">{file.status}</Badge></TableCell></TableRow>)}</TableBody></Table>{result.truncated || result.filesTruncated || result.files.length > 200 ? <p className="text-sm text-muted-foreground">{txt("仅显示部分文件；清理严格使用服务器保存的完整计划。", "Partial listing. Cleanup uses the complete server-held plan.")}</p> : null}</CollapsibleContent></Collapsible> : null}
-          </CardContent>
-          {result.planId && (result.operation === "preview" || result.operation === "quarantine") ? <CardFooter className="flex-wrap gap-2">{result.operation === "preview" ? <Button type="button" disabled={Boolean(busy) || taskRunning || remoteGate !== "ready"} onClick={() => void remote("quarantine")}>{txt("隔离已预览文件", "Quarantine reviewed files")}</Button> : <><Button type="button" variant="outline" disabled={Boolean(busy) || taskRunning} onClick={() => void remote("restore")}>{txt("恢复隔离文件", "Restore quarantined files")}</Button><Button type="button" variant="destructive" disabled={Boolean(busy) || taskRunning || remoteGate !== "ready"} onClick={() => void remote("purge")}>{txt("永久删除隔离文件", "Purge quarantined files")}</Button></>}</CardFooter> : null}
-        </Card> : null}
-      </CardContent>
-    </Card>
   </div>;
 }

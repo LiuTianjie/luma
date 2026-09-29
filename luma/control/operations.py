@@ -28,21 +28,9 @@ def dispatch(token: str, method: str, path: str, body: dict[str, Any] | None = N
         from . import storage_governance
         from . import server
         resource = path.removeprefix("/v1/governance/")
-        if resource == "builder" and method == "POST":
-            return server.handle_builder_storage_request(token, body)
-        if resource.startswith("builder/") and method == "GET":
-            return server.handle_builder_storage_status(token, resource.removeprefix("builder/"))
         result = storage_governance.dispatch(method, resource, body=body, query=query)
         if resource == "inventory" and method == "GET":
             state = load_runtime_state()
-            nodes = state.get("nodes", {})
-            result["builders"] = [{"name": name, "status": server._node_agent_status(record)}
-                for name, record in nodes.items() if isinstance(record, dict)
-                and "builder-storage-v1" in (record.get("agent", {}).get("capabilities") or [])]
-            tasks = state.get("agentTasks", {})
-            items = [task for task in tasks.values() if isinstance(task, dict) and task.get("action") == "builder-storage"]
-            items.sort(key=lambda task: int(task.get("createdAt") or 0), reverse=True)
-            result["builderTasks"] = [server._builder_storage_public_task(task) for task in items[:50]]
             from . import database
             conn = database.connect()
             try:

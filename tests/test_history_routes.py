@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from luma.control import server
 from luma.errors import LumaError
@@ -21,48 +20,32 @@ class HistoryRouteTests(unittest.TestCase):
         ('/v1/deployments/history/deploy-1', 'get_deployment', ('deploy-1',)),
     )
 
-    def call_legacy(self, path, query, token='management'):
-        handler = server.ControlHandler.__new__(server.ControlHandler)
-        handler.path = path + ('?' + query if query else '')
-        handler.headers = {'Authorization': 'Bearer ' + token}
-        handler._json = Mock()
-        handler._error = Mock()
-        handler.do_GET()
-        return handler
-
     def call_asgi(self, path, query, token='management'):
         request = server.Request({'type': 'http', 'method': 'GET', 'path': path,
                                   'query_string': query.encode(),
                                   'headers': [(b'authorization', ('Bearer ' + token).encode())]})
         return asyncio.run(server._asgi_authenticated_get(request))
 
-    def test_all_history_routes_forward_identical_flat_queries_in_both_stacks(self):
+    def test_all_history_routes_forward_flat_queries(self):
         query = 'limit=10&limit=25&cursor=page%2Btwo&app=api&status=failed&source=build&since=10&until=20'
         expected = {'limit': '25', 'cursor': 'page+two', 'app': 'api', 'status': 'failed', 'source': 'build', 'since': '10', 'until': '20'}
         for path, function, args in self.routes:
             with self.subTest(path=path), patch.object(server, 'load_auth_state', return_value={'deployToken': 'management'}), patch.object(server, 'load_state', side_effect=AssertionError('history auth must not hydrate entities')), patch.object(server.control_history, function, return_value={'page': {'hasMore': False}}) as adapter:
-                handler = self.call_legacy(path, query)
-                handler._json.assert_called_once_with(200, {'page': {'hasMore': False}})
-                self.assertEqual(adapter.call_args.args, (*args, expected))
                 response = self.call_asgi(path, query)
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(adapter.call_args.args, (*args, expected))
-                self.assertEqual(adapter.call_count, 2)
+                self.assertEqual(adapter.call_count, 1)
 
     def test_authentication_rejects_join_and_wrong_tokens_before_any_history_query(self):
         for path, function, _args in self.routes:
             for token in ('join-token', 'wrong'):
                 with self.subTest(path=path, token=token), patch.object(server, 'load_auth_state', return_value={'deployToken': 'management', 'joinToken': 'join-token'}), patch.object(server.control_history, function) as adapter:
-                    handler = self.call_legacy(path, 'limit=invalid&cursor=invalid', token)
-                    self.assertEqual(handler._error.call_args.args[0], 401)
                     response = self.call_asgi(path, 'limit=invalid&cursor=invalid', token)
                     self.assertEqual(response.status_code, 401)
                     adapter.assert_not_called()
 
-    def test_invalid_pagination_is_400_in_both_stacks_after_auth(self):
+    def test_invalid_pagination_is_400_after_auth(self):
         with patch.object(server, 'load_auth_state', return_value={'deployToken': 'management'}):
-            handler = self.call_legacy('/v1/history', 'limit=101')
-            self.assertEqual(handler._error.call_args.args[0], 400)
             self.assertEqual(self.call_asgi('/v1/history', 'limit=101').status_code, 400)
 
     def test_direct_legacy_handler_calls_keep_optional_query_arguments(self):
