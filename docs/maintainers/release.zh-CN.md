@@ -12,7 +12,7 @@ npm ci
 bash scripts/check-luma.sh
 ```
 
-检查涵盖版本同步、生成的 CLI 参考、根目录下全部 `unittest` 测试、控制台行为测试、类型检查、构建和空白字符。修改 CLI 参数后，运行 `python scripts/generate-cli-reference.py` 并提交更新后的参考文档。LAE 使用独立工作区和 CI（`cd lae && make check`）。这些检查验证源码和构建产物，不代表已验证线上集群。两个发布工作流还会在发布镜像或包之前，拒绝与包版本不匹配的发布标签。
+检查涵盖版本同步、生成的 CLI 参考、根目录下全部 `unittest` 测试、控制台行为测试、类型检查、构建和空白字符。修改 CLI 参数后，运行 `python scripts/generate-cli-reference.py` 并提交更新后的参考文档。这些检查验证源码和构建产物，不代表已验证线上集群。两个发布工作流还会在发布镜像或包之前，拒绝与包版本不匹配的发布标签。
 
 ## 推荐发布流程 {#recommended-release}
 
@@ -70,7 +70,7 @@ docker buildx imagetools inspect "$CONTROL_IMAGE"
 
 ### 首次从 JSON 升级到 SQLite {#first-json-to-sqlite-upgrade}
 
-首次使用 SQLite 的版本需要一个短暂的 Control 维护窗口。开始更新前，暂停新的部署和构建请求，等待正在运行的构建结束。记录当前 Control 任务定义与镜像、CLI 安装引用、入口基线，并对 `/opt/luma/control`、`/opt/luma/luma.yaml` 及[Control 存储](control-storage.md)中说明的外部配置进行私密备份。
+首次使用 SQLite 的版本需要一个短暂的 Control 维护窗口。开始更新前，暂停新的部署和构建请求，等待正在运行的构建结束。记录当前 Control 任务定义与镜像、CLI 安装引用、入口基线，并对 `/opt/luma/control`、`/opt/luma/luma.yaml` 及[Control 存储](../control-storage.zh-CN.md)中说明的外部配置进行私密备份。
 
 新版 CLI 在角色识别和镜像准备阶段只读取旧配置，不进行导入。预取 Control 镜像后，安装器仅停止 `luma-control` Nomad 任务，等待其分配实例确认终止。出现未知、丢失或仍在运行的实例、Nomad 查询失败或超时，都会中止导入。此次存储切换不会停止 Nomad、Traefik 或应用任务。
 
@@ -91,7 +91,7 @@ PREVIOUS_CONTROL_IMAGE="$(nomad job inspect -json luma-control | \
 nomad job history -p luma-control
 ```
 
-还应将已验证可用的 Git 安装引用（通常是当前发布标签）记录为 `PREVIOUS_INSTALL_REF`。然后在 Manager 上更新候选版本。若此次发布的 Control 支持 LAE，请在同一个 shell 中保留已导出的 LAE Control 环境变量：
+还应将已验证可用的 Git 安装引用（通常是当前发布标签）记录为 `PREVIOUS_INSTALL_REF`。然后在 Manager 上更新候选版本：
 
 ```bash
 FULL_SHA=<verified-40-character-commit>

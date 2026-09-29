@@ -21,7 +21,7 @@ Collector and Traefik share the manager host. Scrapes and OTLP stay on loopback,
 ## App instrumentation
 
 After luma-observe is deployed, Control injects official OTel env into later
-native, Compose and LAE jobs:
+native and Compose jobs:
 
 ```
 OTEL_SERVICE_NAME=<stack>-<task>

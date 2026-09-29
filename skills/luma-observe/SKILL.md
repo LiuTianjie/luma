@@ -22,7 +22,7 @@ stack; the page is empty until `luma-observe` is active.
 - Traefik Prometheus/OTLP loopback listeners
 - Questions about auto-instrumentation or an observe SDK
 
-Do not use this skill for Dashboard node CPU/disk presets, Nomad job YAML for ordinary apps, or LAE tenant observability.
+Do not use this skill for Dashboard node CPU/disk presets or Nomad job YAML for ordinary apps.
 
 ## Invariants
 

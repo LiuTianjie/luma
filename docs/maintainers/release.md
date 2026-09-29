@@ -16,7 +16,7 @@ bash scripts/check-luma.sh
 The gate checks synchronized versions, the generated CLI reference, all root
 `unittest` tests, Dashboard behavior tests, types/build and whitespace. After changing CLI
 arguments, run `python scripts/generate-cli-reference.py` and commit the updated
-reference. LAE keeps its separate workspace/CI (`cd lae && make check`). These
+reference. These
 checks validate source and build artifacts; they do not validate a live cluster.
 Both publishing workflows additionally reject release tags that do not match
 the package version, before any image or package publication.
@@ -88,7 +88,7 @@ The first release using SQLite requires a short Control maintenance window.
 Pause new deploy/build requests and wait for active builds before starting the
 update. Capture the current Control job spec/image, CLI install ref, ingress
 baseline and a private backup of `/opt/luma/control`, `/opt/luma/luma.yaml` and
-the external configuration described in [Control storage](control-storage.md).
+the external configuration described in [Control storage](../control-storage.md).
 
 The updated CLI reads legacy configuration without importing it during role
 detection or image preparation. After prefetching the Control image, the

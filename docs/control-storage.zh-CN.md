@@ -2,7 +2,7 @@
 
 Luma Control 在单个 Manager 使用本地 SQLite，作为 Control 状态及索引化运维记录的权威存储。目录必须位于支持 SQLite 锁和 WAL 的本地文件系统，不支持 NFS，不提供多活动 Manager。
 
-新的 `luma bootstrap manager` 自动直接初始化 SQLite，无中间 `control.json`、独立数据库服务、连接字符串或迁移命令。使用 Python 标准库 `sqlite3`；CLI 安装器创建虚拟环境，Control 镜像使用 Python 基础镜像。
+新的 `luma bootstrap` 自动直接初始化 SQLite，无中间 `control.json`、独立数据库服务、连接字符串或迁移命令。使用 Python 标准库 `sqlite3`；CLI 安装器创建虚拟环境，Control 镜像使用 Python 基础镜像。
 
 默认数据库为 `/opt/luma/control/control.sqlite3`。可在 Control 进程环境设置 `LUMA_CONTROL_STATE_DIR` 更改目录。`control.sqlite3-wal`、`control.sqlite3-shm` 是 SQLite 运行时辅助文件，不能独立备份。
 
@@ -38,7 +38,7 @@ python -m luma.control.maintenance restore /secure-backups/control-2026-09-05.ta
 
 ## 历史查询与经审查的保留策略 {#history-queries-and-reviewed-retention}
 
-控制台历史页和 `luma service history` 以游标分页查询构建/部署尝试，列表返回摘要，详情与步骤单独读取。`luma history NAME` 仍读取用于回滚的 Nomad job 版本。重试创建新的 attempt ID，通过 `retryOf`/`retryRootId` 关联，保留失败尝试与事件。旧全局 100 构建、200 部署、300 构建事件限制不再管理这些记录。Agent 进度与 LAE Builder 任务仍独立保留。
+控制台历史页和 `luma app history` 以游标分页查询构建/部署尝试，列表返回摘要，详情与步骤单独读取。`luma app versions NAME` 仍读取用于回滚的 Nomad job 版本。重试创建新的 attempt ID，通过 `retryOf`/`retryRootId` 关联，保留失败尝试与事件。旧全局 100 构建、200 部署、300 构建事件限制不再管理这些记录。Agent 进度仍独立保留。
 
 即使关闭控制台，Manager 清单快照也约每小时刷新，页面显示采样时间与覆盖范围。
 
@@ -81,7 +81,7 @@ Registry 有独立保留和保护删除/GC 流程。默认 `recommend`，保留�
 
 首次迁移后的 Control job 禁用自动回滚到旧 JSON 镜像。滚动失败保留待切换标记，让重试仍受保护。后续普通 SQLite 更新沿用自动回滚。升级前不要直接对活动旧目录执行新数据库/备份命令，它们可能在未隔离旧进程时初始化数据库。
 
-旧 JSON 镜像无法读取迁移数据库。回退需停止新 Control，恢复最终旧检查点、匹配配置和旧 jobspec，另存迁移后 SQLite 目录。这把 Control 状态回到检查点时刻，不撤销之后的应用侧操作。见[发布切换与回滚流程](release.md#first-json-to-sqlite-upgrade)。
+旧 JSON 镜像无法读取迁移数据库。回退需停止新 Control，恢复最终旧检查点、匹配配置和旧 jobspec，另存迁移后 SQLite 目录。这把 Control 状态回到检查点时刻，不撤销之后的应用侧操作。见[发布切换与回滚流程](maintainers/release.zh-CN.md#first-json-to-sqlite-upgrade)。
 
 导入只保留旧文件中仍存在的记录，无法恢复先前数量限制已删除的构建、部署或指标。已有数据库不会反复被 JSON 覆盖。`control-sqlite-authority.json` 记录数据库身份；切换后数据库缺失、截断或不匹配会停止，即使 JSON 仍存在。应恢复验证备份；删除数据库不会让 Manager 回退 JSON。
 
@@ -95,7 +95,7 @@ Control 归档包含一致性数据库快照及状态目录支持的文件，包
 
 完整 Manager 恢复集还需要归档外的文件：
 
-- Control 服务环境及状态目录外的密钥，例如 LAE principal/签名文件或自定义 metrics token。SQLite 中的渠道 App Secret 已包含，内存 tenant access token 不持久化，重启后重取。
+- Control 服务环境及状态目录外的密钥，例如自定义 metrics token。SQLite 中的渠道 App Secret 已包含，内存 tenant access token 不持久化，重启后重取。
 - Manager Luma 配置、生成 job/路由、Traefik 配置和 ACME 证书状态，以及 Git 中期望清单。
 - 适合该集群的 Nomad 恢复材料，以及应用卷、数据库、所需 Registry/Builder 数据的独立备份。
 

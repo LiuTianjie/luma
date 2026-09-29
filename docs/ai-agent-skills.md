@@ -40,6 +40,19 @@ cp -R skills/luma-deployment-yaml/. ~/.claude/skills/luma-deployment-yaml/
 cp -R skills/luma-observe/. ~/.claude/skills/luma-observe/
 ```
 
+Without a checkout, install from GitHub `main`:
+
+```bash
+tmp="$(mktemp -d)"
+git clone --depth 1 https://github.com/LiuTianjie/luma.git "$tmp/luma"
+for dest in ~/.claude/skills ~/.codex/skills; do
+  mkdir -p "$dest/luma-deployment-yaml" "$dest/luma-observe"
+  cp -R "$tmp/luma/skills/luma-deployment-yaml/." "$dest/luma-deployment-yaml/"
+  cp -R "$tmp/luma/skills/luma-observe/." "$dest/luma-observe/"
+done
+rm -rf "$tmp"
+```
+
 For other assistants, use their supported skill installation mechanism with the linked source directories. Start a new conversation after installation. When updating Luma, refresh the skills from the matching checkout so their instructions stay aligned with the installed version.
 
 ## References

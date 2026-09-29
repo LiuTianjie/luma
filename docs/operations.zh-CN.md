@@ -1,49 +1,35 @@
-# 运维操作 {#operations}
+# 日常运维 {#operations}
 
-资源历史、可恢复日志、磁盘采样、告警和认证 Prometheus 抓取见[可观测](./observability.md)。单 Manager SQLite、历史保留、备份和恢复见[控制面存储与恢复](./control-storage.md)。
+资源历史、可恢复日志、磁盘采样、告警和认证 Prometheus 抓取见[可观测](observability.zh-CN.md)。单 Manager SQLite、历史保留、备份和恢复见[Control 存储与恢复](control-storage.zh-CN.md)。
 
-Luma Control 是 Manager 上的自托管 API，管理令牌、节点注册、DNS、job 渲染和 Nomad 部署调用。`luma deploy` 与 Control 通信，不通过 SSH 部署。底层使用 HashiCorp Nomad，部署单位为 Nomad job。
+本文介绍应用和节点的日常运维。部署见[部署应用](deploying.zh-CN.md)。
 
-默认流程：
-
-```text
-service.yaml -> luma deploy -> Luma Control -> render jobspec -> sync DNS -> Nomad API (/v1/jobs) -> docker driver
-```
-
-Luma 通过 Nomad HTTP API 部署。
-
-## 添加服务 {#add-a-service}
+## 查看应用 {#inspect-applications}
 
 ```bash
-luma service new
-luma deploy <service>.yaml --dry-run
-luma login https://luma.example.com --token <management-token>
-luma deploy <service>.yaml
-luma doctor
+luma status                                   # cluster, nodes and application health
+luma app list --region cn                     # services and replica health
+luma app show api                             # one application or service
+luma app events api                           # recent runtime events of the latest allocation
+luma app logs api --tail 100
+luma app logs api --allocation <alloc-id> --previous
+luma app logs api --follow --format ndjson
 ```
 
-手写清单使用相同字段：
+`--tail` 是所有选中来源共享的 1-500 行预算。文本输出用 `[allocation/task/stream]` 标注每一行；`[partial]` 和 `[continued]` 标记片段。需要保留来源和游标元数据时使用 JSON 或 NDJSON。`--follow` 在连接中断后从上次游标继续（退避最长 15 秒，无进展时最多重连 8 次）；按 Ctrl-C 停止。
 
-```yaml
-name: api
-image: ghcr.io/me/api:2026-05-29-1
-region: cn
-exposure: cn-edge
-domain: api.example.com
-port: 3000
-replicas: 2
-```
-
-多服务应用保持标准 `docker-compose.yml`，另加 Luma sidecar：
+Control 还保存可检索的构建与部署历史，与应用日志分开：
 
 ```bash
-luma compose init --compose docker-compose.yml --output luma.compose.yml
-luma compose validate luma.compose.yml
-luma compose deploy luma.compose.yml --dry-run
-luma compose deploy luma.compose.yml
+luma app history api --kind deployment --status failed
+luma app history --source dashboard --since 2026-09-01T00:00:00+08:00 --format json
+luma app history --id <record-id> --kind deployment
+luma build logs <build-id>
 ```
 
-新的持久化 Compose 和原生服务使用部署节点本地存储。在 `luma.compose.yml` 里用 `volumes.<name>.local.path`；原生服务用 named volume 或 bind mount。不要为新应用注册 NFS 或 storage class。迁移期间仍可使用旧的 `storageClass` 引用；Control 仍拒绝 sidecar 里的非空 `storageClasses`，切换后端需要已验证的 `adopted: true` 或 `initialize: empty`。详见 [compose-storage.md](compose-storage.md)。
+每页默认 50 条（最多 100 条）；翻页时用相同过滤条件并把 `nextCursor` 传给 `--cursor`。保留策略见 [Control 存储](control-storage.zh-CN.md)。
+
+在 Manager 上也可以直接使用 Nomad 工具：`nomad job status <app>`、`nomad alloc logs -f <alloc-id>`。
 
 ## 更新镜像标签 {#update-image-tag}
 
@@ -92,26 +78,6 @@ node: home-mac-mini
 
 `node` 必须是 `luma node join --name` 的节点名。Luma 渲染 `${node.unique.name}`（或 `meta.luma_node_name`）约束，并保留 `${meta.region}` 约束，因此目标节点必须属于该区域。Nomad 节点身份跨重新加入保持稳定，无需刷新固定放置。
 
-## 查看状态 {#view-status}
-
-从客户端：
-
-```bash
-luma status
-luma context list
-luma context use <cluster-id>
-```
-
-`luma status` 显示 Nomad、server leader 和 `role=client` 节点。
-
-从 Manager：
-
-```bash
-nomad job status <service>
-nomad job status -verbose <service>
-nomad alloc logs -f <alloc-id>
-```
-
 ## 回滚 {#roll-back}
 
 Nomad 为每个 job 保留版本历史，Luma 在控制台和 CLI 都提供运行时回滚。
@@ -121,12 +87,12 @@ Nomad 为每个 job 保留版本历史，Luma 在控制台和 CLI 都提供运�
 CLI 操作：
 
 ```bash
-luma history <service>
-luma rollback <service>
-luma rollback <service> --to-version <N>
+luma app versions <app>
+luma app rollback <app>
+luma app rollback <app> --to-version <N>
 ```
 
-`luma history` 列出 Nomad job 旧版本（`GET /v1/job/<id>/versions`）；`luma rollback` 通过 `POST /v1/job/<id>/revert` 回退上一版或 `--to-version` 指定版本。Jobspec 渲染 `update { auto_revert = true }`，新版本健康检查失败时自动回退到最近健康版本。
+`luma app versions` 列出 Nomad job 旧版本（`GET /v1/job/<id>/versions`）；`luma app rollback` 通过 `POST /v1/job/<id>/revert` 回退上一版或 `--to-version` 指定版本。Jobspec 渲染 `update { auto_revert = true }`，新版本健康检查失败时自动回退到最近健康版本。
 
 这只回滚运行 job，不改写 Git 历史或 Control 保存的清单/YAML，不逆转数据库迁移或恢复卷。Compose 回滚作用于整个 job/stack。生产使用固定标签或 digest；`latest` 等可变标签可能让旧 job 拉取到新内容。
 
@@ -134,7 +100,7 @@ luma rollback <service> --to-version <N>
 
 ```bash
 git revert <deploy-commit>
-luma deploy <service>.yaml
+luma deploy <app>.yaml
 ```
 
 ## 重启服务 {#restart-a-service}
@@ -142,9 +108,9 @@ luma deploy <service>.yaml
 无需拉取新镜像或改变存储清单即可重启。重启不仅是进程信号，还会协调交付：等待替换 allocation，刷新 Nomad CNI 主机端口状态，根据记录部署和实际节点重建 HTTP/TCP 路由，同步 DNS，并验证所有公共 HTTP 端点后才返回成功。
 
 ```bash
-luma service restart <stack>
-luma service restart <stack> --service <task>
-luma service restart <stack> --mode task
+luma app restart <app>
+luma app restart <app> --service <task>
+luma app restart <app> --mode task
 ```
 
 两种重启模式：
@@ -152,7 +118,7 @@ luma service restart <stack> --mode task
 - `recreate`：停止 allocation，让 Nomad 重新调度新实例，应用放置/重调度规则；整个 stack 默认此模式。
 - `task`：在现有 allocation 内原地重启任务；`--service` 指定单任务时默认此模式。
 
-省略 `--mode` 时按上述默认值，也可显式覆盖。Compose 的 `luma service restart <app> --service <svc>` 原地重启一个服务任务，`luma service restart <app>` 重建全部 allocation。`--timeout <seconds>` 限制 Control 响应等待，默认 `120`。
+省略 `--mode` 时按上述默认值，也可显式覆盖。Compose 的 `luma app restart <app> --service <svc>` 原地重启一个服务任务，`luma app restart <app>` 重建全部 allocation。`--timeout <seconds>` 限制 Control 响应等待，默认 `120`。
 
 
 **控制台 → 应用 → 应用详情 → 服务**中，运行服务有 **Shell** 操作；节点 Shell 位于 **基础设施 → 节点**。都打开独立终端页，离开页面结束浏览器会话。通过节点 agent 的 `docker exec` 进入容器，复用节点 Shell 的终端 supervisor。用于实时诊断，不能替代日志或重启。系统 stack 被禁止。节点 agent 需声明 `container-terminal`，不支持时先更新。
@@ -163,10 +129,10 @@ luma service restart <stack> --mode task
 
 ## 删除部署 {#remove-a-deployment}
 
-使用已部署服务或 Compose 应用名：
+使用已部署的服务名或 Compose 应用名：
 
 ```bash
-luma service remove <service>
+luma app remove <app>
 ```
 
 Control 使用最近成功部署记录的清单，删除 Luma 管理的公共 DNS，注销并清除 Nomad job（`DELETE /v1/job/<id>?purge=true`），删除 Manager 生成文件。单服务与 Compose 共用命令，客户端没有本地 YAML 也可删除网页创建的部署。tailscale-relay 同时删除 `/opt/luma/routes/<service>.yml`。cloudflare-tunnel 主机名仍归 Cloudflare Zero Trust 管理，跳过其清理。
@@ -174,8 +140,8 @@ Control 使用最近成功部署记录的清单，删除 Luma 管理的公共 DN
 默认保留存储。如需删除记录中引用的可移除存储，先预览再执行：
 
 ```bash
-luma service remove <service> --dry-run --delete-storage
-luma service remove <service> --delete-storage
+luma app remove <app> --dry-run --delete-storage
+luma app remove <app> --delete-storage
 ```
 
 单服务会删除 `storage.<volume>.path` 托管路径和清单中的 Docker 命名卷，跳过 bind mount。Compose 删除 sidecar 引用的托管卷子目录，不删除 class 本身。不能与 `--skip-orchestrator` 同用。
@@ -183,14 +149,14 @@ luma service remove <service> --delete-storage
 只预览清理，不修改 Manager：
 
 ```bash
-luma service remove <service> --dry-run
+luma app remove <app> --dry-run
 ```
 
 部分清理时可保留 DNS 或运行 job。`--skip-orchestrator` 不移除 Nomad job：
 
 ```bash
-luma service remove <service> --skip-dns
-luma service remove <service> --skip-orchestrator
+luma app remove <app> --skip-dns
+luma app remove <app> --skip-orchestrator
 ```
 
 Control 不可用时，在 Manager 直接删除 Nomad job，再删除生成文件：
@@ -229,7 +195,7 @@ nomad node drain -disable <node-id>
 
 ```bash
 export EGRESS_SUBSCRIPTION_URL='...'
-luma egress refresh
+luma manager egress
 ```
 
 在目标节点验证镜像拉取：
@@ -238,12 +204,48 @@ luma egress refresh
 sudo docker pull hello-world:latest
 ```
 
-## 修复控制面 {#repair-control-plane}
+## 升级 Luma {#update-luma}
 
 ```bash
-luma bootstrap manager --domain luma.example.com
+luma update                                  # manager: CLI + Control; node: CLI + agent; client: CLI
+luma update --install-ref v0.1.366           # a specific release, branch or full commit
+luma update fleet                            # every non-manager node with a ready agent
+luma update fleet --include-manager          # explicit repair only
+```
+
+未指定 `--install-ref` 时安装最新发布版；协调发布候选版本时请使用完整提交。控制台的 **节点 → 升级中心** 是升级 Manager 的首选方式：它先把 Control 镜像同步到内部镜像仓库，再带进度和路由检查滚动升级。在 Manager 上直接执行 `luma update` 会自行拉取镜像；无法访问 GHCR 时，把 `LUMA_CONTROL_IMAGE` 设为可拉取的镜像。
+
+在 Manager 上，`luma update` 会刷新防火墙、Traefik、Tailscale 看门狗、Control 配置和 `luma-control` job（启用 Nomad auto-revert），然后刷新本机节点 agent。它不会重启 Docker 或 Nomad agent，不会重新配置出站代理，也不会重新部署应用。`/opt/luma/control` 下的 Manager 状态仅 root 可读；没有免密 sudo 时执行 `sudo ~/.local/bin/luma update`。
+
+在已加入的节点上，`luma update` 刷新 CLI 和节点 agent。agent 版本过旧、不支持批量升级的节点会被报告为跳过；在该节点上执行一次 `luma update` 即可。没有保存 agent 元数据的旧节点，加上 `--control-url https://luma.example.com --token <node-join-token>`。
+
+Manager 和节点都运行一个小的 Tailscale 看门狗，连续探测对端失败后重启 Tailscale，不影响 Docker、Nomad 或应用。
+
+## 修复控制面 {#repair-the-control-plane}
+
+```bash
+luma bootstrap --domain luma.example.com
 luma doctor
 ```
+
+初始化是幂等的，但会涉及 Docker、防火墙、Traefik、Nomad 和出站代理；完整重跑请放在维护窗口进行。
+
+## Manager IP 变更 {#manager-ip-change}
+
+在 Manager 上执行，先预览：
+
+```bash
+luma manager ip-change --old 203.0.113.10 --new 203.0.113.20 --domain luma.example.com --dry-run
+luma manager ip-change --old 203.0.113.10 --new 203.0.113.20 --domain luma.example.com
+```
+
+它先通过 HTTPS 验证新地址，然后只更新 Manager 的 `publicIp`、`providers.dns.edgeTarget` 以及与旧地址完全匹配的 Cloudflare A 记录。它会备份 `luma.yaml`，复用正在运行的 Control 镜像，不会重新部署应用。部分失败后重跑即可补完剩余记录。
+
+## 新节点上的私有镜像仓库 {#private-registries-on-new-nodes}
+
+`luma node join` 和 `luma node nomad-join` 在配置好 Docker 和 Tailscale 之后、启动 Nomad 之前，配置集群托管的 HTTP 镜像仓库。Linux 上会把这些地址合并进 Docker 的 `insecure-registries` 和 `NO_PROXY`，保留无关配置，`daemon.json` 有变化时先备份，仅在需要时重启 Docker。无法完成时加入直接失败，而不是留下一个无法拉取镜像的节点；已有运行中容器的节点会被拒绝（先排空）。macOS 节点不做修改。
+
+`luma registry serve` 会记录托管镜像仓库使用 HTTP 还是 HTTPS。公共镜像仓库和使用 TLS 的私有地址永远不会降级为 HTTP。
 
 ## 所需网络端口 {#required-network-ports}
 

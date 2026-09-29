@@ -3,7 +3,7 @@
 Start with:
 
 ```bash
-luma preflight
+luma doctor --local
 luma doctor
 ```
 
@@ -19,17 +19,17 @@ $EDITOR .env
 Bootstrap is idempotent. A failed step prints `[fail] <title>: <cause>` and a `Fix:` line. Address that layer, then rerun the same command:
 
 ```bash
-luma bootstrap manager --domain luma.example.com
+luma bootstrap --domain luma.example.com
 ```
 
 | Failed step | Typical cause | Repair |
 | --- | --- | --- |
 | Install Docker | no sudo, or the host cannot reach Docker mirrors | fix sudo/network, rerun bootstrap |
 | Install Nomad binary / CNI | HashiCorp downloads blocked | set `EGRESS_SUBSCRIPTION_URL` on a mainland manager, rerun |
-| Install and connect Tailscale | missing auth key, or Tailscale not logged in | `luma tailscale connect` |
+| Install and connect Tailscale | missing auth key, or Tailscale not logged in | `luma node tailscale` |
 | Deploy Traefik / Luma control | Nomad not ready, or the control image cannot be pulled | `nomad job status traefik` / `nomad job status luma-control`; for GHCR on a mainland host do not use `--skip-egress` |
 | Sync control DNS | Cloudflare token, zone, or `LUMA_DNS_EDGE_TARGET` | fix `.env` / prompts, rerun bootstrap |
-| Deploy egress | subscription URL or image mirror | `luma egress setup` |
+| Deploy egress | subscription URL or image mirror | `luma manager egress` |
 
 `luma doctor` reports Control reachability and node readiness after the API is up.
 
@@ -65,14 +65,14 @@ Fix:
 . .venv/bin/activate
 hash -r
 which luma
-luma preflight
+luma doctor --local
 ```
 
 Fallback:
 
 ```bash
-.venv/bin/luma preflight
-./scripts/luma preflight
+.venv/bin/luma doctor --local
+./scripts/luma doctor --local
 ```
 
 ## Tailscale is not logged in
@@ -80,7 +80,7 @@ Fallback:
 Create an ephemeral or reusable auth key in Tailscale, then:
 
 ```bash
-luma tailscale connect
+luma node tailscale
 ```
 
 ## Docker image pulls fail
@@ -88,7 +88,7 @@ luma tailscale connect
 Fix:
 
 ```bash
-luma egress setup
+luma manager egress
 luma doctor --deep
 ```
 
@@ -263,7 +263,7 @@ luma context list
 Rerun manager bootstrap so the Nomad server and Manager Control state are refreshed:
 
 ```bash
-luma bootstrap manager --domain luma.example.com
+luma bootstrap --domain luma.example.com
 ```
 
 If deploy fails before any allocation is placed, check that the Nomad server is up and has a leader:
@@ -340,7 +340,7 @@ Specific zone: your domain
 Then:
 
 ```bash
-luma cloudflare connect --zone example.com
+luma manager cloudflare --zone example.com
 ```
 
 ## Manager public IP changed
@@ -394,5 +394,5 @@ ufw status
 The Nomad HTTP API listens on `4646`, RPC on `4647`, and Serf gossip on `4648`, all bound to `0.0.0.0` but only opened on the `tailscale0` interface by UFW. If `ufw status` does not show those ports allowed on `tailscale0`, or `nomad server members` is empty, rerun bootstrap to repair the agent config:
 
 ```bash
-luma bootstrap manager --domain luma.example.com
+luma bootstrap --domain luma.example.com
 ```

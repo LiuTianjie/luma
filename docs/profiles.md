@@ -15,7 +15,7 @@ One public server running:
 Use:
 
 ```bash
-luma bootstrap manager --domain luma.example.com --profile single-node
+luma bootstrap --domain luma.example.com --profile single-node
 ```
 
 ## `cn-edge`

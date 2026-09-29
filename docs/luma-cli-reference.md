@@ -4,7 +4,8 @@
 
 Generated from the current CLI parser. Regenerate with
 `python scripts/generate-cli-reference.py`; CI verifies it with `--check`.
-See [the CLI guide](luma-cli.md) for authentication, deployment and recovery workflows.
+For task-oriented walkthroughs see [Getting started](getting-started.md),
+[Deploying applications](deploying.md) and [Operations](operations.md).
 Global options precede the command; command options follow the command shown below.
 
 ## `luma`

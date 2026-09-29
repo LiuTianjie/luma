@@ -14,10 +14,7 @@ VERSION_FILES = [
 VERSION_REFERENCE_FILES = [
     ROOT / "README.md",
     ROOT / "README.zh-CN.md",
-    ROOT / "docs" / "luma-cli.md",
-    ROOT / "docs" / "release.md",
-    ROOT / "docs" / "how-to-use-luma.md",
-    ROOT / "docs" / "compose-storage.md",
+    *sorted((ROOT / "docs").rglob("*.md")),
     *sorted((ROOT / "luma" / "cli").glob("*.py")),
     ROOT / "skills" / "luma-deployment-yaml" / "SKILL.md",
     ROOT / "skills" / "luma-deployment-yaml" / "references" / "manifest-reference.md",

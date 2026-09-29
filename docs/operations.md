@@ -2,48 +2,34 @@
 
 Resource history, resumable logs, disk samples, alerts and authenticated Prometheus scraping are described in [Observability](./observability.md). For the single Manager SQLite store, history retention, backups and Manager recovery, see [Control storage and recovery](./control-storage.md).
 
-Luma Control is the self-hosted API on the manager node that handles login tokens, node registration, DNS sync, job rendering, and Nomad deployment calls. `luma deploy` talks to Luma Control; it does not SSH into a node to deploy. The orchestrator underneath is HashiCorp Nomad, so the unit of deployment is a Nomad job.
+Day-2 tasks for running applications and nodes. Deploying is covered in [Deploying applications](deploying.md).
 
-The default path is:
-
-```text
-service.yaml -> luma deploy -> Luma Control -> render jobspec -> sync DNS -> Nomad API (/v1/jobs) -> docker driver
-```
-
-Luma deploys through the Nomad HTTP API.
-
-## Add A Service
+## Inspect Applications
 
 ```bash
-luma service new
-luma deploy <service>.yaml --dry-run
-luma login https://luma.example.com --token <management-token>
-luma deploy <service>.yaml
-luma doctor
+luma status                                   # cluster, nodes and application health
+luma app list --region cn                     # services and replica health
+luma app show api                             # one application or service
+luma app events api                           # recent runtime events of the latest allocation
+luma app logs api --tail 100
+luma app logs api --allocation <alloc-id> --previous
+luma app logs api --follow --format ndjson
 ```
 
-For a hand-written manifest, keep the same fields:
+`--tail` is a 1-500 line budget shared by all selected sources. Text output labels every line with `[allocation/task/stream]`; `[partial]` and `[continued]` mark fragments. Use JSON or NDJSON to keep the source and cursor metadata. `--follow` resumes from the last cursor after a dropped connection (backoff up to 15 seconds, at most eight reconnects without progress); press Ctrl-C to stop.
 
-```yaml
-name: api
-image: ghcr.io/me/api:2026-05-29-1
-region: cn
-exposure: cn-edge
-domain: api.example.com
-port: 3000
-replicas: 2
-```
-
-For multi-service applications, keep `docker-compose.yml` standard and add a Luma sidecar:
+Control also keeps a searchable history of build and deployment attempts, separate from application logs:
 
 ```bash
-luma compose init --compose docker-compose.yml --output luma.compose.yml
-luma compose validate luma.compose.yml
-luma compose deploy luma.compose.yml --dry-run
-luma compose deploy luma.compose.yml
+luma app history api --kind deployment --status failed
+luma app history --source dashboard --since 2026-09-01T00:00:00+08:00 --format json
+luma app history --id <record-id> --kind deployment
+luma build logs <build-id>
 ```
 
-New persistent Compose and native deployments use local storage on the deployment node. Put host paths in `luma.compose.yml` as `volumes.<name>.local.path`; native services use named volumes or bind mounts. Do not register NFS or a storage class for a new app. Legacy `storageClass` references remain usable during migration; Control still rejects non-empty `storageClasses` in submitted sidecars, and backend switches need verified `adopted: true` or `initialize: empty`. See [compose-storage.md](compose-storage.md).
+Pages hold 50 records by default (maximum 100); pass `nextCursor` as `--cursor` with the same filters. Retention is described in [Control storage](control-storage.md).
+
+On the manager, Nomad's own tools work too: `nomad job status <app>`, `nomad alloc logs -f <alloc-id>`.
 
 ## Update Image Tag
 
@@ -92,26 +78,6 @@ node: home-mac-mini
 
 `node` must be the Luma node name passed to `luma node join --name`. Luma renders it as a Nomad constraint on `${node.unique.name}` (or `meta.luma_node_name`) and still keeps the `region` constraint on `${meta.region}`, so the selected node must also be in that region. The Nomad node identity is stable across rejoins, so pinned placement does not need to be refreshed.
 
-## View Status
-
-From a client:
-
-```bash
-luma status
-luma context list
-luma context use <cluster-id>
-```
-
-`luma status` shows the orchestrator (Nomad), the server leader, and nodes with `role=client`.
-
-From a manager node:
-
-```bash
-nomad job status <service>
-nomad job status -verbose <service>
-nomad alloc logs -f <alloc-id>
-```
-
 ## Roll Back
 
 Nomad keeps a version history per job, so Luma exposes runtime rollback through both the dashboard and CLI.
@@ -121,12 +87,12 @@ From the dashboard, open `https://<control-domain>/dashboard/`, choose **Applica
 From the CLI:
 
 ```bash
-luma history <service>
-luma rollback <service>
-luma rollback <service> --to-version <N>
+luma app versions <app>
+luma app rollback <app>
+luma app rollback <app> --to-version <N>
 ```
 
-`luma history` lists prior versions of the Nomad job (`GET /v1/job/<id>/versions`). `luma rollback` reverts to the previous version, or the version chosen with `--to-version`, through Nomad job revert (`POST /v1/job/<id>/revert`). Jobspecs also render `update { auto_revert = true }`, so a new version that fails its health checks rolls back to the last healthy version automatically.
+`luma app versions` lists prior versions of the Nomad job (`GET /v1/job/<id>/versions`). `luma app rollback` reverts to the previous version, or the version chosen with `--to-version`, through Nomad job revert (`POST /v1/job/<id>/revert`). Jobspecs also render `update { auto_revert = true }`, so a new version that fails its health checks rolls back to the last healthy version automatically.
 
 This is a running job rollback. It does not rewrite Git history, change the stored manifest/YAML in Luma Control, reverse database migrations, or restore volume contents. Compose rollback applies to the whole Compose job/stack. Use pinned image tags or digests for production; mutable tags such as `latest` can make an old Nomad job version pull newer bytes.
 
@@ -134,7 +100,7 @@ Git-first path, when you want the manifest and the running job to stay in sync:
 
 ```bash
 git revert <deploy-commit>
-luma deploy <service>.yaml
+luma deploy <app>.yaml
 ```
 
 ## Restart A Service
@@ -142,9 +108,9 @@ luma deploy <service>.yaml
 Restart a running deployment without pulling a new image or changing its stored manifest. Restart is a delivery reconcile, not merely a process signal: Control waits for replacement allocations, refreshes Nomad CNI host-port state, reconstructs HTTP/TCP route files from the stored deployment record and actual allocation node, synchronizes DNS, and verifies every public HTTP endpoint before returning success.
 
 ```bash
-luma service restart <stack>
-luma service restart <stack> --service <task>
-luma service restart <stack> --mode task
+luma app restart <app>
+luma app restart <app> --service <task>
+luma app restart <app> --mode task
 ```
 
 There are two restart modes:
@@ -152,7 +118,7 @@ There are two restart modes:
 - `recreate` — stops the allocation so Nomad reschedules a fresh one (picks up placement/rescheduling). This is the default for a whole stack.
 - `task` — restarts the task in place inside the existing allocation. This is the default when `--service` targets one task.
 
-Omitting `--mode` uses `recreate` for the whole stack and `task` when `--service` is set; pass `--mode` explicitly to override. For a Compose application, `luma service restart <app> --service <svc>` restarts one service's task in place, while `luma service restart <app>` recreates every allocation in the stack. Use `--timeout <seconds>` (default `120`) to bound the control-plane response wait.
+Omitting `--mode` uses `recreate` for the whole stack and `task` when `--service` is set; pass `--mode` explicitly to override. For a Compose application, `luma app restart <app> --service <svc>` restarts one service's task in place, while `luma app restart <app>` recreates every allocation in the stack. Use `--timeout <seconds>` (default `120`) to bound the control-plane response wait.
 
 
 From Dashboard → Applications → application → Services, each running service has a **Shell** action. Nodes have their own Shell action under Infrastructure → Nodes. Both open dedicated terminal pages; leaving the page ends that browser session. That opens an interactive terminal in the service container through the node agent (`docker exec`), using the same terminal supervisor as node shells. It is for live diagnosis, not a substitute for logs or a restart. System stacks are blocked. Node agents need the `container-terminal` capability; update them if the action reports that the agent does not support container terminal.
@@ -166,7 +132,7 @@ Restart refuses the system stacks `traefik`, `egress`, and `luma-control` (Contr
 Use the deployed service or Compose application name:
 
 ```bash
-luma service remove <service>
+luma app remove <app>
 ```
 
 The control plane uses the manifest recorded during the last successful deploy, deletes the Luma-managed Cloudflare DNS record for public services, deregisters and purges the Nomad job (`DELETE /v1/job/<id>?purge=true`), and deletes generated manager files. The same command removes single-service and Compose deployments. Because the control plane stores the manifest, this also works for deployments created through the web UI when the client no longer has a local YAML file. For `tailscale-relay`, it also deletes `/opt/luma/routes/<service>.yml`. For `cloudflare-tunnel`, Cloudflare Tunnel public hostname cleanup is skipped because that hostname is still managed in Cloudflare Zero Trust.
@@ -174,8 +140,8 @@ The control plane uses the manifest recorded during the last successful deploy, 
 Storage data is preserved by default. To intentionally delete removable storage referenced by the recorded deployment, preview and then run:
 
 ```bash
-luma service remove <service> --dry-run --delete-storage
-luma service remove <service> --delete-storage
+luma app remove <app> --dry-run --delete-storage
+luma app remove <app> --delete-storage
 ```
 
 For single-service deployments, this deletes managed storage paths referenced by `storage.<volume>.path` and removes named Docker volume objects declared in the manifest; bind mounts are skipped. For Compose deployments, this deletes managed volume subdirectories referenced by the sidecar, not the storage class itself. It cannot be combined with `--skip-orchestrator`.
@@ -183,14 +149,14 @@ For single-service deployments, this deletes managed storage paths referenced by
 Preview the cleanup without changing the manager:
 
 ```bash
-luma service remove <service> --dry-run
+luma app remove <app> --dry-run
 ```
 
 Keep DNS or the running Nomad job when you are doing a partial cleanup. `--skip-orchestrator` leaves the Nomad job in place:
 
 ```bash
-luma service remove <service> --skip-dns
-luma service remove <service> --skip-orchestrator
+luma app remove <app> --skip-dns
+luma app remove <app> --skip-orchestrator
 ```
 
 If the control plane is unavailable, remove the Nomad job directly on the manager, then remove generated files:
@@ -229,7 +195,7 @@ nomad node drain -disable <node-id>
 
 ```bash
 export EGRESS_SUBSCRIPTION_URL='...'
-luma egress refresh
+luma manager egress
 ```
 
 Verify image pulls on the target node:
@@ -238,12 +204,48 @@ Verify image pulls on the target node:
 sudo docker pull hello-world:latest
 ```
 
-## Repair Control Plane
+## Update Luma
 
 ```bash
-luma bootstrap manager --domain luma.example.com
+luma update                                  # manager: CLI + Control; node: CLI + agent; client: CLI
+luma update --install-ref v0.1.366           # a specific release, branch or full commit
+luma update fleet                            # every non-manager node with a ready agent
+luma update fleet --include-manager          # explicit repair only
+```
+
+Updates install the latest release unless `--install-ref` is given; use a full commit for a coordinated candidate rollout. The dashboard's **Nodes → Update center** is the preferred manager path: it mirrors the Control image into the internal registry first, then rolls out with progress and route checks. A direct `luma update` on the manager pulls the image itself; where GHCR is unreachable, set `LUMA_CONTROL_IMAGE` to a pullable image.
+
+On the manager, `luma update` refreshes the firewall, Traefik, the Tailscale watchdog, Control configuration and the `luma-control` job (with Nomad auto-revert), then refreshes the local node agent. It does not restart Docker or the Nomad agent, run egress setup, or redeploy applications. Manager state under `/opt/luma/control` is root-only; without passwordless sudo run `sudo ~/.local/bin/luma update`.
+
+On a joined node, `luma update` refreshes the CLI and the node agent. A node whose agent is too old for fleet updates is reported as skipped; run `luma update` on it once. For an old node without saved agent metadata, pass `--control-url https://luma.example.com --token <node-join-token>`.
+
+Managers and nodes run a small Tailscale watchdog that restarts Tailscale after consecutive peer failures, without touching Docker, Nomad or applications.
+
+## Repair The Control Plane
+
+```bash
+luma bootstrap --domain luma.example.com
 luma doctor
 ```
+
+Bootstrap is idempotent but touches Docker, the firewall, Traefik, Nomad and egress; treat a full rerun as a maintenance-window operation.
+
+## Manager IP Change
+
+Run on the manager, preview first:
+
+```bash
+luma manager ip-change --old 203.0.113.10 --new 203.0.113.20 --domain luma.example.com --dry-run
+luma manager ip-change --old 203.0.113.10 --new 203.0.113.20 --domain luma.example.com
+```
+
+It verifies the new address over HTTPS, then updates only the manager's `publicIp`, `providers.dns.edgeTarget` and the Cloudflare A records that exactly match the old address. It backs up `luma.yaml`, reuses the running Control image and does not redeploy applications. Rerunning finishes any records left by a partial failure.
+
+## Private Registries On New Nodes
+
+`luma node join` and `luma node nomad-join` configure the cluster's managed HTTP registries after Docker and Tailscale are set up and before Nomad starts. On Linux, the endpoints are merged into Docker's `insecure-registries` and `NO_PROXY`, unrelated settings are preserved, a changed `daemon.json` is backed up, and Docker restarts only if needed. The join fails rather than leaving a node that cannot pull, and a node with running containers is refused (drain it first). macOS nodes are not changed.
+
+`luma registry serve` records whether the managed registry uses HTTP or HTTPS. Public registries and private TLS endpoints are never downgraded to HTTP.
 
 ## Required Network Ports
 

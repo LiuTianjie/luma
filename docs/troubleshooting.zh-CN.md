@@ -3,7 +3,7 @@
 先运行：
 
 ```bash
-luma preflight
+luma doctor --local
 luma doctor
 ```
 
@@ -19,17 +19,17 @@ $EDITOR .env
 Bootstrap 可重复执行。失败步骤会打印 `[fail] <标题>: <原因>` 和 `Fix:`。修好对应层后重跑同一条命令：
 
 ```bash
-luma bootstrap manager --domain luma.example.com
+luma bootstrap --domain luma.example.com
 ```
 
 | 失败步骤 | 常见原因 | 修复 |
 | --- | --- | --- |
 | Install Docker | 没有 sudo，或访问不了 Docker 镜像源 | 修好 sudo/网络后重跑 bootstrap |
 | Install Nomad binary / CNI | 访问不了 HashiCorp 下载 | 国内 manager 配置 `EGRESS_SUBSCRIPTION_URL` 后重跑 |
-| Install and connect Tailscale | 缺 auth key，或未登录 Tailscale | `luma tailscale connect` |
+| Install and connect Tailscale | 缺 auth key，或未登录 Tailscale | `luma node tailscale` |
 | Deploy Traefik / Luma control | Nomad 未就绪，或 control 镜像拉不下来 | `nomad job status traefik` / `nomad job status luma-control`；国内默认 GHCR 不要用 `--skip-egress` |
 | Sync control DNS | Cloudflare token、zone 或 `LUMA_DNS_EDGE_TARGET` | 修正 `.env` / 交互输入后重跑 bootstrap |
-| Deploy egress | 订阅 URL 或镜像源 | `luma egress setup` |
+| Deploy egress | 订阅 URL 或镜像源 | `luma manager egress` |
 
 控制面起来后用 `luma doctor` 看 Control 连通性和节点就绪。
 
@@ -65,14 +65,14 @@ Shell 把仓库中的 `luma/` 包目录识别为了命令，而不是已安装�
 . .venv/bin/activate
 hash -r
 which luma
-luma preflight
+luma doctor --local
 ```
 
 备用方式：
 
 ```bash
-.venv/bin/luma preflight
-./scripts/luma preflight
+.venv/bin/luma doctor --local
+./scripts/luma doctor --local
 ```
 
 ## Tailscale 尚未登录 {#tailscale-is-not-logged-in}
@@ -80,7 +80,7 @@ luma preflight
 在 Tailscale 创建临时或可复用 auth key，然后执行：
 
 ```bash
-luma tailscale connect
+luma node tailscale
 ```
 
 ## Docker 镜像拉取失败 {#docker-image-pulls-fail}
@@ -88,7 +88,7 @@ luma tailscale connect
 修复方法：
 
 ```bash
-luma egress setup
+luma manager egress
 luma doctor --deep
 ```
 
@@ -254,7 +254,7 @@ luma context list
 重新初始化 Manager，刷新 Nomad server 与 Manager Control 状态：
 
 ```bash
-luma bootstrap manager --domain luma.example.com
+luma bootstrap --domain luma.example.com
 ```
 
 如果还未放置任何 allocation 就失败，检查 Nomad server 是否运行且有 leader：
@@ -330,7 +330,7 @@ Specific zone: your domain
 然后执行：
 
 ```bash
-luma cloudflare connect --zone example.com
+luma manager cloudflare --zone example.com
 ```
 
 ## Manager 公网 IP 变更 {#manager-public-ip-changed}
@@ -373,5 +373,5 @@ ufw status
 Nomad HTTP API 使用 `4646`，RPC 使用 `4647`，Serf gossip 使用 `4648`，均绑定 `0.0.0.0`，但 UFW 仅在 `tailscale0` 接口放行。如果 `ufw status` 未显示该接口的相应放行规则，或 `nomad server members` 为空，重新初始化以修复 agent 配置：
 
 ```bash
-luma bootstrap manager --domain luma.example.com
+luma bootstrap --domain luma.example.com
 ```

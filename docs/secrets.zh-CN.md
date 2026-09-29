@@ -7,11 +7,11 @@ CLI 默认加载当前工作目录的 `.env` 和当前用户的 `~/.luma.config.
 正常使用时直接运行目标命令即可。本地缺少配置值时，Luma 会先提示输入，再继续执行：
 
 ```bash
-luma bootstrap manager --domain luma.example.com
+luma bootstrap --domain luma.example.com
 luma node join https://luma.example.com --token <node-join-token> --region global --name global-sg-1
 ```
 
-这会以 `0600` 权限写入 `~/.luma.config.json`。仍可通过 `luma configure --role manager|worker` 预填配置；`luma configure --show` 会遮蔽密钥值。
+这会以 `0600` 权限写入 `~/.luma.config.json`。也可以用环境变量或 `./.env` 中的 Luma 配置项提供；要修改已保存的回答，直接编辑或删除该文件。
 
 `.env` 仍适合开发或一次性的配置覆盖：
 

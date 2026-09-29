@@ -17,7 +17,8 @@
 
 <p align="center">
   <a href="https://liutianjie.github.io/luma/zh.html">官网</a> ·
-  <a href="docs/bootstrap.zh-CN.md">开始使用</a> ·
+  <a href="docs/getting-started.zh-CN.md">开始使用</a> ·
+  <a href="docs/README.zh-CN.md">文档</a> ·
   <a href="docs/dashboard-guide.zh-CN.md">控制台指南</a> ·
   <a href="https://github.com/LiuTianjie/luma/releases">版本发布</a> ·
   <a href="README.md">English</a>
@@ -66,7 +67,7 @@ Luma 适合在少量机器上运行 Web、API 和 Worker 的个人开发者与�
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
-~/.local/bin/luma preflight
+~/.local/bin/luma doctor --local
 ```
 
 安装器会创建独立的 Python 环境，将 `luma` 放到 `~/.local/bin`。若该目录尚未进入 `PATH`，重新打开终端即可。安装 CLI 本身不会初始化服务器。
@@ -101,12 +102,12 @@ python -m pip install "luma-infra==0.1.366"
 **在 Manager 上**执行：
 
 ```bash
-luma bootstrap manager --domain luma.example.com
+luma bootstrap --domain luma.example.com
 ```
 
 CLI 会交互式补齐配置、准备运行环境、初始化 SQLite，并输出控制台地址、**管理令牌**和**节点加入令牌**。请妥善保管这两个令牌。
 
-如果 Manager 需要代理才能拉取默认 GHCR 镜像，请在初始化前配置 `EGRESS_SUBSCRIPTION_URL`，中国大陆服务器尤其需要确认这一点。第一台 Manager 的基础工作负载不依赖 Tailscale 或 Builder Registry。主机与网络配置详见[初始化指南](docs/bootstrap.zh-CN.md)。
+如果 Manager 需要代理才能拉取默认 GHCR 镜像，请在初始化前配置 `EGRESS_SUBSCRIPTION_URL`，中国大陆服务器尤其需要确认这一点。第一台 Manager 的基础工作负载不依赖 Tailscale 或 Builder Registry。主机与网络配置详见[快速上手](docs/getting-started.zh-CN.md)。
 
 ### 3. 部署第一个服务
 
@@ -117,13 +118,13 @@ CLI 会交互式补齐配置、准备运行环境、初始化 SQLite，并输出
 在电脑或 CI 机器上，通过 Control 登录和部署：
 
 ```bash
-luma login https://luma.example.com --token '<management-token>'
+luma login https://luma.example.com --token-stdin < token.txt
 luma deploy status.yaml
 luma status
-luma history status
+luma app versions status
 ```
 
-部署已有镜像的客户端只需安装 CLI 并能够访问 Control；本地源码构建还需要 Docker / Buildx。
+`luma init` 可以生成类似 `status.yaml` 的清单，并预置内存上限和健康检查。部署已有镜像的客户端只需安装 CLI 并能够访问 Control；本地源码构建还需要 Docker / Buildx。
 
 ## 工作原理
 
@@ -208,15 +209,15 @@ luma node join https://luma.example.com \
   --name global-worker-1
 ```
 
-家庭和私有节点需要 Tailscale；macOS 家庭节点还需运行 Docker Desktop 或 OrbStack 等 Docker 环境。每个节点的 Agent 凭据由 Luma 自动安装和管理。详见[节点准备](docs/bootstrap.zh-CN.md)与[节点标签](docs/node-labels.md)。
+家庭和私有节点需要 Tailscale；macOS 家庭节点还需运行 Docker Desktop 或 OrbStack 等 Docker 环境。每个节点的 Agent 凭据由 Luma 自动安装和管理。详见[快速上手](docs/getting-started.zh-CN.md)与[核心概念](docs/concepts.zh-CN.md)。
 
 ## 常用操作
 
 | 任务 | 入口 |
 | --- | --- |
 | 检查集群健康 | `luma status` 和 `luma doctor` |
-| 查看部署版本 | `luma history <app>` |
-| 回滚 Nomad Job 版本 | `luma rollback <app> --to-version <N>` |
+| 查看部署版本 | `luma app versions <app>` |
+| 回滚 Nomad Job 版本 | `luma app rollback <app> --to-version <N>` |
 | 升级 Control 与节点 | Dashboard → Nodes → Update center |
 | 查看镜像仓库空间 | Dashboard → Registry |
 | 配置应用指标与告警 | [可观测性](docs/observability.zh-CN.md)与独立的 [Observe 栈](observe/) |
@@ -226,31 +227,31 @@ luma node join https://luma.example.com \
 
 ## 文档导航
 
-| 开始使用 | 深入了解 |
+第一次使用？先读[快速上手](docs/getting-started.zh-CN.md)，再读[核心概念](docs/concepts.zh-CN.md)。[文档索引](docs/README.zh-CN.md)列出了全部指南。
+
+| 指南 | 参考 |
 | --- | --- |
-| [初始化](docs/bootstrap.zh-CN.md) | [安装生命周期](docs/installation-lifecycle.zh-CN.md) |
-| [控制台指南](docs/dashboard-guide.zh-CN.md) | [日常运维](docs/operations.zh-CN.md) |
-| [部署清单](docs/deployment-yaml.zh-CN.md) | [Compose 与存储](docs/compose-storage.zh-CN.md) |
-| [核心概念](docs/concepts.zh-CN.md) | [入口模型](docs/exposure-model.zh-CN.md) |
-| [密钥管理](docs/secrets.zh-CN.md) | [CLI 参考](docs/luma-cli-reference.zh-CN.md) |
-| [故障排查](docs/troubleshooting.zh-CN.md) | [Control 存储与恢复](docs/control-storage.zh-CN.md) |
-| [Agent 技能](docs/agent-skill.md) | |
+| [部署应用](docs/deploying.zh-CN.md) | [部署清单参考](docs/deployment-yaml.zh-CN.md) |
+| [日常运维](docs/operations.zh-CN.md) | [CLI 参考](docs/luma-cli-reference.zh-CN.md) |
+| [Compose 与存储](docs/compose-storage.zh-CN.md) | [入口模型](docs/exposure-model.zh-CN.md) |
+| [密钥管理](docs/secrets.zh-CN.md) | [Control 存储与恢复](docs/control-storage.zh-CN.md) |
+| [控制台指南](docs/dashboard-guide.zh-CN.md) | [安装生命周期](docs/installation-lifecycle.zh-CN.md) |
+| [故障排查](docs/troubleshooting.zh-CN.md) | [AI Agent 技能](docs/ai-agent-skills.zh-CN.md) |
 
 ## 开发与贡献
 
 ```bash
 git clone https://github.com/LiuTianjie/luma.git
 cd luma
-./scripts/install-luma.sh
-. .venv/bin/activate
-python -m pip install -e '.[test]'
+python3 -m venv .venv
+.venv/bin/python -m pip install -e '.[test]'
 npm ci
-bash scripts/check-luma.sh
+PATH="$PWD/.venv/bin:$PATH" bash scripts/check-luma.sh
 ```
 
-源码检查覆盖版本引用、自动生成的 CLI 文档、Dashboard 类型与构建、Python 测试、Dashboard 测试以及空白格式。控制台源码位于 `dashboard-src/`，构建结果打包到 `luma/assets/dashboard/`。
+测试需要 Python 3.10+（运行时仍支持 3.9）。源码检查覆盖版本引用、自动生成的 CLI 文档、`ruff`、清单模板、Dashboard 类型与构建、Python 与 Dashboard 测试以及空白格式。测试不会读取你真实的 `~/.luma.config.json` 或 `./.env`。控制台源码位于 `dashboard-src/`，构建结果打包到 `luma/assets/dashboard/`。
 
-欢迎提交聚焦的问题修复、可复现的 Bug 报告与文档改进。报告基础设施问题时，请附上 Luma 版本、节点角色、去除密钥的清单、预期行为和相关诊断，不要公开令牌或代理订阅地址。维护流程见[版本发布](docs/release.zh-CN.md)与[网站维护](docs/website.zh-CN.md)。
+欢迎提交聚焦的问题修复、可复现的 Bug 报告与文档改进。报告基础设施问题时，请附上 Luma 版本、节点角色、去除密钥的清单、预期行为和相关诊断，不要公开令牌或代理订阅地址。维护流程见[版本发布](docs/maintainers/release.zh-CN.md)与[网站维护](docs/maintainers/website.zh-CN.md)。
 
 ## 安全与许可证
 

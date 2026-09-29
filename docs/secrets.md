@@ -7,11 +7,11 @@ By default, the CLI loads `.env` from the current working directory and `~/.luma
 For normal use, run the target command directly. If local values are missing, Luma prompts for them before continuing:
 
 ```bash
-luma bootstrap manager --domain luma.example.com
+luma bootstrap --domain luma.example.com
 luma node join https://luma.example.com --token <node-join-token> --region global --name global-sg-1
 ```
 
-This writes `~/.luma.config.json` with mode `0600`. `luma configure --role manager|worker` remains available for pre-filling values, and `luma configure --show` masks secret values.
+This writes `~/.luma.config.json` with mode `0600`. Values can also come from environment variables or from Luma settings in `./.env`; edit or delete the file to change saved answers.
 
 `.env` remains useful for development or one-off overrides:
 

@@ -40,11 +40,24 @@ cp -R skills/luma-deployment-yaml/. ~/.claude/skills/luma-deployment-yaml/
 cp -R skills/luma-observe/. ~/.claude/skills/luma-observe/
 ```
 
+没有本地仓库时，从 GitHub `main` 安装：
+
+```bash
+tmp="$(mktemp -d)"
+git clone --depth 1 https://github.com/LiuTianjie/luma.git "$tmp/luma"
+for dest in ~/.claude/skills ~/.codex/skills; do
+  mkdir -p "$dest/luma-deployment-yaml" "$dest/luma-observe"
+  cp -R "$tmp/luma/skills/luma-deployment-yaml/." "$dest/luma-deployment-yaml/"
+  cp -R "$tmp/luma/skills/luma-observe/." "$dest/luma-observe/"
+done
+rm -rf "$tmp"
+```
+
 其他助手请通过其支持的 Skill 安装方式，使用上方链接的源码目录。安装后新开对话。更新 Luma 时，应从匹配版本的仓库同步 Skill，保持技能说明与安装版本一致。
 
 ## 参考文档 {#references}
 
-- [部署 YAML](deployment-yaml.md)
-- [Compose 与本地存储](compose-storage.md)
-- [可观测](observability.md)
+- [部署 YAML](deployment-yaml.zh-CN.md)
+- [Compose 与本地存储](compose-storage.zh-CN.md)
+- [可观测](observability.zh-CN.md)
 - [部署工作流记录](../skills/luma-deployment-yaml/references/deployment-workflow.md)

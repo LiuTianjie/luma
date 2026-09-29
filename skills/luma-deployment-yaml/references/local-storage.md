@@ -25,7 +25,7 @@ Use this reference for persistent deployments, NFS retirement, and recovery of o
 
 ## Retiring NFS
 
-- Inventory current jobs, stopped applications, LAE volume bindings, Docker NFS options and host mounts. Historical references may need preservation for recovery even after current workloads stop using NFS.
+- Inventory current jobs, stopped applications, Docker NFS options and host mounts. Historical references may need preservation for recovery even after current workloads stop using NFS.
 - Remove unused classes only after checking dependencies. Class removal is not proof of host shutdown; a node-agent operation may be skipped while the class still disappears from Control.
 - Stop and disable the NFS service on reachable hosts after client mounts are gone. Verify both inactive/disabled status and empty exports. Retain source data and configuration backups separately from live exports.
 - Do not call an offline host cleaned. Report its remaining host-level work separately from the verified online state. Never relocate its database into a new empty volume to make the inventory look healthy.

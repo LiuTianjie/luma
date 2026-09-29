@@ -6,7 +6,7 @@ The database directory must be on a local filesystem that supports SQLite
 locking and WAL; an NFS share is not a supported database location. This setup
 does not provide multiple active Managers.
 
-A new `luma bootstrap manager` initializes SQLite directly and automatically.
+A new `luma bootstrap` initializes SQLite directly and automatically.
 There is no intermediate `control.json` state, separate database service,
 connection string or migration command to configure. Luma uses Python's
 standard-library `sqlite3` module; the CLI installer creates a Python virtual
@@ -62,14 +62,13 @@ redeploy an old build even while its history remains searchable.
 
 ## History queries and reviewed retention
 
-The Dashboard history page and `luma service history` query indexed build and
+The Dashboard history page and `luma app history` query indexed build and
 deployment attempts with cursor pagination. List pages contain summaries;
-record details and execution steps are fetched separately. `luma history NAME`
+record details and execution steps are fetched separately. `luma app versions NAME`
 continues to read Nomad job versions for rollback and is a different history.
 Build retries create a new attempt ID linked by `retryOf`/`retryRootId`; the
 failed attempt and its events are preserved. Former global 100-build,
 200-deployment and 300-build-event trimming no longer governs these records.
-Agent progress and LAE Builder task retention remain separate lifecycles.
 
 Manager inventory snapshots refresh about hourly even when the Dashboard is
 closed; the page shows each measurement timestamp and its coverage.
@@ -183,7 +182,7 @@ to that image requires stopping the new Control and restoring the final legacy
 checkpoint plus its matching configuration and old job spec. Keep the migrated
 SQLite directory separately. This rolls back Control state to the checkpoint
 time; it does not undo application-side operations that happened afterward.
-See the [release cutover and rollback procedure](release.md#first-json-to-sqlite-upgrade).
+See the [release cutover and rollback procedure](maintainers/release.md#first-json-to-sqlite-upgrade).
 
 Import preserves records still present in the legacy files. It cannot recover
 builds, deployment history or metrics already removed by earlier count limits.
@@ -216,8 +215,7 @@ not automatically included.
 A complete Manager recovery set also needs the files outside that archive:
 
 - Control service environment and any secret files configured outside the
-  state directory, such as external LAE principal/signing-key files or a custom
-  metrics token path. Notification channel App Secrets stored in SQLite are
+  state directory, such as a custom metrics token path. Notification channel App Secrets stored in SQLite are
   already part of the database snapshot; cached tenant access tokens are not
   persisted and are obtained again after restart.
 - The Manager's Luma configuration, generated jobs/routes, Traefik configuration

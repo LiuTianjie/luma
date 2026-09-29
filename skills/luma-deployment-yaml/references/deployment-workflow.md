@@ -86,5 +86,4 @@ parameters; replay requires that build record to remain available.
   within the user's authorized release scope. Do not announce availability based
   only on edited source or updated skill files.
 - These checks apply to the updated Luma CLI. Older clients, raw API and Dashboard
-  deployments do not participate; do not use them to bypass a CLI mismatch. This
-  workflow does not add LAE tenant functionality.
+  deployments do not participate; do not use them to bypass a CLI mismatch.

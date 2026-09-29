@@ -15,7 +15,7 @@ Profile 是 Manager 初始化预设。普通工作节点加入不使用 profile�
 用法：
 
 ```bash
-luma bootstrap manager --domain luma.example.com --profile single-node
+luma bootstrap --domain luma.example.com --profile single-node
 ```
 
 ## `cn-edge` {#cn-edge}

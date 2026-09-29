@@ -14,9 +14,9 @@ from urllib.parse import urlsplit, urlunsplit
 import markdown
 
 ROOT = Path(__file__).resolve().parents[1]
-GUIDES = [('dashboard-guide', 'Console guide'), ('how-to-use-luma', 'Operating manual'), ('bootstrap', 'Install & bootstrap'), ('architecture', 'Architecture'), ('concepts', 'Core concepts'), ('deployment-yaml', 'Deployment YAML'), ('compose-storage', 'Compose & storage'), ('observability', 'Observability'), ('secrets', 'Secrets & credentials'), ('luma-cli', 'CLI reference'), ('troubleshooting', 'Troubleshooting'), ('ai-agent-skills', 'AI Agent Skills')]
+GUIDES = [('README', 'Overview'), ('getting-started', 'Getting started'), ('concepts', 'Core concepts'), ('deploying', 'Deploying applications'), ('operations', 'Operations'), ('deployment-yaml', 'Deployment YAML'), ('compose-storage', 'Compose & storage'), ('secrets', 'Secrets & credentials'), ('exposure-model', 'Exposure model'), ('observability', 'Observability'), ('dashboard-guide', 'Console guide'), ('troubleshooting', 'Troubleshooting'), ('luma-cli-reference', 'CLI reference'), ('ai-agent-skills', 'AI Agent Skills')]
 
-ZH_LABELS = ['控制台指南', '使用手册', '安装与初始化', '系统架构', '核心概念', '部署 YAML', 'Compose 与存储', '可观测', '密钥与凭据', 'CLI 命令参考', '故障排查', 'AI Agent Skills']
+ZH_LABELS = ['概览', '快速上手', '核心概念', '部署应用', '日常运维', '部署 YAML', 'Compose 与存储', '密钥与凭据', '暴露模型', '可观测', '控制台指南', '故障排查', 'CLI 命令参考', 'AI Agent Skills']
 
 def chinese_source(source):
     # Explicit translations or original Chinese prose; ignore command/help blocks.

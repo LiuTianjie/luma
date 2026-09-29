@@ -17,7 +17,8 @@
 
 <p align="center">
   <a href="https://liutianjie.github.io/luma/">Website</a> ·
-  <a href="docs/bootstrap.md">Getting started</a> ·
+  <a href="docs/getting-started.md">Getting started</a> ·
+  <a href="docs/README.md">Docs</a> ·
   <a href="docs/dashboard-guide.md">Console guide</a> ·
   <a href="https://github.com/LiuTianjie/luma/releases">Releases</a> ·
   <a href="README.zh-CN.md">简体中文</a>
@@ -66,7 +67,7 @@ On the manager and any machine you want to deploy from:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
-~/.local/bin/luma preflight
+~/.local/bin/luma doctor --local
 ```
 
 The installer creates an isolated Python environment and places `luma` in `~/.local/bin`. Open a new shell if that directory is not yet on your `PATH`. Installing the CLI does not bootstrap a server.
@@ -101,12 +102,12 @@ Have these ready:
 Run **on the manager**:
 
 ```bash
-luma bootstrap manager --domain luma.example.com
+luma bootstrap --domain luma.example.com
 ```
 
 The CLI prompts for missing values, provisions the runtime, initializes SQLite, and prints the dashboard URL, **management token**, and **node join token**. Keep both tokens private.
 
-If the manager needs a proxy to pull the default GHCR image, configure `EGRESS_SUBSCRIPTION_URL` before bootstrap. This is especially relevant on mainland China hosts. Tailscale and a Builder Registry are not prerequisites for the first single-manager workload. See the [bootstrap guide](docs/bootstrap.md) for network and host setup.
+If the manager needs a proxy to pull the default GHCR image, configure `EGRESS_SUBSCRIPTION_URL` before bootstrap. This is especially relevant on mainland China hosts. Tailscale and a Builder Registry are not prerequisites for the first single-manager workload. See [getting started](docs/getting-started.md) for network and host setup.
 
 ### 3. Run the first workload
 
@@ -117,13 +118,13 @@ This deploys the repository's [hello-world template](templates/hello-world.yml) 
 From a laptop or CI machine, authenticate and deploy through Control:
 
 ```bash
-luma login https://luma.example.com --token '<management-token>'
+luma login https://luma.example.com --token-stdin < token.txt
 luma deploy status.yaml
 luma status
-luma history status
+luma app versions status
 ```
 
-Image deployment clients need the CLI and access to Control. Local source builds additionally need Docker/Buildx.
+`luma init` scaffolds a manifest like `status.yaml`, including a memory limit and health check. Image deployment clients need the CLI and access to Control. Local source builds additionally need Docker/Buildx.
 
 ## How it works
 
@@ -208,15 +209,15 @@ luma node join https://luma.example.com \
   --name global-worker-1
 ```
 
-Home/private nodes require Tailscale. macOS home nodes also need a running Docker environment such as Docker Desktop or OrbStack. Per-node agent credentials are installed and managed automatically. See [node setup](docs/bootstrap.md) and [node labels](docs/node-labels.md).
+Home/private nodes require Tailscale. macOS home nodes also need a running Docker environment such as Docker Desktop or OrbStack. Per-node agent credentials are installed and managed automatically. See [getting started](docs/getting-started.md#4-add-nodes) and [concepts](docs/concepts.md#node).
 
 ## Operations at a glance
 
 | Task | Entry point |
 | --- | --- |
 | Check cluster health | `luma status` and `luma doctor` |
-| Inspect deployment versions | `luma history <app>` |
-| Roll back a Nomad job version | `luma rollback <app> --to-version <N>` |
+| Inspect deployment versions | `luma app versions <app>` |
+| Roll back a Nomad job version | `luma app rollback <app> --to-version <N>` |
 | Upgrade Control and nodes | Dashboard → Nodes → Update center |
 | Inspect registry storage | Dashboard → Registry |
 | Configure application telemetry and alerts | [Observability](docs/observability.md) and the independent [Observe stack](observe/) |
@@ -226,31 +227,31 @@ Rollback restores a Nomad job version; it does not restore application data. Use
 
 ## Documentation
 
-| Start here | Go deeper |
+New to Luma? Read [Getting started](docs/getting-started.md), then [Concepts](docs/concepts.md). The [documentation index](docs/README.md) lists every guide.
+
+| Guides | Reference |
 | --- | --- |
-| [Bootstrap](docs/bootstrap.md) | [Installation lifecycle](docs/installation-lifecycle.md) |
-| [Console guide](docs/dashboard-guide.md) | [Operations](docs/operations.md) |
-| [Manifest reference](docs/deployment-yaml.md) | [Compose and storage](docs/compose-storage.md) |
-| [Concepts](docs/concepts.md) | [Exposure model](docs/exposure-model.md) |
-| [Secrets](docs/secrets.md) | [CLI reference](docs/luma-cli-reference.md) |
-| [Troubleshooting](docs/troubleshooting.md) | [Control storage and recovery](docs/control-storage.md) |
-| [Agent skills](docs/agent-skill.md) | |
+| [Deploying applications](docs/deploying.md) | [Manifest reference](docs/deployment-yaml.md) |
+| [Operations](docs/operations.md) | [CLI reference](docs/luma-cli-reference.md) |
+| [Compose and storage](docs/compose-storage.md) | [Exposure model](docs/exposure-model.md) |
+| [Secrets](docs/secrets.md) | [Control storage and recovery](docs/control-storage.md) |
+| [Console guide](docs/dashboard-guide.md) | [Installation lifecycle](docs/installation-lifecycle.md) |
+| [Troubleshooting](docs/troubleshooting.md) | [AI agent skills](docs/ai-agent-skills.md) |
 
 ## Development and contributions
 
 ```bash
 git clone https://github.com/LiuTianjie/luma.git
 cd luma
-./scripts/install-luma.sh
-. .venv/bin/activate
-python -m pip install -e '.[test]'
+python3 -m venv .venv
+.venv/bin/python -m pip install -e '.[test]'
 npm ci
-bash scripts/check-luma.sh
+PATH="$PWD/.venv/bin:$PATH" bash scripts/check-luma.sh
 ```
 
-The source gate checks version references, generated CLI docs, dashboard types/builds, Python tests, dashboard tests, and whitespace. Dashboard source lives in `dashboard-src/`; its build is packaged into `luma/assets/dashboard/`.
+Tests need Python 3.10+ (the runtime still supports 3.9). The gate checks version references, generated CLI docs, `ruff`, manifest templates, dashboard types/builds, Python and dashboard tests, and whitespace. Tests never read your real `~/.luma.config.json` or `./.env`. Dashboard source lives in `dashboard-src/`; its build is packaged into `luma/assets/dashboard/`.
 
-Focused fixes, reproducible bug reports, and documentation improvements are welcome. For infrastructure bugs, include the Luma version, node role, manifest with secrets removed, expected behavior, and relevant diagnostics. Never post tokens or proxy subscription URLs. See [release process](docs/release.md) and [website maintenance](docs/website.md) for maintainer workflows.
+Focused fixes, reproducible bug reports, and documentation improvements are welcome. For infrastructure bugs, include the Luma version, node role, manifest with secrets removed, expected behavior, and relevant diagnostics. Never post tokens or proxy subscription URLs. See [release process](docs/maintainers/release.md) and [website maintenance](docs/maintainers/website.md) for maintainer workflows.
 
 ## Security and license
 

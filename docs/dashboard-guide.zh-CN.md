@@ -5,11 +5,9 @@
 ## 首次安装后的第一小时 {#first-hour-after-bootstrap}
 
 1. 打开 `/dashboard/`，粘贴 bootstrap 给出的管理 Token。
-2. 在 **应用 → 创建应用** 选择 **hello-world 首装验证**。它是内部服务（`exposure: none`），不需要额外 DNS、Tailscale、Registry 或 LAE。
+2. 在 **应用 → 创建应用** 选择 **hello-world 首装验证**。它是内部服务（`exposure: none`），不需要额外 DNS、Tailscale 或 Registry。
 3. **首次安装** 页只补集群可选项：Cloudflare zone、Tailscale、egress、内部 Registry。跳过可选项不等于安装失败。
 4. hello-world 健康后再创建 `cn-edge` / `external-edge` 的公开服务。
-
-LAE（多租户引擎）是可选项。未配置 LAE 管理入口时，控制台不显示该菜单。首次安装不会配置它。
 
 ## 选择工作空间 {#choose-a-workspace}
 

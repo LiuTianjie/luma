@@ -22,7 +22,7 @@ For complete field tables and examples, read `references/manifest-reference.md`.
 
 For local build/upload/deploy, repository import, builder registry setup, or registry pull/proxy failures, read the "Builder Registry And Repository Import" section in `references/manifest-reference.md`.
 
-For actual deployments, recorded commands, or workflow-change prompts, read [Deployment Workflow Records](references/deployment-workflow.md). For persistent placement, NFS migration, or storage retirement, read [Local Storage and Migration](references/local-storage.md). This includes the LAE runtime storage boundary; unrelated LAE tenant features are a separate scope.
+For actual deployments, recorded commands, or workflow-change prompts, read [Deployment Workflow Records](references/deployment-workflow.md). For persistent placement, NFS migration, or storage retirement, read [Local Storage and Migration](references/local-storage.md).
 
 ## Token Vocabulary
 
@@ -162,7 +162,7 @@ luma app restart luma-registry --mode recreate
 - Inspect live mounts before changing saved metadata: historical manifests can claim NFS while the running container uses a local Docker volume, or a migration may already have happened.
 - Use `adopted: true` only after verified migration, and remove old `initialize: empty` acknowledgements. Neither flag transfers an established local owner to another node.
 - Do not register NFS or restart an old NFS service to satisfy a new deployment. Retain legacy parsing only for inspection/recovery of old configurations. No allocations does not imply no data.
-- For migration, permission preservation, LAE bindings, offline nodes, and shutdown verification, follow [Local Storage and Migration](references/local-storage.md).
+- For migration, permission preservation, offline nodes, and shutdown verification, follow [Local Storage and Migration](references/local-storage.md).
 
 ## Runtime Resources And OOM
 

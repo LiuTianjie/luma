@@ -112,10 +112,10 @@ This command does not stop services or copy data. For a local destination it req
 
 Existing `storageClass` references remain usable while data is migrated. Registered classes remain manager-owned; non-empty `storageClasses` in submitted sidecars are rejected. `luma storage list`, `check`, `apply`, and `remove` continue to operate on those legacy classes. No class is required for local storage.
 
-Do not remove a class, unmount volumes or disable the NFS server until every active and stopped deployment and LAE binding has been checked. An application with no running allocations can still depend on its old data. Keep offline-node data in place until that node can be inspected.
+Do not remove a class, unmount volumes or disable the NFS server until every active and stopped deployment has been checked. An application with no running allocations can still depend on its old data. Keep offline-node data in place until that node can be inspected.
 
 ## Removal And Recovery
 
-`luma service remove <name>` removes the application job and routes but retains data by default. Avoid `--delete-storage` during migrations. Removing a deployment can also remove its saved owner, so save its pinned configuration before removal and use it when restoring the application.
+`luma app remove <name>` removes the application job and routes but retains data by default. Avoid `--delete-storage` during migrations. Removing a deployment can also remove its saved owner, so save its pinned configuration before removal and use it when restoring the application.
 
 Local storage does not provide cross-node failover. Recover the original node or restore a verified backup and explicitly reconcile placement. Maintain backups independently of the application's disk.
