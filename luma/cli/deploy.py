@@ -1,10 +1,9 @@
-"""Luma CLI: deploy commands."""
+"""Luma CLI: validate, deploy and compose commands."""
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 from typing import Any, Dict
-from ..cloudflare import sync_dns
 from ..compose import (
     compose_route_path,
     compose_stack_path,
@@ -39,28 +38,19 @@ def cmd_validate(args: argparse.Namespace) -> int:
     if _output_format(args) != "text":
         _print_success(args, _render_result(service, target, rendered, route_target, rendered_route, artifact_kind="job"))
         return 0
-    if not _quiet(args):
-        print(f"Service valid: {service.name} ({service.service_kind})")
-        print(rendered)
-    else:
+    if _quiet(args):
         print(f"Service valid: {service.name}")
-    return 0
-
-
-def cmd_render(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
-    service = load_service(args.service)
-    _require_nomad_engine(_service_engine(config, service, args))
-    from ..nomad_render import render_nomad_job
-
-    print(render_nomad_job(config, service, resolve_secrets=False))
-    return 0
-
-
-def cmd_dns_sync(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
-    service = load_service(args.service)
-    print(sync_dns(config, service))
+        return 0
+    print(f"Service valid: {service.name}")
+    for label, detail in (
+        ("Region", service.region),
+        ("Exposure", service.exposure),
+        ("Domain", service.domain),
+        ("Image", service.image),
+    ):
+        if detail:
+            print(f"  {label + ':':<10}{detail}")
+    print(f"Next: luma deploy {args.service} --dry-run shows the Nomad job; luma deploy {args.service} deploys it.")
     return 0
 
 
@@ -107,9 +97,7 @@ def _service_storage_context_for_local(args: argparse.Namespace, service: Any) -
 def cmd_deploy(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     service = load_service(args.service)
-    # Inherit cluster engine when the manifest omits it, mirroring the control
-    # plane, so `--dry-run` previews the SAME artifact that will be deployed.
-    effective_engine = _require_nomad_engine(_service_engine(config, service, args))
+    _require_nomad_engine(_service_engine(config, service, args))
     output_format = _output_format(args)
     quiet = _quiet(args) or output_format != "text"
 
@@ -133,17 +121,15 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         if quiet:
             print(f"Dry run: {service.name}")
             return 0
-        print(f"Dry run: would write {target}")
+        print(f"Dry run: Nomad job for {service.name} (not submitted)")
         for warning in _context_warnings(args):
             print(f"[warn] {warning}")
         print(rendered)
         if rendered_route and route_target:
-            print(f"Dry run: would write {route_target}")
+            print(f"Dry run: Traefik route for {service.name}")
             print(rendered_route)
         return 0
 
-    if args.commit or args.push:
-        raise LumaError("--commit/--push are not supported for control-plane deploy; run deploy --dry-run for local rendering")
     if args.timeout < 1:
         raise LumaError("--timeout must be at least 1 second")
 
@@ -232,12 +218,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 def cmd_compose(args: argparse.Namespace) -> int:
     if args.compose_command == "init":
         init_compose_sidecar(args.compose, args.output)
-        print(f"Compose sidecar created: {args.output}")
+        print(f"Created {args.output}")
+        print(f"Next: luma compose validate {args.output}")
         return 0
     if args.compose_command == "validate":
         return cmd_compose_validate(args)
-    if args.compose_command == "render":
-        return cmd_compose_render(args)
     if args.compose_command == "deploy":
         return cmd_compose_deploy(args)
     raise LumaError(f"unknown compose command: {args.compose_command}")
@@ -290,36 +275,12 @@ def _inject_import_mode_placeholder_images(deployment: Any) -> None:
             service["image"] = f"luma-import-preview/{slugify(str(service_name))}:latest"
 
 
-def cmd_compose_render(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
-    deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args))
-    node_records = _control_node_records_for_local(args)
-    _require_nomad_engine(_compose_engine(config, args))
-    from ..nomad_render import render_compose_job
-
-    rendered = render_compose_job(
-        config,
-        deployment,
-        resolve_secrets=False,
-        node_records=node_records,
-    )
-    for warning in _context_warnings(args):
-        print(f"# warning: {warning}")
-    print(rendered)
-    for service_name, route_text in render_compose_routes(config, deployment).items():
-        print(f"# route: {compose_route_path(config, deployment, service_name)}")
-        print(route_text)
-    return 0
-
-
 def cmd_compose_deploy(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     storage_classes = _control_storage_classes_for_local(args, required=True)
     node_records = _control_node_records_for_local(args, required=True)
     deployment = load_compose_deployment(args.sidecar, storage_classes=storage_classes)
-    # Inherit cluster engine when unset, mirroring the control plane, so the
-    # dry-run preview matches what will actually be deployed.
-    effective_engine = _require_nomad_engine(_compose_engine(config, args))
+    _require_nomad_engine(_compose_engine(config, args))
     output_format = _output_format(args)
     quiet = _quiet(args) or output_format != "text"
     if args.dry_run:
@@ -340,10 +301,10 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
         if output_format != "text":
             _print_success(args, result)
             return 0
-        print(f"Dry run: would write {compose_stack_path(config, deployment)}")
+        print(f"Dry run: Nomad job for {deployment.name} (not submitted)")
         print(stack)
         for service_name, route_text in routes.items():
-            print(f"Dry run: would write {compose_route_path(config, deployment, service_name)}")
+            print(f"Dry run: Traefik route for {deployment.name}/{service_name}")
             print(route_text)
         for warning in deployment.warnings:
             print(f"[warn] {warning}")

@@ -175,7 +175,7 @@ def _docker_pull_error_message(status: int, raw: str, *, registry_auth: Dict[str
         else:
             message += (
                 "; Docker daemon could not reach the registry. Verify the local Luma egress gateway and Docker daemon proxy "
-                "with `luma egress setup` and `docker info` HTTPProxy/HTTPSProxy."
+                "with `luma manager egress` and `docker info` HTTPProxy/HTTPSProxy."
             )
     return message
 

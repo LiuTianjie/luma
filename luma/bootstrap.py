@@ -512,7 +512,7 @@ def _require_egress_gateway_running(remote: Executor) -> None:
         "nomad job status -short egress 2>/dev/null | grep -qiE 'Status[[:space:]]*=[[:space:]]*running|Status[[:space:]]+running'"
     )
     if result.code != 0:
-        raise LumaError("control image pull egress requires a running Nomad egress job; run `luma egress setup` on the manager")
+        raise LumaError("control image pull egress requires a running Nomad egress job; run `luma manager egress` on the manager")
 
 
 def _docker_daemon_uses_egress_proxy(remote: Executor) -> bool:
@@ -884,7 +884,7 @@ def setup_tailscale(node: NodeConfig, *, authkey: str | None = None, executor: E
         results.append("Tailscale already logged in")
         return results
     if not authkey:
-        results.append("Tailscale login skipped: set TAILSCALE_AUTHKEY and run luma tailscale connect " + node.name)
+        results.append("Tailscale login skipped: set TAILSCALE_AUTHKEY and run `luma node tailscale` on " + node.name)
         return results
     _run_tailscale_up(lambda command: remote.sudo_result(f"set -euo pipefail; {command}"), authkey, hostname)
     results.append(f"Tailscale connected: {hostname}")
@@ -1337,7 +1337,7 @@ def _bootstrap_node_nomad(
             emit,
             "Deploy Traefik (Nomad)",
             _deploy_traefik_nomad,
-            fix="Check `nomad job status traefik` and Traefik logs, then rerun `luma bootstrap manager --domain <control-domain>`.",
+            fix="Check `nomad job status traefik` and Traefik logs, then rerun `luma bootstrap --domain <control-domain>`.",
         )
 
     if run_egress and "egress" in roles:
@@ -1351,7 +1351,7 @@ def _bootstrap_node_nomad(
             emit,
             "Deploy egress (Nomad)",
             _deploy_egress_nomad,
-            fix="Set EGRESS_SUBSCRIPTION_URL if image pulls fail, then run `luma egress setup` or rerun bootstrap without --skip-egress.",
+            fix="Set EGRESS_SUBSCRIPTION_URL if image pulls fail, then run `luma manager egress` or rerun bootstrap without --skip-egress.",
         )
 
     return results
@@ -1426,7 +1426,7 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
         emit,
         "Sync control DNS",
         lambda: sync_control_dns(config, domain),
-        fix="Check CLOUDFLARE_API_TOKEN, zone access, and LUMA_DNS_EDGE_TARGET, then rerun `luma bootstrap manager`.",
+        fix="Check CLOUDFLARE_API_TOKEN, zone access, and LUMA_DNS_EDGE_TARGET, then rerun `luma bootstrap`.",
     )
     cutover = {"pending": False}
     def install_state() -> str:
@@ -1755,7 +1755,7 @@ def install_nomad_node(
         emit,
         "Install and connect Tailscale",
         lambda: setup_tailscale(node, authkey=tailscale_authkey, executor=remote),
-        fix="Run: luma tailscale connect",
+        fix="Run: luma node tailscale",
     )
 
     os_name = nomad_node.detect_os()
@@ -1770,7 +1770,7 @@ def install_nomad_node(
     tailscale_ip = _tailscale_ip(remote) or ""
     if not tailscale_ip:
         raise LumaError(
-            "could not detect this node's Tailscale IPv4; run `luma tailscale connect` then rerun"
+            "could not detect this node's Tailscale IPv4; run `luma node tailscale` then rerun"
         )
     cpu_override = nomad_node.detect_cpu_total_compute(os_name, run=_subprocess_capture)
     config_hcl = nomad_node.render_agent_config(
@@ -2043,7 +2043,7 @@ def setup_egress(config: LumaConfig, node: NodeConfig, subscription_url: str, *,
         emit,
         "Deploy egress gateway",
         lambda: _deploy_egress_nomad(remote, config),
-        fix=f"Run: luma egress setup {node.name}",
+        fix=f"Run: luma manager egress",
     )
     _step(
         results,

@@ -254,7 +254,7 @@ class HistoryCliTests(unittest.TestCase):
             client = factory.return_value
             result = {"items": [], "page": {"limit": 5, "hasMore": True, "nextCursor": "next"}}
             client.history.return_value = result
-            code, out, err = self.run_cli("service", "history", "api", "--kind", "deployment", "--status", "failed", "--source", "cli", "--since", "100", "--limit", "5", "--cursor", "previous", "--format", "json")
+            code, out, err = self.run_cli("app", "history", "api", "--kind", "deployment", "--status", "failed", "--source", "cli", "--since", "100", "--limit", "5", "--cursor", "previous", "--format", "json")
         self.assertEqual(code, 0)
         self.assertEqual(err, "")
         self.assertEqual(json.loads(out)["result"], result)
@@ -263,7 +263,7 @@ class HistoryCliTests(unittest.TestCase):
     def test_text_page_notice_is_on_stderr(self):
         with patch("luma.cli.common.ControlClient") as factory:
             factory.return_value.history.return_value = {"items": [], "page": {"hasMore": True, "nextCursor": "abc_def"}}
-            code, out, err = self.run_cli("service", "history")
+            code, out, err = self.run_cli("app", "history")
         self.assertEqual(code, 0)
         self.assertNotIn("abc_def", out)
         self.assertIn("--cursor abc_def", err)
@@ -271,12 +271,12 @@ class HistoryCliTests(unittest.TestCase):
     def test_history_detail_uses_kind_and_scoped_step_cursor(self):
         with patch("luma.cli.common.ControlClient") as factory:
             factory.return_value.history_detail.return_value = {"item": {"id": "deploy-x"}, "events": [], "page": {"hasMore": False}}
-            code, out, err = self.run_cli("service", "history", "--id", "deploy-x", "--kind", "deployment", "--cursor", "step-page", "--limit", "2", "--format", "json")
+            code, out, err = self.run_cli("app", "history", "--id", "deploy-x", "--kind", "deployment", "--cursor", "step-page", "--limit", "2", "--format", "json")
             factory.return_value.history_detail.assert_called_once_with("deployment", "deploy-x", query={"cursor": "step-page", "limit": 2})
         self.assertEqual(code, 0)
         for arguments in (("--id", "x"), ("api", "--id", "x", "--kind", "build"), ("--limit", "101")):
             with patch("luma.cli.common.ControlClient") as factory:
-                code, _, _ = self.run_cli("service", "history", *arguments)
+                code, _, _ = self.run_cli("app", "history", *arguments)
                 factory.assert_not_called()
             self.assertEqual(code, 1)
 
@@ -296,7 +296,7 @@ class HistoryCliTests(unittest.TestCase):
         with patch("luma.cli.common.ControlClient") as factory:
             item = {"id": "expired", "detailsExpiredAt": 123456, "detailsRetentionDays": 30}
             factory.return_value.history_detail.return_value = {"item": item, "events": [], "page": {"hasMore": False}}
-            code, out, err = self.run_cli("service", "history", "--id", "expired", "--kind", "build")
+            code, out, err = self.run_cli("app", "history", "--id", "expired", "--kind", "build")
             self.assertEqual(code, 0)
             self.assertIn("Step log expired", out)
             self.assertIn("30-day retention", out)
@@ -305,10 +305,10 @@ class HistoryCliTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("Step log expired", out)
 
-    def test_nomad_history_parser_is_unchanged(self):
+    def test_app_versions_parser_has_no_pagination(self):
         from luma.cli import build_parser
-        args = build_parser().parse_args(["history", "api"])
-        self.assertEqual(args.command, "history")
+        args = build_parser().parse_args(["app", "versions", "api"])
+        self.assertEqual(args.app_command, "versions")
         self.assertEqual(args.name, "api")
         self.assertFalse(hasattr(args, "cursor"))
 

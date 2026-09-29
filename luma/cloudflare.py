@@ -81,7 +81,7 @@ def sync_dns(
     if not zone_id:
         zone_id = dns_config.get("zoneId")
     if not zone_id:
-        raise LumaError("missing Cloudflare zone id: run luma cloudflare connect --zone <domain> or set providers.dns.zoneId")
+        raise LumaError("missing Cloudflare zone id: run luma manager cloudflare --zone <domain> or set providers.dns.zoneId")
 
     target = service.dns.get("target") or dns_config.get("edgeTarget")
     if not target:
@@ -139,7 +139,7 @@ def delete_dns(
     if not zone_id:
         zone_id = dns_config.get("zoneId")
     if not zone_id:
-        raise LumaError("missing Cloudflare zone id: run luma cloudflare connect --zone <domain> or set providers.dns.zoneId")
+        raise LumaError("missing Cloudflare zone id: run luma manager cloudflare --zone <domain> or set providers.dns.zoneId")
 
     record_type = str(service.dns.get("type") or dns_config.get("recordType", "A")).upper()
     client = CloudflareClient(token)
@@ -170,10 +170,10 @@ def sync_control_dns(config: LumaConfig, domain: str) -> str:
         raise LumaError(f"missing Cloudflare API token env var: {token_env}")
     zone_id = os.environ.get(str(dns_config.get("zoneIdEnv", "CLOUDFLARE_ZONE_ID"))) or dns_config.get("zoneId")
     if not zone_id:
-        raise LumaError("missing Cloudflare zone id: run luma cloudflare connect --zone <domain> or set providers.dns.zoneId")
+        raise LumaError("missing Cloudflare zone id: run luma manager cloudflare --zone <domain> or set providers.dns.zoneId")
     target = dns_config.get("edgeTarget") or config.default_dns_target()
     if not target:
-        return "Control DNS skipped: missing DNS target; configure providers.dns.edgeTarget or run luma configure --role manager"
+        return "Control DNS skipped: missing DNS target; set providers.dns.edgeTarget or LUMA_DNS_EDGE_TARGET"
     record_type = str(dns_config.get("recordType", "A")).upper()
     proxied = bool(dns_config.get("controlProxied", dns_config.get("proxied", False)))
     ttl = int(dns_config.get("ttl", 1))

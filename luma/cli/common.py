@@ -115,18 +115,10 @@ def _validation_context(args: argparse.Namespace) -> Dict[str, Any]:
 
 
 def _command_name(args: argparse.Namespace) -> str:
-    command = str(getattr(args, "command", ""))
-    if command in {"service", "context"}:
-        return f"{command} {getattr(args, command + '_command', '')}".strip()
-    if command == "secret":
-        return f"secret {getattr(args, 'secret_command', '')}".strip()
-    if command == "registry":
-        return f"registry {getattr(args, 'registry_command', '')}".strip()
-    if command == "git-provider":
-        return f"git-provider {getattr(args, 'git_provider_command', '')}".strip()
-    if command == "region":
-        return f"region {getattr(args, 'region_command', '')}".strip()
-    return command
+    """Full command path for structured output, for example "app logs"."""
+    command = str(getattr(args, "command", "") or "")
+    subcommand = getattr(args, command.replace("-", "_") + "_command", None)
+    return f"{command} {subcommand}" if subcommand else command
 
 
 def _json_dumps(payload: Dict[str, Any]) -> str:

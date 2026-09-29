@@ -845,7 +845,7 @@ def nomad_job_status(config: LumaConfig, state: Dict[str, Any], *, slug: str) ->
 
 
 def job_versions(config: LumaConfig, state: Dict[str, Any], *, slug: str) -> List[Dict[str, Any]]:
-    """Return the version history of a job (newest first), for `luma history`."""
+    """Return the version history of a job (newest first), for `luma app versions`."""
     client = NomadApi(nomad_addr(config, state), token=_token(state))
     resp = client.request("GET", f"/v1/job/{_q(slug)}/versions")
     versions = resp.get("Versions") if isinstance(resp, dict) else None

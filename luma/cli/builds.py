@@ -201,7 +201,7 @@ def _workflow_finish(args: argparse.Namespace, client: ControlClient, result: Di
 
 
 def cmd_workflow(args: argparse.Namespace) -> int:
-    from ..deploy_workflow import describe_workflow, make_recipe, parse_recipe, project_root, validate_recipe
+    from ..deploy_workflow import describe_workflow, make_recipe, parse_recipe, project_root, replay_argv, validate_recipe
 
     endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
     client = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
@@ -238,7 +238,7 @@ def cmd_workflow(args: argparse.Namespace) -> int:
             _print_success(args, result)
         return 0
     recipe = validate_recipe(result["workflow"]["recipe"])
-    argv = list(recipe["argv"])
+    argv = replay_argv(recipe["argv"])
     argv += ["--control-url", endpoint, "--token", token, "--workflow-app", args.name, "--format", _output_format(args)]
     if insecure:
         argv.append("--insecure")

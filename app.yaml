@@ -1,0 +1,16 @@
+# Luma service manifest. Field reference: docs/deployment-yaml.md
+name: app
+image: ghcr.io/your-org/app:latest
+region: cn      # where it runs: cn, global, home or a region from 'luma region create'
+exposure: cn-edge  # how traffic reaches it; see docs/exposure-model.md
+domain: app.example.com
+port: 3000
+replicas: 1
+resources:
+  limits:
+    memory: 512M
+# Without a test, Luma checks that the port accepts TCP connections. For an HTTP
+# check, add: test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+healthcheck:
+  interval: 30s
+  timeout: 5s

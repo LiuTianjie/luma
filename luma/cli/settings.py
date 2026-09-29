@@ -1,4 +1,4 @@
-"""Luma CLI: settings commands."""
+"""Luma CLI: secret, registry and git-provider commands."""
 from __future__ import annotations
 
 import argparse
@@ -13,7 +13,7 @@ from .common import _configured_label, _control_context, _output_format, _print_
 
 
 def cmd_secret(args: argparse.Namespace) -> int:
-    if args.secret_command in {"list", "set", "import"}:
+    if args.secret_command in {"list", "set", "import", "remove"}:
         endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
         client = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
     if args.secret_command == "list":
@@ -48,13 +48,18 @@ def cmd_secret(args: argparse.Namespace) -> int:
         print(f"Secret saved: {label}")
         return 0
     if args.secret_command == "import":
-        values = parse_env_file(args.env_file)
+        values = parse_env_file(args.secrets_file)
         if not values:
-            print(f"No secrets found in {args.env_file}")
+            print(f"No secrets found in {args.secrets_file}")
             return 0
         for key, value in sorted(values.items()):
             client.set_secret(name=key, value=value, scope=str(args.scope))
         print(f"Secrets imported: {len(values)} into scope {args.scope}")
+        return 0
+    if args.secret_command == "remove":
+        result = client.remove_secret(name=args.name, scope=str(args.scope or ""))
+        scope = result.get("scope") or args.scope
+        print(f"Secret removed: {scope + '/' if scope else ''}{result.get('name', args.name)}")
         return 0
     raise LumaError(f"unknown secret command: {args.secret_command}")
 

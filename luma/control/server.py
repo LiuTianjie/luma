@@ -6731,7 +6731,7 @@ def handle_service_rollback(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def handle_service_history(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a Nomad-engine service's version history (for `luma history`)."""
+    """Return a Nomad-engine service's version history (for `luma app versions`)."""
     state = load_state()
     require_token(state, token, token_type="deploy")
     _apply_state_secrets(state)
@@ -10808,9 +10808,9 @@ def _running_egress_gateway_node_name(state: Dict[str, Any]) -> str:
         _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
         allocations = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or "")).request("GET", "/v1/job/egress/allocations")
     except LumaError as exc:
-        raise LumaError("image pull egress requires a running Nomad egress job; run `luma egress setup` on the manager") from exc
+        raise LumaError("image pull egress requires a running Nomad egress job; run `luma manager egress` on the manager") from exc
     if not isinstance(allocations, list):
-        raise LumaError("image pull egress requires a running Nomad egress job; run `luma egress setup` on the manager")
+        raise LumaError("image pull egress requires a running Nomad egress job; run `luma manager egress` on the manager")
     for allocation in allocations:
         if not _nomad_allocation_is_running(allocation):
             continue
@@ -10822,7 +10822,7 @@ def _running_egress_gateway_node_name(state: Dict[str, Any]) -> str:
             return entry[0]
         if node_name:
             return node_name
-    raise LumaError("image pull egress requires a running Nomad egress job; run `luma egress setup` on the manager")
+    raise LumaError("image pull egress requires a running Nomad egress job; run `luma manager egress` on the manager")
 
 
 def _nomad_allocation_is_running(allocation: Any) -> bool:

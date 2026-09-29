@@ -1,21 +1,19 @@
-"""Luma CLI: nodes commands."""
+"""Luma CLI: node, region and storage commands."""
 from __future__ import annotations
 
 import argparse
 import os
 from typing import Any, Dict
-from ..bootstrap import _is_tailscale_manager_addr, bootstrap_node, configure_dns, install_docker, install_nomad_node, local_host_name, setup_tailscale
+from ..bootstrap import _is_tailscale_manager_addr, configure_dns, install_docker, install_nomad_node, local_host_name, setup_tailscale
 from ..compose import (
     load_compose_deployment,
     resolve_storage_mounts,
     storage_summary,
 )
-from ..config import load_config
 from ..errors import LumaError
 from ..io import dump_yaml
 from ..node_readiness import wait_for_node_readiness
 from ..local import LocalExecutor
-from ..profiles import PROFILES
 from ..regions import parse_region_name
 from ..storage import storage_check_plan, storage_migration_plan
 from ..userconfig import ensure_interactive_config
@@ -26,20 +24,11 @@ from .manager import _host_from_hostport, _install_node_agent_from_token, _local
 
 
 def cmd_node(args: argparse.Namespace) -> int:
-    if args.node_command == "list":
-        config = load_config(args.config)
-        if not config.nodes:
-            print("No nodes configured")
-            return 0
-        for node in config.nodes.values():
-            print(f"{node.name}\thost={node.host}\tregion={node.region}\troles={','.join(node.roles)}\tpublicIp={node.public_ip or '-'}")
-        return 0
-    if args.node_command == "bootstrap":
-        config = load_config(args.config)
-        node = config.get_node(args.node)
-        profile = PROFILES[args.profile]
-        bootstrap_node(config, node, profile, run_egress=not args.skip_egress, emit=log)
-        print("Bootstrap complete")
+    if args.node_command == "tailscale":
+        ensure_interactive_config("worker", keys=["TAILSCALE_AUTHKEY"], required_keys=["TAILSCALE_AUTHKEY"])
+        log("[start] Install and connect Tailscale")
+        for line in setup_tailscale(_local_node("single-node"), executor=LocalExecutor()):
+            log(f"[ok] {line}")
         return 0
     if args.node_command == "nomad-join":
         endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
@@ -159,19 +148,20 @@ def cmd_node(args: argparse.Namespace) -> int:
         if skipped:
             print(f"Nomad drain skipped: {skipped}")
         return 0
-    if args.node_command == "status":
+    if args.node_command in {"list", "status"}:
+        name = getattr(args, "name", None)
         endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
         payload = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).status()
-        if args.name:
-            payload = _filter_node_status_payload(payload, args.name)
+        if name:
+            payload = _filter_node_status_payload(payload, name)
         if _output_format(args) != "text":
             _print_success(args, payload)
             return 0
         registered = ((payload.get("nodes") or {}).get("items") if isinstance(payload.get("nodes"), dict) else [])
         if not isinstance(registered, list) or not registered:
-            if args.name:
-                raise LumaError(f"node not found: {args.name}")
-            print("No nodes registered")
+            if name:
+                raise LumaError(f"node not found: {name}")
+            print("No nodes registered. Join one with: luma node join <control-url> --token <node-join-token> --region <region>")
             return 0
         rows = []
         for item in registered:
@@ -362,16 +352,6 @@ def _prune_local_docker(remote: LocalExecutor) -> str:
     if _last_nonempty_line(result.output) == "skipped":
         return "Docker prune skipped"
     return "Docker pruned"
-
-
-def cmd_tailscale(args: argparse.Namespace) -> int:
-    if args.tailscale_command == "connect":
-        ensure_interactive_config("worker", keys=["TAILSCALE_AUTHKEY"], required_keys=["TAILSCALE_AUTHKEY"])
-        log("[start] Install and connect Tailscale")
-        for line in setup_tailscale(_local_node("single-node"), executor=LocalExecutor()):
-            log(f"[ok] {line}")
-        return 0
-    raise LumaError(f"unknown tailscale command: {args.tailscale_command}")
 
 
 def _local_tailscale_connected() -> bool:

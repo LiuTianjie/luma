@@ -223,7 +223,7 @@ For a stateful Compose stack before completion:
 - Registry allocation is `running`, port `5000` is listening, but `/v2/` returns `No route to host`: suspect stale Nomad CNI hostport rules. Recreate the registry allocation:
 
 ```bash
-luma service restart luma-registry --mode recreate
+luma app restart luma-registry --mode recreate
 ```
 
 - Target-node pull from the internal registry fails with `502 Bad Gateway`: Docker daemon proxy captured private registry traffic. Check target Docker daemon `NO_PROXY`; it should include the registry host, `host:port`, and Tailscale range:
@@ -544,8 +544,8 @@ When deploying manifests that reference secrets and the project has a `.env`, in
 ## Remove Behavior
 
 ```bash
-luma service remove <name> --dry-run
-luma service remove <name>
+luma app remove <name> --dry-run
+luma app remove <name>
 ```
 
 Luma removes by deployed name, not by local YAML path. The control plane uses the manifest or sidecar recorded during the last successful deploy, so removal also works for web-dashboard deployments.
@@ -553,8 +553,8 @@ Luma removes by deployed name, not by local YAML path. The control plane uses th
 By default, Luma removes Luma-managed DNS, the Nomad job, generated jobspec files, and `tailscale-relay` / `tcp-relay` route files. Storage data is preserved. Add `--delete-storage` only when intentionally deleting removable managed storage referenced by the recorded deployment:
 
 ```bash
-luma service remove <name> --dry-run --delete-storage
-luma service remove <name> --delete-storage
+luma app remove <name> --dry-run --delete-storage
+luma app remove <name> --delete-storage
 ```
 
 `--delete-storage` for single-service manifests removes managed storage paths and named Docker volume objects from the recorded manifest while skipping bind mounts. For Compose it removes managed storage subdirectories referenced by the recorded sidecar, not the storage class itself.

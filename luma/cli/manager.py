@@ -1,4 +1,4 @@
-"""Luma CLI: manager commands."""
+"""Luma CLI: bootstrap, update and manager repair commands."""
 from __future__ import annotations
 
 import argparse
@@ -101,43 +101,41 @@ def _install_node_agent_from_token(
 
 def cmd_bootstrap(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    if args.bootstrap_command == "manager":
-        _apply_bootstrap_port_overrides(config, http_port=args.http_port, https_port=args.https_port)
-        node = config.get_node(args.node) if args.node else (config.default_manager() or _local_node(args.profile))
-        if not node:
-            raise LumaError("no manager node configured. Add a node or pass --node.")
-        profile = PROFILES[args.profile]
-        keys = ["CLOUDFLARE_API_TOKEN", "TRAEFIK_ACME_EMAIL", "TAILSCALE_AUTHKEY", "LUMA_SUDO_PASSWORD"]
-        if not _dns_target_for_bootstrap(config, node) and sys.stdin.isatty():
-            keys.append("LUMA_DNS_EDGE_TARGET")
-        if not args.skip_egress and "egress" in profile.roles:
-            keys.append("EGRESS_SUBSCRIPTION_URL")
-        ensure_interactive_config("manager", keys=keys)
-        _ensure_cloudflare_dns_from_local_config(config, args.domain, node)
-        state = _control_state_for_bootstrap(args.domain, overwrite=args.overwrite_control_state)
-        _attach_control_secrets(state, config)
-        bootstrap_manager_local(config, node, profile, args.domain, state, run_egress=not args.skip_egress, emit=log, overwrite_control_state=args.overwrite_control_state)
-        control_url = _control_url(args.domain, args.https_port or _config_https_port(config))
-        print("Bootstrap complete")
-        print(f"Control domain: {args.domain}")
-        print(f"Control URL: {control_url}")
-        print(f"Cluster: {state['clusterId']}")
-        print(f"Management token: {state['deployToken']}")
-        print(f"Node join token: {state['joinToken']}")
-        print(f"Dashboard: {control_url.rstrip('/')}/dashboard/")
-        print("Next:")
-        print("  1. Open the dashboard and paste the management token")
-        print("  2. Applications → Create application → hello-world first install")
-        print("     (internal smoke service; no extra DNS, Tailscale, or registry)")
-        print("  3. Optional later: Dashboard → First install for Cloudflare extras, Tailscale, egress, or registry")
-        print("If a step failed, fix the printed cause and rerun:")
-        print(f"  luma bootstrap manager --domain {args.domain}")
-        print("Layer repair: luma egress setup | luma tailscale connect | luma doctor")
-        print("Join additional nodes:")
-        for label, command in _node_join_examples(control_url, str(state["joinToken"])):
-            print(f"  {label}: {command}")
-        return 0
-    raise LumaError(f"unknown bootstrap command: {args.bootstrap_command}")
+    _apply_bootstrap_port_overrides(config, http_port=args.http_port, https_port=args.https_port)
+    node = config.get_node(args.node) if args.node else (config.default_manager() or _local_node(args.profile))
+    if not node:
+        raise LumaError("no manager node configured. Add a node or pass --node.")
+    profile = PROFILES[args.profile]
+    keys = ["CLOUDFLARE_API_TOKEN", "TRAEFIK_ACME_EMAIL", "TAILSCALE_AUTHKEY"]
+    if not _dns_target_for_bootstrap(config, node) and sys.stdin.isatty():
+        keys.append("LUMA_DNS_EDGE_TARGET")
+    if not args.skip_egress and "egress" in profile.roles:
+        keys.append("EGRESS_SUBSCRIPTION_URL")
+    ensure_interactive_config("manager", keys=keys)
+    _ensure_cloudflare_dns_from_local_config(config, args.domain, node)
+    state = _control_state_for_bootstrap(args.domain, overwrite=args.overwrite_control_state)
+    _attach_control_secrets(state, config)
+    bootstrap_manager_local(config, node, profile, args.domain, state, run_egress=not args.skip_egress, emit=log, overwrite_control_state=args.overwrite_control_state)
+    control_url = _control_url(args.domain, args.https_port or _config_https_port(config))
+    print("Bootstrap complete")
+    print(f"Control domain: {args.domain}")
+    print(f"Control URL: {control_url}")
+    print(f"Cluster: {state['clusterId']}")
+    print(f"Management token: {state['deployToken']}")
+    print(f"Node join token: {state['joinToken']}")
+    print(f"Dashboard: {control_url.rstrip('/')}/dashboard/")
+    print("Next:")
+    print("  1. Open the dashboard and paste the management token")
+    print("  2. Applications → Create application → hello-world first install")
+    print("     (internal smoke service; no extra DNS, Tailscale, or registry)")
+    print("  3. Optional later: Dashboard → First install for Cloudflare extras, Tailscale, egress, or registry")
+    print("If a step failed, fix the printed cause and rerun:")
+    print(f"  luma bootstrap --domain {args.domain}")
+    print("Layer repair: luma manager egress | luma node tailscale | luma doctor")
+    print("Join additional nodes:")
+    for label, command in _node_join_examples(control_url, str(state["joinToken"])):
+        print(f"  {label}: {command}")
+    return 0
 
 
 def cmd_update(args: argparse.Namespace) -> int:
@@ -397,7 +395,7 @@ def _manager_refresh_decision(args: argparse.Namespace) -> tuple[bool, str]:
         if _manager_state_requires_privilege():
             raise LumaError(
                 "manager control state exists but is not readable by this user. "
-                "Run `sudo luma update` (or set LUMA_SUDO_PASSWORD), then retry; "
+                "Run `sudo luma update`, then retry; "
                 "the 401 from the joined-node path is not a management-token rotation."
             )
         return False, "no local manager control state found"
@@ -596,16 +594,15 @@ def _current_luma_command() -> list[str]:
 
 
 def _refresh_manager_control(args: argparse.Namespace) -> None:
-    _reject_bootstrap_only_update_options(args)
     domain = _manager_update_domain(args.domain)
     state = _existing_control_state()
     if not state:
         if _manager_state_requires_privilege():
             raise LumaError(
                 "manager control state exists but is not readable by this user. "
-                "Run `sudo luma update manager` (or set LUMA_SUDO_PASSWORD), then retry."
+                "Run `sudo luma update manager`, then retry."
             )
-        raise LumaError("manager control state not found. Run luma bootstrap manager --domain <control-domain> for first install or repair.")
+        raise LumaError("manager control state not found. Run luma bootstrap --domain <control-domain> for first install or repair.")
     state["domain"] = domain
     # A managed update runs in a transient systemd unit with no meaningful
     # working directory.  Falling back to the installer checkout's example
@@ -623,19 +620,6 @@ def _refresh_manager_control(args: argparse.Namespace) -> None:
     _ensure_cloudflare_dns_from_local_config(config, domain, node)
     _attach_control_secrets(state, config)
     refresh_manager_control_local(config, node, domain, state, emit=log)
-
-
-def _reject_bootstrap_only_update_options(args: argparse.Namespace) -> None:
-    if args.http_port is not None or args.https_port is not None:
-        raise LumaError(
-            "luma update manager refreshes existing ingress from control state; "
-            "HTTP/HTTPS port overrides are bootstrap-only. Use luma bootstrap manager "
-            "--domain <control-domain> for explicit ingress repair."
-        )
-    if args.skip_egress:
-        raise LumaError("luma update no longer runs egress setup. Use luma bootstrap manager --skip-egress only during full bootstrap repair.")
-    if args.overwrite_control_state:
-        raise LumaError("luma update preserves control state. Use luma bootstrap manager --overwrite-control-state only for explicit repair.")
 
 
 def _manager_update_domain(explicit_domain: str | None) -> str:
@@ -789,7 +773,7 @@ def _ensure_cloudflare_dns_from_local_config(config: LumaConfig, domain: str, no
         return
     raise LumaError(
         "CLOUDFLARE_API_TOKEN is configured, but Cloudflare zone could not be inferred from "
-        f"{domain!r}. Run: luma cloudflare connect --zone <zone>, then rerun bootstrap/update manager."
+        f"{domain!r}. Run: luma manager cloudflare --zone <zone>, then rerun bootstrap/update manager."
     )
 
 
@@ -863,25 +847,25 @@ def _local_node(profile_name: str, *, name: str | None = None, region: str | Non
     )
 
 
-def cmd_cloudflare(args: argparse.Namespace) -> int:
+def _manager_cloudflare(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    if args.cloudflare_command == "connect":
-        zone = find_zone(config, args.zone)
-        providers = config.raw.setdefault("providers", {})
-        dns = providers.setdefault("dns", {})
-        dns["type"] = "cloudflare"
-        dns["zone"] = args.zone
-        dns["zoneId"] = zone["id"]
-        dns.setdefault("apiTokenEnv", "CLOUDFLARE_API_TOKEN")
-        save_config(config)
-        print(f"Cloudflare connected: {args.zone} ({zone['id']})")
-        return 0
-    raise LumaError(f"unknown cloudflare command: {args.cloudflare_command}")
+    zone = find_zone(config, args.zone)
+    providers = config.raw.setdefault("providers", {})
+    dns = providers.setdefault("dns", {})
+    dns["type"] = "cloudflare"
+    dns["zone"] = args.zone
+    dns["zoneId"] = zone["id"]
+    dns.setdefault("apiTokenEnv", "CLOUDFLARE_API_TOKEN")
+    save_config(config)
+    print(f"Cloudflare connected: {args.zone} ({zone['id']})")
+    return 0
 
 
 def cmd_manager(args: argparse.Namespace) -> int:
-    if args.manager_command != "ip-change":
-        raise LumaError(f"unknown manager command: {args.manager_command}")
+    if args.manager_command == "egress":
+        return _manager_egress(args)
+    if args.manager_command == "cloudflare":
+        return _manager_cloudflare(args)
     state = _existing_control_state()
     if not state:
         raise LumaError(
@@ -903,7 +887,7 @@ def cmd_manager(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_egress(args: argparse.Namespace) -> int:
+def _manager_egress(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     ensure_interactive_config("manager", keys=["EGRESS_SUBSCRIPTION_URL"])
     node = _local_node("egress-gateway")
@@ -911,8 +895,5 @@ def cmd_egress(args: argparse.Namespace) -> int:
     if not subscription_url:
         raise LumaError("missing EGRESS_SUBSCRIPTION_URL")
     setup_egress(config, node, subscription_url, emit=log, executor=LocalExecutor())
-    if args.egress_command == "refresh":
-        print("Egress refreshed")
-    else:
-        print("Egress setup complete")
+    print("Egress proxy ready")
     return 0

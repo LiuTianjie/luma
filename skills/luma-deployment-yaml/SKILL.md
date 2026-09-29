@@ -133,7 +133,7 @@ curl -I http://<builder-tailscale-ip>:5000/v2/
 - If the registry allocation is `running` and port `5000` is listening but `/v2/` returns `No route to host`, suspect stale Nomad CNI hostport state; recreate the registry allocation:
 
 ```bash
-luma service restart luma-registry --mode recreate
+luma app restart luma-registry --mode recreate
 ```
 
 - `luma registry serve` should configure `insecure-registries` on ready Linux worker nodes and add the registry host plus Tailscale/private ranges to Docker daemon `NO_PROXY`. It skips manager nodes to avoid killing Luma Control by restarting the manager Docker daemon.
@@ -264,9 +264,9 @@ If the manifest uses `${ENV_NAME}` placeholders and the project has a `.env`, ad
 Inspect and roll back a deployed application only when the user asks for runtime rollback:
 
 ```bash
-luma history <app>
-luma rollback <app>
-luma rollback <app> --to-version <N>
+luma app versions <app>
+luma app rollback <app>
+luma app rollback <app> --to-version <N>
 ```
 
 The dashboard exposes the same Nomad job-version rollback from Applications -> Versions. Treat rollback as a running Nomad job revert; it does not rewrite Git, update the stored manifest, reverse migrations, or restore volume data. Compose rollback reverts the whole stack.
@@ -308,11 +308,11 @@ luma storage check luma.compose.yml --format json
 - For Docker Hub-style images, Builder tries the requested source and then
   configured `defaults.imageMirrors`; it never changes a target node's Docker
   daemon proxy. `defaults.imageMirrors: []` disables source mirror fallback.
-- `luma service remove <name>` uses the manifest recorded by the control plane during the last successful single-service or Compose deploy. This also works for deployments created from the web dashboard.
+- `luma app remove <name>` uses the manifest recorded by the control plane during the last successful single-service or Compose deploy. This also works for deployments created from the web dashboard.
 - Storage data is preserved by default. Add `--delete-storage` only when intentionally deleting removable managed storage referenced by the recorded deployment.
 - `region` controls workload scheduling via a node-meta constraint; the deploy itself is issued by Luma Control through the Nomad API on the manager.
 - A service stays running on its node even if that node briefly disconnects from the manager (Nomad keeps the local allocation alive and reconnects), so transient node-down blips should not be diagnosed as manifest region errors.
 - Required platform ports are separate from manifest `port`: public `80/tcp` and `443/tcp`, `tcp-relay` published ports such as `3306/tcp`, and the Nomad cluster ports `4646/tcp` (HTTP API), `4647/tcp` (RPC), `4648/tcp`+`4648/udp` (Serf). These cluster ports are kept private to the Tailscale interface.
-- `luma update` on a manager refreshes Luma Control only and never touches running service allocations. Use `luma bootstrap manager --domain <control-domain>` for first install or explicit ingress/egress/bootstrap repair.
+- `luma update` on a manager refreshes Luma Control only and never touches running service allocations. Use `luma bootstrap --domain <control-domain>` for first install or explicit ingress/egress/bootstrap repair.
 - `luma update fleet` updates ready non-manager node agents from a logged-in client. It skips the manager so the active control plane is not updated through a remote fleet task. Update the manager separately with `luma update manager` from the manager host.
 - Bootstrap/update installs Tailscale watchdogs on supported manager and node hosts. When diagnosing a node-down heartbeat failure, first separate Docker/container health from Tailscale peer TCP reachability on the Nomad RPC/Serf ports `4647`/`4648`.

@@ -1,93 +1,22 @@
-"""Luma CLI: session commands."""
+"""Luma CLI: getting-started commands (init, login, context, doctor, version, status)."""
 from __future__ import annotations
 
 import argparse
 import getpass
 import re
-import shutil
-import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict
 from ..control.client import ControlClient
 from ..control.context import list_contexts, load_current_context, save_context, use_context
 from ..errors import LumaError
-from ..io import write_yaml
+from ..regions import parse_region_name
+from ..service import VALID_EXPOSURES, load_service, slugify
 from ..installation import installation_diagnostics
-from ..userconfig import configured_keys, interactive_configure, masked_config_lines, user_config_path
 from .. import __version__
 from . import common
-from .common import _arg_text, _configured_label, _control_context, _env_text, _output_format, _print_key_values, _print_success, _print_table, _quiet, _status_value, _yes_no
-
-
-def cmd_init(args: argparse.Namespace) -> int:
-    path = args.config or Path("luma.yaml")
-    if path.exists():
-        print(f"Config already exists: {path}")
-        return 0
-    data: Dict[str, Any] = {
-        "project": "luma",
-        "providers": {
-            "dns": {
-                "type": "cloudflare",
-                "zone": "example.com",
-                "apiTokenEnv": "CLOUDFLARE_API_TOKEN",
-            }
-        },
-        "nodes": {},
-        "defaults": {
-            "engine": "nomad",
-            "exposure": "cn-edge",
-            "stackRoot": "stacks",
-            "routesRoot": "routes",
-            "publicNetwork": "public",
-            "egressNetwork": "egress",
-            "entrypoint": "websecure",
-            "certResolver": "letsencrypt",
-        },
-        "git": {"autoCommit": False, "autoPush": False, "commitMessage": "deploy {name} to {region}"},
-    }
-    write_yaml(path, data)
-    print(f"Config created: {path}")
-    return 0
-
-
-def cmd_preflight(args: argparse.Namespace) -> int:
-    env_file = args.env_file
-    checks = [
-        ("Python", True, f"{sys.executable} ({sys.version_info.major}.{sys.version_info.minor})", "Install Python 3.9+"),
-        ("pip", _module_available("pip"), "python -m pip", "Run: python3 -m ensurepip --upgrade"),
-        ("venv", _module_available("venv"), "python -m venv", "Install python3-venv"),
-        ("Git", bool(shutil.which("git")), shutil.which("git") or "-", "Optional: install Git for source-checkout development"),
-        ("Env file", env_file.exists(), str(env_file), "Optional: cp .env.example .env"),
-        ("Docker Compose", _docker_compose_available(), "docker compose", "Optional locally; install Docker to validate rendered stacks"),
-    ]
-    for name, ok, detail, fix in checks:
-        print(f"{name}: {'ok' if ok else 'missing'} ({detail})")
-        if not ok:
-            print(f"  Fix: {fix}")
-    required_ok = all(ok for name, ok, _, _ in checks if name not in {"Docker Compose", "Env file", "Git", "SSH"})
-    return 0 if required_ok else 1
-
-
-def cmd_configure(args: argparse.Namespace) -> int:
-    path = user_config_path()
-    if args.show:
-        keys = configured_keys(path)
-        print(f"Config: {path}")
-        if not keys:
-            print("No keys configured. Run: luma configure --role manager")
-            return 0
-        for line in masked_config_lines(keys):
-            print(line)
-        return 0
-    if args.role == "client":
-        print("Client machines usually do not need local secrets. Run luma login <control-url> --token <management-token>.")
-    path = interactive_configure(args.role, path=path)
-    print(f"Config saved: {path}")
-    for line in masked_config_lines(configured_keys(path)):
-        print(line)
-    return 0
+from .common import prompt, _arg_text, _configured_label, _control_context, _env_text, _output_format, _print_key_values, _print_success, _print_table, _quiet, _status_value, _yes_no
 
 
 def cmd_version(args: argparse.Namespace) -> int:
@@ -291,29 +220,6 @@ def _version_health_context(args: argparse.Namespace) -> tuple[str, str, bool, s
         bool(context.get("insecure", False)),
         str(context["resolveIp"]) if context.get("resolveIp") else None,
     )
-
-
-def _module_available(name: str) -> bool:
-    result = subprocess.run(
-        [sys.executable, "-c", f"import {name}"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    return result.returncode == 0
-
-
-def _docker_compose_available() -> bool:
-    docker = shutil.which("docker")
-    if not docker:
-        return False
-    result = subprocess.run(
-        [docker, "compose", "version"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    return result.returncode == 0
 
 
 def cmd_login(args: argparse.Namespace) -> int:
@@ -610,3 +516,69 @@ def _image_pull_fix(raw_errors: list[Any]) -> str:
         + " — check Docker daemon registry mirrors/proxy/NO_PROXY. "
         "Runtime `proxy: true` does not affect Docker image pulls."
     )
+
+
+DEFAULT_EXPOSURE_FOR_REGION = {"cn": "cn-edge", "global": "external-edge", "home": "tailscale-relay"}
+EXPOSURES_WITH_DOMAIN = {"cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel"}
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    """Write a commented service manifest, prompting only in a terminal."""
+    interactive = sys.stdin.isatty()
+
+    def value(current: Any, default: str, label: str) -> str:
+        if current not in (None, ""):
+            return str(current)
+        return prompt(default, label) if interactive else default
+
+    name = slugify(value(args.name, "app", "Application name"))
+    image = value(args.image, f"ghcr.io/your-org/{name}:latest", "Container image")
+    region = parse_region_name(value(args.region, "cn", "Region (cn, global, home or a created region)"))
+    exposure = value(args.exposure, DEFAULT_EXPOSURE_FOR_REGION.get(region, "none"), f"Exposure ({', '.join(sorted(VALID_EXPOSURES))})")
+    if exposure not in VALID_EXPOSURES:
+        raise LumaError(f"unknown exposure: {exposure}; choose one of {', '.join(sorted(VALID_EXPOSURES))}")
+    port = int(value(args.port, "3000", "Container port"))
+    domain = value(args.domain, f"{name}.example.com", "Public hostname") if exposure in EXPOSURES_WITH_DOMAIN else ""
+    replicas = int(value(args.replicas, "1", "Replicas"))
+    output = args.output or Path(f"{name}.yaml")
+    if output.exists() and not args.force:
+        raise LumaError(f"{output} already exists; pass --force to overwrite it or --output to choose another path")
+
+    text = _service_manifest_text(name=name, image=image, region=region, exposure=exposure, domain=domain, port=port, replicas=replicas)
+    with tempfile.TemporaryDirectory() as directory:
+        candidate = Path(directory) / output.name
+        candidate.write_text(text, encoding="utf-8")
+        load_service(candidate)
+    output.write_text(text, encoding="utf-8")
+    print(f"Created {output}")
+    print("Next:")
+    print(f"  luma validate {output}")
+    print(f"  luma deploy {output} --dry-run")
+    if exposure in EXPOSURES_WITH_DOMAIN and domain.endswith(".example.com"):
+        print("  Replace example.com with a domain in your Cloudflare zone before deploying.")
+    return 0
+
+
+def _service_manifest_text(*, name: str, image: str, region: str, exposure: str, domain: str, port: int, replicas: int) -> str:
+    lines = [
+        "# Luma service manifest. Field reference: docs/deployment-yaml.md",
+        f"name: {name}",
+        f"image: {image}",
+        f"region: {region}      # where it runs: cn, global, home or a region from 'luma region create'",
+        f"exposure: {exposure}  # how traffic reaches it; see docs/exposure-model.md",
+    ]
+    if domain:
+        lines.append(f"domain: {domain}")
+    lines += [
+        f"port: {port}",
+        f"replicas: {replicas}",
+        "resources:",
+        "  limits:",
+        "    memory: 512M",
+        "# Without a test, Luma checks that the port accepts TCP connections. For an HTTP",
+        "# check, add: test: [\"CMD\", \"curl\", \"-f\", \"http://localhost:%d/health\"]" % port,
+        "healthcheck:",
+        "  interval: 30s",
+        "  timeout: 5s",
+    ]
+    return "\n".join(lines) + "\n"

@@ -12,7 +12,8 @@ else
 fi
 
 REPO_URL="${LUMA_REPO_URL:-https://github.com/LiuTianjie/luma}"
-INSTALL_REF="${LUMA_INSTALL_REF:-main}"
+INSTALL_REF="${LUMA_INSTALL_REF:-}"
+GITHUB_REPO_PATH="${REPO_URL#https://github.com/}"
 LUMA_USER_HOME="${LUMA_USER_HOME:-${HOME:-}}"
 if [ -z "$LUMA_USER_HOME" ]; then
   if command -v getent >/dev/null 2>&1; then
@@ -149,7 +150,32 @@ ensure_path() {
   echo "PATH updated in: $updated"
 }
 
+# The newest vX.Y.Z tag. Tags are the release channel: every tag publishes the
+# PyPI package and the Control image, while GitHub Releases are occasional.
+resolve_latest_release() {
+  latest=""
+  if command -v curl >/dev/null 2>&1; then
+    latest="$(curl -fsSL --connect-timeout 10 --max-time 30 \
+        "https://api.github.com/repos/$GITHUB_REPO_PATH/tags?per_page=100" 2>/dev/null \
+      | grep -o '"name": *"v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"' \
+      | sed 's/.*"v\([^"]*\)"/\1/' \
+      | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)"
+    if [ -z "$latest" ]; then
+      latest="$(curl -fsSL --connect-timeout 10 --max-time 30 https://pypi.org/pypi/luma-infra/json 2>/dev/null \
+        | grep -o '"version": *"[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"' | head -n 1 \
+        | sed 's/.*"\([^"]*\)"/\1/')"
+    fi
+  fi
+  if [ -z "$latest" ]; then
+    echo "Could not determine the latest Luma release from GitHub or PyPI." >&2
+    echo "Set LUMA_INSTALL_REF to a release tag (for example v0.1.366) or to main, then rerun." >&2
+    exit 1
+  fi
+  INSTALL_REF="v$latest"
+}
+
 download_source() {
+  [ -n "$INSTALL_REF" ] || resolve_latest_release
   case "$INSTALL_REF" in
     refs/*)
       default_archive_url="$REPO_URL/archive/$INSTALL_REF.tar.gz"
@@ -482,11 +508,11 @@ fi
 echo "Next:"
 if [ "$LOCAL_CHECKOUT" -eq 1 ]; then
   echo "  . $VENV_DIR/bin/activate"
-  echo "  luma preflight"
+  echo "  luma doctor --local"
   echo "If your shell resolves ./luma instead, run:"
-  echo "  $VENV_DIR/bin/luma preflight"
-  echo "  ./scripts/luma preflight"
+  echo "  $VENV_DIR/bin/luma doctor --local"
+  echo "  ./scripts/luma doctor --local"
 else
-  echo "  $BIN_DIR/luma preflight"
-  echo "  $BIN_DIR/luma login https://luma.example.com --token <deploy-token>"
+  echo "  On a new server:  $BIN_DIR/luma bootstrap --domain luma.example.com"
+  echo "  On a client:      $BIN_DIR/luma login https://luma.example.com --token-stdin"
 fi

@@ -66,16 +66,16 @@ class CliOperationsTests(unittest.TestCase):
             with self.subTest(operation=operation):
                 self.client.restart_application.return_value = {"mode": "recreate", "restarted": []}
                 self.client.remove_service.return_value = {"service": "api", "steps": [{"name": "remove", "status": "ok"}]}
-                code, out, err = self.run_cli("service", operation, "api", "--format", "json")
+                code, out, err = self.run_cli("app", operation, "api", "--format", "json")
                 self.assertEqual(code, 0)
                 self.assertEqual(err, "")
-                self.assertEqual(json.loads(out)["command"], "service " + operation)
+                self.assertEqual(json.loads(out)["command"], "app " + operation)
                 self.assertEqual(len(out.splitlines()), 1)
 
     def test_remove_quiet_suppresses_steps_and_heartbeat(self):
         self.credentials()
         self.client.remove_service.return_value = {"service": "api", "steps": [{"name": "private-progress", "status": "ok"}]}
-        code, out, err = self.run_cli("service", "remove", "api", "--quiet")
+        code, out, err = self.run_cli("app", "remove", "api", "--quiet")
         self.assertEqual(code, 0)
         self.assertIn("Remove finished: api", out)
         self.assertNotIn("private-progress", out)
@@ -84,7 +84,7 @@ class CliOperationsTests(unittest.TestCase):
     def test_errors_go_to_stderr_as_json(self):
         self.credentials()
         self.client.restart_application.side_effect = LumaError("application not found")
-        code, out, err = self.run_cli("service", "restart", "missing", "--format", "json")
+        code, out, err = self.run_cli("app", "restart", "missing", "--format", "json")
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertEqual(json.loads(err)["error"]["message"], "application not found")
@@ -93,7 +93,7 @@ class CliOperationsTests(unittest.TestCase):
         save_context(endpoint="https://first.example.com", cluster_id="first", token="first-token")
         save_context(endpoint="https://second.example.com", cluster_id="second", token="second-token")
         self.client.dashboard.return_value = {"services": []}
-        code, out, err = self.run_cli("service", "list", "--control-context", "first", "--format", "json")
+        code, out, err = self.run_cli("app", "list", "--control-context", "first", "--format", "json")
         self.assertEqual(code, 0)
         self.client_cls.assert_called_once_with("https://first.example.com", "first-token", insecure=False, resolve_ip=None)
         self.assertEqual(current_context_name(), "second")
@@ -101,12 +101,12 @@ class CliOperationsTests(unittest.TestCase):
 
     def test_url_override_does_not_reuse_other_cluster_credentials(self):
         save_context(endpoint="https://first.example.com", cluster_id="first", token="first-secret", insecure=True, resolve_ip="127.0.0.1")
-        code, out, err = self.run_cli("service", "list", "--control-url", "https://second.example.com", "--format", "json")
+        code, out, err = self.run_cli("app", "list", "--control-url", "https://second.example.com", "--format", "json")
         self.assertEqual(code, 1)
         self.client_cls.assert_not_called()
         self.assertNotIn("first-secret", out + err)
         self.client.dashboard.return_value = {"services": []}
-        code, out, err = self.run_cli("service", "list", "--control-url", "https://second.example.com", "--token", "second-token", "--format", "json")
+        code, out, err = self.run_cli("app", "list", "--control-url", "https://second.example.com", "--token", "second-token", "--format", "json")
         self.assertEqual(code, 0)
         self.client_cls.assert_called_once_with("https://second.example.com", "second-token", insecure=False, resolve_ip=None)
 
@@ -115,9 +115,9 @@ class CliOperationsTests(unittest.TestCase):
         save_context(endpoint="https://second.example.com", cluster_id="second", token="second-token")
         os.environ["LUMA_CONTROL_CONTEXT"] = "first"
         self.client.dashboard.return_value = {"services": []}
-        self.run_cli("service", "list", "--format", "json")
+        self.run_cli("app", "list", "--format", "json")
         self.assertEqual(self.client_cls.call_args.args[0], "https://first.example.com")
-        self.run_cli("service", "list", "--control-context", "second", "--format", "json")
+        self.run_cli("app", "list", "--control-context", "second", "--format", "json")
         self.assertEqual(self.client_cls.call_args.args[0], "https://second.example.com")
 
     def test_context_json_never_contains_token(self):
@@ -166,18 +166,18 @@ class CliOperationsTests(unittest.TestCase):
             {"name": "worker", "fullName": "worker", "stack": "worker", "region": "global"},
         ]
         self.client.dashboard.return_value = {"services": services}
-        code, out, _ = self.run_cli("service", "list", "--region", "global", "--format", "json")
+        code, out, _ = self.run_cli("app", "list", "--region", "global", "--format", "json")
         self.assertEqual(json.loads(out)["result"]["services"], services[2:])
-        code, out, _ = self.run_cli("service", "inspect", "shop", "--format", "json")
+        code, out, _ = self.run_cli("app", "show", "shop", "--format", "json")
         self.assertEqual(json.loads(out)["result"]["services"], services[:2])
-        code, out, err = self.run_cli("service", "inspect", "missing", "--format", "json")
+        code, out, err = self.run_cli("app", "show", "missing", "--format", "json")
         self.assertEqual(code, 1)
         self.assertIn("not found", json.loads(err)["error"]["message"])
 
     def test_events_uses_existing_runtime_api_result(self):
         self.credentials()
         self.client.service_events.return_value = {"events": [{"type": "Started", "message": "Task started"}]}
-        code, out, _ = self.run_cli("service", "events", "shop_api", "--format", "json")
+        code, out, _ = self.run_cli("app", "events", "shop_api", "--format", "json")
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["result"]["events"][0]["type"], "Started")
         self.client.service_events.assert_called_once_with("shop_api")
@@ -185,13 +185,13 @@ class CliOperationsTests(unittest.TestCase):
     def test_logs_snapshot_and_follow(self):
         self.credentials()
         self.client.service_logs.return_value = {"logs": ["hello"], "warnings": ["Logs are bounded"]}
-        code, out, err = self.run_cli("service", "logs", "shop_api", "--allocation", "a", "--previous")
+        code, out, err = self.run_cli("app", "logs", "shop_api", "--allocation", "a", "--previous")
         self.assertEqual(out, "[source unavailable] hello\n")
         self.assertIn("Logs are bounded", err)
         self.client.service_logs.assert_called_once_with("shop_api", tail=120, allocation="a", previous=True)
         events = [{"status": "start"}, {"line": "hello", "cursor": "cursor-1"}]
         self.client.service_log_events.return_value = iter(events)
-        code, out, err = self.run_cli("service", "logs", "shop_api", "-f", "--format", "ndjson")
+        code, out, err = self.run_cli("app", "logs", "shop_api", "-f", "--format", "ndjson")
         self.assertEqual([json.loads(line) for line in out.splitlines()], events)
 
     def test_text_logs_label_interleaved_sources_and_fragments(self):
@@ -209,30 +209,30 @@ class CliOperationsTests(unittest.TestCase):
             "[alloc-a/web/stdout] [continued] last\n"
         )
         self.client.service_logs.return_value = {"entries": entries, "logs": ["legacy duplicate"]}
-        code, out, err = self.run_cli("service", "logs", "api")
+        code, out, err = self.run_cli("app", "logs", "api")
         self.assertEqual(code, 0)
         self.assertEqual(out, expected)
         self.assertEqual(err, "")
         self.client.service_log_events.return_value = iter(entries)
-        code, out, err = self.run_cli("service", "logs", "api", "--follow")
+        code, out, err = self.run_cli("app", "logs", "api", "--follow")
         self.assertEqual(code, 0)
         self.assertEqual(out, expected)
         self.assertEqual(err, "")
         self.client.service_log_events.return_value = iter(entries)
-        code, out, err = self.run_cli("service", "logs", "api", "--follow", "--format", "ndjson")
+        code, out, err = self.run_cli("app", "logs", "api", "--follow", "--format", "ndjson")
         self.assertEqual([json.loads(line) for line in out.splitlines()], entries)
 
     def test_logs_follow_error_returns_failure(self):
         self.credentials()
         self.client.service_log_events.return_value = iter([{"type": "status", "status": "error", "message": "Node unavailable"}])
-        code, out, err = self.run_cli("service", "logs", "api", "-f")
+        code, out, err = self.run_cli("app", "logs", "api", "-f")
         self.assertEqual(code, 1)
         self.assertIn("Node unavailable", err)
 
     def test_logs_invalid_options_fail_before_network(self):
         for options in (("--tail", "0"), ("--tail", "501"), ("--follow", "--format", "json")):
             with self.subTest(options=options):
-                code, _, _ = self.run_cli("service", "logs", "api", *options)
+                code, _, _ = self.run_cli("app", "logs", "api", *options)
                 self.assertEqual(code, 1)
         self.client_cls.assert_not_called()
 

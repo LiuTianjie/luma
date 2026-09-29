@@ -54,6 +54,18 @@ def safe_url(value: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc.rsplit("@", 1)[-1], parts.path, "", ""))
 
 
+def replay_argv(argv: list[str]) -> list[str]:
+    """Recorded argv adjusted for the current CLI.
+
+    Recipes recorded before .env loading became implicit start with
+    ``--env-file .env``; replaying that must not turn the application's own .env
+    into an explicit, fully loaded environment file.
+    """
+    if argv[:2] == ["--env-file", ".env"]:
+        return argv[2:]
+    return list(argv)
+
+
 def parse_recipe(argv: Any) -> argparse.Namespace:
     if not isinstance(argv, list) or not argv or len(argv) > 128:
         raise LumaError("workflow argv must be a nonempty array of at most 128 arguments")
@@ -103,7 +115,7 @@ def make_recipe(args: argparse.Namespace) -> dict[str, Any]:
         argv += ["--config", local_path(config)]
     if args.no_env:
         argv += ["--no-env"]
-    else:
+    elif args.env_file is not None:
         argv += ["--env-file", local_path(args.env_file)]
     if method == "remote-build":
         argv += ["import"] + ([safe_url(args.repo)] if args.repo else [])
@@ -141,7 +153,7 @@ def retry_recipe(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(run, dict) or not isinstance(run.get("request"), dict):
         raise LumaError("cannot check a build retry without its recorded build request")
     request = run["request"]
-    argv = ["--no-env"] if args.no_env else ["--env-file", str(args.env_file)]
+    argv = ["--no-env"] if args.no_env else (["--env-file", str(args.env_file)] if args.env_file is not None else [])
     argv += ["build", "retry", args.id, "--timeout", str(args.timeout)]
     parameters: dict[str, Any] = {"method": "remote-build"}
     fields = {

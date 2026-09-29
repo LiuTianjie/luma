@@ -1468,7 +1468,7 @@ class ProductConfigTests(unittest.TestCase):
             )
             result = sync_control_dns(config, "luma.example.com")
             self.assertIn("Control DNS skipped: missing DNS target", result)
-            self.assertIn("luma configure --role manager", result)
+            self.assertIn("LUMA_DNS_EDGE_TARGET", result)
         finally:
             _restore_env("CLOUDFLARE_API_TOKEN", old_token)
 
@@ -1755,47 +1755,26 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(_last_command_value(output), '["ghcr.io/liutianjie/luma-control@sha256:abc123"]')
 
-    def test_init_writes_new_config(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "luma.yaml"
-            code = main(["--config", str(path), "init"])
-            self.assertEqual(code, 0)
-            data = yaml.safe_load(path.read_text())
-            self.assertIn("providers", data)
-            self.assertIn("nodes", data)
 
-    def test_parser_exposes_tailscale_connect(self):
-        args = build_parser().parse_args(["tailscale", "connect"])
-        self.assertEqual(args.command, "tailscale")
-        self.assertEqual(args.tailscale_command, "connect")
+    def test_parser_exposes_node_tailscale(self):
+        args = build_parser().parse_args(["node", "tailscale"])
+        self.assertEqual(args.command, "node")
+        self.assertEqual(args.node_command, "tailscale")
 
     def test_repair_commands_reject_remote_node_argument(self):
-        for argv in (["tailscale", "connect", "manager-1"], ["portainer", "setup", "manager-1"], ["egress", "setup", "manager-1"]):
+        for argv in (["node", "tailscale", "manager-1"], ["portainer", "setup", "manager-1"], ["manager", "egress", "manager-1"]):
             with self.subTest(argv=argv), self.assertRaises(SystemExit) as raised:
                 build_parser().parse_args(argv)
             self.assertEqual(raised.exception.code, 2)
 
-    def test_parser_exposes_preflight(self):
-        args = build_parser().parse_args(["preflight"])
-        self.assertEqual(args.command, "preflight")
 
-    def test_parser_exposes_configure(self):
-        args = build_parser().parse_args(["configure", "--role", "worker"])
-        self.assertEqual(args.command, "configure")
-        self.assertEqual(args.role, "worker")
 
-    def test_bootstrap_supports_skip_egress(self):
-        args = build_parser().parse_args(["node", "bootstrap", "manager-1", "--profile", "single-node", "--skip-egress"])
-        self.assertEqual(args.command, "node")
-        self.assertEqual(args.node_command, "bootstrap")
-        self.assertTrue(args.skip_egress)
 
     def test_bootstrap_manager_supports_public_port_overrides(self):
         args = build_parser().parse_args(
-            ["bootstrap", "manager", "--domain", "luma.example.com", "--http-port", "10080", "--https-port", "10443"]
+            ["bootstrap", "--domain", "luma.example.com", "--http-port", "10080", "--https-port", "10443"]
         )
         self.assertEqual(args.command, "bootstrap")
-        self.assertEqual(args.bootstrap_command, "manager")
         self.assertEqual(args.http_port, 10080)
         self.assertEqual(args.https_port, 10443)
 
@@ -1805,15 +1784,15 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.timeout, 3000)
 
     def test_service_remove_parser_defaults_to_full_cleanup(self):
-        args = build_parser().parse_args(["service", "remove", "app.yaml"])
-        self.assertEqual(args.command, "service")
-        self.assertEqual(args.service_command, "remove")
+        args = build_parser().parse_args(["app", "remove", "app.yaml"])
+        self.assertEqual(args.command, "app")
+        self.assertEqual(args.app_command, "remove")
         self.assertFalse(args.skip_dns)
         self.assertFalse(args.skip_orchestrator)
         self.assertFalse(args.delete_storage)
         self.assertFalse(args.dry_run)
         self.assertEqual(args.timeout, 300)
-        args = build_parser().parse_args(["service", "remove", "app", "--delete-storage"])
+        args = build_parser().parse_args(["app", "remove", "app", "--delete-storage"])
         self.assertTrue(args.delete_storage)
 
     def test_compose_and_storage_parsers_accept_planned_commands(self):
@@ -1956,7 +1935,7 @@ class CliTests(unittest.TestCase):
             try:
                 save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
                 with patch("luma.cli.common.ControlClient") as client_cls, patch("builtins.print"):
-                    code = main(["service", "remove", str(service_path), "--timeout", "12", "--dry-run"])
+                    code = main(["app", "remove", str(service_path), "--timeout", "12", "--dry-run"])
                 self.assertEqual(code, 1)
                 client_cls.assert_not_called()
             finally:
@@ -1979,7 +1958,7 @@ class CliTests(unittest.TestCase):
                     ],
                 }
                 with patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print") as printed:
-                    code = main(["service", "remove", "api", "--dry-run"])
+                    code = main(["app", "remove", "api", "--dry-run"])
                 self.assertEqual(code, 0)
                 client.remove_service.assert_called_once()
                 kwargs = client.remove_service.call_args.kwargs
@@ -2437,31 +2416,6 @@ class CliTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
 
-    def test_configure_writes_user_config_without_printing_secrets(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config_path = Path(tmp) / ".luma.config.json"
-            old_config = _set_env("LUMA_USER_CONFIG", str(config_path))
-            old_token = _set_env("CLOUDFLARE_API_TOKEN", "")
-            old_target = _set_env("LUMA_DNS_EDGE_TARGET", "")
-            try:
-                secret_values = iter(["cf-token", "ts-key", "sub-url", "sudo-pass"])
-                with patch("luma.userconfig.getpass.getpass", side_effect=lambda _prompt: next(secret_values)), patch(
-                    "builtins.input", return_value="ops@example.com"
-                ), patch("builtins.print") as printed:
-                    code = main(["configure", "--role", "manager"])
-                self.assertEqual(code, 0)
-                self.assertTrue(config_path.exists())
-                keys = configured_keys(config_path)
-                self.assertIn("CLOUDFLARE_API_TOKEN", keys)
-                self.assertIn("LUMA_DNS_EDGE_TARGET", keys)
-                self.assertIn("TRAEFIK_ACME_EMAIL", keys)
-                printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
-                self.assertNotIn("cf-token", printed_text)
-                self.assertNotIn("sudo-pass", printed_text)
-            finally:
-                _restore_env("LUMA_USER_CONFIG", old_config)
-                _restore_env("CLOUDFLARE_API_TOKEN", old_token)
-                _restore_env("LUMA_DNS_EDGE_TARGET", old_target)
 
     def test_bootstrap_prompts_for_missing_manager_config_during_command(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2496,11 +2450,8 @@ class CliTests(unittest.TestCase):
                             "--config",
                             str(project_config),
                             "bootstrap",
-                            "manager",
                             "--domain",
                             "luma.example.com",
-                            "--profile",
-                            "single-node",
                         ]
                     )
                 self.assertEqual(code, 0)
@@ -2576,7 +2527,6 @@ class CliTests(unittest.TestCase):
                             "--config",
                             str(config_path),
                             "bootstrap",
-                            "manager",
                             "--domain",
                             "luma.itool.tech",
                             "--node",
@@ -2622,8 +2572,6 @@ class CliTests(unittest.TestCase):
                     "manager",
                     "--domain",
                     "luma.example.com",
-                    "--profile",
-                    "single-node",
                     "--install-ref",
                     "main",
                 ]
@@ -2850,8 +2798,6 @@ class CliTests(unittest.TestCase):
                             "manager",
                             "--domain",
                             "luma.itool.tech",
-                            "--node",
-                            "manager",
                         ]
                     )
 
@@ -3084,27 +3030,18 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         client.update_fleet.assert_called_once_with(install_ref="", include_all=False, include_manager=True, timeout=900)
 
-    def test_update_manager_rejects_bootstrap_only_options(self):
-        with patch("luma.cli.manager._run_luma_installer"), patch("luma.cli.manager._reexec_after_luma_update"), patch(
-            "luma.cli.manager._existing_control_state", return_value={"domain": "luma.example.com"}
-        ), patch("luma.cli.manager.refresh_manager_control_local") as refresh:
-            code = main(["update", "manager", "--domain", "luma.example.com", "--http-port", "8080"])
-
-        self.assertEqual(code, 1)
-        refresh.assert_not_called()
 
     def test_update_manager_does_not_call_full_bootstrap_paths(self):
         state = {"clusterId": "luma-test", "domain": "luma.example.com", "deployToken": "deploy", "joinToken": "join"}
         with patch("luma.cli.manager._run_luma_installer"), patch("luma.cli.manager._reexec_after_luma_update"), patch("luma.cli.manager._existing_control_state", return_value=state), patch(
             "luma.cli.manager.refresh_manager_control_local", return_value=["Control refreshed"]
-        ), patch("luma.cli.manager.bootstrap_manager_local") as bootstrap_manager, patch("luma.cli.nodes.bootstrap_node") as bootstrap_node_call, patch(
+        ), patch("luma.cli.manager.bootstrap_manager_local") as bootstrap_manager, patch(
             "luma.cli.nodes.install_docker"
         ) as docker, patch("luma.cli.manager.setup_egress") as egress:
             code = main(["update", "manager", "--domain", "luma.example.com"])
 
         self.assertEqual(code, 0)
         bootstrap_manager.assert_not_called()
-        bootstrap_node_call.assert_not_called()
         docker.assert_not_called()
         egress.assert_not_called()
 
@@ -3120,7 +3057,7 @@ class CliTests(unittest.TestCase):
             "luma.cli.apps._control_context",
             return_value=("https://luma.example.com", "deploy-token", False, None),
         ), patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print") as printed:
-            code = main(["service", "restart", "granary", "--service", "mysql", "--mode", "task", "--timeout", "45"])
+            code = main(["app", "restart", "granary", "--service", "mysql", "--mode", "task", "--timeout", "45"])
 
         self.assertEqual(code, 0)
         client.restart_application.assert_called_once_with(stack="granary", service="mysql", mode="task", timeout=45)
@@ -3563,7 +3500,7 @@ class CliTests(unittest.TestCase):
                     tailscale_ip="100.64.0.10",
                 )
                 self.assertIn("TAILSCALE_AUTHKEY", configured_keys(config_path))
-                self.assertIn("LUMA_SUDO_PASSWORD", configured_keys(config_path))
+                self.assertNotIn("LUMA_SUDO_PASSWORD", configured_keys(config_path))
             finally:
                 _restore_env("LUMA_USER_CONFIG", old_config)
                 _restore_env("TAILSCALE_AUTHKEY", old_ts)
@@ -3698,8 +3635,6 @@ class CliTests(unittest.TestCase):
                             "global",
                             "--name",
                             "bot",
-                            "--engine",
-                            "nomad",
                         ]
                     )
 

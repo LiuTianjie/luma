@@ -61,7 +61,7 @@ class CliReferenceTests(unittest.TestCase):
     def test_reference_excludes_hidden_internal_commands(self):
         rendered = REFERENCE.render_reference()
         self.assertIn("## `luma doctor`", rendered)
-        self.assertIn("## `luma service restart`", rendered)
+        self.assertIn("## `luma app restart`", rendered)
         self.assertNotIn("node-agent", rendered)
         self.assertNotIn("==SUPPRESS==", rendered)
 

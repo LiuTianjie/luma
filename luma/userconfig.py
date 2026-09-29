@@ -71,13 +71,6 @@ ROLE_KEYS = {
             False,
             "Used by egress setup to build the Mihomo proxy config for Docker image pulls and services with proxy: true. Leave empty when using --skip-egress.",
         ),
-        ConfigPrompt(
-            "LUMA_SUDO_PASSWORD",
-            "sudo password",
-            True,
-            False,
-            "Optional fallback for sudo commands on servers without passwordless sudo. Stored only in the local user config file.",
-        ),
     ],
     "worker": [
         ConfigPrompt(
@@ -86,13 +79,6 @@ ROLE_KEYS = {
             True,
             False,
             "Used when this worker/home node needs to join the tailnet before joining the Luma cluster.",
-        ),
-        ConfigPrompt(
-            "LUMA_SUDO_PASSWORD",
-            "sudo password",
-            True,
-            False,
-            "Optional fallback for sudo commands on servers without passwordless sudo. Stored only in the local user config file.",
         ),
     ],
     "client": [],
@@ -153,36 +139,6 @@ def configured_keys(path: Path | None = None) -> list[str]:
     return sorted(str(key) for key, value in env.items() if value)
 
 
-def interactive_configure(role: str, *, path: Path | None = None, input_fn=None) -> Path:
-    if role not in ROLE_KEYS:
-        raise LumaError(f"unknown configure role: {role}")
-    values: Dict[str, str] = {}
-    prompts = ROLE_KEYS[role]
-    if not prompts:
-        return write_user_config(values, path=path)
-    if input_fn is None:
-        input_fn = input
-    existing = _read_config(path or user_config_path())
-    existing_env = existing.get("env") if isinstance(existing.get("env"), dict) else {}
-    for item in prompts:
-        current = str(existing_env.get(item.key) or os.environ.get(item.key) or "")
-        suffix = " [configured]" if current else (" [required]" if item.required else " [optional]")
-        _print_prompt_help(item, suffix)
-        prompt = f"{item.key}: "
-        if item.secret:
-            value = getpass.getpass(prompt)
-        else:
-            value = input_fn(prompt)
-        value = value.strip()
-        if value:
-            values[item.key] = value
-        elif current:
-            values[item.key] = current
-        elif item.required:
-            raise LumaError(f"{item.key} is required for {role} configuration")
-    return write_user_config(values, path=path)
-
-
 def ensure_interactive_config(
     role: str,
     *,
@@ -202,7 +158,7 @@ def ensure_interactive_config(
         missing_required = [item.key for item in prompts if item.required or item.key in required]
         if missing_required:
             missing = ", ".join(missing_required)
-            raise LumaError(f"missing local config ({missing}). Run: luma configure --role {role}")
+            raise LumaError(f"missing settings: {missing}. Set them as environment variables, or run this command in a terminal to be prompted.")
         return None
     if input_fn is None:
         input_fn = input
@@ -223,14 +179,6 @@ def ensure_interactive_config(
     if not values:
         return None
     return write_user_config(values, path=path)
-
-
-def masked_config_lines(keys: Iterable[str]) -> list[str]:
-    lines = []
-    for key in sorted(keys):
-        marker = "***" if key in SECRET_KEYS or "TOKEN" in key or "PASSWORD" in key or "URL" in key else "set"
-        lines.append(f"{key}={marker}")
-    return lines
 
 
 def _print_prompt_help(item: ConfigPrompt, suffix: str) -> None:

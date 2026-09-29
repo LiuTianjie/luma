@@ -18,17 +18,11 @@ def public_parsers(parser: argparse.ArgumentParser):
     for action in parser._actions:
         if not isinstance(action, argparse._SubParsersAction):
             continue
-        hidden = {
-            choice.dest for choice in action._choices_actions
-            if choice.help == argparse.SUPPRESS
-        }
-        # The CLI removes hidden choices from its help metadata, and supplies an
-        # explicit public metavar instead. Respect that list as well.
-        visible = None
-        if action.metavar and action.metavar.startswith("{") and action.metavar.endswith("}"):
-            visible = set(action.metavar[1:-1].split(","))
+        # Public commands are registered with a help summary; internal entry
+        # points such as node-agent are not.
+        visible = {choice.dest for choice in action._choices_actions if choice.help != argparse.SUPPRESS}
         for name, child in action.choices.items():
-            if name not in hidden and (visible is None or name in visible):
+            if name in visible:
                 yield from public_parsers(child)
 
 
@@ -50,7 +44,7 @@ def render_reference() -> str:
         # line, and use fixed-width argument details independent of COLUMNS.
         usage = argparse.HelpFormatter(parser.prog, width=10000)
         usage.add_usage(parser.usage, parser._actions, parser._mutually_exclusive_groups)
-        formatter = argparse.HelpFormatter(parser.prog, width=100)
+        formatter = parser.formatter_class(parser.prog, width=100)
         formatter.add_text(parser.description)
         for group in parser._action_groups:
             visible = [action for action in group._group_actions if action.help != argparse.SUPPRESS]
@@ -59,6 +53,7 @@ def render_reference() -> str:
             formatter.start_section("arguments")
             formatter.add_arguments(visible)
             formatter.end_section()
+        formatter.add_text(parser.epilog)
         help_text = usage.format_help().rstrip() + "\n\n" + formatter.format_help().rstrip()
         lines.extend([f"## `{parser.prog}`", "", "```text", help_text, "```", ""])
     return "\n".join(lines)
