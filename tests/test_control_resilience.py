@@ -10,7 +10,7 @@ import unittest
 import urllib.error
 from unittest.mock import Mock, patch
 
-from luma.cli import _wait_for_queued_build
+from luma.cli.builds import _wait_for_queued_build
 from luma.control.client import ControlClient
 from luma.errors import ControlRequestError, LumaError
 
@@ -183,7 +183,7 @@ class BuildResumeTests(unittest.TestCase):
             self.page(['final'], 2, status='succeeded'),
             self.page([], 2, status='succeeded'),
         ]
-        with patch('luma.cli.time.sleep'), patch('luma.cli._print_json') as output:
+        with patch('luma.cli.common.time.sleep'), patch('luma.cli.builds._print_json') as output:
             result = _wait_for_queued_build(self.args(), client, {'queued': True, 'buildRunId': 'b1'})
         self.assertEqual(result['buildRunId'], 'b1')
         messages = [c.args[0].get('message') for c in output.call_args_list]
@@ -203,7 +203,7 @@ class BuildResumeTests(unittest.TestCase):
             {'run': {'events': [{'message': 'two'}]}, 'eventsPage': {}},
             {'run': {'status': 'succeeded', 'events': [{'message': 'one'}, {'message': 'two'}],
                      'result': {'service': 'app'}}}]
-        with patch('luma.cli.time.sleep'), patch('luma.cli._print_json') as output:
+        with patch('luma.cli.common.time.sleep'), patch('luma.cli.builds._print_json') as output:
             _wait_for_queued_build(self.args(), client, {'queued': True, 'buildRunId': 'b1'})
         messages = [c.args[0].get('message') for c in output.call_args_list]
         self.assertEqual([m for m in messages if m in ['one', 'two']], ['one', 'two'])
@@ -219,7 +219,7 @@ class BuildResumeTests(unittest.TestCase):
     def test_outage_deadline_preserves_server_task(self):
         client = Mock()
         client.get_build.side_effect = ControlRequestError('offline')
-        with patch('luma.cli.time.monotonic', side_effect=[0, 1, 121]):
+        with patch('luma.cli.common.time.monotonic', side_effect=[0, 1, 121]):
             with self.assertRaisesRegex(LumaError, 'server task continues'):
                 _wait_for_queued_build(self.args(), client, {'queued': True, 'buildRunId': 'b1'})
         client.cancel_build.assert_not_called()

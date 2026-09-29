@@ -14,7 +14,7 @@ from luma.control import build_queue as queue
 from luma.control import server as srv
 from luma.control.client import ControlClient
 from luma.control.state import init_state, load_state, save_state
-from luma.cli import _wait_for_queued_build
+from luma.cli.builds import _wait_for_queued_build
 from luma.errors import LumaError
 
 
@@ -716,7 +716,7 @@ class QueueClientTests(unittest.TestCase):
             {'run': {'status': 'queued', 'queuePosition': 1}},
             {'run': {'status': 'succeeded', 'result': {'service': 'app', 'image': 'image:immutable'}}},
         ]
-        with patch('luma.cli.time.sleep'):
+        with patch('luma.cli.common.time.sleep'):
             result = _wait_for_queued_build(args, client, {'queued': True, 'buildRunId': 'b1'})
         self.assertEqual(result, {'service': 'app', 'image': 'image:immutable', 'buildRunId': 'b1'})
 

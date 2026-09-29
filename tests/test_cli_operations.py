@@ -26,7 +26,7 @@ class CliOperationsTests(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
         self.client = Mock()
-        self.factory = patch("luma.cli.ControlClient", return_value=self.client)
+        self.factory = patch("luma.cli.common.ControlClient", return_value=self.client)
         self.client_cls = self.factory.start()
         self.addCleanup(self.factory.stop)
 
@@ -139,13 +139,13 @@ class CliOperationsTests(unittest.TestCase):
 
     def test_login_hidden_prompt_and_env_sources(self):
         self.client.verify_login.return_value = {"clusterId": "test"}
-        with patch("sys.stdin.isatty", return_value=True), patch("luma.cli.getpass.getpass", return_value="prompt-token") as prompt:
+        with patch("sys.stdin.isatty", return_value=True), patch("luma.cli.session.getpass.getpass", return_value="prompt-token") as prompt:
             code, out, err = self.run_cli("login", "https://control.example.com")
         self.assertEqual(code, 0)
         prompt.assert_called_once()
         self.assertEqual(load_current_context()["token"], "prompt-token")
         os.environ["LUMA_DEPLOY_TOKEN"] = "env-token"
-        with patch("luma.cli.getpass.getpass") as prompt:
+        with patch("luma.cli.session.getpass.getpass") as prompt:
             code, out, err = self.run_cli("login", "https://control.example.com")
         prompt.assert_not_called()
         self.assertEqual(load_current_context()["token"], "env-token")
@@ -244,7 +244,7 @@ class CliOperationsTests(unittest.TestCase):
 
 class ExistingControlStateTests(unittest.TestCase):
     def test_database_only_manager_state_is_found_without_sudo(self):
-        from luma.cli import _existing_control_state
+        from luma.cli.manager import _existing_control_state
         from luma.control.state import new_state, save_state, state_path
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"LUMA_CONTROL_STATE_DIR": temp}):
             state = new_state(domain="old.example.com")
@@ -253,7 +253,7 @@ class ExistingControlStateTests(unittest.TestCase):
             save_state(state)
             # Fresh installations have no legacy JSON. Even if an obsolete
             # file is copied in later, current SQLite state remains authoritative.
-            with patch("luma.cli.LocalExecutor") as executor:
+            with patch("luma.cli.manager.LocalExecutor") as executor:
                 self.assertFalse(state_path().exists())
                 self.assertEqual(_existing_control_state()["domain"], "current.example.com")
                 state_path().write_text('{"domain":"stale.example.com"}')
@@ -263,11 +263,11 @@ class ExistingControlStateTests(unittest.TestCase):
     def test_privileged_fallback_uses_installed_python_and_captured_state(self):
         import shlex
         import sys
-        from luma.cli import _existing_control_state
+        from luma.cli.manager import _existing_control_state
         from luma.local import LocalResult
         marker = "test-secret-not-logged"
         directory = "/tmp/manager state ' quoted"
-        with patch("luma.cli.control_state_is_initialized", side_effect=PermissionError), patch("luma.cli.state_path", return_value=Path(directory) / "control.json"), patch("luma.cli.LocalExecutor") as executor:
+        with patch("luma.cli.manager.control_state_is_initialized", side_effect=PermissionError), patch("luma.cli.manager.state_path", return_value=Path(directory) / "control.json"), patch("luma.cli.manager.LocalExecutor") as executor:
             executor.return_value.sudo_result.return_value = LocalResult(0, json.dumps({"domain": "current.example.com", "deployToken": marker}))
             output = io.StringIO()
             with redirect_stdout(output), redirect_stderr(output):

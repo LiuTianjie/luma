@@ -250,7 +250,7 @@ class HistoryCliTests(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_service_history_passes_filters_and_keeps_pagination_in_json(self):
-        with patch("luma.cli.ControlClient") as factory:
+        with patch("luma.cli.common.ControlClient") as factory:
             client = factory.return_value
             result = {"items": [], "page": {"limit": 5, "hasMore": True, "nextCursor": "next"}}
             client.history.return_value = result
@@ -261,7 +261,7 @@ class HistoryCliTests(unittest.TestCase):
         client.history.assert_called_once_with(query={"app": "api", "kind": "deployment", "status": "failed", "source": "cli", "since": "100", "limit": 5, "cursor": "previous"})
 
     def test_text_page_notice_is_on_stderr(self):
-        with patch("luma.cli.ControlClient") as factory:
+        with patch("luma.cli.common.ControlClient") as factory:
             factory.return_value.history.return_value = {"items": [], "page": {"hasMore": True, "nextCursor": "abc_def"}}
             code, out, err = self.run_cli("service", "history")
         self.assertEqual(code, 0)
@@ -269,19 +269,19 @@ class HistoryCliTests(unittest.TestCase):
         self.assertIn("--cursor abc_def", err)
 
     def test_history_detail_uses_kind_and_scoped_step_cursor(self):
-        with patch("luma.cli.ControlClient") as factory:
+        with patch("luma.cli.common.ControlClient") as factory:
             factory.return_value.history_detail.return_value = {"item": {"id": "deploy-x"}, "events": [], "page": {"hasMore": False}}
             code, out, err = self.run_cli("service", "history", "--id", "deploy-x", "--kind", "deployment", "--cursor", "step-page", "--limit", "2", "--format", "json")
             factory.return_value.history_detail.assert_called_once_with("deployment", "deploy-x", query={"cursor": "step-page", "limit": 2})
         self.assertEqual(code, 0)
         for arguments in (("--id", "x"), ("api", "--id", "x", "--kind", "build"), ("--limit", "101")):
-            with patch("luma.cli.ControlClient") as factory:
+            with patch("luma.cli.common.ControlClient") as factory:
                 code, _, _ = self.run_cli("service", "history", *arguments)
                 factory.assert_not_called()
             self.assertEqual(code, 1)
 
     def test_build_list_and_logs_page_through_existing_response_fields(self):
-        with patch("luma.cli.ControlClient") as factory:
+        with patch("luma.cli.common.ControlClient") as factory:
             factory.return_value.list_builds.return_value = {"runs": [], "page": {"hasMore": False}}
             code, out, _ = self.run_cli("build", "list", "--app", "api", "--limit", "2", "--format", "json")
             factory.return_value.list_builds.assert_called_once_with(query={"app": "api", "limit": 2})
@@ -293,7 +293,7 @@ class HistoryCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
 
     def test_text_step_details_explain_retention_expiry(self):
-        with patch("luma.cli.ControlClient") as factory:
+        with patch("luma.cli.common.ControlClient") as factory:
             item = {"id": "expired", "detailsExpiredAt": 123456, "detailsRetentionDays": 30}
             factory.return_value.history_detail.return_value = {"item": item, "events": [], "page": {"hasMore": False}}
             code, out, err = self.run_cli("service", "history", "--id", "expired", "--kind", "build")

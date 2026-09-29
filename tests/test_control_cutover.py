@@ -7,7 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from luma import bootstrap, cli
+from luma import bootstrap
+from luma.cli import manager as cli
 from luma.control import database, state
 from luma.errors import LumaError
 

@@ -179,7 +179,7 @@ class RegistryJoinIntegrationTests(unittest.TestCase):
         executor.return_value.sudo.assert_not_called()
 
     def test_json_progress_is_flushed(self):
-        from luma.cli import _print_json
+        from luma.cli.common import _print_json
         stream = Mock()
         _print_json({'type': 'event'}, file=stream)
         stream.flush.assert_called_once()

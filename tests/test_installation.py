@@ -169,10 +169,10 @@ class InstallationTests(unittest.TestCase):
             self.assertNotIn(forbidden, result.stdout)
 
     def test_cli_update_and_agent_update_share_identity_policy(self):
-        from luma.cli import _run_luma_installer
+        from luma.cli.manager import _run_luma_installer
         record = self.record()
         record['policy']['indexUrl'] = 'https://enterprise.example.com/simple'
-        with patch('luma.cli.runtime_record', return_value=record), patch('luma.cli._current_install_layout', return_value=None), patch('luma.cli.subprocess.run') as run:
+        with patch('luma.cli.manager.runtime_record', return_value=record), patch('luma.cli.manager._current_install_layout', return_value=None), patch('luma.cli.manager.subprocess.run') as run:
             _run_luma_installer(install_ref='v1.2.3')
         self.assertEqual(run.call_args.kwargs['env']['LUMA_PIP_INDEX_URL'], record['policy']['indexUrl'])
         self.assertEqual(run.call_args.kwargs['env']['LUMA_INSTALL_HOME'], str(self.root))
@@ -181,7 +181,7 @@ class InstallationTests(unittest.TestCase):
         from luma.cli import main
         record = self.record()
         original = (self.runtime / ins.RECORD).read_bytes()
-        with patch.object(ins, 'runtime_record', return_value=record), patch('luma.cli.ControlClient') as client, patch.object(ins.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')), contextlib.redirect_stdout(io.StringIO()) as out:
+        with patch.object(ins, 'runtime_record', return_value=record), patch('luma.cli.common.ControlClient') as client, patch.object(ins.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')), contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(main(['--no-env', 'doctor', '--local', '--format', 'json']), 0)
         payload = json.loads(out.getvalue())
         # Standard CLI success envelope.
@@ -219,20 +219,20 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(env['LUMA_PIP_INDEX_URL'], 'https://pypi.org/simple')
 
     def test_managed_update_reexec_uses_stable_shim_not_old_python(self):
-        from luma.cli import _reexec_after_luma_update
+        from luma.cli.manager import _reexec_after_luma_update
         record = self.record()
         bindir = Path(record['binDir'])
         bindir.mkdir(parents=True)
         shim = bindir / 'luma'
         shim.write_text('#!/bin/sh\nexit 0\n')
         shim.chmod(0o755)
-        with patch('luma.cli.runtime_record', return_value=record), patch.object(sys, 'argv', ['/old/src/luma/cli.py', 'update', 'manager']), patch('luma.cli.os.execvpe') as execute:
+        with patch('luma.cli.manager.runtime_record', return_value=record), patch.object(sys, 'argv', ['/old/src/luma/cli.py', 'update', 'manager']), patch('luma.cli.manager.os.execvpe') as execute:
             _reexec_after_luma_update()
         self.assertEqual(execute.call_args.args[0], str(shim))
         self.assertEqual(execute.call_args.args[1], [str(shim), 'update', 'manager'])
         self.assertEqual(execute.call_args.args[2]['LUMA_UPDATE_REEXECED'], '1')
         shim.unlink()
-        with patch('luma.cli.runtime_record', return_value=record), self.assertRaisesRegex(LumaError, 'old runtime'):
+        with patch('luma.cli.manager.runtime_record', return_value=record), self.assertRaisesRegex(LumaError, 'old runtime'):
             _reexec_after_luma_update()
 
     def test_explicit_ca_cannot_be_overridden_by_host_requests_environment(self):

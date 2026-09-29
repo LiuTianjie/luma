@@ -76,7 +76,10 @@ from luma.local import LocalExecutor
 from luma.profiles import PROFILES
 from luma.registry import DEFAULT_DOCKER_REGISTRY, registry_host_from_image
 from luma.service import ServiceSpec, load_service
-from luma.cli import _node_join_examples, _run_with_wait_heartbeat, build_parser, exit_local_node, main
+from luma.cli.manager import _node_join_examples
+from luma.cli.common import _run_with_wait_heartbeat
+from luma.cli import build_parser, main
+from luma.cli.nodes import exit_local_node
 from luma.userconfig import configured_keys, ensure_interactive_config, load_user_config
 
 
@@ -413,7 +416,7 @@ class ProductConfigTests(unittest.TestCase):
                         ]
                     },
                 }
-                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                with patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print") as printed:
                     code = main(["--no-env", "doctor", "--deep"])
 
                 self.assertEqual(code, 1)
@@ -1108,7 +1111,7 @@ class ProductConfigTests(unittest.TestCase):
                     ]
                 },
             }
-            with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+            with patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print") as printed:
                 code = main(["--no-env", "doctor", "--deep"])
 
             self.assertEqual(code, 1)
@@ -1154,7 +1157,7 @@ class ProductConfigTests(unittest.TestCase):
                     ]
                 },
             }
-            with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+            with patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print") as printed:
                 code = main(["--no-env", "doctor", "--deep"])
 
             self.assertEqual(code, 1)
@@ -1243,7 +1246,7 @@ class ProductConfigTests(unittest.TestCase):
                     ]
                 },
             }
-            with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+            with patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print") as printed:
                 code = main(["--no-env", "doctor", "--deep"])
 
             self.assertEqual(code, 1)
@@ -1596,10 +1599,10 @@ class ProductConfigTests(unittest.TestCase):
         self.assertFalse(_is_tailscale_manager_addr("203.0.113.10:2377"))
 
     def test_cli_nomad_detection_checks_common_install_paths(self):
-        from luma.cli import _find_nomad_cli
+        from luma.cli.manager import _find_nomad_cli
 
-        with patch("luma.cli.shutil.which", return_value=None), patch("luma.cli.Path.exists", return_value=True), patch(
-            "luma.cli.os.access", return_value=True
+        with patch("luma.cli.manager.shutil.which", return_value=None), patch("luma.cli.manager.Path.exists", return_value=True), patch(
+            "luma.cli.manager.os.access", return_value=True
         ):
             self.assertEqual(_find_nomad_cli(), "/usr/local/bin/nomad")
 
@@ -1939,7 +1942,7 @@ class CliTests(unittest.TestCase):
             ["storage", "set", "company-nfs", "--external", "--endpoint", "nfs.example.com:/srv/luma"],
         )
         for argv in cases:
-            with self.subTest(argv=argv), patch("luma.cli.ControlClient") as client_cls, patch("builtins.print"):
+            with self.subTest(argv=argv), patch("luma.cli.common.ControlClient") as client_cls, patch("builtins.print"):
                 code = main(argv)
             self.assertEqual(code, 1)
             client_cls.assert_not_called()
@@ -1952,7 +1955,7 @@ class CliTests(unittest.TestCase):
             old_home = _set_env("LUMA_CONFIG_HOME", str(home))
             try:
                 save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
-                with patch("luma.cli.ControlClient") as client_cls, patch("builtins.print"):
+                with patch("luma.cli.common.ControlClient") as client_cls, patch("builtins.print"):
                     code = main(["service", "remove", str(service_path), "--timeout", "12", "--dry-run"])
                 self.assertEqual(code, 1)
                 client_cls.assert_not_called()
@@ -1975,7 +1978,7 @@ class CliTests(unittest.TestCase):
                         {"name": "Remove Nomad job", "status": "ok", "message": "Nomad job would be removed: api"},
                     ],
                 }
-                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                with patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print") as printed:
                     code = main(["service", "remove", "api", "--dry-run"])
                 self.assertEqual(code, 0)
                 client.remove_service.assert_called_once()
@@ -2020,7 +2023,7 @@ class CliTests(unittest.TestCase):
                         {"name": "Deploy Nomad job", "status": "ok", "message": "Nomad job deployed for api: api"},
                     ],
                 }
-                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                with patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print") as printed:
                     code = main(["deploy", str(service_path), "--timeout", "42"])
                 self.assertEqual(code, 0)
                 client.deploy.assert_called_once()
@@ -2062,7 +2065,7 @@ class CliTests(unittest.TestCase):
                         {"status": "done", "result": {"service": "api", "image": {"selected": "nginx:alpine"}}},
                     ]
                 )
-                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                with patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print") as printed:
                     code = main(["deploy", str(service_path)])
                 self.assertEqual(code, 0)
                 client.deploy_events.assert_called_once()
@@ -2097,7 +2100,7 @@ class CliTests(unittest.TestCase):
                 client.record_workflow.return_value = {"workflow": {"name": "api"}}
                 client.deploy_compose_events.side_effect = LumaError("control API error 404: not found")
                 client.deploy_compose.return_value = {"deployment": "app-stack", "steps": []}
-                with patch("luma.cli.ControlClient", return_value=client):
+                with patch("luma.cli.common.ControlClient", return_value=client):
                     code = main(["compose", "deploy", str(sidecar_path), "--timeout", "12"])
                 self.assertEqual(code, 0)
                 client.deploy_compose.assert_called_once()
@@ -2139,7 +2142,7 @@ class CliTests(unittest.TestCase):
                         {"name": "Render compose Nomad job", "status": "ok", "message": "rendered"},
                     ]
                 )
-                with patch("luma.cli.ControlClient", return_value=client):
+                with patch("luma.cli.common.ControlClient", return_value=client):
                     code = main(["compose", "deploy", str(sidecar_path), "--timeout", "12"])
                 # non-zero exit (LumaError surfaced) and NO silent second deploy
                 self.assertNotEqual(code, 0)
@@ -2178,7 +2181,7 @@ class CliTests(unittest.TestCase):
                         {"status": "done", "result": {"service": "api", "image": {"selected": "nginx:alpine"}}},
                     ]
                 )
-                with patch("luma.cli.ControlClient", return_value=client) as client_cls, patch("builtins.print") as printed:
+                with patch("luma.cli.common.ControlClient", return_value=client) as client_cls, patch("builtins.print") as printed:
                     code = main(["--no-env", "deploy", str(service_path), "--format", "ndjson"])
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
@@ -2217,7 +2220,7 @@ class CliTests(unittest.TestCase):
                 client.record_workflow.return_value = {"workflow": {"name": "api"}}
                 client.build_deploy_events.side_effect = LumaError("control API error 404: not found")
                 client.build_deploy.return_value = {"service": "api", "image": "100.66.177.70:5000/acme/app:abc123", "steps": []}
-                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print"):
+                with patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print"):
                     code = main(
                         [
                             "import",
@@ -2277,7 +2280,7 @@ class CliTests(unittest.TestCase):
                 save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
                 client = Mock()
                 client.set_git_provider.return_value = {"id": "gitea:lin", "saved": True}
-                with patch("luma.cli.ControlClient", return_value=client), patch("sys.stdin", io.StringIO("gitea-secret\n")), patch("builtins.print"):
+                with patch("luma.cli.common.ControlClient", return_value=client), patch("sys.stdin", io.StringIO("gitea-secret\n")), patch("builtins.print"):
                     code = main(
                         [
                             "git-provider",
@@ -2313,7 +2316,7 @@ class CliTests(unittest.TestCase):
                 client.list_git_provider_repositories.return_value = {
                     "repositories": [{"fullName": "acme/app", "defaultBranch": "main", "private": True}]
                 }
-                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                with patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print") as printed:
                     code = main(["git-provider", "repos", "gitea:lin"])
 
                 self.assertEqual(code, 0)
@@ -2337,7 +2340,7 @@ class CliTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with patch("luma.cli.ControlClient") as client_cls, patch("builtins.print") as printed:
+            with patch("luma.cli.common.ControlClient") as client_cls, patch("builtins.print") as printed:
                 code = main(["deploy", str(service_path), "--dry-run", "--format", "json"])
 
         self.assertEqual(code, 0)
@@ -2404,7 +2407,7 @@ class CliTests(unittest.TestCase):
             client = Mock()
             client.verify_login.return_value = {"clusterId": "luma-test"}
             try:
-                with patch("luma.cli.ControlClient", return_value=client) as client_cls, patch("builtins.print") as printed:
+                with patch("luma.cli.common.ControlClient", return_value=client) as client_cls, patch("builtins.print") as printed:
                     code = main(
                         [
                             "login",
@@ -2484,9 +2487,9 @@ class CliTests(unittest.TestCase):
                 with patch("sys.stdin.isatty", return_value=True), patch(
                     "luma.userconfig.getpass.getpass", side_effect=lambda _prompt: next(secret_values)
                 ), patch("builtins.input", side_effect=lambda _prompt: next(input_values)), patch(
-                    "luma.cli.bootstrap_manager_local", side_effect=bootstrap_side_effect
+                    "luma.cli.manager.bootstrap_manager_local", side_effect=bootstrap_side_effect
                 ), patch(
-                    "luma.cli.find_zone", return_value={"id": "zone-example"}
+                    "luma.cli.manager.find_zone", return_value={"id": "zone-example"}
                 ), patch("builtins.print") as printed:
                     code = main(
                         [
@@ -2565,8 +2568,8 @@ class CliTests(unittest.TestCase):
                         return {"id": "zone-itool"}
                     raise LumaError("not found")
 
-                with patch("luma.cli.find_zone", side_effect=find_zone_side_effect), patch(
-                    "luma.cli.bootstrap_manager_local", side_effect=bootstrap_side_effect
+                with patch("luma.cli.manager.find_zone", side_effect=find_zone_side_effect), patch(
+                    "luma.cli.manager.bootstrap_manager_local", side_effect=bootstrap_side_effect
                 ), patch("builtins.print"):
                     code = main(
                         [
@@ -2608,10 +2611,10 @@ class CliTests(unittest.TestCase):
 
     def test_update_manager_installs_cli_then_refreshes_control_only(self):
         state = {"clusterId": "luma-test", "domain": "luma.example.com", "deployToken": "deploy", "joinToken": "join"}
-        with patch("luma.cli._run_luma_installer") as installer, patch("luma.cli._reexec_after_luma_update") as reexec, patch(
-            "luma.cli._existing_control_state", return_value=state
+        with patch("luma.cli.manager._run_luma_installer") as installer, patch("luma.cli.manager._reexec_after_luma_update") as reexec, patch(
+            "luma.cli.manager._existing_control_state", return_value=state
         ), patch(
-            "luma.cli.refresh_manager_control_local", return_value=["Control refreshed"]
+            "luma.cli.manager.refresh_manager_control_local", return_value=["Control refreshed"]
         ) as refresh:
             code = main(
                 [
@@ -2665,8 +2668,8 @@ class CliTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
 
     def test_local_update_pins_bootstrap_installer_and_archive_to_install_ref(self):
-        with patch("luma.cli.subprocess.run") as run:
-            from luma.cli import _run_luma_installer
+        with patch("luma.cli.manager.subprocess.run") as run:
+            from luma.cli.manager import _run_luma_installer
 
             _run_luma_installer(install_ref="v0.1.168")
 
@@ -2674,12 +2677,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["env"]["LUMA_INSTALL_REF"], "v0.1.168")
 
     def test_manager_installer_preserves_running_operator_layout_and_defers_agent_restart(self):
-        with patch("luma.cli._current_install_layout", return_value=(
+        with patch("luma.cli.manager._current_install_layout", return_value=(
             Path("/home/tao"),
             Path("/home/tao/.local/share/luma"),
             Path("/home/tao/.local/bin"),
-        )), patch("luma.cli.subprocess.run") as run:
-            from luma.cli import _run_luma_installer
+        )), patch("luma.cli.manager.subprocess.run") as run:
+            from luma.cli.manager import _run_luma_installer
 
             _run_luma_installer(install_ref="v0.1.173", skip_node_agent_refresh=True)
 
@@ -2703,9 +2706,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["env"]["LUMA_INSTALL_REF"], "staging/a4b02a3")
 
     def test_detached_manager_update_starts_before_installer_or_control_refresh(self):
-        with patch("luma.cli._start_detached_manager_update", return_value=0) as detached, patch(
-            "luma.cli._run_luma_installer"
-        ) as installer, patch("luma.cli._refresh_manager_control") as refresh:
+        with patch("luma.cli.manager._start_detached_manager_update", return_value=0) as detached, patch(
+            "luma.cli.manager._run_luma_installer"
+        ) as installer, patch("luma.cli.manager._refresh_manager_control") as refresh:
             code = main(["update", "manager", "--detach", "--install-ref", "v0.1.168"])
 
         self.assertEqual(code, 0)
@@ -2714,7 +2717,7 @@ class CliTests(unittest.TestCase):
         refresh.assert_not_called()
 
     def test_detach_before_manager_subcommand_is_not_overwritten_by_subparser_defaults(self):
-        with patch("luma.cli._start_detached_manager_update", return_value=0) as detached:
+        with patch("luma.cli.manager._start_detached_manager_update", return_value=0) as detached:
             code = main(["update", "--detach", "manager"])
 
         self.assertEqual(code, 0)
@@ -2724,9 +2727,9 @@ class CliTests(unittest.TestCase):
         old_detached = _set_env("LUMA_UPDATE_DETACHED", "1")
         old_reexec = _set_env("LUMA_UPDATE_REEXECED", "1")
         try:
-            with patch("luma.cli._start_detached_manager_update") as detached, patch(
-                "luma.cli._refresh_manager_control"
-            ) as refresh, patch("luma.cli._try_refresh_manager_agent"):
+            with patch("luma.cli.manager._start_detached_manager_update") as detached, patch(
+                "luma.cli.manager._refresh_manager_control"
+            ) as refresh, patch("luma.cli.manager._try_refresh_manager_agent"):
                 code = main(["update", "manager", "--detach"])
         finally:
             _restore_env("LUMA_UPDATE_DETACHED", old_detached)
@@ -2737,15 +2740,15 @@ class CliTests(unittest.TestCase):
         refresh.assert_called_once()
 
     def test_detached_manager_update_uses_new_session_private_log_and_status_file(self):
-        from luma.cli import _start_detached_manager_update
+        from luma.cli.manager import _start_detached_manager_update
 
         process = Mock(pid=4321)
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
             os.environ, {"XDG_STATE_HOME": tmp}, clear=False
-        ), patch("luma.cli._current_luma_command", return_value=["/opt/luma/bin/luma"]), patch(
-            "luma.cli._manager_update_needs_transient_unit", return_value=False
+        ), patch("luma.cli.manager._current_luma_command", return_value=["/opt/luma/bin/luma"]), patch(
+            "luma.cli.manager._manager_update_needs_transient_unit", return_value=False
         ), patch(
-            "luma.cli.subprocess.Popen", return_value=process
+            "luma.cli.manager.subprocess.Popen", return_value=process
         ) as popen, patch("builtins.print"):
             code = _start_detached_manager_update(
                 Mock(_raw_argv=["update", "manager", "--detach", "--install-ref", "deadbeef"])
@@ -2774,10 +2777,10 @@ class CliTests(unittest.TestCase):
                 "CLOUDFLARE_API_TOKEN": "secret",
             },
             clear=False,
-        ), patch("luma.cli._current_luma_command", return_value=["/home/tao/.local/bin/luma"]), patch(
-            "luma.cli._manager_update_needs_transient_unit", return_value=True
-        ), patch("luma.cli.subprocess.run") as run, patch("builtins.print"):
-            from luma.cli import _start_detached_manager_update
+        ), patch("luma.cli.manager._current_luma_command", return_value=["/home/tao/.local/bin/luma"]), patch(
+            "luma.cli.manager._manager_update_needs_transient_unit", return_value=True
+        ), patch("luma.cli.manager.subprocess.run") as run, patch("builtins.print"):
+            from luma.cli.manager import _start_detached_manager_update
 
             code = _start_detached_manager_update(
                 Mock(_raw_argv=["update", "manager", "--detach", "--install-ref", "deadbeef"])
@@ -2794,7 +2797,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("/home/tao/.local/bin/luma", invocation)
 
     def test_detach_is_rejected_for_fleet_update(self):
-        with patch("luma.cli._run_luma_installer") as installer:
+        with patch("luma.cli.manager._run_luma_installer") as installer:
             code = main(["update", "--detach", "fleet"])
 
         self.assertEqual(code, 1)
@@ -2834,10 +2837,10 @@ class CliTests(unittest.TestCase):
                         return {"id": "zone-itool"}
                     raise LumaError("not found")
 
-                with patch("luma.cli._run_luma_installer"), patch("luma.cli._reexec_after_luma_update"), patch(
-                    "luma.cli._existing_control_state", return_value=state
-                ), patch("luma.cli.find_zone", side_effect=find_zone_side_effect), patch(
-                    "luma.cli.refresh_manager_control_local", side_effect=refresh_side_effect
+                with patch("luma.cli.manager._run_luma_installer"), patch("luma.cli.manager._reexec_after_luma_update"), patch(
+                    "luma.cli.manager._existing_control_state", return_value=state
+                ), patch("luma.cli.manager.find_zone", side_effect=find_zone_side_effect), patch(
+                    "luma.cli.manager.refresh_manager_control_local", side_effect=refresh_side_effect
                 ), patch("builtins.print"):
                     code = main(
                         [
@@ -2876,8 +2879,8 @@ class CliTests(unittest.TestCase):
             )
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(state_dir))
             try:
-                with patch("luma.cli._run_luma_installer") as installer, patch("luma.cli._reexec_after_luma_update"), patch(
-                    "luma.cli.refresh_manager_control_local", return_value=["Control refreshed"]
+                with patch("luma.cli.manager._run_luma_installer") as installer, patch("luma.cli.manager._reexec_after_luma_update"), patch(
+                    "luma.cli.manager.refresh_manager_control_local", return_value=["Control refreshed"]
                 ) as refresh:
                     code = main(["update"])
             finally:
@@ -2915,8 +2918,8 @@ class CliTests(unittest.TestCase):
             )
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(state_dir))
             try:
-                with patch("luma.cli._run_luma_installer") as installer, patch("luma.cli._reexec_after_luma_update"), patch(
-                    "luma.cli.refresh_manager_control_local", return_value=["Control refreshed"]
+                with patch("luma.cli.manager._run_luma_installer") as installer, patch("luma.cli.manager._reexec_after_luma_update"), patch(
+                    "luma.cli.manager.refresh_manager_control_local", return_value=["Control refreshed"]
                 ) as refresh, patch("builtins.print") as printed:
                     code = main(["update"])
             finally:
@@ -2930,13 +2933,13 @@ class CliTests(unittest.TestCase):
         self.assertIn("local manager control state found", printed_text)
 
     def test_update_joined_node_skips_agent_refresh_when_control_is_too_old(self):
-        with patch("luma.cli._run_luma_installer") as installer, patch("luma.cli._reexec_after_luma_update"), patch(
-            "luma.cli._manager_refresh_decision", return_value=(False, "no local manager control state found")
-        ), patch("luma.cli._local_agent_config", return_value=None), patch("luma.cli._safe_local_nomad_node_id", return_value="node-1"), patch(
-            "luma.cli._control_context",
+        with patch("luma.cli.manager._run_luma_installer") as installer, patch("luma.cli.manager._reexec_after_luma_update"), patch(
+            "luma.cli.manager._manager_refresh_decision", return_value=(False, "no local manager control state found")
+        ), patch("luma.cli.manager._local_agent_config", return_value=None), patch("luma.cli.manager._safe_local_nomad_node_id", return_value="node-1"), patch(
+            "luma.cli.manager._control_context",
             return_value=("https://luma.example.com", "management-token", False, None),
         ), patch(
-            "luma.cli._refresh_local_node_agent",
+            "luma.cli.manager._refresh_local_node_agent",
             side_effect=LumaError("control API does not support node-agent credentials yet. Update the manager control plane first."),
         ), patch("builtins.print") as printed:
             code = main(["update"])
@@ -2949,13 +2952,13 @@ class CliTests(unittest.TestCase):
         self.assertIn("[ok] Joined node update complete", printed_text)
 
     def test_update_joined_node_skips_agent_refresh_when_node_is_unregistered(self):
-        with patch("luma.cli._run_luma_installer") as installer, patch("luma.cli._reexec_after_luma_update"), patch(
-            "luma.cli._manager_refresh_decision", return_value=(False, "no local manager control state found")
-        ), patch("luma.cli._local_agent_config", return_value=None), patch("luma.cli._safe_local_nomad_node_id", return_value="stale-node-id"), patch(
-            "luma.cli._control_context",
+        with patch("luma.cli.manager._run_luma_installer") as installer, patch("luma.cli.manager._reexec_after_luma_update"), patch(
+            "luma.cli.manager._manager_refresh_decision", return_value=(False, "no local manager control state found")
+        ), patch("luma.cli.manager._local_agent_config", return_value=None), patch("luma.cli.manager._safe_local_nomad_node_id", return_value="stale-node-id"), patch(
+            "luma.cli.manager._control_context",
             return_value=("https://luma.example.com", "management-token", False, None),
         ), patch(
-            "luma.cli._refresh_local_node_agent",
+            "luma.cli.manager._refresh_local_node_agent",
             side_effect=LumaError("control API error 400: {\"error\": \"nodeName or nodeId must match a registered node\"}"),
         ), patch("builtins.print") as printed:
             code = main(["update"])
@@ -2969,21 +2972,21 @@ class CliTests(unittest.TestCase):
         self.assertIn("[ok] Joined node update complete", printed_text)
 
     def test_update_joined_node_prefers_explicit_control_token_over_local_agent_config(self):
-        with patch("luma.cli._run_luma_installer"), patch("luma.cli._reexec_after_luma_update"), patch(
-            "luma.cli._manager_refresh_decision", return_value=(False, "no local manager control state found")
+        with patch("luma.cli.manager._run_luma_installer"), patch("luma.cli.manager._reexec_after_luma_update"), patch(
+            "luma.cli.manager._manager_refresh_decision", return_value=(False, "no local manager control state found")
         ), patch(
-            "luma.cli._local_agent_config",
+            "luma.cli.manager._local_agent_config",
             return_value={
                 "endpoint": "https://luma.example.com",
                 "token": "stale-agent-token",
                 "nodeName": "home-mac-mini",
                 "nodeId": "old-node-id",
             },
-        ), patch("luma.cli._safe_local_nomad_node_id", return_value="new-node-id"), patch(
-            "luma.cli._control_context",
+        ), patch("luma.cli.manager._safe_local_nomad_node_id", return_value="new-node-id"), patch(
+            "luma.cli.manager._control_context",
             return_value=("https://luma.example.com", "join-token", False, None),
         ) as context, patch(
-            "luma.cli._refresh_local_node_agent"
+            "luma.cli.manager._refresh_local_node_agent"
         ) as refresh:
             code = main(["update", "--control-url", "https://luma.example.com", "--token", "join-token"])
 
@@ -3000,9 +3003,9 @@ class CliTests(unittest.TestCase):
     def test_update_after_reexec_skips_installer_and_refreshes_manager(self):
         old_reexec = _set_env("LUMA_UPDATE_REEXECED", "1")
         try:
-            with patch("luma.cli._run_luma_installer") as installer, patch(
-                "luma.cli._manager_refresh_decision", return_value=(True, "local manager control state found")
-            ), patch("luma.cli._refresh_manager_control") as refresh, patch("luma.cli._try_refresh_manager_agent"), patch("builtins.print") as printed:
+            with patch("luma.cli.manager._run_luma_installer") as installer, patch(
+                "luma.cli.manager._manager_refresh_decision", return_value=(True, "local manager control state found")
+            ), patch("luma.cli.manager._refresh_manager_control") as refresh, patch("luma.cli.manager._try_refresh_manager_agent"), patch("builtins.print") as printed:
                 code = main(["update"])
         finally:
             _restore_env("LUMA_UPDATE_REEXECED", old_reexec)
@@ -3015,9 +3018,9 @@ class CliTests(unittest.TestCase):
         self.assertIn("[ok] Manager update complete", printed_text)
 
     def test_update_without_manager_state_updates_cli_only(self):
-        with patch("luma.cli._existing_control_state", return_value=None), patch(
-            "luma.cli._run_luma_installer"
-        ) as installer, patch("luma.cli._reexec_after_luma_update"), patch("luma.cli.refresh_manager_control_local") as refresh, patch("builtins.print") as printed:
+        with patch("luma.cli.manager._existing_control_state", return_value=None), patch(
+            "luma.cli.manager._run_luma_installer"
+        ) as installer, patch("luma.cli.manager._reexec_after_luma_update"), patch("luma.cli.manager.refresh_manager_control_local") as refresh, patch("builtins.print") as printed:
             code = main(["update"])
 
         self.assertEqual(code, 0)
@@ -3028,7 +3031,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Manager control-plane refresh skipped", printed_text)
 
     def test_update_reports_unreadable_manager_state_instead_of_using_client_token(self):
-        from luma.cli import _manager_refresh_decision
+        from luma.cli.manager import _manager_refresh_decision
 
         args = Mock(
             domain=None,
@@ -3039,8 +3042,8 @@ class CliTests(unittest.TestCase):
             overwrite_control_state=False,
             profile="single-node",
         )
-        with patch("luma.cli._existing_control_state", return_value=None), patch(
-            "luma.cli._manager_state_requires_privilege", return_value=True
+        with patch("luma.cli.manager._existing_control_state", return_value=None), patch(
+            "luma.cli.manager._manager_state_requires_privilege", return_value=True
         ):
             with self.assertRaisesRegex(LumaError, "not readable by this user"):
                 _manager_refresh_decision(args)
@@ -3053,12 +3056,12 @@ class CliTests(unittest.TestCase):
             "skipped": 0,
             "results": [{"nodeName": "home-mac-mini", "region": "home", "os": "darwin", "status": "succeeded", "message": "Luma installer finished"}],
         }
-        with patch("luma.cli._run_luma_installer") as installer, patch("luma.cli._reexec_after_luma_update"), patch(
-            "luma.cli._manager_refresh_decision", return_value=(False, "no local manager control state found")
+        with patch("luma.cli.manager._run_luma_installer") as installer, patch("luma.cli.manager._reexec_after_luma_update"), patch(
+            "luma.cli.manager._manager_refresh_decision", return_value=(False, "no local manager control state found")
         ), patch(
-            "luma.cli._control_context", return_value=("https://luma.example.com", "management-token", False, None)
+            "luma.cli.manager._control_context", return_value=("https://luma.example.com", "management-token", False, None)
         ), patch(
-            "luma.cli.ControlClient", return_value=client
+            "luma.cli.common.ControlClient", return_value=client
         ), patch("builtins.print"):
             code = main(["update", "fleet", "--install-ref", "main", "--timeout", "120"])
 
@@ -3069,12 +3072,12 @@ class CliTests(unittest.TestCase):
     def test_update_fleet_include_manager_flag_is_explicit(self):
         client = Mock()
         client.update_fleet.return_value = {"succeeded": 0, "failed": 0, "skipped": 0, "results": []}
-        with patch("luma.cli._run_luma_installer"), patch("luma.cli._reexec_after_luma_update"), patch(
-            "luma.cli._manager_refresh_decision", return_value=(False, "no local manager control state found")
+        with patch("luma.cli.manager._run_luma_installer"), patch("luma.cli.manager._reexec_after_luma_update"), patch(
+            "luma.cli.manager._manager_refresh_decision", return_value=(False, "no local manager control state found")
         ), patch(
-            "luma.cli._control_context", return_value=("https://luma.example.com", "management-token", False, None)
+            "luma.cli.manager._control_context", return_value=("https://luma.example.com", "management-token", False, None)
         ), patch(
-            "luma.cli.ControlClient", return_value=client
+            "luma.cli.common.ControlClient", return_value=client
         ), patch("builtins.print"):
             code = main(["update", "fleet", "--include-manager"])
 
@@ -3082,9 +3085,9 @@ class CliTests(unittest.TestCase):
         client.update_fleet.assert_called_once_with(install_ref="", include_all=False, include_manager=True, timeout=900)
 
     def test_update_manager_rejects_bootstrap_only_options(self):
-        with patch("luma.cli._run_luma_installer"), patch("luma.cli._reexec_after_luma_update"), patch(
-            "luma.cli._existing_control_state", return_value={"domain": "luma.example.com"}
-        ), patch("luma.cli.refresh_manager_control_local") as refresh:
+        with patch("luma.cli.manager._run_luma_installer"), patch("luma.cli.manager._reexec_after_luma_update"), patch(
+            "luma.cli.manager._existing_control_state", return_value={"domain": "luma.example.com"}
+        ), patch("luma.cli.manager.refresh_manager_control_local") as refresh:
             code = main(["update", "manager", "--domain", "luma.example.com", "--http-port", "8080"])
 
         self.assertEqual(code, 1)
@@ -3092,11 +3095,11 @@ class CliTests(unittest.TestCase):
 
     def test_update_manager_does_not_call_full_bootstrap_paths(self):
         state = {"clusterId": "luma-test", "domain": "luma.example.com", "deployToken": "deploy", "joinToken": "join"}
-        with patch("luma.cli._run_luma_installer"), patch("luma.cli._reexec_after_luma_update"), patch("luma.cli._existing_control_state", return_value=state), patch(
-            "luma.cli.refresh_manager_control_local", return_value=["Control refreshed"]
-        ), patch("luma.cli.bootstrap_manager_local") as bootstrap_manager, patch("luma.cli.bootstrap_node") as bootstrap_node_call, patch(
-            "luma.cli.install_docker"
-        ) as docker, patch("luma.cli.setup_egress") as egress:
+        with patch("luma.cli.manager._run_luma_installer"), patch("luma.cli.manager._reexec_after_luma_update"), patch("luma.cli.manager._existing_control_state", return_value=state), patch(
+            "luma.cli.manager.refresh_manager_control_local", return_value=["Control refreshed"]
+        ), patch("luma.cli.manager.bootstrap_manager_local") as bootstrap_manager, patch("luma.cli.nodes.bootstrap_node") as bootstrap_node_call, patch(
+            "luma.cli.nodes.install_docker"
+        ) as docker, patch("luma.cli.manager.setup_egress") as egress:
             code = main(["update", "manager", "--domain", "luma.example.com"])
 
         self.assertEqual(code, 0)
@@ -3114,9 +3117,9 @@ class CliTests(unittest.TestCase):
             "restarted": [{"allocId": "alloc-1", "task": "mysql", "mode": "task"}],
         }
         with patch(
-            "luma.cli._control_context",
+            "luma.cli.apps._control_context",
             return_value=("https://luma.example.com", "deploy-token", False, None),
-        ), patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+        ), patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print") as printed:
             code = main(["service", "restart", "granary", "--service", "mysql", "--mode", "task", "--timeout", "45"])
 
         self.assertEqual(code, 0)
@@ -3125,7 +3128,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Restart finished: granary/mysql (task)", printed_text)
 
     def test_version_local_skips_control_check(self):
-        with patch("luma.cli.ControlClient") as client_cls, patch("builtins.print") as printed:
+        with patch("luma.cli.common.ControlClient") as client_cls, patch("builtins.print") as printed:
             code = main(["version", "--local"])
 
         self.assertEqual(code, 0)
@@ -3155,7 +3158,7 @@ class CliTests(unittest.TestCase):
             "nodeJoinModel": "region-first",
             "capabilities": ["node-region", "service-proxy"],
         }
-        with patch("luma.cli.ControlClient", return_value=client) as client_cls, patch("builtins.print") as printed:
+        with patch("luma.cli.common.ControlClient", return_value=client) as client_cls, patch("builtins.print") as printed:
             code = main(["version", "--control-url", "https://luma.example.com"])
 
         self.assertEqual(code, 0)
@@ -3228,7 +3231,7 @@ class CliTests(unittest.TestCase):
                         ],
                     },
                 }
-                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                with patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print") as printed:
                     code = main(["status"])
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
@@ -3283,7 +3286,7 @@ class CliTests(unittest.TestCase):
                     "nodes": {"registered": 0, "items": []},
                     "swarm": {"available": True, "nodes": []},
                 }
-                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                with patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print") as printed:
                     code = main(["status"])
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
@@ -3304,7 +3307,7 @@ class CliTests(unittest.TestCase):
             try:
                 client = Mock()
                 client.status.return_value = {"clusterId": "luma-test", "version": "0.1.2"}
-                with patch("luma.cli.ControlClient", return_value=client) as client_cls, patch("builtins.print") as printed:
+                with patch("luma.cli.common.ControlClient", return_value=client) as client_cls, patch("builtins.print") as printed:
                     code = main(["--no-env", "status", "--format", "json"])
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
@@ -3329,7 +3332,7 @@ class CliTests(unittest.TestCase):
                 save_context(endpoint="https://context.example.com", cluster_id="luma-test", token="context-token")
                 client = Mock()
                 client.status.return_value = {"clusterId": "luma-test"}
-                with patch("luma.cli.ControlClient", return_value=client) as client_cls, patch("builtins.print"):
+                with patch("luma.cli.common.ControlClient", return_value=client) as client_cls, patch("builtins.print"):
                     code = main(
                         [
                             "--no-env",
@@ -3355,7 +3358,7 @@ class CliTests(unittest.TestCase):
         old_token = _set_env("LUMA_DEPLOY_TOKEN", "deploy-token")
         old_insecure = _set_env("LUMA_INSECURE", "sometimes")
         try:
-            with patch("luma.cli.ControlClient") as client_cls, patch("builtins.print") as printed:
+            with patch("luma.cli.common.ControlClient") as client_cls, patch("builtins.print") as printed:
                 code = main(["--no-env", "status", "--format", "json"])
         finally:
             _restore_env("LUMA_CONTROL_URL", old_url)
@@ -3379,7 +3382,7 @@ class CliTests(unittest.TestCase):
                 secret_client.list_secrets.return_value = {"secrets": ["DATABASE_URL"]}
                 registry_client = Mock()
                 registry_client.list_registries.return_value = {"registries": [{"host": "ghcr.io", "username": "bot"}]}
-                with patch("luma.cli.ControlClient", side_effect=[secret_client, registry_client]) as client_cls, patch(
+                with patch("luma.cli.common.ControlClient", side_effect=[secret_client, registry_client]) as client_cls, patch(
                     "builtins.print"
                 ) as printed:
                     secret_code = main(["--no-env", "secret", "list", "--format", "json"])
@@ -3408,7 +3411,7 @@ class CliTests(unittest.TestCase):
                 secret_client.set_secret.return_value = {"name": "DATABASE_URL", "saved": True}
                 registry_client = Mock()
                 registry_client.set_registry.return_value = {"host": "ghcr.io"}
-                with patch("luma.cli.ControlClient", side_effect=[secret_client, registry_client]) as client_cls, patch(
+                with patch("luma.cli.common.ControlClient", side_effect=[secret_client, registry_client]) as client_cls, patch(
                     "sys.stdin", io.StringIO("registry-token\n")
                 ), patch("builtins.print"):
                     secret_code = main(["--no-env", "secret", "set", "DATABASE_URL", "--value", "postgres://secret"])
@@ -3466,7 +3469,7 @@ class CliTests(unittest.TestCase):
                         ],
                     },
                 }
-                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                with patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print") as printed:
                     code = main(["node", "status", "home-mac-mini"])
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
@@ -3481,7 +3484,7 @@ class CliTests(unittest.TestCase):
         remote.sudo_result.return_value = Mock(code=0, output="stopped\n")
         remote.sudo.return_value = ""
 
-        with patch("luma.cli.LocalExecutor", return_value=remote):
+        with patch("luma.cli.nodes.LocalExecutor", return_value=remote):
             results = exit_local_node()
 
         self.assertEqual(results, ["Nomad agent stopped", "Removed /opt/luma"])
@@ -3497,7 +3500,7 @@ class CliTests(unittest.TestCase):
         ]
         remote.sudo.return_value = ""
 
-        with patch("luma.cli.LocalExecutor", return_value=remote):
+        with patch("luma.cli.nodes.LocalExecutor", return_value=remote):
             results = exit_local_node(tailscale=True, prune_docker=True)
 
         self.assertEqual(
@@ -3528,14 +3531,14 @@ class CliTests(unittest.TestCase):
                 client.label_node.return_value = {"message": "labels applied"}
                 with patch("sys.stdin.isatty", return_value=True), patch(
                     "luma.userconfig.getpass.getpass", side_effect=lambda _prompt: next(secret_values)
-                ), patch("luma.cli.configure_dns", return_value="DNS ok"), patch(
-                    "luma.cli.install_docker", return_value="Docker available"
+                ), patch("luma.cli.nodes.configure_dns", return_value="DNS ok"), patch(
+                    "luma.cli.nodes.install_docker", return_value="Docker available"
                 ), patch(
-                    "luma.cli.ControlClient", return_value=client
-                ), patch("luma.cli.install_nomad_node", return_value=[]), patch(
-                    "luma.cli.local_nomad_node_info", return_value=("worker-1", "node-id-1")
+                    "luma.cli.common.ControlClient", return_value=client
+                ), patch("luma.cli.nodes.install_nomad_node", return_value=[]), patch(
+                    "luma.cli.nodes.local_nomad_node_info", return_value=("worker-1", "node-id-1")
                 ), patch(
-                    "luma.cli._local_tailscale_ip", return_value="100.64.0.10"
+                    "luma.cli.nodes._local_tailscale_ip", return_value="100.64.0.10"
                 ):
                     code = main(
                         [
@@ -3575,8 +3578,8 @@ class CliTests(unittest.TestCase):
             try:
                 with patch("sys.stdin.isatty", return_value=True), patch(
                     "luma.userconfig.getpass.getpass", return_value=""
-                ), patch("luma.cli._local_tailscale_connected", return_value=False), patch(
-                    "luma.cli.ControlClient"
+                ), patch("luma.cli.nodes._local_tailscale_connected", return_value=False), patch(
+                    "luma.cli.common.ControlClient"
                 ) as client_cls, patch("builtins.print"):
                     code = main(
                         [
@@ -3616,14 +3619,14 @@ class CliTests(unittest.TestCase):
                 client.label_node.return_value = {"message": "labels applied"}
                 with patch("sys.stdin.isatty", return_value=True), patch(
                     "luma.userconfig.getpass.getpass", side_effect=lambda _prompt: next(secret_values)
-                ), patch("luma.cli._local_tailscale_connected", side_effect=[False, False]), patch(
-                    "luma.cli.configure_dns", return_value="DNS ok"
-                ), patch("luma.cli.install_docker", return_value="Docker available"
-                ), patch("luma.cli.ControlClient", return_value=client), patch(
-                    "luma.cli.install_nomad_node", return_value=[]
-                ), patch("luma.cli.local_nomad_node_info", return_value=("docker-home", "home-id-1")
+                ), patch("luma.cli.nodes._local_tailscale_connected", side_effect=[False, False]), patch(
+                    "luma.cli.nodes.configure_dns", return_value="DNS ok"
+                ), patch("luma.cli.nodes.install_docker", return_value="Docker available"
+                ), patch("luma.cli.common.ControlClient", return_value=client), patch(
+                    "luma.cli.nodes.install_nomad_node", return_value=[]
+                ), patch("luma.cli.nodes.local_nomad_node_info", return_value=("docker-home", "home-id-1")
                 ), patch(
-                    "luma.cli._local_tailscale_ip", return_value="100.64.0.20"
+                    "luma.cli.nodes._local_tailscale_ip", return_value="100.64.0.20"
                 ):
                     code = main(
                         [
@@ -3673,17 +3676,17 @@ class CliTests(unittest.TestCase):
                 }
                 with patch("sys.stdin.isatty", return_value=True), patch(
                     "luma.userconfig.getpass.getpass", return_value="sudo-pass"
-                ), patch("luma.cli.configure_dns", return_value="DNS ok"), patch(
-                    "luma.cli.install_docker", return_value="Docker available"
-                ), patch("luma.cli.ControlClient", return_value=client), patch(
-                    "luma.cli.install_nomad_node", return_value=[]
+                ), patch("luma.cli.nodes.configure_dns", return_value="DNS ok"), patch(
+                    "luma.cli.nodes.install_docker", return_value="Docker available"
+                ), patch("luma.cli.common.ControlClient", return_value=client), patch(
+                    "luma.cli.nodes.install_nomad_node", return_value=[]
                 ) as install_nomad, patch(
-                    "luma.cli.local_nomad_node_info", return_value=("bot-host", "nomad-node-id")
+                    "luma.cli.nodes.local_nomad_node_info", return_value=("bot-host", "nomad-node-id")
                 ), patch(
-                    "luma.cli._local_tailscale_ip", return_value="100.80.0.20"
+                    "luma.cli.nodes._local_tailscale_ip", return_value="100.80.0.20"
                 ), patch(
-                    "luma.cli._install_node_agent_from_token"
-                ) as install_agent, patch("luma.cli.wait_for_node_readiness", return_value={"agentVersion": "test"}) as verify:
+                    "luma.cli.nodes._install_node_agent_from_token"
+                ) as install_agent, patch("luma.cli.nodes.wait_for_node_readiness", return_value={"agentVersion": "test"}) as verify:
                     code = main(
                         [
                             "node",
@@ -3732,9 +3735,9 @@ class CliTests(unittest.TestCase):
                 client = Mock()
                 with patch("sys.stdin.isatty", return_value=True), patch(
                     "luma.userconfig.getpass.getpass", return_value="sudo-pass"
-                ), patch("luma.cli.configure_dns", return_value="DNS ok"), patch(
-                    "luma.cli.install_docker", side_effect=LumaError("Docker is not ready")
-                ), patch("luma.cli.ControlClient", return_value=client), patch("builtins.print"):
+                ), patch("luma.cli.nodes.configure_dns", return_value="DNS ok"), patch(
+                    "luma.cli.nodes.install_docker", side_effect=LumaError("Docker is not ready")
+                ), patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print"):
                     code = main(
                         [
                             "node",
@@ -3771,10 +3774,10 @@ class CliTests(unittest.TestCase):
                 }
                 with patch("sys.stdin.isatty", return_value=True), patch(
                     "luma.userconfig.getpass.getpass", return_value="sudo-pass"
-                ), patch("luma.cli.configure_dns", return_value="DNS ok"), patch(
-                    "luma.cli.install_docker", return_value="Docker available"
-                ), patch("luma.cli.ControlClient", return_value=client), patch(
-                    "luma.cli.install_nomad_node", side_effect=LumaError("nomad join failed")
+                ), patch("luma.cli.nodes.configure_dns", return_value="DNS ok"), patch(
+                    "luma.cli.nodes.install_docker", return_value="Docker available"
+                ), patch("luma.cli.common.ControlClient", return_value=client), patch(
+                    "luma.cli.nodes.install_nomad_node", side_effect=LumaError("nomad join failed")
                 ), patch("builtins.print") as printed:
                     code = main(
                         [
@@ -3998,7 +4001,7 @@ class CliTests(unittest.TestCase):
             try:
                 save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
                 client = Mock()
-                with patch("luma.cli.ControlClient", return_value=client):
+                with patch("luma.cli.common.ControlClient", return_value=client):
                     code = main(["deploy", str(service_path), "--env", str(root / "missing.env")])
                 self.assertEqual(code, 1)
                 client.deploy_events.assert_not_called()
@@ -4189,8 +4192,8 @@ class CliTests(unittest.TestCase):
                 save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
                 client = Mock()
                 client.set_secret.return_value = {"name": "DATABASE_URL", "saved": True}
-                with patch("luma.cli.ControlClient", return_value=client), patch(
-                    "luma.cli.getpass.getpass", return_value="postgres://secret"
+                with patch("luma.cli.common.ControlClient", return_value=client), patch(
+                    "luma.cli.session.getpass.getpass", return_value="postgres://secret"
                 ), patch("builtins.print") as printed:
                     code = main(["secret", "set", "DATABASE_URL"])
                 self.assertEqual(code, 0)
@@ -4207,7 +4210,7 @@ class CliTests(unittest.TestCase):
                 save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
                 client = Mock()
                 client.set_secret.return_value = {"name": "DATABASE_URL", "saved": True}
-                with patch("luma.cli.ControlClient", return_value=client), patch(
+                with patch("luma.cli.common.ControlClient", return_value=client), patch(
                     "sys.stdin", io.StringIO("postgres://secret\n")
                 ), patch("builtins.print") as printed:
                     code = main(["secret", "set", "DATABASE_URL", "--value-stdin"])
@@ -4223,7 +4226,7 @@ class CliTests(unittest.TestCase):
             old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))
             try:
                 save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
-                with patch("luma.cli.ControlClient") as client_cls:
+                with patch("luma.cli.common.ControlClient") as client_cls:
                     code = main(["secret", "set", "DATABASE_URL", "--value", "a", "--value-stdin"])
                 self.assertEqual(code, 1)
                 client_cls.return_value.set_secret.assert_not_called()
