@@ -116,7 +116,7 @@ python scripts/bump-version.py --minor    # 或 --major / --set x.y.z
 - `tests/__init__.py` 隔离环境：`LUMA_USER_CONFIG`、`LUMA_CONFIG_HOME` 指向临时目录，`LUMA_CONTROL_CONFIG` 默认 `tests/fixtures/cluster.yaml`。测试不得依赖仓库根的 `luma.yaml`、`.env` 或真实 `~/.luma.config.json`。
 - mock 要打在**名字被查找的模块**上（例如 `luma.cli.nodes.X` 而不是 `luma.cli.manager.X`）；不要为兼容旧 patch 路径重新导出私有 helper。CLI 分发用 `patch.dict("luma.cli.main.COMMANDS", ...)`。
 - Control 端点用 `starlette.testclient.TestClient(create_app())` 测。
-- `tests/test_nomad_render.py` / `test_render.py` / `test_nomad_compose.py`：渲染逻辑，改渲染或部署逻辑优先在这里加用例。`tests/test_cli_surface.py`：命令树、帮助与首次使用体验。`tests/test_productization.py`：bootstrap、agent、cloudflare、Control 等宽集成行为。
+- `tests/test_nomad_render.py` / `test_render.py` / `test_nomad_compose.py`：渲染逻辑，改渲染或部署逻辑优先在这里加用例。`tests/test_cli_surface.py`：命令树、帮助与首次使用体验。宽集成测试按领域拆分：`test_control_api.py`（Control handler）、`test_cli_commands.py`、`test_github_import.py`（导入与构建）、`test_bootstrap_nomad.py`、`test_product_config.py`、`test_control_deploy_guards.py`；共享 helper 在 `tests/support.py`（`from tests.support import ...`）。
 
 ## 文档
 
