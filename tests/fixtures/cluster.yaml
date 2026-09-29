@@ -28,7 +28,7 @@ nodes:
 defaults:
   engine: nomad
   exposure: cn-edge
-  registry: ghcr.io/liutianjie
+  registry: ghcr.io/example
   stackRoot: stacks
   routesRoot: routes
   publicNetwork: public
@@ -38,7 +38,7 @@ defaults:
   images:
     traefik: docker.1panel.live/library/traefik:v3.6
     egressGateway: docker.1panel.live/metacubex/mihomo:latest
-    lumaControl: ghcr.io/liutianjie/luma-control:latest
+    lumaControl: ghcr.io/example/luma-control:latest
 git:
   autoCommit: false
   autoPush: false

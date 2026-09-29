@@ -117,21 +117,21 @@ Do not use for:
 Manifest:
 
 ```yaml
-name: granary-db
+name: ledger-db
 image: mysql:8.4.9
 region: home
 node: lab
 exposure: tcp-relay
-domain: granary-db.itool.tech
+domain: ledger-db.example.net
 port: 3306
 publishPort: 3306
 ```
 
 Luma generates:
 
-- `stacks/home/granary-db/granary-db.nomad.json`, which publishes the service port in host mode;
+- `stacks/home/ledger-db/ledger-db.nomad.json`, which publishes the service port in host mode;
 - Traefik service update for the derived `tcp-3306` entrypoint and host-mode published port;
-- `routes/granary-db.yml`, which uses Traefik `tcp.routers` with `HostSNI("*")` / `HostSNI(\`*\`)`;
+- `routes/ledger-db.yml`, which uses Traefik `tcp.routers` with `HostSNI("*")` / `HostSNI(\`*\`)`;
 - Cloudflare DNS record pointing to the configured edge target.
 
 Ordinary MySQL clients do not start with an HTTP Host header, and should not be assumed to provide reliable TLS SNI before the server handshake. Treat `tcp-relay` as port-exclusive: one published port routes to one TCP service.

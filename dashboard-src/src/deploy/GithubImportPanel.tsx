@@ -393,7 +393,7 @@ export function GithubImportPanel({
         </CardHeader>
         <CollapsibleContent><CardContent className="@container"><FieldGroup className="grid grid-cols-1 items-start gap-4 @md:grid-cols-2">
           <DeployTextField label={zh ? "构建平台" : "Build platform"} type="text" value={platform} placeholder="linux/amd64" onChange={(event) => setPlatform(event.target.value)} />
-          <DeployTextField label={zh ? "Registry 地址" : "Registry host"} type="text" value={registryHost} placeholder="100.66.177.70:5000" onChange={(event) => setRegistryHost(event.target.value)} />
+          <DeployTextField label={zh ? "Registry 地址" : "Registry host"} type="text" value={registryHost} placeholder="100.64.0.70:5000" onChange={(event) => setRegistryHost(event.target.value)} />
           <DeployTextField label={zh ? "Push 地址" : "Push host"} type="text" value={pushHost} placeholder="localhost:5000" onChange={(event) => setPushHost(event.target.value)} />
           <DeployTextField label={zh ? "构建上下文" : "Context"} type="text" value={context} placeholder="." onChange={(event) => setContext(event.target.value)} />
           <DeployTextField label="Dockerfile" type="text" value={dockerfile} placeholder="Dockerfile" onChange={(event) => setDockerfile(event.target.value)} />

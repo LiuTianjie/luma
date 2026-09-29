@@ -26,7 +26,6 @@ def dispatch(token: str, method: str, path: str, body: dict[str, Any] | None = N
         return alerting.dispatch(method, path.removeprefix("/v1/alerting/"), body=body, query=query)
     if path.startswith("/v1/governance/"):
         from . import storage_governance
-        from . import server
         resource = path.removeprefix("/v1/governance/")
         result = storage_governance.dispatch(method, resource, body=body, query=query)
         if resource == "inventory" and method == "GET":

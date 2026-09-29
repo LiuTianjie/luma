@@ -5,6 +5,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 python scripts/bump-version.py --check
 python scripts/generate-cli-reference.py --check
+python -m ruff check luma tests scripts observe
+bash scripts/validate-stacks.sh
 # Server and package tests serve these generated assets on a clean checkout.
 npm run typecheck:dashboard
 npm run build:dashboard

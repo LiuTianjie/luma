@@ -14,23 +14,23 @@ const devDashboardPayload = {
     failedServices: 0,
   },
   readiness: {
-    dns: { ready: true, provider: "Cloudflare", zone: "itool.tech", target: "8.130.148.30" },
-    nomad: { ready: true, available: true, leader: "100.113.204.125:4647" },
+    dns: { ready: true, provider: "Cloudflare", zone: "example.net", target: "203.0.113.30" },
+    nomad: { ready: true, available: true, leader: "100.64.0.125:4647" },
   },
   nodes: [
     { name: "cn-edge", displayName: "cn-edge", region: "cn", role: "manager", state: "ready", availability: "active", leader: true, agentStatus: "ready", agentOs: "linux", storageCapabilities: ["terminal"], terminalConnected: true, terminalStatus: "connected", metrics: { cpuPercent: 21.4, load1: 0.82, memoryUsedPercent: 58.2, memoryTotalBytes: 17179869184 }, capacity: { cpus: 4, memoryBytes: 17179869184 } },
     { name: "home-mac-mini", displayName: "home-mac-mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false, agentStatus: "ready", agentOs: "darwin", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 13.8, load1: 1.1, memoryUsedPercent: 61.5, memoryTotalBytes: 34359738368 }, capacity: { cpus: 10, memoryBytes: 34359738368 } },
     { name: "tailscale-relay", displayName: "tailscale-relay", region: "home", role: "worker", state: "ready", availability: "active", leader: false, agentStatus: "ready", agentOs: "linux", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 8.1, load1: 0.2, memoryUsedPercent: 44.0, memoryTotalBytes: 8589934592 }, capacity: { cpus: 4, memoryBytes: 8589934592 } },
-    { name: "m4mini", displayName: "m4mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false, agentStatus: "ready", agentOs: "darwin", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 29.7, load1: 2.4, memoryUsedPercent: 67.9, memoryTotalBytes: 17179869184 }, capacity: { cpus: 8, memoryBytes: 17179869184 } },
+    { name: "home-mini", displayName: "home-mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false, agentStatus: "ready", agentOs: "darwin", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 29.7, load1: 2.4, memoryUsedPercent: 67.9, memoryTotalBytes: 17179869184 }, capacity: { cpus: 8, memoryBytes: 17179869184 } },
   ],
   services: [
     {
-      name: "codex-gitea",
-      fullName: "codex-gitea_codex-gitea",
-      stack: "codex-gitea",
+      name: "gitea",
+      fullName: "gitea_gitea",
+      stack: "gitea",
       region: "home",
       exposure: "tailscale-relay",
-      image: "ghcr.io/liutianjie/codex-gitea@sha256:ade6c61734a1b7d53b342356c82251afe9fba93d3a2d7509510320c86652834e",
+      image: "ghcr.io/liutianjie/gitea@sha256:ade6c61734a1b7d53b342356c82251afe9fba93d3a2d7509510320c86652834e",
       desired: 1,
       running: 1,
       pending: 0,
@@ -50,15 +50,15 @@ const devDashboardPayload = {
       pending: 0,
       failed: 0,
       health: "running",
-      nodes: ["m4mini"],
+      nodes: ["home-mini"],
     },
     {
-      name: "linkshell-gateway",
-      fullName: "linkshell-gateway_linkshell-gateway",
-      stack: "linkshell-gateway",
+      name: "api-gateway",
+      fullName: "api-gateway_api-gateway",
+      stack: "api-gateway",
       region: "cn",
       exposure: "cn-edge",
-      image: "nickname4th/linkshell-gateway@sha256:a0fdd4f49fd5a9ee4e8990b5b403e32cb75fe883d59477ae3397edc598a04ea2",
+      image: "nickname4th/api-gateway@sha256:a0fdd4f49fd5a9ee4e8990b5b403e32cb75fe883d59477ae3397edc598a04ea2",
       desired: 1,
       running: 1,
       pending: 0,
@@ -82,11 +82,11 @@ const devDashboardPayload = {
     },
     {
       name: "mysql",
-      fullName: "granary_mysql",
-      stack: "granary",
+      fullName: "ledger_mysql",
+      stack: "ledger",
       region: "home",
       exposure: "tcp-relay",
-      domain: "granary-db.itool.tech",
+      domain: "ledger-db.example.net",
       targetPort: 3306,
       publishPort: 3306,
       image: "mysql:8",
@@ -99,14 +99,14 @@ const devDashboardPayload = {
     },
     {
       name: "frontend",
-      fullName: "granary_frontend",
-      stack: "granary",
+      fullName: "ledger_frontend",
+      stack: "ledger",
       region: "home",
       exposure: "tailscale-relay",
-      domain: "granary.itool.tech",
+      domain: "ledger.example.net",
       targetPort: 3000,
       publishPort: 3000,
-      image: "ghcr.io/liutianjie/granary-frontend:latest",
+      image: "ghcr.io/liutianjie/ledger-frontend:latest",
       desired: 1,
       running: 1,
       pending: 0,
@@ -115,12 +115,12 @@ const devDashboardPayload = {
       nodes: ["tailscale-relay"],
     },
     {
-      name: "tifenxia-docs",
-      fullName: "docs_tifenxia-docs",
+      name: "docs-site",
+      fullName: "docs_docs-site",
       stack: "docs",
       region: "home",
       exposure: "tailscale-relay",
-      image: "registry.itool.tech/docs/tifenxia-docs:latest",
+      image: "registry.example.net/docs/docs-site:latest",
       desired: 1,
       running: 1,
       pending: 0,
@@ -144,12 +144,12 @@ const devDashboardPayload = {
     },
   ],
   trafficPaths: [
-    { id: "linkshell-gateway", kind: "cn-edge", domain: "gateway.itool.tech", segments: ["Cloudflare DNS", "8.130.148.30", "Traefik", "linkshell-gateway:8787", "cn-edge"] },
-    { id: "luma-control", kind: "cn-edge", domain: "luma.itool.tech", segments: ["Cloudflare DNS", "8.130.148.30", "Traefik", "luma-control:8080", "cn-edge"] },
-    { id: "codex-gitea", kind: "tailscale-relay", domain: "codex-bot.itool.tech", segments: ["Cloudflare DNS", "8.130.148.30", "Traefik", "Tailscale", "http://100.115.5.84:8080"] },
-    { id: "tifenxia-docs", kind: "tailscale-relay", domain: "tifenxia-docs.itool.tech", segments: ["Cloudflare DNS", "8.130.148.30", "Traefik", "Tailscale", "http://100.115.5.84:18080"] },
-    { id: "egress", kind: "internal", domain: "", segments: ["client/internal", "mihomo", "m4mini"] },
-    { id: "granary", kind: "tcp-relay", domain: "granary-db.itool.tech", segments: ["Cloudflare DNS", "8.130.148.30:3306", "Traefik TCP", "Tailscale", "100.115.5.84:3306"] },
+    { id: "api-gateway", kind: "cn-edge", domain: "gateway.example.net", segments: ["Cloudflare DNS", "203.0.113.30", "Traefik", "api-gateway:8787", "cn-edge"] },
+    { id: "luma-control", kind: "cn-edge", domain: "luma.example.net", segments: ["Cloudflare DNS", "203.0.113.30", "Traefik", "luma-control:8080", "cn-edge"] },
+    { id: "gitea", kind: "tailscale-relay", domain: "gitea.example.net", segments: ["Cloudflare DNS", "203.0.113.30", "Traefik", "Tailscale", "http://100.64.0.3:8080"] },
+    { id: "docs-site", kind: "tailscale-relay", domain: "docs-site.example.net", segments: ["Cloudflare DNS", "203.0.113.30", "Traefik", "Tailscale", "http://100.64.0.3:18080"] },
+    { id: "egress", kind: "internal", domain: "", segments: ["client/internal", "mihomo", "home-mini"] },
+    { id: "ledger", kind: "tcp-relay", domain: "ledger-db.example.net", segments: ["Cloudflare DNS", "203.0.113.30:3306", "Traefik TCP", "Tailscale", "100.64.0.3:3306"] },
   ],
   storage: {
     storageClasses: [
@@ -157,14 +157,14 @@ const devDashboardPayload = {
       { name: "cn-nfs", provider: "nfs", mode: "managed", node: "cn-edge", path: "/srv/luma", regions: ["cn"] },
     ],
     volumes: [
-      { name: "granary-mysql", kind: "volume", storageClass: "local", node: "tailscale-relay", services: ["granary"] },
-      { name: "gitea-data", kind: "bind", storageClass: "local", node: "tailscale-relay", services: ["codex-gitea"] },
+      { name: "ledger-mysql", kind: "volume", storageClass: "local", node: "tailscale-relay", services: ["ledger"] },
+      { name: "gitea-data", kind: "bind", storageClass: "local", node: "tailscale-relay", services: ["gitea"] },
     ],
     warnings: [],
   },
   issues: [
     { severity: "warning", kind: "service-pending", target: "egress_mihomo", message: "Service egress_mihomo has 1 pending task" },
-    { severity: "warning", kind: "node-memory", target: "m4mini", message: "Node m4mini memory is 67.9%" },
+    { severity: "warning", kind: "node-memory", target: "home-mini", message: "Node home-mini memory is 67.9%" },
   ],
   errors: [],
 };
@@ -172,8 +172,8 @@ const devDashboardPayload = {
 const devNodeAddresses: Record<string, string> = {
   "cn-edge": "100.64.0.1",
   "home-mac-mini": "100.64.0.2",
-  "tailscale-relay": "100.115.5.84",
-  m4mini: "100.64.0.4",
+  "tailscale-relay": "100.64.0.3",
+  "home-mini": "100.64.0.4",
 };
 
 (devDashboardPayload.services as any[]).forEach((service) => {
@@ -217,7 +217,7 @@ const devNodeAddresses: Record<string, string> = {
 });
 
 const devRegistryPayload = {
-  registry: { host: "100.66.177.70:5000", node: "builder", volumeName: "luma-registry-data", jobId: "luma-registry" },
+  registry: { host: "100.64.0.70:5000", node: "builder", volumeName: "luma-registry-data", jobId: "luma-registry" },
   summary: { repositoryCount: 144, tagCount: 1122, manifestCount: 486, protectedCount: 173, retainedCount: 284, candidateCount: 29, unknownCount: 0, scanErrors: 0, scannedAt: Math.floor(Date.now() / 1000), durationMs: 4380 },
   usage: {
     volumeBytes: 27_742_000_000,
@@ -240,14 +240,14 @@ const devRegistryPayload = {
   entries: [
     { repository: "lae/agent-controller", digest: `sha256:${"a".repeat(64)}`, tags: ["2026.08.17-8d91ab", "latest"], logicalBytes: 724_000_000, createdAt: 1786900000, platforms: ["linux/amd64", "linux/arm64"], protectionStatus: "protected", protectionReasons: [{ kind: "nomad-version", source: "nomad:lae-agent-controller:v18" }] },
     { repository: "luma-control", digest: `sha256:${"b".repeat(64)}`, tags: ["0.1.281", "latest"], logicalBytes: 381_000_000, createdAt: 1786800000, platforms: ["linux/amd64"], protectionStatus: "protected", protectionReasons: [{ kind: "system", source: "system retention" }] },
-    { repository: "tifenxia/api", digest: `sha256:${"c".repeat(64)}`, tags: ["release-20260815"], logicalBytes: 1_840_000_000, createdAt: 1786500000, platforms: ["linux/amd64"], protectionStatus: "protected", protectionReasons: [{ kind: "deployment", source: "services:tifenxia-api" }] },
-    { repository: "granary/frontend", digest: `sha256:${"d".repeat(64)}`, tags: ["main-f81d2c"], logicalBytes: 186_000_000, createdAt: 1784300000, platforms: ["linux/amd64"], protectionStatus: "retained", protectionReasons: [] },
-    { repository: "granary/frontend", digest: `sha256:${"e".repeat(64)}`, tags: ["main-25a90a"], logicalBytes: 181_000_000, createdAt: 1781200000, platforms: ["linux/amd64"], protectionStatus: "candidate", protectionReasons: [] },
-    { repository: "docs/tifenxia-docs", digest: `sha256:${"f".repeat(64)}`, tags: ["preview-418", "preview-latest"], logicalBytes: 93_000_000, createdAt: 1779000000, platforms: ["linux/amd64"], protectionStatus: "candidate", protectionReasons: [] },
+    { repository: "docs-site/api", digest: `sha256:${"c".repeat(64)}`, tags: ["release-20260815"], logicalBytes: 1_840_000_000, createdAt: 1786500000, platforms: ["linux/amd64"], protectionStatus: "protected", protectionReasons: [{ kind: "deployment", source: "services:docs-site-api" }] },
+    { repository: "ledger/frontend", digest: `sha256:${"d".repeat(64)}`, tags: ["main-f81d2c"], logicalBytes: 186_000_000, createdAt: 1784300000, platforms: ["linux/amd64"], protectionStatus: "retained", protectionReasons: [] },
+    { repository: "ledger/frontend", digest: `sha256:${"e".repeat(64)}`, tags: ["main-25a90a"], logicalBytes: 181_000_000, createdAt: 1781200000, platforms: ["linux/amd64"], protectionStatus: "candidate", protectionReasons: [] },
+    { repository: "docs/docs-site", digest: `sha256:${"f".repeat(64)}`, tags: ["preview-418", "preview-latest"], logicalBytes: 93_000_000, createdAt: 1779000000, platforms: ["linux/amd64"], protectionStatus: "candidate", protectionReasons: [] },
   ],
   deletions: [
     { id: "registry-delete-7f13b2c4", status: "deleted_pending_gc", manifests: [{ repository: "sandbox/old-worker", digest: `sha256:${"1".repeat(64)}` }], logicalBytes: 612_000_000, createdAt: 1786600000, updatedAt: 1786686400, gcAfter: 1787291200, message: "2 manifests deleted; blobs retained until GC" },
-    { id: "registry-delete-a19c3d28", status: "queued", manifests: [{ repository: "granary/frontend", digest: `sha256:${"e".repeat(64)}` }], logicalBytes: 181_000_000, createdAt: 1786900000, updatedAt: 1786900000, notBefore: 1786986400, message: "Deletion queued" },
+    { id: "registry-delete-a19c3d28", status: "queued", manifests: [{ repository: "ledger/frontend", digest: `sha256:${"e".repeat(64)}` }], logicalBytes: 181_000_000, createdAt: 1786900000, updatedAt: 1786900000, notBefore: 1786986400, message: "Deletion queued" },
   ],
 };
 
@@ -453,7 +453,7 @@ export default defineConfig({
           response.statusCode = 200;
           response.setHeader("Content-Type", "application/json; charset=utf-8");
           response.setHeader("Cache-Control", "no-store");
-          response.end(JSON.stringify({ secrets: ["CLOUDFLARE_API_TOKEN", "TAILSCALE_AUTHKEY", "granary/DATABASE_URL", "codex-gitea/GITEA_TOKEN"] }));
+          response.end(JSON.stringify({ secrets: ["CLOUDFLARE_API_TOKEN", "TAILSCALE_AUTHKEY", "ledger/DATABASE_URL", "gitea/GITEA_TOKEN"] }));
         });
         server.middlewares.use("/v1/registries", (request, response, next) => {
           if (request.method !== "GET") {
@@ -586,8 +586,8 @@ export default defineConfig({
           if (rest === "/" || rest === "") {
             response.end(JSON.stringify({
               items: [
-                { kind: "deployment", id: "deploy-1", title: "linkshell-gateway", application: "linkshell-gateway", source: "dashboard", status: "succeeded", createdAt: nowSec - 3600, updatedAt: nowSec - 3500 },
-                { kind: "build", id: "build-1", title: "codex-gitea", application: "codex-gitea", source: "build", status: "succeeded", createdAt: nowSec - 7200, repository: "liutianjie/codex-gitea", ref: "main", buildNode: "home-mac-mini" },
+                { kind: "deployment", id: "deploy-1", title: "api-gateway", application: "api-gateway", source: "dashboard", status: "succeeded", createdAt: nowSec - 3600, updatedAt: nowSec - 3500 },
+                { kind: "build", id: "build-1", title: "gitea", application: "gitea", source: "build", status: "succeeded", createdAt: nowSec - 7200, repository: "liutianjie/gitea", ref: "main", buildNode: "home-mac-mini" },
               ],
               page: { limit: 50, nextCursor: null, hasMore: false },
             }));
@@ -704,14 +704,14 @@ export default defineConfig({
           const nowSec = Math.floor(Date.now() / 1000);
           const devSteps: Record<string, Array<{ name: string; status: string; message?: string }>> = {
             "deploy-1": [
-              { name: "Parse manifest", status: "ok", message: "linkshell-gateway -> cn/cn-edge" },
+              { name: "Parse manifest", status: "ok", message: "api-gateway -> cn/cn-edge" },
               { name: "Resolve image", status: "ok" },
               { name: "Write route file", status: "ok" },
               { name: "Submit Nomad job", status: "ok" },
               { name: "Probe public route", status: "ok", message: "HTTP 200" },
             ],
             "deploy-2": [
-              { name: "Parse sidecar", status: "ok", message: "granary -> home" },
+              { name: "Parse sidecar", status: "ok", message: "ledger -> home" },
               { name: "Prepare managed storage", status: "ok" },
               { name: "Submit Nomad job", status: "ok" },
             ],
@@ -738,9 +738,9 @@ export default defineConfig({
           response.setHeader("Cache-Control", "no-store");
           response.end(JSON.stringify({
             events: [
-              { id: "deploy-1", kind: "service", name: "linkshell-gateway", slug: "linkshell-gateway", sourceName: "service.yaml", origin: "cli", status: "active", stepCount: 5, createdAt: nowSec - 120 },
-              { id: "deploy-2", kind: "compose", name: "granary", slug: "granary", sourceName: "luma.compose.yml", origin: "dashboard", status: "active", stepCount: 3, createdAt: nowSec - 900 },
-              { id: "deploy-3", kind: "service", name: "codex-gitea", slug: "codex-gitea", sourceName: "service.yaml", origin: "cli", status: "failed_partial", stepCount: 3, createdAt: nowSec - 3600 },
+              { id: "deploy-1", kind: "service", name: "api-gateway", slug: "api-gateway", sourceName: "service.yaml", origin: "cli", status: "active", stepCount: 5, createdAt: nowSec - 120 },
+              { id: "deploy-2", kind: "compose", name: "ledger", slug: "ledger", sourceName: "luma.compose.yml", origin: "dashboard", status: "active", stepCount: 3, createdAt: nowSec - 900 },
+              { id: "deploy-3", kind: "service", name: "gitea", slug: "gitea", sourceName: "service.yaml", origin: "cli", status: "failed_partial", stepCount: 3, createdAt: nowSec - 3600 },
             ],
           }));
         });

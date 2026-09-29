@@ -32,15 +32,15 @@ class ObserveQueryTests(unittest.TestCase):
             if "5.." in expr:
                 return [{"labels": {"router": "word2pdf-web@nomad"}, "points": [[int(now) - 60, 0.1], [int(now), 0.2]]}]
             if expr == "luma_observe_job_failed":
-                return [{"labels": {"job": "granary", "task_group": "app"}, "points": [[int(now), 21]]}]
-            return [{"labels": {"job": "granary", "task_group": "app"}, "points": [[int(now), 0]]}]
+                return [{"labels": {"job": "ledger", "task_group": "app"}, "points": [[int(now), 21]]}]
+            return [{"labels": {"job": "ledger", "task_group": "app"}, "points": [[int(now), 0]]}]
 
         with patch.object(observe, "require_token"), patch.object(observe, "load_state", return_value={"nodes": {}}), patch.object(observe, "_query_range", side_effect=fake_range):
             result = observe.handle_observe_apps("token", window=3600)
         self.assertTrue(result["available"])
         self.assertEqual(result["http"][0]["id"], "word2pdf-web")
         self.assertEqual(result["http"][0]["requestRate"], 4.0)
-        self.assertEqual(result["jobs"][0]["job"], "granary")
+        self.assertEqual(result["jobs"][0]["job"], "ledger")
         self.assertEqual(result["jobs"][0]["failed"], 21)
 
     def test_unavailable_observe_is_explicit(self):

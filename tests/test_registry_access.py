@@ -10,19 +10,19 @@ from unittest.mock import Mock, patch
 from luma.errors import LumaError
 from luma.registry_access import REGISTRY_SETUP_SCRIPT, configure_join_registries, join_insecure_registries, registry_host_allows_http
 
-HOST = "100.66.177.70:5000"
+HOST = "100.64.0.70:5000"
 
 
 class RegistryPolicyTests(unittest.TestCase):
     def test_legacy_builder_is_discovered_but_not_local_push_host(self):
         state = {"build": {"registryHost": HOST, "pushHost": "localhost:5000"},
-                 "nodes": {"builder": {"tailscaleIP": "100.66.177.70"}}}
+                 "nodes": {"builder": {"tailscaleIP": "100.64.0.70"}}}
         self.assertEqual(join_insecure_registries(state), [HOST])
 
     def test_no_downgrade_for_unknown_or_tls_registry(self):
-        for host in ["registry.example.com", "10.0.0.1:5000", "100.66.177.70:5443", HOST]:
+        for host in ["registry.example.com", "10.0.0.1:5000", "100.64.0.70:5443", HOST]:
             self.assertEqual(join_insecure_registries({"build": {"registryHost": host}}), [])
-        state = {"build": {"registryHost": HOST}, "nodes": {"builder": {"tailscaleIP": "100.66.177.70"}},
+        state = {"build": {"registryHost": HOST}, "nodes": {"builder": {"tailscaleIP": "100.64.0.70"}},
                  "managedRegistryTransports": {HOST: "https"}}
         self.assertEqual(join_insecure_registries(state), [])
         state.pop("managedRegistryTransports")

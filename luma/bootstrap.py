@@ -1732,7 +1732,7 @@ def install_nomad_node(
     Auto-detects node facts (Tailscale IP, OS/arch, Apple-Silicon CPU) and
     generates the agent config via nomad_node, so the operator just runs the
     command and types their password once — zero hand-tuning. The shell steps
-    mirror what was validated by hand on aly/lab/gaojiu during the migration.
+    mirror steps validated by hand on Linux and macOS nodes.
     NOTE: constructed to match those hand-verified steps; pending a fresh-node
     live test before being wired as the default join path.
     """
@@ -2043,7 +2043,7 @@ def setup_egress(config: LumaConfig, node: NodeConfig, subscription_url: str, *,
         emit,
         "Deploy egress gateway",
         lambda: _deploy_egress_nomad(remote, config),
-        fix=f"Run: luma manager egress",
+        fix="Run: luma manager egress",
     )
     _step(
         results,

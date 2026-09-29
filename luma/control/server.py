@@ -9,7 +9,6 @@ import errno
 import functools
 import gzip
 import hashlib
-import hmac
 import http.client
 import json
 import math
@@ -21,7 +20,6 @@ import shlex
 import shutil
 import socket
 import ssl
-import stat
 import subprocess
 import sys
 import tempfile
@@ -32,7 +30,6 @@ import urllib.parse
 import urllib.request
 from dataclasses import replace
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, AsyncIterator, Mapping
 
@@ -59,8 +56,6 @@ from ..compose import (
     compose_route_path,
     compose_stack_path,
     load_compose_deployment,
-    render_storage_class_volume,
-    render_compose_routes,
     resolve_storage_mounts,
     storage_summary,
 )
@@ -77,7 +72,7 @@ from ..local_storage import (
     service_persistent_mounts,
     storage_owner_from_job,
 )
-from ..nomad_api import NomadApi, NomadRolloutError, deploy_to_nomad, remove_from_nomad, revert_job, job_versions, nomad_addr, nomad_status_summary, nomad_services_summary, nomad_service_directory
+from ..nomad_api import NomadApi, deploy_to_nomad, remove_from_nomad, revert_job, job_versions, nomad_addr, nomad_status_summary, nomad_services_summary, nomad_service_directory
 from ..nomad_render import EDGE_EXPOSURES, render_nomad_job, render_compose_job, resource_policy_warnings
 from ..observe_instrument import OBSERVE_STACK, manager_tailscale_ip, mint_otlp_token, otlp_mesh_endpoint
 from ..registry import (
@@ -115,7 +110,7 @@ from ..regions import (
     require_region_exposure,
     require_registered_region,
 )
-from ..service import TCP_RELAY_RESERVED_PORTS, ServiceSpec, load_service, slugify, tcp_entrypoint_name
+from ..service import TCP_RELAY_RESERVED_PORTS, ServiceSpec, load_service, slugify
 from .. import __version__
 from .dashboard_queries import SCOPES as DASHBOARD_SCOPES, service_summary as _dashboard_service_summary, application_page as _dashboard_application_page
 from .metrics_api import handle_metrics_history_batch
@@ -137,7 +132,6 @@ from .state import (
     require_token,
     save_state,
     state_dir,
-    state_path,
 )
 # Re-exported from the secrets leaf module so existing imports of these names
 # from luma.control.server (callers and tests) keep working unchanged.
@@ -145,7 +139,6 @@ from .secrets import (
     _apply_state_secrets,
     _render_secrets,
     _request_env_secrets,
-    _referenced_env_names,
     _valid_env_name,
 )
 # Re-exported from the resources leaf module (image-ref parsing, registry auth,
@@ -155,7 +148,6 @@ from .secrets import (
 from .resources import (
     EGRESS_PROXY_URL,
     EGRESS_NO_PROXY,
-    DEFAULT_EGRESS_PULL_REGISTRIES,
     _docker_info_no_proxy,
     _docker_info_no_proxy_contains,
     _docker_info_uses_egress_proxy,
@@ -1872,7 +1864,6 @@ def handle_control_status(token: str) -> Dict[str, Any]:
     _apply_state_secrets(state)
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
-    runtime_config = _config_with_state_nodes(config, state)
     dns = config.dns
     dns_provider = str(dns.get("provider") or "not configured")
     token_env = str(dns.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))
@@ -8860,7 +8851,6 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
     deployment = _load_compose_request(body, source_name)
     _require_compose_regions(state, deployment)
     deployment, body = _bind_compose_local_storage(config, state, deployment, body, inspect_runtime=False)
-    target = _resolve_control_path(compose_stack_path(config, deployment), config_path)
     _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
     _ensure_compose_exposure_supported_on_nodes(state, deployment)
     compose_requirements = {

@@ -8,8 +8,7 @@ from unittest.mock import patch
 
 from starlette.testclient import TestClient
 from luma.control import alerting, operations, server
-from luma.control.state import init_state, load_state
-from luma.errors import LumaError
+from luma.control.state import init_state
 
 
 class OperationsIntegrationTests(unittest.TestCase):
@@ -46,7 +45,7 @@ class OperationsIntegrationTests(unittest.TestCase):
 
     def test_worker_evaluates_without_dashboard_and_delivery_is_independent(self):
         worker = operations.OperationsWorker(interval=1)
-        with patch.object(alerting, "load_evaluation_state", return_value={"nodes": {}}) as snapshot, patch.object(alerting, "tick") as evaluate, patch.object(alerting, "deliver_pending") as deliveries:
+        with patch.object(alerting, "load_evaluation_state", return_value={"nodes": {}}) as snapshot, patch.object(alerting, "tick") as evaluate, patch.object(alerting, "deliver_pending"):
             worker.start()
             deadline = time.monotonic() + 3
             while not evaluate.called and time.monotonic() < deadline:

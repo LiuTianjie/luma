@@ -74,7 +74,6 @@ esac
             self.assertNotIn('Luma version:', result.stdout)
 
     def test_shim_uses_the_validated_python_not_stale_console_entry(self):
-        script = (Path(__file__).resolve().parents[1] / 'scripts/install-luma.sh').read_text()
         import sys
         from unittest.mock import patch
         from luma import installation

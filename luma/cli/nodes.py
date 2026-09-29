@@ -89,7 +89,7 @@ def cmd_node(args: argparse.Namespace) -> int:
             log(f"[start] Roll back node registration: {registered_node_name}")
             try:
                 client.unregister_node(node_name=registered_node_name)
-            except LumaError as cleanup_exc:
+            except LumaError:
                 raise LumaError(
                     f"{exc}. Node registration cleanup also failed; run `luma node remove "
                     f"{registered_node_name}` after fixing control API access."

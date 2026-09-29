@@ -246,7 +246,7 @@ luma import acme/myapp --build-node build-1
 也可以使用保存的 provider 账户：
 
 ```bash
-luma build config --node builder --registry-host 100.66.177.70:5000 --push-host 100.66.177.70:5000
+luma build config --node builder --registry-host 100.64.0.70:5000 --push-host 100.64.0.70:5000
 luma import --provider-id gitea:lin --repository acme/myapp --env .env
 ```
 
@@ -310,7 +310,7 @@ constraint {
 name: home-db
 image: postgres:16
 region: home
-node: mac-mini-gaojiu
+node: mac-mini-home
 exposure: none
 volumes:
   - home_db_data:/var/lib/postgresql/data
@@ -325,7 +325,7 @@ constraint {
 }
 constraint {
   attribute = "${meta.luma_node_name}"
-  value     = "mac-mini-gaojiu"
+  value     = "mac-mini-home"
 }
 ```
 
@@ -462,12 +462,12 @@ relay:
 服务 manifest：
 
 ```yaml
-name: granary-db
+name: ledger-db
 image: mysql:8.4.9
 region: home
 node: lab
 exposure: tcp-relay
-domain: granary-db.itool.tech
+domain: ledger-db.example.net
 port: 3306
 publishPort: 3306
 replicas: 1

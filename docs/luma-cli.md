@@ -349,13 +349,13 @@ manager host first, then repeat without `--dry-run`:
 luma manager ip-change \
   --old 8.147.65.253 \
   --new 8.145.62.128 \
-  --domain luma.itool.tech \
+  --domain luma.example.net \
   --dry-run
 
 luma manager ip-change \
   --old 8.147.65.253 \
   --new 8.145.62.128 \
-  --domain luma.itool.tech
+  --domain luma.example.net
 ```
 
 The command validates the new address through HTTPS while preserving the

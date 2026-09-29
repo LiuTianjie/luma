@@ -10,7 +10,6 @@ ROOT = Path(__file__).resolve().parents[1]
 VERSION_FILES = [
     ROOT / "pyproject.toml",
     ROOT / "luma" / "__init__.py",
-    ROOT / "luma" / "assets" / "pyproject.toml",
 ]
 VERSION_REFERENCE_FILES = [
     ROOT / "README.md",
@@ -19,7 +18,6 @@ VERSION_REFERENCE_FILES = [
     ROOT / "docs" / "release.md",
     ROOT / "docs" / "how-to-use-luma.md",
     ROOT / "docs" / "compose-storage.md",
-    ROOT / "luma" / "assets" / "README.md",
     *sorted((ROOT / "luma" / "cli").glob("*.py")),
     ROOT / "skills" / "luma-deployment-yaml" / "SKILL.md",
     ROOT / "skills" / "luma-deployment-yaml" / "references" / "manifest-reference.md",

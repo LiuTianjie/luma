@@ -114,8 +114,8 @@ luma build local . --platform linux/amd64
   Docker daemon proxy after a pull failure.
 - Repository Import must support both single-service manifests and Compose deployments. If the repository has `luma.compose.yml`, build services declared with Compose `build:` blocks, rewrite those services to internal-registry `image:` references, then deploy through the normal Compose deployment path.
 - Prefer a dedicated Luma node named `builder` when available. Confirm it is `ready`, Linux, and advertises `docker-build` in `luma status` before using it.
-- Dashboard Repository Import should expose the dedicated `builder` node as the build/registry target. Other historical `docker-build` nodes such as `blg` should not appear in the main build-node dropdown unless the product explicitly adds an advanced override path.
-- Prefer a builder-hosted registry for internal image distribution. Both `registryHost` and `pushHost` must use the Builder Tailscale endpoint that is reachable from target nodes and from the BuildKit container, for example `100.66.177.70:5000`. Do not use `localhost:5000`: inside BuildKit that is the BuildKit container itself, and the old host-loopback endpoint is not part of the supported architecture. Re-check the live Builder IP before hardcoding it.
+- Dashboard Repository Import should expose the dedicated `builder` node as the build/registry target. Other historical `docker-build` nodes such as `home-2` should not appear in the main build-node dropdown unless the product explicitly adds an advanced override path.
+- Prefer a builder-hosted registry for internal image distribution. Both `registryHost` and `pushHost` must use the Builder Tailscale endpoint that is reachable from target nodes and from the BuildKit container, for example `100.64.0.70:5000`. Do not use `localhost:5000`: inside BuildKit that is the BuildKit container itself, and the old host-loopback endpoint is not part of the supported architecture. Re-check the live Builder IP before hardcoding it.
 - Start or refresh the registry on its deployment node with local storage; no storage class registration is required:
 
 ```bash

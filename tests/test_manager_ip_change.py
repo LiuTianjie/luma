@@ -23,7 +23,7 @@ def _config(path: Path) -> dict:
         "providers": {
             "dns": {
                 "type": "cloudflare",
-                "zone": "itool.tech",
+                "zone": "example.net",
                 "zoneId": "zone-id",
                 "apiTokenEnv": "CLOUDFLARE_API_TOKEN",
                 "edgeTarget": OLD_IP,
@@ -57,7 +57,7 @@ class FakeCloudflareClient:
                 "result": [
                     {
                         "id": "record-1",
-                        "name": "luma.itool.tech",
+                        "name": "luma.example.net",
                         "type": "A",
                         "content": OLD_IP,
                         "ttl": 300,
@@ -65,7 +65,7 @@ class FakeCloudflareClient:
                     },
                     {
                         "id": "record-2",
-                        "name": "app.itool.tech",
+                        "name": "app.example.net",
                         "type": "A",
                         "content": OLD_IP,
                         "ttl": 1,
@@ -91,7 +91,7 @@ class ManagerIpChangeTests(unittest.TestCase):
                 "--new",
                 NEW_IP,
                 "--domain",
-                "luma.itool.tech",
+                "luma.example.net",
                 "--dry-run",
             ]
         )
@@ -107,7 +107,7 @@ class ManagerIpChangeTests(unittest.TestCase):
             original = _config(path)
             path.write_text(yaml.safe_dump(original), encoding="utf-8")
             state = {
-                "domain": "luma.itool.tech",
+                "domain": "luma.example.net",
                 "secrets": {"CLOUDFLARE_API_TOKEN": "super-secret-token"},
                 "history": f"manager used to be {OLD_IP}",
             }
@@ -121,7 +121,7 @@ class ManagerIpChangeTests(unittest.TestCase):
                 result = manager_ip_change(
                     old_ip=OLD_IP,
                     new_ip=NEW_IP,
-                    domain="luma.itool.tech",
+                    domain="luma.example.net",
                     state=state,
                     config_path=path,
                     dry_run=True,
@@ -133,7 +133,7 @@ class ManagerIpChangeTests(unittest.TestCase):
             self.assertEqual(yaml.safe_load(path.read_text(encoding="utf-8")), original)
             self.assertEqual(state["history"], f"manager used to be {OLD_IP}")
             self.assertNotIn("super-secret-token", "\n".join(messages))
-            probe.assert_called_once_with("luma.itool.tech", NEW_IP)
+            probe.assert_called_once_with("luma.example.net", NEW_IP)
             install.assert_not_called()
             refresh.assert_not_called()
             self.assertFalse(
@@ -147,7 +147,7 @@ class ManagerIpChangeTests(unittest.TestCase):
             raw["notes"] = {"historicalIp": OLD_IP}
             path.write_text(yaml.safe_dump(raw), encoding="utf-8")
             state = {
-                "domain": "luma.itool.tech",
+                "domain": "luma.example.net",
                 "secrets": {"CLOUDFLARE_API_TOKEN": "super-secret-token"},
                 "history": f"do not rewrite {OLD_IP}",
             }
@@ -168,7 +168,7 @@ class ManagerIpChangeTests(unittest.TestCase):
                 result = manager_ip_change(
                     old_ip=OLD_IP,
                     new_ip=NEW_IP,
-                    domain="luma.itool.tech",
+                    domain="luma.example.net",
                     state=state,
                     config_path=path,
                     emit=lambda _: None,
@@ -216,8 +216,8 @@ class ManagerIpChangeTests(unittest.TestCase):
                 manager_ip_change(
                     old_ip=OLD_IP,
                     new_ip=NEW_IP,
-                    domain="other.itool.tech",
-                    state={"domain": "luma.itool.tech"},
+                    domain="other.example.net",
+                    state={"domain": "luma.example.net"},
                     config_path=path,
                     dry_run=True,
                     emit=lambda _: None,

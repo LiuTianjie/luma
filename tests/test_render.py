@@ -81,11 +81,11 @@ relay:
     def test_tcp_route_renders_publish_port_entrypoint(self):
         service = self.load_service(
             """
-name: granary-mysql
+name: ledger-mysql
 image: mysql:8
 region: home
 exposure: tcp-relay
-domain: granary-db.example.com
+domain: ledger-db.example.com
 port: 3306
 publishPort: 13306
 tcp:
@@ -93,8 +93,8 @@ tcp:
 """
         )
         rendered = yaml.safe_load(render_tcp_route(self.config(), service))
-        router = rendered["tcp"]["routers"]["granary-mysql"]
-        servers = rendered["tcp"]["services"]["granary-mysql"]["loadBalancer"]["servers"]
+        router = rendered["tcp"]["routers"]["ledger-mysql"]
+        servers = rendered["tcp"]["services"]["ledger-mysql"]["loadBalancer"]["servers"]
         self.assertEqual(router["entryPoints"], ["tcp-13306"])
         self.assertEqual(servers, [{"address": "100.64.0.20:3306"}])
 
@@ -119,14 +119,14 @@ region: cn
             (root / "luma.compose.yml").write_text(
                 yaml.safe_dump(
                     {
-                        "name": "granary",
+                        "name": "ledger",
                         "compose": "docker-compose.yml",
                         "region": "home",
                         "services": {
                             "mysql": {
                                 "region": "home",
                                 "exposure": "tcp-relay",
-                                "domain": "granary-db.example.com",
+                                "domain": "ledger-db.example.com",
                                 "port": 3306,
                                 "publishPort": 3306,
                                 "tcp": {"address": "100.64.0.20:3306"},
@@ -140,7 +140,7 @@ region: cn
             routes = render_compose_routes(self.config(), deployment)
         route = yaml.safe_load(routes["mysql"])
         self.assertEqual(
-            route["tcp"]["services"]["granary-mysql"]["loadBalancer"]["servers"],
+            route["tcp"]["services"]["ledger-mysql"]["loadBalancer"]["servers"],
             [{"address": "100.64.0.20:3306"}],
         )
 

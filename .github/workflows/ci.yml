@@ -39,3 +39,24 @@ jobs:
 
       - name: Validate sources
         run: bash scripts/check-luma.sh
+
+  runtime-python39:
+    # Home nodes may self-update with macOS's system Python 3.9. The test suite
+    # needs 3.10+, so this job checks that the package installs and runs on 3.9.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Install and smoke-test the CLI
+        run: |
+          python -m pip install .
+          python -m compileall -q luma
+          luma --version
+          python -m luma.cli node-agent run --help > /dev/null
+          bash scripts/validate-stacks.sh

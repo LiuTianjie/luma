@@ -168,7 +168,7 @@ def install_nomad_commands(
 
     Pure/testable: returns {download_url, config, service_kind, service_unit}.
     The caller writes/executes them with sudo. Mirrors the steps validated by
-    hand on aly (linux/systemd) and gaojiu (darwin/launchd) during migration.
+    hand on Linux (systemd) and macOS (launchd) nodes.
     """
     if os_name == "darwin":
         plat = f"darwin_{_nomad_arch(arch)}"

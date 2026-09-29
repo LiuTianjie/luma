@@ -12,7 +12,7 @@ class LogShipperTests(unittest.TestCase):
     def _source(self, **values):
         return self.mod.Source(
             alloc=values.get("alloc", "alloc-1"),
-            job=values.get("job", "granary"),
+            job=values.get("job", "ledger"),
             task=values.get("task", "web"),
             task_group=values.get("task_group", "web"),
             stream=values.get("stream", "stdout"),
@@ -48,7 +48,7 @@ class LogShipperTests(unittest.TestCase):
             list_allocs=lambda: [
                 {
                     "ID": "alloc-1",
-                    "JobID": "granary",
+                    "JobID": "ledger",
                     "TaskGroup": "web",
                     "ClientStatus": "running",
                     "NodeName": "worker",
@@ -72,7 +72,7 @@ class LogShipperTests(unittest.TestCase):
             list_allocs=lambda: [
                 {
                     "ID": "alloc-1",
-                    "JobID": "granary",
+                    "JobID": "ledger",
                     "TaskGroup": "web",
                     "ClientStatus": "running",
                     "TaskStates": {"web": {}},
@@ -120,7 +120,7 @@ class LogShipperTests(unittest.TestCase):
             list_allocs=lambda: [
                 {
                     "ID": "alloc-1",
-                    "JobID": "granary",
+                    "JobID": "ledger",
                     "TaskGroup": "web",
                     "ClientStatus": "running",
                     "TaskStates": {"web": {}},
@@ -166,7 +166,7 @@ class LogShipperTests(unittest.TestCase):
 
     def test_traefik_json_stays_raw_in_msg(self):
         source = self._source(job="traefik", task="traefik")
-        raw = '{"RequestHost":"itool.tech","DownstreamStatus":200}'
+        raw = '{"RequestHost":"example.net","DownstreamStatus":200}'
         rows = self.mod.records_for(source, [raw], "2026-09-10T14:00:00.000Z")
         self.assertEqual(rows[0]["_msg"], raw)
         self.assertEqual(rows[0]["app"], "traefik")
@@ -183,7 +183,7 @@ class LogShipperHttpErrorTests(unittest.TestCase):
             list_allocs=lambda: [
                 {
                     "ID": "alloc-1",
-                    "JobID": "granary",
+                    "JobID": "ledger",
                     "ClientStatus": "running",
                     "TaskStates": {"web": {}},
                 }

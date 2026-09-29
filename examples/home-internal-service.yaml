@@ -1,8 +1,0 @@
-name: backup-job
-image: ghcr.io/your-org/backup-job:latest
-region: home
-exposure: none
-replicas: 1
-requirements:
-  capabilities: [tailscale]
-  init: [tailscale-node]

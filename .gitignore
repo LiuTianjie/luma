@@ -27,3 +27,7 @@ _site/
 # Local investigation notes and audit artifacts
 /.local-notes/
 /docs/research/
+
+# Python packaging output
+/build/
+/dist/

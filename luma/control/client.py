@@ -11,7 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, BinaryIO, Dict, Iterator
+from typing import Any, Dict, Iterator
 
 from ..errors import ControlRequestError, LumaError
 from ..repo_paths import normalize_repo_relative_path

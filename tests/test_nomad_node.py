@@ -10,8 +10,8 @@ class DetectTests(unittest.TestCase):
         self.assertEqual(nn.detect_os("Linux"), "linux")
 
     def test_tailscale_ip_picks_ipv4(self):
-        ip = nn.detect_tailscale_ip(run=lambda cmd: "100.115.5.84\n")
-        self.assertEqual(ip, "100.115.5.84")
+        ip = nn.detect_tailscale_ip(run=lambda cmd: "100.64.0.3\n")
+        self.assertEqual(ip, "100.64.0.3")
 
     def test_tailscale_ip_none_when_unavailable(self):
         self.assertIsNone(nn.detect_tailscale_ip(run=lambda cmd: None))
@@ -36,7 +36,7 @@ class DetectTests(unittest.TestCase):
 class RenderConfigTests(unittest.TestCase):
     def test_server_config_has_server_block_and_bind_all(self):
         cfg = nn.render_agent_config(
-            os_name="linux", role="server", tailscale_ip="100.113.204.125",
+            os_name="linux", role="server", tailscale_ip="100.64.0.125",
             region="cn", node_name="manager-1",
             extra_meta={"ingress": "true", "egress": "true"},
         )
@@ -44,9 +44,9 @@ class RenderConfigTests(unittest.TestCase):
         # we hit binding only the Tailscale IP).
         self.assertIn('bind_addr = "0.0.0.0"', cfg)
         self.assertIn("bootstrap_expect = 1", cfg)
-        self.assertIn('http = "100.113.204.125"', cfg)
+        self.assertIn('http = "100.64.0.125"', cfg)
         self.assertIn('region         = "cn"', cfg)
-        self.assertIn('luma_tailscale_ip = "100.113.204.125"', cfg)
+        self.assertIn('luma_tailscale_ip = "100.64.0.125"', cfg)
         self.assertIn('ingress = "true"', cfg)
         # volumes enabled — core components use host bind mounts.
         self.assertIn("volumes {", cfg)
@@ -58,18 +58,18 @@ class RenderConfigTests(unittest.TestCase):
         cfg = nn.render_agent_config(
             os_name="linux", role="client", tailscale_ip="100.69.154.50",
             region="home", node_name="lab",
-            server_addrs=["100.113.204.125:4647"],
+            server_addrs=["100.64.0.125:4647"],
         )
         self.assertIn("server_join {", cfg)
-        self.assertIn('retry_join = ["100.113.204.125:4647"]', cfg)
+        self.assertIn('retry_join = ["100.64.0.125:4647"]', cfg)
         self.assertIn('luma_tailscale_ip = "100.69.154.50"', cfg)
         self.assertNotIn("bootstrap_expect", cfg)
 
     def test_darwin_client_includes_cpu_override(self):
         cfg = nn.render_agent_config(
-            os_name="darwin", role="client", tailscale_ip="100.115.5.84",
+            os_name="darwin", role="client", tailscale_ip="100.64.0.3",
             region="home", node_name="home-mac-mini",
-            server_addrs=["100.113.204.125:4647"],
+            server_addrs=["100.64.0.125:4647"],
             cpu_total_compute=30000,
         )
         self.assertIn("cpu_total_compute = 30000", cfg)
@@ -118,7 +118,7 @@ class InstallCommandTests(unittest.TestCase):
             role="client",
             tailscale_ip="100.1.1.1",
             region="home",
-            node_name="blg",
+            node_name="home-2",
             server_addrs=["100.2.2.2:4647"],
         )
 

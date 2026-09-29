@@ -1611,7 +1611,7 @@ arguments:
   --default-node DEFAULT_NODE
                         Default builder node for luma import
   --registry-host REGISTRY_HOST
-                        Registry host that target nodes pull from, for example 100.66.177.70:5000
+                        Registry host that target nodes pull from, for example 100.64.0.70:5000
   --push-host PUSH_HOST
                         Registry host BuildKit pushes to; use the builder Tailscale endpoint, not
                         localhost:5000

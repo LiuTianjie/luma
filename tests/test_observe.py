@@ -141,26 +141,26 @@ class NomadExporterTests(unittest.TestCase):
         exporter = load_observe("nomad_exporter.py", "nomad_exporter")
         jobs = [
             {
-                "ID": "granary",
-                "Name": "granary",
+                "ID": "ledger",
+                "Name": "ledger",
                 "Status": "running",
                 "Meta": {"luma.managed": "true", "luma.compose": "true"},
-                "JobSummary": {"Summary": {"granary": {"Running": 1, "Failed": 21, "Queued": 0}}},
+                "JobSummary": {"Summary": {"ledger": {"Running": 1, "Failed": 21, "Queued": 0}}},
             }
         ]
         allocations = [
             {
                 "ID": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-                "JobID": "granary",
-                "TaskGroup": "granary",
+                "JobID": "ledger",
+                "TaskGroup": "ledger",
                 "ClientStatus": "running",
                 "DesiredStatus": "run",
                 "TaskStates": {"app": {"Restarts": 6}, "mysql": {"Restarts": 0}},
             },
             {
                 "ID": "bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee",
-                "JobID": "granary",
-                "TaskGroup": "granary",
+                "JobID": "ledger",
+                "TaskGroup": "ledger",
                 "ClientStatus": "failed",
                 "DesiredStatus": "stop",
                 "TaskStates": {"app": {"Restarts": 3}},
@@ -179,13 +179,13 @@ class NomadExporterTests(unittest.TestCase):
         with patch.object(exporter, "fetch_json", side_effect=fake_fetch):
             text = exporter.collect("http://127.0.0.1:4646", "", routes_dir=Path("/tmp/missing-luma-routes"))
         self.assertIn("luma_observe_nomad_up 1", text)
-        self.assertIn('luma_observe_job_failed{app="granary",job="granary",task_group="granary"} 0', text)
-        self.assertIn('luma_observe_job_running{app="granary",job="granary",task_group="granary"} 1', text)
-        self.assertIn('luma_observe_job_active{app="granary",job="granary",task_group="granary"} 1', text)
-        self.assertIn('luma_observe_allocs{app="granary",job="granary",task_group="granary",status="failed"} 1', text)
-        self.assertIn('luma_observe_alloc_restarts{app="granary",job="granary",task_group="granary",alloc="aaaaaaaa",task="app"} 6', text)
-        self.assertIn('luma_observe_router_app{app="granary",service="app",router="granary-app@nomad"} 1', text)
-        self.assertIn('luma_observe_router_app{app="granary",service="granary",router="granary@nomad"} 1', text)
+        self.assertIn('luma_observe_job_failed{app="ledger",job="ledger",task_group="ledger"} 0', text)
+        self.assertIn('luma_observe_job_running{app="ledger",job="ledger",task_group="ledger"} 1', text)
+        self.assertIn('luma_observe_job_active{app="ledger",job="ledger",task_group="ledger"} 1', text)
+        self.assertIn('luma_observe_allocs{app="ledger",job="ledger",task_group="ledger",status="failed"} 1', text)
+        self.assertIn('luma_observe_alloc_restarts{app="ledger",job="ledger",task_group="ledger",alloc="aaaaaaaa",task="app"} 6', text)
+        self.assertIn('luma_observe_router_app{app="ledger",service="app",router="ledger-app@nomad"} 1', text)
+        self.assertIn('luma_observe_router_app{app="ledger",service="ledger",router="ledger@nomad"} 1', text)
         self.assertNotIn('alloc="bbbbbbbb"', text)
 
     def test_current_failed_counts_desired_run_only(self):
@@ -412,7 +412,7 @@ class ObserveTraceStackTests(unittest.TestCase):
         text = (ROOT / "observe" / "docker-compose.yml").read_text(encoding="utf-8")
         self.assertIn('GF_USERS_VIEWERS_CAN_EDIT: "true"', text)
         self.assertIn('GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"', text)
-        self.assertNotIn("itool.tech", text)
+        self.assertNotIn("example.net", text)
         self.assertNotIn("GF_SERVER_DOMAIN", text)
         self.assertNotIn("GF_SERVER_ROOT_URL", text)
 
@@ -420,8 +420,8 @@ class ObserveTraceStackTests(unittest.TestCase):
 class GrafanaRouteTests(unittest.TestCase):
     def test_grafana_route_is_on_the_control_domain(self):
         from luma.observe_grafana import grafana_route_yaml
-        text = grafana_route_yaml("luma.itool.tech")
-        self.assertIn("Host(`luma.itool.tech`) && PathPrefix(`/grafana`)", text)
+        text = grafana_route_yaml("luma.example.net")
+        self.assertIn("Host(`luma.example.net`) && PathPrefix(`/grafana`)", text)
         self.assertIn("priority: 1000", text)
         self.assertIn("url: http://127.0.0.1:3100", text)
         self.assertNotIn("100.106.154.3:3000", text)

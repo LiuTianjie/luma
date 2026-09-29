@@ -5,6 +5,7 @@ import gzip
 import json
 import tempfile
 import unittest
+from typing import Any
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace

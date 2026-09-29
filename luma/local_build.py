@@ -206,9 +206,6 @@ def build_and_push_local_source(
                 payload["platform"] = platform
             if selected_sidecar:
                 payload["composeSidecar"] = selected_sidecar
-            local_env = _buildx_environment(
-                docker_config, buildx_config_root=user_buildx_root
-            )
             # The default Docker-context builder commonly uses the ``docker``
             # driver. Its image exporter delegates pushes to the host daemon,
             # which may upgrade Luma's tailnet HTTP registry to HTTPS even

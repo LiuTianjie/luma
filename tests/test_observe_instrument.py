@@ -19,12 +19,12 @@ class ObserveInstrumentTests(unittest.TestCase):
             "worker": {"tailscaleIP": "100.1.1.1"},
             "manager": {
                 "status": "manager",
-                "tailscaleIP": "100.66.177.70",
+                "tailscaleIP": "100.64.0.70",
                 "labels": {"role.nomad-manager": "true"},
             },
         })
-        self.assertEqual(ip, "100.66.177.70")
-        self.assertEqual(otlp_mesh_endpoint(ip), "http://100.66.177.70:4319")
+        self.assertEqual(ip, "100.64.0.70")
+        self.assertEqual(otlp_mesh_endpoint(ip), "http://100.64.0.70:4319")
 
     def test_apply_env_injects_collector_vars_for_observe_stack(self):
         env = apply_env(
@@ -32,10 +32,10 @@ class ObserveInstrumentTests(unittest.TestCase):
             stack=OBSERVE_STACK,
             task="collector",
             region="cn",
-            observe_otlp={"token": "observe-token-observe-token-observe", "mesh_bind": "100.66.177.70"},
+            observe_otlp={"token": "observe-token-observe-token-observe", "mesh_bind": "100.64.0.70"},
         )
         self.assertEqual(env["LUMA_OTLP_TOKEN"], "observe-token-observe-token-observe")
-        self.assertEqual(env["LUMA_OTLP_MESH_BIND"], "100.66.177.70")
+        self.assertEqual(env["LUMA_OTLP_MESH_BIND"], "100.64.0.70")
         self.assertNotIn("OTEL_EXPORTER_OTLP_ENDPOINT", env)
         self.assertNotIn("GF_SERVER_DOMAIN", env)
 
@@ -47,7 +47,7 @@ class ObserveInstrumentTests(unittest.TestCase):
             region="cn",
             observe_otlp={
                 "token": "observe-token-observe-token-observe",
-                "mesh_bind": "100.66.177.70",
+                "mesh_bind": "100.64.0.70",
                 "grafana_domain": "luma.example.com",
             },
         )
@@ -57,13 +57,13 @@ class ObserveInstrumentTests(unittest.TestCase):
     def test_apply_env_does_not_override_app_endpoint(self):
         env = apply_env(
             {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318"},
-            stack="granary",
+            stack="ledger",
             task="web",
             region="cn",
             observe_otlp={
                 "token": "observe-token-observe-token-observe",
-                "mesh_bind": "100.66.177.70",
-                "endpoint": "http://100.66.177.70:4319",
+                "mesh_bind": "100.64.0.70",
+                "endpoint": "http://100.64.0.70:4319",
             },
         )
         self.assertEqual(env["OTEL_EXPORTER_OTLP_ENDPOINT"], "http://127.0.0.1:4318")
@@ -80,15 +80,15 @@ class ObserveInstrumentTests(unittest.TestCase):
             resolve_secrets=False,
             observe_otlp={
                 "token": "observe-token-observe-token-observe",
-                "mesh_bind": "100.66.177.70",
-                "endpoint": "http://100.66.177.70:4319",
+                "mesh_bind": "100.64.0.70",
+                "endpoint": "http://100.64.0.70:4319",
                 "grafana_domain": "luma.example.com",
             },
         )["Job"]
         names = {task["Name"] for task in job["TaskGroups"][0]["Tasks"]}
         self.assertIn("tempo", names)
         collector = next(task for task in job["TaskGroups"][0]["Tasks"] if task["Name"] == "collector")
-        self.assertEqual(collector["Env"]["LUMA_OTLP_MESH_BIND"], "100.66.177.70")
+        self.assertEqual(collector["Env"]["LUMA_OTLP_MESH_BIND"], "100.64.0.70")
         grafana = next(task for task in job["TaskGroups"][0]["Tasks"] if task["Name"] == "grafana")
         self.assertEqual(grafana["Env"]["GF_SERVER_DOMAIN"], "luma.example.com")
         self.assertEqual(grafana["Env"]["GF_SERVER_ROOT_URL"], "https://luma.example.com/grafana")
@@ -142,12 +142,12 @@ exposure: none
             as_json=False,
             observe_otlp={
                 "token": "observe-token-observe-token-observe",
-                "mesh_bind": "100.66.177.70",
-                "endpoint": "http://100.66.177.70:4319",
+                "mesh_bind": "100.64.0.70",
+                "endpoint": "http://100.64.0.70:4319",
             },
         )["Job"]
         env = job["TaskGroups"][0]["Tasks"][0]["Env"]
-        self.assertEqual(env["OTEL_EXPORTER_OTLP_ENDPOINT"], "http://100.66.177.70:4319")
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_ENDPOINT"], "http://100.64.0.70:4319")
         self.assertEqual(env["OTEL_SERVICE_NAME"], "demo")
         self.assertEqual(env["OTEL_TRACES_SAMPLER"], "parentbased_always_on")
         self.assertEqual(env["OTEL_LOGS_EXPORTER"], "none")

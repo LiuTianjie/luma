@@ -275,7 +275,7 @@ class ImportComposeSidecarTests(unittest.TestCase):
                     "builder": {
                         "name": "builder",
                         "region": "home",
-                        "tailscaleIP": "100.66.177.70",
+                        "tailscaleIP": "100.64.0.70",
                         "agent": {
                             "status": "ready",
                             "os": "linux",
@@ -285,7 +285,7 @@ class ImportComposeSidecarTests(unittest.TestCase):
                 }
                 state["build"] = {
                     "defaultNode": "builder",
-                    "registryHost": "100.66.177.70:5000",
+                    "registryHost": "100.64.0.70:5000",
                     "pushHost": "localhost:5000",
                 }
                 save_state(state)

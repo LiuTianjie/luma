@@ -570,47 +570,47 @@ class NomadApiTests(unittest.TestCase):
         responses = {
             "GET /v1/jobs": [
                 {
-                    "ID": "granary",
-                    "Name": "granary",
+                    "ID": "ledger",
+                    "Name": "ledger",
                     "Type": "service",
                     "Status": "running",
                     "Meta": {"luma.region": "home", "luma.compose": "true"},
-                    "JobSummary": {"Summary": {"granary": {"Running": 1, "Failed": 13}}},
+                    "JobSummary": {"Summary": {"ledger": {"Running": 1, "Failed": 13}}},
                 }
             ],
-            "GET /v1/job/granary": {
-                "ID": "granary",
+            "GET /v1/job/ledger": {
+                "ID": "ledger",
                 "Meta": {"luma.region": "home", "luma.compose": "true"},
                 "TaskGroups": [
                     {
-                        "Name": "granary",
+                        "Name": "ledger",
                         "Count": 1,
                         "Networks": [{"ReservedPorts": [{"Label": "mysql", "Value": 3306, "To": 3306}]}],
                         "Tasks": [
                             {"Name": "mysql", "Config": {"image": "mysql:8", "ports": ["mysql"]}, "Resources": {"CPU": 100, "MemoryMB": 256}},
-                            {"Name": "granary", "Config": {"image": "granary:latest"}, "Resources": {"CPU": 100, "MemoryMB": 256}},
+                            {"Name": "ledger", "Config": {"image": "ledger:latest"}, "Resources": {"CPU": 100, "MemoryMB": 256}},
                         ],
                     }
                 ],
             },
-            "GET /v1/job/granary/allocations": [
+            "GET /v1/job/ledger/allocations": [
                 {
                     "ID": "alloc-1",
-                    "JobID": "granary",
-                    "TaskGroup": "granary",
+                    "JobID": "ledger",
+                    "TaskGroup": "ledger",
                     "DesiredStatus": "run",
                     "ClientStatus": "running",
                     "NodeName": "lab",
-                    "TaskStates": {"mysql": {"State": "running"}, "granary": {"State": "running"}},
+                    "TaskStates": {"mysql": {"State": "running"}, "ledger": {"State": "running"}},
                 },
                 {
                     "ID": "alloc-old",
-                    "JobID": "granary",
-                    "TaskGroup": "granary",
+                    "JobID": "ledger",
+                    "TaskGroup": "ledger",
                     "DesiredStatus": "stop",
                     "ClientStatus": "failed",
                     "NodeName": "lab",
-                    "TaskStates": {"mysql": {"State": "dead", "Failed": True}, "granary": {"State": "dead", "Failed": True}},
+                    "TaskStates": {"mysql": {"State": "dead", "Failed": True}, "ledger": {"State": "dead", "Failed": True}},
                 },
             ],
         }
@@ -620,13 +620,13 @@ class NomadApiTests(unittest.TestCase):
         self.assertEqual(len(services), 1)
         self.assertTrue(services[0]["compose"])
         tasks = {item["name"]: item for item in services[0]["tasks"]}
-        self.assertEqual(tasks["mysql"]["fullName"], "granary_mysql")
+        self.assertEqual(tasks["mysql"]["fullName"], "ledger_mysql")
         self.assertEqual(tasks["mysql"]["targetPort"], "3306")
         self.assertEqual(tasks["mysql"]["nodes"], ["lab"])
         self.assertEqual(tasks["mysql"]["status"], "running")
         self.assertEqual(tasks["mysql"]["failed"], 0)
         self.assertEqual([row["id"] for row in tasks["mysql"]["tasks"]], ["alloc-1"])
-        self.assertEqual(tasks["granary"]["fullName"], "granary_granary")
+        self.assertEqual(tasks["ledger"]["fullName"], "ledger_ledger")
 
 
     def test_rescheduled_recovered_service_reports_running_not_failed(self):

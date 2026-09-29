@@ -39,7 +39,7 @@ class LocalBuildWorkflowTests(unittest.TestCase):
         state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
         state["build"] = {
             "defaultNode": "builder",
-            "registryHost": "100.66.177.70:5000",
+            "registryHost": "100.64.0.70:5000",
             "pushHost": "localhost:5000",
         }
         state["nodes"] = {
@@ -342,7 +342,7 @@ class LocalBuildWorkflowTests(unittest.TestCase):
                 {
                     "buildResult": {
                         "kind": "service",
-                        "image": "100.66.177.70:5000/other/app:bad",
+                        "image": "100.64.0.70:5000/other/app:bad",
                         "manifest": "name: app\nregion: cn\nexposure: none\n",
                     }
                 },

@@ -907,7 +907,7 @@ def _network(service: ServiceSpec) -> tuple[Dict[str, Any] | None, str | None]:
 
     On Linux nodes, manifests can opt into real port mapping by setting
     publishPort. That renders a bridge network with a ReservedPort mapping
-    publishPort -> port, matching the current production path for lab/aly.
+    publishPort -> port.
 
     Edge services keep a Nomad-managed port for Traefik nomad-provider discovery.
     """

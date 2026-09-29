@@ -136,11 +136,11 @@ builder capability: docker-build
 builder capability: runtime-image-cache-v1
 registry service: luma-registry pinned on builder
 registryHost: <builder-tailscale-ip>:5000
-pushHost: 100.66.177.70:5000
+pushHost: 100.64.0.70:5000
 target Linux nodes: insecure-registry + Docker daemon NO_PROXY configured
 ```
 
-For the user's current cluster, `builder` has been used as the intended build+registry node and has been observed at `100.66.177.70:5000`; always re-check live status before relying on that exact IP.
+For the user's current cluster, `builder` has been used as the intended build+registry node and has been observed at `100.64.0.70:5000`; always re-check live status before relying on that exact IP.
 
 ### Setup Or Refresh
 

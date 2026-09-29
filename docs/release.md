@@ -147,10 +147,10 @@ SHORT_SHA="$(printf '%s' "$FULL_SHA" | cut -c1-7)"
 CONTROL_IMAGE="ghcr.io/liutianjie/luma-control:sha-$SHORT_SHA"
 
 export LUMA_CONTROL_IMAGE="$CONTROL_IMAGE"
-luma update manager --install-ref "$FULL_SHA" --domain luma.itool.tech
+luma update manager --install-ref "$FULL_SHA" --domain luma.example.net
 
-luma version --control-url https://luma.itool.tech
-curl --fail --silent --show-error https://luma.itool.tech/v1/health
+luma version --control-url https://luma.example.net
+curl --fail --silent --show-error https://luma.example.net/v1/health
 nomad job status luma-control
 ```
 
@@ -168,7 +168,7 @@ unhealthy, restore the prior Nomad job immediately:
 ```bash
 nomad job revert luma-control "$PREVIOUS_JOB_VERSION"
 nomad job status luma-control
-curl --fail --silent --show-error https://luma.itool.tech/v1/health
+curl --fail --silent --show-error https://luma.example.net/v1/health
 ```
 
 That first rollback restores the Control job spec; it does not restore the
@@ -178,7 +178,7 @@ recorded release:
 ```bash
 PREVIOUS_INSTALL_REF=<known-good-tag-or-40-character-commit>
 export LUMA_CONTROL_IMAGE="$PREVIOUS_CONTROL_IMAGE"
-luma update manager --install-ref "$PREVIOUS_INSTALL_REF" --domain luma.itool.tech
+luma update manager --install-ref "$PREVIOUS_INSTALL_REF" --domain luma.example.net
 ```
 
 If the candidate CLI itself cannot run the rollback, reinstall the known-good
@@ -189,7 +189,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
   LUMA_INSTALL_REF="$PREVIOUS_INSTALL_REF" sh
 export LUMA_CONTROL_IMAGE="$PREVIOUS_CONTROL_IMAGE"
 ~/.local/bin/luma update manager --install-ref "$PREVIOUS_INSTALL_REF" \
-  --domain luma.itool.tech
+  --domain luma.example.net
 ```
 
 4. Configure PyPI Trusted Publishing once for the `luma-infra` project:

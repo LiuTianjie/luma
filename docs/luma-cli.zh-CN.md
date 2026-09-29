@@ -324,13 +324,13 @@ Manager 的 `/opt/luma/control` 仅 root 可访问。运维账户无免密 sudo 
 luma manager ip-change \
   --old 8.147.65.253 \
   --new 8.145.62.128 \
-  --domain luma.itool.tech \
+  --domain luma.example.net \
   --dry-run
 
 luma manager ip-change \
   --old 8.147.65.253 \
   --new 8.145.62.128 \
-  --domain luma.itool.tech
+  --domain luma.example.net
 ```
 
 命令通过 HTTPS 验证新地址，并保留 Control 主机名用于 SNI 和证书检查。只修改 Manager 节点 `publicIp`、`providers.dns.edgeTarget`，以及内容精确等于旧地址的 Cloudflare A 记录。备份 `luma.yaml`，复用运行中 `luma-control` Nomad job 的镜像，协调控制面，不重装 CLI 或重新部署用户应用。不会全局替换 Control 状态，历史事件内容不变。操作幂等，可重新执行以完成 Cloudflare 部分失败遗留的记录。

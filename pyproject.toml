@@ -23,6 +23,7 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Software Development :: Build Tools",
   "Topic :: System :: Systems Administration",
 ]
@@ -37,6 +38,7 @@ dependencies = [
 [project.optional-dependencies]
 test = [
   "httpx2>=2.4.0",
+  "ruff>=0.6",
 ]
 
 [project.urls]
@@ -53,8 +55,14 @@ include = ["luma*"]
 
 [tool.setuptools.package-data]
 luma = [
-  "assets/Dockerfile.control",
-  "assets/README.md",
-  "assets/pyproject.toml",
   "assets/dashboard/*",
 ]
+
+[tool.ruff]
+# The runtime supports Python 3.9 (macOS system Python on home nodes).
+target-version = "py39"
+extend-exclude = ["dashboard-src", "site", "node_modules", "luma/assets"]
+
+[tool.ruff.lint]
+# Correctness only: undefined names, unused imports/variables, syntax errors.
+select = ["F", "E9"]

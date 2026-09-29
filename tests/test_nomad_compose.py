@@ -37,7 +37,7 @@ services:
     image: mysql:8.4.9
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_PW}
-      MYSQL_DATABASE: granary
+      MYSQL_DATABASE: ledger
     volumes:
       - mysql_data:/var/lib/mysql
     deploy:
@@ -47,20 +47,20 @@ services:
   app:
     image: registry.example.com/app:latest
     environment:
-      DSN: root:${DB_PW}@tcp(mysql:3306)/granary
+      DSN: root:${DB_PW}@tcp(mysql:3306)/ledger
 volumes:
   mysql_data:
 """
 
 GRANARY_SIDECAR = """
-name: granary
+name: ledger
 compose: docker-compose.yml
 region: home
 services:
   mysql:
     node: lab
     exposure: tcp-relay
-    domain: granary-db.example.com
+    domain: ledger-db.example.com
     port: 3306
     publishPort: 3306
   app:
@@ -76,60 +76,60 @@ services:
   mysql:
     image: mysql:8.4.9@sha256:c36050afdca850f23cef85703f84c7531a5ae155a11b5ee1c60acb09937c4084
     environment:
-      MYSQL_DATABASE: granary
+      MYSQL_DATABASE: ledger
       MYSQL_ROOT_PASSWORD: ${GRANARY_MYSQL_ROOT_PASSWORD}
       TZ: Asia/Shanghai
     volumes:
-      - granary_mysql_data:/var/lib/mysql
+      - ledger_mysql_data:/var/lib/mysql
     deploy:
       resources:
         limits: { cpus: "0.50", memory: 512M }
         reservations: { cpus: "0.10", memory: 256M }
-  granary:
-    image: gcode.gaojiua.com:3000/gaojiuatech/granary:latest
+  ledger:
+    image: gcode.gaojiua.com:3000/gaojiuatech/ledger:latest
     environment:
       GRANARY_ADMIN_EMAIL: admin@gaojiua.com
       GRANARY_ADMIN_PASSWORD: ${GRANARY_ADMIN_PASSWORD}
       GRANARY_JWT_SECRET: ${GRANARY_JWT_SECRET}
-      GRANARY_MYSQL_DSN: root:${GRANARY_MYSQL_ROOT_PASSWORD}@tcp(mysql:3306)/granary?charset=utf8mb4&parseTime=true&loc=Local
+      GRANARY_MYSQL_DSN: root:${GRANARY_MYSQL_ROOT_PASSWORD}@tcp(mysql:3306)/ledger?charset=utf8mb4&parseTime=true&loc=Local
       TZ: Asia/Shanghai
-  granary-frontend:
-    image: gcode.gaojiua.com:3000/gaojiuatech/granary-frontend:latest
+  ledger-frontend:
+    image: gcode.gaojiua.com:3000/gaojiuatech/ledger-frontend:latest
   adminer:
     image: adminer:4.8.1
     environment:
       ADMINER_DEFAULT_SERVER: mysql
 volumes:
-  granary_mysql_data:
+  ledger_mysql_data:
 """
 
 REAL_GRANARY_SIDECAR = """
-name: granary
+name: ledger
 compose: docker-compose.yml
 region: home
 services:
   mysql:
     node: lab
     exposure: tcp-relay
-    domain: granary-db.itool.tech
+    domain: ledger-db.example.net
     port: 3306
     publishPort: 3306
-  granary:
+  ledger:
     node: lab
     exposure: tailscale-relay
-    domain: api-granary.itool.tech
+    domain: api-ledger.example.net
     port: 8888
     publishPort: 8888
-  granary-frontend:
+  ledger-frontend:
     node: lab
     exposure: tailscale-relay
-    domain: granary.itool.tech
+    domain: ledger.example.net
     port: 80
     publishPort: 8081
   adminer:
     node: lab
     exposure: tailscale-relay
-    domain: granary-db.itool.tech
+    domain: ledger-db.example.net
     port: 8080
     publishPort: 8080
 """
@@ -180,7 +180,7 @@ services:
 
     def test_multi_service_single_group(self):
         job = self.render()
-        self.assertEqual(job["ID"], "granary")
+        self.assertEqual(job["ID"], "ledger")
         groups = job["TaskGroups"]
         self.assertEqual(len(groups), 1)  # one group so tasks share netns
         names = {t["Name"] for t in groups[0]["Tasks"]}
@@ -301,7 +301,7 @@ storageClasses:
   remote-backups:
     provider: nfs
     mode: managed
-    node: tecent
+    node: cn-2
     path: /srv/luma-backups
     regions: [cn]
     nodes: [manager]
@@ -322,7 +322,7 @@ services:
             deployment,
             as_json=False,
             node_records={
-                "tecent": {
+                "cn-2": {
                     "hostname": "VM-0-10-ubuntu",
                     "region": "cn",
                     "tailscaleIP": "100.64.29.91",
@@ -333,7 +333,7 @@ services:
         mount = job["TaskGroups"][0]["Tasks"][0]["Config"]["mount"][0]
         options = mount["volume_options"]["driver_config"]["options"][0]
         self.assertIn("addr=100.64.29.91", options["o"])
-        self.assertNotIn("addr=tecent", options["o"])
+        self.assertNotIn("addr=cn-2", options["o"])
         self.assertNotIn("addr=VM-0-10-ubuntu", options["o"])
 
     def test_all_internal_multi_service_gets_shared_netns_bridge(self):
@@ -444,14 +444,14 @@ compose: docker-compose.yml
 region: cn
 services:
   web:
-    node: tecent
+    node: cn-2
     exposure: cn-edge
     domain: web.example.com
     port: 3000
 """
         dep = write_deployment(sidecar, compose)
         job = render_compose_job(
-            cfg({"nodes": {"tecent": {"host": "tecent", "tailscaleIP": "100.64.29.91"}}}),
+            cfg({"nodes": {"cn-2": {"host": "cn-2", "tailscaleIP": "100.64.29.91"}}}),
             dep,
             as_json=False,
         )["Job"]
@@ -659,7 +659,7 @@ services:
     image: registry.example.com/app:latest
 """
         sidecar = """
-name: granary
+name: ledger
 compose: docker-compose.yml
 region: home
 services:
@@ -685,7 +685,7 @@ services:
       - "/var/lib/mysql:"
 """
         sidecar = """
-name: granary
+name: ledger
 compose: docker-compose.yml
 region: home
 services:
@@ -711,7 +711,7 @@ services:
       - /var/lib/mysql
 """
         sidecar = """
-name: granary
+name: ledger
 compose: docker-compose.yml
 region: home
 services:
@@ -744,7 +744,7 @@ services:
         read_only: true
 """
         sidecar = """
-name: granary
+name: ledger
 compose: docker-compose.yml
 region: home
 services:
@@ -778,7 +778,7 @@ services:
         target: /var/lib/mysql
 """
         sidecar = """
-name: granary
+name: ledger
 compose: docker-compose.yml
 region: home
 services:
@@ -803,7 +803,7 @@ services:
     def test_resolve_env_passthrough_non_secret(self):
         self.assertEqual(_resolve_env_value("plain-value"), "plain-value")
 
-    def test_real_granary_shape_renders_ports_volume_and_private_auth(self):
+    def test_real_ledger_shape_renders_ports_volume_and_private_auth(self):
         dep = write_deployment(REAL_GRANARY_SIDECAR, REAL_GRANARY_COMPOSE)
         auth = {"username": "deploy", "password": "token", "serveraddress": "gcode.gaojiua.com:3000"}
         job = render_compose_job(
@@ -819,24 +819,24 @@ services:
         )["Job"]
 
         group = job["TaskGroups"][0]
-        self.assertEqual({task["Name"] for task in group["Tasks"]}, {"mysql", "granary", "granary-frontend", "adminer"})
+        self.assertEqual({task["Name"] for task in group["Tasks"]}, {"mysql", "ledger", "ledger-frontend", "adminer"})
         constraints = {(c["LTarget"], c["RTarget"]) for c in job["Constraints"]}
         self.assertIn(("${meta.region}", "home"), constraints)
         self.assertIn(("${meta.luma_node_name}", "lab"), constraints)
         ports = {p["Label"]: (p["Value"], p["To"]) for p in group["Networks"][0]["ReservedPorts"]}
         self.assertEqual(ports["mysql"], (3306, 3306))
-        self.assertEqual(ports["granary"], (8888, 8888))
-        self.assertEqual(ports["granary_frontend"], (8081, 80))
+        self.assertEqual(ports["ledger"], (8888, 8888))
+        self.assertEqual(ports["ledger_frontend"], (8081, 80))
         self.assertEqual(ports["adminer"], (8080, 8080))
 
         mysql = next(t for t in group["Tasks"] if t["Name"] == "mysql")
-        self.assertEqual(mysql["Config"]["mount"][0]["source"], "granary_mysql_data")
+        self.assertEqual(mysql["Config"]["mount"][0]["source"], "ledger_mysql_data")
         self.assertEqual(mysql["Config"]["mount"][0]["type"], "volume")
         self.assertEqual(mysql["Env"]["MYSQL_ROOT_PASSWORD"], "mysql-secret")
-        app = next(t for t in group["Tasks"] if t["Name"] == "granary")
+        app = next(t for t in group["Tasks"] if t["Name"] == "ledger")
         self.assertEqual(app["Config"]["auth"]["server_address"], "gcode.gaojiua.com:3000")
         self.assertIn("root:mysql-secret@tcp(mysql:3306)", app["Env"]["GRANARY_MYSQL_DSN"])
-        frontend = next(t for t in group["Tasks"] if t["Name"] == "granary-frontend")
+        frontend = next(t for t in group["Tasks"] if t["Name"] == "ledger-frontend")
         self.assertEqual(frontend["Config"]["auth"]["username"], "deploy")
 
 

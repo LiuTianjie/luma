@@ -120,7 +120,7 @@ name: app
 image: ghcr.io/acme/app:latest
 region: cn
 exposure: cn-edge
-domain: random.itool.tech
+domain: random.example.net
 port: 3000
 """
         )
@@ -130,7 +130,7 @@ port: 3000
                     "entrypoint": "websecure",
                     "certResolver": "letsencrypt",
                     "acmeDnsProvider": "cloudflare",
-                    "acmeDomains": ["itool.tech"],
+                    "acmeDomains": ["example.net"],
                 }
             },
             None,
@@ -138,10 +138,10 @@ port: 3000
         job = render_nomad_job(config, service, as_json=False)["Job"]
         tags = job["TaskGroups"][0]["Services"][0]["Tags"]
         self.assertIn(
-            "traefik.http.routers.app.tls.domains[0].main=*.itool.tech", tags
+            "traefik.http.routers.app.tls.domains[0].main=*.example.net", tags
         )
         self.assertIn(
-            "traefik.http.routers.app.tls.domains[0].sans=itool.tech", tags
+            "traefik.http.routers.app.tls.domains[0].sans=example.net", tags
         )
 
     def test_cn_edge_with_pinned_node_advertises_tailscale_address(self):
@@ -150,7 +150,7 @@ port: 3000
 name: app
 image: ghcr.io/acme/app:latest
 region: cn
-node: tecent
+node: cn-2
 exposure: cn-edge
 domain: app.example.com
 port: 3000
@@ -163,8 +163,8 @@ port: 3000
                     "certResolver": "letsencrypt",
                 },
                 "nodes": {
-                    "tecent": {
-                        "host": "tecent",
+                    "cn-2": {
+                        "host": "cn-2",
                         "tailscaleIP": "100.64.29.91",
                     }
                 },
@@ -632,7 +632,7 @@ port: 3000
             acme_email="ops@example.com",
             acme_dns_provider="cloudflare",
             acme_dns_token_file="/opt/luma/traefik/cloudflare-dns-token",
-            acme_domains=["itool.tech"],
+            acme_domains=["example.net"],
             as_json=False,
         )["Job"]
         task = job["TaskGroups"][0]["Tasks"][0]
@@ -646,8 +646,8 @@ port: 3000
             args,
         )
         self.assertFalse(any("httpchallenge" in value for value in args))
-        self.assertIn("--entrypoints.websecure.http.tls.domains[0].main=*.itool.tech", args)
-        self.assertIn("--entrypoints.websecure.http.tls.domains[0].sans=itool.tech", args)
+        self.assertIn("--entrypoints.websecure.http.tls.domains[0].main=*.example.net", args)
+        self.assertIn("--entrypoints.websecure.http.tls.domains[0].sans=example.net", args)
         self.assertEqual(
             task["Env"],
             {"CF_DNS_API_TOKEN_FILE": "/run/secrets/cloudflare-dns-token"},

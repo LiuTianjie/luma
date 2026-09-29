@@ -1,0 +1,3 @@
+# Tests use Python 3.10+ syntax; the package itself stays 3.9-compatible.
+extend = "../pyproject.toml"
+target-version = "py310"

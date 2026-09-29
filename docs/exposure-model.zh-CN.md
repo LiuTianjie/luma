@@ -117,21 +117,21 @@ Client -> Cloudflare DNS -> edge Traefik TCP entrypoint -> task host port
 清单：
 
 ```yaml
-name: granary-db
+name: ledger-db
 image: mysql:8.4.9
 region: home
 node: lab
 exposure: tcp-relay
-domain: granary-db.itool.tech
+domain: ledger-db.example.net
 port: 3306
 publishPort: 3306
 ```
 
 Luma 生成：
 
-- `stacks/home/granary-db/granary-db.nomad.json`，以 host 模式发布服务端口；
+- `stacks/home/ledger-db/ledger-db.nomad.json`，以 host 模式发布服务端口；
 - 更新 Traefik 服务，增加推导的 `tcp-3306` 入口和 host 模式发布端口；
-- `routes/granary-db.yml`，使用 Traefik `tcp.routers` 与 `HostSNI("*")` / `HostSNI(\`*\`)`；
+- `routes/ledger-db.yml`，使用 Traefik `tcp.routers` 与 `HostSNI("*")` / `HostSNI(\`*\`)`；
 - 指向已配置边缘目标的 Cloudflare DNS 记录。
 
 普通 MySQL 客户端不会以 HTTP Host 请求头开始通信，也不能假定在服务端握手前提供可靠 TLS SNI。`tcp-relay` 应视为端口独占：一个发布端口路由到一个 TCP 服务。

@@ -149,7 +149,7 @@ class AlertingTest(unittest.TestCase):
     def test_retry_persists_and_never_records_credentials(self):
         ch=self.channel()
         with patch('luma.control.alerting.time.time',return_value=1000):
-            delivery=alerting.dispatch('POST',f"channels/{ch['id']}/test")['delivery']
+            alerting.dispatch('POST',f"channels/{ch['id']}/test")
         def fail(*args): raise ValueError('private-sign '+args[0])
         alerting.deliver_pending(now=1000,transport=fail)
         first=self.items('deliveries')[0]

@@ -13,3 +13,5 @@ _ISOLATED_HOME = tempfile.mkdtemp(prefix="luma-tests-")
 atexit.register(shutil.rmtree, _ISOLATED_HOME, ignore_errors=True)
 os.environ["LUMA_USER_CONFIG"] = os.path.join(_ISOLATED_HOME, "user-config.json")
 os.environ["LUMA_CONFIG_HOME"] = os.path.join(_ISOLATED_HOME, "config")
+# Control reads its cluster config from LUMA_CONTROL_CONFIG; give tests a fixed one.
+os.environ.setdefault("LUMA_CONTROL_CONFIG", os.path.join(os.path.dirname(__file__), "fixtures", "cluster.yaml"))
