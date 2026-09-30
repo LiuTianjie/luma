@@ -10,7 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Input } from "@/components/ui/input";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, ArrowRight, GitBranch, HardDrive, KeyRound, PackageCheck, Plus, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertCircle, GitBranch, KeyRound, PackageCheck, Plus, RefreshCw, ShieldCheck } from "lucide-react";
 import {
   fetchControlResources,
   removeGitProvider,
@@ -24,8 +24,7 @@ import {
 } from "../controlResourcesApi";
 import { CodeCell, PrimaryCell, StatePill } from "../components/primitives";
 import { useConfirm } from "../components/ConfirmDialog";
-import type { DashboardStorageClass, Lang } from "../types";
-import type { DashboardViewModel } from "../dashboardViewModel";
+import type { Lang } from "../types";
 import { PageHeader } from "./PageHeader";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -35,7 +34,6 @@ type CredentialsState = {
   secrets: string[];
   registries: RegistryCredential[];
   gitProviders: GitProviderCredential[];
-  storageClasses: DashboardStorageClass[];
   loading: boolean;
   error: string;
 };
@@ -139,31 +137,26 @@ function buildSecretGroups(secrets: ParsedSecret[], lang: Lang): SecretGroup[] {
 export function CredentialsPage({
   lang,
   token,
-  vm,
 }: {
   lang: Lang;
   token: string;
-  vm: DashboardViewModel;
 }) {
   const zh = lang === "zh";
   const { path, search, navigate } = useRouter();
   const section = path.split("/")[2] || "secrets";
-  const activeTab = ["registries", "git", "storage", "maintenance"].includes(section) ? section : "secrets";
+  const activeTab = ["registries", "git"].includes(section) ? section : "secrets";
   const sectionMeta = {
     secrets: { zh: "密钥", en: "Secrets", zhDescription: "管理应用和平台密钥。敏感值只写不回显。", enDescription: "Manage application and platform secrets. Sensitive values are write-only." },
     registries: { zh: "镜像仓库凭据", en: "Registry credentials", zhDescription: "管理私有镜像仓库的拉取凭据。", enDescription: "Manage credentials for pulling from private registries." },
     git: { zh: "Git 凭据", en: "Git credentials", zhDescription: "管理代码仓库访问凭据。", enDescription: "Manage credentials for source repositories." },
-    storage: { zh: "存储配置", en: "Storage configuration", zhDescription: "查看集群可用的存储类和节点端点。", enDescription: "View storage classes and node endpoints available to the cluster." },
-    maintenance: { zh: "维护", en: "Maintenance", zhDescription: "进入基础设施维护，执行升级和路由检查。", enDescription: "Open infrastructure maintenance for upgrades and route checks." },
   }[activeTab] || {
     zh: "设置", en: "Settings", zhDescription: "管理设置。", enDescription: "Manage settings.",
   };
-  const editing = path.endsWith("/new") && ["secrets", "registries", "git"].includes(activeTab);
+  const editing = path.endsWith("/new");
   const [state, setState] = useState<CredentialsState>({
     secrets: [],
     registries: [],
     gitProviders: [],
-    storageClasses: vm.storageClasses,
     loading: true,
     error: "",
   });
@@ -189,7 +182,6 @@ export function CredentialsPage({
         secrets: resources.secrets || [],
         registries: resources.registries || [],
         gitProviders: resources.providers || [],
-        storageClasses: resources.storageClasses || vm.storageClasses,
         loading: false,
         error: "",
       });
@@ -197,24 +189,19 @@ export function CredentialsPage({
       if (signal?.aborted) return;
       setState((current) => ({ ...current, loading: false, error: String(error instanceof Error ? error.message : error) }));
     }
-  }, [token, vm.storageClasses]);
+  }, [token]);
 
   useEffect(() => {
-    if (activeTab === "maintenance") {
-      setState(current => ({ ...current, loading: false }));
-      return;
-    }
     const controller = new AbortController();
     void refresh(controller.signal);
     return () => controller.abort();
-  }, [refresh, activeTab]);
+  }, [refresh]);
 
   useEffect(() => {
-    if (activeTab === "maintenance") return;
     const onRefresh = () => void refresh();
     window.addEventListener("luma:refresh", onRefresh);
     return () => window.removeEventListener("luma:refresh", onRefresh);
-  }, [refresh, activeTab]);
+  }, [refresh]);
 
   useEffect(() => {
     const params = new URLSearchParams(search);
@@ -370,11 +357,10 @@ export function CredentialsPage({
     }
   };
 
-  const canWrite = ["secrets", "registries", "git"].includes(activeTab);
   const itemCount = activeTab === "secrets" ? state.secrets.length
     : activeTab === "registries" ? state.registries.length
-      : activeTab === "git" ? state.gitProviders.length : state.storageClasses.length;
-  const initialLoading = state.loading && !itemCount && activeTab !== "maintenance";
+      : state.gitProviders.length;
+  const initialLoading = state.loading && !itemCount;
   const submitting = busy === "secret" || busy === "registry" || busy === "git-provider";
   const saveDisabled = Boolean(busy) || (activeTab === "registries"
     ? !registryForm.host.trim() || !registryForm.username.trim() || !registryForm.password
@@ -384,7 +370,7 @@ export function CredentialsPage({
   const formTitle = activeTab === "registries" ? (zh ? "保存拉取凭据" : "Save pull credentials")
     : activeTab === "git" ? (zh ? "保存仓库访问凭据" : "Save repository credentials")
       : (zh ? "新增或轮换密钥" : "Add or rotate a secret");
-  const SectionIcon = activeTab === "registries" ? PackageCheck : activeTab === "git" ? GitBranch : activeTab === "storage" ? HardDrive : KeyRound;
+  const SectionIcon = activeTab === "registries" ? PackageCheck : activeTab === "git" ? GitBranch : KeyRound;
   const providerOptions = [{ value: "github", label: "GitHub" }, { value: "gitea", label: "Git / Gitea" }];
 
   return (
@@ -396,12 +382,12 @@ export function CredentialsPage({
         description: editing ? (zh ? "敏感值只写不回显，保存后不会返回浏览器。" : "Sensitive values are write-only and never returned after saving.") : (zh ? sectionMeta.zhDescription : sectionMeta.enDescription),
         action: editing ? (
           <Button variant="outline" size="sm" disabled={Boolean(busy)} onClick={() => navigate(`/settings/${activeTab}`)}>{zh ? "返回列表" : "Back to list"}</Button>
-        ) : canWrite ? (
+        ) : (
           <Button size="sm" onClick={() => navigate(`/settings/${activeTab}/new`)}><Plus data-icon="inline-start" />{zh ? "新增 / 轮换凭据" : "Add / rotate credential"}</Button>
-        ) : undefined,
+        ),
       }} />
 
-      {state.error && activeTab !== "maintenance" ? (
+      {state.error ? (
         <Alert variant="destructive">
           <AlertCircle />
           <AlertTitle>{zh ? "读取失败" : "Load failed"}</AlertTitle>
@@ -524,16 +510,6 @@ export function CredentialsPage({
             </CardFooter>
           </Card>
         </form>
-      ) : activeTab === "maintenance" ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>{zh ? "系统维护" : "System maintenance"}</CardTitle>
-            <CardDescription>{zh ? "管理控制面与节点升级，检查路由并查看任务结果。" : "Manage control-plane and node upgrades, check routes, and review task results."}</CardDescription>
-          </CardHeader>
-          <CardFooter>
-            <Button type="button" size="sm" onClick={() => navigate("/fleet/maintenance")}>{zh ? "打开系统维护" : "Open system maintenance"}<ArrowRight data-icon="inline-end" /></Button>
-          </CardFooter>
-        </Card>
       ) : (
         <Card>
           <CardHeader className="has-data-[slot=card-action]:grid-cols-1 sm:has-data-[slot=card-action]:grid-cols-[1fr_auto]">
@@ -566,17 +542,14 @@ export function CredentialsPage({
                   <EmptyTitle>{state.error ? (zh ? "暂时无法加载配置" : "Configuration unavailable") : (zh ? "暂无配置" : "No configuration yet")}</EmptyTitle>
                   <EmptyDescription>{state.error
                     ? (zh ? "请重试以获取最新配置。" : "Try again to retrieve the latest configuration.")
-                    : canWrite ? (zh ? "添加凭据后，可在这里查看或管理。" : "Add a credential to view and manage it here.")
-                      : (zh ? "配置存储类后，可在这里查看节点和端点。" : "Configured storage classes will show their nodes and endpoints here.")}</EmptyDescription>
+                    : (zh ? "添加凭据后，可在这里查看或管理。" : "Add a credential to view and manage it here.")}</EmptyDescription>
                 </EmptyHeader>
-                {state.error || canWrite ? (
-                  <EmptyContent>
-                    <Button variant={state.error ? "outline" : "default"} type="button" onClick={() => state.error ? void refresh() : navigate(`/settings/${activeTab}/new`)}>
-                      {state.error ? <RefreshCw data-icon="inline-start" /> : <Plus data-icon="inline-start" />}
-                      {state.error ? (zh ? "重试" : "Retry") : (zh ? "添加凭据" : "Add credential")}
-                    </Button>
-                  </EmptyContent>
-                ) : null}
+                <EmptyContent>
+                  <Button variant={state.error ? "outline" : "default"} type="button" onClick={() => state.error ? void refresh() : navigate(`/settings/${activeTab}/new`)}>
+                    {state.error ? <RefreshCw data-icon="inline-start" /> : <Plus data-icon="inline-start" />}
+                    {state.error ? (zh ? "重试" : "Retry") : (zh ? "添加凭据" : "Add credential")}
+                  </Button>
+                </EmptyContent>
               </Empty>
             ) : activeTab === "secrets" ? (
               <Accordion multiple value={[...expandedSecretGroups]} onValueChange={(values) => setExpandedSecretGroups(new Set(values))}>
@@ -636,7 +609,7 @@ export function CredentialsPage({
                   </TableRow>
                 ))}</TableBody>
               </Table>
-            ) : activeTab === "git" ? (
+            ) : (
               <Table aria-label={zh ? "Git 凭据" : "Git credentials"} containerProps={{ tabIndex: 0, role: "region", "aria-label": zh ? "Git 凭据，可横向滚动" : "Git credentials, horizontally scrollable" }}>
                 <TableHeader><TableRow>
                   <TableHead>{zh ? "服务" : "Provider"}</TableHead><TableHead>{zh ? "账户" : "Account"}</TableHead><TableHead>{zh ? "地址" : "Host"}</TableHead><TableHead>{zh ? "状态" : "Status"}</TableHead><TableHead className="text-right">{zh ? "操作" : "Actions"}</TableHead>
@@ -651,21 +624,6 @@ export function CredentialsPage({
                       {busy === `remove-git-${gitProviderLabel(item)}` ? <Spinner aria-hidden="true" data-icon="inline-start" /> : null}
                       {busy === `remove-git-${gitProviderLabel(item)}` ? (zh ? "删除中…" : "Removing…") : (zh ? "删除" : "Remove")}
                     </Button></TableCell>
-                  </TableRow>
-                ))}</TableBody>
-              </Table>
-            ) : (
-              <Table aria-label={zh ? "存储配置" : "Storage configuration"} containerProps={{ tabIndex: 0, role: "region", "aria-label": zh ? "存储配置，可横向滚动" : "Storage configuration, horizontally scrollable" }}>
-                <TableHeader><TableRow>
-                  <TableHead>{zh ? "存储类" : "Storage class"}</TableHead><TableHead>{zh ? "提供方" : "Provider"}</TableHead><TableHead>{zh ? "模式" : "Mode"}</TableHead><TableHead>{zh ? "节点 / 端点" : "Node / endpoint"}</TableHead><TableHead>{zh ? "区域" : "Regions"}</TableHead>
-                </TableRow></TableHeader>
-                <TableBody>{state.storageClasses.map((item) => (
-                  <TableRow key={item.name || "storage-class"}>
-                    <TableCell><PrimaryCell title={item.name || "-"} /></TableCell>
-                    <TableCell><Badge variant="secondary">{item.provider || "-"}</Badge></TableCell>
-                    <TableCell><Badge variant="outline">{item.mode || "-"}</Badge></TableCell>
-                    <TableCell><CodeCell value={item.node || item.endpoint || item.path || "-"} /></TableCell>
-                    <TableCell><div className="flex flex-wrap gap-1">{item.regions?.length ? item.regions.map((region) => <Badge variant="secondary" key={region}>{region}</Badge>) : "-"}</div></TableCell>
                   </TableRow>
                 ))}</TableBody>
               </Table>

@@ -16,7 +16,8 @@ test('independent pages skip fleet queries and node consumers use the light scop
   const { dashboardScopeForPage: scope } = load('dashboardScope');
   for (const page of ['deployments', 'registry', 'credentials']) assert.equal(scope(page), 'none');
   assert.equal(scope('builder'), 'nodes');
-  for (const path of ['/fleet/join', '/fleet/regions', '/fleet/maintenance', '/terminal/node/manager']) assert.equal(scope('nodes', path), 'nodes');
+  for (const path of ['/fleet/join', '/fleet/regions', '/terminal/node/manager']) assert.equal(scope('nodes', path), 'nodes');
+  assert.equal(scope('maintenance', '/settings/maintenance'), 'nodes');
   assert.equal(scope('nodes', '/fleet'), 'fleet');
   assert.equal(scope('nodes', '/fleet/nodes/manager'), 'full');
   assert.equal(scope('nodes', '/fleet/network'), 'network');

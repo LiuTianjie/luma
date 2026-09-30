@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
-import { Activity, Boxes, CloudCog, Database, HardDrive, LayoutDashboard, Network, Package, ScrollText, ServerCog, Settings, WandSparkles } from "lucide-react";
+import { Activity, Boxes, CloudCog, Database, HardDrive, LayoutDashboard, Network, Package, ScrollText, ServerCog, Settings, WandSparkles, Wrench } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { pageForPath } from "../routes";
 import { useRouter } from "../router";
-const pageIcons = { overview: LayoutDashboard, applications: Boxes, deployments: ScrollText, deploy: Package, builder: Package, nodes: ServerCog, storage: HardDrive, registry: Database, observability: Activity, credentials: Settings, setup: WandSparkles, notfound: undefined };
+const pageIcons = { overview: LayoutDashboard, applications: Boxes, deployments: ScrollText, deploy: Package, builder: Package, nodes: ServerCog, storage: HardDrive, registry: Database, observability: Activity, credentials: Settings, maintenance: Wrench, setup: WandSparkles, notfound: undefined };
 
 export type PageMetric = {
   label: string;

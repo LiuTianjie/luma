@@ -44,12 +44,13 @@ function load(filename) {
 }
 const { NodesPage } = load("pages/NodesPage.tsx");
 const { StoragePage } = load("pages/StoragePage.tsx");
+const { MaintenancePage } = load("pages/MaintenancePage.tsx");
 const { DetailDrawer } = load("DetailDrawer.tsx");
 const { TerminalDrawer } = load("components/TerminalDrawer.tsx");
 const props = { lang: "en", token: "test", theme: "light", controlVersion: "1", vm: { nodes: [], services: [], regions: [], trafficPaths: [], storageClasses: [], storageVolumes: [], storageWarnings: [] }, onSelectNode() {}, onTerminal() {}, onRefresh() {} };
 
-test("fleet opens at inventory and preserves independent region, network, and maintenance destinations", () => {
-  for (const [url, expected] of [["/fleet", ["NodeFleetMap"]], ["/fleet/regions", ["RegionPanel"]], ["/fleet/network", ["TrafficPaths"]], ["/fleet/maintenance", ["SystemUpdatePanel"]], ["/fleet/join", []]]) {
+test("fleet opens at inventory and preserves independent region and network destinations", () => {
+  for (const [url, expected] of [["/fleet", ["NodeFleetMap"]], ["/fleet/regions", ["RegionPanel"]], ["/fleet/network", ["TrafficPaths"]], ["/fleet/maintenance", []], ["/fleet/join", []]]) {
     route = url;
     const html = renderToStaticMarkup(React.createElement(NodesPage, props));
     const rendered = [...html.matchAll(/data-capability="([^"]+)"/g)].map((match) => match[1]);
@@ -59,7 +60,10 @@ test("fleet opens at inventory and preserves independent region, network, and ma
       assert.match(html, />Routes<\/button>/);
       assert.match(html, />Node topology<\/button>/);
     }
+    if (url === "/fleet") assert.match(html, />Join node<\/button>/);
+    if (url === "/fleet/maintenance") assert.match(html, /This infrastructure page does not exist/);
     if (url === "/fleet/join") {
+      assert.match(html, />Back to nodes<\/button>/);
       assert.doesNotMatch(html, /<node-join-token>/);
       assert.match(html, /Control did not return a node join token/);
     }
@@ -72,11 +76,21 @@ test("fleet opens at inventory and preserves independent region, network, and ma
 
 test("storage governance has a dedicated destination without hiding volume inventory", () => {
   route = "/storage";
-  assert.match(renderToStaticMarkup(React.createElement(StoragePage, props)), /data-capability="StoragePanel"/);
+  const inventory = renderToStaticMarkup(React.createElement(StoragePage, props));
+  assert.match(inventory, /data-capability="StoragePanel"/);
+  assert.match(inventory, /<a[^>]*href="\/dashboard\/storage\/governance"[^>]*>Capacity and cleanup<\/a>/);
   route = "/storage/governance";
   const html = renderToStaticMarkup(React.createElement(StoragePage, props));
   assert.match(html, /data-capability="StorageGovernancePanel"/);
   assert.doesNotMatch(html, /data-capability="StoragePanel"/);
+  assert.match(html, /<a[^>]*aria-current="page"[^>]*>Capacity and cleanup<\/a>/);
+});
+
+test("system maintenance is a platform settings page", () => {
+  route = "/settings/maintenance";
+  const html = renderToStaticMarkup(React.createElement(MaintenancePage, props));
+  assert.match(html, /data-capability="SystemUpdatePanel"/);
+  assert.match(html, /<h1[^>]*>System maintenance<\/h1>/);
 });
 
 test("inline object details retain zero and false values and do not declare a modal", () => {

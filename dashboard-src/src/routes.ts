@@ -14,7 +14,22 @@ export const ROUTE_BY_PAGE: Record<NavPage, string> = {
   storage: "/storage",
   registry: "/registry",
   credentials: "/settings/secrets",
+  maintenance: "/settings/maintenance",
 };
+
+// Destinations that moved when the navigation was regrouped. Bookmarks and links in
+// release notes keep working; the router replaces them before any page renders.
+const LEGACY_ROUTES: [string, string][] = [
+  ["/fleet/maintenance", "/settings/maintenance"],
+  ["/settings/storage", "/storage"],
+];
+
+export function legacyRedirect(path: string): string | null {
+  for (const [from, to] of LEGACY_ROUTES) {
+    if (path === from || path.startsWith(`${from}/`)) return to;
+  }
+  return null;
+}
 
 export type ResolvedPage = NavPage | "notfound";
 
@@ -33,6 +48,7 @@ export function pageForPath(path: string): ResolvedPage {
   if (path === "/observe" || path.startsWith("/observe/")) return "observability";
   if (path === "/storage" || path.startsWith("/storage/")) return "storage";
   if (path === "/registry" || path.startsWith("/registry/")) return "registry";
+  if (path === "/settings/maintenance" || path.startsWith("/settings/maintenance/")) return "maintenance";
   if (path === "/settings" || path.startsWith("/settings/")) return "credentials";
   return "notfound";
 }

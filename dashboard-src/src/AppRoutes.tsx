@@ -17,6 +17,7 @@ const loadNodesPage = () => import("./pages/NodesPage").then((module) => ({ defa
 const loadObservabilityPage = () => import("./pages/ObservabilityPage").then((module) => ({ default: module.ObservabilityPage }));
 const loadStoragePage = () => import("./pages/StoragePage").then((module) => ({ default: module.StoragePage }));
 const loadRegistryPage = () => import("./pages/RegistryPage").then((module) => ({ default: module.RegistryPage }));
+const loadMaintenancePage = () => import("./pages/MaintenancePage").then((module) => ({ default: module.MaintenancePage }));
 const ApplicationsPage = lazy(loadApplicationsPage);
 const BuilderPage = lazy(loadBuilderPage);
 const DeploymentsPage = lazy(loadDeploymentsPage);
@@ -28,6 +29,7 @@ const NotFound = lazy(() => import("./pages/NotFound").then((module) => ({ defau
 const ObservabilityPage = lazy(loadObservabilityPage);
 const StoragePage = lazy(loadStoragePage);
 const RegistryPage = lazy(loadRegistryPage);
+const MaintenancePage = lazy(loadMaintenancePage);
 
 export type AppRoutesProps = {
   page: ResolvedPage;
@@ -67,6 +69,7 @@ export function preloadPage(page: NavPage): void {
     : page === "observability" ? loadObservabilityPage
     : page === "storage" ? loadStoragePage
     : page === "registry" ? loadRegistryPage
+    : page === "maintenance" ? loadMaintenancePage
     : null;
   if (loader) void loader().catch(() => {});
 }
@@ -134,7 +137,7 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
       content = <DeploymentsPage lang={lang} token={token} />;
       break;
     case "nodes":
-      content = <NodesPage lang={lang} vm={vm} theme={theme} token={token} nodeJoin={payload.nodeJoin} controlVersion={payload.cluster?.version || ""} onSelectNode={props.onSelectNode} onTerminal={props.onTerminal} onRefresh={props.onRefresh} />;
+      content = <NodesPage lang={lang} vm={vm} theme={theme} token={token} nodeJoin={payload.nodeJoin} onSelectNode={props.onSelectNode} onTerminal={props.onTerminal} onRefresh={props.onRefresh} />;
       break;
     case "observability":
       content = <ObservabilityPage lang={lang} token={token} vm={vm} />;
@@ -146,7 +149,10 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
       content = <RegistryPage lang={lang} token={token} />;
       break;
     case "credentials":
-      content = <CredentialsPage lang={lang} token={token} vm={vm} />;
+      content = <CredentialsPage lang={lang} token={token} />;
+      break;
+    case "maintenance":
+      content = <MaintenancePage lang={lang} token={token} vm={vm} controlVersion={payload.cluster?.version || ""} onRefresh={props.onRefresh} />;
       break;
     case "setup":
       content = <SetupPage lang={lang} token={token} readiness={payload.readiness} onRefresh={props.onRefresh} />;

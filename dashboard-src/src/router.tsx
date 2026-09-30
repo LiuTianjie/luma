@@ -30,30 +30,39 @@ type RouterValue = {
 
 const RouterContext = createContext<RouterValue | null>(null);
 
-export function RouterProvider({ children }: { children: ReactNode }) {
-  const [location, setLocation] = useState(() => ({
-    path: stripBase(window.location.pathname),
-    search: window.location.search,
-  }));
+// Read the browser location, replacing a moved path in place so the page that
+// renders and the address bar always agree.
+function readLocation(redirect?: (path: string) => string | null) {
+  const path = stripBase(window.location.pathname);
+  const search = window.location.search;
+  const target = redirect?.(path);
+  if (!target) return { path, search };
+  window.history.replaceState(window.history.state, "", toHref(target) + search);
+  return { path: target, search };
+}
+
+export function RouterProvider({ children, redirect }: { children: ReactNode; redirect?: (path: string) => string | null }) {
+  const [location, setLocation] = useState(() => readLocation(redirect));
 
   useEffect(() => {
-    const onPop = () => setLocation({ path: stripBase(window.location.pathname), search: window.location.search });
+    const onPop = () => setLocation(readLocation(redirect));
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, []);
+  }, [redirect]);
 
   const navigate = useCallback((to: string, opts?: { replace?: boolean }) => {
     // Split only on the first "?" so query values that themselves contain "?" survive.
     const queryIndex = to.indexOf("?");
     const pathPart = queryIndex === -1 ? to : to.slice(0, queryIndex);
     const searchPart = queryIndex === -1 ? "" : to.slice(queryIndex + 1);
-    const nextPath = pathPart.startsWith("/") ? pathPart : `/${pathPart}`;
+    const requestedPath = pathPart.startsWith("/") ? pathPart : `/${pathPart}`;
+    const nextPath = redirect?.(requestedPath) || requestedPath;
     const search = searchPart ? `?${searchPart}` : "";
     const href = toHref(nextPath) + search;
     if (opts?.replace) window.history.replaceState({}, "", href);
     else window.history.pushState({}, "", href);
     setLocation({ path: nextPath, search });
-  }, []);
+  }, [redirect]);
 
   const value = useMemo<RouterValue>(() => ({ ...location, navigate }), [location, navigate]);
   return <RouterContext.Provider value={value}>{children}</RouterContext.Provider>;

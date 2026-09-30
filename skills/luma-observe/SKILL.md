@@ -29,7 +29,7 @@ Do not use this skill for Dashboard node CPU/disk presets or Nomad job YAML for 
 - Control pins the stack to the registered manager (Traefik/Control node) on deploy and rewrites sidecar `node`/`region`. `observe/luma.compose.yml` values such as `node: manager` are a local-render fallback only; do not assume the manager is named `manager`.
 - Every Compose service uses `network_mode: host` and `exposure: none`.
 - Collectors bind `127.0.0.1` only. Control uses host networking to read VictoriaMetrics at `127.0.0.1:8428`. Never publish 4318/8082/8428/9428/3100 on eth0 or the public NIC. Port 4319 is the manager Tailscale mesh OTLP listener with a Control-issued bearer token; do not bind it on the public NIC.
-- After observe is deployed, look at Dashboard → Observability → Apps. It embeds Grafana at `/grafana` on the Control domain.
+- After observe is deployed, look at Dashboard → Observability → App monitoring. It embeds Grafana at `/grafana` on the Control domain.
 - Alert evaluation is vmalert + Alertmanager + optional Feishu webhook.
 - Auto-instrumentation is automatic after observe is deployed: Control injects official OTel env vars into later app jobs. Do not create a Luma telemetry SDK.
 - This injection is configuration wiring, not magic code instrumentation. A business image
@@ -43,7 +43,7 @@ Do not use this skill for Dashboard node CPU/disk presets or Nomad job YAML for 
   visible under `/grafana` as public to anyone who can reach the Control domain;
   do not put secrets or sensitive payloads into logs or trace attributes.
 
-Operators look at Dashboard → Observability → Apps. Traefik routers and Nomad
+Operators look at Dashboard → Observability → App monitoring. Traefik routers and Nomad
 jobs are mapped to Luma app/stack names by observe itself. Do not ask apps to
 add labels, sidecars, or a Luma SDK for this view.
 

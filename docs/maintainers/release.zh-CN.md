@@ -169,7 +169,7 @@ curl -fsSL "https://raw.githubusercontent.com/LiuTianjie/luma/$LUMA_INSTALL_REF/
 
 ### 从控制台升级已发布版本 {#roll-out-a-published-release-from-dashboard}
 
-包发布和 Control 镜像工作流均成功后，打开控制台 → 基础设施 → 节点 → 系统维护。使用不可变标签作为发布引用，并选择相同标签的 Control 镜像。支持的操作顺序是：
+包发布和 Control 镜像工作流均成功后，打开控制台 → 设置 → 系统维护。使用不可变标签作为发布引用，并选择相同标签的 Control 镜像。支持的操作顺序是：
 
 1. 记录公共路由基线；
 2. 确认更新 Control；已声明的 Builder 首先通过受管出口代理将外部镜像复制到内部镜像仓库，并验证摘要；

@@ -1,8 +1,8 @@
 import { parseApplicationPath, applicationPath } from "./applicationRoutes";
-import { ArrowLeft, Package } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Breadcrumb, BreadcrumbList, BreadcrumbItem, BreadcrumbLink, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb";
-import { buildNavGroups } from "../navItems";
+import { activeNavChild, buildNavGroups, navWorkspace } from "../navItems";
 import { ROUTE_BY_PAGE } from "../routes";
 import { toHref, useRouter } from "../router";
 import type { DashboardViewModel, NavPage } from "../dashboardViewModel";
@@ -27,12 +27,14 @@ export function Topbar({
 }: Props) {
   const { path, navigate } = useRouter();
   const applicationRoute = parseApplicationPath(path);
-  const items = buildNavGroups(lang, vm).flatMap(group => group.items);
-  const item = items.find(item => item.children?.some(child => path === child.href || path.startsWith(`${child.href}/`)))
-    || items.find(item => item.id === activeNavPage);
-  const child = item?.children?.filter(child => path === child.href || path.startsWith(`${child.href}/`)).sort((a, b) => b.href.length - a.href.length)[0];
-  const title = child?.label || item?.label || (activeNavPage === "deploy" ? (lang === "zh" ? "创建应用" : "Create application") : activeNavPage === "builder" ? (lang === "zh" ? "构建" : "Builds") : (lang === "zh" ? "控制台" : "Console"));
-  const Icon = item?.icon || (["deploy", "builder"].includes(activeNavPage) ? Package : undefined);
+  const item = buildNavGroups(lang, vm).flatMap(group => group.items).find(entry => entry.id === navWorkspace(activeNavPage));
+  const child = activeNavChild(item, path);
+  // Task pages without a sidebar entry still name themselves under their owning workspace.
+  const pageTitle = activeNavPage === "deploy" ? (lang === "zh" ? "创建应用" : "Create application")
+    : activeNavPage === "builder" ? (lang === "zh" ? "从 Git 构建" : "Build from Git") : "";
+  const leaf = child?.label || pageTitle;
+  const title = leaf || item?.label || (lang === "zh" ? "控制台" : "Console");
+  const Icon = item?.icon;
   const timeFormatter = new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", {
     hour: "2-digit",
     minute: "2-digit",
@@ -54,7 +56,7 @@ export function Topbar({
             <BreadcrumbItem className="min-w-0">{applicationRoute.service ? <BreadcrumbLink href={toHref(applicationPath(applicationRoute.stack))} className="truncate" title={applicationRoute.stack} onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return; event.preventDefault(); navigate(applicationPath(applicationRoute.stack || "")); }}>{applicationRoute.stack}</BreadcrumbLink> : <BreadcrumbPage className="truncate" title={applicationRoute.stack}>{applicationRoute.stack}</BreadcrumbPage>}</BreadcrumbItem>
             {applicationRoute.service && <><BreadcrumbSeparator /><BreadcrumbItem className="min-w-0"><BreadcrumbPage className="truncate" title={applicationRoute.service}>{applicationRoute.service}</BreadcrumbPage></BreadcrumbItem></>}
           </> : <>
-          {child && item ? <><BreadcrumbItem><BreadcrumbLink href={toHref(ROUTE_BY_PAGE[item.id])} onClick={event => {
+          {leaf && item ? <><BreadcrumbItem><BreadcrumbLink href={toHref(ROUTE_BY_PAGE[item.id])} onClick={event => {
             if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
             event.preventDefault(); navigate(ROUTE_BY_PAGE[item.id]);
           }}>{item.label}</BreadcrumbLink></BreadcrumbItem><BreadcrumbSeparator /></> : null}

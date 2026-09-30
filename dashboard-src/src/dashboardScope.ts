@@ -13,8 +13,8 @@ export function dashboardScopeForPage(page: ResolvedPage, path = ""): DashboardS
     case "nodes":
       if (/^\/fleet\/network(?:\/|$)/.test(path)) return "network";
       if (/^\/fleet\/nodes\/[^/]+/.test(path)) return "full";
-      return /^\/fleet\/(join|regions|maintenance)(\/|$)/.test(path) || path.startsWith("/terminal/node/") ? "nodes" : "fleet";
-    case "builder": return "nodes";
+      return /^\/fleet\/(join|regions)(\/|$)/.test(path) || path.startsWith("/terminal/node/") ? "nodes" : "fleet";
+    case "builder": case "maintenance": return "nodes";
     case "setup": return "setup";
     case "deploy": return !path || path === "/create" ? "none" : "deploy";
     case "storage": return path.startsWith("/storage/governance") ? "none" : "storage";

@@ -500,7 +500,7 @@ export function DeployWorkspace({
           {steps.length ? <Card className="min-w-0" aria-label={lang === "zh" ? "部署进度" : "Deployment progress"}>
             <CardHeader><CardTitle>{lang === "zh" ? "部署进度" : "Deployment progress"}</CardTitle></CardHeader>
             <CardContent><StepLog steps={steps} lang={lang} /></CardContent>
-            <CardFooter className="justify-end"><Button variant="outline" type="button" onClick={() => router.navigate(`/deployments?app=${encodeURIComponent(submitted.summary?.name || configTitle)}`)}>{lang === "zh" ? "查看交付记录" : "View delivery records"}<ArrowRight data-icon="inline-end" /></Button></CardFooter>
+            <CardFooter className="justify-end"><Button variant="outline" type="button" onClick={() => router.navigate(`/deployments?app=${encodeURIComponent(submitted.summary?.name || configTitle)}`)}>{lang === "zh" ? "查看部署记录" : "View deployment records"}<ArrowRight data-icon="inline-end" /></Button></CardFooter>
           </Card> : null}
           <Card>
             <CardHeader><CardTitle>{yamlDirty ? (lang === "zh" ? "提交当前 YAML" : "Submit current YAML") : (lang === "zh" ? "提交当前配置" : "Submit current configuration")}</CardTitle><CardDescription>{lang === "zh" ? <>Secret 使用 ${"{NAME}"} 引用，明文密钥请先存入 Luma Control。</> : <>Secrets must use ${"{NAME}"} references. Store plaintext secrets in Luma Control first.</>}</CardDescription></CardHeader>

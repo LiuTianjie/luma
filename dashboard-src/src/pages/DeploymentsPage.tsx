@@ -247,11 +247,11 @@ function HistoryDetailPage({ lang, token, selection, initialItem, onClose, onRef
   return (
     <div className="flex min-w-0 flex-col gap-6">
       <PageHeader meta={{
-        eyebrow: zh ? "交付 / 任务详情" : "Delivery / Task",
+        eyebrow: zh ? "部署记录 / 任务详情" : "Deployments / Task",
         title: item?.title || item?.application || id,
         description: kind === "build" ? (zh ? "构建记录与完整步骤日志" : "Build record and step log") : (zh ? "部署记录与完整步骤日志" : "Deployment record and step log"),
         metrics: [],
-        action: <Button type="button" variant="outline" onClick={onClose}><ArrowLeft data-icon="inline-start" />{zh ? "返回交付记录" : "Back to delivery"}</Button>,
+        action: <Button type="button" variant="outline" onClick={onClose}><ArrowLeft data-icon="inline-start" />{zh ? "返回部署记录" : "Back to deployments"}</Button>,
       }} />
       <Card aria-busy={!item && Boolean(loading)}>
         <CardHeader><CardTitle>{zh ? "任务信息" : "Task information"}</CardTitle></CardHeader>
@@ -436,7 +436,7 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
       </Card>
       <Card aria-busy={Boolean(loading)}>
         <CardHeader>
-          <CardTitle>{zh ? "交付记录" : "Delivery records"}</CardTitle>
+          <CardTitle>{zh ? "记录列表" : "Records"}</CardTitle>
           <CardDescription>{zh ? "按创建时间从新到旧排列。" : "Ordered by creation time, newest first."}</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">

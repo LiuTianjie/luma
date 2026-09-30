@@ -1,3 +1,4 @@
+import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   Sidebar,
   SidebarContent,
@@ -16,11 +17,11 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
 } from "@/components/ui/sidebar";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuLabel, DropdownMenuLinkItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Separator } from "@/components/ui/separator";
 import { LogOut, Settings2, Monitor, Moon, Sun } from "lucide-react";
 import type { ThemeMode } from "./useTheme";
-import { buildNavGroups, type NavGroup } from "./navItems";
+import { activeNavChild, buildNavGroups, navWorkspace, type NavGroup } from "./navItems";
 import type { DashboardViewModel, NavPage } from "./dashboardViewModel";
 import { ROUTE_BY_PAGE } from "./routes";
 import { toHref, useRouter } from "./router";
@@ -58,8 +59,15 @@ export function AppSidebar({
   const toggleLabel = lang === "zh" ? (expanded ? "收起侧边栏" : "展开侧边栏") : (expanded ? "Collapse sidebar" : "Expand sidebar");
   const groups: NavGroup[] = buildNavGroups(lang, vm);
   const { path, navigate: navigatePath } = useRouter();
-  const activeWorkspace = ["builder", "deploy"].includes(activeNavPage) ? "deployments"
-    : ["storage", "registry"].includes(activeNavPage) ? "nodes" : activeNavPage;
+  const activeWorkspace = navWorkspace(activeNavPage);
+  // Icon-only mode hides nested lists, so workspaces with secondary pages open a flyout instead.
+  const iconOnly = !isMobile && !open;
+  const openChild = (event: ReactMouseEvent, href: string) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    navigatePath(href);
+    if (isMobile) setOpenMobile(false);
+  };
 
   return (
     <Sidebar collapsible="icon" variant="sidebar" >
@@ -84,6 +92,42 @@ export function AppSidebar({
                   const showValue = typeof item.value === "number";
                   const active = activeWorkspace === item.id;
                   const tip = `${item.label} - ${item.detail}`;
+                  const activeChild = active ? activeNavChild(item, path) : undefined;
+                  if (iconOnly && item.children?.length) {
+                    return (
+                      <SidebarMenuItem key={item.id}>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger
+                            onPointerEnter={() => onPrefetch?.(item.id)}
+                            onFocus={() => onPrefetch?.(item.id)}
+                            render={<SidebarMenuButton isActive={active} className="h-10" aria-label={item.label} tooltip={tip} />}
+                          >
+                            <Icon />
+                            <span className="truncate group-data-[collapsible=icon]:hidden">{item.label}</span>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent side="right" align="start" sideOffset={8} className="min-w-48">
+                            <DropdownMenuGroup>
+                              <DropdownMenuLabel>{item.label}</DropdownMenuLabel>
+                              {item.children.map((child) => (
+                                <DropdownMenuLinkItem
+                                  key={child.href}
+                                  closeOnClick
+                                  href={toHref(child.href)}
+                                  title={child.detail}
+                                  aria-current={activeChild === child ? "page" : undefined}
+                                  className="aria-[current=page]:font-medium aria-[current=page]:text-foreground"
+                                  onClick={(event) => openChild(event, child.href)}
+                                >
+                                  {child.label}
+                                </DropdownMenuLinkItem>
+                              ))}
+                            </DropdownMenuGroup>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                        {showValue ? <SidebarMenuBadge className="group-data-[collapsible=icon]:hidden">{item.value}</SidebarMenuBadge> : null}
+                      </SidebarMenuItem>
+                    );
+                  }
                   return (
                     <SidebarMenuItem key={item.id}>
                       <SidebarMenuButton
@@ -94,7 +138,7 @@ export function AppSidebar({
                         render={
                           <a
                             href={toHref(ROUTE_BY_PAGE[item.id])}
-                            aria-current={active ? "page" : undefined}
+                            aria-current={active && !activeChild ? "page" : undefined}
                             onClick={(event) => {
                               if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
                               event.preventDefault();
@@ -112,30 +156,20 @@ export function AppSidebar({
                       {showValue ? <SidebarMenuBadge className="group-data-[collapsible=icon]:hidden">{item.value}</SidebarMenuBadge> : null}
                       {item.children?.length && active ? (
                         <SidebarMenuSub className="py-1">
-                          {item.children.map((child) => {
-                            const activeChild = child.href === "/fleet"
-                              ? path === child.href
-                              : path === child.href || path.startsWith(`${child.href}/`);
-                            return (
-                              <SidebarMenuSubItem key={child.href}>
-                                <SidebarMenuSubButton
-                                  size="md"
-                                  className="h-9"
-                                  isActive={activeChild}
-                                  title={child.detail}
-                                  render={<a href={toHref(child.href)} aria-current={activeChild ? "page" : undefined} />}
-                                  onClick={(event) => {
-                                    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-                                    event.preventDefault();
-                                    navigatePath(child.href);
-                                    if (isMobile) setOpenMobile(false);
-                                  }}
-                                >
-                                  <span>{child.label}</span>
-                                </SidebarMenuSubButton>
-                              </SidebarMenuSubItem>
-                            );
-                          })}
+                          {item.children.map((child) => (
+                            <SidebarMenuSubItem key={child.href}>
+                              <SidebarMenuSubButton
+                                size="md"
+                                className="h-9"
+                                isActive={activeChild === child}
+                                title={child.detail}
+                                render={<a href={toHref(child.href)} aria-current={activeChild === child ? "page" : undefined} />}
+                                onClick={(event) => openChild(event, child.href)}
+                              >
+                                <span>{child.label}</span>
+                              </SidebarMenuSubButton>
+                            </SidebarMenuSubItem>
+                          ))}
                         </SidebarMenuSub>
                       ) : null}
                     </SidebarMenuItem>

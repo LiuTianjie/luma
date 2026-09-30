@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Copy, CircleAlert, Server } from "lucide-react";
+import { ArrowLeft, Check, Copy, CircleAlert, Plus, Server } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,7 +8,6 @@ import { Empty, EmptyContent, EmptyHeader, EmptyMedia, EmptyTitle } from "@/comp
 import { NodeFleetMap } from "../components/NodeFleetMap";
 import { RegionPanel } from "../components/RegionPanel";
 import { NodeTopology } from "../components/NodeTopology";
-import { SystemUpdatePanel } from "../components/SystemUpdatePanel";
 import { TrafficPaths } from "../components/TrafficPaths";
 import { useRouter } from "../router";
 import type { DashboardNode, Lang } from "../types";
@@ -45,7 +44,6 @@ export function NodesPage({
   onSelectNode,
   onTerminal,
   onRefresh,
-  controlVersion,
 }: {
   lang: Lang;
   vm: DashboardViewModel;
@@ -55,12 +53,11 @@ export function NodesPage({
   onSelectNode: (node: DashboardNode) => void;
   onTerminal: (node: DashboardNode) => void;
   onRefresh: () => Promise<void> | void;
-  controlVersion: string;
 }) {
   const zh = lang === "zh";
   const { path, navigate } = useRouter();
   const requestedSection = path.split("/")[2] || "nodes";
-  const section = ["nodes", "join", "regions", "maintenance", "network"].includes(requestedSection) ? requestedSection : "unknown";
+  const section = ["nodes", "join", "regions", "network"].includes(requestedSection) ? requestedSection : "unknown";
   const ready = vm.nodes.filter(readyNode).length;
   const managers = vm.nodes.filter(managerNode).length;
   const agents = vm.nodes.filter(agentReady).length;
@@ -88,10 +85,9 @@ export function NodesPage({
       <PageHeader
         meta={{
           eyebrow: zh ? "节点舰队" : "Fleet",
-          title: section === "join" ? (zh ? "加入节点" : "Join a node") : section === "regions" ? (zh ? "区域管理" : "Regions") : section === "maintenance" ? (zh ? "系统维护" : "System maintenance") : section === "network" ? (zh ? "网络与拓扑" : "Network and topology") : (zh ? "节点" : "Nodes"),
+          title: section === "join" ? (zh ? "加入节点" : "Join a node") : section === "regions" ? (zh ? "区域管理" : "Regions") : section === "network" ? (zh ? "网络与拓扑" : "Network and topology") : (zh ? "节点" : "Nodes"),
           description: section === "join" ? (zh ? "在目标机器上安装并接入当前集群。" : "Connect a host to this cluster.")
             : section === "regions" ? (zh ? "管理调度区域及其出口策略。" : "Manage scheduling regions and egress policies.")
-            : section === "maintenance" ? (zh ? "检查路由，升级控制面和节点，并追踪任务结果。" : "Check routes, upgrade the control plane and agents, and track results.")
             : section === "network" ? (zh ? "查看入口流量路径、证书和节点拓扑。" : "Inspect ingress paths, certificates, and node topology.")
             : (zh ? "查看节点资源、调度状态与终端可用性。" : "Inspect node resources, scheduling state, and terminal availability."),
           metrics: section === "nodes" ? [
@@ -100,6 +96,12 @@ export function NodesPage({
             { label: zh ? "Manager" : "Managers", value: managers },
             { label: "Terminal", value: terminalNodes },
           ] : [],
+          // Joining is an action on the inventory, not a destination of its own.
+          action: section === "nodes" ? (
+            <Button type="button" onClick={() => navigate("/fleet/join")}><Plus data-icon="inline-start" />{zh ? "加入节点" : "Join node"}</Button>
+          ) : section === "join" ? (
+            <Button type="button" variant="outline" onClick={() => navigate("/fleet")}><ArrowLeft data-icon="inline-start" />{zh ? "返回节点列表" : "Back to nodes"}</Button>
+          ) : undefined,
         }}
       />
 
@@ -139,14 +141,6 @@ export function NodesPage({
           </CardContent>
         </Card>
       )}
-
-      {section === "maintenance" && <SystemUpdatePanel
-        lang={lang}
-        token={token}
-        controlVersion={controlVersion}
-        nodes={vm.nodes}
-        onRefresh={onRefresh}
-      />}
 
       {section === "network" && <Tabs defaultValue="routes" className="network-workspace">
         <TabsList aria-label={zh ? "网络视图" : "Network views"}>

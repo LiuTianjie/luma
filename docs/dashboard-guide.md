@@ -15,13 +15,13 @@ The console is available at `https://<control-domain>/dashboard/`. Sign in with 
 | --- | --- |
 | Overview | Review applications or nodes that need attention. |
 | Applications | Inspect services, replicas, endpoints, logs, metrics, configuration and version history. |
-| Delivery | Follow builds and deployment results. |
-| Observability | Review alert incidents, application monitoring, resource metrics, logs, alert rules and notification channels. |
-| Infrastructure | Manage nodes, regions, routes, storage and system maintenance. |
-| First setup | Configure cluster dependencies and verify them. |
-| Settings | Manage secrets, registry credentials, Git providers and storage configuration. |
+| Deployments | Follow builds and deployment results. |
+| Observability | Review alert incidents, application monitoring (requests, logs and traces), resource metrics, alert rules and notification channels. |
+| Infrastructure | Manage nodes (including joining new ones), regions, network routes, storage and registry images. |
+| Settings | Manage secrets, registry credentials, Git credentials and system maintenance (Control and agent upgrades). |
+| First install | Configure cluster dependencies and verify them. |
 
-The top bar shows your current location. Appearance, language and sign-out controls live in the sidebar. Choosing an appearance or language closes the preference menu. On desktop, the sidebar header contains the collapse control; narrow screens use the top-bar navigation opener.
+Settings and First install sit in the sidebar's Platform group. Creating an application and building from Git belong to Applications. The top bar shows your current location. Appearance, language and sign-out controls live in the sidebar. When the desktop sidebar is collapsed to icons, workspaces with secondary pages open a flyout menu. Choosing an appearance or language closes the preference menu. On desktop, the sidebar header contains the collapse control; narrow screens use the top-bar navigation opener.
 
 ## Create an application
 

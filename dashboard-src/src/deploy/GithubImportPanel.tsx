@@ -309,7 +309,7 @@ export function GithubImportPanel({
   return <section className="flex min-w-0 flex-col gap-6">
     {onBack ? <Button type="button" variant="outline" className="w-fit" onClick={onBack} disabled={status !== "idle"}><ArrowLeft data-icon="inline-start" />{zh ? "返回模板" : "Back to templates"}</Button> : null}
     <PageHeader meta={{
-      eyebrow: zh ? "交付 / 新建构建" : "Delivery / New build",
+      eyebrow: zh ? "应用 / 从 Git 构建" : "Applications / Build from Git",
       title: zh ? "从 Git 构建并部署" : "Build and deploy from Git",
       description: zh ? "选择代码来源和构建节点。部署配置默认沿用仓库，也可以在下方覆盖。" : "Choose a source and build node. Use the repository’s deployment configuration or override it below.",
       metrics: [{ label: zh ? "可用构建节点" : "Build nodes", value: candidates.length }, { label: "Registry", value: clusterRegistryHost || (zh ? "尚未配置" : "Not configured") }],

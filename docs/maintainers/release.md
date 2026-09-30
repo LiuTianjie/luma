@@ -227,7 +227,7 @@ The installer downloads the GitHub archive for that tag, prepares an isolated ru
 
 ### Roll Out A Published Release From Dashboard
 
-After both package and Control-image workflows succeed, open Dashboard → Infrastructure → Nodes → System maintenance. Use the immutable tag as the release ref and the same-tag Control image. The supported order is:
+After both package and Control-image workflows succeed, open Dashboard → Settings → System maintenance. Use the immutable tag as the release ref and the same-tag Control image. The supported order is:
 
 1. capture the public-route baseline;
 2. confirm the Control update; the declared Builder first copies the external image into the internal registry through its managed egress proxy and verifies the digest;

@@ -416,7 +416,7 @@ export function ApplicationManagementPanel({
             <>
               <p>
                 {lang === "zh"
-                  ? "会重新拉取仓库、构建镜像并部署，构建进度在当前应用页面显示，并可在交付记录追溯。"
+                  ? "会重新拉取仓库、构建镜像并部署，构建进度在当前应用页面显示，并可在部署记录追溯。"
                   : "Re-clones the repository, builds a new image and deploys it. Progress remains visible on this application page and in delivery history."}
               </p>
               <p>
@@ -1680,7 +1680,7 @@ export function ApplicationManagementPanel({
           {onNavigateToDeployments ? (
             <CardFooter>
               <Button variant="outline" onClick={onNavigateToDeployments}>
-                {lang === "zh" ? "查看交付记录" : "View delivery history"}
+                {lang === "zh" ? "查看部署记录" : "View deployment history"}
               </Button>
             </CardFooter>
           ) : null}
