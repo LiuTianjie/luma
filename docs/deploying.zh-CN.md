@@ -160,7 +160,7 @@ luma workflow run api --path ~/src/api
 CI 可以在不保存登录的情况下使用 CLI：
 
 ```bash
-python -m pip install "luma-infra==0.2.0"
+python -m pip install "luma-infra==0.2.1"
 export LUMA_CONTROL_URL=https://luma.example.com
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 

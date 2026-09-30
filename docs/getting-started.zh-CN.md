@@ -29,10 +29,10 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 
 ```bash
 # A specific release, a branch or a commit
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.2.0 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.2.1 sh
 
 # CI runners and virtual environments
-python -m pip install "luma-infra==0.2.0"
+python -m pip install "luma-infra==0.2.1"
 ```
 
 卸载 CLI 使用 `scripts/uninstall-luma.sh`（不会动 `/opt/luma` 下的服务器状态）；加 `--purge` 会同时删除本地保存的配置和登录信息。

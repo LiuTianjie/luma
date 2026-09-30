@@ -29,10 +29,10 @@ Other ways to install:
 
 ```bash
 # A specific release, a branch or a commit
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.2.0 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.2.1 sh
 
 # CI runners and virtual environments
-python -m pip install "luma-infra==0.2.0"
+python -m pip install "luma-infra==0.2.1"
 ```
 
 To uninstall the CLI (server state under `/opt/luma` is not touched), run `scripts/uninstall-luma.sh`; add `--purge` to also remove saved settings and logins.

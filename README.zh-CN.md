@@ -80,7 +80,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install "luma-infra==0.2.0"
+python -m pip install "luma-infra==0.2.1"
 ```
 
 运行时诊断与卸载行为见[安装生命周期](docs/installation-lifecycle.zh-CN.md)。

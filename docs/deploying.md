@@ -160,7 +160,7 @@ Records never contain tokens or `.env` contents. Notes are free text; do not put
 CI can use the CLI without a saved login:
 
 ```bash
-python -m pip install "luma-infra==0.2.0"
+python -m pip install "luma-infra==0.2.1"
 export LUMA_CONTROL_URL=https://luma.example.com
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 
