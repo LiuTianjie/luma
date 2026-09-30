@@ -82,11 +82,11 @@ class LumaArgumentParser(argparse.ArgumentParser):
     """ArgumentParser with "did you mean" hints for mistyped commands."""
 
     def error(self, message: str) -> None:  # type: ignore[override]
-        match = re.search(r"invalid choice: '([^']*)' \(choose from (.*)\)", message)
-        if match:
-            choices = re.findall(r"'([^']*)'", match.group(2))
-            if self.prog == "luma":
-                choices = list(SUMMARIES)
+        # Read the choices from the parser: Python 3.12.8+ stopped quoting them in the message.
+        match = re.search(r"invalid choice: '([^']*)'", message)
+        commands = [action for action in self._actions if isinstance(action, argparse._SubParsersAction)]
+        if match and commands:
+            choices = list(SUMMARIES) if self.prog == "luma" else list(commands[0].choices)
             close = difflib.get_close_matches(match.group(1), choices, n=1)
             message = f"unknown command '{match.group(1)}'"
             if close:
