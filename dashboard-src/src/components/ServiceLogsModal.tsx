@@ -737,7 +737,7 @@ export function ServiceLogsModal({
 
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span id={`${fieldId}-output`}>{lang === "zh" ? "日志输出" : "Log output"}</span>
-          <Badge variant="outline">{filteredLogs.length} / {logsState?.logs?.length || 0} {lang === "zh" ? "行" : "lines"}{logsState?.updatedAt ? ` · ${new Date(logsState.updatedAt * 1000).toLocaleTimeString()}` : ""}</Badge>
+          <Badge variant="outline">{filteredLogs.length} / {logsState?.logs?.length || 0} {lang === "zh" ? "行" : "lines"}{logsState?.updatedAt ? ` · ${new Date(logsState.updatedAt * 1000).toLocaleTimeString(lang === "zh" ? "zh-CN" : "en-US", { hour12: false })}` : ""}</Badge>
         </div>
         {filteredLogs.length ? <pre ref={logTailRef} className={cn("log-console__viewport", wrapLines && "is-wrapped")} tabIndex={0} aria-labelledby={`${fieldId}-output`} onScroll={(event) => {
           const tail = event.currentTarget;

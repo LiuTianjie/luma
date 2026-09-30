@@ -20,7 +20,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { PageHeader } from "./PageHeader";
 import { formatTimestamp } from "../format";
 import { t } from "../i18n";
-import { toHref, useRouter } from "../router";
+import { toHref, useRouter, isPlainLeftClick } from "../router";
 import { fetchHistory, fetchHistoryDetail } from "../historyApi";
 import { dateInputTimestamp, HISTORY_FILTERS, historyFilters, historyItemKey, historySelection, historyRetentionNotice, historyStatus, historyStatusValue, localDateInput, mergeHistoryItems, retryBuildSelection, type HistoryDetail, type HistoryItem, type HistoryPage, type HistorySelection } from "../historyModel";
 import type { Lang } from "../types";
@@ -414,7 +414,7 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
           <div className="flex flex-wrap items-center gap-2">
             <Button type="button" variant="outline" onClick={() => void load("refresh")} disabled={Boolean(loading)}>
               {loading === "refresh" ? <Spinner data-icon="inline-start" aria-hidden="true" /> : <RefreshCw data-icon="inline-start" />}
-              {zh ? "刷新最新记录" : "Refresh latest"}
+              {zh ? "刷新" : "Refresh"}
             </Button>
             <Button type="button" variant="outline" onClick={() => navigate("/builds")}>
               <GitBranch data-icon="inline-start" />
@@ -427,11 +427,7 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
           </div>
         ),
       }} />
-      <Card>
-        <CardHeader>
-          <CardTitle>{zh ? "筛选记录" : "Filter records"}</CardTitle>
-          <CardDescription>{zh ? "选择需要查看的应用、记录类型和时间范围。" : "Choose the application, record type, and time range to review."}</CardDescription>
-        </CardHeader>
+      <Card aria-label={zh ? "筛选记录" : "Filter records"}>
         <CardContent><HistoryFilters key={filters} lang={lang} filters={filters} onApply={apply} /></CardContent>
       </Card>
       <Card aria-busy={Boolean(loading)}>
@@ -466,7 +462,7 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
                     <TableCell><Badge variant="secondary">{sourceLabel(item.source, lang)}</Badge></TableCell>
                     <TableCell>
                       <div className="flex min-w-0 max-w-96 flex-col items-start gap-1">
-                        <Button variant="link" size="sm" className="h-auto max-w-full justify-start px-0" nativeButton={false} render={<a href={toHref(`/deployments/${item.kind}/${encodeURIComponent(item.id)}${filters ? `?${filters}` : ""}`)} onClick={(event) => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); select(item); } }} />}>
+                        <Button variant="link" size="sm" className="h-auto max-w-full justify-start px-0" nativeButton={false} render={<a href={toHref(`/deployments/${item.kind}/${encodeURIComponent(item.id)}${filters ? `?${filters}` : ""}`)} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); select(item); } }} />}>
                           <span className="truncate" title={item.title || item.application || item.id}>{item.title || item.application || item.id}</span>
                         </Button>
                         <p className="max-w-full truncate text-xs text-muted-foreground" title={[item.application, item.ref, item.buildNode].filter(Boolean).join(" · ")}>{[item.kind === "build" ? (zh ? "构建" : "Build") : (zh ? "部署" : "Deployment"), item.application, item.ref, item.buildNode].filter(Boolean).join(" · ")}</p>

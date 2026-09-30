@@ -324,7 +324,7 @@ export function GithubImportPanel({
           </ToggleGroup>
         </Field>
         {mode === "provider" ? <FieldGroup className="grid grid-cols-1 items-start gap-4 @md:grid-cols-2">
-          <DeploySelectField label="Git provider" value={providerType} onChange={(value) => setProviderType(value as (typeof PROVIDER_TYPES)[number])} options={PROVIDER_TYPES.map((type) => ({ value: type, label: providerTypeLabel(type, lang) }))} />
+          <DeploySelectField label={zh ? "代码托管服务" : "Git provider"} value={providerType} onChange={(value) => setProviderType(value as (typeof PROVIDER_TYPES)[number])} options={PROVIDER_TYPES.map((type) => ({ value: type, label: providerTypeLabel(type, lang) }))} />
           <DeploySelectField label={zh ? "账户凭据" : "Account credential"} value={providerId} onChange={setProviderId} disabled={providerLoading} options={[
             { value: "", label: providerLoading ? (zh ? "读取中…" : "Loading…") : (zh ? "选择账户" : "Select account") },
             ...accounts.map((provider) => ({ value: provider.id || "", label: providerAccountLabel(provider) })),
@@ -349,7 +349,7 @@ export function GithubImportPanel({
       <FieldGroup><DeploySelectField label={zh ? "构建节点" : "Build node"} value={buildNode} onChange={setBuildNode} options={[
         { value: "", label: zh ? "选择构建节点" : "Select build node" },
         ...candidates.map((node) => ({ value: node.name || "", label: node.displayName || node.name || "" })),
-      ]} description={!candidates.length ? (zh ? "当前没有可用的声明构建节点，节点需具备 docker-build 能力。" : "No declared builder node is currently available; the node must advertise docker-build.") : undefined} error={!buildNode ? (zh ? "请选择构建节点" : "Select a build node") : undefined} /></FieldGroup>
+      ]} description={!candidates.length ? (zh ? "当前没有可用的声明构建节点，节点需具备 docker-build 能力。" : "No declared builder node is currently available; the node must advertise docker-build.") : undefined} error={candidates.length && !buildNode ? (zh ? "请选择构建节点" : "Select a build node") : undefined} /></FieldGroup>
       {clusterRegistryHost ? <Alert><Server /><AlertTitle>{zh ? "集群 Registry" : "Cluster registry"}</AlertTitle><AlertDescription>{clusterRegistryHost}</AlertDescription></Alert> : null}
       <Collapsible open={showRegistry} onOpenChange={setShowRegistry} className="flex flex-col gap-4">
         <CollapsibleTrigger render={<Button variant="outline" className="w-fit" />}>

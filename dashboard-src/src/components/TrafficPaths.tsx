@@ -161,9 +161,9 @@ export function TrafficPaths({
 
   useEffect(() => {
     if (!cyRef || cyRef.destroyed()) return;
-    const frame = requestAnimationFrame(() => { cyRef.resize(); cyRef.fit(undefined, 36); });
+    const frame = requestAnimationFrame(() => { cyRef.resize(); cyRef.fit(undefined, 24); });
     const container = cyRef.container();
-    const observer = new ResizeObserver(() => { if (!cyRef.destroyed()) { cyRef.resize(); cyRef.fit(undefined, 36); } });
+    const observer = new ResizeObserver(() => { if (!cyRef.destroyed()) { cyRef.resize(); cyRef.fit(undefined, 24); } });
     if (container) observer.observe(container);
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
   }, [cyRef, elements]);
@@ -258,7 +258,7 @@ export function TrafficPaths({
           <CardContent>
             <div className="topology-canvas route-map" aria-label={zh ? "路由关系图" : "Route diagram"}>
               {/* A fixed zoom floor clamps fit() and clips large route graphs. */}
-              <CytoscapeComponent className="cy-topology" elements={elements} layout={{ name: "preset", fit: true, padding: 36 }} maxZoom={1.6} minZoom={0} stylesheet={stylesheet} cy={setCyRef} />
+              <CytoscapeComponent className="cy-topology" elements={elements} layout={{ name: "preset", fit: true, padding: 24 }} maxZoom={1.6} minZoom={0} stylesheet={stylesheet} cy={setCyRef} />
               <div className="cy-controls" role="group" aria-label={zh ? "关系图操作" : "Diagram controls"}>
                 {selected ? <Button variant="outline" size="sm" onClick={() => setSelectedPath(null)}><X data-icon="inline-start" />{zh ? "显示全部" : "Show all"}</Button> : null}
                 {controls.map(({ icon: Icon, label, action }) => <Tooltip key={label}>

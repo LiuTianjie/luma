@@ -93,14 +93,20 @@ export function CodeCell({ value }: { value: string }) {
   return <code className="block max-w-full font-mono text-xs whitespace-normal break-all">{value}</code>;
 }
 
-export function StatePill({ label, value }: { label: string; value?: string }) {
+const SUCCESS_STATES = ["ready", "running", "healthy", "active", "succeeded", "success", "stable", "available", "enabled", "sent", "configured", "resolved"];
+const DANGER_STATES = ["failed", "missing", "bad", "down", "error", "failed_partial", "critical", "firing"];
+const WARNING_STATES = ["pending", "degraded", "drain", "draining", "warning", "starting", "deploying", "queued", "retrying"];
+
+export function stateVariant(value?: string): "success" | "destructive" | "warning" | "outline" {
   const normalized = (value || "").toLowerCase();
-  const variant = ["ready", "running", "healthy", "active", "succeeded", "stable", "available"].includes(normalized)
-    ? "success"
-    : ["failed", "missing", "bad", "down", "error", "failed_partial", "critical"].includes(normalized)
-      ? "destructive"
-      : ["pending", "degraded", "drain", "draining", "warning", "starting", "deploying", "unknown", ""].includes(normalized)
-        ? "warning"
-        : "outline";
-  return <UiBadge variant={variant}>{label}</UiBadge>;
+  if (SUCCESS_STATES.includes(normalized)) return "success";
+  if (DANGER_STATES.includes(normalized)) return "destructive";
+  if (WARNING_STATES.includes(normalized)) return "warning";
+  return "outline";
+}
+
+/** Status badge coloured by meaning. Unknown states stay neutral; a missing label renders nothing. */
+export function StatePill({ label, value }: { label: string; value?: string }) {
+  if (!label || label === "-" || label === "—") return null;
+  return <UiBadge variant={stateVariant(value)}>{label}</UiBadge>;
 }

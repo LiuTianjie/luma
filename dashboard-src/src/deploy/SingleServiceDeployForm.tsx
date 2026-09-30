@@ -67,7 +67,7 @@ export function SingleServiceDeployForm({
             ...nodeOptions.map((node) => ({ value: node.name || "", label: node.name })),
           ]} description={zh ? "有持久化卷时，首次部署后自动固定节点，更新与重启继续使用原数据。" : "Persistent volumes pin the first deployment node. Updates and restarts reuse its data."} />
           <DeployTextField label={zh ? "副本" : "Replicas"} type="number" min={1} value={draft.replicas} onChange={(event) => patch({ replicas: Number(event.target.value || 1) })} error={!Number.isInteger(draft.replicas) || draft.replicas < 1 ? (zh ? "副本数必须为正整数" : "Replicas must be a positive integer") : undefined} />
-          <DeployCheckboxField label={zh ? "启用 egress proxy" : "Enable egress proxy"} checked={draft.proxy} onCheckedChange={(checked) => patch({ proxy: checked })} />
+          <DeployCheckboxField label={zh ? "启用出网代理" : "Enable egress proxy"} checked={draft.proxy} onCheckedChange={(checked) => patch({ proxy: checked })} />
         </FieldGroup>
       </DeployFormSection>
       <DeployFormSection id="deploy-network" title={zh ? "02 入口与网络" : "02 Ingress and network"}>
@@ -80,14 +80,14 @@ export function SingleServiceDeployForm({
           <DeployTextField label={zh ? "容器端口" : "Container port"} value={draft.port} inputMode="numeric" disabled={draft.exposure === "none"} onChange={(event) => patch({ port: event.target.value })} error={draft.exposure !== "none" && (!Number.isInteger(Number(draft.port)) || Number(draft.port) < 1) ? (zh ? "请输入有效的正整数端口" : "Enter a positive integer port") : undefined} />
           <DeployTextField label={zh ? "发布端口" : "Published port"} value={draft.publishPort} inputMode="numeric" disabled={!["tailscale-relay", "tcp-relay"].includes(draft.exposure)} onChange={(event) => patch({ publishPort: event.target.value })} error={draft.publishPort.trim() && (!Number.isInteger(Number(draft.publishPort)) || Number(draft.publishPort) < 1) ? (zh ? "请输入有效的正整数端口" : "Enter a positive integer port") : undefined} />
           <DeployTextareaField wide label={zh ? "额外网络" : "Extra networks"} value={draft.networks} onChange={(event) => patch({ networks: event.target.value })} placeholder={zh ? "每行一个网络" : "One network per line"} />
-          <DeployTextareaField wide label="Labels" value={draft.labels} onChange={(event) => patch({ labels: event.target.value })} placeholder={zh ? "每行一个标签" : "One label per line"} />
+          <DeployTextareaField wide label={zh ? "标签" : "Labels"} value={draft.labels} onChange={(event) => patch({ labels: event.target.value })} placeholder={zh ? "每行一个标签" : "One label per line"} />
         </FieldGroup>
       </DeployFormSection>
       <DeployFormSection id="deploy-runtime" title={zh ? "03 运行参数" : "03 Runtime"}>
         <FieldGroup className="grid grid-cols-1 items-start gap-4 @md:grid-cols-2">
           <DeployTextField wide label={zh ? "命令" : "Command"} value={draft.command} onChange={(event) => patch({ command: event.target.value })} />
-          <DeployTextField label="CPU limit" value={draft.cpuLimit} onChange={(event) => patch({ cpuLimit: event.target.value })} placeholder="0.50" />
-          <DeployTextField label="Memory limit" value={draft.memoryLimit} onChange={(event) => patch({ memoryLimit: event.target.value })} placeholder="512M" />
+          <DeployTextField label={zh ? "CPU 上限" : "CPU limit"} value={draft.cpuLimit} onChange={(event) => patch({ cpuLimit: event.target.value })} placeholder="0.50" />
+          <DeployTextField label={zh ? "内存上限" : "Memory limit"} value={draft.memoryLimit} onChange={(event) => patch({ memoryLimit: event.target.value })} placeholder="512M" />
           <DeployTextField label={zh ? "健康检查 URL" : "Healthcheck URL"} value={draft.healthcheckUrl} onChange={(event) => patch({ healthcheckUrl: event.target.value })} placeholder="http://127.0.0.1:80/healthz" />
           <DeployTextareaField label={zh ? "额外挂载" : "Extra mounts"} value={draft.volumes} onChange={(event) => patch({ volumes: event.target.value })} placeholder="/srv/media:/media:ro" />
           {draft.storage.trim() ? <DeployTextareaField label={zh ? "原有存储配置" : "Existing storage configuration"} value={draft.storage} onChange={(event) => patch({ storage: event.target.value })} /> : null}

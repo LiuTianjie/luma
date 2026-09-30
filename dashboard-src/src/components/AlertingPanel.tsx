@@ -84,13 +84,10 @@ import {
 } from "@/components/ui/combobox";
 import { cn } from "@/lib/utils";
 import { useConfirm } from "./ConfirmDialog";
+import { EMPTY_VALUE, formatDateTime } from "../format";
 
 function stamp(value: number | null | undefined, zh: boolean) {
-  return value
-    ? new Date(value * 1000).toLocaleString(zh ? "zh-CN" : "en-US", {
-        hour12: false,
-      })
-    : "—";
+  return value ? formatDateTime(value, zh ? "zh" : "en") : EMPTY_VALUE;
 }
 function AlertStatus({ status, zh }: { status: string; zh: boolean }) {
   return (
@@ -99,8 +96,10 @@ function AlertStatus({ status, zh }: { status: string; zh: boolean }) {
         ["firing", "failed", "critical"].includes(status)
           ? "destructive"
           : ["pending", "warning", "retry", "sending"].includes(status)
-            ? "secondary"
-            : "outline"
+            ? "warning"
+            : ["sent", "resolved", "delivered"].includes(status)
+              ? "success"
+              : "outline"
       }
     >
       {alertStatusLabel(status, zh)}
@@ -803,7 +802,7 @@ export function AlertingPanel({
                                 variant={
                                   item.severity === "critical"
                                     ? "destructive"
-                                    : "secondary"
+                                    : "warning"
                                 }
                               >
                                 {item.severity === "critical"
@@ -1110,7 +1109,7 @@ export function AlertingPanel({
                                   : item.target}
                               </span>
                               <Badge
-                                variant={item.enabled ? "secondary" : "outline"}
+                                variant={item.enabled ? "success" : "outline"}
                               >
                                 {item.enabled
                                   ? zh
@@ -1693,7 +1692,7 @@ export function AlertingPanel({
                             <div className="flex flex-col items-start gap-1">
                               <span className="font-medium">{item.name}</span>
                               <Badge
-                                variant={item.enabled ? "secondary" : "outline"}
+                                variant={item.enabled ? "success" : "outline"}
                               >
                                 {item.enabled
                                   ? zh
@@ -2087,20 +2086,19 @@ export function AlertingPanel({
         </>
       )}
       {!editor && (
-        <div className="flex flex-wrap items-center justify-end gap-3">
-          <span className="text-sm text-muted-foreground">
-            {zh ? "每 15 秒自动刷新" : "Refreshes every 15 seconds"}
-          </span>
+        <p className="flex flex-wrap items-center gap-1 text-sm text-muted-foreground">
+          {zh ? "每 15 秒自动刷新。" : "Refreshes every 15 seconds."}
           <Button
             type="button"
-            variant="ghost"
+            variant="link"
             size="sm"
+            className="h-auto px-0"
             onClick={refreshNow}
             disabled={busy}
           >
-            {zh ? "刷新" : "Refresh"}
+            {zh ? "立即刷新" : "Refresh now"}
           </Button>
-        </div>
+        </p>
       )}
     </div>
   );

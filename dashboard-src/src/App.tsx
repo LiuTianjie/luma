@@ -53,6 +53,12 @@ export function App() {
   const { token, payload, cluster, errors, syncStatus, lastUpdated, setToken, signOut, loadDashboard } = useDashboardData(dashboardScope, dashboardQuery);
   const { mode: themeMode, theme, setMode: setThemeMode } = useTheme();
   const vm = useMemo(() => createDashboardViewModel(payload), [payload]);
+  // Pages that fetch their own data return no cluster identity; keep the last one seen.
+  const [clusterId, setClusterId] = useState("");
+  const liveClusterId = cluster?.id || payload?.cluster?.id || "";
+  useEffect(() => {
+    if (liveClusterId) setClusterId(liveClusterId);
+  }, [liveClusterId]);
 
   const objectRoute = parseObjectRoute(router.path);
   const editName = objectRoute?.kind === "update" ? objectRoute.name : "";
@@ -77,7 +83,8 @@ export function App() {
     return () => { active = false; };
   }, [editName, token, currentUpdateRequest, payload, vm.applications, updateAttempt]);
 
-  const activeNavPage: NavPage = resolvedPage === "notfound" ? "overview" : resolvedPage;
+  // A missing page belongs to no workspace, so nothing in the sidebar claims it.
+  const activeNavPage: NavPage | null = resolvedPage === "notfound" ? null : resolvedPage;
   // These pages fetch their own data and can render while the overview payload
   // is still in flight. Keeping this gate narrow avoids making their first paint
   // wait on nodes, services, metrics, and issue history.
@@ -181,7 +188,7 @@ export function App() {
         </Button>
         <AppSidebar
           lang={lang}
-          clusterId={cluster?.id || vm.clusterId}
+          clusterId={clusterId}
           vm={vm}
           showFleetSummary={["full", "overview", "fleet", "network", "metrics"].includes(payload?.scope || "")}
           activeNavPage={activeNavPage}

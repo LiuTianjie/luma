@@ -14,6 +14,12 @@ import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
+function egressLabel(egress: string, zh: boolean) {
+  if (egress === "proxy") return zh ? "网关代理" : "Proxy";
+  if (egress === "direct") return zh ? "直接出网" : "Direct";
+  return egress;
+}
+
 export function RegionPanel({
   lang,
   token,
@@ -160,7 +166,7 @@ export function RegionPanel({
           <TableRow>
             <TableHead>{zh ? "名称" : "Name"}</TableHead>
             <TableHead>{zh ? "类型" : "Kind"}</TableHead>
-            <TableHead>egress</TableHead>
+            <TableHead>{zh ? "出网方式" : "Egress"}</TableHead>
             <TableHead>{zh ? "节点" : "Nodes"}</TableHead>
             <TableHead>{zh ? "允许的入口" : "Exposures"}</TableHead>
             <TableHead><span className="sr-only">{zh ? "操作" : "Actions"}</span></TableHead>
@@ -171,12 +177,12 @@ export function RegionPanel({
             <TableRow key={region.name}>
               <TableCell>{region.name}</TableCell>
               <TableCell><Badge variant="secondary">{region.builtin ? (zh ? "内置" : "Built-in") : (zh ? "自定义" : "Custom")}</Badge></TableCell>
-              <TableCell><Badge variant="outline">{region.egress || "-"}</Badge></TableCell>
+              <TableCell>{region.egress ? <Badge variant="outline">{egressLabel(region.egress, zh)}</Badge> : <span className="text-muted-foreground">—</span>}</TableCell>
               <TableCell>{region.nodeCount}</TableCell>
               <TableCell>
                 <div className="flex flex-wrap gap-2">
                   {(region.exposures || (region.builtin ? [] : ["none"])).map((exposure) => <Badge key={exposure} variant="outline">{exposure}</Badge>)}
-                  {region.builtin && !region.exposures?.length ? "-" : null}
+                  {region.builtin && !region.exposures?.length ? <span className="text-muted-foreground">—</span> : null}
                 </div>
               </TableCell>
               <TableCell>

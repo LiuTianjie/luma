@@ -44,7 +44,7 @@ import {
   rollbackService,
   updateApplicationStream,
 } from "../lifecycleApi";
-import { formatTimestamp } from "../format";
+import { formatDateTime } from "../format";
 import type { DeployStep } from "../deploy/types";
 import type {
   DashboardPayload,
@@ -111,7 +111,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
@@ -150,7 +149,7 @@ function versionNumber(version: ServiceVersion["version"]) {
   return Number.isInteger(value) ? value : null;
 }
 
-function versionSubmittedLabel(value: ServiceVersion["submitTime"]) {
+function versionSubmittedLabel(value: ServiceVersion["submitTime"], lang: Lang) {
   const timestamp = Number(value);
   if (!Number.isFinite(timestamp) || timestamp <= 0) return "-";
   let milliseconds = timestamp;
@@ -161,8 +160,7 @@ function versionSubmittedLabel(value: ServiceVersion["submitTime"]) {
   } else if (timestamp < 10_000_000_000) {
     milliseconds = timestamp * 1000;
   }
-  const date = new Date(milliseconds);
-  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString();
+  return formatDateTime(new Date(milliseconds), lang);
 }
 
 export function ApplicationManagementPanel({
@@ -909,8 +907,9 @@ export function ApplicationManagementPanel({
           if (next) navigate(applicationPath(selected.stack, next.id));
         }}
       >
-        <div className="max-w-full overflow-x-auto pb-1">
+        <div className="max-w-full overflow-x-auto">
           <TabsList
+            variant="line"
             aria-label={lang === "zh" ? "应用工作区" : "Application workspace"}
           >
             {APPLICATION_TABS.map((item) => (
@@ -1191,7 +1190,7 @@ export function ApplicationManagementPanel({
                           current={isCurrent}
                           image={version.image || "-"}
                           imageLabel={t(lang, "image")}
-                          submitted={versionSubmittedLabel(version.submitTime)}
+                          submitted={versionSubmittedLabel(version.submitTime, lang)}
                           submittedLabel={t(lang, "submitted")}
                           stable={
                             version.stable ? (
@@ -1281,7 +1280,7 @@ export function ApplicationManagementPanel({
                   </span>
                   <span>
                     {t(lang, "lastUpdated")}:{" "}
-                    {formatTimestamp(selectedConfig.updatedAt)}
+                    {formatDateTime(selectedConfig.updatedAt, lang)}
                   </span>
                 </CardDescription>
                 <CardAction>
@@ -1346,16 +1345,15 @@ export function ApplicationManagementPanel({
                   ) : null}
                   <TabsContent value={configTab} className="min-w-0">
                     {selectedConfigContent ? (
-                      <ScrollArea className="h-80 max-h-[60vh]">
+                      <div className="max-h-[60vh] overflow-auto rounded-md border bg-muted/40">
                         <pre
                           tabIndex={0}
                           aria-label={t(lang, "deploymentConfig")}
-                          className="m-0 w-max min-w-full p-1"
+                          className="m-0 w-max min-w-full p-4 font-mono text-xs leading-relaxed"
                         >
                           <code>{selectedConfigContent}</code>
                         </pre>
-                        <ScrollBar orientation="horizontal" />
-                      </ScrollArea>
+                      </div>
                     ) : (
                       <Empty>
                         <EmptyHeader>

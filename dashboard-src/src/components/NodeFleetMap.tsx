@@ -1,4 +1,4 @@
-import { Activity, Cpu, MapPin, Server, SquareTerminal, TerminalSquare } from "lucide-react";
+import { Activity, Bot, Cpu, MapPin, Server, SquareTerminal, TerminalSquare } from "lucide-react";
 import { localizeState } from "../i18n";
 import type { DashboardNode, DashboardService, Lang } from "../types";
 import { Badge } from "@/components/ui/badge";
@@ -7,27 +7,11 @@ import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader,
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { formatBytes, formatPercent } from "../format";
 
 function clampPercent(value?: number) {
   if (typeof value !== "number" || !Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(100, value));
-}
-
-function formatPercent(value?: number) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
-  return `${Math.round(value)}%`;
-}
-
-function formatBytes(value?: number) {
-  if (!value) return "-";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let amount = value;
-  let index = 0;
-  while (amount >= 1024 && index < units.length - 1) {
-    amount /= 1024;
-    index += 1;
-  }
-  return `${amount >= 10 || index === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
 }
 
 function nodeHealth(node: DashboardNode) {
@@ -140,6 +124,7 @@ export function NodeFleetMap({
   const workloads = workloadCounts(services || []);
   const readyNodes = nodes.filter((node) => nodeHealth(node) === "good").length;
   const terminalNodes = nodes.filter(terminalReady).length;
+  const readyAgents = nodes.filter((node) => (node.agentStatus || "").toLowerCase() === "ready").length;
   const pressuredNodes = nodes.filter((node) => pressureOf(node) >= 85).length;
   const maxPressure = nodes.reduce((max, node) => Math.max(max, pressureOf(node)), 0);
 
@@ -147,10 +132,11 @@ export function NodeFleetMap({
     <section className="flex flex-col gap-6" aria-label={zh ? "节点态势" : "Node fleet"}>
       <div className="flex flex-wrap items-center gap-2">
         {[
-          { icon: Server, value: readyNodes, label: zh ? "在线" : "Ready" },
-          { icon: TerminalSquare, value: terminalNodes, label: zh ? "终端可用" : "Terminal" },
-          { icon: Activity, value: pressuredNodes, label: zh ? "高负载" : "hot" },
-          { icon: Cpu, value: formatPercent(nodes.some(pressureAvailable) ? maxPressure : undefined), label: zh ? "峰值" : "peak" },
+          { icon: Server, value: `${readyNodes}/${nodes.length}`, label: zh ? "在线" : "Ready" },
+          { icon: Bot, value: `${readyAgents}/${nodes.length}`, label: zh ? "Agent 就绪" : "Agents ready" },
+          { icon: TerminalSquare, value: terminalNodes, label: zh ? "终端可用" : "Terminal ready" },
+          { icon: Activity, value: pressuredNodes, label: zh ? "高负载" : "High load" },
+          { icon: Cpu, value: formatPercent(nodes.some(pressureAvailable) ? maxPressure : undefined), label: zh ? "峰值" : "Peak" },
         ].map((item) => (
           <Badge key={item.label} variant="outline">
             <item.icon data-icon="inline-start" />

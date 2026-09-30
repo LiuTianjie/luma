@@ -1,5 +1,4 @@
 import { GithubImportPanel } from "../deploy/GithubImportPanel";
-import type { DashboardViewModel, NavPage } from "../dashboardViewModel";
 import type { DashboardPayload, Lang } from "../types";
 
 // Builder is the source-to-image entry: import a Git repository (clone → build →
@@ -14,21 +13,17 @@ export function BuilderPage({
   lang: Lang;
   token: string;
   payload: DashboardPayload;
-  vm: DashboardViewModel;
   onRefresh: () => Promise<void> | void;
-  onNavigate: (page: NavPage) => void;
 }) {
-  const nodes = payload.nodes || [];
-
   return (
-      <section className="min-w-0">
-        <GithubImportPanel
-          lang={lang}
-          token={token}
-          nodes={nodes}
-          build={payload.build}
-          onRefresh={onRefresh}
-        />
-      </section>
+    <section className="min-w-0">
+      <GithubImportPanel
+        lang={lang}
+        token={token}
+        nodes={payload.nodes || []}
+        build={payload.build}
+        onRefresh={onRefresh}
+      />
+    </section>
   );
 }

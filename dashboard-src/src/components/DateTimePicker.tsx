@@ -75,14 +75,14 @@ export function DateTimePicker({
           <Button
             type="button"
             variant="outline"
-            className="w-full min-w-0 justify-between"
+            className="w-full min-w-0 justify-between font-normal"
           />
         }
       >
-        <span className="truncate">
+        <span className={selected ? "truncate" : "truncate text-muted-foreground"}>
           {selected ? formatDisplay(selected, lang) : placeholder}
         </span>
-        <CalendarIcon data-icon="inline-end" />
+        <CalendarIcon data-icon="inline-end" className="text-muted-foreground" />
       </PopoverTrigger>
       <PopoverContent align="start" className="w-auto max-w-[calc(100vw-2rem)] p-0">
         <PopoverTitle className="sr-only">{placeholder}</PopoverTitle>

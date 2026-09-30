@@ -51,7 +51,7 @@ export function ApplicationsPage({
             ? "管理应用、服务实例与发布版本。"
             : "Manage applications, service instances, and releases.",
           metrics: [
-            { label: t(lang, "applications"), value: counts?.total ?? applications.length },
+            { label: zh ? "全部" : "Total", value: counts?.total ?? applications.length },
             { label: zh ? "健康" : "Healthy", value: healthy },
             { label: zh ? "降级" : "Degraded", value: degraded },
             { label: zh ? "失败" : "Failed", value: failed },

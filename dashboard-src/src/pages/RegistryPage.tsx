@@ -1,13 +1,4 @@
-import {
-  AlertTriangle,
-  Boxes,
-  Info,
-  RefreshCw,
-  Search,
-  Settings2,
-  ShieldCheck,
-  Trash2,
-} from "lucide-react";
+import { AlertTriangle, ArrowLeft, Boxes, Info, RefreshCw, Search, Settings2, ShieldCheck, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Bar, BarChart, CartesianGrid, XAxis } from "recharts";
 import { CodeCell } from "../components/primitives";
@@ -38,7 +29,7 @@ import {
   type RegistryPolicy,
 } from "../registryManagementApi";
 import type { Lang } from "../types";
-import { useRouter, toHref } from "../router";
+import { useRouter, spaLink } from "../router";
 import { findRegistryImage } from "../registryDetail";
 import { PageHeader } from "./PageHeader";
 
@@ -306,7 +297,9 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
           title: section === "delete" ? (zh ? "删除镜像" : "Delete images") : showPolicy ? (zh ? "镜像保留策略" : "Image retention policy") : (zh ? "Registry 镜像管理" : "Registry image management"),
           description: section === "delete"
             ? (zh ? "核对清理范围与影响后，确认执行。" : "Review the cleanup scope and impact before confirming.")
-            : zh ? "查看镜像与引用情况，选择需要清理的镜像即可删除。" : "Review images and their references, then select images to delete.",
+            : showPolicy
+              ? (zh ? "设置自动清理的保留数量、宽限期与容量阈值。" : "Set how many images to keep, grace periods, and capacity thresholds for automatic cleanup.")
+              : zh ? "查看镜像与引用情况，选择需要清理的镜像即可删除。" : "Review images and their references, then select images to delete.",
           metrics: section === "delete" ? (preview ? [
             { label: zh ? "选中镜像" : "Images", value: preview.selected?.length || 0 },
             { label: zh ? "标签" : "Tags", value: preview.selected?.reduce((count, item) => count + (item.tags?.length || 0), 0) || 0 },
@@ -323,7 +316,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
                 {zh ? "重新扫描" : "Rescan"}
               </Button>
               <Button variant="outline" type="button" disabled={!!busy} onClick={() => setShowPolicy(!showPolicy)}>
-                <Settings2 data-icon="inline-start" />{showPolicy ? (zh ? "返回镜像" : "Back to images") : (zh ? "保留策略" : "Retention")}
+                {showPolicy ? <ArrowLeft data-icon="inline-start" /> : <Settings2 data-icon="inline-start" />}{showPolicy ? (zh ? "返回镜像" : "Back to images") : (zh ? "保留策略" : "Retention")}
               </Button>
             </div>
           ),
@@ -435,7 +428,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
                   <TableBody>
                     {entries.map((item) => <TableRow key={keyFor(item)} data-state={selected.has(keyFor(item)) ? "selected" : undefined}>
                       <TableCell><Checkbox checked={selected.has(keyFor(item))} disabled={!!busy} onCheckedChange={() => toggle(item)} aria-label={`${item.repository} ${item.digest}`} /></TableCell>
-                      <TableCell><span className="flex w-80 flex-col items-start gap-1 whitespace-normal"><a className={cn(buttonVariants({ variant: "link", size: "sm" }), "h-auto max-w-full whitespace-normal break-all px-0 text-left")} href={toHref(`/registry/image?image=${encodeURIComponent(keyFor(item))}`)} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(`/registry/image?image=${encodeURIComponent(keyFor(item))}`); }}>{item.repository}</a><CodeCell value={item.digest} /></span></TableCell>
+                      <TableCell><span className="flex w-80 flex-col items-start gap-1 whitespace-normal"><a className={cn(buttonVariants({ variant: "link", size: "sm" }), "h-auto max-w-full whitespace-normal break-all px-0 text-left")} {...spaLink(`/registry/image?image=${encodeURIComponent(keyFor(item))}`, navigate)}>{item.repository}</a><CodeCell value={item.digest} /></span></TableCell>
                       <TableCell><span className="flex max-w-52 flex-wrap gap-1">{item.tags?.length ? item.tags.slice(0, 4).map((tag) => <Badge key={tag} variant="secondary" title={tag}><span className="max-w-44 truncate">{tag}</span></Badge>) : <span className="text-muted-foreground">—</span>}{(item.tags || []).length > 4 ? <Badge variant="outline">+{item.tags.length - 4}</Badge> : null}</span></TableCell>
                       <TableCell><span className="flex flex-col items-start gap-1">{item.platforms?.length ? item.platforms.map((platform) => <Badge key={platform} variant="outline">{platform}</Badge>) : <span className="text-muted-foreground">—</span>}</span></TableCell>
                       <TableCell>{formatBytes(item.logicalBytes)}</TableCell><TableCell>{formatTimestamp(item.createdAt || item.lastModified, lang)}</TableCell>

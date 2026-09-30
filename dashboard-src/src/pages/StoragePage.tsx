@@ -1,7 +1,6 @@
-import type { MouseEvent } from "react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StorageGovernancePanel } from "../components/StorageGovernancePanel";
-import { toHref, useRouter } from "../router";
+import { useRouter, spaLink } from "../router";
 import { StoragePanel } from "../components/StoragePanel";
 import { t } from "../i18n";
 import type { Lang } from "../types";
@@ -13,10 +12,6 @@ const STORAGE_VIEWS = [
   { id: "inventory", href: "/storage", zh: "卷与存储类", en: "Volumes and classes" },
   { id: "governance", href: "/storage/governance", zh: "容量与回收", en: "Capacity and cleanup" },
 ] as const;
-
-function plainClick(event: MouseEvent) {
-  return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
-}
 
 export function StoragePage({ lang, vm, token }: { lang: Lang; vm: DashboardViewModel; token: string }) {
   const zh = lang === "zh";
@@ -40,18 +35,13 @@ export function StoragePage({ lang, vm, token }: { lang: Lang; vm: DashboardView
         }}
       />
       <Tabs value={view}>
-        <TabsList aria-label={zh ? "存储视图" : "Storage views"}>
+        <TabsList variant="line" aria-label={zh ? "存储视图" : "Storage views"}>
           {STORAGE_VIEWS.map((item) => (
             <TabsTrigger
               key={item.id}
               value={item.id}
               nativeButton={false}
-              render={<a href={toHref(item.href)} aria-current={view === item.id ? "page" : undefined} />}
-              onClick={(event) => {
-                if (!plainClick(event)) return;
-                event.preventDefault();
-                navigate(item.href);
-              }}
+              render={<a {...spaLink(item.href, navigate)} aria-current={view === item.id ? "page" : undefined} />}
             >
               {zh ? item.zh : item.en}
             </TabsTrigger>

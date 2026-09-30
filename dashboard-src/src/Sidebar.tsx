@@ -1,4 +1,3 @@
-import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   Sidebar,
   SidebarContent,
@@ -24,7 +23,7 @@ import type { ThemeMode } from "./useTheme";
 import { activeNavChild, buildNavGroups, navWorkspace, type NavGroup } from "./navItems";
 import type { DashboardViewModel, NavPage } from "./dashboardViewModel";
 import { ROUTE_BY_PAGE } from "./routes";
-import { toHref, useRouter } from "./router";
+import { toHref, useRouter, isPlainLeftClick, spaLink } from "./router";
 import type { Lang } from "./types";
 import { t } from "./i18n";
 import lumaLogoMark from "./assets/luma-logo-mark.png";
@@ -46,7 +45,7 @@ export function AppSidebar({
   clusterId: string;
   vm: DashboardViewModel;
   showFleetSummary?: boolean;
-  activeNavPage: NavPage;
+  activeNavPage: NavPage | null;
   onNavigate: (page: NavPage) => void;
   onPrefetch?: (page: NavPage) => void;
   onSignOut: () => void;
@@ -59,15 +58,10 @@ export function AppSidebar({
   const toggleLabel = lang === "zh" ? (expanded ? "收起侧边栏" : "展开侧边栏") : (expanded ? "Collapse sidebar" : "Expand sidebar");
   const groups: NavGroup[] = buildNavGroups(lang, vm);
   const { path, navigate: navigatePath } = useRouter();
-  const activeWorkspace = navWorkspace(activeNavPage);
+  const activeWorkspace = activeNavPage ? navWorkspace(activeNavPage) : null;
   // Icon-only mode hides nested lists, so workspaces with secondary pages open a flyout instead.
   const iconOnly = !isMobile && !open;
-  const openChild = (event: ReactMouseEvent, href: string) => {
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    event.preventDefault();
-    navigatePath(href);
-    if (isMobile) setOpenMobile(false);
-  };
+  const closeMobile = () => { if (isMobile) setOpenMobile(false); };
 
   return (
     <Sidebar collapsible="icon" variant="sidebar" >
@@ -79,9 +73,9 @@ export function AppSidebar({
         </div>
       </SidebarHeader>
       <SidebarContent>
-        <div className="flex min-w-0 items-center gap-2 px-5 pt-4 text-xs group-data-[collapsible=icon]:hidden">
+        {clusterId ? <div className="flex min-w-0 items-center gap-2 px-5 pt-4 text-xs group-data-[collapsible=icon]:hidden">
           <span className="shrink-0 text-muted-foreground">{t(lang, "cluster")}</span><code className="truncate" title={clusterId} translate="no">{clusterId}</code>
-        </div>
+        </div> : null}
         {groups.map((group) => (
           <SidebarGroup key={group.key} className="px-3 pt-4 pb-2 group-data-[collapsible=icon]:px-2">
             {group.label ? <SidebarGroupLabel>{group.label}</SidebarGroupLabel> : null}
@@ -112,11 +106,10 @@ export function AppSidebar({
                                 <DropdownMenuLinkItem
                                   key={child.href}
                                   closeOnClick
-                                  href={toHref(child.href)}
+                                  {...spaLink(child.href, navigatePath)}
                                   title={child.detail}
                                   aria-current={activeChild === child ? "page" : undefined}
                                   className="aria-[current=page]:font-medium aria-[current=page]:text-foreground"
-                                  onClick={(event) => openChild(event, child.href)}
                                 >
                                   {child.label}
                                 </DropdownMenuLinkItem>
@@ -140,10 +133,10 @@ export function AppSidebar({
                             href={toHref(ROUTE_BY_PAGE[item.id])}
                             aria-current={active && !activeChild ? "page" : undefined}
                             onClick={(event) => {
-                              if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+                              if (!isPlainLeftClick(event)) return;
                               event.preventDefault();
                               onNavigate(item.id);
-                              if (isMobile) setOpenMobile(false);
+                              closeMobile();
                             }}
                             onPointerEnter={() => onPrefetch?.(item.id)}
                             onFocus={() => onPrefetch?.(item.id)}
@@ -163,8 +156,7 @@ export function AppSidebar({
                                 className="h-9"
                                 isActive={activeChild === child}
                                 title={child.detail}
-                                render={<a href={toHref(child.href)} aria-current={activeChild === child ? "page" : undefined} />}
-                                onClick={(event) => openChild(event, child.href)}
+                                render={<a {...spaLink(child.href, navigatePath, closeMobile)} aria-current={activeChild === child ? "page" : undefined} />}
                               >
                                 <span>{child.label}</span>
                               </SidebarMenuSubButton>

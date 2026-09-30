@@ -1,5 +1,5 @@
 import { dump, load } from "js-yaml";
-import type { ComposeDeploymentDraft, ComposeServiceDraft, ComposeVolumeDraft, KeyValueRow, ServiceManifestDraft } from "./types";
+import type { ComposeDeploymentDraft, ComposeServiceDraft, KeyValueRow, ServiceManifestDraft } from "./types";
 
 type YamlMap = Record<string, unknown>;
 

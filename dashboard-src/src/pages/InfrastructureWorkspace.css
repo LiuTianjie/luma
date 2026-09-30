@@ -11,6 +11,6 @@
 .network-workspace { gap: 24px; }
 .route-workspace { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
 .route-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 260px); gap: 16px; max-width: 1000px; }
-.route-map { height: 320px; min-height: 320px; }
+.route-map { height: 420px; min-height: 320px; }
 .route-map .cy-topology { height: 100%; min-height: 0; }
 @container (max-width: 600px) { .route-filters { grid-template-columns: minmax(0, 1fr); } }

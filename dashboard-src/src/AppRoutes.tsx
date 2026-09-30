@@ -131,7 +131,7 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
       );
       break;
     case "builder":
-      content = <BuilderPage lang={lang} token={token} payload={payload} vm={vm} onRefresh={props.onRefresh} onNavigate={props.onNavigate} />;
+      content = <BuilderPage lang={lang} token={token} payload={payload} onRefresh={props.onRefresh} />;
       break;
     case "deployments":
       content = <DeploymentsPage lang={lang} token={token} />;

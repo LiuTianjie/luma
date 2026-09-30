@@ -28,6 +28,7 @@ import {
   type ManagerUpdate,
   type RouteSentinel,
 } from "../systemUpdateApi";
+import { formatDateTime } from "../format";
 
 function versionFromRef(value: string) {
   return value.trim().replace(/^v/, "");
@@ -373,7 +374,7 @@ export function SystemUpdatePanel({
         <Card>
           <CardHeader>
             <CardTitle>{zh ? "最近一次路由检查" : "Latest route check"}</CardTitle>
-            <CardDescription>{sentinel.checkedAt ? new Date(sentinel.checkedAt * 1000).toLocaleString(zh ? "zh-CN" : "en-US") : (zh ? "当前会话的检查结果。" : "Results from this session.")}</CardDescription>
+            <CardDescription>{sentinel.checkedAt ? formatDateTime(sentinel.checkedAt, lang) : (zh ? "当前会话的检查结果。" : "Results from this session.")}</CardDescription>
             <CardAction><Badge variant={sentinel.failed ? "warning" : "secondary"}>{sentinel.succeeded || 0}/{sentinel.total || 0} {zh ? "可达" : "reachable"}</Badge></CardAction>
           </CardHeader>
           <CardContent>

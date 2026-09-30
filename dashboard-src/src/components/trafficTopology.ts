@@ -175,7 +175,7 @@ export function buildTopology(paths: TrafficPath[]): {
 
   const graph = new dagre.graphlib.Graph();
   graph.setDefaultEdgeLabel(() => ({}));
-  graph.setGraph({ rankdir: "LR", nodesep: 48, ranksep: 120, marginx: 40, marginy: 40 });
+  graph.setGraph({ rankdir: "LR", nodesep: 24, ranksep: 64, marginx: 16, marginy: 16 });
 
   nodeData.forEach((node) => graph.setNode(node.id, { width: node.kind === "destination" ? DESTINATION_WIDTH : NODE_WIDTH, height: NODE_HEIGHT }));
   edges.forEach((edge) => graph.setEdge(edge.source, edge.target));

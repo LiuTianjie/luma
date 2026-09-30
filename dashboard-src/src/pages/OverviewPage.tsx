@@ -1,4 +1,4 @@
-import { ArrowRight, CheckCircle2, Info, Plus, Server, X } from "lucide-react";
+import { ArrowRight, CheckCircle2, CircleAlert, Info, Plus, Server, TriangleAlert, X } from "lucide-react";
 import { useMemo } from "react";
 import { StatePill } from "../components/primitives";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -17,6 +17,16 @@ import { PageHeader } from "./PageHeader";
 
 function percent(value?: number) {
   return typeof value === "number" && Number.isFinite(value) ? `${Math.round(value)}%` : "—";
+}
+
+function severityVariant(severity: string) {
+  return severity === "critical" ? "destructive" as const : severity === "warning" ? "warning" as const : "outline" as const;
+}
+
+function SeverityIcon({ severity }: { severity: string }) {
+  if (severity === "critical") return <CircleAlert className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden="true" />;
+  if (severity === "warning") return <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning-foreground" aria-hidden="true" />;
+  return <Info className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />;
 }
 
 export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
@@ -142,49 +152,49 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
             <CardDescription>{zh ? "按对象归组；归组不代表相同根因。" : "Grouped by object; grouping does not imply a shared cause."}</CardDescription>
             <CardAction><Badge variant="secondary">{zh ? `${groups.length} 个对象` : `${groups.length} objects`}</Badge></CardAction>
           </CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            {groups.map((group) => (
-              <Card size="sm" key={group.key}>
-                <CardHeader>
-                  <CardTitle className="min-w-0 wrap-anywhere">{group.target}</CardTitle>
-                  <CardDescription>{groupKind(group)}</CardDescription>
-                  <CardAction>
-                    <Badge variant={group.severity === "critical" ? "destructive" : group.severity === "warning" ? "secondary" : "outline"}>
-                      {severityLabel(group.severity)}
-                    </Badge>
-                  </CardAction>
-                </CardHeader>
-                <CardContent className="flex flex-col gap-3">
-                  <div className="flex flex-col gap-2">
-                    {group.issues.map((issue, index) => (
-                      <Alert variant={issue.severity === "critical" ? "destructive" : "default"} key={`${issueKey(issue)}:${index}`}>
-                        <AlertTitle className="min-w-0 wrap-anywhere">{issue.message || (zh ? "未提供诊断信息" : "No diagnostic message provided")}</AlertTitle>
-                        <AlertDescription className="min-w-0 wrap-anywhere">{[severityLabel(issue.severity || "info"), issue.kind].filter(Boolean).join(" · ")}</AlertDescription>
-                        <AlertAction>
-                          <Tooltip>
-                            <TooltipTrigger render={<Button variant="ghost" size="icon-xs" aria-label={zh ? "仅在此浏览器隐藏 1 小时" : "Hide in this browser for 1 hour"} onClick={() => dismiss(issueKey(issue))} />}>
-                              <X data-icon="inline-start" />
-                            </TooltipTrigger>
-                            <TooltipContent>{zh ? "仅在此浏览器隐藏 1 小时" : "Hide in this browser for 1 hour"}</TooltipContent>
-                          </Tooltip>
-                        </AlertAction>
-                      </Alert>
-                    ))}
+          <CardContent className="-mb-(--card-spacing) px-0">
+            <ul className="divide-y border-t">
+              {groups.map((group) => (
+                <li key={group.key} className="flex flex-col gap-2 px-(--card-spacing) py-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="flex min-w-0 flex-col gap-0.5">
+                      <span className="font-medium wrap-anywhere">{group.target}</span>
+                      <span className="text-xs text-muted-foreground">{groupKind(group)}</span>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Badge variant={severityVariant(group.severity)}>{severityLabel(group.severity)}</Badge>
+                      {group.app || group.node ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => group.node ? onSelectNode(group.node) : onNavigate("applications", { selectApp: group.app!.stack })}
+                        >
+                          {zh ? "查看详情" : "View details"}
+                          <ArrowRight data-icon="inline-end" />
+                        </Button>
+                      ) : null}
+                    </div>
                   </div>
-                  {group.app || group.node ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="w-fit"
-                      onClick={() => group.node ? onSelectNode(group.node) : onNavigate("applications", { selectApp: group.app!.stack })}
-                    >
-                      {zh ? "查看详情" : "View details"}
-                      <ArrowRight data-icon="inline-end" />
-                    </Button>
-                  ) : null}
-                </CardContent>
-              </Card>
-            ))}
+                  <ul className="flex flex-col gap-1.5">
+                    {group.issues.map((issue, index) => (
+                      <li key={`${issueKey(issue)}:${index}`} className="flex items-start gap-2 rounded-md bg-muted/60 py-2 pr-1.5 pl-3">
+                        <SeverityIcon severity={issue.severity || "info"} />
+                        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                          <span className="text-sm wrap-anywhere">{issue.message || (zh ? "未提供诊断信息" : "No diagnostic message provided")}</span>
+                          {issue.kind ? <span className="font-mono text-xs text-muted-foreground wrap-anywhere">{issue.kind}</span> : null}
+                        </div>
+                        <Tooltip>
+                          <TooltipTrigger render={<Button variant="ghost" size="icon-xs" aria-label={zh ? "仅在此浏览器隐藏 1 小时" : "Hide in this browser for 1 hour"} onClick={() => dismiss(issueKey(issue))} />}>
+                            <X />
+                          </TooltipTrigger>
+                          <TooltipContent>{zh ? "仅在此浏览器隐藏 1 小时" : "Hide in this browser for 1 hour"}</TooltipContent>
+                        </Tooltip>
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ul>
           </CardContent>
           {hiddenCount ? (
             <CardFooter>
@@ -212,7 +222,7 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
         </Alert>
       )}
 
-      <section className="grid items-start gap-6 @lg:grid-cols-2" aria-label={zh ? "控制面与容量" : "Control plane and capacity"}>
+      <section className="grid gap-6 @lg:grid-cols-2" aria-label={zh ? "控制面与容量" : "Control plane and capacity"}>
         <Card className="min-w-0">
           <CardHeader>
             <CardTitle>{zh ? "控制面" : "Control plane"}</CardTitle>
@@ -261,8 +271,8 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
                 {nodes.map((node, index) => (
                   <TableRow key={node.name || index}>
                     <TableCell>
-                      <div className="flex flex-col gap-1">
-                        <Button variant="link" size="sm" className="w-fit max-w-40" onClick={() => onSelectNode(node)}>
+                      <div className="flex items-center gap-2">
+                        <Button variant="link" size="sm" className="h-auto max-w-40 px-0" onClick={() => onSelectNode(node)}>
                           <span className="truncate" title={node.displayName || node.name || "—"}>{node.displayName || node.name || "—"}</span>
                         </Button>
                         <StatePill label={localizeState(lang, node.state)} value={node.state} />

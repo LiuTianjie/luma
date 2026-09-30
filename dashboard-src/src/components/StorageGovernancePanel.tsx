@@ -18,6 +18,7 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { formatDateTime } from "../format";
 
 export function StorageGovernancePanel({ lang, token }: { lang: Lang; token: string }) {
   const zh = lang === "zh";
@@ -35,7 +36,7 @@ export function StorageGovernancePanel({ lang, token }: { lang: Lang; token: str
   const requests = useRef(new Set<AbortController>());
   const { confirm, element } = useConfirm(lang);
   const bytes = (n: number | null | undefined) => storageBytes(n, txt("未测量", "Not measured"));
-  const date = (value?: number | string | null) => { const ms = storageTime(value); return ms === null ? txt("暂无记录", "No record") : new Date(ms).toLocaleString(zh ? "zh-CN" : "en-US", { hour12: false }); };
+  const date = (value?: number | string | null) => { const ms = storageTime(value); return ms === null ? txt("暂无记录", "No record") : formatDateTime(new Date(ms), zh ? "zh" : "en"); };
   const run = async <T,>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> => {
     const controller = new AbortController(); requests.current.add(controller);
     const timeout = window.setTimeout(() => controller.abort(), 20000);

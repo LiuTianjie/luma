@@ -14,7 +14,6 @@ import type {
   ResourceValues,
 } from "../types";
 import { SelectControl, StatePill } from "./primitives";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Field,
@@ -43,6 +42,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { AlertCircle } from "lucide-react";
 import { TrendChart } from "./charts";
 import { useRouter, useSearchParams } from "../router";
+import { formatBytes, formatPercent } from "../format";
 
 const HISTORY_WINDOWS = [900, 3600, 21600];
 
@@ -113,24 +113,6 @@ function HistoryStatus({ lang, state }: { lang: Lang; state?: HistoryState }) {
       </Alert>
     );
   return <p className="text-sm text-muted-foreground">{range}</p>;
-}
-
-function formatBytes(value?: number) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return "-";
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let next = value;
-  let unit = 0;
-  while (next >= 1024 && unit < units.length - 1) {
-    next /= 1024;
-    unit += 1;
-  }
-  return `${next >= 10 ? next.toFixed(0) : next.toFixed(1)} ${units[unit]}`;
-}
-
-function formatPercent(value?: number) {
-  return typeof value === "number"
-    ? `${value.toFixed(value >= 10 ? 0 : 1)}%`
-    : "-";
 }
 
 function resourceText(resources?: ResourceValues) {
@@ -439,9 +421,11 @@ export function ObservabilityPanel({
                     <dd className="text-2xl font-semibold tabular-nums">
                       {formatBytes(node.metrics?.diskAvailableBytes)}
                     </dd>
-                    <span className="text-sm text-muted-foreground wrap-anywhere">
-                      {node.metrics?.metricsPath || "—"}
-                    </span>
+                    {node.metrics?.metricsPath ? (
+                      <span className="text-sm text-muted-foreground wrap-anywhere">
+                        {node.metrics.metricsPath}
+                      </span>
+                    ) : null}
                   </div>
                 </dl>
               ) : (
@@ -506,15 +490,15 @@ export function ObservabilityPanel({
                   <CardHeader>
                     <CardTitle>{label}</CardTitle>
                     <CardDescription>
-                      {zh ? "最后采样" : "Latest sample"}
+                      {samples.length
+                        ? zh ? "最后采样" : "Latest sample"
+                        : zh ? "暂无采样" : "No samples yet"}
                     </CardDescription>
-                    <CardAction>
-                      <Badge variant="outline">
-                        {samples.length
-                          ? format(samples[samples.length - 1][1])
-                          : "—"}
-                      </Badge>
-                    </CardAction>
+                    {samples.length ? (
+                      <CardAction className="text-lg font-semibold tabular-nums">
+                        {format(samples[samples.length - 1][1])}
+                      </CardAction>
+                    ) : null}
                   </CardHeader>
                   <CardContent>
                     {!history ? (

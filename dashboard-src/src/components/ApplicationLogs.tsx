@@ -1,5 +1,5 @@
+import { Info } from "lucide-react";
 import { useState } from "react";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { DashboardService, Lang } from "../types";
 import { ObserveAppsPanel } from "./ObserveAppsPanel";
@@ -60,19 +60,20 @@ export function ApplicationLogs({
         />
       ) : (
         <>
-          <Alert>
-            <AlertDescription>
+          <p className="flex items-start gap-2 text-sm text-muted-foreground">
+            <Info className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+            <span>
               {zh
-                ? (mode === "traces"
-                    ? "Tempo 链路追踪，已按当前应用筛选。"
-                    : "VictoriaLogs 日志检索，已按当前应用筛选。") +
-                  "需启用可观测服务；暂不可用时可切换到实时日志。"
-                : (mode === "traces"
-                    ? "Tempo traces filtered to this application. "
-                    : "VictoriaLogs search filtered to this application. ") +
-                  "Requires observability services; live logs remain available separately."}
-            </AlertDescription>
-          </Alert>
+                  ? (mode === "traces"
+                      ? "Tempo 链路追踪，已按当前应用筛选。"
+                      : "VictoriaLogs 日志检索，已按当前应用筛选。") +
+                    "需启用可观测服务；暂不可用时可切换到实时日志。"
+                  : (mode === "traces"
+                      ? "Tempo traces filtered to this application. "
+                      : "VictoriaLogs search filtered to this application. ") +
+                    "Requires observability services; live logs remain available separately."}
+            </span>
+          </p>
           <ObserveAppsPanel
             key={mode}
             lang={lang}

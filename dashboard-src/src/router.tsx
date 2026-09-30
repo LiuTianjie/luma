@@ -79,3 +79,23 @@ export function useSearchParams(): URLSearchParams {
   const { search } = useRouter();
   return useMemo(() => new URLSearchParams(search), [search]);
 }
+
+type ClickLike = { button: number; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean };
+
+/** An unmodified primary click; modified clicks keep native link behaviour (new tab, download). */
+export function isPlainLeftClick(event: ClickLike): boolean {
+  return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+}
+
+/** href and onClick for an in-app link, so plain clicks stay in the SPA and modified clicks still open a tab. */
+export function spaLink(to: string, navigate: (to: string) => void, after?: () => void) {
+  return {
+    href: toHref(to),
+    onClick: (event: ClickLike & { preventDefault: () => void }) => {
+      if (!isPlainLeftClick(event)) return;
+      event.preventDefault();
+      navigate(to);
+      after?.();
+    },
+  };
+}

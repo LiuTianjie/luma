@@ -16,7 +16,7 @@ function load(filename) {
   mod.filename = filename;
   mod.paths = module.paths;
   mod.require = (name) => {
-    if (name.endsWith("/router")) return { useRouter: () => ({ path: route, navigate() {} }), toHref: (value) => `/dashboard${value}` };
+    if (name.endsWith("/router")) return { useRouter: () => ({ path: route, navigate() {} }), toHref: (value) => `/dashboard${value}`, isPlainLeftClick: () => true, spaLink: (to) => ({ href: `/dashboard${to}`, onClick() {} }) };
     const panel = panels.find((entry) => name.endsWith(`/${entry}`));
     // These existing operational panels are not changed by the workspace split.
     if (panel) return { [panel]: () => React.createElement("section", { "data-capability": panel }) };

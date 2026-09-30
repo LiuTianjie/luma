@@ -7,22 +7,11 @@ import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { localizeState } from "../i18n";
-import { useRouter, toHref } from "../router";
+import { useRouter, spaLink } from "../router";
 import { servicePath } from "../objectRoutes";
 import { PageHeader } from "./PageHeader";
 import type { DashboardNode, DashboardService, Lang } from "../types";
-
-function formatBytes(value?: number): string {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "-";
-  if (value === 0) return "0 B";
-  const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
-  const unit = Math.min(Math.max(0, Math.floor(Math.log(value) / Math.log(1024))), units.length - 1);
-  return `${Number((value / 1024 ** unit).toFixed(unit === 0 ? 0 : 1))} ${units[unit]}`;
-}
-
-function formatPercent(value?: number): string {
-  return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(1)}%` : "-";
-}
+import { formatBytes, formatPercent } from "../format";
 
 function Fact({ label, value }: { label: string; value: string }) {
   return (
@@ -60,7 +49,7 @@ export function ResourceDetailPage({ lang, node, service, services, applicationN
             <Button
               variant="outline"
               nativeButton={false}
-              render={<a href={toHref(back)} onClick={(event) => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigate(back); } }} />}
+              render={<a {...spaLink(back, navigate)} />}
             >
               <ArrowLeft data-icon="inline-start" />
               {zh ? "返回列表" : "Back to list"}
@@ -166,7 +155,7 @@ export function ResourceDetailPage({ lang, node, service, services, applicationN
                         size="sm"
                         className="h-auto max-w-96 justify-start px-0"
                         nativeButton={false}
-                        render={<a href={toHref(servicePath(item.fullName || item.name || ""))} onClick={(event) => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigate(servicePath(item.fullName || item.name || "")); } }} />}
+                        render={<a {...spaLink(servicePath(item.fullName || item.name || ""), navigate)} />}
                       >
                         <span className="truncate" title={item.stack ? `${item.stack} / ${item.name}` : item.name}>{item.stack ? `${item.stack} / ` : ""}{item.name}</span>
                       </Button>

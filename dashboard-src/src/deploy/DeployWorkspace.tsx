@@ -43,17 +43,17 @@ function deployFlowSteps(mode: DeployMode, lang: Lang) {
   const zh = lang === "zh";
   return mode === "service"
     ? [
-      { id: "deploy-basic", label: zh ? "身份" : "Identity", value: "name / image" },
-      { id: "deploy-network", label: zh ? "入口" : "Ingress", value: "domain / port" },
-      { id: "deploy-runtime", label: zh ? "运行" : "Runtime", value: "cpu / env / volume" },
-      { id: "deploy-advanced", label: zh ? "开关" : "Guardrails", value: "dns / nomad" },
+      { id: "deploy-basic", label: zh ? "基础配置" : "Basics", value: "name / image" },
+      { id: "deploy-network", label: zh ? "入口与网络" : "Ingress", value: "domain / port" },
+      { id: "deploy-runtime", label: zh ? "运行参数" : "Runtime", value: "cpu / env / volume" },
+      { id: "deploy-advanced", label: zh ? "部署开关" : "Deploy options", value: "dns / nomad" },
     ]
     : [
-      { id: "compose-basic", label: zh ? "应用" : "App", value: "compose" },
-      { id: "compose-services", label: zh ? "服务" : "Services", value: "ingress / node" },
-      { id: "compose-env", label: zh ? "密钥" : "Secrets", value: "env / secret" },
-      { id: "compose-storage", label: zh ? "存储" : "Storage", value: "volume" },
-      { id: "compose-advanced", label: zh ? "开关" : "Guardrails", value: "dns / nomad" },
+      { id: "compose-basic", label: zh ? "应用配置" : "Application", value: "compose" },
+      { id: "compose-services", label: zh ? "服务入口" : "Service ingress", value: "ingress / node" },
+      { id: "compose-env", label: zh ? "环境变量与密钥" : "Environment", value: "env / secret" },
+      { id: "compose-storage", label: zh ? "存储卷" : "Volumes", value: "volume" },
+      { id: "compose-advanced", label: zh ? "部署开关" : "Deploy options", value: "dns / nomad" },
     ];
 }
 

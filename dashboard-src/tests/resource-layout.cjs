@@ -25,7 +25,7 @@ function load(filename) {
       if (initial instanceof Set) return [new Set(["global:other"]), () => {}];
       return [initial, () => {}];
     } };
-    if (name.endsWith("/router")) return { useRouter: () => ({ path: route, search: "", navigate() {} }), toHref: (value) => `/dashboard${value}` };
+    if (name.endsWith("/router")) return { useRouter: () => ({ path: route, search: "", navigate() {} }), toHref: (value) => `/dashboard${value}`, isPlainLeftClick: () => true, spaLink: (to) => ({ href: `/dashboard${to}`, onClick() {} }) };
     if (name.endsWith("/ConfirmDialog")) return { useConfirm: () => ({ confirm() {}, element: null }) };
     if (name.endsWith(".css")) return {};
     if (name.startsWith("@/")) {

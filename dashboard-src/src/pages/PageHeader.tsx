@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Activity, Boxes, CloudCog, Database, HardDrive, LayoutDashboard, Network, Package, ScrollText, ServerCog, Settings, WandSparkles, Wrench } from "lucide-react";
+import { Activity, Boxes, Database, HardDrive, LayoutDashboard, Network, Package, ScrollText, ServerCog, Settings, WandSparkles, Wrench } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";

@@ -15,18 +15,6 @@ import type { DashboardViewModel } from "../dashboardViewModel";
 import { PageHeader } from "./PageHeader";
 import "./InfrastructureWorkspace.css";
 
-function readyNode(node: DashboardNode) {
-  return (node.state || "").toLowerCase() === "ready" && (node.availability || "").toLowerCase() !== "drain";
-}
-
-function managerNode(node: DashboardNode) {
-  return (node.role || "").toLowerCase().includes("manager") || Boolean(node.leader);
-}
-
-function agentReady(node: DashboardNode) {
-  return (node.agentStatus || "").toLowerCase() === "ready";
-}
-
 function joinCommand(nodeJoin?: { token?: string; domain?: string }, region?: string) {
   const rawOrigin = nodeJoin?.domain || (typeof window !== "undefined" ? window.location.origin : "https://<control-domain>");
   const origin = /^https?:\/\//i.test(rawOrigin) ? rawOrigin : `https://${rawOrigin}`;
@@ -58,10 +46,6 @@ export function NodesPage({
   const { path, navigate } = useRouter();
   const requestedSection = path.split("/")[2] || "nodes";
   const section = ["nodes", "join", "regions", "network"].includes(requestedSection) ? requestedSection : "unknown";
-  const ready = vm.nodes.filter(readyNode).length;
-  const managers = vm.nodes.filter(managerNode).length;
-  const agents = vm.nodes.filter(agentReady).length;
-  const terminalNodes = vm.nodes.filter((node) => node.terminalConnected).length;
   const defaultRegion = vm.regions.find((item) => !item.builtin)?.name || vm.regions[0]?.name;
   const command = joinCommand(nodeJoin, defaultRegion);
   const joinTokenAvailable = Boolean(nodeJoin?.token?.trim());
@@ -90,12 +74,8 @@ export function NodesPage({
             : section === "regions" ? (zh ? "管理调度区域及其出口策略。" : "Manage scheduling regions and egress policies.")
             : section === "network" ? (zh ? "查看入口流量路径、证书和节点拓扑。" : "Inspect ingress paths, certificates, and node topology.")
             : (zh ? "查看节点资源、调度状态与终端可用性。" : "Inspect node resources, scheduling state, and terminal availability."),
-          metrics: section === "nodes" ? [
-            { label: zh ? "Ready 节点" : "Ready nodes", value: `${ready}/${vm.nodes.length}` },
-            { label: zh ? "Ready Agent" : "Ready agents", value: `${agents}/${vm.nodes.length}` },
-            { label: zh ? "Manager" : "Managers", value: managers },
-            { label: "Terminal", value: terminalNodes },
-          ] : [],
+          // The fleet map carries the live summary row; the header stays a title.
+          metrics: [],
           // Joining is an action on the inventory, not a destination of its own.
           action: section === "nodes" ? (
             <Button type="button" onClick={() => navigate("/fleet/join")}><Plus data-icon="inline-start" />{zh ? "加入节点" : "Join node"}</Button>
@@ -143,7 +123,7 @@ export function NodesPage({
       )}
 
       {section === "network" && <Tabs defaultValue="routes" className="network-workspace">
-        <TabsList aria-label={zh ? "网络视图" : "Network views"}>
+        <TabsList variant="line" aria-label={zh ? "网络视图" : "Network views"}>
           <TabsTrigger value="routes">{zh ? "路由" : "Routes"}</TabsTrigger>
           <TabsTrigger value="nodes">{zh ? "节点拓扑" : "Node topology"}</TabsTrigger>
         </TabsList>
