@@ -40,11 +40,12 @@ receivers:
 processors:
   memory_limiter:
     check_interval: 1s
-    limit_mib: 256
-    spike_limit_mib: 64
+    limit_mib: 512
+    spike_limit_mib: 128
   tail_sampling:
     decision_wait: 10s
-    num_traces: 20000
+    # Ten seconds at the expected rate needs ~1000 traces. Bound burst memory.
+    num_traces: 5000
     expected_new_traces_per_sec: 100
     policies:
       - name: http-5xx
@@ -67,11 +68,15 @@ processors:
           sampling_percentage: 10
   batch:
     timeout: 5s
-    send_batch_size: 1024
+    send_batch_size: 512
+    send_batch_max_size: 1024
 
 connectors:
   spanmetrics:
     namespace: traces.span.metrics
+    dimensions_cache_size: 1000
+    resource_metrics_cache_size: 1000
+    metrics_expiration: 5m
 
 extensions:
   bearertokenauth:
@@ -81,10 +86,19 @@ extensions:
 exporters:
   prometheusremotewrite:
     endpoint: http://127.0.0.1:8428/api/v1/write
+    remote_write_queue:
+      queue_size: 128
+      num_consumers: 2
     resource_to_telemetry_conversion:
       enabled: true
   otlphttp/tempo:
     endpoint: http://127.0.0.1:4418
+    timeout: 5s
+    sending_queue:
+      queue_size: 128
+      num_consumers: 2
+    retry_on_failure:
+      max_elapsed_time: 30s
     tls:
       insecure: true
 

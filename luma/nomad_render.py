@@ -118,10 +118,8 @@ def render_traefik_job(
         "--metrics.prometheus.addRoutersLabels=true",
         "--metrics.prometheus.addServicesLabels=true",
         "--metrics.prometheus.buckets=0.05,0.1,0.25,0.5,1,2.5,5,10",
-        "--metrics.otlp=true",
-        "--metrics.otlp.addRoutersLabels=true",
-        "--metrics.otlp.addServicesLabels=true",
-        "--metrics.otlp.http.endpoint=" + TRAEFIK_OTLP_HTTP_ENDPOINT,
+        # Prometheus already carries the complete ingress RED metrics. Keep
+        # only asynchronous trace export dependent on the optional collector.
         "--tracing.otlp=true",
         "--tracing.otlp.http.endpoint=" + TRAEFIK_OTLP_HTTP_ENDPOINT,
         "--entrypoints.web.address=:80",
@@ -158,6 +156,10 @@ def render_traefik_job(
         "Update": {"AutoRevert": True, "MinHealthyTime": 5_000_000_000, "HealthyDeadline": 120_000_000_000},
         "TaskGroups": [{
             "Name": "traefik", "Count": 1, "MaxClientDisconnect": 3_600_000_000_000,
+            "Networks": [{
+                "Mode": "host",
+                "ReservedPorts": [{"Label": "metrics", "Value": 8082}],
+            }],
             "Tasks": [{
                 "Name": "traefik", "Driver": "docker",
                 "Config": {
@@ -169,14 +171,40 @@ def render_traefik_job(
                         {"type": "bind", "target": "/dynamic", "source": "/opt/luma/routes"},
                     ],
                 },
-                "Resources": {"CPU": 200, "MemoryMB": 256},
+                "Env": {
+                    "GOMEMLIMIT": "384MiB",
+                    "OTEL_BSP_MAX_QUEUE_SIZE": "512",
+                    "OTEL_BSP_MAX_EXPORT_BATCH_SIZE": "128",
+                    "OTEL_BSP_EXPORT_TIMEOUT": "1000",
+                    "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT": "1000",
+                },
+                "Resources": {"CPU": 200, "MemoryMB": 512},
+                "Services": [{
+                    "Name": "luma-traefik-health",
+                    "Provider": "nomad",
+                    "AddressMode": "auto",
+                    "Address": "127.0.0.1",
+                    "PortLabel": "metrics",
+                    "Checks": [{
+                        "Name": "traefik-local-metrics",
+                        "Type": "http",
+                        "Path": "/metrics",
+                        "Interval": 15_000_000_000,
+                        "Timeout": 5_000_000_000,
+                        "CheckRestart": {
+                            "Limit": 3,
+                            "Grace": 60_000_000_000,
+                            "IgnoreWarnings": False,
+                        },
+                    }],
+                }],
             }],
         }],
         "Meta": {"luma.managed": "true"},
     }
     task = job["TaskGroups"][0]["Tasks"][0]
     if acme_dns_provider == "cloudflare" and acme_dns_token_file:
-        task["Env"] = {"CF_DNS_API_TOKEN_FILE": "/run/secrets/cloudflare-dns-token"}
+        task["Env"]["CF_DNS_API_TOKEN_FILE"] = "/run/secrets/cloudflare-dns-token"
         task["Config"]["mount"].append({
             "type": "bind",
             "target": "/run/secrets/cloudflare-dns-token",

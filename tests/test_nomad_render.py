@@ -649,9 +649,10 @@ port: 3000
         self.assertIn("--entrypoints.websecure.http.tls.domains[0].main=*.example.net", args)
         self.assertIn("--entrypoints.websecure.http.tls.domains[0].sans=example.net", args)
         self.assertEqual(
-            task["Env"],
-            {"CF_DNS_API_TOKEN_FILE": "/run/secrets/cloudflare-dns-token"},
+            task["Env"]["CF_DNS_API_TOKEN_FILE"],
+            "/run/secrets/cloudflare-dns-token",
         )
+        self.assertEqual(task["Env"]["GOMEMLIMIT"], "384MiB")
         secret_mount = next(
             mount for mount in task["Config"]["mount"]
             if mount["target"] == "/run/secrets/cloudflare-dns-token"
@@ -674,6 +675,17 @@ port: 3000
             {"LTarget": "${meta.ingress}", "RTarget": "true", "Operand": "="},
             job["Constraints"],
         )
+
+    def test_traefik_recovers_from_a_stalled_local_metrics_endpoint(self):
+        task = render_traefik_job(image="traefik:v3.6", as_json=False)["Job"]["TaskGroups"][0]["Tasks"][0]
+        service = task["Services"][0]
+        check = service["Checks"][0]
+        self.assertEqual(service["Provider"], "nomad")
+        self.assertEqual(service["Address"], "127.0.0.1")
+        self.assertEqual(service["PortLabel"], "metrics")
+        self.assertEqual(check["Path"], "/metrics")
+        self.assertGreaterEqual(check["CheckRestart"]["Grace"], check["Interval"] * check["CheckRestart"]["Limit"])
+        self.assertLess(int(task["Env"]["GOMEMLIMIT"].removesuffix("MiB")), task["Resources"]["MemoryMB"])
 
 
 class InternalFixedPortTests(unittest.TestCase):

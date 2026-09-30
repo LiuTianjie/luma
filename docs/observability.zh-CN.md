@@ -10,9 +10,9 @@ Luma 提供节点与容器采样、当前任务队列、资源历史、运行事
 
 ## 应用告警（`luma-observe`） {#application-alerts-luma-observe}
 
-Control 控制台提供节点与容器采样，实时 allocation 日志仍通过 Control 按需代理。应用 HTTP 5xx、延迟（p90/p95/p99）、Nomad 失败 allocation、重启风暴、链路追踪，以及可搜索的 stdout/stderr，由可选的 [`observe/`](../observe/) Compose 应用提供。可用 Luma 部署它；不部署也不影响 Control 运行。运维人员通过 **控制台 → 可观测 → 应用**查看，它在 Control 域名的 `/grafana` 嵌入 Grafana。部署 observe 后，HTTP、Nomad 和 trace 序列立即按 Luma 应用/stack 名标记，无需应用单独加入。失败指标只统计 Nomad 仍希望运行的 allocation，不是累计失败次数。该组件使用主机网络和回环监听器：Prometheus 为 `127.0.0.1:8082`，OTLP 为 `127.0.0.1:4318`，Tempo 为 `127.0.0.1:3200`。应用任务携带 Control 签发的 bearer token，向 Manager Tailscale mesh 的 4319 端口发送 trace。Control 使用主机网络，observe 存在时查询 `http://127.0.0.1:8428`。`127.0.0.1:3100` 上的 Grafana 仅用于本地调试。告警在 vmalert/Alertmanager 中评估，不经过 Control SQLite。Trace 和日志保留 7 天，指标保留期单独配置。
+Control 控制台提供节点与容器采样，实时 allocation 日志仍通过 Control 按需代理。应用 HTTP 5xx、延迟（p90/p95/p99）、Nomad 失败 allocation、重启风暴、链路追踪，以及可搜索的 stdout/stderr，由可选的 [`observe/`](../observe/) Compose 应用提供。可用 Luma 部署它；不部署也不影响 Control 运行。运维人员通过 **控制台 → 可观测 → 应用**查看，它在 Control 域名的 `/grafana` 嵌入 Grafana。部署 observe 后，HTTP、Nomad 和 trace 序列立即按 Luma 应用/stack 名标记，无需应用单独加入。失败指标只统计 Nomad 仍希望运行的 allocation，不是累计失败次数。该组件使用主机网络和回环监听器：Prometheus 为 `127.0.0.1:8082`，OTLP 为 `127.0.0.1:4318`，Tempo 为 `127.0.0.1:3200`。应用任务携带 Control 签发的 bearer token，向 Manager Tailscale mesh 的 4319 端口发送 trace。Control 使用主机网络，observe 存在时查询 `http://127.0.0.1:8428`。`127.0.0.1:3100` 上的 Grafana 仅用于本地调试。告警在 vmalert/Alertmanager 中评估，不经过 Control SQLite。Trace 保留 14 天，日志和指标保留 15 天。
 
-在 `observe/` 中执行 `luma build local . --platform linux/amd64` 部署。首次部署不需要 secret；飞书通知可以之后再用 scoped secret 补上。当前 CLI 支持回环 metrics/OTLP 标志后，刷新 Traefik，让 RED 规则有可抓取目标。通过 **控制台 → 可观测 → 应用**查看。图表按 Luma 应用展示 Traefik HTTP 请求率、5xx、p90/p95/p99 延迟和 Nomad 健康状态，不是读取每个容器的 `/metrics`。Traefik 直方图桶为 `0.05,0.1,0.25,0.5,1,2.5,5,10` 秒，以区分这些分位数。启用 observe 后，后续 Luma 部署会自动注入官方 OpenTelemetry 环境变量：`OTEL_SERVICE_NAME`、`luma.stack` / `luma.task` / `luma.region`，以及指向 mesh 监听器的 OTLP HTTP 配置。已包含 OpenTelemetry 发行版的应用无需 Luma SDK 即可发送 span。首次启用 observe 后应重新部署已有应用。Trace 导出失败不会阻塞业务；采集器保留 HTTP 5xx、OTel 错误、超过 1 秒的 trace，并对其他请求进行 10% 基线采样。接近内存上限时丢弃新 trace，而不是触发 OOM。不要通过 Manager 公网接口向外发送原始访问日志或 trace。
+在 `observe/` 中执行 `luma build local . --platform linux/amd64` 部署。首次部署不需要 secret；飞书通知可以之后再用 scoped secret 补上。当前 CLI 支持回环 metrics/OTLP 标志后，刷新 Traefik，让 RED 规则有可抓取目标。通过 **控制台 → 可观测 → 应用**查看。图表按 Luma 应用展示 Traefik HTTP 请求率、5xx、p90/p95/p99 延迟和 Nomad 健康状态，不是读取每个容器的 `/metrics`。Traefik 直方图桶为 `0.05,0.1,0.25,0.5,1,2.5,5,10` 秒，以区分这些分位数。启用 observe 后，后续 Luma 部署会自动注入官方 OpenTelemetry 环境变量：`OTEL_SERVICE_NAME`、`luma.stack` / `luma.task` / `luma.region`，以及指向 mesh 监听器的 OTLP HTTP 配置。已包含 OpenTelemetry 发行版的应用无需 Luma SDK 即可发送 span。首次启用 observe 后应重新部署已有应用。Trace 导出失败不会阻塞业务；采集器保留 HTTP 5xx、OTel 错误、超过 1 秒的 trace，并对其他请求进行 10% 基线采样。采集器通过 Go 内存目标、memory limiter 和有界队列控制内存，持续过载时会拒收或丢弃遥测数据。不要通过 Manager 公网接口向外发送原始访问日志或 trace。
 
 ## 应用接入 {#application-integration}
 
@@ -77,7 +77,7 @@ async function charge(orderId) {
 
 ## 控制台与日志 {#dashboard-and-logs}
 
-**控制台 → 可观测**默认打开告警事件。指标有独立页面；日志通过 Grafana Explore 查询 VictoriaLogs（保留 7 天）。规则与通知渠道分别有列表和编辑地址。存储治理位于 **基础设施 → 存储 → 数据治理**。
+**控制台 → 可观测**默认打开告警事件。指标有独立页面；日志通过 Grafana Explore 查询 VictoriaLogs（保留 15 天）。规则与通知渠道分别有列表和编辑地址。存储治理位于 **基础设施 → 存储 → 数据治理**。
 
 指标页显示实际采样时间范围和保留期，区分缺失、过期和查询失败，并在采样缺口处断开曲线。可选择服务查看资源历史，或打开按 stack 筛选的可观测日志。
 
@@ -121,7 +121,7 @@ Luma 自动申请 tenant access token，仅缓存于进程内存，并在过期�
 
 显式配置 `LUMA_METRICS_TOKEN_FILE` 会覆盖默认路径。自定义安装应在进程/容器内暴露该绝对路径，并在对应环境设置变量；Manager shell 中的任意环境变量不会自动传给 Nomad job。
 
-安全地把令牌复制到 Prometheus 采集器凭据文件。此令牌只被 `/v1/metrics` 接受，不能查询控制台、读取应用日志、部署、重启或访问 LAE 租户 API。它应与其他所有 Luma 令牌区分。端点输出包含基础设施名称与区域标签；远程抓取需要认证，同机 luma-observe 抓取仅限回环。
+安全地把令牌复制到 Prometheus 采集器凭据文件。此令牌只被 `/v1/metrics` 接受，不能查询控制台、读取应用日志、部署或重启。它应与其他所有 Luma 令牌区分。端点输出包含基础设施名称与区域标签；远程抓取需要认证，同机 luma-observe 抓取仅限回环。
 
 示例 [Prometheus 抓取配置](./examples/monitoring/prometheus.yml)和[告警规则](./examples/monitoring/luma-alerts.yml)是可选模板。替换主机名与凭据路径，使用当前 Prometheus 版本检查，并配置 Alertmanager 目标后才会有通知。外部模板独立于上述 Luma 内置规则和飞书渠道。应用 Prometheus/Alertmanager 配置是单独的基础设施变更，不会创建 Luma 通知渠道。
 

@@ -34,7 +34,7 @@ class TraefikObserveRenderTests(unittest.TestCase):
         self.assertIn("--metrics.prometheus=true", args)
         self.assertIn("--metrics.prometheus.addRoutersLabels=true", args)
         self.assertIn("--metrics.prometheus.buckets=0.05,0.1,0.25,0.5,1,2.5,5,10", args)
-        self.assertIn("--metrics.otlp.http.endpoint=http://127.0.0.1:4318", args)
+        self.assertFalse(any(value.startswith("--metrics.otlp") for value in args))
         self.assertIn("--tracing.otlp.http.endpoint=http://127.0.0.1:4318", args)
         self.assertFalse(any(value.startswith("--entrypoints.metrics.address=0.0.0.0") for value in args))
         self.assertFalse(any(value.startswith("--entrypoints.metrics.address=:8082") for value in args))
@@ -117,6 +117,30 @@ services:
 
 
 class RepoManifestTests(unittest.TestCase):
+    def test_memory_budgets_leave_room_below_container_limits(self):
+        import yaml
+        from luma.compose import load_compose_deployment
+
+        compose = yaml.safe_load((ROOT / "observe" / "docker-compose.yml").read_text())
+        config = yaml.safe_load((ROOT / "observe" / "collector.yaml").read_text())
+        dep = load_compose_deployment(ROOT / "observe" / "luma.compose.yml", allow_build_services=True)
+        job = render_compose_job(cfg(), dep, as_json=False, resolve_secrets=False)["Job"]
+        tasks = {task["Name"]: task for task in job["TaskGroups"][0]["Tasks"]}
+        collector = tasks["collector"]
+        go_limit = int(collector["Env"]["GOMEMLIMIT"].removesuffix("MiB"))
+        limiter = config["processors"]["memory_limiter"]
+        self.assertLessEqual(go_limit, limiter["limit_mib"] - limiter["spike_limit_mib"])
+        self.assertLess(limiter["limit_mib"], collector["Resources"]["MemoryMaxMB"])
+        for pipeline in config["service"]["pipelines"].values():
+            self.assertEqual(pipeline["processors"][0], "memory_limiter")
+        batch = config["processors"]["batch"]
+        self.assertGreaterEqual(batch["send_batch_max_size"], batch["send_batch_size"])
+
+        args = dict(arg.removeprefix("--").split("=", 1) for arg in compose["services"]["victoria"]["command"])
+        cache = int(args["memory.allowedBytes"].removesuffix("MiB"))
+        queries = int(args["search.maxConcurrentRequests"]) * int(args["search.maxMemoryPerQuery"].removesuffix("MiB"))
+        self.assertLess(cache + queries, tasks["victoria"]["Resources"]["MemoryMaxMB"] * 0.8)
+
     def test_repo_manifest_renders_host_network(self):
         from luma.compose import load_compose_deployment
         dep = load_compose_deployment(ROOT / "observe" / "luma.compose.yml", allow_build_services=True)
@@ -340,9 +364,9 @@ class ObserveTraceStackTests(unittest.TestCase):
         self.assertIn("bearertokenauth", text)
         self.assertIn("${env:LUMA_OTLP_MESH_BIND}:4319", text)
 
-    def test_tempo_retains_fifteen_days(self):
+    def test_tempo_preserves_fourteen_day_live_retention(self):
         text = (ROOT / "observe" / "tempo.yaml").read_text(encoding="utf-8")
-        self.assertIn("block_retention: 168h", text)
+        self.assertIn("block_retention: 336h", text)
         self.assertIn("http_listen_port: 3200", text)
         self.assertIn("127.0.0.1:4418", text)
         self.assertIn("stream_over_http_enabled: true", text)
@@ -400,7 +424,7 @@ class ObserveTraceStackTests(unittest.TestCase):
     def test_victorialogs_is_loopback_with_fifteen_day_retention(self):
         compose = (ROOT / "observe" / "docker-compose.yml").read_text(encoding="utf-8")
         self.assertIn("127.0.0.1:9428", compose)
-        self.assertIn("retentionPeriod=7d", compose)
+        self.assertIn("retentionPeriod=15d", compose)
         self.assertNotIn("0.0.0.0:9428", compose)
         sources = (ROOT / "observe" / "grafana" / "provisioning" / "datasources" / "datasource.yml").read_text(encoding="utf-8")
         self.assertIn("uid: victorialogs", sources)

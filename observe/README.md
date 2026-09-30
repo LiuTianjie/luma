@@ -11,8 +11,8 @@ except for tiny Feishu posts.
 ## What it watches
 
 - Traefik Prometheus on `127.0.0.1:8082` (public HTTP rate, 5xx, p90/p95/p99)
-- Traefik OTLP on `127.0.0.1:4318` (traces stored in Tempo, 7 days)
-- Nomad allocation stdout/stderr in VictoriaLogs (`127.0.0.1:9428`, 7 days)
+- Traefik OTLP on `127.0.0.1:4318` (traces stored in Tempo, 14 days)
+- Nomad allocation stdout/stderr in VictoriaLogs (`127.0.0.1:9428`, 15 days)
 - Application OTLP on the manager Tailscale IP port `4319` (bearer token from Control)
 - Nomad job running / current failed / live restarts via a local exporter
 
@@ -39,11 +39,28 @@ Public HTTP already has Traefik RED and an ingress span. Process spans need
 the official OpenTelemetry distro in the image. Do not set the OTLP endpoint
 or a Luma SDK; Control injects `OTEL_*` on the next deploy. The collector
 keeps 5xx, OTel errors, and traces slower than 1s, plus a 10% baseline;
-it drops new traces near its memory limit instead of OOM. Manual spans use
+it refuses telemetry above its memory budget; sustained overload can drop data.
+Manual spans use
 `opentelemetry.trace.get_tracer(...).start_as_current_span(...)` (or the
 language equivalent). See [Application integration](../docs/observability.md#application-integration).
 
 ## Deploy
+
+Collector has a 768 MiB container ceiling, a 384 MiB Go memory target, a
+512 MiB memory limiter and bounded batches/export queues. Tail sampling keeps
+at most 5,000 pending traces; inactive span-metric series expire after five
+minutes. These bounds preserve room for transient and non-heap allocations.
+
+VictoriaMetrics retains 15 days under a 1 GiB container ceiling. Its cache
+allowance is 384 MiB, with at most four concurrent queries and 64 MiB per query;
+cache limits alone do not cap total process memory. Existing VictoriaLogs
+(15 days) and Tempo (14 days) retention and local storage paths are preserved.
+
+Traefik exports ingress metrics through Prometheus only, and retains bounded,
+asynchronous OTLP trace export. Its 512 MiB container has a 384 MiB Go memory
+target. A Nomad check of the local metrics endpoint restarts Traefik after
+three failed checks, with a one-minute startup grace period. Collector failure
+must not make public HTTP requests wait for telemetry delivery.
 
 luma-observe colocates with Traefik and Control on the manager host network.
 Control pins the stack to the registered manager node (not the name `manager`)
@@ -72,7 +89,7 @@ as soon as this stack is running.
 | 3200 / 3201 | Tempo query (loopback) |
 | 4418 / 4417 | Tempo OTLP ingest (loopback) |
 | 8428 | VictoriaMetrics on 127.0.0.1; host-gateway also binds Nomad/docker0 so Control can scrape |
-| 9428 | VictoriaLogs (allocation stdout/stderr, 7 days) |
+| 9428 | VictoriaLogs (allocation stdout/stderr, 15 days) |
 | 8880 | vmalert |
 | 9093 | Alertmanager |
 | 9107 | nomad-exporter |

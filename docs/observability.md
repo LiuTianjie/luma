@@ -21,14 +21,13 @@ allocations Nomad still wants to run, not lifetime failure counters.
 The stack uses host networking and loopback listeners (`127.0.0.1:8082` Prometheus,
 `127.0.0.1:4318` OTLP, `127.0.0.1:3200` Tempo). Application tasks send traces to the manager Tailscale mesh listener on port 4319 with a Control-issued bearer token. Control uses host networking and queries `http://127.0.0.1:8428` when observe is present. Grafana on `127.0.0.1:3100`
 is local debug only. Alerts evaluate in vmalert/Alertmanager. Control SQLite
-is not on this path. Trace and log storage retain 7 days; metric retention is
-configured independently.
+is not on this path. Trace storage retains 14 days; logs and metrics retain 15 days.
 
 Deploy from `observe/` with `luma build local . --platform linux/amd64`. First deploy does not require secrets; add Feishu later with scoped secrets if needed.
 Refresh Traefik after the current CLI includes the loopback metrics/OTLP flags
 so RED rules have a scrape target. Operators look at Dashboard → Observability → Apps.
 The charts are per Luma app (Traefik HTTP rate, 5xx and p90/p95/p99 latency + Nomad health), not each container's `/metrics`. Traefik histogram buckets are `0.05,0.1,0.25,0.5,1,2.5,5,10` seconds so those quantiles are distinguishable.
-Selecting observe also injects official OpenTelemetry environment variables into later Luma deploys (`OTEL_SERVICE_NAME`, `luma.stack` / `luma.task` / `luma.region`, OTLP HTTP to the mesh listener). Apps that already ship an OpenTelemetry distro emit spans without a Luma SDK. Redeploy existing apps after observe is first enabled. Apps export traces fail-open; the collector keeps HTTP 5xx, OTel errors, and traces slower than 1s, plus a 10% baseline. Near the collector memory limit it drops new traces instead of OOM.
+Selecting observe also injects official OpenTelemetry environment variables into later Luma deploys (`OTEL_SERVICE_NAME`, `luma.stack` / `luma.task` / `luma.region`, OTLP HTTP to the mesh listener). Apps that already ship an OpenTelemetry distro emit spans without a Luma SDK. Redeploy existing apps after observe is first enabled. Apps export traces fail-open; the collector keeps HTTP 5xx, OTel errors, and traces slower than 1s, plus a 10% baseline. The collector uses a Go memory target, a memory limiter and bounded queues; sustained overload can refuse or drop telemetry.
 Do not ship raw access logs or traces off the manager public interface.
 
 ## Application integration
@@ -105,7 +104,7 @@ no OpenTelemetry SDK, these calls are no-ops unless you add the distro.
 ## Dashboard and logs
 
 Dashboard → Observability opens incidents. Metrics have a dedicated page; Logs
-opens Grafana Explore against VictoriaLogs (7 days). Rules and notification
+opens Grafana Explore against VictoriaLogs (15 days). Rules and notification
 channels have separate list and edit URLs. Storage governance is under
 Infrastructure → Storage → Data governance.
 
@@ -208,7 +207,7 @@ On the manager, provision a random token of at least 32 ASCII characters in `/op
 
 An explicitly configured `LUMA_METRICS_TOKEN_FILE` overrides that path. For custom Control installations, expose the absolute path inside the process/container and set the environment variable there; an arbitrary manager shell environment is not automatically forwarded to the Nomad job.
 
-Copy the token securely into the Prometheus collector's credentials file. This dedicated token is accepted only by `/v1/metrics`; it cannot query the Dashboard, read application logs, deploy, restart or access LAE tenant APIs. Keep it distinct from every other Luma token. Endpoint output includes infrastructure names and region labels. Remote scrapes remain authenticated; the colocated luma-observe scrape is loopback-only.
+Copy the token securely into the Prometheus collector's credentials file. This dedicated token is accepted only by `/v1/metrics`; it cannot query the Dashboard, read application logs, deploy or restart. Keep it distinct from every other Luma token. Endpoint output includes infrastructure names and region labels. Remote scrapes remain authenticated; the colocated luma-observe scrape is loopback-only.
 
 The example [Prometheus scrape config](./examples/monitoring/prometheus.yml) and [alert rules](./examples/monitoring/luma-alerts.yml) are opt-in templates. Replace the hostname and credential path, check with your Prometheus version, and configure an Alertmanager destination before expecting notifications. These external templates are separate from Luma's built-in alert rules and Feishu channels described above. Applying Prometheus/Alertmanager configuration is a separate infrastructure change; it does not create a Luma notification channel.
 

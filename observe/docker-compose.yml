@@ -6,6 +6,10 @@ services:
     image: luma-observe-collector:local
     network_mode: host
     restart: unless-stopped
+    environment:
+      # Collect before the memory limiter starts refusing telemetry; leave room
+      # for non-Go allocations below the container's hard limit.
+      GOMEMLIMIT: 384MiB
     depends_on:
       - victoria
       - nomad-exporter
@@ -14,9 +18,9 @@ services:
       resources:
         reservations:
           cpus: "0.10"
-          memory: 192M
+          memory: 256M
         limits:
-          memory: 384M
+          memory: 768M
 
   tempo:
     build:
@@ -41,17 +45,22 @@ services:
     restart: unless-stopped
     command:
       - --httpListenAddr=127.0.0.1:8428
-      - --retentionPeriod=7d
+      - --retentionPeriod=15d
       - --storageDataPath=/data
+      # The cache allowance is not a process memory limit. Reserve headroom
+      # for ingestion, merges and concurrent dashboard queries.
+      - --memory.allowedBytes=384MiB
+      - --search.maxConcurrentRequests=4
+      - --search.maxMemoryPerQuery=64MiB
     volumes:
       - victoria-data:/data
     deploy:
       resources:
         reservations:
           cpus: "0.10"
-          memory: 256M
-        limits:
           memory: 512M
+        limits:
+          memory: 1G
 
   vmalert:
     build:
@@ -103,7 +112,7 @@ services:
     restart: unless-stopped
     command:
       - "-httpListenAddr=127.0.0.1:9428"
-      - "-retentionPeriod=7d"
+      - "-retentionPeriod=15d"
       - "-storageDataPath=/data"
     volumes:
       - victorialogs-data:/data
