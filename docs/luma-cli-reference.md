@@ -76,7 +76,7 @@ arguments:
   --domain DOMAIN             Public hostname for edge and tunnel exposures
   --port PORT                 Container port (default: 3000)
   --replicas REPLICAS         Number of instances (default: 1)
-  --output OUTPUT, -o OUTPUT  Manifest path (default: <name>.yaml)
+  --output OUTPUT             Manifest path (default: <name>.yaml)
   --force                     Overwrite an existing manifest
 
 Example: luma init --name web --image nginx:1.27 --region cn --exposure cn-edge --domain
@@ -114,12 +114,12 @@ usage: luma context [-h] <command> ...
 List or switch saved Control logins
 
 arguments:
-  -h, --help    show this help message and exit
+  -h, --help  show this help message and exit
 
 arguments:
   <command>
-    list        List saved logins
-    use         Switch the current login
+    list      List saved logins
+    use       Switch the current login
 ```
 
 ## `luma context list`
@@ -262,13 +262,13 @@ usage: luma compose [-h] <command> ...
 Deploy a Docker Compose application with a Luma sidecar
 
 arguments:
-  -h, --help    show this help message and exit
+  -h, --help  show this help message and exit
 
 arguments:
   <command>
-    init        Create a Luma sidecar for a docker-compose.yml
-    validate    Check a Compose sidecar and the Compose file it references
-    deploy      Deploy a Compose application
+    init      Create a Luma sidecar for a docker-compose.yml
+    validate  Check a Compose sidecar and the Compose file it references
+    deploy    Deploy a Compose application
 ```
 
 ## `luma compose init`
@@ -414,16 +414,16 @@ usage: luma build [-h] <command> ...
 Build a local checkout, or inspect and retry build runs
 
 arguments:
-  -h, --help    show this help message and exit
+  -h, --help  show this help message and exit
 
 arguments:
   <command>
-    local       Build a local checkout with Docker Buildx, push it and deploy it
-    list        List recent build runs
-    logs        Show the step log of a build run
-    retry       Run a recorded build again
-    cancel      Cancel a running build
-    config      Show or set builder nodes and the internal registry
+    local     Build a local checkout with Docker Buildx, push it and deploy it
+    list      List recent build runs
+    logs      Show the step log of a build run
+    retry     Run a recorded build again
+    cancel    Cancel a running build
+    config    Show or set builder nodes and the internal registry
 ```
 
 ## `luma build local`
@@ -631,14 +631,14 @@ Show or record how an application is built and deployed. Deploy, import and buil
 themselves with the recorded workflow and stop on changes.
 
 arguments:
-  -h, --help    show this help message and exit
+  -h, --help  show this help message and exit
 
 arguments:
   <command>
-    list        List recorded workflows
-    show        Show an application's recorded command and notes
-    record      Record a workflow without deploying
-    run         Run the recorded command from a local checkout
+    list      List recorded workflows
+    show      Show an application's recorded command and notes
+    record    Record a workflow without deploying
+    run       Run the recorded command from a local checkout
 ```
 
 ## `luma workflow list`
@@ -780,19 +780,19 @@ usage: luma app [-h] <command> ...
 Inspect, restart, roll back or remove deployed applications
 
 arguments:
-  -h, --help    show this help message and exit
+  -h, --help  show this help message and exit
 
 arguments:
   <command>
-    list        List deployed services and their replica health
-    show        Show an application or one of its services
-    logs        Read application logs
-    events      Show recent runtime events of the latest allocation
-    history     Page through build and deployment attempts
-    versions    List the Nomad job versions that 'luma app rollback' can restore
-    rollback    Restore a previous Nomad job version
-    restart     Restart an application
-    remove      Remove an application, its routes and DNS records
+    list      List deployed services and their replica health
+    show      Show an application or one of its services
+    logs      Read application logs
+    events    Show recent runtime events of the latest allocation
+    history   Page through build and deployment attempts
+    versions  List the Nomad job versions that 'luma app rollback' can restore
+    rollback  Restore a previous Nomad job version
+    restart   Restart an application
+    remove    Remove an application, its routes and DNS records
 
 Examples:
   luma app list
@@ -1054,14 +1054,14 @@ usage: luma secret [-h] <command> ...
 Manage application secrets. Manifests reference them as ${NAME}; the scope is the application name.
 
 arguments:
-  -h, --help    show this help message and exit
+  -h, --help  show this help message and exit
 
 arguments:
   <command>
-    list        List secret names
-    set         Set a secret; prompts for the value when neither --value nor --value-stdin is given
-    import      Import every variable of a .env file into an application scope
-    remove      Remove a secret
+    list      List secret names
+    set       Set a secret; prompts for the value when neither --value nor --value-stdin is given
+    import    Import every variable of a .env file into an application scope
+    remove    Remove a secret
 ```
 
 ## `luma secret list`
@@ -1441,13 +1441,13 @@ usage: luma region [-h] <command> ...
 Manage scheduling regions
 
 arguments:
-  -h, --help    show this help message and exit
+  -h, --help  show this help message and exit
 
 arguments:
   <command>
-    list        List built-in and custom regions
-    create      Create a custom region
-    remove      Remove an unused custom region
+    list      List built-in and custom regions
+    create    Create a custom region
+    remove    Remove an unused custom region
 ```
 
 ## `luma region list`
@@ -1532,16 +1532,16 @@ usage: luma storage [-h] <command> ...
 Manage NFS storage classes
 
 arguments:
-  -h, --help    show this help message and exit
+  -h, --help  show this help message and exit
 
 arguments:
   <command>
-    list        List storage classes
-    set         Create or update an NFS storage class
-    remove      Remove a storage class
-    apply       Prepare the volumes a Compose sidecar needs
-    check       Check that a sidecar's volumes can be mounted where it runs
-    migrate     Print a manual plan for moving a volume's data
+    list      List storage classes
+    set       Create or update an NFS storage class
+    remove    Remove a storage class
+    apply     Prepare the volumes a Compose sidecar needs
+    check     Check that a sidecar's volumes can be mounted where it runs
+    migrate   Print a manual plan for moving a volume's data
 ```
 
 ## `luma storage list`
@@ -1707,19 +1707,19 @@ usage: luma registry [-h] <command> ...
 Manage registry credentials and the managed registry
 
 arguments:
-  -h, --help    show this help message and exit
+  -h, --help  show this help message and exit
 
 arguments:
   <command>
-    list        List saved registry credentials
-    login       Save credentials for pulling private images
-    remove      Remove saved registry credentials
-    serve       Deploy the managed registry on a Linux node
-    images      List images in the managed registry and their protection state
-    delete      Queue a manifest for deletion after a protection check
-    deletion    Cancel, execute or restore a queued deletion
-    gc          Preview or run registry garbage collection (irreversible)
-    policy      Show or change the retention policy
+    list      List saved registry credentials
+    login     Save credentials for pulling private images
+    remove    Remove saved registry credentials
+    serve     Deploy the managed registry on a Linux node
+    images    List images in the managed registry and their protection state
+    delete    Queue a manifest for deletion after a protection check
+    deletion  Cancel, execute or restore a queued deletion
+    gc        Preview or run registry garbage collection (irreversible)
+    policy    Show or change the retention policy
 ```
 
 ## `luma registry list`
@@ -1971,15 +1971,15 @@ usage: luma git-provider [-h] <command> ...
 Manage saved GitHub and Gitea credentials
 
 arguments:
-  -h, --help    show this help message and exit
+  -h, --help  show this help message and exit
 
 arguments:
   <command>
-    list        List saved provider credentials
-    set         Save a GitHub or Gitea access token
-    remove      Remove a saved credential
-    repos       List repositories a credential can read
-    refs        List branches and tags of a repository
+    list      List saved provider credentials
+    set       Save a GitHub or Gitea access token
+    remove    Remove a saved credential
+    repos     List repositories a credential can read
+    refs      List branches and tags of a repository
 ```
 
 ## `luma git-provider list`

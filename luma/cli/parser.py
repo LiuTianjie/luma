@@ -62,9 +62,11 @@ class LumaHelpFormatter(argparse.RawDescriptionHelpFormatter):
 
     def add_argument(self, action: argparse.Action) -> None:
         super().add_argument(action)
-        # argparse measures subcommand names two columns shallower than it prints them.
+        # Older argparse releases measure subcommand names two columns shallower
+        # than they print them; newer ones do not. Take the printed width either way.
         if isinstance(action, argparse._SubParsersAction):
-            self._action_max_length += 2
+            widest = max((len(self._format_action_invocation(sub)) for sub in action._get_subactions()), default=0)
+            self._action_max_length = max(self._action_max_length, self._current_indent + 2 + widest)
 
     def _fill_text(self, text: str, width: int, indent: str) -> str:
         paragraphs = []
@@ -159,7 +161,7 @@ def _add_get_started_commands(sub: argparse._SubParsersAction) -> None:
     init.add_argument("--domain", help="Public hostname for edge and tunnel exposures")
     init.add_argument("--port", type=int, help="Container port (default: 3000)")
     init.add_argument("--replicas", type=int, help="Number of instances (default: 1)")
-    init.add_argument("--output", "-o", type=Path, help="Manifest path (default: <name>.yaml)")
+    init.add_argument("--output", type=Path, help="Manifest path (default: <name>.yaml)")
     init.add_argument("--force", action="store_true", help="Overwrite an existing manifest")
 
     login = _command(sub, "login", epilog="Example: luma login https://luma.example.com --token-stdin < token.txt")
