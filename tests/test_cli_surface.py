@@ -191,5 +191,25 @@ class RecordedWorkflowCompatibilityTests(unittest.TestCase):
         self.assertEqual(replay_argv(["--no-env", "deploy", "app.yaml"]), ["--no-env", "deploy", "app.yaml"])
 
 
+
+class ManagerStateReadTests(unittest.TestCase):
+    """A non-root operator reads root-owned Control state through a sudo helper process."""
+
+    def test_privileged_reader_imports_its_helper_from_the_installed_package(self):
+        from luma.cli import manager
+        from luma.control.state import init_state
+        from luma.local import LocalResult
+
+        def run_without_sudo(command, **_kwargs):
+            done = subprocess.run(command, shell=True, capture_output=True, text=True, env=dict(os.environ, LUMA_CONTROL_STATE_DIR=""))
+            return LocalResult(done.returncode, done.stdout + done.stderr)
+
+        with tempfile.TemporaryDirectory() as state_dir, patch.dict(os.environ, {"LUMA_CONTROL_STATE_DIR": state_dir}):
+            init_state(domain="luma.example.com")
+            with patch.object(manager, "control_state_is_initialized", side_effect=PermissionError), \
+                    patch.object(manager.LocalExecutor, "sudo_result", side_effect=run_without_sudo):
+                state = manager._existing_control_state()
+        self.assertEqual((state or {}).get("domain"), "luma.example.com")
+
 if __name__ == "__main__":
     unittest.main()

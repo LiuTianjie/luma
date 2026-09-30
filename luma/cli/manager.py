@@ -667,7 +667,7 @@ def _existing_control_state() -> Dict[str, object] | None:
     code = (
         "import json,os,sys; "
         "os.environ['LUMA_CONTROL_STATE_DIR']=sys.argv[1]; "
-        "from luma.cli import _existing_control_state; "
+        "from luma.cli.manager import _existing_control_state; "
         "from luma.control.state import is_initialized,load_state; "
         "sys.exit(3) if not is_initialized() else None; "
         "print(json.dumps(_existing_control_state()))"
