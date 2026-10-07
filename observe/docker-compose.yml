@@ -31,13 +31,16 @@ services:
     restart: unless-stopped
     volumes:
       - tempo-data:/data
+    environment:
+      # Leave space for mmap/page cache and non-Go memory during compaction.
+      GOMEMLIMIT: 1GiB
     deploy:
       resources:
         reservations:
           cpus: "0.10"
           memory: 256M
         limits:
-          memory: 512M
+          memory: 1536M
 
   victoria:
     image: victoriametrics/victoria-metrics:v1.114.0

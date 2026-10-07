@@ -22,21 +22,29 @@ ingester:
       replication_factor: 1
   trace_idle_period: 10s
   max_block_duration: 5m
+  # This single-binary instance shares the Manager's disk with Control.
+  concurrent_flushes: 1
+  max_block_bytes: 67108864 # 64 MiB
 
 compactor:
   compaction:
     block_retention: 336h
+    max_block_bytes: 268435456 # 256 MiB
+    retention_concurrency: 1
 
 storage:
   trace:
     backend: local
+    blocklist_poll_concurrency: 2
+    search:
+      read_buffer_count: 4
     wal:
       path: /data/wal
     local:
       path: /data/blocks
 
 querier:
-  max_concurrent_queries: 8
+  max_concurrent_queries: 2
 
 query_frontend:
   search:
