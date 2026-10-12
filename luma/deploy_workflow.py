@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from .build_capabilities import normalize_build_capabilities
+from .build_capabilities import normalize_build_capabilities, repository_build_requirements
 from .errors import LumaError
 
 
@@ -141,7 +141,7 @@ def make_recipe(args: argparse.Namespace) -> dict[str, Any]:
         if value is not None and value != "":
             value = local_path(value) if key in {"manifest", "deploy_env_file"} else safe_url(str(value))
             argv += [flag, value]
-    for capability in normalize_build_capabilities(getattr(args, "require_build_capabilities", None)):
+    for capability in repository_build_requirements(getattr(args, "require_build_capabilities", None), fallback_manifest=bool(getattr(args, "manifest", None))):
         argv += ["--require-build-capability", capability]
     if getattr(args, "skip_dns", False):
         argv.append("--skip-dns")
@@ -170,7 +170,7 @@ def retry_recipe(args: argparse.Namespace) -> dict[str, Any]:
         value = request.get(source)
         if value not in (None, "", False):
             parameters[target] = safe_url(str(value)) if target != "port" else value
-    required = normalize_build_capabilities(request.get("requireBuildCapabilities"))
+    required = repository_build_requirements(request.get("requireBuildCapabilities"), fallback_manifest=bool(request.get("manifest")))
     if required:
         parameters["require_build_capabilities"] = required
     if request.get("manifest"):

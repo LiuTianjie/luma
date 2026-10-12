@@ -155,6 +155,8 @@ luma import --provider-id gitea:team --repository acme/app --ref "$APP_COMMIT" \
 
 CLI 必须支持该参数，Control 必须声明 `required-build-capability-v1`，选中的就绪 Builder 必须声明 `repository-build-inputs-v1`。Control 在执行时再次检查实时 Builder，并在部署前要求构建结果确认能力；重试保留要求。缺能力会明确停止，不会静默忽略额外输入。源码实现不代表已发布或线上已加载：使用前需要发布相应 Luma 版本并升级 Control 与 Builder。
 
+外部 `--manifest` 会自动要求同一能力，无需重复传该参数。仅当仓库没有清单时，Builder 才使用外部清单中通过校验的构建和调度字段；仓库自带清单在构建与部署阶段都优先。外部清单的运行环境和密钥不会作为构建输入传递。使用新版 CLI 的外部清单入口前，必须升级 Control 与 Builder。
+
 `luma build local` 不支持 `x-luma-git-contexts`，包括 Compose 构建。额外 Git 输入必须走远程 `luma import`，不能把 provider 凭据塞进 Dockerfile 绕过。仅使用 `build.target` 不代表必须有额外 Git 输入。
 
 ### 构建记录与队列 {#build-runs-and-the-queue}

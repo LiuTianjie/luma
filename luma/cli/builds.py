@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Dict
-from ..build_capabilities import normalize_build_capabilities, require_build_result_capabilities
+from ..build_capabilities import repository_build_requirements, require_build_result_capabilities
 from ..control.client import ControlClient
 from ..errors import ControlRequestError, LumaError
 from ..service import slugify
@@ -283,7 +283,7 @@ def cmd_import(args: argparse.Namespace) -> int:
         print(f"[ok] Control endpoint: {endpoint}", flush=True)
         print(f"[start] Import: {source_label} (build on {build_node_label})", flush=True)
     client = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
-    required = normalize_build_capabilities(args.require_build_capabilities)
+    required = repository_build_requirements(args.require_build_capabilities, fallback_manifest=bool(args.manifest))
     if required:
         client.check_build_capabilities(required=required, build_node=args.build_node)
     _workflow_prepare(args, client)
@@ -511,7 +511,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         args._workflow_retry_run = client.get_build(args.id).get("run")
         prior_result = (args._workflow_retry_run or {}).get("result") or {}
         request = (args._workflow_retry_run or {}).get("request") or {}
-        required = normalize_build_capabilities(request.get("requireBuildCapabilities"))
+        required = repository_build_requirements(request.get("requireBuildCapabilities"), fallback_manifest=bool(request.get("manifest")))
         if required:
             client.check_build_capabilities(required=required, build_node=str(request.get("buildNode") or ""))
         _workflow_prepare(args, client, name=str(prior_result.get("service") or prior_result.get("deployment") or ""))

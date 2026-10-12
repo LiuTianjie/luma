@@ -114,6 +114,110 @@ class RepositoryBuildInputsTests(unittest.TestCase):
                             build_image(self.payload(), cancel_event=threading.Event())
                     build.assert_not_called()
 
+    def test_external_manifest_build_inputs_are_used_when_repository_has_no_manifest(self) -> None:
+        prepared_paths: list[Path] = []
+        spec = {
+            "context": "app",
+            "dockerfile": "app/Dockerfile.worker",
+            "target": "question-video",
+            "repo": "acme/video-worker",
+            "x-luma-git-contexts": {"teachvideo": {"lock": "deploy/teachvideo.lock.json"}},
+        }
+
+        def clone(_url, dest, **_kwargs):
+            (dest / "app").mkdir(parents=True)
+            (dest / "app/Dockerfile.worker").write_text("FROM scratch AS question-video\n", encoding="utf-8")
+
+        def prepare(root, received, **kwargs):
+            self.assertEqual(received, spec)
+            prepared = kwargs["workspace"] / "contexts/teachvideo"
+            prepared.mkdir(parents=True)
+            prepared_paths.append(prepared)
+            self.assertNotIn(root, prepared.parents)
+            return {"teachvideo": SimpleNamespace(path=prepared)}
+
+        payload = {
+            **self.payload(),
+            "fallbackBuild": spec,
+            "fallbackPlacement": {"region": "home", "node": "video-arm"},
+            "targetPlatformsByNode": {"video-arm": "linux/arm64"},
+        }
+        with patch("luma.gitops.clone", side_effect=clone), patch("luma.gitops.head_commit", return_value="abc123"), patch(
+            "luma.agent._docker_binary", return_value="docker"
+        ), patch("luma.agent._docker_buildx_available", return_value=True), patch(
+            "luma.agent._ensure_buildx_builder", return_value="luma-builder"
+        ), patch("luma.build_sources.prepare_git_contexts", side_effect=prepare) as preparation, patch(
+            "luma.agent._run_process_streaming", return_value=SimpleNamespace(code=0, output="built")
+        ) as run:
+            result = build_image(payload)
+
+        preparation.assert_called_once()
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--target") + 1], "question-video")
+        self.assertEqual(command[command.index("--platform") + 1], "linux/arm64")
+        self.assertEqual(command[command.index("--build-context") + 1], f"teachvideo={prepared_paths[0]}")
+        self.assertTrue(command[-1].endswith("/src/app"))
+        self.assertTrue(command[command.index("-f") + 1].endswith("/src/app/Dockerfile.worker"))
+        self.assertIn("/acme/video-worker:", result["image"])
+        self.assertEqual(result["manifest"], "")
+        self.assertEqual(result["buildCapabilities"], ["repository-build-inputs-v1"])
+        self.assertIs(result["fallbackManifestUsed"], True)
+        self.assertFalse(prepared_paths[0].exists())
+
+    def test_repository_manifest_owns_complete_build_inputs_over_external_fallback(self) -> None:
+        for compose in (False, True):
+            with self.subTest(compose=compose):
+                def clone(_url, dest, **_kwargs):
+                    self.write_project(dest, compose=compose, extra_sources=False, target="background")
+
+                payload = {
+                    **self.payload(),
+                    "fallbackBuild": {
+                        "context": "missing-external-context",
+                        "dockerfile": "missing-external-Dockerfile",
+                        "target": "question-video",
+                        "x-luma-git-contexts": {"teachvideo": {"lock": "missing-lock.json"}},
+                    },
+                    "fallbackPlacement": {"node": "missing-external-node", "region": "missing-region"},
+                }
+                with patch("luma.gitops.clone", side_effect=clone), patch("luma.gitops.head_commit", return_value="abc123"), patch(
+                    "luma.agent._docker_binary", return_value="docker"
+                ), patch("luma.agent._docker_buildx_available", return_value=True), patch(
+                    "luma.agent._ensure_buildx_builder", return_value="luma-builder"
+                ), patch("luma.build_sources.prepare_git_contexts") as preparation, patch(
+                    "luma.agent._run_process_streaming", return_value=SimpleNamespace(code=0, output="built")
+                ) as run:
+                    result = build_image(payload)
+                preparation.assert_not_called()
+                command = run.call_args.args[0]
+                self.assertEqual(command[command.index("--target") + 1], "background")
+                self.assertNotIn("--build-context", command)
+                self.assertTrue(command[-1].endswith("/src"))
+                self.assertEqual(command[command.index("--platform") + 1], "linux/arm64")
+                self.assertTrue(result["manifest"])
+                self.assertNotIn("fallbackManifestUsed", result)
+
+    def test_external_fallback_rejects_invalid_build_inputs_instead_of_default_stage(self) -> None:
+        for fallback in (
+            {"fallbackBuild": "question-video"},
+            {"fallbackBuild": {"target": "${TARGET}"}},
+            {"fallbackBuild": {"environment": {"RUNTIME_SECRET": "must-not-enter-build"}}},
+            {"fallbackPlacement": {"region": "home", "environment": {}}},
+        ):
+            with self.subTest(fallback=fallback):
+                def clone(_url, dest, **_kwargs):
+                    dest.mkdir(parents=True)
+                    (dest / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+
+                with patch("luma.gitops.clone", side_effect=clone), patch("luma.gitops.head_commit", return_value="abc123"), patch(
+                    "luma.agent._docker_binary", return_value="docker"
+                ), patch("luma.agent._docker_buildx_available", return_value=True), patch(
+                    "luma.agent._docker_buildx_build"
+                ) as build:
+                    with self.assertRaises(LumaError):
+                        build_image({**self.payload(), **fallback})
+                build.assert_not_called()
+
     def test_local_source_contract_is_explicitly_rejected_before_build(self) -> None:
         for compose in (False, True):
             with self.subTest(compose=compose), tempfile.TemporaryDirectory() as temporary:

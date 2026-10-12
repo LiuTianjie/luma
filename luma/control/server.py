@@ -43,7 +43,7 @@ import yaml
 
 from ..registry_access import join_insecure_registries, registry_host_allows_http
 from ..assets import asset_path
-from ..build_capabilities import REQUIRED_BUILD_CAPABILITY, normalize_build_capabilities, require_build_result_capabilities
+from ..build_capabilities import REQUIRED_BUILD_CAPABILITY, normalize_build_capabilities, repository_build_requirements, require_build_result_capabilities
 from ..cloudflare import CloudflareClient, delete_dns, sync_dns
 from ..dependencies import initialize_service_requirements, require_service_requirements, service_requirements
 from ..egress import minimal_mihomo_config_from_bytes
@@ -3384,6 +3384,30 @@ def _load_service_manifest(manifest: str) -> ServiceSpec:
         service_path.unlink(missing_ok=True)
 
 
+def _repository_fallback_build_inputs(manifest: str, *, region: str = "") -> Dict[str, Any]:
+    """Validate only source/build/placement; keep runtime secrets off Builder."""
+    try:
+        raw = yaml.safe_load(manifest)
+    except yaml.YAMLError as exc:
+        raise LumaError("invalid fallback service manifest YAML") from exc
+    if not isinstance(raw, dict):
+        raise LumaError("fallback service manifest must contain a YAML mapping")
+    # Use the same native service build schema without interpreting runtime env,
+    # ports, volumes, or credentials. The placeholder image permits the normal
+    # no-build-block Dockerfile default used by repository imports.
+    build_only = {
+        "name": "repository-build-inputs", "image": "luma-build-placeholder",
+        "region": region or raw.get("region"),
+        **({"node": raw["node"]} if "node" in raw else {}),
+        **({"build": raw["build"]} if "build" in raw else {}),
+    }
+    spec = _load_service_manifest(yaml.safe_dump(build_only))
+    placement = {"region": spec.region}
+    if spec.node:
+        placement["node"] = spec.node
+    return {"fallbackBuild": dict(spec.build.raw) if spec.build else {}, "fallbackPlacement": placement}
+
+
 def _build_proxy_for_request(
     config: LumaConfig,
     state: Dict[str, Any],
@@ -3809,10 +3833,6 @@ def handle_build_deploy(
         str(body.get("buildNode") or build_config.get("defaultNode") or DEFAULT_BUILD_NODE_NAME).strip(),
         purpose="repository build",
     )
-    required_build_capabilities = normalize_build_capabilities(body.get("requireBuildCapabilities"))
-    _require_builder_capabilities(
-        _node_record_for_name(state.get("nodes") or {}, build_node) or {}, build_node, required_build_capabilities
-    )
     ref = str(body.get("ref") or "").strip()
     compose_sidecar = str(body.get("composeSidecar") or "")
     if compose_sidecar:
@@ -3821,6 +3841,12 @@ def handle_build_deploy(
         )
         if str(body.get("manifest") or "").strip():
             raise LumaError("composeSidecar cannot be combined with manifest")
+    fallback_manifest = str(body.get("manifest") or "").strip()
+    fallback_inputs = _repository_fallback_build_inputs(fallback_manifest, region=str(body.get("region") or "")) if fallback_manifest else {}
+    required_build_capabilities = repository_build_requirements(body.get("requireBuildCapabilities"), fallback_manifest=bool(fallback_manifest))
+    _require_builder_capabilities(
+        _node_record_for_name(state.get("nodes") or {}, build_node) or {}, build_node, required_build_capabilities
+    )
     steps: list[dict[str, str]] = []
 
     registry_host = str(body.get("registryHost") or "").strip()
@@ -3844,6 +3870,7 @@ def handle_build_deploy(
         "repo": repo,
         "proxy": proxy,
         "buildTimeout": int(body.get("buildTimeout") or 7200),
+        **fallback_inputs,
     }
     if required_build_capabilities:
         build_payload["requireBuildCapabilities"] = required_build_capabilities
@@ -3861,6 +3888,8 @@ def handle_build_deploy(
     run_body = dict(body)
     run_body["repoUrl"] = repo_url
     run_body["buildNode"] = build_node
+    if required_build_capabilities:
+        run_body["requireBuildCapabilities"] = required_build_capabilities
     if provider_id:
         run_body["providerId"] = provider_id
     # A retry is a new attempt. Never reset the parent's request, result or
@@ -3931,7 +3960,12 @@ def handle_build_deploy(
                 "builder did not honor the selected composeSidecar; update the builder node agent"
             )
 
-        manifest_text = str(body.get("manifest") or "").strip() or repo_manifest
+        if fallback_manifest and not repo_manifest and build_result.get("fallbackManifestUsed") is not True:
+            raise LumaError("builder did not confirm the fallback manifest build inputs; refusing to deploy")
+        # The supplied manifest is a fallback, matching Builder discovery and
+        # the CLI contract. Never build a repository recipe then deploy a
+        # different caller-supplied manifest.
+        manifest_text = repo_manifest or fallback_manifest
         if not manifest_text:
             raise LumaError("no Luma deployment manifest found in repository and no manifest provided")
 

@@ -7,6 +7,7 @@ from typing import Any
 from .errors import LumaError
 
 REQUIRED_BUILD_CAPABILITY = "required-build-capability-v1"
+REPOSITORY_BUILD_INPUTS_CAPABILITY = "repository-build-inputs-v1"
 
 
 def normalize_build_capabilities(value: Any) -> list[str]:
@@ -18,6 +19,13 @@ def normalize_build_capabilities(value: Any) -> list[str]:
     ):
         raise LumaError("requireBuildCapabilities must be an array of at most 32 capability names")
     return sorted(set(value))
+
+
+def repository_build_requirements(value: Any, *, fallback_manifest: bool = False) -> list[str]:
+    required = normalize_build_capabilities(value)
+    if fallback_manifest:
+        required = sorted(set(required + [REPOSITORY_BUILD_INPUTS_CAPABILITY]))
+    return required
 
 
 def require_build_result_capabilities(result: dict[str, Any], required: list[str], *, owner: str) -> None:

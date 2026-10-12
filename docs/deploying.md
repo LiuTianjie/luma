@@ -155,6 +155,8 @@ luma import --provider-id gitea:team --repository acme/app --ref "$APP_COMMIT" \
 
 This requires a CLI that supports the flag, Control capability `required-build-capability-v1`, and the selected ready Builder advertising `repository-build-inputs-v1`. Control checks the live Builder again and requires the build result to confirm the capability before deployment; retries preserve the requirement. Missing support stops the operation rather than ignoring the additional inputs. Source implementation alone does not prove the feature is released or running: publish the supporting Luma version and upgrade Control and Builder before using this path.
 
+An external `--manifest` automatically requires the same capability, even without the flag. Builder uses its validated build and placement fields only when the repository has no manifest; a repository manifest takes precedence for both building and deployment. Runtime environment and secrets from the external manifest are never forwarded as build inputs. Upgrade Control and Builder before using an external manifest with this CLI.
+
 `luma build local` does not support `x-luma-git-contexts`, including in Compose builds. Use remote `luma import` for these inputs; do not move provider credentials into a Dockerfile to bypass the restriction. `build.target` alone does not require an additional Git input.
 
 ### Build runs and the queue

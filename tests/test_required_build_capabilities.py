@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import unittest
 from unittest.mock import Mock, patch
 
@@ -57,6 +58,20 @@ class BuildCapabilityClientTests(unittest.TestCase):
         with patch.object(client, "health", return_value={"capabilities": [REQUIRED_BUILD_CAPABILITY]}), patch.object(client, "_with_build_queue", side_effect=lambda body: body), patch.object(client, "request") as request:
             client.build_deploy(repo_url="https://github.com/acme/web.git", require_build_capabilities=[CAPABILITY])
             self.assertEqual(request.call_args.args[2]["requireBuildCapabilities"], [CAPABILITY])
+
+    def test_external_manifest_requires_manager_support_without_an_explicit_flag(self):
+        manifest = "name: web\nregion: home\nbuild:\n  target: worker\n"
+        client = ControlClient("https://control.example.com", "test")
+        with patch.object(client, "health", return_value={"capabilities": []}), patch.object(client, "request") as request, patch.object(client, "stream") as stream:
+            for operation in (client.build_deploy, client.build_deploy_events):
+                with self.assertRaisesRegex(LumaError, "update the manager"):
+                    operation(repo_url="https://github.com/acme/web.git", manifest=manifest)
+            request.assert_not_called()
+            stream.assert_not_called()
+        body = ControlClient._build_body({"manifest": manifest})
+        self.assertEqual(body["requireBuildCapabilities"], [CAPABILITY])
+        args = build_parser().parse_args(["--no-env", "import", "acme/web", "--manifest", "local.yml"])
+        self.assertEqual(comparison_fields(make_recipe(args))["require_build_capabilities"], [CAPABILITY])
 
     def test_preflight_reuses_control_default_and_requires_literal_ready(self):
         client = ControlClient("https://control.example.com", "test")
@@ -162,6 +177,65 @@ class BuildCapabilityControlTests(unittest.TestCase):
             self.assertEqual(task.call_args.args[3]["requireBuildCapabilities"], [CAPABILITY])
             self.assertEqual(result["buildCapabilities"], [CAPABILITY])
             self.assertEqual(deploy.call_args.args[1]["gitSource"]["requireBuildCapabilities"], [CAPABILITY])
+
+    def test_external_manifest_sends_validated_build_and_placement_only(self):
+        manifest = """name: worker
+region: home
+node: arm-worker
+build:
+  context: app
+  dockerfile: deploy/Dockerfile
+  target: worker
+  x-luma-git-contexts:
+    teachvideo:
+      lock: deploy/teachvideo.lock.json
+env:
+  DATABASE_PASSWORD: runtime-secret-never-on-builder
+  API_KEY: ${RUNTIME_API_KEY}
+labels:
+  - runtime-sensitive-label
+"""
+        body = {"repoUrl": self.body["repoUrl"], "manifest": manifest}
+        returned = {**self.build_result, "manifest": "", "fallbackManifestUsed": True}
+        with patch.object(server, "_run_node_agent_task", return_value=returned) as task, patch.object(server, "handle_deployment", return_value={"service": "worker"}) as deploy:
+            result = server.handle_build_deploy("test", body)
+        payload = task.call_args.args[3]
+        self.assertEqual(payload["fallbackBuild"], {"context": "app", "dockerfile": "deploy/Dockerfile", "target": "worker", "x-luma-git-contexts": {"teachvideo": {"lock": "deploy/teachvideo.lock.json"}}})
+        self.assertEqual(payload["fallbackPlacement"], {"region": "home", "node": "arm-worker"})
+        self.assertNotIn("platform", payload["fallbackBuild"])
+        for secret in ("runtime-secret-never-on-builder", "RUNTIME_API_KEY", "runtime-sensitive-label", "DATABASE_PASSWORD"):
+            self.assertNotIn(secret, json.dumps(payload))
+        self.assertNotIn("manifest", payload)
+        self.assertEqual(payload["requireBuildCapabilities"], [CAPABILITY])
+        self.assertEqual(result["buildCapabilities"], [CAPABILITY])
+        self.assertIn("runtime-secret-never-on-builder", deploy.call_args.args[1]["manifest"])
+        self.assertEqual(server._create_build_run.call_args.args[0]["requireBuildCapabilities"], [CAPABILITY])
+
+    def test_external_manifest_build_fields_are_validated_before_builder_dispatch(self):
+        for build in ("target: '${STAGE}'", "secrets: [runtime-secret]", "x-luma-git-contexts: {extra: {lock: ../outside}}"):
+            with self.subTest(build=build), patch.object(server, "_run_node_agent_task") as task:
+                with self.assertRaises(LumaError):
+                    server.handle_build_deploy("test", {"repoUrl": self.body["repoUrl"], "manifest": "name: worker\nregion: home\nbuild:\n  " + build + "\n"})
+                task.assert_not_called()
+
+    def test_external_manifest_requires_builder_support_without_explicit_flag(self):
+        self.state["nodes"]["builder"]["agent"]["capabilities"] = ["docker-build"]
+        with patch.object(server, "_run_node_agent_task") as task:
+            with self.assertRaisesRegex(LumaError, CAPABILITY):
+                server.handle_build_deploy("test", {"repoUrl": self.body["repoUrl"], "manifest": "name: worker\nregion: home\nbuild:\n  target: worker\n"})
+            task.assert_not_called()
+
+    def test_generic_capability_ack_does_not_confirm_external_input_was_applied(self):
+        with patch.object(server, "_run_node_agent_task", return_value={**self.build_result, "manifest": ""}), patch.object(server, "handle_deployment") as deploy:
+            with self.assertRaisesRegex(LumaError, "fallback manifest build inputs"):
+                server.handle_build_deploy("test", {"repoUrl": self.body["repoUrl"], "manifest": "name: worker\nregion: home\nbuild:\n  target: worker\n"})
+            deploy.assert_not_called()
+
+    def test_repository_manifest_owns_build_and_deploy_when_external_fallback_exists(self):
+        with patch.object(server, "_run_node_agent_task", return_value=self.build_result), patch.object(server, "handle_deployment", return_value={"service": "web"}) as deploy:
+            server.handle_build_deploy("test", {"repoUrl": self.body["repoUrl"], "manifest": "name: external-worker\nregion: home\nbuild:\n  target: worker\n"})
+        self.assertIn("name: web", deploy.call_args.args[1]["manifest"])
+        self.assertNotIn("external-worker", deploy.call_args.args[1]["manifest"])
 
     def test_no_requirement_preserves_old_builder_behavior(self):
         self.state["nodes"]["builder"]["agent"]["capabilities"] = ["docker-build"]

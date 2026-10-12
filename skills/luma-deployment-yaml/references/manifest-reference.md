@@ -353,6 +353,8 @@ Builder uses the primary import's saved provider credential outside Docker to fe
 
 Call `luma import ... --require-build-capability repository-build-inputs-v1`. This is a capability gate, not a claim that the new code is already released: the CLI must support the flag, Control must expose `required-build-capability-v1`, and the ready selected Builder must advertise `repository-build-inputs-v1`. Control rechecks at execution and rejects a result that does not confirm the required capability before deployment. Retries retain the requirement. Publish and upgrade the supporting CLI/Control/Builder before using this contract; never drop the flag to make an older installation proceed.
 
+External `--manifest` imports automatically require the same capability. Builder receives only validated build and placement fields, never the external runtime environment or secrets. It uses those fields only when no repository manifest exists; the repository manifest takes precedence for both building and deployment. Upgrade Control and Builder before using this external-manifest path with the new CLI.
+
 The local lane explicitly rejects additional Git inputs, for both single-service and Compose builds. Keep the application's recorded workflow rules, and use remote Repository Import when this input contract is required; `build.target` alone can be used without additional Git inputs.
 
 #### Compose source and deployment payload

@@ -4029,10 +4029,13 @@ def build_image(
         manifest_path = deployment_manifest[1] if deployment_manifest else None
         manifest_text = manifest_path.read_text(encoding="utf-8") if manifest_path else ""
 
-        # For single-service imports, the repo manifest's build block is the
-        # declarative source of truth; payload values act as overrides.
+        # A repository manifest owns the whole declarative build input. The
+        # external manifest is a fallback only when no repository deployment
+        # manifest exists; never merge the two source declarations. Control
+        # sends only its checked build/placement subset, not runtime secrets.
         build_block: Dict[str, Any] = {}
         parsed: Dict[str, Any] = {}
+        fallback_manifest_used = False
         if manifest_text.strip():
             import yaml
 
@@ -4044,6 +4047,25 @@ def build_image(
                 raise LumaError("Luma deployment manifest must contain a YAML mapping")
             if isinstance(parsed.get("build"), dict):
                 build_block = parsed["build"]
+        elif deployment_manifest is None:
+            if "fallbackBuild" in payload:
+                from .service import _load_service_build
+
+                fallback_build = payload["fallbackBuild"]
+                if not isinstance(fallback_build, dict):
+                    raise LumaError("fallbackBuild must be a mapping")
+                checked_build = _load_service_build(fallback_build, "repository-import")
+                build_block = checked_build.raw
+            if "fallbackPlacement" in payload:
+                placement = payload["fallbackPlacement"]
+                if (
+                    not isinstance(placement, dict)
+                    or set(placement) - {"node", "region"}
+                    or any(not isinstance(value, str) or not value.strip() for value in placement.values())
+                ):
+                    raise LumaError("fallbackPlacement must contain only literal node/region values")
+                parsed = dict(placement)
+                fallback_manifest_used = True
         repo = _safe_image_repo(str(build_block.get("repo") or repo))
         context_rel = str(payload.get("context") or build_block.get("context") or ".").strip() or "."
         dockerfile_rel = str(payload.get("dockerfile") or build_block.get("dockerfile") or "Dockerfile").strip() or "Dockerfile"
@@ -4106,6 +4128,7 @@ def build_image(
         "sha": sha,
         "manifest": manifest_text,
         "message": f"Built and pushed {image}",
+        **({"fallbackManifestUsed": True} if fallback_manifest_used else {}),
     }
 
 

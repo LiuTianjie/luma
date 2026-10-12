@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, Iterator
 
-from ..build_capabilities import REQUIRED_BUILD_CAPABILITY, normalize_build_capabilities
+from ..build_capabilities import REQUIRED_BUILD_CAPABILITY, normalize_build_capabilities, repository_build_requirements
 from ..errors import ControlRequestError, LumaError
 from ..repo_paths import normalize_repo_relative_path
 
@@ -681,7 +681,7 @@ class ControlClient:
         env_secrets: Dict[str, str] | None = None,
         timeout: int = 2400,
     ) -> Dict[str, Any]:
-        require_build_capabilities = normalize_build_capabilities(require_build_capabilities)
+        require_build_capabilities = repository_build_requirements(require_build_capabilities, fallback_manifest=bool(manifest.strip()))
         if require_build_capabilities:
             self._require_build_capabilities()
         if proxy_mode == "direct":
@@ -716,7 +716,7 @@ class ControlClient:
         env_secrets: Dict[str, str] | None = None,
         timeout: int = 2400,
     ) -> Iterator[Dict[str, Any]]:
-        require_build_capabilities = normalize_build_capabilities(require_build_capabilities)
+        require_build_capabilities = repository_build_requirements(require_build_capabilities, fallback_manifest=bool(manifest.strip()))
         if require_build_capabilities:
             self._require_build_capabilities()
         if proxy_mode == "direct":
@@ -802,7 +802,7 @@ class ControlClient:
         for key, value in optional.items():
             if value:
                 body[key] = value
-        required = normalize_build_capabilities(values.get("require_build_capabilities"))
+        required = repository_build_requirements(values.get("require_build_capabilities"), fallback_manifest=bool(values.get("manifest")))
         if required:
             body["requireBuildCapabilities"] = required
         proxy_mode = str(values.get("proxy_mode") or "auto").strip().lower()
