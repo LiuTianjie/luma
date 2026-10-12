@@ -484,7 +484,7 @@ class CliTests(unittest.TestCase):
                 client.check_workflow.return_value = {"status": "unrecorded", "differences": []}
                 client.record_workflow.return_value = {"workflow": {"name": "api"}}
                 client.build_deploy_events.side_effect = LumaError("control API error 404: not found")
-                client.build_deploy.return_value = {"service": "api", "image": "100.64.0.70:5000/acme/app:abc123", "steps": []}
+                client.build_deploy.return_value = {"service": "api", "image": "100.64.0.70:5000/acme/app:abc123", "steps": [], "buildCapabilities": ["repository-build-inputs-v1"]}
                 with patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print"):
                     code = main(
                         [
@@ -510,6 +510,7 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(kwargs["repository"], "acme/app")
                 self.assertEqual(kwargs["repo_url"], "")
                 self.assertEqual(kwargs["proxy_mode"], "direct")
+                self.assertEqual(kwargs["require_build_capabilities"], ["repository-build-inputs-v1"])
                 self.assertIn("DATABASE_URL", kwargs["manifest"])
                 self.assertEqual(kwargs["env_secrets"], {"DATABASE_URL": "postgres://secret", "UNUSED": "value"})
             finally:
@@ -2351,7 +2352,7 @@ class CliTests(unittest.TestCase):
         response.read.return_value = b'{"ok": true}'
         response.read1.side_effect = [response.read.return_value, b"", response.read.return_value, b""]
         response.__enter__.return_value = response
-        with patch("urllib.request.urlopen", return_value=response) as urlopen:
+        with patch("urllib.request.urlopen", return_value=response) as urlopen, patch.object(client, "health", return_value={"capabilities": ["required-build-capability-v1"]}):
             client.build_deploy(
                 provider_id="gitea:lin",
                 repository="acme/app",
@@ -2367,6 +2368,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(body["repository"], "acme/app")
         self.assertEqual(body["manifest"], "name: api\nregion: cn\nexposure: none\n")
         self.assertEqual(body["envSecrets"], {"DATABASE_URL": "postgres://secret"})
+
+        self.assertEqual(body["requireBuildCapabilities"], ["repository-build-inputs-v1"])
 
     def test_control_client_cancels_repository_import_build(self):
         client = ControlClient("https://luma.example.com", "secret")

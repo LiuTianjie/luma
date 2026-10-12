@@ -34,7 +34,7 @@ from .installer import luma_installer_command
 from .installation import runtime_record, installer_environment
 from .local import LocalExecutor, LocalResult
 from .registry_management import RegistryHttpClient, validate_digest, validate_repository
-from .service import slugify
+from .service import build_target, slugify
 
 class TaskCanceled(LumaError):
     """Raised when Control has requested cancellation of a running task."""
@@ -150,6 +150,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
         return []
     if _docker_buildx_available():
         capabilities.append("docker-build")
+        capabilities.append("repository-build-inputs-v1")
     if os_value == "linux" and _crane_binary():
         # Builders with crane installed can copy images registry-to-registry.
         # Control uses this
@@ -3521,10 +3522,14 @@ def _docker_buildx_build(
     proxy: str,
     build_timeout: int,
     build_args: Mapping[str, str] | None = None,
+    target: str = "",
+    build_contexts: Mapping[str, Path] | None = None,
     progress: Callable[[Dict[str, Any]], None] | None = None,
     cancel_event: threading.Event | None = None,
     buildx_config_root: Path | None = None,
 ) -> str:
+    if cancel_event is not None and cancel_event.is_set():
+        raise TaskCanceled("build-image task canceled")
     tag_sha = f"{push_host}/{repo}:{sha}"
     tag_latest = f"{push_host}/{repo}:latest"
     no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
@@ -3546,10 +3551,17 @@ def _docker_buildx_build(
         for name, value in sorted((build_args or {}).items())
         for item in ("--build-arg", f"{name}={value}")
     ]
+    declared_build_contexts = [
+        item
+        for name, path in sorted((build_contexts or {}).items())
+        for item in ("--build-context", f"{name}={path}")
+    ]
     command = [
         docker, "buildx", "build",
         "--builder", builder,
         "--platform", platform,
+        *(["--target", target] if target else []),
+        *declared_build_contexts,
         *declared_build_args,
         *proxy_build_args,
         # Luma's managed build registry is intentionally served over the
@@ -3568,6 +3580,8 @@ def _docker_buildx_build(
             progress({"type": "output", "line": line})
 
     def run_build() -> LocalResult:
+        if cancel_event is not None and cancel_event.is_set():
+            raise TaskCanceled("build-image task canceled")
         return _run_process_streaming(
             command,
             env=env,
@@ -3625,6 +3639,46 @@ def _compose_build_spec(body: Dict[str, Any]) -> Dict[str, Any] | None:
     if not isinstance(raw, dict):
         raise LumaError("compose service build must be a string or mapping")
     return dict(raw)
+
+
+def _prepare_build_git_contexts(
+    src: Path,
+    spec: Mapping[str, Any],
+    *,
+    payload: Mapping[str, Any],
+    workspace: Path | None,
+    proxy: str,
+    progress: Callable[[Dict[str, Any]], None] | None,
+    cancel_event: threading.Event | None,
+) -> Dict[str, Path]:
+    if "x-luma-git-contexts" not in spec:
+        return {}
+    if workspace is None:
+        raise LumaError(
+            "build.x-luma-git-contexts requires a remote repository import; "
+            "use luma import with the saved Git provider instead of luma build local"
+        )
+    from .build_sources import GitContextCanceled, prepare_git_contexts
+
+    def emit(line: str) -> None:
+        if progress:
+            progress({"type": "output", "line": line})
+
+    try:
+        contexts = prepare_git_contexts(
+            src,
+            dict(spec),
+            repository_url=str(payload.get("repoUrl") or ""),
+            workspace=workspace,
+            token=str(payload.get("gitToken") or "").strip() or None,
+            username=str(payload.get("gitUsername") or "").strip() or None,
+            proxy=proxy or None,
+            cancel_event=cancel_event,
+            progress=emit,
+        )
+    except GitContextCanceled as exc:
+        raise TaskCanceled("build-image task canceled") from exc
+    return {name: context.path for name, context in contexts.items()}
 
 
 _COMPOSE_BUILD_ARG_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
@@ -3747,6 +3801,7 @@ def _build_compose_images(
     allow_repo_overrides: bool = True,
     buildx_builder: str = "",
     buildx_config_root: Path | None = None,
+    source_workspace: Path | None = None,
 ) -> Dict[str, Any]:
     import yaml
 
@@ -3775,6 +3830,12 @@ def _build_compose_images(
             raise LumaError(f"compose service {service_name} must be a mapping")
         spec = _compose_build_spec(service_body)
         if spec is not None:
+            build_target(spec)
+            if "x-luma-git-contexts" in spec and source_workspace is None:
+                _prepare_build_git_contexts(
+                    src, spec, payload=payload, workspace=None, proxy=proxy,
+                    progress=progress, cancel_event=cancel_event,
+                )
             build_services.append((str(service_name), service_body, spec))
             declared_image = str(service_body.get("image") or "").strip()
             if declared_image:
@@ -3823,6 +3884,10 @@ def _build_compose_images(
             else ""
         )
         image_repo = _safe_image_repo(repo_override or (repo if single_build else f"{repo}/{slugify(service_name)}"))
+        build_contexts = _prepare_build_git_contexts(
+            src, spec, payload=payload, workspace=source_workspace, proxy=proxy,
+            progress=progress, cancel_event=cancel_event,
+        )
         image = _docker_buildx_build(
             docker=docker,
             builder=builder,
@@ -3837,6 +3902,8 @@ def _build_compose_images(
             proxy=proxy,
             build_timeout=build_timeout,
             build_args=_compose_build_args(spec),
+            target=build_target(spec),
+            build_contexts=build_contexts,
             progress=progress,
             cancel_event=cancel_event,
             buildx_config_root=buildx_config_root,
@@ -3953,17 +4020,22 @@ def build_image(
                 payload=payload,
                 progress=progress,
                 cancel_event=cancel_event,
+                source_workspace=Path(workdir),
             )
             result["sha"] = sha
+            result["buildCapabilities"] = ["repository-build-inputs-v1"]
             return result
 
         manifest_path = deployment_manifest[1] if deployment_manifest else None
         manifest_text = manifest_path.read_text(encoding="utf-8") if manifest_path else ""
 
-        # For single-service imports, the repo manifest's build block is the
-        # declarative source of truth; payload values act as overrides.
+        # A repository manifest owns the whole declarative build input. The
+        # external manifest is a fallback only when no repository deployment
+        # manifest exists; never merge the two source declarations. Control
+        # sends only its checked build/placement subset, not runtime secrets.
         build_block: Dict[str, Any] = {}
         parsed: Dict[str, Any] = {}
+        fallback_manifest_used = False
         if manifest_text.strip():
             import yaml
 
@@ -3975,6 +4047,25 @@ def build_image(
                 raise LumaError("Luma deployment manifest must contain a YAML mapping")
             if isinstance(parsed.get("build"), dict):
                 build_block = parsed["build"]
+        elif deployment_manifest is None:
+            if "fallbackBuild" in payload:
+                from .service import _load_service_build
+
+                fallback_build = payload["fallbackBuild"]
+                if not isinstance(fallback_build, dict):
+                    raise LumaError("fallbackBuild must be a mapping")
+                checked_build = _load_service_build(fallback_build, "repository-import")
+                build_block = checked_build.raw
+            if "fallbackPlacement" in payload:
+                placement = payload["fallbackPlacement"]
+                if (
+                    not isinstance(placement, dict)
+                    or set(placement) - {"node", "region"}
+                    or any(not isinstance(value, str) or not value.strip() for value in placement.values())
+                ):
+                    raise LumaError("fallbackPlacement must contain only literal node/region values")
+                parsed = dict(placement)
+                fallback_manifest_used = True
         repo = _safe_image_repo(str(build_block.get("repo") or repo))
         context_rel = str(payload.get("context") or build_block.get("context") or ".").strip() or "."
         dockerfile_rel = str(payload.get("dockerfile") or build_block.get("dockerfile") or "Dockerfile").strip() or "Dockerfile"
@@ -3989,6 +4080,12 @@ def build_image(
         dockerfile_path = _safe_repo_subpath(src, dockerfile_rel)
         if not dockerfile_path.is_file():
             raise LumaError(f"Dockerfile not found in repository: {dockerfile_rel}")
+
+        target = build_target(build_block)
+        build_contexts = _prepare_build_git_contexts(
+            src, build_block, payload=payload, workspace=Path(workdir),
+            proxy=proxy or "", progress=progress, cancel_event=cancel_event,
+        )
 
         # cn/home build nodes reach the internet through the egress proxy. The
         # proxy must reach three places: the buildx CLI + FROM pulls (env), the
@@ -4018,16 +4115,20 @@ def build_image(
             platform=platform,
             proxy=proxy or "",
             build_timeout=build_timeout,
+            target=target,
+            build_contexts=build_contexts,
             progress=progress,
             cancel_event=cancel_event,
         )
 
     return {
         "kind": "service",
+        "buildCapabilities": ["repository-build-inputs-v1"],
         "image": image,
         "sha": sha,
         "manifest": manifest_text,
         "message": f"Built and pushed {image}",
+        **({"fallbackManifestUsed": True} if fallback_manifest_used else {}),
     }
 
 

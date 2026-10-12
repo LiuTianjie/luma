@@ -43,6 +43,7 @@ import yaml
 
 from ..registry_access import join_insecure_registries, registry_host_allows_http
 from ..assets import asset_path
+from ..build_capabilities import REQUIRED_BUILD_CAPABILITY, normalize_build_capabilities, repository_build_requirements, require_build_result_capabilities
 from ..cloudflare import CloudflareClient, delete_dns, sync_dns
 from ..dependencies import initialize_service_requirements, require_service_requirements, service_requirements
 from ..egress import minimal_mihomo_config_from_bytes
@@ -748,6 +749,15 @@ def _require_build_node(state: Dict[str, Any], node_name: str, *, purpose: str) 
     return value
 
 
+def _require_builder_capabilities(record: Dict[str, Any], node_name: str, required: list[str]) -> None:
+    missing = [cap for cap in required if not _node_agent_is_ready(record, required_capability=cap)]
+    if missing:
+        raise LumaError(
+            f"builder {node_name} does not support required build capabilities: {', '.join(missing)}; "
+            "update the builder node agent before building"
+        )
+
+
 def _agent_tasks(state: Dict[str, Any]) -> Dict[str, Any]:
     tasks = state.setdefault("agentTasks", {})
     if not isinstance(tasks, dict):
@@ -832,6 +842,9 @@ def _sanitize_git_source(source: Dict[str, Any]) -> Dict[str, Any]:
                 cleaned[key] = text
         elif isinstance(value, (int, float, bool)):
             cleaned[key] = value
+    required = normalize_build_capabilities(source.get("requireBuildCapabilities"))
+    if required:
+        cleaned["requireBuildCapabilities"] = required
     return cleaned
 
 
@@ -1425,6 +1438,14 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                     continue
                 if not required_capabilities and required_capability and not _node_agent_is_ready(record, required_capability=required_capability):
                     continue
+                if task.get("action") == "build-image":
+                    try:
+                        required = normalize_build_capabilities((task.get("payload") or {}).get("requireBuildCapabilities"))
+                        _require_builder_capabilities(record, canonical_node_name, required)
+                    except LumaError as exc:
+                        task.update(status="failed", message=str(exc), result={}, completedAt=now, updatedAt=now)
+                        changed = True
+                        continue
                 task["status"] = "running"
                 task["leasedAt"] = now
                 task["updatedAt"] = now
@@ -1744,6 +1765,9 @@ def _queue_node_agent_task(
                 f"status={_node_agent_status(record)}, os={agent.get('os') or 'unknown'}, "
                 f"capabilities={','.join(str(value) for value in agent.get('capabilities') or []) or '-'}"
             )
+        if action == "build-image":
+            required = normalize_build_capabilities(payload.get("requireBuildCapabilities"))
+            _require_builder_capabilities(record, node_name, required)
         now = int(time.time())
         _prune_agent_tasks(current, now=now)
         task = {
@@ -2548,6 +2572,10 @@ def handle_build_run_retry(
         raise LumaError(f"build run not found: {build_id}")
     request = run.get("request") if isinstance(run.get("request"), dict) else {}
     retry_body = {key: value for key, value in request.items() if key not in {"envSecretNames", "queue"}}
+    requested = normalize_build_capabilities((body or {}).get("requireBuildCapabilities"))
+    required = normalize_build_capabilities(request.get("requireBuildCapabilities"))
+    if requested or required:
+        retry_body["requireBuildCapabilities"] = sorted(set(required + requested))
     retry_body.update(_build_run_retry_overrides({k: v for k, v in (body or {}).items() if k not in {"queue", "workflow"}}))
     if (body or {}).get("queue") is True:
         retry_body["queue"] = True
@@ -3356,6 +3384,30 @@ def _load_service_manifest(manifest: str) -> ServiceSpec:
         service_path.unlink(missing_ok=True)
 
 
+def _repository_fallback_build_inputs(manifest: str, *, region: str = "") -> Dict[str, Any]:
+    """Validate only source/build/placement; keep runtime secrets off Builder."""
+    try:
+        raw = yaml.safe_load(manifest)
+    except yaml.YAMLError as exc:
+        raise LumaError("invalid fallback service manifest YAML") from exc
+    if not isinstance(raw, dict):
+        raise LumaError("fallback service manifest must contain a YAML mapping")
+    # Use the same native service build schema without interpreting runtime env,
+    # ports, volumes, or credentials. The placeholder image permits the normal
+    # no-build-block Dockerfile default used by repository imports.
+    build_only = {
+        "name": "repository-build-inputs", "image": "luma-build-placeholder",
+        "region": region or raw.get("region"),
+        **({"node": raw["node"]} if "node" in raw else {}),
+        **({"build": raw["build"]} if "build" in raw else {}),
+    }
+    spec = _load_service_manifest(yaml.safe_dump(build_only))
+    placement = {"region": spec.region}
+    if spec.node:
+        placement["node"] = spec.node
+    return {"fallbackBuild": dict(spec.build.raw) if spec.build else {}, "fallbackPlacement": placement}
+
+
 def _build_proxy_for_request(
     config: LumaConfig,
     state: Dict[str, Any],
@@ -3510,6 +3562,8 @@ def _resolve_target_build_platform(
 def handle_local_build_prepare(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
+    if normalize_build_capabilities(body.get("requireBuildCapabilities")):
+        raise LumaError("requireBuildCapabilities is supported only for remote repository builds")
     repo_url = normalize_import_repo_url(str(body.get("repoUrl") or "").strip())
     if not repo_url:
         raise LumaError("repoUrl is required for a local build")
@@ -3787,6 +3841,12 @@ def handle_build_deploy(
         )
         if str(body.get("manifest") or "").strip():
             raise LumaError("composeSidecar cannot be combined with manifest")
+    fallback_manifest = str(body.get("manifest") or "").strip()
+    fallback_inputs = _repository_fallback_build_inputs(fallback_manifest, region=str(body.get("region") or "")) if fallback_manifest else {}
+    required_build_capabilities = repository_build_requirements(body.get("requireBuildCapabilities"), fallback_manifest=bool(fallback_manifest))
+    _require_builder_capabilities(
+        _node_record_for_name(state.get("nodes") or {}, build_node) or {}, build_node, required_build_capabilities
+    )
     steps: list[dict[str, str]] = []
 
     registry_host = str(body.get("registryHost") or "").strip()
@@ -3810,7 +3870,10 @@ def handle_build_deploy(
         "repo": repo,
         "proxy": proxy,
         "buildTimeout": int(body.get("buildTimeout") or 7200),
+        **fallback_inputs,
     }
+    if required_build_capabilities:
+        build_payload["requireBuildCapabilities"] = required_build_capabilities
     target_inventory = _target_build_platform_inventory(state)
     build_payload["targetPlatformsByNode"] = target_inventory["byNode"]
     build_payload["targetPlatformsByRegion"] = target_inventory["byRegion"]
@@ -3825,6 +3888,8 @@ def handle_build_deploy(
     run_body = dict(body)
     run_body["repoUrl"] = repo_url
     run_body["buildNode"] = build_node
+    if required_build_capabilities:
+        run_body["requireBuildCapabilities"] = required_build_capabilities
     if provider_id:
         run_body["providerId"] = provider_id
     # A retry is a new attempt. Never reset the parent's request, result or
@@ -3880,6 +3945,7 @@ def handle_build_deploy(
         )
         if _build_run_cancel_requested(build_run_id):
             raise LumaError("build canceled")
+        require_build_result_capabilities(build_result, required_build_capabilities, owner="Builder")
         built_image = str(build_result.get("image") or "").strip()
         built_images = build_result.get("images") if isinstance(build_result.get("images"), dict) else {}
         if not built_image and not built_images:
@@ -3894,7 +3960,12 @@ def handle_build_deploy(
                 "builder did not honor the selected composeSidecar; update the builder node agent"
             )
 
-        manifest_text = str(body.get("manifest") or "").strip() or repo_manifest
+        if fallback_manifest and not repo_manifest and build_result.get("fallbackManifestUsed") is not True:
+            raise LumaError("builder did not confirm the fallback manifest build inputs; refusing to deploy")
+        # The supplied manifest is a fallback, matching Builder discovery and
+        # the CLI contract. Never build a repository recipe then deploy a
+        # different caller-supplied manifest.
+        manifest_text = repo_manifest or fallback_manifest
         if not manifest_text:
             raise LumaError("no Luma deployment manifest found in repository and no manifest provided")
 
@@ -3951,6 +4022,7 @@ def handle_build_deploy(
                     "images": built_images,
                     "buildRunId": build_run_id,
                     **({"composeSidecar": compose_sidecar} if compose_sidecar else {}),
+                    **({"buildCapabilities": required_build_capabilities} if required_build_capabilities else {}),
                 }
             _complete_build_run(build_run_id, "succeeded", result=result if isinstance(result, dict) else {})
             return result
@@ -3978,7 +4050,8 @@ def handle_build_deploy(
         result = handle_deployment(token, deploy_body, progress=run_progress)
         if isinstance(result, dict):
             merged_steps = steps + list(result.get("steps") or [])
-            result = {**result, "steps": merged_steps, "image": built_image, "buildRunId": build_run_id}
+            result = {**result, "steps": merged_steps, "image": built_image, "buildRunId": build_run_id,
+                      **({"buildCapabilities": required_build_capabilities} if required_build_capabilities else {})}
         _complete_build_run(build_run_id, "succeeded", result=result if isinstance(result, dict) else {})
         return result
     except LumaError as exc:
@@ -14089,6 +14162,7 @@ async def _asgi_health(_: Request) -> JSONResponse:
                 "deployment-workflow-v1",
                 "build-queue-v1",
                 "build-proxy-mode-v1",
+                REQUIRED_BUILD_CAPABILITY,
                 "system-update-v1",
                 "control-image-preparation-v1",
                 "route-sentinel-v1",

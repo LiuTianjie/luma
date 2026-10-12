@@ -1248,7 +1248,7 @@ class GithubImportTests(unittest.TestCase):
                         "name": "builder",
                         "region": "home",
                         "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "ready", "os": "linux", "capabilities": ["docker-build"]},
+                        "agent": {"status": "ready", "os": "linux", "capabilities": ["docker-build", "repository-build-inputs-v1"]},
                     }
                 }
                 state["build"] = {"defaultNode": "builder", "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
@@ -1257,7 +1257,7 @@ class GithubImportTests(unittest.TestCase):
 
                 with patch(
                     "luma.control.server._run_node_agent_task",
-                    return_value={"image": "100.64.0.70:5000/gaojiuatech/price:abc123", "manifest": ""},
+                    return_value={"image": "100.64.0.70:5000/gaojiuatech/price:abc123", "manifest": "", "buildCapabilities": ["repository-build-inputs-v1"], "fallbackManifestUsed": True},
                 ), patch("luma.control.server.handle_deployment", return_value={"service": "price", "steps": []}) as deploy:
                     result = handle_build_deploy(
                         state["deployToken"],

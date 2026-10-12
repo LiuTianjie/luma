@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from .errors import LumaError
 from .dependencies import validate_requirement_block
@@ -72,6 +72,7 @@ class ServiceBuildSpec:
     dockerfile: str = "Dockerfile"
     platform: str = "linux/amd64"
     repo: Optional[str] = None
+    target: Optional[str] = None
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -291,16 +292,32 @@ def _load_service_build(raw: Any, slug: str) -> Optional["ServiceBuildSpec"]:
     platform = str(raw.get("platform") or "linux/amd64").strip() or "linux/amd64"
     repo_value = raw.get("repo")
     repo = str(repo_value).strip() if repo_value is not None and str(repo_value).strip() else None
-    unknown = sorted(k for k in raw if k not in {"context", "dockerfile", "platform", "repo"})
+    unknown = sorted(k for k in raw if k not in {"context", "dockerfile", "platform", "repo", "target", "x-luma-git-contexts"})
     if unknown:
         raise LumaError(f"unsupported build field(s): {', '.join(unknown)}")
+    target = build_target(raw)
+    if "x-luma-git-contexts" in raw:
+        from .build_sources import validate_git_contexts_spec
+
+        validate_git_contexts_spec(raw)
     return ServiceBuildSpec(
         context=context,
         dockerfile=dockerfile,
         platform=platform,
         repo=repo,
+        target=target or None,
         raw=dict(raw),
     )
+
+
+def build_target(spec: Mapping[str, Any]) -> str:
+    """Validate a literal Dockerfile stage name shared by both build lanes."""
+    if "target" not in spec:
+        return ""
+    target = spec["target"]
+    if not isinstance(target, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", target):
+        raise LumaError("build.target must be a literal Dockerfile stage name")
+    return target
 
 
 def _normalize_service_resources(resources: Dict[str, Any]) -> Dict[str, Any]:

@@ -350,7 +350,7 @@ arguments:
 ## `luma import`
 
 ```text
-usage: luma import [-h] [--ref REF] [--provider-id PROVIDER_ID] [--repository REPOSITORY] [--manifest MANIFEST] [--compose-sidecar COMPOSE_SIDECAR] [--region REGION] [--exposure EXPOSURE] [--domain DOMAIN] [--port PORT] [--env DEPLOY_ENV_FILE] [--build-node BUILD_NODE] [--platform PLATFORM] [--context BUILD_CONTEXT] [--dockerfile DOCKERFILE] [--registry-host REGISTRY_HOST] [--proxy-mode {auto,direct}] [--timeout TIMEOUT] [--workflow-app WORKFLOW_APP] [--accept-workflow-change] [--workflow-note WORKFLOW_NOTE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] [repo]
+usage: luma import [-h] [--ref REF] [--provider-id PROVIDER_ID] [--repository REPOSITORY] [--manifest MANIFEST] [--compose-sidecar COMPOSE_SIDECAR] [--region REGION] [--exposure EXPOSURE] [--domain DOMAIN] [--port PORT] [--env DEPLOY_ENV_FILE] [--build-node BUILD_NODE] [--platform PLATFORM] [--context BUILD_CONTEXT] [--dockerfile DOCKERFILE] [--registry-host REGISTRY_HOST] [--require-build-capability REQUIRE_BUILD_CAPABILITIES] [--proxy-mode {auto,direct}] [--timeout TIMEOUT] [--workflow-app WORKFLOW_APP] [--accept-workflow-change] [--workflow-note WORKFLOW_NOTE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] [repo]
 
 Build and deploy a Git repository on a builder node. Luma looks for a .luma.yml service manifest or
 a luma.compose.yml sidecar; Compose services with build: are built, pushed to the internal registry
@@ -379,6 +379,9 @@ arguments:
   --dockerfile DOCKERFILE     Dockerfile inside the repository (default: Dockerfile)
   --registry-host REGISTRY_HOST
                               Registry host that nodes pull from (default: <build-node>:5000)
+  --require-build-capability REQUIRE_BUILD_CAPABILITIES
+                              Require a versioned Builder capability (repeatable); unsupported
+                              Control or Builder fails before deployment
   --proxy-mode {auto,direct}  Builder network: auto follows the node's region policy, direct
                               disables the proxy
   --timeout TIMEOUT           Seconds to wait for build and deploy (default: 3600)

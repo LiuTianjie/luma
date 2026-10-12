@@ -114,6 +114,51 @@ luma import --provider-id github:personal --repository acme/app --ref main
 
 导入会查找单服务 manifest（`.luma.yml`、`luma.yml`、`*.luma.yml`）或 Compose sidecar（`luma.compose.yml`、`.luma.compose.yml`、`*.luma.compose.yml`、`docker-compose.luma.yml`）。可以用 `--compose-sidecar 仓库内路径` 明确指定；仓库里没有部署文件时用 `--manifest 本地文件`。对 Compose 仓库，带 `build:` 的服务会被构建并改写为推送后的 `image:`。本地用 `luma compose validate --import-mode luma.compose.yml` 检查这一路径。
 
+### Dockerfile 阶段与固定 Git 输入 {#dockerfile-targets-and-pinned-git-inputs}
+
+`build.target` 选择一个字面量 Dockerfile 阶段名。远程仓库构建还可以把其他仓库作为具名源码上下文：
+
+```yaml
+# docker-compose.yml；单服务 manifest 也使用相同 build 字段
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: release
+      x-luma-git-contexts:
+        library:
+          lock: deploy/library.lock.json
+```
+
+`lock` 是相对主仓库根目录的文件路径，不是内联对象，也不相对 `build.context`。该 JSON 文件必须且只能包含 `repository`、`commit`、`archive_sha256`：
+
+```json
+{
+  "repository": "https://gitea.example.com/acme/library.git",
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "archive_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
+```
+
+将示例摘要替换为完整小写 commit 和 `git archive --format=tar.gz <commit>` 的 SHA256。Builder 在校验两者后才把导出的文件作为 BuildKit 具名上下文 `library`，Dockerfile 可用 `COPY --from=library` 引用。Git 托管平台的 archive 接口可能产生不同字节，不能代替该归档。
+
+额外仓库必须与主仓库具有相同 HTTPS origin（主机和端口），URL 不得包含凭据、query 或 fragment。读取使用主仓库选定的 Git provider 凭据，该凭据必须能访问每个锁定仓库。拉取和校验都发生在 Docker 之外；进入 BuildKit 的只有已验证源码，不包含 Git 凭据、凭据辅助文件或 `.git` 元数据。
+
+导入时显式要求协议能力：
+
+```bash
+luma import --provider-id gitea:team --repository acme/app --ref "$APP_COMMIT" \
+  --compose-sidecar deploy/luma.compose.yml \
+  --require-build-capability repository-build-inputs-v1
+```
+
+CLI 必须支持该参数，Control 必须声明 `required-build-capability-v1`，选中的就绪 Builder 必须声明 `repository-build-inputs-v1`。Control 在执行时再次检查实时 Builder，并在部署前要求构建结果确认能力；重试保留要求。缺能力会明确停止，不会静默忽略额外输入。源码实现不代表已发布或线上已加载：使用前需要发布相应 Luma 版本并升级 Control 与 Builder。
+
+外部 `--manifest` 会自动要求同一能力，无需重复传该参数。仅当仓库没有清单时，Builder 才使用外部清单中通过校验的构建和调度字段；仓库自带清单在构建与部署阶段都优先。外部清单的运行环境和密钥不会作为构建输入传递。使用新版 CLI 的外部清单入口前，必须升级 Control 与 Builder。
+
+`luma build local` 不支持 `x-luma-git-contexts`，包括 Compose 构建。额外 Git 输入必须走远程 `luma import`，不能把 provider 凭据塞进 Dockerfile 绕过。仅使用 `build.target` 不代表必须有额外 Git 输入。
+
 ### 构建记录与队列 {#build-runs-and-the-queue}
 
 导入和重试会进入按仓库、ref 和部署目标划分的持久队列：同一目标的新提交会取消更早的排队请求，而 `main` 和 `dev` 互不阻塞。忙碌的构建节点只会让自己的请求排队，不会影响其他构建节点。

@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Dict
+from ..build_capabilities import repository_build_requirements, require_build_result_capabilities
 from ..control.client import ControlClient
 from ..errors import ControlRequestError, LumaError
 from ..service import slugify
@@ -282,6 +283,9 @@ def cmd_import(args: argparse.Namespace) -> int:
         print(f"[ok] Control endpoint: {endpoint}", flush=True)
         print(f"[start] Import: {source_label} (build on {build_node_label})", flush=True)
     client = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    required = repository_build_requirements(args.require_build_capabilities, fallback_manifest=bool(args.manifest))
+    if required:
+        client.check_build_capabilities(required=required, build_node=args.build_node)
     _workflow_prepare(args, client)
     manifest_text = args.manifest.read_text(encoding="utf-8") if args.manifest else ""
     env_secrets = _import_env_secrets(args.deploy_env_file)
@@ -306,6 +310,9 @@ def cmd_import(args: argparse.Namespace) -> int:
         proxy_mode=args.proxy_mode,
         timeout=args.timeout,
     )
+
+    if required:
+        build_kwargs["require_build_capabilities"] = required
 
     streamed = False
     result: Dict[str, Any] | None = None
@@ -348,6 +355,7 @@ def cmd_import(args: argparse.Namespace) -> int:
                     _print_deploy_step(step)
 
     result = _wait_for_queued_build(args, client, result)
+    require_build_result_capabilities(result, required, owner="Control")
     if args.compose_sidecar and result.get("composeSidecar") != args.compose_sidecar:
         raise LumaError(
             "Control did not confirm the selected Compose sidecar; refusing to report import success"
@@ -502,10 +510,16 @@ def cmd_build(args: argparse.Namespace) -> int:
     if args.build_command == "retry":
         args._workflow_retry_run = client.get_build(args.id).get("run")
         prior_result = (args._workflow_retry_run or {}).get("result") or {}
+        request = (args._workflow_retry_run or {}).get("request") or {}
+        required = repository_build_requirements(request.get("requireBuildCapabilities"), fallback_manifest=bool(request.get("manifest")))
+        if required:
+            client.check_build_capabilities(required=required, build_node=str(request.get("buildNode") or ""))
         _workflow_prepare(args, client, name=str(prior_result.get("service") or prior_result.get("deployment") or ""))
         env_secrets = _import_env_secrets(args.deploy_env_file)
-        result = client.retry_build(args.id, timeout=args.timeout, env_secrets=env_secrets)
+        retry_kwargs = {"require_build_capabilities": required} if required else {}
+        result = client.retry_build(args.id, timeout=args.timeout, env_secrets=env_secrets, **retry_kwargs)
         result = _wait_for_queued_build(args, client, result)
+        require_build_result_capabilities(result, required, owner="Control")
         _workflow_finish(args, client, result)
         if output_format != "text":
             _print_success(args, result)
