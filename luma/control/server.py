@@ -11719,10 +11719,11 @@ def _dashboard_nodes(
         node = raw_node
         hostname = str(node.get("hostname") or "").strip()
         nomad_id = str(node.get("id") or node.get("rawId") or "").strip()
+        # Hostnames and historical aliases can belong to a different node.
         name = str(
-            node.get("lumaNode")
+            node_ids.get(nomad_id)
+            or node.get("lumaNode")
             or hostnames.get(hostname)
-            or node_ids.get(nomad_id)
             or (hostname if hostname in merged else "")
             or ""
         )

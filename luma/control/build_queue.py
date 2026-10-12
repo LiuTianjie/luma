@@ -460,11 +460,13 @@ def execute(item: WorkItem) -> None:
                 mutate_state(cleanup)
                 break
             except (sqlite3.OperationalError, LumaError) as exc:
-                if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                if not any(reason in str(exc).lower() for reason in ("locked", "busy", "disk i/o error")):
                     raise
                 # Host side effects already happened. Retry only the receipt,
                 # never the deployment, and retain this worker slot meanwhile.
-                LOG.warning("Build execution finished; retrying queue ownership release after database contention")
+                # A transient I/O failure must not abandon queueExecuting after
+                # the remote child has stopped. Each attempt reconnects to SQLite.
+                LOG.warning("Build %s finished; retrying queue ownership release after database error: %s", build_id, exc)
                 time.sleep(1)
 
 

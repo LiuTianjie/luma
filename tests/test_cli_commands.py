@@ -1702,6 +1702,25 @@ class CliTests(unittest.TestCase):
         self.assertIn("mini", printed_text)
         self.assertNotIn("\n  lab", printed_text)
 
+    def test_node_status_matches_nomad_id_without_crossing_aliases(self):
+        from luma.cli.nodes import _filter_node_status_payload
+
+        payload = {
+            "nodes": {"items": [
+                {"name": "air2", "hostname": "air2", "nodeId": "air2-id"},
+                {"name": "gaojiu", "nodeId": "gaojiu-id", "aliases": ["Mac.lan"]},
+            ]},
+            "nomad": {"nodes": [
+                {"id": "air2-id", "name": "Mac.lan", "hostname": "Mac.lan", "state": "ready"},
+                {"id": "gaojiu-id", "name": "Mac", "hostname": "Mac", "state": "down"},
+            ]},
+        }
+        for query, expected_id in (("air2", "air2-id"), ("gaojiu", "gaojiu-id"),
+                                   ("air2-id", "air2-id"), ("Mac.lan", "gaojiu-id")):
+            with self.subTest(query=query):
+                result = _filter_node_status_payload(payload, query)
+                self.assertEqual([node["id"] for node in result["nomad"]["nodes"]], [expected_id])
+
     def test_node_exit_cleans_local_nomad_and_runtime_state(self):
         remote = Mock()
         remote.sudo_result.return_value = Mock(code=0, output="stopped\n")

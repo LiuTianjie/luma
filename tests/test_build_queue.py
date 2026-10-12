@@ -247,6 +247,73 @@ class BuildQueueTests(unittest.TestCase):
         self.assertNotIn('queueExecuting', state['buildRuns'][first])
         self.assertNotIn(first, state['buildQueue'])
 
+    def test_cleanup_retries_io_errors_without_replaying_work(self):
+        wrapped = LumaError('cannot open control database: disk I/O error')
+        wrapped.__cause__ = sqlite3.OperationalError('disk I/O error')
+        for failure in (sqlite3.OperationalError('disk I/O error'), wrapped):
+            with self.subTest(error=type(failure).__name__):
+                first = self.remote()
+                item = queue.claim()
+                mutate = queue.mutate_state
+                attempts = []
+                def io_once(callback):
+                    attempts.append(True)
+                    if len(attempts) == 1:
+                        raise failure
+                    return mutate(callback)
+                def finish(*args, **kwargs):
+                    srv._complete_build_run(first, 'succeeded')
+                    return {}
+                with patch.object(srv, 'handle_build_deploy', side_effect=finish) as deploy, \
+                     patch.object(queue, 'mutate_state', side_effect=io_once), patch.object(queue.time, 'sleep'):
+                    queue.execute(item)
+                deploy.assert_called_once()
+                self.assertEqual(len(attempts), 2)
+                state = load_state()
+                self.assertEqual(state['buildRuns'][first]['status'], 'succeeded')
+                self.assertNotIn('queueExecuting', state['buildRuns'][first])
+                self.assertNotIn(first, state['buildQueue'])
+
+    def test_cleanup_io_retry_still_waits_for_running_remote_child(self):
+        first = self.remote(composeSidecar='prod.yml')
+        item = queue.claim()
+        state = load_state()
+        state['buildRuns'][first]['agentTaskId'] = 'child'
+        state['agentTasks'] = {'child': {'status': 'running', 'nodeName': 'builder'}}
+        save_state(state)
+        latest = self.remote(composeSidecar='prod.yml')
+        mutate = queue.mutate_state
+        calls = 0
+        def io_once(callback):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise sqlite3.OperationalError('disk I/O error')
+            return mutate(callback)
+        with patch.object(srv, 'handle_build_deploy', side_effect=LumaError('canceled')) as deploy, \
+             patch.object(queue, 'mutate_state', side_effect=io_once), patch.object(queue.time, 'sleep'):
+            queue.execute(item)
+        deploy.assert_called_once()
+        self.assertTrue(load_state()['buildRuns'][first]['queueOwnerReleased'])
+        self.assertIsNone(queue.claim())
+        state = load_state()
+        state['agentTasks']['child']['status'] = 'canceled'
+        save_state(state)
+        self.assertEqual(queue.claim()[0], latest)
+
+    def test_cleanup_does_not_retry_non_io_database_failures(self):
+        first = self.remote()
+        item = queue.claim()
+        def finish(*args, **kwargs):
+            srv._complete_build_run(first, 'succeeded')
+            return {}
+        with patch.object(srv, 'handle_build_deploy', side_effect=finish), \
+             patch.object(queue, 'mutate_state', side_effect=sqlite3.OperationalError('no such table: control_entities')) as mutate, \
+             patch.object(queue.time, 'sleep') as sleep, self.assertRaises(sqlite3.OperationalError):
+            queue.execute(item)
+        mutate.assert_called_once()
+        sleep.assert_not_called()
+
     def test_queue_reads_do_not_hydrate_unrelated_history(self):
         from luma.control import database
         state = load_state()

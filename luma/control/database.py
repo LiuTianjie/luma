@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import secrets
 import sqlite3
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -21,6 +23,7 @@ DATABASE_FILE = "control.sqlite3"
 SCHEMA_VERSION = 1
 ENTITY_KINDS = frozenset({"nodes", "agentTasks", "builderTasks", "builderTaskIdempotency", "builderSourceSnapshots", "buildRuns", "deploymentEvents"})
 EVENT_STREAMS = ("events", "progress", "steps")
+LOG = logging.getLogger(__name__)
 
 
 def database_path() -> Path:
@@ -33,8 +36,35 @@ def _json(value: Any) -> str:
 
 
 def _private(path: Path) -> None:
-    if path.exists():
+    try:
         path.chmod(0o600)
+    except FileNotFoundError:
+        # SQLite can remove WAL/SHM when the last other connection closes.
+        pass
+
+
+def _create_database_file(path: Path) -> None:
+    if path.exists():
+        return
+    # Never open/close an existing database outside SQLite: POSIX close()
+    # drops this process's locks, including those held by other connections.
+    # Close a private new inode before publishing it, so simultaneous first
+    # connections cannot see the file until the non-SQLite close is finished.
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(name)
+    try:
+        os.close(fd)
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            pass  # Another initializer published its file first.
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _log_sqlite_error(exc: sqlite3.Error) -> None:
+    LOG.error("Control SQLite operation failed: %s (sqlite_errorcode=%s sqlite_errorname=%s)",
+              exc, getattr(exc, "sqlite_errorcode", None), getattr(exc, "sqlite_errorname", None))
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -68,8 +98,7 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     # Create with restrictive mode before SQLite opens it, including under a
     # permissive process umask. WAL/SHM inherit the main database permissions.
-    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
-    os.close(fd)
+    _create_database_file(path)
     _private(path)
     conn = None
     try:
@@ -84,6 +113,8 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
             _private(Path(str(path) + suffix))
         return conn
     except (sqlite3.Error, ValueError, LumaError) as exc:
+        if isinstance(exc, sqlite3.Error):
+            _log_sqlite_error(exc)
         if conn is not None:
             conn.close()
         if isinstance(exc, LumaError):
@@ -141,7 +172,9 @@ def transaction(*, immediate: bool = True) -> Iterator[sqlite3.Connection]:
         # import. A prepared manifest also blocks automatic stale JSON reuse
         # after a crash between commit and this marker write.
         _record_authority(conn)
-    except BaseException:
+    except BaseException as exc:
+        if isinstance(exc, sqlite3.Error):
+            _log_sqlite_error(exc)
         if not committed:
             conn.rollback()
             if not had_manifest:
