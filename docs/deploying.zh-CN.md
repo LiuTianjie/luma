@@ -119,7 +119,7 @@ luma import --provider-id github:personal --repository acme/app --ref main
 `build.target` 选择一个字面量 Dockerfile 阶段名。远程仓库构建还可以把其他仓库作为具名源码上下文：
 
 ```yaml
-# docker-compose.yml；单服务 manifest 也使用相同 build 字段
+# docker-compose.yml; the same build fields work in a single-service manifest
 services:
   worker:
     build:
