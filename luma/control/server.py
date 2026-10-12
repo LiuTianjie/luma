@@ -1019,7 +1019,9 @@ def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | No
 
 def _build_run_result_summary(result: Dict[str, Any]) -> Dict[str, Any]:
     summary: Dict[str, Any] = {}
-    for key in ("service", "deployment", "image", "images", "dns", "orchestrator", "composeSidecar", "revision"):
+    # The durable result is also the queued client's completion response. Keep
+    # the verified Builder acknowledgement; never reconstruct it from a request.
+    for key in ("service", "deployment", "image", "images", "dns", "orchestrator", "composeSidecar", "revision", "buildCapabilities"):
         value = result.get(key)
         if value not in (None, "", [], {}):
             summary[key] = value
