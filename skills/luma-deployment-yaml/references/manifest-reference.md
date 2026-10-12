@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | `name` | yes | string | Service name. Luma slugifies it for stack, service, route, and deployment records. |
 | `image` | required unless `build` is set | string | Prebuilt container image. With Builder Registry configured, Luma copies external/private images into the internal cache and deploys the verified internal digest. For Repository Import, omit `image` and use `build:` so Luma can inject the built internal-registry image. |
-| `build` | no | map | Source-to-image build for `luma import` / Dashboard Repository Import. Subfields: `build.context` (default `.`), `build.dockerfile` (default `Dockerfile`), `build.platform` (default `linux/amd64`), and optional `build.repo` to override the internal image repository path. When present, `image` may be omitted. Not used by plain `luma deploy`. |
+| `build` | no | map | Source-to-image build for `luma import` / Dashboard Repository Import. Subfields: `build.context` (default `.`), `build.dockerfile` (default `Dockerfile`), `build.platform` (default `linux/amd64`), optional `build.repo`, literal Dockerfile stage `build.target`, and remote-only `build.x-luma-git-contexts` with reviewed lock files (see below). When present, `image` may be omitted. Not used by plain `luma deploy`. |
 | `region` | yes | `cn` / `global` / `home` or a custom region | Runtime placement region. Custom regions from `luma region create` only allow `exposure: none` unless later extended. |
 | `engine` | no | `nomad` | Orchestrator override. Omit to inherit the cluster default. |
 | `node` | no | string | Luma node name from `luma node join --name`; control-plane deploy resolves it to a node-meta placement constraint and keeps the region constraint. Stable across node restarts. Do not use Docker hostnames for normal pins. |
@@ -332,6 +332,30 @@ build:
 Do not add a second top-level field for this unless the Luma manifest schema changes. `image` remains for prebuilt external images; `build:` marks an image that Luma will produce and inject.
 
 ### Compose Repository Import
+
+#### Dockerfile targets and additional Git contexts
+
+Single-service and Compose `build` blocks accept `target: <Dockerfile-stage>`. For additional repositories, remote import accepts `x-luma-git-contexts.<alias>.lock: <repository-relative-JSON-path>`:
+
+```yaml
+build:
+  context: .
+  dockerfile: Dockerfile
+  target: release
+  x-luma-git-contexts:
+    library:
+      lock: deploy/library.lock.json
+```
+
+The lock path is relative to the primary repository root, stays inside it, and must contain exactly `{repository, commit, archive_sha256}`. `repository` is an HTTPS clone URL on the primary repository's same host and port, with no embedded credentials, query or fragment; `commit` is a full lowercase Git commit; `archive_sha256` is the lowercase SHA256 of `git archive --format=tar.gz <commit>`, not a hosted archive endpoint. Up to 16 named inputs are allowed. Use lowercase aliases and do not reuse `context`, `dockerfile` or `scratch`.
+
+Builder uses the primary import's saved provider credential outside Docker to fetch and verify the locked repository. That credential must have read access to every input on the same origin. Only the verified exported source becomes a named BuildKit context, consumed with `COPY --from=library`; Git metadata and credential helpers never enter the context or image. Do not put repository credentials in YAML, Docker build arguments or Dockerfile download commands.
+
+Call `luma import ... --require-build-capability repository-build-inputs-v1`. This is a capability gate, not a claim that the new code is already released: the CLI must support the flag, Control must expose `required-build-capability-v1`, and the ready selected Builder must advertise `repository-build-inputs-v1`. Control rechecks at execution and rejects a result that does not confirm the required capability before deployment. Retries retain the requirement. Publish and upgrade the supporting CLI/Control/Builder before using this contract; never drop the flag to make an older installation proceed.
+
+The local lane explicitly rejects additional Git inputs, for both single-service and Compose builds. Keep the application's recorded workflow rules, and use remote Repository Import when this input contract is required; `build.target` alone can be used without additional Git inputs.
+
+#### Compose source and deployment payload
 
 Compose repositories must be first-class in the same build+registry flow. A repository can contain:
 

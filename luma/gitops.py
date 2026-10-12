@@ -66,20 +66,51 @@ def clone(
     proxy: str | None = None,
     token: str | None = None,
     username: str | None = None,
+    strict_https_origin: bool = False,
 ) -> str:
-    safe_url = str(url or "").strip()
+    original_url = str(url or "")
+    safe_url = original_url.strip()
     if not safe_url:
         raise LumaError("git clone requires a repository url")
+    if strict_https_origin and (
+        not safe_url.startswith("https://")
+        or any(ord(character) <= 32 or ord(character) == 127 for character in original_url)
+    ):
+        raise LumaError("strict git source requires an HTTPS repository url")
     if not safe_url.startswith(("https://", "git@", "ssh://")):
         # accept bare github.com/owner/repo shorthand
         safe_url = f"https://{safe_url.lstrip('/')}"
     parsed = urllib.parse.urlparse(safe_url)
+    if strict_https_origin and (
+        not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or "?" in safe_url
+        or "#" in safe_url
+    ):
+        raise LumaError("strict git source requires an HTTPS repository host")
     if parsed.scheme in {"http", "https", "ssh"}:
         if parsed.username or parsed.password:
             raise LumaError("git repository url must not contain inline credentials")
         if parsed.query or parsed.fragment:
             raise LumaError("git repository url must not contain query parameters or fragments")
     env = dict(os.environ)
+    git_prefix = ["git"]
+    if strict_https_origin:
+        # A second repository borrows the primary provider's credential only
+        # for its validated HTTPS origin. Host configuration must not rewrite
+        # that URL, follow it to another origin, or persist/use other helpers.
+        env = {key: value for key, value in env.items() if not key.startswith("GIT_")}
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env["GIT_CONFIG_GLOBAL"] = os.devnull
+        git_prefix += [
+            "-c", "http.followRedirects=false",
+            "-c", "credential.helper=",
+            "-c", "protocol.allow=never",
+            "-c", "protocol.https.allow=always",
+            "-c", f"core.hooksPath={os.devnull}",
+            "-c", "init.templateDir=",
+        ]
     for name in (
         "GIT_TRACE",
         "GIT_TRACE2",
@@ -100,7 +131,7 @@ def clone(
 
     if ref and _FULL_COMMIT_RE.fullmatch(str(ref)):
         commands = [
-            ["git", "init", "--", str(dest)],
+            ["git", "init", *(["--object-format=sha256"] if len(str(ref)) == 64 else []), "--", str(dest)],
             ["git", "-C", str(dest), "remote", "add", "origin", safe_url],
             [
                 "git",
@@ -135,7 +166,7 @@ def clone(
                 env["LUMA_GIT_PASSWORD_FILE"] = str(password_file)
             for command in commands:
                 result = subprocess.run(
-                    command,
+                    [*git_prefix, *command[1:]],
                     check=False,
                     text=True,
                     stdout=subprocess.PIPE,

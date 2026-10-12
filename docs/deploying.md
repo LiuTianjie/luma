@@ -114,6 +114,49 @@ luma import --provider-id github:personal --repository acme/app --ref main
 
 Import looks for a single-service manifest (`.luma.yml`, `luma.yml`, `*.luma.yml`) or a Compose sidecar (`luma.compose.yml`, `.luma.compose.yml`, `*.luma.compose.yml`, `docker-compose.luma.yml`). Select one explicitly with `--compose-sidecar path/in/repo.yml`, or pass `--manifest local.yml` when the repository has none. For Compose repositories, services with `build:` are built and rewritten to the pushed `image:`. Check that locally with `luma compose validate --import-mode luma.compose.yml`.
 
+### Dockerfile targets and pinned Git inputs
+
+Use `build.target` to select a literal Dockerfile stage. A remote repository build can also supply named source contexts from other repositories:
+
+```yaml
+# docker-compose.yml; the same build fields work in a single-service manifest
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: release
+      x-luma-git-contexts:
+        library:
+          lock: deploy/library.lock.json
+```
+
+`lock` is a path relative to the primary repository root, not an inline object or a path relative to `build.context`. Its JSON contains exactly `repository`, `commit` and `archive_sha256`:
+
+```json
+{
+  "repository": "https://gitea.example.com/acme/library.git",
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "archive_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
+```
+
+Replace these example hashes with the full lowercase commit and SHA256 of `git archive --format=tar.gz <commit>`. Builder verifies both before supplying the exported files as the BuildKit context `library`, usable with `COPY --from=library`. Hosted archive endpoints may produce different bytes and are not interchangeable with this archive.
+
+Additional repositories must use the same HTTPS origin (host and port) as the primary repository, without embedded credentials, query or fragment. They use the selected primary Git provider credential; that credential must have access to every locked repository. Fetching and verification happen outside Docker. Only verified exported source enters BuildKit; Git credentials, helpers and `.git` metadata do not enter Docker contexts or image layers.
+
+Require the protocol explicitly when importing:
+
+```bash
+luma import --provider-id gitea:team --repository acme/app --ref "$APP_COMMIT" \
+  --compose-sidecar deploy/luma.compose.yml \
+  --require-build-capability repository-build-inputs-v1
+```
+
+This requires a CLI that supports the flag, Control capability `required-build-capability-v1`, and the selected ready Builder advertising `repository-build-inputs-v1`. Control checks the live Builder again and requires the build result to confirm the capability before deployment; retries preserve the requirement. Missing support stops the operation rather than ignoring the additional inputs. Source implementation alone does not prove the feature is released or running: publish the supporting Luma version and upgrade Control and Builder before using this path.
+
+`luma build local` does not support `x-luma-git-contexts`, including in Compose builds. Use remote `luma import` for these inputs; do not move provider credentials into a Dockerfile to bypass the restriction. `build.target` alone does not require an additional Git input.
+
 ### Build runs and the queue
 
 Imports and retries enter a persistent queue per repository, ref and deployment target: a newer submission for the same target cancels older queued ones, while `main` and `dev` never block each other. A busy builder keeps its requests queued without holding up other builders.

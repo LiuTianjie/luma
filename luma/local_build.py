@@ -23,6 +23,7 @@ from .agent import (
     _write_docker_auth_config,
 )
 from .errors import LumaError
+from .service import build_target
 
 
 def _expose_local_docker_runtime(docker_config: Path) -> None:
@@ -239,6 +240,12 @@ def build_and_push_local_source(
         except yaml.YAMLError as exc:
             raise LumaError(f"invalid local Luma deployment manifest: {exc}") from exc
         build_block = parsed.get("build") if isinstance(parsed, dict) and isinstance(parsed.get("build"), dict) else {}
+        if "x-luma-git-contexts" in build_block:
+            raise LumaError(
+                "build.x-luma-git-contexts requires a remote repository import; "
+                "use luma import with the saved Git provider instead of luma build local"
+            )
+        target = build_target(build_block)
         context_rel = str(context or build_block.get("context") or ".").strip() or "."
         dockerfile_rel = str(dockerfile or build_block.get("dockerfile") or "Dockerfile").strip() or "Dockerfile"
         build_platform = str(platform or build_block.get("platform") or "linux/amd64").strip() or "linux/amd64"
@@ -269,6 +276,7 @@ def build_and_push_local_source(
             platform=build_platform,
             proxy=local_proxy,
             build_timeout=timeout,
+            target=target,
             progress=emit,
             buildx_config_root=user_buildx_root,
         )

@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, Iterator
 
+from ..build_capabilities import REQUIRED_BUILD_CAPABILITY, normalize_build_capabilities
 from ..errors import ControlRequestError, LumaError
 from ..repo_paths import normalize_repo_relative_path
 
@@ -674,11 +675,15 @@ class ControlClient:
         dockerfile: str = "",
         registry_host: str = "",
         proxy_mode: str = "auto",
+        require_build_capabilities: list[str] | None = None,
         manifest: str = "",
         compose_sidecar: str = "",
         env_secrets: Dict[str, str] | None = None,
         timeout: int = 2400,
     ) -> Dict[str, Any]:
+        require_build_capabilities = normalize_build_capabilities(require_build_capabilities)
+        if require_build_capabilities:
+            self._require_build_capabilities()
         if proxy_mode == "direct":
             self._require_build_proxy_mode()
         if compose_sidecar:
@@ -705,11 +710,15 @@ class ControlClient:
         dockerfile: str = "",
         registry_host: str = "",
         proxy_mode: str = "auto",
+        require_build_capabilities: list[str] | None = None,
         manifest: str = "",
         compose_sidecar: str = "",
         env_secrets: Dict[str, str] | None = None,
         timeout: int = 2400,
     ) -> Iterator[Dict[str, Any]]:
+        require_build_capabilities = normalize_build_capabilities(require_build_capabilities)
+        if require_build_capabilities:
+            self._require_build_capabilities()
         if proxy_mode == "direct":
             self._require_build_proxy_mode()
         if compose_sidecar:
@@ -718,6 +727,34 @@ class ControlClient:
             )
             self._require_repository_compose_sidecar()
         return self.stream("POST", "/v1/builds/stream", self._with_build_queue(self._build_body(locals())), timeout=timeout)
+
+    def check_build_capabilities(self, *, required: list[str], build_node: str = "") -> Dict[str, Any]:
+        """Read-only preflight; execution still checks the live agent and result."""
+        required = normalize_build_capabilities(required)
+        if required:
+            self._require_build_capabilities()
+        build = self.status().get("build")
+        if not isinstance(build, dict):
+            raise LumaError("Control did not return the Builder configuration")
+        node_name = build_node or str(build.get("defaultNode") or "")
+        nodes = build.get("nodes")
+        record = next((item for item in nodes if isinstance(item, dict) and item.get("name") == node_name), None) if isinstance(nodes, list) else None
+        if not record or record.get("ready") is not True:
+            raise LumaError(f"builder {node_name or '(default)'} is not declared and ready")
+        capabilities = record.get("storageCapabilities")
+        advertised = {item for item in capabilities if isinstance(item, str)} if isinstance(capabilities, list) else set()
+        missing = sorted(set(required) - advertised)
+        if missing:
+            raise LumaError(f"builder {node_name} does not support required build capabilities: {', '.join(missing)}; update the builder node agent before building")
+        return {"buildNode": node_name, "buildCapabilities": required}
+
+    def _require_build_capabilities(self) -> None:
+        capabilities = self.health().get("capabilities")
+        if not isinstance(capabilities, list) or REQUIRED_BUILD_CAPABILITY not in capabilities:
+            raise LumaError(
+                "Luma Control does not support required build capabilities; "
+                "update the manager before using --require-build-capability"
+            )
 
     def _require_repository_compose_sidecar(self) -> None:
         capabilities = self.health().get("capabilities") or []
@@ -765,6 +802,9 @@ class ControlClient:
         for key, value in optional.items():
             if value:
                 body[key] = value
+        required = normalize_build_capabilities(values.get("require_build_capabilities"))
+        if required:
+            body["requireBuildCapabilities"] = required
         proxy_mode = str(values.get("proxy_mode") or "auto").strip().lower()
         if proxy_mode not in {"auto", "direct"}:
             raise LumaError("proxy mode must be auto or direct")
@@ -852,8 +892,13 @@ class ControlClient:
     def get_build(self, build_id: str, *, query: Dict[str, Any] | None = None, timeout: float = 30) -> Dict[str, Any]:
         return self.request("GET", self._query_path(f"/v1/builds/{urllib.parse.quote(build_id, safe='')}", query), timeout=timeout)
 
-    def retry_build(self, build_id: str, *, timeout: int = 2400, env_secrets: Dict[str, str] | None = None) -> Dict[str, Any]:
+    def retry_build(self, build_id: str, *, timeout: int = 2400, env_secrets: Dict[str, str] | None = None, require_build_capabilities: list[str] | None = None) -> Dict[str, Any]:
+        required = normalize_build_capabilities(require_build_capabilities)
+        if required:
+            self._require_build_capabilities()
         body: Dict[str, Any] = {}
+        if required:
+            body["requireBuildCapabilities"] = required
         if env_secrets is not None:
             body["envSecrets"] = env_secrets
         return self.request("POST", f"/v1/builds/{urllib.parse.quote(build_id, safe='')}/retry", self._with_build_queue(body), timeout=timeout)

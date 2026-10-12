@@ -263,6 +263,7 @@ def _add_deploy_commands(sub: argparse._SubParsersAction) -> None:
     import_cmd.add_argument("--context", dest="build_context", default="", help="Docker build context inside the repository (default: .)")
     import_cmd.add_argument("--dockerfile", default="", help="Dockerfile inside the repository (default: Dockerfile)")
     import_cmd.add_argument("--registry-host", dest="registry_host", default="", help="Registry host that nodes pull from (default: <build-node>:5000)")
+    import_cmd.add_argument("--require-build-capability", dest="require_build_capabilities", action="append", default=[], help="Require a versioned Builder capability (repeatable); unsupported Control or Builder fails before deployment")
     import_cmd.add_argument("--proxy-mode", choices=("auto", "direct"), default="auto", help="Builder network: auto follows the node's region policy, direct disables the proxy")
     import_cmd.add_argument("--timeout", type=int, default=3600, help="Seconds to wait for build and deploy (default: 3600)")
     _add_workflow_arguments(import_cmd)

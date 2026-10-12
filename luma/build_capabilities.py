@@ -1,0 +1,30 @@
+"""Versioned repository-build requirements shared by CLI and Control."""
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from .errors import LumaError
+
+REQUIRED_BUILD_CAPABILITY = "required-build-capability-v1"
+
+
+def normalize_build_capabilities(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 32 or any(
+        not isinstance(item, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,95}", item)
+        for item in value
+    ):
+        raise LumaError("requireBuildCapabilities must be an array of at most 32 capability names")
+    return sorted(set(value))
+
+
+def require_build_result_capabilities(result: dict[str, Any], required: list[str], *, owner: str) -> None:
+    if not required:
+        return
+    advertised = result.get("buildCapabilities")
+    honored = {item for item in advertised if isinstance(item, str)} if isinstance(advertised, list) else set()
+    missing = sorted(set(required) - honored)
+    if missing:
+        raise LumaError(f"{owner} did not confirm required build capabilities: {', '.join(missing)}; refusing to continue")

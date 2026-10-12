@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from .build_capabilities import normalize_build_capabilities
 from .errors import LumaError
 
 
@@ -140,6 +141,8 @@ def make_recipe(args: argparse.Namespace) -> dict[str, Any]:
         if value is not None and value != "":
             value = local_path(value) if key in {"manifest", "deploy_env_file"} else safe_url(str(value))
             argv += [flag, value]
+    for capability in normalize_build_capabilities(getattr(args, "require_build_capabilities", None)):
+        argv += ["--require-build-capability", capability]
     if getattr(args, "skip_dns", False):
         argv.append("--skip-dns")
     # Control URL, token, TLS and resolve-IP are supplied by the current client,
@@ -167,6 +170,9 @@ def retry_recipe(args: argparse.Namespace) -> dict[str, Any]:
         value = request.get(source)
         if value not in (None, "", False):
             parameters[target] = safe_url(str(value)) if target != "port" else value
+    required = normalize_build_capabilities(request.get("requireBuildCapabilities"))
+    if required:
+        parameters["require_build_capabilities"] = required
     if request.get("manifest"):
         parameters["manifest"] = "sha256:" + hashlib.sha256(str(request["manifest"]).encode()).hexdigest()
     if args.deploy_env_file:
@@ -191,6 +197,9 @@ def comparison_fields(recipe: dict[str, Any]) -> dict[str, Any]:
             result[key] = str(value) if isinstance(value, Path) else value
     if args.command == "build" and args.build_command == "retry":
         result = dict(recipe["retryParameters"])
+    required = normalize_build_capabilities(result.get("require_build_capabilities", getattr(args, "require_build_capabilities", None)))
+    if required:
+        result["require_build_capabilities"] = required
     # Canonicalize spellings with the same semantics.
     for key in ("build_context", "dockerfile", "proxy_mode"):
         default = {"build_context": ".", "dockerfile": "Dockerfile", "proxy_mode": "auto"}[key]
@@ -217,12 +226,16 @@ def validate_recipe(value: Any) -> dict[str, Any]:
         parameters = value.get("retryParameters")
         if not isinstance(parameters, dict) or parameters.get("method") != "remote-build":
             raise LumaError("retry workflow requires its recorded build parameters")
-        if len(parameters) > 32 or any(not isinstance(k, str) or len(k) > 100 or not isinstance(v, (str, int)) or len(str(v)) > 4096 for k, v in parameters.items()):
+        required = normalize_build_capabilities(parameters.get("require_build_capabilities"))
+        scalar_parameters = {k: v for k, v in parameters.items() if k != "require_build_capabilities"}
+        if len(parameters) > 32 or any(not isinstance(k, str) or len(k) > 100 or not isinstance(v, (str, int)) or len(str(v)) > 4096 for k, v in scalar_parameters.items()):
             raise LumaError("invalid retry workflow parameters")
-        allowed = {"method", "repo", "provider_id", "repository", "ref", "build_node", "region", "exposure", "domain", "port", "compose_sidecar", "platform", "build_context", "dockerfile", "registry_host", "proxy_mode", "manifest", "deploy_env_file"}
+        allowed = {"method", "repo", "provider_id", "repository", "ref", "build_node", "region", "exposure", "domain", "port", "compose_sidecar", "platform", "build_context", "dockerfile", "registry_host", "proxy_mode", "manifest", "deploy_env_file", "require_build_capabilities"}
         if parameters.keys() - allowed:
             raise LumaError("unknown retry workflow parameters")
-        result["retryParameters"] = {k: safe_url(str(v)) if isinstance(v, str) else v for k, v in parameters.items()}
+        result["retryParameters"] = {k: safe_url(str(v)) if isinstance(v, str) else v for k, v in scalar_parameters.items()}
+        if required:
+            result["retryParameters"]["require_build_capabilities"] = required
     return result
 
 
