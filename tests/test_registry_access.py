@@ -59,7 +59,7 @@ class RegistrySetupScriptTests(unittest.TestCase):
         self.probe_status = 200
         self.check_only = False
         self.service = '{ path=/usr/bin/dockerd ; argv[]=/usr/bin/dockerd -H fd:// ; ignore_errors=no ; }'
-        self.initial = {"RegistryConfig": {"IndexConfigs": {}}, "NoProxy": "localhost,custom.internal"}
+        self.initial = {"RegistryConfig": {"IndexConfigs": {}}, "HttpProxy": "", "HttpsProxy": "", "NoProxy": "localhost,custom.internal"}
         self.current = self.initial
         self.script = REGISTRY_SETUP_SCRIPT.replace("/etc/docker/daemon.json", str(self.config)).replace(
             "/etc/systemd/system/docker.service.d/zz-luma-registry-no-proxy.conf", str(self.dropin))
@@ -78,7 +78,7 @@ class RegistrySetupScriptTests(unittest.TestCase):
             if args == ('systemctl', 'restart', 'docker'):
                 config = json.loads(self.config.read_text())
                 proxy = self.dropin.read_text().split('NO_PROXY=')[1].split('"')[0]
-                self.current = {"RegistryConfig": {"IndexConfigs": {h: {"Secure": False} for h in config['insecure-registries']}}, "NoProxy": proxy}
+                self.current = {"RegistryConfig": {"IndexConfigs": {h: {"Secure": False} for h in config['insecure-registries']}}, "HttpProxy": self.current["HttpProxy"], "HttpsProxy": self.current["HttpsProxy"], "NoProxy": proxy}
             if args == ('systemctl', 'is-active', 'docker'):
                 return 'active'
             if args == ('systemctl', 'show', 'docker', '--property=ExecStart', '--value'):
@@ -138,7 +138,7 @@ class RegistrySetupScriptTests(unittest.TestCase):
             self.run_script()
 
     def test_ready_daemon_configured_elsewhere_is_a_noop_on_a_busy_node(self):
-        self.current = {"RegistryConfig": {"IndexConfigs": {HOST: {"Secure": False}}}}
+        self.current = {"RegistryConfig": {"IndexConfigs": {HOST: {"Secure": False}}}, "HttpProxy": "", "HttpsProxy": "", "NoProxy": ""}
         self.containers = 'production-container'
         self.run_script()
         self.assertFalse(self.config.exists())
@@ -165,7 +165,7 @@ class RegistrySetupScriptTests(unittest.TestCase):
 
     def test_active_proxy_requires_a_real_daemon_bypass(self):
         self.check_only = True
-        self.current = {"RegistryConfig": {"IndexConfigs": {HOST: {"Secure": False}}}, "HTTPSProxy": "http://proxy:7890", "NoProxy": "localhost"}
+        self.current = {"RegistryConfig": {"IndexConfigs": {HOST: {"Secure": False}}}, "HttpProxy": "", "HttpsProxy": "http://proxy:7890", "NoProxy": "localhost"}
         with self.assertRaisesRegex(RuntimeError, 'read-only'):
             self.run_script()
         self.current['NoProxy'] += ',' + HOST
@@ -176,11 +176,21 @@ class RegistrySetupScriptTests(unittest.TestCase):
         self.containers = 'production-container'
         for no_proxy in ('100.64.0.0/10', '100.64.0.70', HOST, '*'):
             with self.subTest(no_proxy=no_proxy):
-                self.current = {"RegistryConfig": {"IndexConfigs": {HOST: {"Secure": False}}}, "HTTPSProxy": "http://proxy:7890", "NoProxy": no_proxy}
+                self.current = {"RegistryConfig": {"IndexConfigs": {HOST: {"Secure": False}}}, "HttpProxy": "", "HttpsProxy": "http://proxy:7890", "NoProxy": no_proxy}
                 self.run_script()
                 self.assertFalse(self.config.exists())
                 self.assertFalse(self.dropin.exists())
                 self.assertFalse(any(call[0] == 'systemctl' for call in self.calls))
+
+    def test_missing_or_wrong_cased_proxy_facts_fail_before_any_change(self):
+        for proxy_fields in ({}, {"HTTPProxy": "http://proxy:7890", "HTTPSProxy": "", "NoProxy": ""},
+                             {"HttpProxy": None, "HttpsProxy": "", "NoProxy": ""}):
+            self.current = {"RegistryConfig": {"IndexConfigs": {HOST: {"Secure": False}}}, **proxy_fields}
+            with self.subTest(proxy_fields=proxy_fields), self.assertRaisesRegex(RuntimeError, "invalid proxy information"):
+                self.run_script()
+            self.assertFalse(self.config.exists())
+            self.assertFalse(self.dropin.exists())
+        self.assertFalse(any(call[0] == 'systemctl' for call in self.calls))
 
     def test_non_finite_and_duplicate_json_do_not_replace_configuration(self):
         for value in ('{"value":NaN}', '{"value":Infinity}', '{"value":1,"value":2}'):
@@ -215,7 +225,7 @@ class RegistryJoinIntegrationTests(unittest.TestCase):
             state = init_state(domain='luma.example.com', cluster_id='test', overwrite=True)
             state['nomadRpcAddr'] = '100.64.0.1:4647'
             state['managedRegistryTransports'] = {HOST: 'http'}
-            state['nodes'] = {'ppt': {'region': 'cn', 'nodeId': 'agent-id', 'agent': {'status': 'ready', 'capabilities': ['nomad-join-registry-v1', 'managed-registry-access-v1']}}}
+            state['nodes'] = {'ppt': {'region': 'cn', 'nodeId': 'agent-id', 'agent': {'status': 'ready', 'capabilities': ['nomad-join-registry-v1', 'managed-registry-access-v2']}}}
             save_state(state)
             with patch('luma.control.server._run_node_agent_task', return_value={
                 'nodeName': 'ppt', 'nodeId': 'nomad-id', 'tailscaleIP': '100.64.0.2'}) as task:
@@ -223,7 +233,7 @@ class RegistryJoinIntegrationTests(unittest.TestCase):
             self.assertEqual(task.call_count, 1)
             self.assertEqual(task.call_args.args[2], 'join-nomad')
             self.assertEqual(task.call_args.args[3]['insecureRegistries'], [HOST])
-            self.assertEqual(task.call_args.kwargs['required_capability'], 'nomad-join-registry-v1')
+            self.assertEqual(task.call_args.kwargs['required_capability'], 'managed-registry-access-v2')
 
     def test_agent_join_forwards_registry_policy(self):
         from luma.agent import execute_agent_task, node_agent_capabilities

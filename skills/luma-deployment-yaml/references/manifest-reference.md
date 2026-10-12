@@ -137,7 +137,7 @@ builder capability: runtime-image-cache-v1
 registry service: luma-registry pinned on builder
 registryHost: <builder-tailscale-ip>:5000
 pushHost: 100.64.0.70:5000
-target Linux nodes: insecure-registry + Docker daemon NO_PROXY configured
+target Docker nodes (Linux or OrbStack): managed-registry-access-v2 readiness verified
 ```
 
 For the user's current cluster, `builder` has been used as the intended build+registry node and has been observed at `100.64.0.70:5000`; always re-check live status before relying on that exact IP.
@@ -168,7 +168,9 @@ luma registry serve --node builder --port 5000
 
 Preserve the existing registry volume identity. Remove stale class metadata only after verifying its actual local mount.
 
-`luma registry serve` deploys `registry:2` as `luma-registry`, pins it to `builder`, and uses `<builder-tailscale-ip>:5000` for both BuildKit pushes and target-node pulls. `localhost:5000` is not valid inside the BuildKit container and is not a supported push endpoint. Luma should configure the reachable endpoint as an insecure registry on ready Linux nodes without mutating unrelated daemon proxy policy.
+`luma registry serve` deploys `registry:2` as `luma-registry`, pins it to `builder`, and records its transport. It does not configure or restart other nodes. Use `<builder-tailscale-ip>:5000` for both BuildKit pushes and target-node pulls; `localhost:5000` is not valid inside the BuildKit container. Target access is verified on normal join or deployment, against the exact managed HTTP endpoints and actual Docker runtime.
+
+Before submitting a final Nomad job, Control requires `managed-registry-access-v2` on every eligible target, including new regional nodes. It checks the complete capability set before any configuration change. Corrected agents retain v1 and v2 through the same action and implementation so older v1 Controls can use them; new Control refuses v1-only agents. Manager targets are read-only. Configuration changes require an idle engine and never justify restarting running workloads automatically.
 
 Once both `registryHost` and `pushHost` are configured, ordinary single-service
 and Compose deployments also use Builder Registry. Builder copies each distinct
@@ -226,13 +228,7 @@ For a stateful Compose stack before completion:
 luma app restart luma-registry --mode recreate
 ```
 
-- Target-node pull from the internal registry fails with `502 Bad Gateway`: Docker daemon proxy captured private registry traffic. Check target Docker daemon `NO_PROXY`; it should include the registry host, `host:port`, and Tailscale range:
-
-```text
-<builder-tailscale-ip>
-<builder-tailscale-ip>:5000
-100.64.0.0/10
-```
+- Target-node pull from the internal registry fails with `502 Bad Gateway`: check reachability and the actual proxy owner before concluding that a proxy captured traffic. Linux Docker JSON uses `HttpProxy`, `HttpsProxy` and `NoProxy`; an active proxy needs a matching host, port, domain or CIDR bypass. Direct access does not require inventing exclusions, and missing facts are an error. On OrbStack, inspect native `network_proxy` and `network.proxy.exclude`, plus the effective macOS proxy in `auto` mode. Its internal Docker broker may be present with no external proxy. Preserve existing settings, append only required managed hosts through the runtime owner, and refuse unknown modes or inspection failures.
 
 - Build fails before push with `invalid value "127.0.0.1", expecting k=v`: suspect buildx driver option parsing of comma-separated `NO_PROXY`. Update Luma or ensure commas are escaped in `--driver-opt env.NO_PROXY=...`; do not treat this as a registry health failure.
 - Local Build reaches the push step but fails with `server gave HTTP response to HTTPS client`: the current Docker-context builder handled the exporter and upgraded Builder Registry to HTTPS. Use Luma 0.1.271 or newer so the default path creates the managed docker-container builder. Do not switch to Docker Hub, request a Docker Hub token, or bypass the one-command workflow with an ad hoc push.
@@ -549,7 +545,7 @@ CI:
 
 ```bash
 # Verify this version is published before installing.
-python -m pip install "luma-infra==0.2.5"
+python -m pip install "luma-infra==0.2.6"
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 luma validate service.yaml --format json

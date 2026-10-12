@@ -18,7 +18,8 @@ from luma.control.state import init_state, load_state, save_state
 from luma.errors import LumaError
 
 HOST = '100.64.0.70:5000'
-CAPABILITY = 'managed-registry-access-v1'
+CAPABILITY = 'managed-registry-access-v2'
+LEGACY_CAPABILITY = 'managed-registry-access-v1'
 
 
 def registered(name, region='home', *, manager=False, capabilities=None):
@@ -78,6 +79,58 @@ class ManagedRegistryControlTests(unittest.TestCase):
             with self.assertRaisesRegex(LumaError, 'air2.*upgrade'):
                 server._ensure_job_managed_registry_access(self.config, self.state, docker_job())
             task.assert_not_called()
+
+    def test_v1_only_receipts_are_rejected_for_workers_and_managers(self):
+        for manager in (False, True):
+            self.state['nodes']['air1'] = registered('air1', manager=manager, capabilities=[LEGACY_CAPABILITY, 'docker-image'])
+            # A version string is not the capability contract.
+            self.state['nodes']['air1']['agent']['version'] = '999.0.0'
+            with self.subTest(manager=manager), patch.object(server, '_run_node_agent_task', return_value=receipt()) as task:
+                with self.assertRaisesRegex(LumaError, CAPABILITY + '.*upgrade'):
+                    server._ensure_nodes_managed_registry_access(self.state, {'air1': {HOST}})
+                task.assert_not_called()
+
+    def test_region_only_deploy_discovers_air3_and_checks_the_whole_pool_first(self):
+        for name in ('air1', 'air2'):
+            self.state['nodes'][name]['region'] = 'render'
+        self.live = [nomad_node('air1', 'render'), nomad_node('air2', 'render'), nomad_node('air3', 'render'), nomad_node('unrelated-old', 'cn')]
+        self.state['nodes']['air3'] = registered('air3', 'render', capabilities=[LEGACY_CAPABILITY, 'docker-image'])
+        self.state['nodes']['unrelated-old'] = registered('unrelated-old', 'cn', capabilities=[LEGACY_CAPABILITY])
+        job = docker_job(region='render')
+        with patch.object(server.NomadApi, 'request', side_effect=self.api), patch.object(server, '_run_node_agent_task', return_value=receipt()) as task:
+            with self.assertRaisesRegex(LumaError, 'air3.*' + CAPABILITY):
+                server._ensure_job_managed_registry_access(self.config, self.state, job)
+            task.assert_not_called()
+            self.state['nodes']['air3']['agent']['capabilities'].append(CAPABILITY)
+            self.state['nodes']['air3']['agent']['version'] = '0.0.0'
+            result = server._ensure_job_managed_registry_access(self.config, self.state, job)
+            self.assertEqual([call.args[1] for call in task.call_args_list], ['air1', 'air2', 'air3'])
+            self.assertEqual([row['node'] for row in result['nodes']], ['air1', 'air2', 'air3'])
+            # The next deployment discovers another ready regional node rather
+            # than retaining a fixed inventory of the original Air machines.
+            task.reset_mock()
+            self.live.append(nomad_node('future-render-worker', 'render'))
+            self.state['nodes']['future-render-worker'] = registered('future-render-worker', 'render')
+            server._ensure_job_managed_registry_access(self.config, self.state, job)
+            self.assertEqual([call.args[1] for call in task.call_args_list], ['air1', 'air2', 'air3', 'future-render-worker'])
+            self.assertNotIn('unrelated-old', [call.args[1] for call in task.call_args_list])
+
+    def test_new_agent_keeps_published_v1_action_compatibility_with_one_owner(self):
+        from luma.agent import execute_agent_task, node_agent_capabilities
+
+        for platform in ('linux', 'darwin'):
+            capabilities = node_agent_capabilities(platform)
+            self.assertIn(LEGACY_CAPABILITY, capabilities)
+            self.assertIn(CAPABILITY, capabilities)
+        expected = receipt()
+        with patch('luma.agent.ensure_managed_registry_access', return_value=expected) as owner:
+            result = execute_agent_task({'action': 'managed-registry-access', 'payload': {'registries': [HOST], 'checkOnly': True}})
+            self.assertEqual(result, expected)
+            owner.assert_called_once_with(registries=[HOST], check_only=True)
+        with patch('luma.agent.ensure_managed_registry_access', return_value=expected) as owner:
+            result = execute_agent_task({'action': 'configure-insecure-registry', 'payload': {'registry': HOST}})
+            self.assertEqual(result, {**expected, 'registry': HOST})
+            owner.assert_called_once_with(registries=[HOST])
 
     def test_manager_is_verified_read_only_when_it_is_a_real_target(self):
         self.state['nodes']['air1']['roles'] = ['nomad-manager']
@@ -215,7 +268,7 @@ class ManagedRegistryDeploymentTests(unittest.TestCase):
         self.assertEqual(server._service_deployment_record(load_state(), 'blocked-app')['status'], 'failed_partial')
 
     def test_remote_join_checks_both_capabilities_before_configuring(self):
-        for capabilities in ([CAPABILITY], ['nomad-join-registry-v1']):
+        for capabilities in ([CAPABILITY], ['nomad-join-registry-v1'], ['nomad-join-registry-v1', LEGACY_CAPABILITY]):
             state = load_state()
             state['nodes']['air1']['agent']['capabilities'] = capabilities
             save_state(state)
@@ -223,6 +276,22 @@ class ManagedRegistryDeploymentTests(unittest.TestCase):
                 with self.assertRaisesRegex(LumaError, 'upgrad'):
                     server.handle_node_nomad_join(self.token, {'nodeName': 'air1'})
                 task.assert_not_called()
+
+    def test_v2_task_cannot_be_leased_after_agent_falls_back_to_v1(self):
+        for action in ('managed-registry-access', 'join-nomad'):
+            with self.subTest(action=action):
+                state = load_state()
+                state['nodes']['air1']['agent']['capabilities'] = [CAPABILITY, LEGACY_CAPABILITY, 'nomad-join-registry-v1']
+                token = server._issue_node_agent_token(state, 'air1', node_id='id-air1')
+                save_state(state)
+                task_id = server._queue_node_agent_task(state, 'air1', action, {'registries': [HOST]}, required_capability=CAPABILITY)
+                stored = load_state()['agentTasks'][task_id]
+                self.assertEqual(stored['requiredCapability'], CAPABILITY)
+                with patch.object(server, '_record_metrics_history'):
+                    leased = server.handle_node_agent_lease(token, {'nodeName': 'air1', 'nodeId': 'id-air1',
+                        'capabilities': [LEGACY_CAPABILITY, 'nomad-join-registry-v1'], 'os': 'linux', 'waitSeconds': 0})
+                self.assertIsNone(leased['task'])
+                self.assertEqual(load_state()['agentTasks'][task_id]['status'], 'queued')
 
     def test_fresh_remote_join_installs_runtime_before_registry_probe_and_nomad_start(self):
         from luma.agent import execute_agent_task

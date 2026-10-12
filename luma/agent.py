@@ -112,6 +112,8 @@ def _docker_buildx_available() -> bool:
 
 
 def node_agent_capabilities(os_name: str | None = None) -> list[str]:
+    # v2 verifies the proxy through its runtime owner. Retain the published v1
+    # capability for rolling Control upgrades; both use the same corrected action.
     os_value = os_name or node_agent_os()
     if os_value == "linux":
         capabilities = [
@@ -129,6 +131,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "nomad-join",
             "nomad-join-registry-v1",
             "managed-registry-access-v1",
+            "managed-registry-access-v2",
             "nomad-cni-repair",
             "terminal",
             "container-terminal",
@@ -145,6 +148,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "nomad-join",
             "nomad-join-registry-v1",
             "managed-registry-access-v1",
+            "managed-registry-access-v2",
             "terminal",
             "container-terminal",
         ]

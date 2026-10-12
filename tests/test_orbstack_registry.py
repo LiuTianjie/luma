@@ -42,8 +42,21 @@ class ManagedRegistryContractTests(unittest.TestCase):
         ]
         for host, no_proxy, expected in cases:
             with self.subTest(host=host, no_proxy=no_proxy):
-                self.assertEqual(proxy_bypasses_registry_hosts({"HTTPSProxy": "http://proxy:7890", "NoProxy": no_proxy}, [host]), expected)
-        self.assertFalse(proxy_bypasses_registry_hosts({"HTTPSProxy": "http://proxy:7890", "NoProxy": HOST}, [HOST, "other.internal:5000"]))
+                self.assertEqual(proxy_bypasses_registry_hosts({"HttpProxy": "", "HttpsProxy": "http://proxy:7890", "NoProxy": no_proxy}, [host]), expected)
+        self.assertFalse(proxy_bypasses_registry_hosts({"HttpProxy": "", "HttpsProxy": "http://proxy:7890", "NoProxy": HOST}, [HOST, "other.internal:5000"]))
+
+    def test_real_docker_proxy_shape_is_required_even_without_an_active_proxy(self):
+        direct = {"HttpProxy": "", "HttpsProxy": "", "NoProxy": ""}
+        self.assertTrue(proxy_bypasses_registry_hosts(direct, [HOST]))
+        bad = [{}, {"HTTPProxy": "http://proxy:7890", "HTTPSProxy": "", "NoProxy": ""}]
+        for key in direct:
+            bad.append({name: value for name, value in direct.items() if name != key})
+            for value in (None, False, [], {}):
+                bad.append({**direct, key: value})
+        for info in bad:
+            with self.subTest(info=info), self.assertRaisesRegex(RuntimeError, "invalid proxy information"):
+                proxy_bypasses_registry_hosts(info, [HOST])
+        self.assertFalse(proxy_bypasses_registry_hosts({**direct, "HttpProxy": "http://proxy:7890"}, [HOST]))
 
     def test_only_complete_literal_host_authorities_are_accepted(self):
         self.assertEqual(normalize_managed_registry_hosts([HOST, "Registry.Internal:5000", HOST, "[::1]:5000"]),
@@ -96,7 +109,11 @@ class OrbStackRegistryTests(unittest.TestCase):
         self.owner = SimpleNamespace(pw_dir=str(self.root), pw_uid=os.geteuid(), pw_name="orb-owner")
         self.orbctl = self.root / "orbctl"
         self.orbctl.write_text("fixture")
-        self.info = {"OperatingSystem": "OrbStack", "RegistryConfig": {"IndexConfigs": {}}, "HTTPProxy": "", "HTTPSProxy": "", "NoProxy": ""}
+        self.info = {"OperatingSystem": "OrbStack", "RegistryConfig": {"IndexConfigs": {}}, "HttpProxy": "http://runtime-broker:8305", "HttpsProxy": "http://runtime-broker:8305", "NoProxy": ""}
+        self.native_mode = "auto"
+        self.native_exclusions = ""
+        self.system_proxy = "<dictionary> {\n}\n"
+        self.native_set_hook = None
         self.commands = []
         self.containers = ""
         self.ps_outputs = []
@@ -137,6 +154,15 @@ class OrbStackRegistryTests(unittest.TestCase):
             if self.activate:
                 self.info["RegistryConfig"]["IndexConfigs"][HOST] = {"Secure": False}
             return "restarted"
+        elif command[:3] == [str(self.orbctl), "config", "get"]:
+            return (self.native_mode if command[3] == "network_proxy" else self.native_exclusions) + "\n"
+        elif command[:4] == [str(self.orbctl), "config", "set", "network.proxy.exclude"]:
+            self.native_exclusions = command[4]
+            if self.native_set_hook:
+                self.native_set_hook()
+            return ""
+        elif command == ["/usr/sbin/scutil", "--proxy"]:
+            return self.system_proxy
         raise AssertionError(command)
 
     def apply(self, **kwargs):
@@ -285,16 +311,252 @@ class OrbStackRegistryTests(unittest.TestCase):
             self.apply()
         self.assertEqual(self.config.read_text(), "{}\n")
 
-    def test_proxy_without_runtime_bypass_fails_without_changing_preferences(self):
+    def test_native_proxy_adds_only_exact_missing_exclusions_without_engine_restart(self):
         self.set_ready()
-        self.info["HTTPSProxy"] = "http://user:secret@proxy.example.com:7890"
+        self.native_mode = "https://user:secret@proxy.example.com:7890"
+        self.native_exclusions = "localhost,.internal,10.0.0.0/8"
+        self.info["HttpProxy"] = "http://runtime-broker:8305"
+        self.info["HttpsProxy"] = "http://runtime-broker:8305"
         before = self.config.read_bytes()
-        with self.assertRaisesRegex(RuntimeError, "proxy exclusions") as error:
+        result = self.apply()
+        self.assertTrue(result["changed"])
+        self.assertFalse(result["dockerRestarted"])
+        self.assertNotIn("secret", json.dumps(result))
+        self.assertEqual(self.native_mode, "https://user:secret@proxy.example.com:7890")
+        self.assertEqual(self.native_exclusions, "localhost,.internal,10.0.0.0/8," + HOST)
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertFalse(any("restart" in command for command in self.commands))
+        self.commands.clear()
+        self.containers = "production"
+        self.assertFalse(self.apply()["changed"])
+        self.assertFalse(any("set" in command or "ps" in command for command in self.commands))
+
+    def test_proxy_and_transport_changes_are_verified_together_after_one_restart(self):
+        self.native_mode = "socks5h://user:secret@proxy.example.com:1080"
+        self.native_exclusions = ".existing.internal"
+        result = self.apply()
+        self.assertTrue(result["changed"])
+        self.assertTrue(result["dockerRestarted"])
+        self.assertEqual(self.native_exclusions, ".existing.internal," + HOST)
+        self.assertEqual(json.loads(self.config.read_text())["insecure-registries"], [HOST])
+        self.assertEqual(self.commands.count([str(self.orbctl), "restart", "docker"]), 1)
+        self.assertNotIn("secret", json.dumps(result))
+
+    def test_combined_change_container_race_restores_both_owned_candidates(self):
+        self.config.unlink()
+        self.native_mode = "http://user:secret@proxy.example.com:7890"
+        self.native_exclusions = "localhost"
+        self.ps_outputs = ["", "", "production"]
+        with self.assertRaisesRegex(RuntimeError, "maintenance window"):
+            self.apply()
+        self.assertFalse(self.config.exists())
+        self.assertEqual(self.native_exclusions, "localhost")
+        self.assertFalse(any("restart" in command for command in self.commands))
+
+    def test_stock_broker_uses_known_effective_upstream_not_daemon_proxy_presence(self):
+        self.set_ready()
+        self.containers = "production"
+        for system in ("<dictionary> {\n}\n",
+                       "<dictionary> {\nExceptionsList : <array> {\n0 : *.local\n1 : 169.254/16\n}\n}\n",
+                       "<dictionary> {\nHTTPEnable : 0\nHTTPSEnable : 0\nSOCKSEnable : 0\nProxyAutoConfigEnable : 0\n}\n"):
+            with self.subTest(system=system):
+                self.system_proxy = system
+                result = self.apply()
+                self.assertFalse(result["changed"])
+                self.assertFalse(result["dockerRestarted"])
+        self.native_mode = "none"
+        self.system_proxy = "unreadable unused system settings"
+        self.assertFalse(self.apply()["changed"])
+        self.assertFalse(any("set" in command or "ps" in command or "restart" in command for command in self.commands))
+
+    def test_manual_system_proxy_honors_native_and_exact_system_exclusions(self):
+        self.set_ready()
+        self.containers = "production"
+        self.system_proxy = "<dictionary> {\nSOCKSEnable : 1\nSOCKSProxy : proxy.example.com\nSOCKSPort : 1080\nExceptionsList : <array> {\n0 : 100.66.177.70\n}\n}\n"
+        self.assertFalse(self.apply()["changed"])
+        self.system_proxy = self.system_proxy.replace("100.66.177.70", "localhost")
+        self.native_exclusions = "100.64.0.0/10"
+        self.assertFalse(self.apply()["changed"])
+        self.assertFalse(any("set" in command or "ps" in command for command in self.commands))
+
+    def test_system_exception_domains_do_not_inherit_no_proxy_subdomain_semantics(self):
+        state = {"active": True, "exclusions": "", "systemExclusions": ["example.com"]}
+        self.assertTrue(orb._proxy_ready(state, ["example.com:5000"]))
+        self.assertFalse(orb._proxy_ready(state, ["registry.example.com:5000"]))
+        state["systemExclusions"] = ["*.example.com"]
+        self.assertTrue(orb._proxy_ready(state, ["registry.example.com:5000"]))
+        self.assertFalse(orb._proxy_ready(state, ["example.com:5000"]))
+        state["systemExclusions"] = [".example.com", "example.com,registry.example.com"]
+        self.assertFalse(orb._proxy_ready(state, ["registry.example.com:5000"]))
+        state["exclusions"] = "example.com"
+        self.assertTrue(orb._proxy_ready(state, ["registry.example.com:5000"]))
+
+    def test_manual_system_proxy_merges_only_missing_exact_host(self):
+        self.set_ready()
+        self.native_exclusions = ".existing.internal,10.0.0.0/8"
+        self.system_proxy = "<dictionary> {\nHTTPEnable : 1\nHTTPProxy : proxy.example.com\nHTTPPort : 7890\n}\n"
+        result = self.apply()
+        self.assertTrue(result["changed"])
+        self.assertFalse(result["dockerRestarted"])
+        self.assertEqual(self.native_exclusions, ".existing.internal,10.0.0.0/8," + HOST)
+        self.assertEqual(self.native_mode, "auto")
+
+    def test_proxy_maintenance_never_writes_on_busy_or_read_only_nodes(self):
+        self.set_ready()
+        self.native_mode = "http://user:secret@proxy.example.com:7890"
+        before = self.config.read_bytes()
+        for check_only in (True, False):
+            self.containers = "" if check_only else "production"
+            with self.subTest(check_only=check_only), self.assertRaisesRegex(RuntimeError, "maintenance") as error:
+                self.apply(check_only=check_only)
+            self.assertNotIn("secret", str(error.exception))
+            self.assertEqual(self.native_exclusions, "")
+            self.assertEqual(self.config.read_bytes(), before)
+        self.assertFalse(any("set" in command or "restart" in command for command in self.commands))
+
+    def test_unknown_pac_wpad_and_scoped_system_policies_fail_closed(self):
+        self.set_ready()
+        examples = ["ProxyAutoConfigEnable : 1\nProxyAutoConfigURLString : http://user:secret@pac.example.com",
+                    "ProxyAutoDiscoveryEnable : 1", "HTTPEnable : 2", "MysteryEnable : 1",
+                    "ProxyAutoConfigJavaScript : secret", "HTTPEnable : 1",
+                    "__SCOPED__ : <dictionary> {\nen0 : <dictionary> {\nHTTPEnable : 0\n}\n}",
+                    "__SUPPLEMENTAL__ : <array> {\n0 : <dictionary> {\nHTTPEnable : 0\n}\n}",
+                    "__SERVICES__ : <dictionary> {\nservice : <dictionary> {\nHTTPEnable : 0\n}\n}",
+                    "ExceptionsList : <array> {\n0 : localhost," + HOST + "\n}"]
+        for fields in examples:
+            self.system_proxy = "<dictionary> {\n" + fields + "\n}\n"
+            with self.subTest(fields=fields), self.assertRaises(RuntimeError) as error:
+                self.apply()
+            self.assertNotIn("secret", str(error.exception))
+        self.assertFalse(any("set" in command or "restart" in command for command in self.commands))
+
+    def test_system_proxy_parser_rejects_incomplete_or_ambiguous_output(self):
+        for output in ("", "garbage", "<dictionary> {", "<dictionary> {\n}\ntrailing",
+                       "<dictionary> {\nHTTPEnable : 0\nHTTPEnable : 1\n}",
+                       "<dictionary> {\nExceptionsList : <array> {\n1 : localhost\n}\n}",
+                       "<dictionary> {\nHTTPEnable : <data> abc\n}"):
+            with self.subTest(output=output), self.assertRaises(RuntimeError):
+                orb._parse_system_proxy(output)
+        for host in (":", "..", "[::1]junk", "999.999.999.999", "proxy/secret", " "):
+            with self.subTest(host=host), self.assertRaises(RuntimeError):
+                orb._system_proxy_state({"HTTPEnable": "1", "HTTPProxy": host, "HTTPPort": "7890"})
+
+    def test_custom_proxy_urls_are_supported_without_exposing_credentials(self):
+        self.set_ready()
+        self.native_exclusions = HOST
+        self.system_proxy = "unused system PAC"
+        for scheme in ("http", "https", "socks5", "socks5h"):
+            self.native_mode = scheme + "://user:secret@proxy.example.com:7890"
+            self.assertNotIn("secret", json.dumps(self.apply()))
+        for mode in ("", "unknown", "ftp://user:secret@proxy.example.com", "http://user:secret@host/path",
+                     "http://user:secret@host:", "http://[::1]junk", "http://user:secret@host:99999",
+                     "http://user:secret@host?query", "http://user:secret@host#fragment"):
+            self.native_mode = mode
+            with self.subTest(mode=mode), self.assertRaisesRegex(RuntimeError, "Unknown OrbStack proxy mode") as error:
+                self.apply()
+            self.assertNotIn("secret", str(error.exception))
+        self.assertFalse(any("set" in command or "restart" in command for command in self.commands))
+
+    def test_custom_engine_proxy_settings_are_rejected_before_any_direct_noop(self):
+        self.set_ready()
+        self.native_mode = "none"
+        for custom in ({"http-proxy": "http://user:secret@proxy:7890"}, {"no-proxy": HOST}, None, "bad"):
+            self.config.write_text(json.dumps({"insecure-registries": [HOST], "proxies": custom}))
+            before = self.config.read_bytes()
+            for check_only in (False, True):
+                with self.subTest(custom=custom, check_only=check_only), self.assertRaisesRegex(RuntimeError, "configuration owner") as error:
+                    self.apply(check_only=check_only)
+                self.assertNotIn("secret", str(error.exception))
+                self.assertEqual(self.config.read_bytes(), before)
+        self.assertFalse(any("set" in command or "restart" in command for command in self.commands))
+
+    def test_native_proxy_change_during_fact_collection_is_not_overwritten(self):
+        self.set_ready()
+        self.native_mode = "http://user:secret@proxy:7890"
+        self.ps_hook = lambda: setattr(self, "native_exclusions", "operator.example.com")
+        with self.assertRaisesRegex(RuntimeError, "settings changed"):
+            self.apply()
+        self.assertEqual(self.native_exclusions, "operator.example.com")
+        self.assertFalse(any("set" in command for command in self.commands))
+
+    def test_container_race_restores_only_our_native_proxy_candidate(self):
+        self.set_ready()
+        self.native_mode = "http://user:secret@proxy:7890"
+        self.native_exclusions = "localhost"
+        self.ps_outputs = ["", "production"]
+        with self.assertRaisesRegex(RuntimeError, "maintenance window"):
+            self.apply()
+        self.assertEqual(self.native_exclusions, "localhost")
+        self.assertEqual(self.native_mode, "http://user:secret@proxy:7890")
+        self.assertFalse(any("restart" in command for command in self.commands))
+
+    def test_operator_docker_edit_during_native_write_is_preserved(self):
+        self.native_mode = "http://user:secret@proxy:7890"
+        self.native_set_hook = lambda: self.config.write_text('{"operator":"new setting"}')
+        with self.assertRaisesRegex(RuntimeError, "settings changed"):
+            self.apply()
+        self.assertEqual(json.loads(self.config.read_text()), {"operator": "new setting"})
+        self.assertEqual(self.native_exclusions, "")
+        self.assertFalse(any("restart" in command for command in self.commands))
+
+    def test_missing_docker_file_before_failed_proxy_readback_does_not_break_restoration(self):
+        self.config.unlink()
+        self.native_mode = "http://user:secret@proxy:7890"
+        self.native_set_hook = lambda: setattr(self, "native_mode", "http://operator:new-secret@proxy:7890")
+        with self.assertRaisesRegex(RuntimeError, "read back") as error:
             self.apply()
         self.assertNotIn("secret", str(error.exception))
-        self.assertEqual(self.config.read_bytes(), before)
-        self.info["NoProxy"] = "localhost,100.64.0.0/10"
-        self.assertTrue(self.apply()["verified"])
+        self.assertFalse(self.config.exists())
+        self.assertEqual(self.native_exclusions, "")
+        self.assertEqual(self.native_mode, "http://operator:new-secret@proxy:7890")
+
+    def test_operator_native_exclusion_edit_is_preserved_on_readback_failure(self):
+        self.set_ready()
+        self.native_mode = "http://proxy:7890"
+        self.native_set_hook = lambda: setattr(self, "native_exclusions", "operator.example.com")
+        with self.assertRaisesRegex(RuntimeError, "read back"):
+            self.apply()
+        self.assertEqual(self.native_exclusions, "operator.example.com")
+        self.probe.assert_not_called()
+
+    def test_operator_changes_during_http_probe_invalidate_the_final_receipt(self):
+        self.set_ready()
+        before = self.config.read_text()
+        for change in ("mode", "exclusions", "docker"):
+            self.native_mode = "none"
+            self.native_exclusions = ""
+            self.config.write_text(before)
+            def edit(_hosts):
+                if change == "mode":
+                    self.native_mode = "https://operator:secret@proxy.example.com:7890"
+                elif change == "exclusions":
+                    self.native_exclusions = "operator.example.com"
+                else:
+                    self.config.write_text('{"operator":"new settings"}')
+            self.probe.side_effect = edit
+            with self.subTest(change=change), self.assertRaisesRegex(RuntimeError, "settings changed during verification") as error:
+                self.apply()
+            self.assertNotIn("secret", str(error.exception))
+            if change == "mode":
+                self.assertEqual(self.native_mode, "https://operator:secret@proxy.example.com:7890")
+            elif change == "exclusions":
+                self.assertEqual(self.native_exclusions, "operator.example.com")
+            else:
+                self.assertEqual(json.loads(self.config.read_text()), {"operator": "new settings"})
+        self.assertFalse(any("set" in command or "restart" in command for command in self.commands))
+
+    def test_native_proxy_read_failure_is_not_inferred_as_direct(self):
+        self.set_ready()
+        original_run = self.run_command
+        def run(command, **kwargs):
+            if command[:3] == [str(self.orbctl), "config", "get"]:
+                raise RuntimeError("OrbStack proxy configuration inspection failed")
+            return original_run(command, **kwargs)
+        self.run.side_effect = run
+        with self.assertRaisesRegex(RuntimeError, "inspection failed"):
+            self.apply()
+        self.probe.assert_not_called()
+        self.assertFalse(any("set" in command or "restart" in command for command in self.commands))
 
     def test_root_launcher_drops_to_socket_owner_and_uses_isolated_system_python(self):
         result = {"verified": True, "registries": [HOST], "changed": False, "dockerRestarted": False}

@@ -171,7 +171,7 @@ luma registry list
 image: ghcr.io/acme/private-api:1.0.0
 ```
 
-部署时 Luma 会从 image 推断 registry host，使用匹配的凭证，并把 registry auth 注入 Nomad jobspec 的 docker `config.auth` 块，让被调度的节点可以拉取私有镜像。`luma registry list` 只显示 registry host 和 username，不显示 password/token。
+已配置 Builder Registry 时，Luma 将匹配外部 image 的源仓库凭据租给 Builder，由 Builder 复制镜像并返回已验证的内部镜像 digest。最终 Nomad job 使用内部镜像引用；只有内部仓库需要认证时，才把对应凭据写入 docker `config.auth`，不会把外部源仓库凭据交给运行节点。`luma registry list` 只显示 registry host 和 username，不显示 password/token。
 
 ## Compose 组件依赖 {#compose}
 
@@ -190,9 +190,11 @@ services:
 
 Control 会在 Compose 预览和部署前逐服务检查这些依赖。未知 capability 或初始化动作会在解析阶段直接报错，不会被静默忽略。
 
-常见 GitHub 场景：GitHub Actions 把应用镜像推到私有 GHCR，同一个仓库还可以用 GitHub Pages 发布文档或营销页。Luma 只需要 GHCR 的 registry credential 来拉运行时镜像，不需要把 GitHub token 写进 manifest，也不影响 GitHub Pages 的静态站点发布。
+常见 GitHub 场景：GitHub Actions 把应用镜像推到私有 GHCR，同一个仓库还可以用 GitHub Pages 发布文档或营销页。在上述 Builder Registry 链路中，GHCR 凭据供 Builder 复制源镜像，运行节点拉取内部镜像，不需要把 GitHub token 写进 manifest，也不影响 GitHub Pages 的静态站点发布。
 
-私有 registry 的镜像拉取和服务运行时 `proxy: true` 是两条路径。`proxy: true` 只给容器里的出站 HTTP/HTTPS 请求注入代理；镜像拉取走 Docker daemon。Docker Hub 风格镜像会优先使用 manifest 里的原始 image；固定节点部署在 registry 网络失败时会配置目标节点 Docker egress proxy 后重试，仍失败才 fallback 到 `defaults.imageMirrors` 配置的镜像源。设置 `defaults.imageMirrors: []` 可以禁用镜像源 fallback。如果 `curl https://<registry>/v2/` 能返回 registry 的 `401`，但 `docker pull` 报 EOF/timeout，优先检查 `docker info` 里的 HTTPProxy/HTTPSProxy/NO_PROXY，并确保私有 registry host 在 Docker daemon 的 `NO_PROXY` 中。
+镜像获取和服务运行时 `proxy: true` 是两条路径。`proxy: true` 只给容器里的出站 HTTP/HTTPS 请求注入代理。配置 Builder Registry 后，外部源镜像访问、进程级代理及 Docker Hub 风格镜像的 `defaults.imageMirrors` 回退由 Builder 负责；不会因为源仓库拉取失败就改运行节点的 Docker egress proxy。设置 `defaults.imageMirrors: []` 可以禁用镜像源回退。
+
+最终镜像使用托管 HTTP Registry 时，正式部署会在提交 Nomad job 前检查全部符合落点约束的 Docker 目标节点，并在修改任何配置前要求所有 agent 声明 `managed-registry-access-v2`。新 agent 保留 v1/v2 并共用同一修正实现，兼容仍要求 v1 的旧 Control。Linux 使用 Docker 实际代理字段；OrbStack 使用其原生代理设置及 `auto` 模式下的系统有效代理，不能仅凭内置 broker 地址判断外部代理。Manager 只做只读验证；配置修改要求空闲引擎。具体 HTTP 地址范围、历史兼容例外和维护边界见[运维说明](operations.zh-CN.md#private-registries-on-new-nodes)。
 
 ## 从 Git provider 构建部署 {#git-provider}
 
@@ -268,7 +270,7 @@ luma import https://github.com/acme/app.git \
 
 普通 `luma compose validate` / `luma compose deploy` 不构建镜像，因此仍要求运行时 Compose 的每个 service 都已经有 `image:`。
 
-CLI 会流式回传 clone → build → push → deploy 每一步。构建节点来自控制面声明的 builder 节点；通常无需传 `--build-node`，只有临时覆盖时才传，且 Control 会拒绝未声明的构建节点。`--env .env` 会把运行时环境变量作为 scoped secrets 交给控制面，由最终 `.luma.yml` / Compose 内容过滤并保存。单服务 import 可用 `--region` / `--exposure` / `--domain` / `--port` / `--platform` 覆盖 `.luma.yml` 里的对应字段；Compose import 只接受 `--region` 覆盖 sidecar，服务级入口要写在 `luma.compose.yml` 的 `services:` 里。构建出的镜像 tag 形如 `<build-node-tailscale-host>:5000/acme/myapp:<git-sha>`，其它区域的节点经 Tailscale 内网拉取（`luma registry serve` 已为各节点配好 `insecure-registries`）。构建历史用 `luma build list` 查看，失败详情用 `luma build logs <id>`，修好凭据或配置后可 `luma build retry <id>`。
+CLI 会流式回传 clone → build → push → deploy 每一步。构建节点来自控制面声明的 builder 节点；通常无需传 `--build-node`，只有临时覆盖时才传，且 Control 会拒绝未声明的构建节点。`--env .env` 会把运行时环境变量作为 scoped secrets 交给控制面，由最终 `.luma.yml` / Compose 内容过滤并保存。单服务 import 可用 `--region` / `--exposure` / `--domain` / `--port` / `--platform` 覆盖 `.luma.yml` 里的对应字段；Compose import 只接受 `--region` 覆盖 sidecar，服务级入口要写在 `luma.compose.yml` 的 `services:` 里。构建出的镜像 tag 形如 `<build-node-tailscale-host>:5000/acme/myapp:<git-sha>`，其它区域的节点经 Tailscale 内网拉取；HTTP 访问由目标节点在 join 或最终部署预检时按需准备，`luma registry serve` 不再为全体节点配置 `insecure-registries`。构建历史用 `luma build list` 查看，失败详情用 `luma build logs <id>`，修好凭据或配置后可 `luma build retry <id>`。
 
 dashboard 的「创建应用」页顶部也有「仓库导入」入口，可选择 Git provider/账户/仓库/ref 或手填 URL，进度实时显示。
 

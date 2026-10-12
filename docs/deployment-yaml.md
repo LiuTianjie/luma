@@ -194,7 +194,7 @@ Control 会在 Compose 预览和部署前逐服务检查这些依赖。未知 ca
 
 镜像获取和服务运行时 `proxy: true` 是两条路径。`proxy: true` 只给容器里的出站 HTTP/HTTPS 请求注入代理。配置 Builder Registry 后，外部源镜像访问、进程级代理及 Docker Hub 风格镜像的 `defaults.imageMirrors` 回退由 Builder 负责；不会因为源仓库拉取失败就改运行节点的 Docker egress proxy。设置 `defaults.imageMirrors: []` 可以禁用镜像源回退。
 
-最终镜像使用托管 HTTP Registry 时，正式部署会在提交 Nomad job 前检查全部符合落点约束的 Docker 目标节点，并要求 agent 的 `managed-registry-access-v1` 能力。Linux 和实际 OrbStack 引擎分别由自己的配置入口处理，保留已有配置并回读生效状态；需要修改和重启 Docker 时，节点必须没有运行中容器，否则需安排维护。Manager 只做只读验证。具体 HTTP 地址范围、历史兼容例外和维护边界见[运维说明](operations.zh-CN.md#private-registries-on-new-nodes)。
+最终镜像使用托管 HTTP Registry 时，正式部署会在提交 Nomad job 前检查全部符合落点约束的 Docker 目标节点，并在修改任何配置前要求所有 agent 声明 `managed-registry-access-v2`。新 agent 保留 v1/v2 并共用同一修正实现，兼容仍要求 v1 的旧 Control。Linux 使用 Docker 实际代理字段；OrbStack 使用其原生代理设置及 `auto` 模式下的系统有效代理，不能仅凭内置 broker 地址判断外部代理。Manager 只做只读验证；配置修改要求空闲引擎。具体 HTTP 地址范围、历史兼容例外和维护边界见[运维说明](operations.zh-CN.md#private-registries-on-new-nodes)。
 
 ## 从 Git provider 构建部署
 

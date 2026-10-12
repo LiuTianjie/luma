@@ -1783,6 +1783,10 @@ def _queue_node_agent_task(
             "createdAt": now,
             "updatedAt": now,
         }
+        if required_capability:
+            # Leasing rechecks the current heartbeat. Keep this existing gate
+            # effective when an agent changes after the task was accepted.
+            task["requiredCapability"] = required_capability
         if build_run_id:
             run = _build_runs(current).get(build_run_id)
             if not isinstance(run, dict):
@@ -3137,7 +3141,7 @@ def handle_node_nomad_join(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if registries:
         payload["insecureRegistries"] = registries
         _guard_manager_docker_daemon_change(state, node_name)
-        for capability in ("nomad-join-registry-v1", "managed-registry-access-v1"):
+        for capability in ("nomad-join-registry-v1", "managed-registry-access-v2"):
             if not _node_agent_is_ready(record, required_capability=capability):
                 raise LumaError(f"node {node_name} requires an upgraded agent with {capability} before Nomad join")
         # Fresh nodes may not have Docker or Tailscale yet. The join task owns
@@ -3149,7 +3153,7 @@ def handle_node_nomad_join(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "join-nomad",
         payload,
         timeout=timeout,
-        required_capability="nomad-join-registry-v1" if registries else "nomad-join",
+        required_capability="managed-registry-access-v2" if registries else "nomad-join",
     )
     actual_node_name = str(result.get("nodeName") or node_name).strip()
     nomad_node_id = str(result.get("nodeId") or result.get("nomadNodeId") or "").strip()
@@ -4249,9 +4253,9 @@ def _ensure_nodes_managed_registry_access(
         record = _node_record_for_name(nodes, name)
         if not isinstance(record, dict):
             raise LumaError(f"managed registry target is not a registered Luma node: {name}")
-        if not _node_agent_is_ready(record, required_capability="managed-registry-access-v1"):
+        if not _node_agent_is_ready(record, required_capability="managed-registry-access-v2"):
             raise LumaError(
-                f"node {name} does not have a ready agent with managed-registry-access-v1; "
+                f"node {name} does not have a ready agent with managed-registry-access-v2; "
                 "upgrade the target node agent before deploying images from the managed HTTP registry"
             )
         plan.append((name, registries, _node_record_is_manager(record)))
@@ -4264,7 +4268,7 @@ def _ensure_nodes_managed_registry_access(
             result = _run_node_agent_task(
                 state, name, "managed-registry-access",
                 {"registries": registries, "checkOnly": check_only},
-                timeout=360, required_capability="managed-registry-access-v1",
+                timeout=360, required_capability="managed-registry-access-v2",
             )
             acknowledged = result.get("registries")
             if (result.get("verified") is not True or not isinstance(acknowledged, list)
