@@ -129,15 +129,16 @@ luma registry serve --node builder --port 5000
 curl -I http://<builder-tailscale-ip>:5000/v2/
 ```
 
-- Also verify from at least one target Linux node when diagnosing pull failures. A healthy `/v2/` from the manager alone does not prove Docker pulls on every target node are bypassing proxies.
+- Diagnose from the actual Docker target nodes, including OrbStack hosts. A healthy `/v2/` from the manager alone does not prove each target engine can pull the image.
 - If the registry allocation is `running` and port `5000` is listening but `/v2/` returns `No route to host`, suspect stale Nomad CNI hostport state; recreate the registry allocation:
 
 ```bash
 luma app restart luma-registry --mode recreate
 ```
 
-- `luma registry serve` should configure `insecure-registries` on ready Linux worker nodes and add the registry host plus Tailscale/private ranges to Docker daemon `NO_PROXY`. It skips manager nodes to avoid killing Luma Control by restarting the manager Docker daemon.
-- If target-node pulls fail with `502 Bad Gateway`, do not blame the registry first. Check target-node Docker daemon proxy and `NO_PROXY`; it must include the registry host, `host:port`, and Tailscale range (`100.64.0.0/10`).
+- `luma registry serve` deploys the registry and records its transport; it does not configure or restart the fleet. Normal join and deployment use one managed-registry readiness owner. Before deployment, every eligible target of the final Docker job must advertise `managed-registry-access-v2`; all capabilities are checked before any target configuration changes. Manager targets are read-only and require host-owned maintenance if configuration is missing.
+- Corrected agents retain v1 and v2 for rolling upgrades, with one implementation and unchanged public action/payload. Existing v1 Controls can use corrected agents; new Control rejects v1-only agents. Upgrade all eligible target agents first.
+- If target pulls fail with `502 Bad Gateway`, verify the actual proxy owner. Linux JSON uses `HttpProxy`, `HttpsProxy` and `NoProxy`; an active proxy needs a matching bypass, but missing facts must not be treated as direct access. OrbStack uses native `network_proxy` and `network.proxy.exclude`, plus the effective macOS system proxy in `auto` mode; its internal Docker broker address alone does not imply an external proxy. Preserve existing exclusions and append only missing managed hosts. Any configuration change requires an idle engine, even when native proxy settings can apply without a Docker restart.
 - If buildx fails with `invalid value "127.0.0.1", expecting k=v`, suspect comma handling in buildx `--driver-opt env.NO_PROXY=...`; update Luma so the entire `env.NO_PROXY=...` driver opt is CSV-quoted. Backslash-comma escaping is not reliable for buildx driver opts.
 - Repository Import build-node choices come from declared builder nodes, not every node advertising `docker-build`. Prefer `luma build config --node builder --registry-host <builder-ip>:5000 --push-host <builder-ip>:5000`; node role labels such as `builder` are also valid declarations. Dashboard and Control API should reject undeclared build targets, while preserving `builder` as the simple default for first setup.
 - For GitHub/Gitea source imports, manage Git provider PATs with the Git Provider credential flow rather than the old special `GITHUB_TOKEN`. Multiple accounts per provider are expected. Tokens are write-only and injected only into leased build tasks.
@@ -278,7 +279,7 @@ Direct `compose render` with local paths requires an explicit node. Control dry-
 For generic CI, install a published PyPI version; verify publication before using the version example below. A source version bump or a successful Control rollout does not prove PyPI availability. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.2.5"
+python -m pip install "luma-infra==0.2.6"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:

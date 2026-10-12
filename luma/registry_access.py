@@ -11,7 +11,7 @@ from typing import Any
 
 from .errors import LumaError
 from .registry import normalize_registry_host
-from .registry_proxy import proxy_bypasses_registry_hosts
+from .registry_proxy import docker_proxy_settings, no_proxy_bypasses_registry_hosts, proxy_bypasses_registry_hosts
 
 
 def join_insecure_registries(state: dict[str, Any]) -> list[str]:
@@ -155,7 +155,9 @@ def ensure_managed_registry_access(
     return result
 
 
-REGISTRY_SETUP_SCRIPT = inspect.getsource(proxy_bypasses_registry_hosts) + r'''
+REGISTRY_SETUP_SCRIPT = '\n'.join(inspect.getsource(helper) for helper in (
+    docker_proxy_settings, no_proxy_bypasses_registry_hosts, proxy_bypasses_registry_hosts,
+)) + r'''
 import json, os, pathlib, re, shlex, subprocess, sys, tempfile, time, urllib.request, urllib.error
 hosts = json.loads(sys.argv[1])
 check_only = len(sys.argv) > 2 and sys.argv[2] == 'true'

@@ -96,12 +96,12 @@ For private registries, separate reachability, Docker daemon proxying, and auth:
 
 ```bash
 # run these on the node that receives the service task
-docker info | grep -i proxy -A3
+docker info --format '{{json .}}'
 curl -vk https://<registry-host>/v2/
 docker pull <registry-host>/<org>/<image>:<tag>
 ```
 
-If `curl /v2/` returns `401` with `docker-distribution-api-version`, the registry is reachable from that node. If `docker pull` still fails with EOF/timeout before auth, check Docker daemon `HTTPProxy`/`HTTPSProxy` and ensure the private registry host is in daemon `NO_PROXY` on the same node. This is separate from manifest `proxy: true`, which only affects runtime outbound traffic from the container.
+If `curl /v2/` returns `401` with `docker-distribution-api-version`, the registry is reachable from that node; this alone does not verify the Docker engine's path. On Linux, inspect the actual JSON fields `HttpProxy`, `HttpsProxy` and `NoProxy`: an active proxy requires a bypass that matches the registry, while missing fields are an inspection error. On OrbStack, inspect its native `network_proxy` and `network.proxy.exclude`, plus effective macOS proxy settings in `auto` mode. A nonempty Docker broker address can be internal to OrbStack and does not establish an external proxy. Do not overwrite the runtime owner's settings or restart a busy engine to test a guess. This is separate from manifest `proxy: true`, which only affects runtime outbound traffic from the container. The managed registry preflight and v2 upgrade boundary are described in [Operations](operations.md#private-registries-on-new-nodes).
 
 For services pinned to `home` or ARM nodes, make sure the image has the target platform:
 

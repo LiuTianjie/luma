@@ -208,7 +208,7 @@ sudo docker pull hello-world:latest
 
 ```bash
 luma update                                  # manager: CLI + Control; node: CLI + agent; client: CLI
-luma update --install-ref v0.2.5           # a specific release, branch or full commit
+luma update --install-ref v0.2.6           # a specific release, branch or full commit
 luma update fleet                            # every non-manager node with a ready agent
 luma update fleet --include-manager          # explicit repair only
 ```
@@ -245,11 +245,15 @@ luma manager ip-change --old 203.0.113.10 --new 203.0.113.20 --domain luma.examp
 
 `luma node join` 和 `luma node nomad-join` 在配置好 Docker 和 Tailscale 之后、启动 Nomad 之前，准备托管 HTTP 镜像仓库访问。地址来自控制面登记的 HTTP transport。保留一条窄的历史兼容规则：已配置的 Builder Registry 使用已注册节点的 Tailscale IP 和 `5000` 端口，且未登记明确 transport、未保存该仓库凭据时，也按 HTTP 处理。不会将其他私有地址、公共镜像仓库或已登记的 HTTPS 地址推断为 HTTP。
 
-单服务和 Compose 正式部署在提交最终 Nomad job 之前，根据最终 Docker 镜像中的托管 HTTP 地址、实际落点约束和健康的 task driver，检查全部符合条件的目标节点。每个目标都需要在线且声明 `managed-registry-access-v1` 的 agent；旧 agent、未知运行时或无法判断的落点约束都会阻止提交。Manager 若属于目标，只做只读验证；缺少配置时需在宿主机维护，预检不会重启 Manager 的 Docker。
+单服务和 Compose 正式部署在提交最终 Nomad job 之前，根据最终 Docker 镜像中的托管 HTTP 地址、实际落点约束和健康的 task driver，检查全部符合条件的目标节点。修改任何目标的配置前，所有目标都必须声明 `managed-registry-access-v2`。按 region 部署也会检查新加入的合格节点；旧 agent、未知运行时或无法判断的落点约束都会阻止提交。Manager 若属于目标，只做只读验证；缺少配置时需在宿主机维护，预检不会修改 Manager 的 Docker 或代理配置。
 
-Linux 使用本机 `/var/run/docker.sock`，把托管地址合并进 `insecure-registries` 和 Docker 代理绕过配置，保留无关 daemon 配置，并在修改 `daemon.json` 前备份。macOS 会识别实际 OrbStack socket 的所有者，以该用户身份更新其 `~/.orbstack/config/docker.json`，保留已有配置；其他 macOS Docker 运行时会明确失败。配置后会回读 Docker 实际生效状态，并通过 HTTP 探测各仓库的 `/v2/`；仅文件写入成功不算验证通过。
+滚动升级时，修正后的 agent 同时声明 v1 和 v2，保持公开 action 和 payload 不变，统一使用同一实现。仍要求 v1 的旧 Control 可以调用修正后的 agent；新 Control 要求 v2，拒绝仅支持 v1 的旧 agent。应先升级所有合格的目标 agent，再升级 Control。
 
-已有配置与引擎实际状态都满足要求时，即使有运行中容器也可以完成验证。若需要重启 Docker 才能应用配置，Luma 会在修改前拒绝繁忙引擎，需在维护窗口排空节点后重试。单独升级 agent 不会配置或重启 Docker；后续正常 join 或 deploy 才执行所需验证，并在允许时配置。
+Linux 使用本机 `/var/run/docker.sock`，读取 Docker 实际 JSON 字段 `HttpProxy`、`HttpsProxy` 和 `NoProxy`。只有 HTTP transport 或有效代理绕过需要配置时，才补充精确的托管地址；保留无关配置，并在修改 `daemon.json` 前备份。缺少代理事实会报错，不能当作直连。
+
+macOS 会识别实际 OrbStack socket 的所有者。HTTP transport 由该用户的 `~/.orbstack/config/docker.json` 管理，代理策略则读取 OrbStack 原生的 `network_proxy` 和 `network.proxy.exclude`；`auto` 模式还会检查 macOS 系统实际生效的代理配置。不能仅凭 Docker 中的 OrbStack 内置 broker 地址非空，就判断存在外部代理。确认有效上游代理需要绕过时，Luma 通过原生配置入口保留已有排除项，只追加缺失的托管地址。未知模式、不支持的 PAC/WPAD 配置、不完整的检查结果及其他 macOS Docker 运行时都会明确失败。配置后回读生效状态，并通过 HTTP 探测各仓库的 `/v2/`；仅文件写入成功不算验证通过。
+
+已有配置与引擎实际状态都满足要求时，即使有运行中容器也可以完成验证。任何需要的配置修改，包括无需重启 Docker 即可生效的原生代理排除项，都要求引擎空闲；否则需在维护窗口排空节点后重试。Luma 仅在 HTTP transport 配置需要时重启 Docker，并准确返回是否重启。单独升级 agent 不会配置或重启 Docker；后续正常 join 或 deploy 才执行所需验证，并在允许时配置。
 
 `luma registry serve` 记录托管镜像仓库使用 HTTP 还是 HTTPS，并部署 registry 服务，不再为集群全部节点配置 Docker。registry 服务自身最终使用的镜像也走同一目标预检；使用新仓库的节点在各自 join 或 deploy 时按需准备访问。
 

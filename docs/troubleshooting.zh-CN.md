@@ -96,12 +96,12 @@ luma doctor --deep
 
 ```bash
 # run these on the node that receives the service task
-docker info | grep -i proxy -A3
+docker info --format '{{json .}}'
 curl -vk https://<registry-host>/v2/
 docker pull <registry-host>/<org>/<image>:<tag>
 ```
 
-`curl /v2/` 返回带 `docker-distribution-api-version` 的 `401`，说明该节点可以访问仓库。如果 `docker pull` 仍在认证前出现 EOF/超时，检查同一节点的 Docker daemon `HTTPProxy`/`HTTPSProxy`，确保私有仓库主机名位于 daemon 的 `NO_PROXY`。这与清单中的 `proxy: true` 无关，后者只控制容器运行时出站流量。
+`curl /v2/` 返回带 `docker-distribution-api-version` 的 `401`，说明该节点可以访问仓库，但不能单凭这一点证明 Docker 引擎的访问路径正常。Linux 应检查实际 JSON 字段 `HttpProxy`、`HttpsProxy` 和 `NoProxy`：存在有效代理时，需要匹配该仓库的绕过规则；字段缺失属于检查错误。OrbStack 应检查原生 `network_proxy`、`network.proxy.exclude`，以及 `auto` 模式下的 macOS 有效代理配置。Docker 中非空的 broker 地址可能只是 OrbStack 内部入口，不能据此认定存在外部代理。不要为验证猜测覆盖实际配置入口，或重启繁忙引擎。这与清单中的 `proxy: true` 无关，后者只控制容器运行时出站流量。托管仓库预检和 v2 升级边界见[运维说明](operations.zh-CN.md#private-registries-on-new-nodes)。
 
 服务固定在 `home` 或 ARM 节点时，确认镜像提供目标平台：
 
