@@ -194,19 +194,23 @@ def _filter_node_status_payload(payload: Dict[str, Any], name: str) -> Dict[str,
     matched_aliases = set[str]()
     for item in matched_registered:
         matched_aliases.update(_node_status_names(item))
+    matched_ids = {str(item.get("nodeId") or "").strip() for item in matched_registered} - {""}
 
-    nomad = payload.get("nomad") if isinstance(payload.get("nomad"), dict) else {}
-    nomad_nodes = nomad.get("nodes") if isinstance(nomad.get("nodes"), list) else []
-    matched_nomad = [
-        item
-        for item in nomad_nodes
-        if isinstance(item, dict)
-        and (
+    def matches_nomad(item: Any) -> bool:
+        if not isinstance(item, dict):
+            return False
+        node_id = str(item.get("id") or item.get("nodeId") or "").strip()
+        if node_id and matched_ids:
+            return node_id in matched_ids
+        return (
             _node_status_item_matches(item, name)
             or _node_status_canonical_name(item) in matched_names
             or bool(_node_status_names(item) & matched_aliases)
         )
-    ]
+
+    nomad = payload.get("nomad") if isinstance(payload.get("nomad"), dict) else {}
+    nomad_nodes = nomad.get("nodes") if isinstance(nomad.get("nodes"), list) else []
+    matched_nomad = [item for item in nomad_nodes if matches_nomad(item)]
     next_nodes = {**nodes, "items": matched_registered, "registered": len(matched_registered), "names": sorted(matched_names)}
     return {**payload, "nodes": next_nodes, "nomad": {**nomad, "nodes": matched_nomad}}
 

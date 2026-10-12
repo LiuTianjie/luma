@@ -2334,6 +2334,27 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(rows[0]["state"], "ready")
         self.assertEqual(rows[0]["availability"], "eligible")
 
+    def test_dashboard_nodes_prefer_nomad_id_over_conflicting_names(self):
+        from luma.control.server import _dashboard_nodes
+
+        registered = [
+            {"name": "air2", "hostname": "air2", "nodeId": "air2-id"},
+            {"name": "gaojiu", "hostname": "gaojiu", "nodeId": "gaojiu-id", "aliases": ["Mac.lan"]},
+        ]
+        for stale_name in ("", "gaojiu"):
+            raw = [
+                {"id": "gaojiu-id", "hostname": "Mac", "state": "down", "availability": "ineligible"},
+                {"id": "air2-id", "hostname": "Mac.lan", "lumaNode": stale_name,
+                 "state": "ready", "availability": "eligible"},
+            ]
+            for nodes in (raw, list(reversed(raw))):
+                with self.subTest(stale_name=stale_name, first=nodes[0]["id"]):
+                    rows = {row["name"]: row for row in _dashboard_nodes(registered, nodes)}
+                    self.assertEqual(rows["air2"]["state"], "ready")
+                    self.assertEqual(rows["air2"]["availability"], "eligible")
+                    self.assertEqual(rows["gaojiu"]["state"], "down")
+                    self.assertEqual(rows["gaojiu"]["availability"], "ineligible")
+
     def test_state_nodes_expands_aliases_for_internal_resolution(self):
         state = {
             "nodes": {
