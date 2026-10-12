@@ -243,9 +243,15 @@ It verifies the new address over HTTPS, then updates only the manager's `publicI
 
 ## Private Registries On New Nodes
 
-`luma node join` and `luma node nomad-join` configure the cluster's managed HTTP registries after Docker and Tailscale are set up and before Nomad starts. On Linux, the endpoints are merged into Docker's `insecure-registries` and `NO_PROXY`, unrelated settings are preserved, a changed `daemon.json` is backed up, and Docker restarts only if needed. The join fails rather than leaving a node that cannot pull, and a node with running containers is refused (drain it first). macOS nodes are not changed.
+`luma node join` and `luma node nomad-join` prepare managed HTTP registry access after Docker and Tailscale are set up and before Nomad starts. The host list comes from the control plane's recorded HTTP transports. A narrow legacy exception remains for the configured Builder Registry at a registered node's Tailscale IP on port `5000`, when neither an explicit transport nor registry credentials are recorded. Other private hosts, public registries and recorded HTTPS endpoints are not inferred to use HTTP.
 
-`luma registry serve` records whether the managed registry uses HTTP or HTTPS. Public registries and private TLS endpoints are never downgraded to HTTP.
+Before a single-service or Compose deployment submits its final Nomad job, Control checks the managed HTTP hosts in the resolved Docker images on every eligible target matching the job's placement and healthy task drivers. Each target needs a ready agent advertising `managed-registry-access-v1`; an old agent, unknown runtime or unsupported placement constraint stops submission. Manager targets are verification-only: missing Docker configuration requires host-owned maintenance, and this preflight never restarts the manager's Docker engine.
+
+Linux setup uses the local `/var/run/docker.sock`, merges the managed hosts into `insecure-registries` and Docker's proxy bypass settings, preserves unrelated daemon settings, and backs up `daemon.json` before changing it. On macOS, Luma identifies the actual OrbStack socket owner and updates that user's `~/.orbstack/config/docker.json` as that user, preserving the existing settings. Other macOS Docker runtimes fail explicitly. After setup, Luma reads the active Docker configuration back and probes each registry's `/v2/` over HTTP; a saved file alone is not a successful verification.
+
+When existing settings and the active engine state already satisfy the request, verification can run while containers are running. If applying the transport requires a Docker restart, Luma refuses to change a busy engine: drain the node in a maintenance window and retry. Agent updates alone do not configure or restart Docker; the next normal join or deployment performs the required verification and, where permitted, setup.
+
+`luma registry serve` records whether the managed registry uses HTTP or HTTPS and deploys the registry service. It no longer configures every node in the cluster. Its own resolved image uses the same target preflight; consumers prepare access to the new registry on their own join or deployment.
 
 ## Required Network Ports
 

@@ -39,9 +39,11 @@ class RegistryPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(LumaError, "node must not join"):
             configure_join_registries([HOST], executor=executor, os_name="linux")
 
-    def test_mac_exec_nodes_do_not_rewrite_linux_docker_config(self):
+    def test_mac_docker_nodes_use_the_orbstack_runtime_owner(self):
         executor = Mock()
-        configure_join_registries([HOST], executor=executor, os_name="darwin")
+        with patch('luma.orbstack_registry.ensure_orbstack_registries', return_value={'message': 'verified', 'verified': True, 'registries': [HOST]}) as setup:
+            self.assertEqual(configure_join_registries([HOST], executor=executor, os_name="darwin"), 'verified')
+        setup.assert_called_once_with([HOST], docker='/Applications/OrbStack.app/Contents/MacOS/xbin/docker', check_only=False)
         executor.sudo.assert_not_called()
 
 
@@ -55,6 +57,8 @@ class RegistrySetupScriptTests(unittest.TestCase):
         self.calls = []
         self.containers = ""
         self.probe_status = 200
+        self.check_only = False
+        self.service = '{ path=/usr/bin/dockerd ; argv[]=/usr/bin/dockerd -H fd:// ; ignore_errors=no ; }'
         self.initial = {"RegistryConfig": {"IndexConfigs": {}}, "NoProxy": "localhost,custom.internal"}
         self.current = self.initial
         self.script = REGISTRY_SETUP_SCRIPT.replace("/etc/docker/daemon.json", str(self.config)).replace(
@@ -62,6 +66,10 @@ class RegistrySetupScriptTests(unittest.TestCase):
 
     def run_script(self):
         def check_output(args, **kwargs):
+            if args[0] == 'docker':
+                self.assertEqual(args[1:3], ('--host', 'unix:///var/run/docker.sock'))
+                self.assertFalse(any(key.startswith('DOCKER_') for key in kwargs['env']))
+                args = (args[0], *args[3:])
             self.calls.append(args)
             if args[:2] == ('docker', 'info'):
                 return json.dumps(self.current)
@@ -71,6 +79,10 @@ class RegistrySetupScriptTests(unittest.TestCase):
                 config = json.loads(self.config.read_text())
                 proxy = self.dropin.read_text().split('NO_PROXY=')[1].split('"')[0]
                 self.current = {"RegistryConfig": {"IndexConfigs": {h: {"Secure": False} for h in config['insecure-registries']}}, "NoProxy": proxy}
+            if args == ('systemctl', 'is-active', 'docker'):
+                return 'active'
+            if args == ('systemctl', 'show', 'docker', '--property=ExecStart', '--value'):
+                return self.service
             return ''
         response = Mock(status=self.probe_status)
         context = Mock()
@@ -78,7 +90,7 @@ class RegistrySetupScriptTests(unittest.TestCase):
         context.__exit__ = Mock(return_value=False)
         opener = Mock()
         opener.open.return_value = context
-        with patch('sys.argv', ['setup', json.dumps([HOST])]), patch('subprocess.check_output', side_effect=check_output), patch(
+        with patch('sys.argv', ['setup', json.dumps([HOST]), 'true' if self.check_only else 'false']), patch('subprocess.check_output', side_effect=check_output), patch(
             'urllib.request.build_opener', return_value=opener):
             exec(compile(self.script, '<registry-setup>', 'exec'), {})
         return opener
@@ -103,7 +115,7 @@ class RegistrySetupScriptTests(unittest.TestCase):
         with self.assertRaises(json.JSONDecodeError):
             self.run_script()
         self.assertEqual(self.config.read_text(), 'not json')
-        self.assertEqual(self.calls, [])
+        self.assertNotIn(('systemctl', 'restart', 'docker'), self.calls)
 
     def test_busy_node_is_not_restarted_or_changed(self):
         self.containers = 'container-1'
@@ -124,6 +136,60 @@ class RegistrySetupScriptTests(unittest.TestCase):
         self.probe_status = 503
         with self.assertRaisesRegex(RuntimeError, 'probe failed'):
             self.run_script()
+
+    def test_ready_daemon_configured_elsewhere_is_a_noop_on_a_busy_node(self):
+        self.current = {"RegistryConfig": {"IndexConfigs": {HOST: {"Secure": False}}}}
+        self.containers = 'production-container'
+        self.run_script()
+        self.assertFalse(self.config.exists())
+        self.assertFalse(self.dropin.exists())
+        self.assertFalse(any(call[0] == 'systemctl' for call in self.calls))
+
+    def test_check_only_fails_without_modifying_an_unconfigured_node(self):
+        self.check_only = True
+        with self.assertRaisesRegex(RuntimeError, 'read-only'):
+            self.run_script()
+        self.assertFalse(self.config.exists())
+        self.assertFalse(self.dropin.exists())
+        self.assertFalse(any(call[0] == 'systemctl' for call in self.calls))
+
+    def test_custom_owner_and_conflicting_service_flags_are_not_overwritten(self):
+        for args in ('--config-file=/srv/docker.json', '--insecure-registry=old.internal:5000', '--no-proxy=localhost', '-H unix:///tmp/other.sock', '-Hunix:///tmp/other.sock'):
+            with self.subTest(args=args):
+                self.service = '{ path=/usr/bin/dockerd ; argv[]=/usr/bin/dockerd ' + args + ' ; ignore_errors=no ; }'
+                with self.assertRaisesRegex(RuntimeError, 'maintenance window|maintenance is required'):
+                    self.run_script()
+                self.assertFalse(self.config.exists())
+                self.assertFalse(self.dropin.exists())
+                self.assertNotIn(('systemctl', 'restart', 'docker'), self.calls)
+
+    def test_active_proxy_requires_a_real_daemon_bypass(self):
+        self.check_only = True
+        self.current = {"RegistryConfig": {"IndexConfigs": {HOST: {"Secure": False}}}, "HTTPSProxy": "http://proxy:7890", "NoProxy": "localhost"}
+        with self.assertRaisesRegex(RuntimeError, 'read-only'):
+            self.run_script()
+        self.current['NoProxy'] += ',' + HOST
+        self.run_script()
+        self.assertFalse(self.config.exists())
+
+    def test_existing_proxy_bypass_variants_allow_busy_runtime_noop(self):
+        self.containers = 'production-container'
+        for no_proxy in ('100.64.0.0/10', '100.64.0.70', HOST, '*'):
+            with self.subTest(no_proxy=no_proxy):
+                self.current = {"RegistryConfig": {"IndexConfigs": {HOST: {"Secure": False}}}, "HTTPSProxy": "http://proxy:7890", "NoProxy": no_proxy}
+                self.run_script()
+                self.assertFalse(self.config.exists())
+                self.assertFalse(self.dropin.exists())
+                self.assertFalse(any(call[0] == 'systemctl' for call in self.calls))
+
+    def test_non_finite_and_duplicate_json_do_not_replace_configuration(self):
+        for value in ('{"value":NaN}', '{"value":Infinity}', '{"value":1,"value":2}'):
+            with self.subTest(value=value):
+                self.config.write_text(value)
+                with self.assertRaises(ValueError):
+                    self.run_script()
+                self.assertEqual(self.config.read_text(), value)
+        self.assertNotIn(('systemctl', 'restart', 'docker'), self.calls)
 
 
 class RegistryJoinIntegrationTests(unittest.TestCase):
@@ -149,11 +215,13 @@ class RegistryJoinIntegrationTests(unittest.TestCase):
             state = init_state(domain='luma.example.com', cluster_id='test', overwrite=True)
             state['nomadRpcAddr'] = '100.64.0.1:4647'
             state['managedRegistryTransports'] = {HOST: 'http'}
-            state['nodes'] = {'ppt': {'region': 'cn', 'nodeId': 'agent-id'}}
+            state['nodes'] = {'ppt': {'region': 'cn', 'nodeId': 'agent-id', 'agent': {'status': 'ready', 'capabilities': ['nomad-join-registry-v1', 'managed-registry-access-v1']}}}
             save_state(state)
             with patch('luma.control.server._run_node_agent_task', return_value={
                 'nodeName': 'ppt', 'nodeId': 'nomad-id', 'tailscaleIP': '100.64.0.2'}) as task:
                 handle_node_nomad_join(state['deployToken'], {'nodeName': 'ppt'})
+            self.assertEqual(task.call_count, 1)
+            self.assertEqual(task.call_args.args[2], 'join-nomad')
             self.assertEqual(task.call_args.args[3]['insecureRegistries'], [HOST])
             self.assertEqual(task.call_args.kwargs['required_capability'], 'nomad-join-registry-v1')
 

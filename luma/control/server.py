@@ -3137,6 +3137,11 @@ def handle_node_nomad_join(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if registries:
         payload["insecureRegistries"] = registries
         _guard_manager_docker_daemon_change(state, node_name)
+        for capability in ("nomad-join-registry-v1", "managed-registry-access-v1"):
+            if not _node_agent_is_ready(record, required_capability=capability):
+                raise LumaError(f"node {node_name} requires an upgraded agent with {capability} before Nomad join")
+        # Fresh nodes may not have Docker or Tailscale yet. The join task owns
+        # installing them before the shared registry check and Nomad startup.
 
     result = _run_node_agent_task(
         state,
@@ -4221,6 +4226,116 @@ def _reconcile_allocations_after_docker_restart(
     }
 
 
+
+def _ensure_nodes_managed_registry_access(
+    state: Dict[str, Any],
+    node_registries: Dict[str, set[str]],
+    *,
+    progress: Callable[[dict[str, str]], None] | None = None,
+) -> Dict[str, Any]:
+    """One daemon owner for explicit managed HTTP registries, never a fleet sweep."""
+    allowed = set(join_insecure_registries(state))
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    plan: list[tuple[str, list[str], bool]] = []
+    # Validate the entire target set before any node may change configuration.
+    # Otherwise one upgraded node could be changed before discovering an older
+    # agent on the other eligible scheduling target.
+    for name, requested in sorted(node_registries.items()):
+        registries = sorted({normalize_registry_host(host) for host in requested})
+        if not registries:
+            continue
+        if set(registries) - allowed:
+            raise LumaError("registry access preflight accepts only Luma-managed HTTP registries")
+        record = _node_record_for_name(nodes, name)
+        if not isinstance(record, dict):
+            raise LumaError(f"managed registry target is not a registered Luma node: {name}")
+        if not _node_agent_is_ready(record, required_capability="managed-registry-access-v1"):
+            raise LumaError(
+                f"node {name} does not have a ready agent with managed-registry-access-v1; "
+                "upgrade the target node agent before deploying images from the managed HTTP registry"
+            )
+        plan.append((name, registries, _node_record_is_manager(record)))
+
+    completed: list[Dict[str, Any]] = []
+    for name, registries, check_only in plan:
+        event = {"name": f"Verify managed registry access on {name}", "status": "start", "message": ", ".join(registries)}
+        _emit_progress(progress, event)
+        try:
+            result = _run_node_agent_task(
+                state, name, "managed-registry-access",
+                {"registries": registries, "checkOnly": check_only},
+                timeout=360, required_capability="managed-registry-access-v1",
+            )
+            acknowledged = result.get("registries")
+            if (result.get("verified") is not True or not isinstance(acknowledged, list)
+                    or any(not isinstance(host, str) for host in acknowledged)
+                    or sorted(set(acknowledged)) != registries
+                    or not isinstance(result.get("changed"), bool)
+                    or not isinstance(result.get("dockerRestarted"), bool)):
+                raise LumaError("node agent did not confirm managed registry access; update the target node agent")
+            if check_only and (result.get("changed") or result.get("dockerRestarted")):
+                raise LumaError("manager registry access check must not change or restart Docker; use host-owned maintenance")
+            if result.get("affectedAllocationIds"):
+                raise LumaError("managed registry access unexpectedly affected running allocations; inspect the node before continuing")
+            receipt = {"node": name, **result}
+            completed.append(receipt)
+            _emit_progress(progress, {**event, "status": "ok", "message": str(result.get("message") or "Managed HTTP registry access verified")})
+        except LumaError as exc:
+            verified = ", ".join(str(item["node"]) for item in completed) or "none"
+            message = f"Managed registry access failed on {name}; already verified: {verified}. {exc}"
+            _emit_progress(progress, {**event, "status": "fail", "message": message})
+            raise LumaError(message) from exc
+    return {"nodes": completed, "message": "Managed HTTP registry access verified on: " + (", ".join(item[0] for item in plan) or "none required")}
+
+
+def _ensure_job_managed_registry_access(
+    config: Any, state: Dict[str, Any], job_json: str,
+    *, progress: Callable[[dict[str, str]], None] | None = None,
+) -> Dict[str, Any]:
+    """Inspect the final Docker images and real Nomad scheduling candidates."""
+    from .registry_targets import registry_task_groups, registry_candidate_nodes
+
+    groups = registry_task_groups(job_json, join_insecure_registries(state))
+    if not groups:
+        return {"nodes": [], "message": "No managed HTTP registry images require node configuration"}
+    api = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    inventory = api.request("GET", "/v1/nodes")
+    if not isinstance(inventory, list):
+        raise LumaError("cannot verify managed registry access: Nomad node inventory is unavailable")
+    detailed: list[Dict[str, Any]] = []
+    for node in inventory:
+        if not isinstance(node, dict) or str(node.get("Status") or "") != "ready":
+            continue
+        node_id = str(node.get("ID") or "").strip()
+        if not node_id:
+            raise LumaError("cannot verify managed registry access: a ready Nomad node has no ID")
+        detail = api.request("GET", f"/v1/node/{urllib.parse.quote(node_id, safe='')}")
+        if not isinstance(detail, dict) or str(detail.get("ID") or "") != node_id:
+            raise LumaError(f"cannot verify managed registry access: Nomad node details are invalid for {node_id}")
+        detailed.append(detail)
+    node_registries: Dict[str, set[str]] = {}
+    registered = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    for group in groups:
+        candidates = registry_candidate_nodes(group, detailed)
+        if not candidates:
+            raise LumaError(
+                f"cannot verify managed registry access for group {group['name']}: "
+                "no ready Docker target matches the job placement; restore the target runtime before deploying"
+            )
+        for node in candidates:
+            meta = node.get("Meta") if isinstance(node.get("Meta"), dict) else {}
+            entry = _node_record_entry_for_name_or_id(registered, str(meta.get("luma_node_name") or ""), str(node["ID"]))
+            if entry is None:
+                raise LumaError(f"managed HTTP registry job can schedule on unregistered Nomad node {node['ID']}; join that node to Luma before deploying")
+            if _node_record_nomad_node_id(entry[1]) != str(node["ID"]):
+                raise LumaError(
+                    f"managed registry target identity mismatch for {entry[0]}: candidate {node['ID']} is not its current Nomad client; "
+                    "reconcile stale node registration before deploying"
+                )
+            node_registries.setdefault(entry[0], set()).update(group["registries"])
+    return _ensure_nodes_managed_registry_access(state, node_registries, progress=progress)
+
+
 def _require_registry_node(state: Dict[str, Any], node_name: str) -> Dict[str, Any]:
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     record = _node_record_for_name(nodes, node_name)
@@ -4359,7 +4474,6 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
         raise LumaError(
             "public registry requires a valid domain, username, and password"
         )
-    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     region = str(record.get("region") or (record.get("labels") or {}).get("region") or "cn").strip() or "cn"
     if secure_public and region not in {"cn", "global"}:
         raise LumaError(
@@ -4408,84 +4522,20 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
         manifest["publishPort"] = port
     manifest_text = yaml.safe_dump(manifest, sort_keys=False, allow_unicode=False)
 
-    # Configure insecure-registries on every ready Linux node so any of them can
-    # pull from the in-cluster registry (unpinned services schedule anywhere).
-    # Do this before creating the registry allocation: configuring the builder
-    # may restart Docker, which otherwise leaves the freshly-created Nomad CNI
-    # namespace detached while the task is restarted inside the old allocation.
-    # Skip the manager: Control runs in a container there, and restarting its
-    # Docker daemon would kill this very request mid-stream. The manager's daemon
-    # must be configured out-of-band if it also runs pulled workloads.
+    # Registry creation deploys only this registry service. Its own resolved
+    # image follows the ordinary per-target registry preflight below. Consumers
+    # configure this new endpoint when they join or deploy; never restart every
+    # ready node merely because a registry was created.
     configured: list[str] = []
     skipped: list[str] = []
     docker_recoveries: list[Dict[str, Any]] = []
-    registry_no_proxy = _merge_no_proxy(EGRESS_NO_PROXY, *_no_proxy_entries_for_registry(registry_host))
-    for node_name in ([] if secure_public else sorted(str(n) for n in nodes)):
-        node_record = nodes.get(node_name)
-        if not isinstance(node_record, dict):
-            continue
-        agent = node_record.get("agent") if isinstance(node_record.get("agent"), dict) else {}
-        if _node_record_is_manager(node_record):
-            skipped.append(f"{node_name} (manager: configure docker daemon out-of-band)")
-            continue
-        if str(agent.get("os") or "") != "linux" or not _node_agent_is_ready(node_record):
-            skipped.append(node_name)
-            continue
-        affected_allocation_ids: set[str] = set()
-        configuration_error: LumaError | None = None
-        try:
-            registry_result = _run_node_agent_task(
-                state,
-                node_name,
-                "configure-insecure-registry",
-                {"registry": registry_host},
-                timeout=240,
-                required_capability=None,
-            )
-            affected_allocation_ids.update(_docker_restart_allocation_ids(registry_result))
-            daemon_proxy = _docker_daemon_proxy_for_node(config, state, node_name, node_record)
-            if daemon_proxy:
-                proxy_result = _run_node_agent_task(
-                    state,
-                    node_name,
-                    "configure-docker-egress-proxy",
-                    {"proxy": daemon_proxy, "noProxy": registry_no_proxy},
-                    timeout=240,
-                    required_capability=None,
-                )
-                affected_allocation_ids.update(_docker_restart_allocation_ids(proxy_result))
-        except LumaError as exc:
-            configuration_error = exc
-        if affected_allocation_ids:
-            try:
-                recovery = _reconcile_allocations_after_docker_restart(state, node_name, affected_allocation_ids)
-            except LumaError as exc:
-                raise LumaError(
-                    f"Docker restarted on {node_name}, but its Nomad allocations did not recover automatically: {exc}"
-                ) from exc
-            docker_recoveries.append(recovery)
-            recovery_step = {
-                "name": f"Recover Docker restart on {node_name}",
-                "status": "ok",
-                "message": str(recovery.get("message") or "Nomad allocations recovered"),
-            }
-            steps.append(recovery_step)
-            _emit_progress(progress, recovery_step)
-        if configuration_error is not None:
-            skipped.append(f"{node_name} ({configuration_error})")
-        else:
-            configured.append(node_name)
     registry_transport_step = {
-        "name": (
-            "Configure authenticated TLS registry"
-            if secure_public
-            else "Configure insecure-registries"
-        ),
+        "name": "Configure authenticated TLS registry" if secure_public else "Register managed HTTP registry",
         "status": "ok",
         "message": (
             f"https://{domain} uses Traefik Basic Auth; Docker daemon restarts are not required"
             if secure_public
-            else f"configured: {', '.join(configured) or 'none'}; skipped: {', '.join(skipped) or 'none'}"
+            else f"{registry_host}: consumer access is verified on each target at node join or deployment"
         ),
     }
     steps.append(registry_transport_step)
@@ -6583,6 +6633,12 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
             lambda: render_nomad_job(runtime_config, service, registry_auth=registry_auth, secrets=secrets, egress_proxy_url=_egress_proxy_for_region(config, state, service.region), observe_otlp=_observe_otlp_settings(state, service.slug)),
             progress=progress,
         )
+        if not _skip_orchestrator(body):
+            _deploy_step(
+                steps, "Verify managed registry access",
+                lambda: _ensure_job_managed_registry_access(config, state, stack_text, progress=progress),
+                progress=progress,
+            )
         _deploy_step(steps, "Write Nomad job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
         written = [str(target)]
         dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service), progress=progress)
@@ -8763,6 +8819,12 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
             ),
             progress=progress,
         )
+        if not _skip_orchestrator(body):
+            _deploy_step(
+                steps, "Verify managed registry access",
+                lambda: _ensure_job_managed_registry_access(config, state, stack_text, progress=progress),
+                progress=progress,
+            )
         _deploy_step(
             steps,
             "Check storage backend",
@@ -11506,6 +11568,8 @@ def _node_record_names(key: str, record: Dict[str, Any]) -> set[str]:
 
 
 def _node_record_is_manager(record: Dict[str, Any]) -> bool:
+    if "nomad-manager" in {str(role).lower() for role in record.get("roles") or []}:
+        return True
     if str(record.get("status") or "").lower() == "manager":
         return True
     if str(record.get("nomadRole") or "").lower() == "server":
