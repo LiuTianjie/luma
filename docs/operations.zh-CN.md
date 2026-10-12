@@ -208,7 +208,7 @@ sudo docker pull hello-world:latest
 
 ```bash
 luma update                                  # manager: CLI + Control; node: CLI + agent; client: CLI
-luma update --install-ref v0.2.4           # a specific release, branch or full commit
+luma update --install-ref v0.2.5           # a specific release, branch or full commit
 luma update fleet                            # every non-manager node with a ready agent
 luma update fleet --include-manager          # explicit repair only
 ```
@@ -243,9 +243,15 @@ luma manager ip-change --old 203.0.113.10 --new 203.0.113.20 --domain luma.examp
 
 ## 新节点上的私有镜像仓库 {#private-registries-on-new-nodes}
 
-`luma node join` 和 `luma node nomad-join` 在配置好 Docker 和 Tailscale 之后、启动 Nomad 之前，配置集群托管的 HTTP 镜像仓库。Linux 上会把这些地址合并进 Docker 的 `insecure-registries` 和 `NO_PROXY`，保留无关配置，`daemon.json` 有变化时先备份，仅在需要时重启 Docker。无法完成时加入直接失败，而不是留下一个无法拉取镜像的节点；已有运行中容器的节点会被拒绝（先排空）。macOS 节点不做修改。
+`luma node join` 和 `luma node nomad-join` 在配置好 Docker 和 Tailscale 之后、启动 Nomad 之前，准备托管 HTTP 镜像仓库访问。地址来自控制面登记的 HTTP transport。保留一条窄的历史兼容规则：已配置的 Builder Registry 使用已注册节点的 Tailscale IP 和 `5000` 端口，且未登记明确 transport、未保存该仓库凭据时，也按 HTTP 处理。不会将其他私有地址、公共镜像仓库或已登记的 HTTPS 地址推断为 HTTP。
 
-`luma registry serve` 会记录托管镜像仓库使用 HTTP 还是 HTTPS。公共镜像仓库和使用 TLS 的私有地址永远不会降级为 HTTP。
+单服务和 Compose 正式部署在提交最终 Nomad job 之前，根据最终 Docker 镜像中的托管 HTTP 地址、实际落点约束和健康的 task driver，检查全部符合条件的目标节点。每个目标都需要在线且声明 `managed-registry-access-v1` 的 agent；旧 agent、未知运行时或无法判断的落点约束都会阻止提交。Manager 若属于目标，只做只读验证；缺少配置时需在宿主机维护，预检不会重启 Manager 的 Docker。
+
+Linux 使用本机 `/var/run/docker.sock`，把托管地址合并进 `insecure-registries` 和 Docker 代理绕过配置，保留无关 daemon 配置，并在修改 `daemon.json` 前备份。macOS 会识别实际 OrbStack socket 的所有者，以该用户身份更新其 `~/.orbstack/config/docker.json`，保留已有配置；其他 macOS Docker 运行时会明确失败。配置后会回读 Docker 实际生效状态，并通过 HTTP 探测各仓库的 `/v2/`；仅文件写入成功不算验证通过。
+
+已有配置与引擎实际状态都满足要求时，即使有运行中容器也可以完成验证。若需要重启 Docker 才能应用配置，Luma 会在修改前拒绝繁忙引擎，需在维护窗口排空节点后重试。单独升级 agent 不会配置或重启 Docker；后续正常 join 或 deploy 才执行所需验证，并在允许时配置。
+
+`luma registry serve` 记录托管镜像仓库使用 HTTP 还是 HTTPS，并部署 registry 服务，不再为集群全部节点配置 Docker。registry 服务自身最终使用的镜像也走同一目标预检；使用新仓库的节点在各自 join 或 deploy 时按需准备访问。
 
 ## 所需网络端口 {#required-network-ports}
 

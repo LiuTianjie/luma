@@ -2183,7 +2183,7 @@ class GithubImportTests(unittest.TestCase):
         )
         self.assertLessEqual(len(progress), 4)
 
-    def test_registry_serve_configures_insecure_registry_and_docker_no_proxy(self):
+    def test_registry_serve_defers_consumer_access_to_join_or_deploy(self):
         from luma.control.server import handle_registry_serve
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2234,25 +2234,11 @@ class GithubImportTests(unittest.TestCase):
 
                 self.assertEqual(load_state()["managedRegistryTransports"]["100.64.0.70:5000"], "http")
                 self.assertEqual(result["registryHost"], "100.64.0.70:5000")
-                tecent_no_proxy = [
-                    payload["noProxy"]
-                    for node_name, action, payload in calls
-                    if node_name == "cn-2" and action == "configure-docker-egress-proxy"
-                ][0]
-                self.assertIn("100.64.0.70:5000", tecent_no_proxy)
-                self.assertIn("100.64.0.70", tecent_no_proxy)
-                self.assertIn("100.64.0.0/10", tecent_no_proxy)
-                tecent_proxy = [
-                    payload["proxy"]
-                    for node_name, action, payload in calls
-                    if node_name == "cn-2" and action == "configure-docker-egress-proxy"
-                ][0]
-                self.assertEqual(tecent_proxy, "http://10.0.0.2:7890")
-                self.assertIn(("cn-2", "configure-insecure-registry", {"registry": "100.64.0.70:5000"}), calls)
-                deploy_index = events.index(("deploy", "luma-registry"))
-                self.assertTrue(events[:deploy_index])
-                self.assertTrue(all(event[0] == "agent" for event in events[:deploy_index]))
-                self.assertFalse(any(event[0] == "agent" for event in events[deploy_index + 1 :]))
+                self.assertEqual(calls, [])
+                self.assertEqual(events, [("deploy", "luma-registry")])
+                self.assertEqual(result["configuredNodes"], [])
+                self.assertEqual(result["skippedNodes"], [])
+                self.assertEqual(result["dockerRestartRecoveries"], [])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -2340,39 +2326,28 @@ class GithubImportTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_configure_insecure_registry_only_restarts_docker_when_config_changes(self):
+    def test_legacy_registry_action_uses_the_shared_runtime_owner(self):
         from luma.agent import configure_insecure_registry
 
-        executor = MagicMock()
-        executor.sudo.return_value = "LUMA_DOCKER_CONFIG_CHANGED=1\n"
-        with patch("luma.agent.node_agent_os", return_value="linux"), patch(
-            "luma.agent.LocalExecutor", return_value=executor
-        ), patch("luma.agent._active_nomad_docker_alloc_ids", return_value={"alloc-b", "alloc-a"}) as active_allocs:
+        expected = {"registries": ["100.64.0.70:5000"], "changed": True, "dockerRestarted": True, "affectedAllocationIds": []}
+        with patch("luma.agent.ensure_managed_registry_access", return_value=expected) as ensure:
             result = configure_insecure_registry(registry="100.64.0.70:5000")
-
-        script = executor.sudo.call_args.args[0]
-        self.assertIn("changed=$(python3", script)
-        self.assertIn("changed = host not in regs", script)
-        self.assertIn('if [ "$changed" = "1" ]; then systemctl restart docker; fi', script)
+        ensure.assert_called_once_with(registries=["100.64.0.70:5000"])
         self.assertTrue(result["changed"])
         self.assertTrue(result["dockerRestarted"])
-        self.assertEqual(result["affectedAllocationIds"], ["alloc-a", "alloc-b"])
-        active_allocs.assert_called_once_with(executor)
+        self.assertEqual(result["affectedAllocationIds"], [])
+        self.assertEqual(result["registry"], "100.64.0.70:5000")
 
     def test_configure_insecure_registry_reports_no_restart_when_unchanged(self):
         from luma.agent import configure_insecure_registry
 
-        executor = MagicMock()
-        executor.sudo.return_value = "LUMA_DOCKER_CONFIG_CHANGED=0\n"
-        with patch("luma.agent.node_agent_os", return_value="linux"), patch(
-            "luma.agent.LocalExecutor", return_value=executor
-        ), patch("luma.agent._active_nomad_docker_alloc_ids", return_value={"alloc-a"}):
+        expected = {"registries": ["100.64.0.70:5000"], "changed": False, "dockerRestarted": False, "affectedAllocationIds": []}
+        with patch("luma.agent.ensure_managed_registry_access", return_value=expected):
             result = configure_insecure_registry(registry="100.64.0.70:5000")
 
         self.assertFalse(result["changed"])
         self.assertFalse(result["dockerRestarted"])
         self.assertEqual(result["affectedAllocationIds"], [])
-        self.assertIn("already configured", result["message"])
 
     def test_configure_docker_egress_proxy_only_restarts_when_content_changes(self):
         from luma.agent import configure_docker_egress_proxy

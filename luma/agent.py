@@ -128,6 +128,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "manager-update-v1",
             "nomad-join",
             "nomad-join-registry-v1",
+            "managed-registry-access-v1",
             "nomad-cni-repair",
             "terminal",
             "container-terminal",
@@ -143,6 +144,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "luma-update-egress-fallback-v1",
             "nomad-join",
             "nomad-join-registry-v1",
+            "managed-registry-access-v1",
             "terminal",
             "container-terminal",
         ]
@@ -2313,6 +2315,10 @@ def _execute_agent_task_impl(
         return build_image(payload, progress=progress, cancel_event=cancel_event)
     if action == "configure-insecure-registry":
         return configure_insecure_registry(registry=_required(payload, "registry"))
+    if action == "managed-registry-access":
+        return ensure_managed_registry_access(
+            registries=payload.get("registries"), check_only=payload.get("checkOnly", False)
+        )
     if action == "join-nomad":
         return join_nomad_node(
             node_name=_required(payload, "nodeName"),
@@ -4133,51 +4139,20 @@ def build_image(
 
 
 def configure_insecure_registry(*, registry: str) -> Dict[str, Any]:
-    os_value = node_agent_os()
-    if os_value != "linux":
-        raise LumaError(f"insecure-registries configuration is not supported on {os_value}")
-    host = _safe_registry_host(registry)
-    script = (
-        "set -euo pipefail; "
-        "mkdir -p /etc/docker; "
-        'f=/etc/docker/daemon.json; '
-        '[ -f "$f" ] || echo "{}" > "$f"; '
-        f"changed=$(python3 - \"$f\" {shlex.quote(host)} <<'PY'\n"
-        "import os, json, sys\n"
-        "path, host = sys.argv[1], sys.argv[2]\n"
-        "try:\n"
-        "    data = json.load(open(path))\n"
-        "except Exception:\n"
-        "    data = {}\n"
-        "if not isinstance(data, dict):\n"
-        "    data = {}\n"
-        "regs = data.get('insecure-registries')\n"
-        "if not isinstance(regs, list):\n"
-        "    regs = []\n"
-        "changed = host not in regs\n"
-        "if host not in regs:\n"
-        "    regs.append(host)\n"
-        "if changed:\n"
-        "    data['insecure-registries'] = regs\n"
-        "    tmp = path + '.luma.tmp'\n"
-        "    open(tmp, 'w').write(json.dumps(data, indent=2) + '\\n')\n"
-        "    os.replace(tmp, path)\n"
-        "print('1' if changed else '0')\n"
-        "PY\n"
-        "); "
-        'if [ "$changed" = "1" ]; then systemctl restart docker; fi; '
-        f"printf '{_DOCKER_CONFIG_CHANGED_MARKER}%s\\n' \"$changed\""
+    result = ensure_managed_registry_access(registries=[registry])
+    return {**result, "registry": result["registries"][0]}
+
+
+def ensure_managed_registry_access(*, registries: list[str], check_only: bool = False) -> Dict[str, Any]:
+    from .registry_access import ensure_managed_registry_access as configure
+
+    return configure(
+        registries,
+        executor=LocalExecutor(),
+        os_name=node_agent_os(),
+        docker=_docker_binary() or "",
+        check_only=check_only,
     )
-    executor = LocalExecutor()
-    active_alloc_ids = sorted(_active_nomad_docker_alloc_ids(executor))
-    changed = _docker_config_changed(executor.sudo(script))
-    return {
-        "registry": host,
-        "changed": changed,
-        "dockerRestarted": changed,
-        "affectedAllocationIds": active_alloc_ids if changed else [],
-        "message": f"insecure-registry configured: {host}" if changed else f"insecure-registry already configured: {host}",
-    }
 
 
 def _docker_image_repository(image: str) -> str:

@@ -1,4 +1,6 @@
 import argparse
+import contextlib
+import io
 import json
 import os
 import sqlite3
@@ -708,6 +710,98 @@ class BuildQueueTests(unittest.TestCase):
         self.assertEqual(run['status'], 'succeeded')
         self.assertFalse(run['result']['workflow']['saved'])
         self.assertEqual(run['result']['workflow']['warning'], 'newer recipe preserved')
+
+    def test_required_capability_survives_queued_http_result_and_standard_import(self):
+        from starlette.testclient import TestClient
+        from luma.cli import build_parser
+        from luma.cli.builds import cmd_import
+
+        capability = 'repository-build-inputs-v1'
+        state = load_state()
+        state['nodes']['builder']['agent']['capabilities'].append(capability)
+        save_state(state)
+
+        for kind in ('service', 'compose'):
+            with self.subTest(kind=kind):
+                name = 'app-' + kind
+                image = 'builder:5000/acme/' + name + ':immutable'
+                args = build_parser().parse_args([
+                    '--no-env', 'import', 'acme/' + name,
+                    '--require-build-capability', capability, '--format', 'json', '--quiet',
+                    '--timeout', '10',
+                    *(['--compose-sidecar', 'luma.compose.yml'] if kind == 'compose' else []),
+                ])
+                built = {'kind': kind, 'image': image, 'buildCapabilities': [capability],
+                         'manifest': f'name: {name}\nregion: cn\nexposure: none\n'}
+                deployed = {'service': name}
+                if kind == 'compose':
+                    built.update(manifest=f'name: {name}\ncompose: docker-compose.yml\nregion: cn\nservices:\n  web:\n    exposure: none\n',
+                                 composeContent=f'services:\n  web:\n    image: {image}\n',
+                                 images={'web': image}, imageAliases={}, composeSidecar='luma.compose.yml')
+                    deployed = {'deployment': name}
+                # Only substitute the remote Builder/Nomad side effects. The
+                # real queue executes, persists to SQLite, then serves its
+                # public history through HTTP to the real CLI client parser.
+                http = TestClient(srv.create_app())
+                self.addCleanup(http.close)
+                client = ControlClient('https://luma.example.com', self.token)
+                readbacks = []
+                accepted_ids = []
+
+                def open_response(method, path, body=None, **_kwargs):
+                    response = http.request(method, path, json=body,
+                                            headers={'Authorization': f'Bearer {self.token}'})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    if method == 'POST' and path == '/v1/builds/stream':
+                        events = [json.loads(line) for line in response.iter_lines()]
+                        accepted = next(event['result'] for event in events if event.get('status') == 'done')
+                        self.assertTrue(accepted['queued'])
+                        accepted_ids.append(accepted['buildRunId'])
+                        self.assertEqual(accepted['run']['status'], 'queued')
+                        item = queue.claim()
+                        self.assertEqual(item[0], accepted['buildRunId'])
+                        queue.execute(item)
+                    elif method == 'GET' and path.startswith('/v1/builds/'):
+                        readbacks.append(response.json())
+                    result = io.BytesIO(response.content)
+                    result.headers = response.headers
+                    return result
+
+                output = io.StringIO()
+                with patch.object(srv, '_build_proxy_for_request', return_value=''), patch.object(
+                    srv, '_run_node_agent_task', return_value=built,
+                ), patch.object(srv, 'handle_deployment', return_value=deployed), patch.object(
+                    srv, 'handle_compose_deployment', return_value=deployed,
+                ), patch.object(srv, 'handle_control_status', side_effect=lambda _token: {'build': srv._build_summary(load_state())}), patch.object(
+                    client, '_open', side_effect=open_response,
+                ), patch('luma.cli.common.ControlClient', return_value=client), patch(
+                    'luma.cli.builds._control_context', return_value=('https://luma.example.com', self.token, False, None),
+                ), contextlib.redirect_stdout(output):
+                    self.assertEqual(cmd_import(args), 0)
+                self.assertTrue(readbacks)
+                for detail in readbacks:
+                    self.assertEqual(detail['run']['status'], 'succeeded')
+                    self.assertEqual(detail['run']['result']['buildCapabilities'], [capability])
+                saved = load_state()['buildRuns'][accepted_ids[0]]
+                self.assertEqual(saved['result']['buildCapabilities'], [capability])
+                self.assertFalse(saved.get('queueExecuting'))
+                final = json.loads(output.getvalue())
+                self.assertTrue(final['ok'])
+                self.assertEqual(final['result']['buildCapabilities'], [capability])
+                self.assertEqual(final['result']['buildRunId'], accepted_ids[0])
+
+    def test_queue_does_not_invent_result_capabilities_from_requested_capabilities(self):
+        capability = 'repository-build-inputs-v1'
+        run = self.remote(requireBuildCapabilities=[capability])
+        item = queue.claim()
+        srv._complete_build_run(run, 'succeeded', result={'service': 'app'})
+        srv._mutate_control_state(lambda state: queue.discard(state, state['buildRuns'][item[0]]))
+        public = srv.handle_build_run_get(self.token, run)['run']
+        self.assertEqual(public['request']['requireBuildCapabilities'], [capability])
+        self.assertNotIn('buildCapabilities', public['result'])
+        from luma.build_capabilities import require_build_result_capabilities
+        with self.assertRaisesRegex(LumaError, 'did not confirm'):
+            require_build_result_capabilities(public['result'], [capability], owner='Control')
 
     def test_queue_result_preserves_compose_sidecar_confirmation(self):
         self.assertEqual(srv._build_run_result_summary({'deployment': 'app', 'composeSidecar': 'luma.compose.yml'})['composeSidecar'], 'luma.compose.yml')
