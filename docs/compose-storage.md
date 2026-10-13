@@ -2,7 +2,69 @@
 
 Persistent data belongs to the node running the application. New dashboard templates use local storage; no NFS server or storage class is needed. Control chooses a ready node in the deployment region (or uses the requested node), records that owner before submitting the job, and pins subsequent deployments to it. An unavailable owner blocks placement rather than starting an empty database elsewhere.
 
-A Compose stack runs together on one node. Read-only configuration mounts and Docker sockets do not create persistent-data ownership. Writable local mounts require stable node placement. Native services with persistent mounts require `replicas: 1`; persistent workloads do not use canary promotion that could start two writers against one directory.
+A multi-service Compose stack runs together on one node, with one allocation. A mount-free single-service stack can run multiple allocations in its region. Read-only configuration mounts and Docker sockets do not create persistent-data ownership. Writable local mounts require stable node placement. Native services with persistent mounts require `replicas: 1`; persistent workloads do not use canary promotion that could start two writers against one directory.
+
+## Replicas
+
+Luma resolves `services.<name>.deploy.replicas` in Docker Compose and
+`services.<name>.replicas` in the Luma sidecar to Nomad group `Count`.
+Either declaration is sufficient; if both are present they must agree.
+Compose `scale` is also accepted and must agree with any other declaration.
+The default is `1`. Counts must be positive integers; zero, booleans, floats,
+null and conflicting declarations fail validation, including import validation.
+Only `deploy.mode: replicated` is supported.
+
+Multiple replicas require exactly one service, no Compose volume mounts and no
+sidecar volume declarations. This includes read-only, anonymous and legacy NFS
+mounts: replicated mount semantics are not supported yet. A multi-service stack
+requires every service to use one replica, even when all requested counts are
+equal. Siblings share loopback inside one allocation; scaling its group would
+also duplicate databases and schedulers. Put independently scaled workers in
+separate deployments using externally reachable dependencies.
+
+```yaml
+# docker-compose.yml
+services:
+  worker:
+    image: registry.example.com/worker:1
+    deploy:
+      replicas: 6
+      resources:
+        reservations: {memory: 2048M}
+        limits: {memory: 2048M}
+```
+
+```yaml
+# luma.compose.yml
+name: worker-pool
+region: render
+services:
+  worker:
+    exposure: none
+    replicas: 6
+```
+
+Create the custom region before deploying. With no `node` pin, Nomad can place
+each allocation on any eligible node in that region; an even split is not
+guaranteed. An explicit pin constrains all replicas to that node. Resource
+reservations and container process counts apply **per replica**. Six allocations
+with a 2 GiB reservation require 12 GiB of schedulable memory; spare physical
+memory alone does not prove scheduling capacity.
+
+Replicated services support bridge networking with `exposure: none`, or dynamic
+`cn-edge` / `external-edge` ports. Host networking, relay exposures, `publishPort`,
+Compose `ports` and `container_name` are rejected. `deploy.placement`,
+`deploy.update_config` and `deploy.rollback_config` are rejected for multiple
+replicas: use Luma region/node placement and its managed rolling update policy.
+Updates retain `MaxParallel: 1`, health gating, auto-revert and `stop_grace_period`;
+multiple replicas do not add a canary. Rollout success requires all requested
+allocations of the submitted job version to be healthy.
+
+This fix requires upgrading **Control**; installing only a newer CLI cannot
+change the jobspec rendered by an older server. An upgrade does not resubmit
+existing jobs. After upgrading, preview the saved deployment, check `Count`,
+then deliberately redeploy through the application's existing workflow to apply
+the requested count. Existing applications remain untouched until that action.
 
 ## Compose Example
 

@@ -301,6 +301,7 @@ def validate_compose_deployment_data(
     for service_name in services:
         if service_name not in compose_services:
             raise LumaError(f"luma.compose.yml references unknown compose service: {service_name}")
+    compose_replica_count(compose, services, volumes)
     declared_volume_names = _compose_declared_volume_names(compose)
     for volume_name in volumes:
         if declared_volume_names and volume_name not in declared_volume_names:
@@ -349,6 +350,73 @@ def validate_compose_deployment_data(
             raise LumaError(f"compose tcp-relay publishPort {port} is already used by service {tcp_ports[port]}")
         tcp_ports[port] = service_name
     return warnings
+
+
+def _replica_count(value: Any, field_name: str) -> int:
+    # YAML floats and bools must not be silently truncated/coerced by int().
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise LumaError(f"{field_name} must be a positive integer")
+    return _positive_int(value, field_name)
+
+
+def compose_replica_count(
+    compose: Dict[str, Any], services: Dict[str, ComposeServiceSpec],
+    volumes: Dict[str, ComposeVolumeSpec] | None = None,
+) -> int:
+    """Resolve one executable replica contract for validation and rendering.
+
+    Compose siblings share loopback inside one Nomad group. Independent service
+    counts therefore need separate deployments, not a larger Count on that group.
+    """
+    counts: Dict[str, int] = {}
+    for name, body in (compose.get("services") or {}).items():
+        if not isinstance(body, dict):
+            raise LumaError(f"compose service {name} must be a mapping")
+        deploy = body.get("deploy", {})
+        if not isinstance(deploy, dict):
+            raise LumaError(f"compose service {name} deploy must be a mapping")
+        if deploy.get("mode", "replicated") != "replicated":
+            raise LumaError(f"compose service {name} deploy.mode must be replicated; global and job modes are not supported")
+        declared: Dict[str, int] = {}
+        for key, raw in (("deploy.replicas", deploy), ("scale", body)):
+            field = key.split(".")[-1]
+            if field in raw:
+                declared[key] = _replica_count(raw[field], f"services.{name}.{key}")
+        override = services.get(str(name))
+        if override is not None and override.replicas is not None:
+            declared["sidecar replicas"] = _replica_count(override.replicas, f"services.{name}.replicas")
+        if len(set(declared.values())) > 1:
+            detail = ", ".join(f"{key}={value}" for key, value in declared.items())
+            raise LumaError(f"compose service {name} has conflicting replica counts: {detail}; make all declarations agree")
+        counts[str(name)] = next(iter(declared.values()), 1)
+
+    if not any(count > 1 for count in counts.values()):
+        return 1
+    if len(counts) != 1:
+        raise LumaError(
+            "compose replicas > 1 requires exactly one service; multi-service stacks share a Nomad "
+            "network namespace and require replicas: 1 for every service. Use separate deployments to scale workers"
+        )
+    if volumes:
+        raise LumaError("compose replicas > 1 cannot declare sidecar volumes; use a mount-free deployment")
+    name = next(iter(counts))
+    body = compose["services"][name]
+    override = services.get(name)
+    if body.get("volumes"):
+        raise LumaError(f"compose service {name} replicas > 1 does not support volume mounts (including read-only mounts); use a mount-free deployment")
+    if body.get("network_mode", "bridge") != "bridge":
+        raise LumaError(f"compose service {name} replicas > 1 requires bridge networking")
+    if body.get("container_name") or body.get("ports"):
+        raise LumaError(f"compose service {name} replicas > 1 cannot set container_name or Compose ports; use dynamic Luma edge ports")
+    if override and (override.publish_port is not None or override.exposure in {"tailscale-relay", "tcp-relay", "cloudflare-tunnel"}):
+        raise LumaError(f"compose service {name} replicas > 1 requires exposure none or a dynamic edge port without publishPort")
+    for field in ("placement", "update_config", "rollback_config"):
+        if (body.get("deploy") or {}).get(field):
+            raise LumaError(
+                f"compose service {name} replicas > 1 does not support deploy.{field}; "
+                "use Luma region/node placement and the managed rolling update policy"
+            )
+    return counts[name]
 
 
 def _load_storage_classes(raw: Any) -> Dict[str, StorageClassSpec]:
@@ -471,7 +539,7 @@ def _load_compose_services(raw: Any) -> Dict[str, ComposeServiceSpec]:
             domain=str(value["domain"]).strip() if value.get("domain") else None,
             port=_positive_int(value["port"], f"services.{name}.port") if value.get("port") is not None else None,
             publish_port=_positive_int(value["publishPort"], f"services.{name}.publishPort") if value.get("publishPort") is not None else None,
-            replicas=_positive_int(value["replicas"], f"services.{name}.replicas") if value.get("replicas") is not None else None,
+            replicas=_replica_count(value["replicas"], f"services.{name}.replicas") if "replicas" in value else None,
             proxy=bool(value.get("proxy", False)),
             relay=dict(relay),
             tunnel=dict(tunnel),

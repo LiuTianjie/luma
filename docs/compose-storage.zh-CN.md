@@ -2,7 +2,59 @@
 
 持久化数据属于运行应用的节点。新的控制台模板使用本地存储，无需 NFS 服务器或存储类。Control 在部署区域中选择一个就绪节点（或使用指定节点），在提交任务前记录数据归属，后续部署固定到该节点。归属节点不可用时会阻止调度，而不会在其他节点启动一个空数据库。
 
-一个 Compose stack 中的服务一起运行在同一节点。只读配置挂载和 Docker socket 不产生持久化数据归属。可写本地挂载需要稳定的节点位置。带持久化挂载的原生服务要求 `replicas: 1`；持久化工作负载不使用可能让两个写入进程同时操作同一目录的金丝雀晋级。
+多服务 Compose stack 中的服务一起运行在同一节点，只有一个 allocation。无挂载的单服务 stack 可以在所属 region 内运行多个 allocation。只读配置挂载和 Docker socket 不产生持久化数据归属。可写本地挂载需要稳定的节点位置。带持久化挂载的原生服务要求 `replicas: 1`；持久化工作负载不使用可能让两个写入进程同时操作同一目录的金丝雀晋级。
+
+## 副本数 {#replicas}
+
+Luma 将 Docker Compose 的 `services.<name>.deploy.replicas` 与 sidecar 的
+`services.<name>.replicas` 解析为 Nomad group `Count`。两处任选其一；同时声明时
+必须一致。Compose `scale` 同样受支持，并且必须与其他副本声明一致。默认值为 `1`。
+副本数必须为正整数；零、布尔值、浮点数、null 和冲突值会在校验阶段报错，导入校验
+也执行相同规则。`deploy.mode` 只支持 `replicated`。
+
+多个副本要求恰好一个服务、没有 Compose volume 挂载，也没有 sidecar volume 声明。
+只读、匿名及历史 NFS 挂载也在限制范围内，目前尚不支持这些挂载的多副本语义。
+多服务 stack 中每个服务必须为一个副本，即使所有服务声明的副本数相同也不能扩容。
+同组服务共享 loopback；复制整个组会同时复制数据库和调度器。需要独立扩容的 worker
+应拆为独立部署，通过可跨节点访问的地址连接依赖。
+
+```yaml
+# docker-compose.yml
+services:
+  worker:
+    image: registry.example.com/worker:1
+    deploy:
+      replicas: 6
+      resources:
+        reservations: {memory: 2048M}
+        limits: {memory: 2048M}
+```
+
+```yaml
+# luma.compose.yml
+name: worker-pool
+region: render
+services:
+  worker:
+    exposure: none
+    replicas: 6
+```
+
+部署前需创建自定义 region。不设 `node` 时，Nomad 可将各 allocation 分配到该 region
+内任一符合条件的节点，不保证均匀分布。显式节点锁定会约束所有副本。资源预留和容器内
+进程数均按**每副本**计算；六个各预留 2 GiB 的 allocation 共需 12 GiB 可调度内存，
+物理空闲内存不等于可调度余量。
+
+多副本服务支持 bridge 网络和 `exposure: none`，或使用动态端口的 `cn-edge` /
+`external-edge`。host 网络、relay 暴露、`publishPort`、Compose `ports` 和
+`container_name` 会被拒绝。多副本的 `deploy.placement`、`deploy.update_config`
+和 `deploy.rollback_config` 也会报错：调度使用 Luma region/node，更新使用 Luma
+管理的滚动策略。更新保留 `MaxParallel: 1`、健康检查、自动回滚与 `stop_grace_period`；
+多副本不额外启动 canary。提交版本的全部所需 allocation 健康后才算部署成功。
+
+修复必须升级 **Control**，仅升级 CLI 无法改变旧服务端渲染的 jobspec。升级本身不会
+重新提交已有应用。升级后先预览保存的配置、确认 `Count`，再按应用原有流程主动重新
+部署，才会应用副本数。在此之前，已有应用保持原状。
 
 ## Compose 示例 {#compose-example}
 

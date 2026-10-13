@@ -54,6 +54,7 @@ from ..compose import (
     DEFAULT_NFS_MOUNT_OPTIONS,
     StorageClassSpec,
     compose_public_services,
+    compose_replica_count,
     compose_route_path,
     compose_stack_path,
     load_compose_deployment,
@@ -9042,7 +9043,8 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
             }
         )
     services = []
-    for service_name, service in sorted(deployment.services.items()):
+    for service_name in sorted(deployment.compose["services"]):
+        service = deployment.services.get(service_name) or ComposeServiceSpec(name=service_name)
         services.append(
             {
                 "name": service_name,
@@ -9052,7 +9054,7 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
                 "domain": service.domain or "",
                 "port": service.port,
                 "publishPort": service.publish_port,
-                "replicas": service.replicas,
+                "replicas": compose_replica_count(deployment.compose, deployment.services, deployment.volumes),
                 "proxy": service.proxy,
             }
         )
@@ -10006,7 +10008,7 @@ def _compose_service_as_service_spec(deployment: ComposeDeploymentSpec, service:
         domain=service.domain,
         port=service.port,
         publish_port=service.publish_port,
-        replicas=service.replicas or 1,
+        replicas=compose_replica_count(deployment.compose, deployment.services, deployment.volumes),
         relay=service.relay,
         tunnel=service.tunnel,
         tcp=service.tcp,
