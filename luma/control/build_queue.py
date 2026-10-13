@@ -17,13 +17,13 @@ import json
 import logging
 import os
 import posixpath
-import sqlite3
 import threading
 import time
 import urllib.parse
 from typing import Any
 
 from ..errors import LumaError
+from .database_errors import persist_receipt
 from .state import is_initialized, load_auth_state, mutate_state, mutate_state_if_changed, require_token
 
 LOG = logging.getLogger(__name__)
@@ -34,6 +34,7 @@ FINALIZING_STALE_SECONDS = 600
 CANCELING_STALE_SECONDS = 180
 State = dict[str, Any]
 WorkItem = tuple[str, dict[str, Any]]
+QUEUE_METADATA_KINDS = {"buildRuns", "agentTasks"}
 
 
 def _runs(state: State) -> State:
@@ -368,7 +369,7 @@ def position(build_id: str) -> State:
     from .database import ensure_initialized, read_state, transaction
     ensure_initialized()
     with transaction(immediate=False) as conn:
-        state = read_state(conn, lazy=True)
+        state = read_state(conn, lazy=True, metadata_kinds=QUEUE_METADATA_KINDS)
         run = _runs(state).get(build_id)
         if not isinstance(run, dict) or run.get("status") != "queued":
             return {}
@@ -404,7 +405,7 @@ def claim(*, concurrency: int | None = None) -> WorkItem | None:
                        updatedAt=int(time.time()), message="Executing queued deployment")
             return (run["id"], dict(payload)), True
         return None, changed
-    return mutate_state_if_changed(mutate)
+    return mutate_state_if_changed(mutate, metadata_kinds=QUEUE_METADATA_KINDS)
 
 
 def execute(item: WorkItem) -> None:
@@ -438,7 +439,7 @@ def execute(item: WorkItem) -> None:
                 run = _runs(state).get(build_id)
                 if isinstance(run, dict) and run.get("status") == "succeeded":
                     run.setdefault("result", {})["workflow"] = recorded
-            mutate_state(record_outcome)
+            persist_receipt(lambda: mutate_state(record_outcome, metadata_kinds=QUEUE_METADATA_KINDS), owner="queue.workflow_receipt")
     except Exception as exc:
         srv._complete_build_run(build_id, "failed", message=str(exc))
     finally:
@@ -455,19 +456,7 @@ def execute(item: WorkItem) -> None:
                 _request_stop(state, run, int(time.time()))
                 if _safe_to_release(state, run):
                     discard(state, run)
-        while True:
-            try:
-                mutate_state(cleanup)
-                break
-            except (sqlite3.OperationalError, LumaError) as exc:
-                if not any(reason in str(exc).lower() for reason in ("locked", "busy", "disk i/o error")):
-                    raise
-                # Host side effects already happened. Retry only the receipt,
-                # never the deployment, and retain this worker slot meanwhile.
-                # A transient I/O failure must not abandon queueExecuting after
-                # the remote child has stopped. Each attempt reconnects to SQLite.
-                LOG.warning("Build %s finished; retrying queue ownership release after database error: %s", build_id, exc)
-                time.sleep(1)
+        persist_receipt(lambda: mutate_state(cleanup, metadata_kinds=QUEUE_METADATA_KINDS), owner="queue.release")
 
 
 def recover() -> None:
@@ -494,7 +483,7 @@ def recover() -> None:
             _request_stop(state, run, int(time.time()))
             if _safe_to_release(state, run):
                 discard(state, run)
-    mutate_state(mutate)
+    mutate_state(mutate, metadata_kinds=QUEUE_METADATA_KINDS)
 
 
 class BuildQueueWorker:

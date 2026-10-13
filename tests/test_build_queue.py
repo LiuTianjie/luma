@@ -17,7 +17,7 @@ from luma.control import server as srv
 from luma.control.client import ControlClient
 from luma.control.state import init_state, load_state, save_state
 from luma.cli.builds import _wait_for_queued_build
-from luma.errors import LumaError
+from luma.errors import DatabaseBusyError, LumaError
 
 
 class BuildQueueTests(unittest.TestCase):
@@ -231,11 +231,11 @@ class BuildQueueTests(unittest.TestCase):
         item = queue.claim()
         mutate = queue.mutate_state
         attempts = []
-        def locked_once(callback):
+        def locked_once(callback, **kwargs):
             attempts.append(True)
             if len(attempts) == 1:
                 raise sqlite3.OperationalError('database is locked')
-            return mutate(callback)
+            return mutate(callback, **kwargs)
         def finish(*args, **kwargs):
             srv._complete_build_run(first, 'succeeded')
             return {}
@@ -252,18 +252,18 @@ class BuildQueueTests(unittest.TestCase):
     def test_cleanup_retries_transient_database_errors_without_replaying_work(self):
         wrapped = LumaError('cannot open control database: disk I/O error')
         wrapped.__cause__ = sqlite3.OperationalError('disk I/O error')
-        local_contention = LumaError('Control database is locked: writer wait timed out: cleanup; current writer: heartbeat')
+        local_contention = DatabaseBusyError('Control database is locked: writer wait timed out: cleanup; current writer: heartbeat')
         for failure in (sqlite3.OperationalError('disk I/O error'), wrapped, local_contention):
             with self.subTest(error=type(failure).__name__):
                 first = self.remote()
                 item = queue.claim()
                 mutate = queue.mutate_state
                 attempts = []
-                def io_once(callback):
+                def io_once(callback, **kwargs):
                     attempts.append(True)
                     if len(attempts) == 1:
                         raise failure
-                    return mutate(callback)
+                    return mutate(callback, **kwargs)
                 def finish(*args, **kwargs):
                     srv._complete_build_run(first, 'succeeded')
                     return {}
@@ -287,12 +287,12 @@ class BuildQueueTests(unittest.TestCase):
         latest = self.remote(composeSidecar='prod.yml')
         mutate = queue.mutate_state
         calls = 0
-        def io_once(callback):
+        def io_once(callback, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 1:
                 raise sqlite3.OperationalError('disk I/O error')
-            return mutate(callback)
+            return mutate(callback, **kwargs)
         with patch.object(srv, 'handle_build_deploy', side_effect=LumaError('canceled')) as deploy, \
              patch.object(queue, 'mutate_state', side_effect=io_once), patch.object(queue.time, 'sleep'):
             queue.execute(item)

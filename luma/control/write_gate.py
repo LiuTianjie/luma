@@ -11,7 +11,7 @@ import time
 from collections import deque
 from contextlib import contextmanager
 
-from ..errors import LumaError
+from ..errors import DatabaseBusyError, LumaError
 
 
 class WriterGate:
@@ -37,7 +37,7 @@ class WriterGate:
                     if remaining <= 0:
                         # Receipt cleanup recognizes locked/busy failures and
                         # retries only persistence, never the deployment.
-                        raise LumaError(f"Control database is locked: writer wait timed out: {owner}; current writer: {self.owner}")
+                        raise DatabaseBusyError(f"Control database is locked: writer wait timed out: {owner}; current writer: {self.owner}")
                     self.condition.wait(remaining)
                 self.pending.popleft()
                 self.owner_thread, self.owner = thread, owner

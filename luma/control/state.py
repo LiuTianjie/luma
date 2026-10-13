@@ -192,22 +192,22 @@ def _detach(value: Any) -> Any:
     return value
 
 
-def mutate_state(mutator: Callable[[Dict[str, Any]], Any]) -> Any:
+def mutate_state(mutator: Callable[[Dict[str, Any]], Any], *, metadata_kinds: set[str] | None = None) -> Any:
     from .database import ensure_initialized, read_state, transaction, write_state
     with transaction(owner=getattr(mutator, "__qualname__", type(mutator).__name__)) as conn:
         ensure_initialized(conn)
-        state = read_state(conn, lazy=True)
+        state = read_state(conn, lazy=True, metadata_kinds=metadata_kinds)
         result = mutator(state)
         write_state(conn, state)
         return _detach(result)
 
 
-def mutate_state_if_changed(mutator: Callable[[Dict[str, Any]], tuple[T, bool]]) -> T:
+def mutate_state_if_changed(mutator: Callable[[Dict[str, Any]], tuple[T, bool]], *, metadata_kinds: set[str] | None = None) -> T:
     """Claim/read/update atomically; idle polls perform no state-row writes."""
     from .database import ensure_initialized, read_state, transaction, write_state
     with transaction(owner=getattr(mutator, "__qualname__", type(mutator).__name__)) as conn:
         ensure_initialized(conn)
-        state = read_state(conn, lazy=True)
+        state = read_state(conn, lazy=True, metadata_kinds=metadata_kinds)
         result, changed = mutator(state)
         if changed:
             write_state(conn, state)

@@ -421,8 +421,7 @@ def _hydrate_observe_alerts(state: dict[str, Any]) -> None:
 
 
 def retention_plan(conn, *, cutoff):
-    """Reviewable bounded plan; caller owns transaction and retention policy (e.g. 90 days)."""
-    _schema(conn)
+    """Read-only plan; caller initializes schema before entering its snapshot."""
     cutoff = _bounded(cutoff,'cutoff',0,253402300799)
     deliveries = conn.execute("""SELECT id,length(text) size FROM alert_outbox o
         WHERE created_at<? AND status IN ('sent','failed','cancelled')

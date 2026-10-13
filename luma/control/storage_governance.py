@@ -135,18 +135,34 @@ def _references(conn) -> set[str]:
 
 
 def _fingerprint(conn, row) -> tuple[str, int, int]:
-    events = list(conn.execute("SELECT stream,position,payload FROM control_events WHERE kind=? AND entity_id=? ORDER BY stream,position", (row["kind"], row["id"])))
-    blob = json.dumps([dict(row), [tuple(event) for event in events]], sort_keys=True).encode()
-    return hashlib.sha256(blob).hexdigest(), len(row["payload"].encode()), sum(len(event["payload"].encode()) for event in events)
+    # Preserve existing plan fingerprints without building a second complete
+    # copy of a potentially large log stream in memory.
+    digest = hashlib.sha256()
+    digest.update(("[" + json.dumps(dict(row), sort_keys=True) + ", [").encode())
+    detail_bytes = 0
+    for index, event in enumerate(conn.execute(
+        "SELECT stream,position,payload FROM control_events WHERE kind=? AND entity_id=? ORDER BY stream,position",
+        (row["kind"], row["id"]),
+    )):
+        if index:
+            digest.update(b", ")
+        digest.update(json.dumps(tuple(event)).encode())
+        detail_bytes += len(event["payload"].encode())
+    digest.update(b"]]")
+    return digest.hexdigest(), len(row["payload"].encode()), detail_bytes
 
 
 def preview_history(*, now: float | None = None) -> dict[str, Any]:
     now = time.time() if now is None else now
-    with database.transaction() as conn:
+    from . import alerting
+    with database.transaction(owner="history.preview.schema") as conn:
         database.ensure_initialized(conn)
         _schema(conn)
+        alerting._schema(conn)
+    # Plan computation is a WAL read snapshot. Heartbeats and deployment
+    # receipts remain writable while history is scanned and fingerprinted.
+    with database.transaction(immediate=False, owner="history.preview.read") as conn:
         policy = _policy(conn)
-        _expire_plans(conn, now)
         refs = _references(conn)
         candidates = []
         protected_count = 0
@@ -164,14 +180,17 @@ def preview_history(*, now: float | None = None) -> dict[str, Any]:
                 truncated = True
                 break
             candidates.append({"kind": row["kind"], "id": row["id"], "app": row["app"], "updatedAt": row["updated_at"], "action": "summary" if delete_summary else "details", "estimatedBytes": detail_bytes + (summary_bytes if delete_summary else 0), "fingerprint": fingerprint})
-        from .alerting import retention_plan
-        alert_plan = retention_plan(conn, cutoff=now - policy["summaryDays"] * DAY)
+        alert_plan = alerting.retention_plan(conn, cutoff=now - policy["summaryDays"] * DAY)
         encoded_alert = json.dumps(alert_plan)
         plan_id = secrets.token_hex(16)
         eligible = now + policy["graceHours"] * 3600
         expires = eligible + 7 * DAY
         encoded = json.dumps(candidates)
         encoded_policy = json.dumps(policy)
+    with database.transaction(owner="history.preview.save") as conn:
+        if _policy(conn) != policy:
+            raise LumaError("retention policy changed while preparing preview; create a new preview")
+        _expire_plans(conn, now)
         existing = conn.execute("SELECT id,created_at,eligible_at,expires_at FROM storage_history_plans WHERE status='preview' AND expires_at>? AND policy=? AND candidates=? AND alert_plan=? ORDER BY created_at DESC LIMIT 1", (now, encoded_policy, encoded, encoded_alert)).fetchone()
         if existing:
             plan_id, created, eligible, expires = tuple(existing)

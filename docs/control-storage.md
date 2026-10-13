@@ -17,6 +17,31 @@ The default database is `/opt/luma/control/control.sqlite3`; set
 state directory. The `control.sqlite3-wal` and `control.sqlite3-shm` files are
 SQLite runtime sidecars, not independent backup artifacts.
 
+## Writer contention and task receipts
+
+Control admits local writers in FIFO order with one 30-second acquisition
+budget shared with SQLite. Read snapshots do not enter this queue. Slow writes
+log their owner, wait duration and held duration without SQL values. Database
+contention returns HTTP 503 with `database_busy` and `Retry-After: 1`.
+
+Build scheduling reads task metadata without loading event streams. Build output
+is appended in batches; heartbeat receipt maintenance runs in bounded background
+batches. A completed build/deployment keeps its executor ownership while retrying
+only its captured terminal receipt after transient database failures. It does not
+rerun the external operation or turn a temporary receipt failure into a failed
+build. Process interruption still requires runtime inspection after restart.
+
+New node agents send a monotonically increasing `batchSequence` per task. Control
+commits the sequence and events atomically, acknowledges repeated/older batches
+without appending them again, and preserves the existing bounded progress window.
+Older agents remain accepted during rolling upgrades; upgrade Control first and
+then node agents to enable duplicate suppression end to end. Progress remains
+observational: the agent can discard output after its bounded send attempts.
+
+History cleanup preview computes references and fingerprints in a read snapshot,
+then briefly acquires the writer to recheck policy and save the plan. Applying a
+plan still rechecks references and fingerprints before deleting anything.
+
 ## Local maintenance commands
 
 Run these on the Manager using the same installed Luma version and state

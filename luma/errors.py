@@ -4,3 +4,7 @@ class LumaError(Exception):
 
 class ControlRequestError(LumaError):
     """A transient transport failure, not an application or authentication error."""
+
+
+class DatabaseBusyError(LumaError):
+    """Control cannot acquire its database writer within the request budget."""

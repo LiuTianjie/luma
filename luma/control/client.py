@@ -527,6 +527,7 @@ class ControlClient:
         node_name: str,
         node_id: str = "",
         events: list[Dict[str, Any]] | None = None,
+        batch_sequence: int | None = None,
         timeout: int = 5,
     ) -> Dict[str, Any]:
         return self.request(
@@ -536,6 +537,7 @@ class ControlClient:
                 "taskId": task_id,
                 "nodeName": node_name,
                 "nodeId": node_id,
+                **({"batchSequence": batch_sequence} if batch_sequence is not None else {}),
                 "events": events or [],
             },
             timeout=timeout,

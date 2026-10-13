@@ -1459,6 +1459,7 @@ class _AgentTaskProgressReporter:
         self.events: queue.Queue[Dict[str, Any]] = queue.Queue()
         self.stop = threading.Event()
         self.closed = threading.Event()
+        self.batch_sequence = 0
         self.thread = threading.Thread(
             target=self._run,
             name=f"luma-agent-task-progress-{node_name}",
@@ -1505,6 +1506,9 @@ class _AgentTaskProgressReporter:
                         return
 
     def _send(self, events: list[Dict[str, Any]]) -> bool:
+        # One serial sender per task. Reuse the sequence after an ambiguous
+        # response so Control can acknowledge without appending twice.
+        self.batch_sequence += 1
         for attempt in range(2):
             try:
                 self.client.progress_agent_task(
@@ -1512,6 +1516,7 @@ class _AgentTaskProgressReporter:
                     node_name=self.node_name,
                     node_id=self.node_id,
                     events=events,
+                    batch_sequence=self.batch_sequence,
                     timeout=5,
                 )
                 return True

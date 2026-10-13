@@ -64,6 +64,7 @@ from ..compose import (
 from ..config import LumaConfig, load_config, save_config
 from ..errors import LumaError
 from .build_events import append_build_run_events
+from .database_errors import is_database_busy, persist_receipt
 from .logs import LogReader, LogUnavailable, CAPABILITIES as LOG_CAPABILITIES, LIMITS as LOG_LIMITS, POLL_INTERVAL as LOG_POLL_INTERVAL, encode_event as _log_event
 from ..io import load_yaml
 from ..local import LocalExecutor
@@ -995,7 +996,10 @@ def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | No
         if final_status != "canceled" and isinstance(result, dict):
             run["result"] = _build_run_result_summary(result)
 
-    _mutate_control_state(mutate)
+    # A completed deployment must not be reclassified as failed merely because
+    # its success receipt cannot acquire the writer. Retain this exact outcome
+    # and the queue owner until its idempotent persistence succeeds.
+    persist_receipt(lambda: mutate_state(mutate, metadata_kinds={"buildRuns"}), owner="build.complete")
 
 
 def _build_run_result_summary(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -1667,7 +1671,7 @@ def handle_node_agent_complete(token: str, body: Dict[str, Any]) -> Dict[str, An
             build_run["events"] = events
 
     _mutate_control_state(mutate)
-    state = load_state()
+    state = load_runtime_state()
     entry = _node_record_entry_for_name_or_id(state.get("nodes") if isinstance(state.get("nodes"), dict) else {}, node_name, node_id)
     _record_metrics_history(entry[0] if entry else node_name, body, config=config, state=state)
     return {"taskId": task_id, "status": final_status}
@@ -1679,12 +1683,17 @@ def handle_node_agent_progress(token: str, body: Dict[str, Any]) -> Dict[str, An
     task_id = str(body.get("taskId") or "").strip()
     if not node_name or not task_id:
         raise LumaError("nodeName and taskId are required")
+    sequence = body.get("batchSequence")
+    if sequence is not None and (isinstance(sequence, bool) or not isinstance(sequence, int) or not 1 <= sequence <= 9223372036854775807):
+        raise LumaError("batchSequence must be a positive integer")
     raw_events = body.get("events") if isinstance(body.get("events"), list) else []
     events = _agent_progress_events(raw_events)
     if not events:
         return {"taskId": task_id, "events": 0}
+    accepted = len(events)
 
     def mutate(state: Dict[str, Any]) -> None:
+        nonlocal accepted
         nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
         entry = _node_record_entry_for_name_or_id(nodes, node_name, node_id)
         canonical_node_name = entry[0] if entry else node_name
@@ -1693,6 +1702,11 @@ def handle_node_agent_progress(token: str, body: Dict[str, Any]) -> Dict[str, An
         task = tasks.get(task_id)
         if not isinstance(task, dict) or task.get("nodeName") != canonical_node_name:
             raise LumaError(f"agent task not found: {task_id}")
+        if sequence is not None:
+            if sequence <= int(task.get("progressBatchSequence") or 0):
+                accepted = 0
+                return
+            task["progressBatchSequence"] = sequence
         progress = task.get("progress") if isinstance(task.get("progress"), list) else []
         progress.extend(events)
         progress_limit = max(int(AGENT_TASK_PROGRESS_LIMIT), 50)
@@ -1702,7 +1716,7 @@ def handle_node_agent_progress(token: str, body: Dict[str, Any]) -> Dict[str, An
         task["updatedAt"] = int(time.time())
 
     _mutate_control_state(mutate)
-    return {"taskId": task_id, "events": len(events)}
+    return {"taskId": task_id, "events": accepted}
 
 
 def _agent_progress_events(raw_events: list[Any]) -> list[Dict[str, Any]]:
@@ -14187,10 +14201,15 @@ def _compact_json_response(request: Request, payload: Dict[str, Any]) -> Respons
 
 
 def _asgi_error(status: int, exc: Exception, *, code: str = "luma_error") -> JSONResponse:
+    if is_database_busy(exc):
+        status, code = 503, "database_busy"
     request_id = _request_id()
     if status >= 500:
         print(f"requestId={request_id} control API error: {exc}", file=sys.stderr, flush=True)
-    return _json_response(status, _error_payload(code, str(exc), request_id=request_id))
+    response = _json_response(status, _error_payload(code, str(exc), request_id=request_id))
+    if code == "database_busy":
+        response.headers["Retry-After"] = "1"
+    return response
 
 
 async def _asgi_dashboard_asset(request: Request) -> Response:

@@ -17,7 +17,8 @@ from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Iterator
 
-from ..errors import LumaError
+from ..errors import DatabaseBusyError, LumaError
+from .database_errors import is_database_busy
 from .write_gate import WriterGate
 
 DATABASE_FILE = "control.sqlite3"
@@ -208,6 +209,8 @@ def _transaction_body(conn, *, immediate, owner, started, deadline):
             conn.rollback()
             if not had_manifest:
                 _migration_manifest_path().unlink(missing_ok=True)
+        if is_database_busy(exc) and not isinstance(exc, DatabaseBusyError):
+            raise DatabaseBusyError(f"Control database is locked: owner={owner}") from exc
         raise
     finally:
         conn.close()
@@ -443,8 +446,9 @@ class EntityMap(dict):
     Keys are cheap to list; JSON/event payloads load when a callback touches a
     record. Unvisited collections and records are never rewritten on heartbeat.
     """
-    def __init__(self, conn: sqlite3.Connection, kind: str):
+    def __init__(self, conn: sqlite3.Connection, kind: str, *, metadata_only: bool = False):
         self.conn, self.kind = conn, kind
+        self.metadata_only = metadata_only
         self.original_keys = {row[0] for row in conn.execute("SELECT id FROM control_entities WHERE kind=?", (kind,))}
         self.loaded: set[str] = set()
         super().__init__((key, None) for key in self.original_keys)
@@ -453,7 +457,8 @@ class EntityMap(dict):
         if key not in self:
             raise KeyError(key)
         if key not in self.loaded:
-            super().__setitem__(key, read_entity(self.conn, self.kind, key))
+            reader = read_entity_metadata if self.metadata_only else read_entity
+            super().__setitem__(key, reader(self.conn, self.kind, key))
             self.loaded.add(key)
         return super().__getitem__(key)
 
@@ -538,7 +543,10 @@ class EntityMap(dict):
         for key in self.original_keys - self.keys():
             self.conn.execute("DELETE FROM control_entities WHERE kind=? AND id=?", (self.kind, key))
         for key in self.loaded & self.keys():
-            _write_entity(self.conn, self.kind, str(key), self[key])
+            if self.metadata_only and key in self.original_keys:
+                update_entity_metadata(self.conn, self.kind, str(key), self[key])
+            else:
+                _write_entity(self.conn, self.kind, str(key), self[key])
 
 
 def _list_id(value: Any, index: int, used: set[str]) -> str:
@@ -690,13 +698,14 @@ class EntityList(list):
             self.conn.execute("DELETE FROM control_entities WHERE kind=? AND id=?", (self.kind, identifier))
 
 
-def read_state(conn: sqlite3.Connection, *, lazy: bool = False, kinds: set[str] | None = None) -> dict[str, Any]:
+def read_state(conn: sqlite3.Connection, *, lazy: bool = False, kinds: set[str] | None = None,
+               metadata_kinds: set[str] | None = None) -> dict[str, Any]:
     state = {row[0]: json.loads(row[1]) for row in conn.execute("SELECT key,payload FROM control_config")}
     for kind, shape in conn.execute("SELECT kind,shape FROM control_collections"):
         if kinds is not None and kind not in kinds:
             continue
         if shape == "dict":
-            collection = EntityMap(conn, kind)
+            collection = EntityMap(conn, kind, metadata_only=kind in (metadata_kinds or ()))
             state[kind] = collection if lazy else collection.copy()
         else:
             collection = EntityList(conn, kind)

@@ -6,6 +6,24 @@ Luma Control 在单个 Manager 使用本地 SQLite，作为 Control 状态及索
 
 默认数据库为 `/opt/luma/control/control.sqlite3`。可在 Control 进程环境设置 `LUMA_CONTROL_STATE_DIR` 更改目录。`control.sqlite3-wal`、`control.sqlite3-shm` 是 SQLite 运行时辅助文件，不能独立备份。
 
+## 写锁竞争与任务回执
+
+Control 的本地写入按先来后到排队，与 SQLite 共用 30 秒的取锁预算；读快照不进入写队列。
+慢写事务会记录调用归属、等待与持锁耗时，不记录 SQL 参数。数据库繁忙返回 HTTP 503、
+`database_busy` 和 `Retry-After: 1`。
+
+构建调度只读取任务摘要，不加载日志；构建输出按批次追加，心跳回执清理由后台有界分批执行。
+构建或部署已经完成时，临时数据库故障只触发终态回执重试，并保留执行器归属；不会重跑外部操作，
+也不会仅因回执暂时无法写入就把成功改成失败。进程意外中断后，仍须核对实际运行状态。
+
+新版节点 Agent 为每个任务发送递增的 `batchSequence`。Control 在同一事务中提交序号与日志，
+重复或迟到批次只确认、不重复追加，并保留原有的进度窗口上限。滚动升级期间仍接受旧 Agent；
+先升级 Control，再升级节点 Agent，才能完整启用去重。进度日志仍是观测数据，Agent 的有界发送
+尝试耗尽后可以丢弃输出。
+
+历史清理预览在读快照中计算引用和指纹，只在重查策略、保存计划时短暂取得写锁；真正应用计划时
+仍会重新检查引用和指纹后再删除。
+
 ## 本地维护命令 {#local-maintenance-commands}
 
 在 Manager 使用与 Control 相同的已安装版本和状态目录执行。命令操作本地文件，无需远程管理令牌：
