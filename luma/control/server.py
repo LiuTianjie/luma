@@ -63,6 +63,7 @@ from ..compose import (
 )
 from ..config import LumaConfig, load_config, save_config
 from ..errors import LumaError
+from .build_events import append_build_run_events
 from .logs import LogReader, LogUnavailable, CAPABILITIES as LOG_CAPABILITIES, LIMITS as LOG_LIMITS, POLL_INTERVAL as LOG_POLL_INTERVAL, encode_event as _log_event
 from ..io import load_yaml
 from ..local import LocalExecutor
@@ -964,28 +965,7 @@ def _create_build_run(
 
 
 def _append_build_run_event(run_id: str, event: Dict[str, Any]) -> None:
-    safe_event = {
-        str(key): str(value)[:BUILD_RUN_MESSAGE_LIMIT]
-        for key, value in event.items()
-        if value is not None
-    }
-
-    def mutate(state: Dict[str, Any]) -> None:
-        run = _build_runs(state).get(run_id)
-        if not isinstance(run, dict):
-            return
-        events = run.get("events")
-        if not isinstance(events, list):
-            events = []
-            run["events"] = events
-        events.append({**safe_event, "ts": int(time.time())})
-        run["updatedAt"] = int(time.time())
-        status = str(safe_event.get("status") or "")
-        if status == "fail" and str(run.get("status") or "") not in {"canceling", "canceled"}:
-            run["status"] = "failed"
-            run["message"] = str(safe_event.get("message") or "")
-
-    _mutate_control_state(mutate)
+    append_build_run_events(run_id, [event], message_limit=BUILD_RUN_MESSAGE_LIMIT)
 
 
 def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | None = None, message: str = "") -> None:
@@ -1189,19 +1169,36 @@ def _deployment_origin(body: Dict[str, Any] | None) -> str:
     return "dashboard" if origin == "dashboard" else "cli"
 
 
-def _prune_agent_tasks(state: Dict[str, Any], *, now: int | None = None) -> None:
-    """Drop finished agent tasks older than the retention window.
+def _agent_task_items_with_status(tasks, statuses):
+    active_items = getattr(tasks, "active_items", None)
+    if callable(active_items):
+        return active_items(statuses)
+    return ((key, task) for key, task in tasks.items()
+            if isinstance(task, dict) and task.get("status") in statuses)
 
-    Terminal tasks (succeeded/failed/timeout) are kept only briefly for history;
-    queued/running tasks are never pruned (a deploy may still be polling them).
-    Called from the same mutate that inserts a new task, so it rides an existing
-    state write and adds no extra fsync.
+
+def _prune_agent_tasks(state: Dict[str, Any], *, now: int | None = None) -> None:
+    """Maintain at most 100 receipts per pass, outside heartbeat/lease work.
+
+    A persisted cursor rotates through recent and old records alike; active
+    tasks and unconsumed queue receipts are never deleted. Progress trimming
+    remains available for records written by older agents/configuration.
     """
     now = int(time.time()) if now is None else now
     cutoff = now - AGENT_TASK_RETENTION_SECONDS
     tasks = _agent_tasks(state)
+    cursor = str(state.get("agentTaskMaintenanceCursor") or "")
+    identifiers = sorted(tasks)
+    batch_ids = [key for key in identifiers if key > cursor][:100]
+    if not batch_ids:
+        batch_ids = identifiers[:100]
+    if batch_ids and len(identifiers) > 100:
+        state["agentTaskMaintenanceCursor"] = batch_ids[-1]
+    else:
+        state.pop("agentTaskMaintenanceCursor", None)
+    batch = {key: tasks[key] for key in batch_ids}
     progress_limit = max(int(AGENT_TASK_PROGRESS_LIMIT), 50)
-    for task in tasks.values():
+    for task in batch.values():
         if not isinstance(task, dict):
             continue
         progress = task.get("progress") if isinstance(task.get("progress"), list) else []
@@ -1211,21 +1208,7 @@ def _prune_agent_tasks(state: Dict[str, Any], *, now: int | None = None) -> None
         if task.get("message"):
             task["message"] = str(task.get("message"))[:BUILD_RUN_MESSAGE_LIMIT]
 
-    # A running task for a node that is no longer registered can never report
-    # completion: its agent token and canonical identity no longer exist.
-    # Reuse the normal interruption path so linked Builder tasks/build runs are
-    # finalized consistently instead of retaining permanent ghost activity.
-    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-    unregistered_running_nodes = {
-        str(task.get("nodeName") or "")
-        for task in tasks.values()
-        if isinstance(task, dict)
-        and str(task.get("status") or "") == "running"
-        and str(task.get("nodeName") or "")
-        and _node_record_entry_for_name_or_id(nodes, str(task.get("nodeName") or "")) is None
-    }
-    for node_name in sorted(unregistered_running_nodes):
-        _reconcile_interrupted_agent_tasks(state, node_name, "", now=now)
+    _reconcile_unregistered_agent_tasks(state, now=now)
 
     # Keep the completion receipt until its queue owner has consumed it and
     # released the project fence, even when history retention has elapsed.
@@ -1237,7 +1220,7 @@ def _prune_agent_tasks(state: Dict[str, Any], *, now: int | None = None) -> None
     terminal = {"succeeded", "failed", "timeout", "canceled"}
     stale = [
         task_id
-        for task_id, task in tasks.items()
+        for task_id, task in batch.items()
         if isinstance(task, dict)
         and task_id not in protected
         and str(task.get("status") or "") in terminal
@@ -1245,6 +1228,20 @@ def _prune_agent_tasks(state: Dict[str, Any], *, now: int | None = None) -> None
     ]
     for task_id in stale:
         tasks.pop(task_id, None)
+
+
+def _reconcile_unregistered_agent_tasks(state, *, now=None):
+    # Orphan fencing is safety-critical heartbeat work. Unlike history
+    # retention it only needs running receipts, selected by the status index.
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    unregistered = {
+        str(task.get("nodeName") or "")
+        for _task_id, task in _agent_task_items_with_status(_agent_tasks(state), {"running"})
+        if task.get("nodeName")
+        and _node_record_entry_for_name_or_id(nodes, str(task["nodeName"])) is None
+    }
+    for node_name in sorted(unregistered):
+        _reconcile_interrupted_agent_tasks(state, node_name, "", now=now)
 
 
 def _reconcile_interrupted_agent_tasks(
@@ -1274,7 +1271,7 @@ def _reconcile_interrupted_agent_tasks(
         return  # Delayed heartbeat from the previous task is not a restart.
     active_leased_at = int(active_receipt.get("leasedAt") or 0) if isinstance(active_receipt, dict) else 0
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-    for task_id, task in tasks.items():
+    for task_id, task in _agent_task_items_with_status(tasks, {"running"}):
         task_node_name = str(task.get("nodeName") or "") if isinstance(task, dict) else ""
         task_node_entry = _node_record_entry_for_name_or_id(nodes, task_node_name)
         canonical_task_node = task_node_entry[0] if task_node_entry else task_node_name
@@ -1400,7 +1397,7 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
             record = _require_node_agent_token(state, token, node_name, node_id=node_id)
             changed = False
             if persist_heartbeat:
-                _prune_agent_tasks(state)
+                _reconcile_unregistered_agent_tasks(state)
                 _prune_build_runs(state)
                 normalized_container_stats = _update_agent_heartbeat(
                     record, body, config=config, state=state, observed_at=observed_at
@@ -1424,8 +1421,7 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
             if any(isinstance(task, dict) and task.get("nodeName") == canonical_node_name
                    and task.get("status") == "running" for task in running):
                 return None, changed
-            for task_id in sorted(tasks):
-                task = tasks.get(task_id)
+            for task_id, task in sorted(_agent_task_items_with_status(tasks, {"queued"})):
                 if not isinstance(task, dict):
                     continue
                 if task.get("nodeName") != canonical_node_name or task.get("status") != "queued":
@@ -1504,7 +1500,7 @@ def handle_node_agent_heartbeat(token: str, body: Dict[str, Any]) -> Dict[str, A
 
     def mutate(state: Dict[str, Any]) -> None:
         nonlocal canonical_node_name, normalized_container_stats
-        _prune_agent_tasks(state)
+        _reconcile_unregistered_agent_tasks(state)
         _prune_build_runs(state)
         nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
         entry = _node_record_entry_for_name_or_id(nodes, node_name, node_id)
@@ -1518,12 +1514,12 @@ def handle_node_agent_heartbeat(token: str, body: Dict[str, Any]) -> Dict[str, A
             observed_at=observed_at,
         )
 
+    active_task_id = str(body.get("activeTaskId") or "").strip()
     _mutate_control_state(mutate)
-    state = load_runtime_state()
+    state = load_runtime_state(task_id=active_task_id)
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     record = _node_record_for_name(nodes, canonical_node_name) or {}
     _record_metrics_history(canonical_node_name, body, container_stats=normalized_container_stats if isinstance(body.get("containerStats"), list) else None, config=config, state=state)
-    active_task_id = str(body.get("activeTaskId") or "").strip()
     cancel_requested = False
     if active_task_id:
         active_task = _agent_tasks(state).get(active_task_id)
@@ -1733,6 +1729,7 @@ def _run_node_agent_task(
     required_capability: str | None = "nfs-host",
     progress: Callable[[dict[str, str]], None] | None = None,
     build_run_id: str = "",
+    progress_batch: Callable[[list[dict[str, str]]], None] | None = None,
 ) -> Dict[str, Any]:
     task_id = _queue_node_agent_task(
         state,
@@ -1742,7 +1739,7 @@ def _run_node_agent_task(
         required_capability=required_capability,
         build_run_id=build_run_id,
     )
-    return _wait_node_agent_task(task_id, node_name, action, timeout=timeout, progress=progress)
+    return _wait_node_agent_task(task_id, node_name, action, timeout=timeout, progress=progress, progress_batch=progress_batch)
 
 
 def _queue_node_agent_task(
@@ -1772,7 +1769,6 @@ def _queue_node_agent_task(
             required = normalize_build_capabilities(payload.get("requireBuildCapabilities"))
             _require_builder_capabilities(record, node_name, required)
         now = int(time.time())
-        _prune_agent_tasks(current, now=now)
         task = {
             "id": task_id,
             "nodeName": node_name,
@@ -1810,6 +1806,7 @@ def _wait_node_agent_task(
     *,
     timeout: int | None = None,
     progress: Callable[[dict[str, str]], None] | None = None,
+    progress_batch: Callable[[list[dict[str, str]]], None] | None = None,
 ) -> Dict[str, Any]:
     wait_started = time.time()
     execution_timeout = float(timeout or AGENT_TASK_TIMEOUT_SECONDS)
@@ -1825,10 +1822,16 @@ def _wait_node_agent_task(
         status = "missing"
         if isinstance(task, dict):
             task_progress, cursor = _agent_task_progress_since(task, cursor)
+            events = []
             for event in task_progress:
                 line = str(event.get("line") or event.get("message") or "").strip()
                 if line:
-                    _emit_progress(progress, {"name": _agent_task_progress_step_name(action), "status": "progress", "message": line})
+                    events.append({"name": _agent_task_progress_step_name(action), "status": "progress", "message": line})
+            if events and progress_batch is not None:
+                progress_batch(events)
+            else:
+                for event in events:
+                    _emit_progress(progress, event)
             status = str(task.get("status") or "")
             if status == "succeeded":
                 result = task.get("result") if isinstance(task.get("result"), dict) else {}
@@ -2797,8 +2800,8 @@ def _agent_task_progress_since(task: Dict[str, Any], cursor: int) -> tuple[list[
 
 
 def _agent_task_progress_snapshot(task_id: str, cursor: int) -> tuple[list[Dict[str, Any]], int, str, Dict[str, Any], str]:
-    state = load_state()
-    task = (state.get("agentTasks") if isinstance(state.get("agentTasks"), dict) else {}).get(task_id)
+    from .state import load_entity
+    task = load_entity("agentTasks", task_id)
     if not isinstance(task, dict):
         return [], cursor, "missing", {}, "agent task not found"
     events, next_cursor = _agent_task_progress_since(task, cursor)
@@ -2807,7 +2810,8 @@ def _agent_task_progress_snapshot(task_id: str, cursor: int) -> tuple[list[Dict[
 
 
 def handle_prometheus_metrics(token: str | None, *, allow_unauthenticated: bool = False) -> str:
-    state = load_state()
+    from .state import load_metrics_state
+    state = load_metrics_state()
     if not allow_unauthenticated:
         require_metrics_token(state, str(token or ""))
     _deployment_index, compose_jobs = _dashboard_deployment_service_index(state)
@@ -3933,6 +3937,11 @@ def handle_build_deploy(
         _append_build_run_event(build_run_id, event)
         _emit_progress(progress, event)
 
+    def run_progress_batch(events: list[dict[str, str]]) -> None:
+        append_build_run_events(build_run_id, events, message_limit=BUILD_RUN_MESSAGE_LIMIT)
+        for event in events:
+            _emit_progress(progress, event)
+
     try:
         # Publish the new identity before work starts, so streaming clients can
         # open the failed child even when no final success result is produced.
@@ -3952,6 +3961,7 @@ def handle_build_deploy(
                 required_capability="docker-build",
                 progress=run_progress,
                 build_run_id=build_run_id,
+                progress_batch=run_progress_batch,
             ),
             progress=run_progress,
         )

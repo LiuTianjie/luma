@@ -13,17 +13,30 @@ import secrets
 import sqlite3
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Iterator
 
 from ..errors import LumaError
+from .write_gate import WriterGate
 
 DATABASE_FILE = "control.sqlite3"
 SCHEMA_VERSION = 1
 ENTITY_KINDS = frozenset({"nodes", "agentTasks", "builderTasks", "builderTaskIdempotency", "builderSourceSnapshots", "buildRuns", "deploymentEvents"})
 EVENT_STREAMS = ("events", "progress", "steps")
 LOG = logging.getLogger(__name__)
+WRITER_WAIT_SECONDS = 30
+SLOW_TRANSACTION_SECONDS = 1
+_writer_gate = WriterGate()
+
+
+def _reset_writer_gate() -> None:
+    global _writer_gate
+    _writer_gate = WriterGate()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_writer_gate)
 
 
 def database_path() -> Path:
@@ -93,7 +106,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO database_meta(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(SCHEMA_VERSION),))
 
 
-def connect(path: Path | None = None) -> sqlite3.Connection:
+def connect(path: Path | None = None, *, timeout: float = 30) -> sqlite3.Connection:
     path = Path(path or database_path())
     path.parent.mkdir(parents=True, exist_ok=True)
     # Create with restrictive mode before SQLite opens it, including under a
@@ -102,9 +115,9 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     _private(path)
     conn = None
     try:
-        conn = sqlite3.connect(path, timeout=30, isolation_level=None)
+        conn = sqlite3.connect(path, timeout=timeout, isolation_level=None)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute(f"PRAGMA busy_timeout={max(0, int(timeout * 1000))}")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=FULL")
@@ -154,12 +167,26 @@ def _record_authority(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def transaction(*, immediate: bool = True) -> Iterator[sqlite3.Connection]:
-    conn = connect()
+def transaction(*, immediate: bool = True, owner: str = "control.transaction") -> Iterator[sqlite3.Connection]:
+    started = time.monotonic()
+    admission = _writer_gate.acquire(owner, timeout=WRITER_WAIT_SECONDS) if immediate else nullcontext(None)
+    with admission as deadline:
+        timeout = max(0, deadline - time.monotonic()) if deadline is not None else WRITER_WAIT_SECONDS
+        conn = connect(timeout=timeout) if immediate else connect()
+        with _transaction_body(conn, immediate=immediate, owner=owner, started=started, deadline=deadline):
+            yield conn
+
+
+@contextmanager
+def _transaction_body(conn, *, immediate, owner, started, deadline):
     had_manifest = _migration_manifest_path().exists()
     committed = False
+    acquired = None
     try:
+        if deadline is not None:
+            conn.execute(f"PRAGMA busy_timeout={max(0, int((deadline - time.monotonic()) * 1000))}")
         conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+        acquired = time.monotonic()
         if initialized(conn):
             _verify_authority(conn)
         elif _authority_path().exists() or _migration_manifest_path().exists():
@@ -175,6 +202,8 @@ def transaction(*, immediate: bool = True) -> Iterator[sqlite3.Connection]:
     except BaseException as exc:
         if isinstance(exc, sqlite3.Error):
             _log_sqlite_error(exc)
+            LOG.error("Control transaction failed: owner=%s phase=%s elapsed=%.3fs",
+                      owner, "write" if acquired is not None else "acquire", time.monotonic() - started)
         if not committed:
             conn.rollback()
             if not had_manifest:
@@ -182,6 +211,12 @@ def transaction(*, immediate: bool = True) -> Iterator[sqlite3.Connection]:
         raise
     finally:
         conn.close()
+        finished = time.monotonic()
+        wait = (acquired if acquired is not None else finished) - started
+        held = finished - acquired if acquired is not None else 0
+        if immediate and max(wait, held) >= SLOW_TRANSACTION_SECONDS:
+            LOG.warning("Slow Control write transaction: owner=%s wait=%.3fs held=%.3fs committed=%s",
+                        owner, wait, held, committed)
 
 
 def initialized(conn: sqlite3.Connection) -> bool:
@@ -334,6 +369,61 @@ def _write_entity(conn: sqlite3.Connection, kind: str, identifier: str, value: A
         conn.execute("DELETE FROM control_events WHERE kind=? AND entity_id=? AND stream=? AND position=?", (kind, identifier, stream, position))
 
 
+def read_entity_metadata(conn: sqlite3.Connection, kind: str, identifier: str) -> Any:
+    """Read a task summary without materializing any of its log streams."""
+    row = conn.execute("SELECT payload FROM control_entities WHERE kind=? AND id=?", (kind, identifier)).fetchone()
+    if row is None:
+        raise KeyError(identifier)
+    return json.loads(row[0])
+
+
+def update_entity_metadata(conn: sqlite3.Connection, kind: str, identifier: str, value: dict[str, Any]) -> None:
+    """Update an existing summary while preserving event rows and list order.
+
+    The caller owns the transaction. Stream mutation must use its own storage
+    operation, never a read/modify/write of the complete event history.
+    """
+    if any(key in value for key in EVENT_STREAMS):
+        raise ValueError("entity metadata must not contain event streams")
+    status, app, _, updated = _entity_fields(value)
+    result = conn.execute(
+        "UPDATE control_entities SET payload=?,status=?,app=?,updated_at=? WHERE kind=? AND id=?",
+        (_json(value), status, app, updated, kind, identifier),
+    )
+    if result.rowcount != 1:
+        raise KeyError(identifier)
+
+
+def append_entity_events(
+    conn: sqlite3.Connection,
+    kind: str,
+    identifier: str,
+    stream: str,
+    entries: list[dict[str, Any]],
+) -> int:
+    """Append only the new batch, with positions assigned under a writer lock.
+
+    Use inside transaction() so concurrent producers cannot reserve the same
+    position and summary/terminal changes commit atomically with the batch.
+    The primary key finds the tail without reading historical event payloads.
+    """
+    if stream not in EVENT_STREAMS:
+        raise ValueError(f"unsupported event stream: {stream}")
+    if not entries:
+        return 0
+    conn.execute("INSERT OR IGNORE INTO control_event_streams VALUES(?,?,?)", (kind, identifier, stream))
+    tail = conn.execute(
+        "SELECT position FROM control_events WHERE kind=? AND entity_id=? AND stream=? ORDER BY position DESC LIMIT 1",
+        (kind, identifier, stream),
+    ).fetchone()
+    start = int(tail[0]) + 1 if tail is not None else 0
+    conn.executemany(
+        "INSERT INTO control_events(kind,entity_id,stream,position,payload) VALUES(?,?,?,?,?)",
+        ((kind, identifier, stream, start + index, _json(entry)) for index, entry in enumerate(entries)),
+    )
+    return len(entries)
+
+
 def read_entity(conn: sqlite3.Connection, kind: str, identifier: str) -> Any:
     row = conn.execute("SELECT payload FROM control_entities WHERE kind=? AND id=?", (kind, identifier)).fetchone()
     if row is None:
@@ -427,6 +517,10 @@ class EntityMap(dict):
         return copy.deepcopy(self.copy(), memo)
 
     def active_values(self, statuses):
+        for _key, value in self.active_items(statuses):
+            yield value
+
+    def active_items(self, statuses):
         wanted = set(statuses)
         if not wanted:
             return
@@ -438,7 +532,7 @@ class EntityMap(dict):
         for key in (ids | self.loaded) & self.keys():
             value = self[key]
             if isinstance(value, dict) and value.get("status") in wanted:
-                yield value
+                yield key, value
 
     def flush(self):
         for key in self.original_keys - self.keys():

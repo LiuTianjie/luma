@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from ..errors import LumaError
-from .state import is_initialized, load_auth_state, load_runtime_state, require_token
+from .state import is_initialized, load_auth_state, require_token
 
 LOG = logging.getLogger(__name__)
 
@@ -29,7 +29,6 @@ def dispatch(token: str, method: str, path: str, body: dict[str, Any] | None = N
         resource = path.removeprefix("/v1/governance/")
         result = storage_governance.dispatch(method, resource, body=body, query=query)
         if resource == "inventory" and method == "GET":
-            state = load_runtime_state()
             from . import database
             conn = database.connect()
             try:
@@ -78,6 +77,11 @@ class OperationsWorker:
         from . import alerting
         state = alerting.load_evaluation_state()
         alerting.tick(state)
+        # Retention/legacy progress normalization is bounded maintenance work,
+        # never part of every node heartbeat or one-second lease poll.
+        from .server import _prune_agent_tasks
+        from .state import mutate_state
+        mutate_state(_prune_agent_tasks)
         if time.monotonic() - self.last_inventory_at >= 3600:
             from .storage_governance import storage_inventory
             storage_inventory()

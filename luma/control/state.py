@@ -104,14 +104,20 @@ def load_state(path: Path | None = None) -> Dict[str, Any]:
         return read_state(conn)
 
 
-def load_runtime_state() -> Dict[str, Any]:
-    """Heartbeat/lease snapshot without builds, deployments or source history."""
-    from .database import database_path, ensure_initialized, read_state, transaction
+def load_runtime_state(*, task_id: str = "") -> Dict[str, Any]:
+    """Node snapshot and, when needed, one active receipt's cancellation flag."""
+    from .database import database_path, ensure_initialized, read_entity_metadata, read_state, transaction
     if not is_initialized():
         raise LumaError(f"control state not initialized: {database_path()}; run luma bootstrap")
     ensure_initialized()
     with transaction(immediate=False) as conn:
-        return read_state(conn, kinds={"nodes", "agentTasks", "builderTasks"})
+        state = read_state(conn, kinds={"nodes"})
+        if task_id:
+            try:
+                state["agentTasks"] = {task_id: read_entity_metadata(conn, "agentTasks", task_id)}
+            except KeyError:
+                state["agentTasks"] = {}
+        return state
 
 
 def load_dashboard_state() -> Dict[str, Any]:
@@ -124,6 +130,22 @@ def load_dashboard_state() -> Dict[str, Any]:
         # Build runs, deployment events, and task receipts are served by their
         # own paginated endpoints and need not be materialized on every refresh.
         return read_state(conn, kinds={"nodes"})
+
+
+def load_metrics_state() -> Dict[str, Any]:
+    """Metrics need node samples and active task metadata, never event history."""
+    from .database import ensure_initialized, read_state, transaction
+    ensure_initialized()
+    with transaction(immediate=False) as conn:
+        state = read_state(conn, kinds={"nodes"})
+        for kind in ("agentTasks", "builderTasks", "buildRuns"):
+            state[kind] = {
+                row[0]: json.loads(row[1]) for row in conn.execute(
+                    "SELECT id,payload FROM control_entities WHERE kind=? AND status IN ('queued','running')",
+                    (kind,),
+                )
+            }
+        return state
 
 
 def load_entity(kind: str, identifier: str) -> Dict[str, Any] | None:
@@ -172,7 +194,7 @@ def _detach(value: Any) -> Any:
 
 def mutate_state(mutator: Callable[[Dict[str, Any]], Any]) -> Any:
     from .database import ensure_initialized, read_state, transaction, write_state
-    with transaction() as conn:
+    with transaction(owner=getattr(mutator, "__qualname__", type(mutator).__name__)) as conn:
         ensure_initialized(conn)
         state = read_state(conn, lazy=True)
         result = mutator(state)
@@ -183,7 +205,7 @@ def mutate_state(mutator: Callable[[Dict[str, Any]], Any]) -> Any:
 def mutate_state_if_changed(mutator: Callable[[Dict[str, Any]], tuple[T, bool]]) -> T:
     """Claim/read/update atomically; idle polls perform no state-row writes."""
     from .database import ensure_initialized, read_state, transaction, write_state
-    with transaction() as conn:
+    with transaction(owner=getattr(mutator, "__qualname__", type(mutator).__name__)) as conn:
         ensure_initialized(conn)
         state = read_state(conn, lazy=True)
         result, changed = mutator(state)

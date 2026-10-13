@@ -249,10 +249,11 @@ class BuildQueueTests(unittest.TestCase):
         self.assertNotIn('queueExecuting', state['buildRuns'][first])
         self.assertNotIn(first, state['buildQueue'])
 
-    def test_cleanup_retries_io_errors_without_replaying_work(self):
+    def test_cleanup_retries_transient_database_errors_without_replaying_work(self):
         wrapped = LumaError('cannot open control database: disk I/O error')
         wrapped.__cause__ = sqlite3.OperationalError('disk I/O error')
-        for failure in (sqlite3.OperationalError('disk I/O error'), wrapped):
+        local_contention = LumaError('Control database is locked: writer wait timed out: cleanup; current writer: heartbeat')
+        for failure in (sqlite3.OperationalError('disk I/O error'), wrapped, local_contention):
             with self.subTest(error=type(failure).__name__):
                 first = self.remote()
                 item = queue.claim()
