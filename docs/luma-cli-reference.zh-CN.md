@@ -592,13 +592,14 @@ arguments:
 ## `luma build config`
 
 ```text
-usage: luma build config [-h] [--node NODES] [--default-node DEFAULT_NODE] [--registry-host REGISTRY_HOST] [--push-host PUSH_HOST] [--direct-egress-node DIRECT_EGRESS_NODES] [--clear-direct-egress] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+usage: luma build config [-h] [--node NODES] [--clear-nodes] [--default-node DEFAULT_NODE] [--registry-host REGISTRY_HOST] [--push-host PUSH_HOST] [--direct-egress-node DIRECT_EGRESS_NODES] [--clear-direct-egress] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
 
 Show or set builder nodes and the internal registry
 
 arguments:
   -h, --help                  show this help message and exit
-  --node NODES                Builder node; repeat for several
+  --node NODES                Replace the allowed build-node list; repeat for several nodes
+  --clear-nodes               Clear the allowed build-node list (pause new pool assignments)
   --default-node DEFAULT_NODE
                               Builder used by 'luma import' by default
   --registry-host REGISTRY_HOST

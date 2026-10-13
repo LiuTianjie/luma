@@ -85,6 +85,10 @@ def _registry_auth_for_service(state: Dict[str, Any], service: ServiceSpec) -> D
 
 
 def _registry_auth_for_image(state: Dict[str, Any], image: str) -> Dict[str, str] | None:
+    from ..release import registry_for_image
+    registry = registry_for_image(image)
+    if registry:
+        return {"username": registry["username"], "password": registry["password"], "serveraddress": registry["host"]}
     registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
     return registry_auth_for_image(registries, image)
 

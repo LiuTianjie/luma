@@ -1,0 +1,29 @@
+# Build services only. Point platform.env at your self-hosted Temporal,
+# PostgreSQL, Harbor, Nomad and S3-compatible storage deployments.
+services:
+  api:
+    image: ${LUMA_BUILD_SERVICE_IMAGE:?Set a built service image digest}
+    command: [serve, --host, 0.0.0.0, --port, '8091']
+    env_file: platform.env
+    ports:
+      - '${LUMA_BUILD_BIND_ADDRESS:-127.0.0.1}:8091:8091'
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1
+    read_only: true
+    tmpfs: [/tmp:size=256m]
+  worker:
+    image: ${LUMA_BUILD_SERVICE_IMAGE:?Set a built service image digest}
+    command: [worker]
+    env_file: platform.env
+    restart: unless-stopped
+    mem_limit: 4g
+    cpus: 2
+    read_only: true
+    # Source checkout scratch lives on disk, not in the worker memory budget.
+    # Pre-create a UID 65532 writable directory on a volume with enough quota.
+    volumes:
+      - ${LUMA_BUILD_SCRATCH:?Set a writable source scratch directory}:/work
+    environment:
+      TMPDIR: /work
+    tmpfs: [/tmp:size=256m]

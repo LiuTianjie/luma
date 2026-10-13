@@ -1,0 +1,13 @@
+# Native builds: publish this executor image for both amd64 and arm64.
+ARG BUILDKIT_IMAGE=moby/buildkit:v0.26.0
+FROM ${BUILDKIT_IMAGE} AS buildkit
+FROM python:3.13-alpine
+RUN apk add --no-cache ca-certificates git iptables fuse-overlayfs pigz xz
+COPY --from=buildkit /usr/bin/buildkitd /usr/local/bin/buildkitd
+COPY --from=buildkit /usr/bin/buildctl /usr/local/bin/buildctl
+COPY --from=buildkit /usr/bin/buildkit-runc /usr/local/bin/buildkit-runc
+WORKDIR /app
+# The executor uses only the standard library and luma.errors. No SDK/database.
+COPY luma/__init__.py luma/errors.py ./luma/
+COPY luma/build_platform/__init__.py luma/build_platform/model.py luma/build_platform/placement.py luma/build_platform/executor.py ./luma/build_platform/
+ENTRYPOINT ["python", "-m", "luma.build_platform.executor"]

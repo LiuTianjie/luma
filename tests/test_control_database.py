@@ -1,6 +1,8 @@
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -292,6 +294,45 @@ class ControlDatabaseTests(unittest.TestCase):
             self.assertEqual(conn.execute("PRAGMA foreign_keys").fetchone()[0], 1)
             indexes = {row[1] for row in conn.execute("PRAGMA index_list(control_entities)")}
             self.assertIn("control_history_created", indexes)
+
+    @unittest.skipUnless(os.name == "posix", "SQLite POSIX lock regression")
+    def test_opening_another_connection_preserves_existing_sqlite_locks(self):
+        # Probe from a separate process: POSIX locks belong to the process,
+        # so another thread cannot detect that an unrelated close() lost them.
+        probe = """
+import fcntl, os, sys
+fd = os.open(sys.argv[1], os.O_RDWR)
+try:
+    fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB, 510, 0x40000002)
+    print('unprotected')
+except BlockingIOError:
+    print('locked')
+finally:
+    os.close(fd)
+"""
+        def lock_state():
+            return subprocess.check_output(
+                [sys.executable, "-c", probe, str(database.database_path())],
+                text=True, timeout=10,
+            ).strip()
+
+        with closing(database.connect()) as first:
+            first.execute("BEGIN")
+            first.execute("SELECT * FROM database_meta").fetchall()
+            self.assertEqual(lock_state(), "locked")
+            with closing(database.connect()):
+                self.assertEqual(lock_state(), "locked")
+            self.assertEqual(lock_state(), "locked")
+
+    def test_new_database_is_private_even_with_permissive_umask(self):
+        old = os.umask(0)
+        try:
+            with closing(database.connect()):
+                for suffix in ("", "-wal", "-shm"):
+                    path = Path(str(database.database_path()) + suffix)
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        finally:
+            os.umask(old)
 
 
 if __name__ == "__main__":

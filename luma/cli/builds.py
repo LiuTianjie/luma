@@ -118,7 +118,7 @@ def _wait_for_queued_build(args: argparse.Namespace, client: ControlClient, resu
                 if state[2]:
                     message += f"; waiting for {state[2]}"
                 reasons = {"target": "same branch/target is still active", "builder": "builder is busy",
-                           "builder-offline": "builder is offline", "capacity": "Control execution slots are full"}
+                           "builder-offline": "builder is offline", "build-capacity": "waiting for a build pool slot", "build-node": str(run.get("message") or "waiting for a native build node"), "capacity": "Control execution slots are full"}
                 if state[3] in reasons:
                     message += "; " + reasons[state[3]]
                 if state[4]:
@@ -136,7 +136,7 @@ def _wait_for_queued_build(args: argparse.Namespace, client: ControlClient, resu
                 continue
             # A terminal state can become visible while draining a frozen page.
             # Fetch once past its last event before returning, so final output is not lost.
-            if events and state[0] in {"succeeded", "failed", "canceled"} and not run.get("queueExecuting"):
+            if events and state[0] in {"succeeded", "failed", "canceled", "superseded"} and not run.get("queueExecuting"):
                 continue
         else:
             # Older Control versions provide frozen pagination, but no live cursor.
@@ -159,7 +159,7 @@ def _wait_for_queued_build(args: argparse.Namespace, client: ControlClient, resu
             seen = len(events)
         if state[0] == "succeeded" and not run.get("queueExecuting"):
             return {**(run.get("result") or {}), "buildRunId": build_id}
-        if state[0] in {"failed", "canceled"} and not run.get("queueExecuting"):
+        if state[0] in {"failed", "canceled", "superseded"} and not run.get("queueExecuting"):
             raise LumaError(f"Build {build_id} {state[0]}: {run.get('message') or 'see build history'}")
         time.sleep(min(2, max(0, deadline - time.monotonic())))
 
@@ -530,10 +530,16 @@ def cmd_build(args: argparse.Namespace) -> int:
         direct_egress_nodes = [] if args.clear_direct_egress else args.direct_egress_nodes
         if args.clear_direct_egress and args.direct_egress_nodes:
             raise LumaError("--clear-direct-egress cannot be combined with --direct-egress-node")
-        if not nodes and not default_node and not args.registry_host and not args.push_host and direct_egress_nodes is None:
+        if getattr(args, "clear_nodes", False) and nodes:
+            raise LumaError("--clear-nodes cannot be combined with --node")
+        if not getattr(args, "clear_nodes", False) and not nodes and not default_node and not args.registry_host and not args.push_host and direct_egress_nodes is None:
             raise LumaError("build config requires a builder, registry, or direct-egress option")
+        if default_node and "native-build-pool-v1" in (client.health().get("capabilities") or []):
+            if args.default_node:
+                raise LumaError("the native build pool uses automatic placement; use --build-node on a single build to pin a node")
+            default_node = ""
         result = client.configure_build(
-            nodes=nodes or None,
+            nodes=[] if getattr(args, "clear_nodes", False) else nodes or None,
             default_node=default_node,
             registry_host=args.registry_host,
             push_host=args.push_host,
@@ -554,10 +560,10 @@ def cmd_build(args: argparse.Namespace) -> int:
                 rows.append([
                     str(node.get("name") or ""),
                     str(node.get("region") or ""),
-                    "yes" if node.get("ready") else "no",
-                    ",".join(str(value) for value in node.get("storageCapabilities") or []) or "-",
+                    str(node.get("platform") or "unknown") if build.get("executionBackend") == "temporal-nomad" else "yes" if node.get("ready") else "no",
+                    str(node.get("nodeId") or "-") if build.get("executionBackend") == "temporal-nomad" else ",".join(str(value) for value in node.get("storageCapabilities") or []) or "-",
                 ])
         if rows:
-            _print_table(["NODE", "REGION", "READY", "CAPABILITIES"], rows)
+            _print_table(["NODE", "REGION", "PLATFORM", "NOMAD NODE"] if build.get("executionBackend") == "temporal-nomad" else ["NODE", "REGION", "READY", "CAPABILITIES"], rows)
         return 0
     raise LumaError(f"unknown build command: {args.build_command}")

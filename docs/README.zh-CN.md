@@ -29,6 +29,7 @@
 | [部署 YAML 参考](deployment-yaml.zh-CN.md) | 服务 manifest 的全部字段 |
 | [CLI 参考](luma-cli-reference.zh-CN.md) | 由 CLI 自动生成的全部命令与参数 |
 | [Control 存储与恢复](control-storage.zh-CN.md) | Manager 的 SQLite 状态、保留策略、备份与恢复 |
+| [持久化构建平台](build-platform.zh-CN.md) | 自托管构建编排、原生执行池与迁移 |
 | [安装生命周期](installation-lifecycle.zh-CN.md) | 各机器上安装与升级的校验方式 |
 | [初始化配置档](profiles.zh-CN.md) | `luma bootstrap --profile` 使用的角色组合 |
 

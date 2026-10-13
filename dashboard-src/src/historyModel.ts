@@ -118,7 +118,7 @@ export function historyStatus(status: string | undefined, lang: "zh" | "en"): st
     succeeded: ["成功", "Succeeded"], completed: ["成功", "Completed"], complete: ["成功", "Completed"], success: ["成功", "Success"],
     timeout: ["超时", "Timed out"], timed_out: ["超时", "Timed out"],
     active: ["已部署", "Deployed"], failed_partial: ["部分失败", "Partially failed"],
-    canceling: ["正在取消", "Canceling"], canceled: ["已取消", "Canceled"], cancelled: ["已取消", "Canceled"],
+    superseded: ["已被新版本替代", "Superseded"], canceling: ["正在取消", "Canceling"], canceled: ["已取消", "Canceled"], cancelled: ["已取消", "Canceled"],
     interrupted: ["已中断", "Interrupted"], error: ["错误", "Error"], queued: ["排队中", "Queued"],
   };
   return labels[value]?.[lang === "zh" ? 0 : 1] || localizeState(lang, value || "-");

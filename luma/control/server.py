@@ -61,6 +61,7 @@ from ..compose import (
 )
 from ..config import LumaConfig, load_config, save_config
 from ..errors import LumaError
+from .build_events import append_build_run_events
 from .logs import LogReader, LogUnavailable, CAPABILITIES as LOG_CAPABILITIES, LIMITS as LOG_LIMITS, POLL_INTERVAL as LOG_POLL_INTERVAL, encode_event as _log_event
 from ..io import load_yaml
 from ..local import LocalExecutor
@@ -950,28 +951,7 @@ def _create_build_run(
 
 
 def _append_build_run_event(run_id: str, event: Dict[str, Any]) -> None:
-    safe_event = {
-        str(key): str(value)[:BUILD_RUN_MESSAGE_LIMIT]
-        for key, value in event.items()
-        if value is not None
-    }
-
-    def mutate(state: Dict[str, Any]) -> None:
-        run = _build_runs(state).get(run_id)
-        if not isinstance(run, dict):
-            return
-        events = run.get("events")
-        if not isinstance(events, list):
-            events = []
-            run["events"] = events
-        events.append({**safe_event, "ts": int(time.time())})
-        run["updatedAt"] = int(time.time())
-        status = str(safe_event.get("status") or "")
-        if status == "fail" and str(run.get("status") or "") not in {"canceling", "canceled"}:
-            run["status"] = "failed"
-            run["message"] = str(safe_event.get("message") or "")
-
-    _mutate_control_state(mutate)
+    append_build_run_events(run_id, [event], message_limit=BUILD_RUN_MESSAGE_LIMIT)
 
 
 def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | None = None, message: str = "") -> None:
@@ -1051,6 +1031,8 @@ def _reconcile_orphaned_build_runs_after_control_restart() -> int:
         candidates = active_values({"running", "canceling"}) if callable(active_values) else runs.values()
         for run in candidates:
             if not isinstance(run, dict):
+                continue
+            if run.get("executionBackend") == "temporal-nomad":
                 continue
             status = str(run.get("status") or "")
             if status not in {"running", "canceling"}:
@@ -1709,6 +1691,7 @@ def _run_node_agent_task(
     required_capability: str | None = "nfs-host",
     progress: Callable[[dict[str, str]], None] | None = None,
     build_run_id: str = "",
+    progress_batch: Callable[[list[dict[str, str]]], None] | None = None,
 ) -> Dict[str, Any]:
     task_id = _queue_node_agent_task(
         state,
@@ -1718,7 +1701,10 @@ def _run_node_agent_task(
         required_capability=required_capability,
         build_run_id=build_run_id,
     )
-    return _wait_node_agent_task(task_id, node_name, action, timeout=timeout, progress=progress)
+    return _wait_node_agent_task(
+        task_id, node_name, action, timeout=timeout, progress=progress,
+        progress_batch=progress_batch,
+    )
 
 
 def _queue_node_agent_task(
@@ -1779,6 +1765,7 @@ def _wait_node_agent_task(
     *,
     timeout: int | None = None,
     progress: Callable[[dict[str, str]], None] | None = None,
+    progress_batch: Callable[[list[dict[str, str]]], None] | None = None,
 ) -> Dict[str, Any]:
     wait_started = time.time()
     execution_timeout = float(timeout or AGENT_TASK_TIMEOUT_SECONDS)
@@ -1794,10 +1781,16 @@ def _wait_node_agent_task(
         status = "missing"
         if isinstance(task, dict):
             task_progress, cursor = _agent_task_progress_since(task, cursor)
+            batch: list[dict[str, str]] = []
             for event in task_progress:
                 line = str(event.get("line") or event.get("message") or "").strip()
                 if line:
-                    _emit_progress(progress, {"name": _agent_task_progress_step_name(action), "status": "progress", "message": line})
+                    batch.append({"name": _agent_task_progress_step_name(action), "status": "progress", "message": line})
+            if batch and progress_batch is not None:
+                progress_batch(batch)
+            else:
+                for event in batch:
+                    _emit_progress(progress, event)
             status = str(task.get("status") or "")
             if status == "succeeded":
                 result = task.get("result") if isinstance(task.get("result"), dict) else {}
@@ -2363,6 +2356,15 @@ def handle_history_list(token: str, query: Dict[str, Any] | None = None) -> Dict
 
 def handle_history_get(token: str, kind: str, record_id: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
     _require_history_token(token)
+    if kind == "build" and record_id.startswith("bld2-"):
+        value = handle_build_run_get(token, record_id, query)
+        run = value["run"]
+        item = {"id": record_id, "kind": "build", "application": run.get("result", {}).get("targetKey", ""),
+                "source": "build", "status": run["status"], "title": run["projectKey"], "repository": run["source"],
+                "ref": run["ref"], "createdAt": run["createdAt"], "updatedAt": run["updatedAt"],
+                "message": run["message"], "buildNode": run["buildNode"], "stepCount": run.get("eventCount", 0)}
+        return {"item": item, "record": {k: v for k, v in value["run"].items() if k != "events"},
+                "events": value["run"]["events"], "page": value["eventsPage"]}
     return control_history.get_history(kind, record_id, query)
 
 
@@ -2373,6 +2375,9 @@ def handle_build_run_list(token: str, query: Dict[str, Any] | None = None) -> Di
 
 def handle_build_run_get(token: str, build_id: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
     _require_history_token(token)
+    if build_id.startswith("bld2-"):
+        from .build_platform import request
+        return request("GET", "/v1/builds/" + build_id, query=query)
     result = control_history.get_build(build_id, query)
     if result.get("run", {}).get("status") == "queued":
         from .build_queue import position
@@ -2429,6 +2434,10 @@ def handle_build_run_cancel(
         raise LumaError("build cancel request body must be empty")
     state = load_state()
     require_token(state, token, token_type="deploy")
+    if build_id.startswith("bld2-"):
+        from .build_platform import request
+        result = request("POST", "/v1/builds/" + build_id + "/cancel", {})
+        return result
     now = int(time.time())
 
     def mutate(current: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
@@ -2543,6 +2552,10 @@ def handle_build_run_retry(
 ) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
+    if build_id.startswith("bld2-"):
+        from .build_platform import request
+        result = request("POST", "/v1/builds/" + build_id + "/retry", body or {})
+        return result
     run = (state.get("buildRuns") if isinstance(state.get("buildRuns"), dict) else {}).get(build_id)
     if not isinstance(run, dict):
         raise LumaError(f"build run not found: {build_id}")
@@ -2589,6 +2602,9 @@ def handle_application_update(
 
 def handle_build_config_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     nodes_raw = body.get("nodes")
+    if nodes_raw is not None and not isinstance(nodes_raw, list):
+        raise LumaError("nodes must be a list")
+    selection_provided = "nodes" in body or "node" in body
     node = str(body.get("node") or "").strip()
     nodes = [str(value).strip() for value in nodes_raw] if isinstance(nodes_raw, list) else []
     if node:
@@ -2605,13 +2621,22 @@ def handle_build_config_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         for name in nodes:
             if _node_record_for_name(registered, name) is None:
                 raise LumaError(f"unknown Luma node: {name}")
-        if default_node and default_node not in nodes:
+        from .build_platform import enabled
+        if enabled():
+            from .build_pool import validate_nodes
+            if selection_provided:
+                validate_nodes(state, nodes)
+            if body.get("defaultNode") and default_node not in (nodes if selection_provided else state.get("build", {}).get("nodes", [])):
+                raise LumaError("defaultNode must be in the explicit build-node list")
+        elif default_node and default_node not in nodes:
+            if _node_record_for_name(registered, default_node) is None:
+                raise LumaError(f"unknown Luma node: {default_node}")
             nodes.insert(0, default_node)
         build = state.get("build") if isinstance(state.get("build"), dict) else {}
         build = dict(build)
-        if nodes:
-            build["nodes"] = nodes
-        if default_node:
+        if selection_provided:
+            build["nodes"] = list(dict.fromkeys(nodes))
+        if default_node and not enabled():
             build["defaultNode"] = default_node
         if direct_egress_raw is not None:
             direct_egress_nodes: list[str] = []
@@ -2634,6 +2659,7 @@ def handle_build_config_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                     build[key] = value
                 else:
                     build.pop(key, None)
+        build["configRevision"] = int(build.get("configRevision") or 0) + 1
         state["build"] = build
         if any(body.get(key) is not None for key in ("registryHost", "pushHost")):
             _invalidate_setup_checks(state, "registry")
@@ -3765,6 +3791,9 @@ def handle_build_deploy(
     require_token(state, token, token_type="deploy")
     _reject_control_maintenance(state)
     _apply_state_secrets(state)
+    from . import build_platform
+    if build_platform.enabled() and not _queued_run_id:
+        return build_platform.submit(token, body)
     build_config = _build_config(state)
     provider_id = str(body.get("providerId") or "").strip()
     repository = str(body.get("repository") or "").strip()
@@ -3856,6 +3885,11 @@ def handle_build_deploy(
         _append_build_run_event(build_run_id, event)
         _emit_progress(progress, event)
 
+    def run_progress_batch(events: list[dict[str, str]]) -> None:
+        append_build_run_events(build_run_id, events, message_limit=BUILD_RUN_MESSAGE_LIMIT)
+        for event in events:
+            _emit_progress(progress, event)
+
     try:
         # Publish the new identity before work starts, so streaming clients can
         # open the failed child even when no final success result is produced.
@@ -3875,6 +3909,7 @@ def handle_build_deploy(
                 required_capability="docker-build",
                 progress=run_progress,
                 build_run_id=build_run_id,
+                progress_batch=run_progress_batch,
             ),
             progress=run_progress,
         )
@@ -11500,6 +11535,12 @@ def _registered_nodes_summary(nodes: Dict[str, Any]) -> list[Dict[str, Any]]:
 
 
 def _build_summary(state: Dict[str, Any]) -> Dict[str, Any]:
+    from .build_platform import enabled
+    if enabled():
+        host = urllib.parse.urlsplit(os.environ.get("LUMA_BUILD_REGISTRY_URL", "")).netloc
+        from .build_pool import inventory, candidates
+        return {"executionBackend": "temporal-nomad", "configRevision": int(_build_config(state).get("configRevision") or 0), "defaultNode": "auto", "registryHost": host,
+                "pushHost": host, "directEgressNodes": [], "nodes": inventory(state), "availableNodes": candidates(state)}
     config = _build_config(state)
     nodes: list[Dict[str, Any]] = []
     for record in _build_node_records(state, require_ready=False):
@@ -13043,6 +13084,9 @@ def _cache_runtime_image_on_builder(
     platform: str = "",
     progress: Callable[[dict[str, str]], None] | None = None,
 ) -> Dict[str, Any]:
+    from ..release import registry_for_image
+    if registry_for_image(image) and "@sha256:" in image:
+        return {"deployed": image, "cacheImage": image, "builderNode": "nomad", "cached": False}
     build = _build_config(state)
     pull_host_raw = str(build.get("registryHost") or "").strip()
     push_host_raw = str(build.get("pushHost") or "").strip()
@@ -14071,6 +14115,7 @@ async def _asgi_metrics(request: Request) -> Response:
 
 
 async def _asgi_health(_: Request) -> JSONResponse:
+    from .build_platform import enabled as native_build_pool_enabled
     return _json_response(
         200,
         {
@@ -14087,6 +14132,7 @@ async def _asgi_health(_: Request) -> JSONResponse:
                 "repository-compose-sidecar-v1",
                 "deployment-workflow-v1",
                 "build-queue-v1",
+                *(["native-build-pool-v1"] if native_build_pool_enabled() else []),
                 "build-proxy-mode-v1",
                 "system-update-v1",
                 "control-image-preparation-v1",
@@ -14274,6 +14320,15 @@ async def _asgi_authenticated_post(request: Request) -> Response:
         if not isinstance(body, dict):
             raise LumaError("request body must be a JSON object")
         token = bearer_token(request.headers)
+        if path.startswith("/v1/build-platform/"):
+            from .build_platform import dispatch, retryable_publication_error
+            try:
+                result = await run_in_threadpool(dispatch, token, path.rsplit("/", 1)[1], body)
+            except LumaError as exc:
+                if path.endswith("/publish") and retryable_publication_error(exc):
+                    return _json_response(503, {"error": "publication outcome uncertain; reconcile the same release"})
+                raise
+            return _json_response(200, result)
         if operations_api.handles(path):
             result = await run_in_threadpool(functools.partial(operations_api.dispatch, token, "POST", path, body=body, query=dict(request.query_params)))
             return _json_response(200, result)

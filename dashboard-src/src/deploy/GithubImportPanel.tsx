@@ -13,6 +13,7 @@ import { ROUTE_BY_PAGE } from "../routes";
 import type { DashboardBuildNode, DashboardNode, Lang } from "../types";
 import { buildImportStream, registryServeStream } from "./deployApi";
 import { isReadyNode, regionChoices } from "./options";
+import { BuildNodeSelection } from "./BuildNodeSelection";
 import { StepLog } from "./StepLog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,9 +28,9 @@ import type { DeployStep, Exposure, Region } from "./types";
 const EXPOSURES: Exposure[] = ["none", "cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel", "tcp-relay"];
 const PROVIDER_TYPES = ["github", "gitea"] as const;
 
-function buildNodes(nodes: DashboardNode[], declared: DashboardBuildNode[] = []): DashboardNode[] {
+function buildNodes(nodes: DashboardNode[], declared: DashboardBuildNode[] = [], strict = false): DashboardNode[] {
   const declaredNames = declared.filter((node) => node.ready && node.name).map((node) => node.name as string);
-  if (declaredNames.length) {
+  if (declaredNames.length || strict) {
     const byName = new Map(nodes.map((node) => [node.name, node]));
     return declaredNames.map((name) => byName.get(name) || { name }).filter((node) => Boolean(node.name));
   }
@@ -93,10 +94,13 @@ export function GithubImportPanel({
   nodes: DashboardNode[];
   regions?: Region[];
   build?: {
+    executionBackend?: string;
+    configRevision?: number;
     defaultNode?: string;
     registryHost?: string;
     pushHost?: string;
     nodes?: DashboardBuildNode[];
+    availableNodes?: DashboardBuildNode[];
   };
   onBack?: () => void;
   onRefresh: () => Promise<void> | void;
@@ -105,11 +109,15 @@ export function GithubImportPanel({
   const zh = lang === "zh";
   const regionOptions = regions && regions.length ? regions : regionChoices([], nodes);
   const router = useRouter();
-  const candidates = useMemo(() => buildNodes(nodes, build?.nodes || []), [build?.nodes, nodes]);
+  const pooled = build?.executionBackend === "temporal-nomad";
+  const [savedPool, setSavedPool] = useState<{ nodes: DashboardBuildNode[]; configRevision: number } | null>(null);
+  const effectiveBuildNodes = pooled && savedPool && (build?.configRevision ?? 0) < savedPool.configRevision ? savedPool.nodes : build?.nodes ?? [];
+  const candidates = useMemo(() => buildNodes(nodes, effectiveBuildNodes, pooled), [effectiveBuildNodes, nodes, pooled]);
   const preferredBuildNode = useMemo(() => {
+    if (pooled) return "auto";
     const defaultNode = build?.defaultNode || "";
     return candidates.some((node) => node.name === defaultNode) ? defaultNode : candidates[0]?.name || "";
-  }, [build?.defaultNode, candidates]);
+  }, [build?.defaultNode, candidates, pooled]);
   const clusterRegistryHost = (build?.registryHost || "").trim();
 
   const [mode, setMode] = useState<"provider" | "manual">("provider");
@@ -152,9 +160,11 @@ export function GithubImportPanel({
   const [registryDone, setRegistryDone] = useState("");
 
   useEffect(() => {
-    if (!buildNode && preferredBuildNode) setBuildNode(preferredBuildNode);
+    if (!pooled && buildNode === 'auto') setBuildNode(preferredBuildNode);
+    else if (pooled && buildNode !== 'auto' && !candidates.some(node => node.name === buildNode)) setBuildNode('auto');
+    else if (!buildNode && preferredBuildNode) setBuildNode(preferredBuildNode);
     if (!registryNode && preferredBuildNode) setRegistryNode(preferredBuildNode);
-  }, [buildNode, preferredBuildNode, registryNode]);
+  }, [buildNode, preferredBuildNode, registryNode, pooled, candidates]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -255,7 +265,7 @@ export function GithubImportPanel({
     setSteps([]);
     setError("");
     try {
-      await buildImportStream(
+      const result = await buildImportStream(
         {
           token,
           repoUrl: mode === "manual" ? repoUrl.trim() : undefined,
@@ -278,7 +288,10 @@ export function GithubImportPanel({
         (step) => setSteps((current) => [...current, step]),
       );
       await onRefresh();
-      onImported?.();
+      const accepted = result as { queued?: boolean; buildRunId?: string } | undefined;
+      if (accepted?.queued && accepted.buildRunId) {
+        router.navigate(`/deployments/build/${encodeURIComponent(accepted.buildRunId)}`);
+      } else onImported?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -312,7 +325,7 @@ export function GithubImportPanel({
       eyebrow: zh ? "应用 / 从 Git 构建" : "Applications / Build from Git",
       title: zh ? "从 Git 构建并部署" : "Build and deploy from Git",
       description: zh ? "选择代码来源和构建节点。部署配置默认沿用仓库，也可以在下方覆盖。" : "Choose a source and build node. Use the repository’s deployment configuration or override it below.",
-      metrics: [{ label: zh ? "可用构建节点" : "Build nodes", value: candidates.length }, { label: "Registry", value: clusterRegistryHost || (zh ? "尚未配置" : "Not configured") }],
+      metrics: [{ label: pooled ? (zh ? "已指定构建节点" : "Selected build nodes") : (zh ? "可用构建节点" : "Build nodes"), value: candidates.length }, { label: "Registry", value: clusterRegistryHost || (zh ? "尚未配置" : "Not configured") }],
     }} />
     <DeployFormSection title={zh ? "01 代码来源" : "01 Source repository"}>
       <FieldGroup>
@@ -346,12 +359,13 @@ export function GithubImportPanel({
       {sourceError ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{zh ? "代码来源读取失败" : "Could not load source"}</AlertTitle><AlertDescription>{sourceError}</AlertDescription></Alert> : null}
     </DeployFormSection>
     <DeployFormSection title={zh ? "02 构建目标" : "02 Build target"}>
+      {pooled && <BuildNodeSelection token={token} lang={lang} selected={effectiveBuildNodes} candidates={build?.availableNodes || []} onRefresh={onRefresh} onSaved={setSavedPool} />}
       <FieldGroup><DeploySelectField label={zh ? "构建节点" : "Build node"} value={buildNode} onChange={setBuildNode} options={[
-        { value: "", label: zh ? "选择构建节点" : "Select build node" },
+        { value: pooled ? "auto" : "", label: pooled ? (zh ? "自动分配构建节点" : "Automatically assign a build node") : (zh ? "选择构建节点" : "Select build node") },
         ...candidates.map((node) => ({ value: node.name || "", label: node.displayName || node.name || "" })),
-      ]} description={!candidates.length ? (zh ? "当前没有可用的声明构建节点，节点需具备 docker-build 能力。" : "No declared builder node is currently available; the node must advertise docker-build.") : undefined} error={candidates.length && !buildNode ? (zh ? "请选择构建节点" : "Select a build node") : undefined} /></FieldGroup>
+      ]} description={pooled ? (zh ? "由构建池按资源和目标架构调度。" : "The pool schedules by resources and target architecture.") : !candidates.length ? (zh ? "当前没有可用的声明构建节点，节点需具备 docker-build 能力。" : "No declared builder node is currently available; the node must advertise docker-build.") : undefined} error={candidates.length && !buildNode ? (zh ? "请选择构建节点" : "Select a build node") : undefined} /></FieldGroup>
       {clusterRegistryHost ? <Alert><Server /><AlertTitle>{zh ? "集群 Registry" : "Cluster registry"}</AlertTitle><AlertDescription>{clusterRegistryHost}</AlertDescription></Alert> : null}
-      <Collapsible open={showRegistry} onOpenChange={setShowRegistry} className="flex flex-col gap-4">
+      {!pooled && <Collapsible open={showRegistry} onOpenChange={setShowRegistry} className="flex flex-col gap-4">
         <CollapsibleTrigger render={<Button variant="outline" className="w-fit" />}>
           <Server data-icon="inline-start" />{zh ? "内部 Registry 设置" : "Internal registry setup"}{showRegistry ? <ChevronUp data-icon="inline-end" /> : <ChevronDown data-icon="inline-end" />}
         </CollapsibleTrigger>
@@ -367,7 +381,7 @@ export function GithubImportPanel({
           {registryError ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{zh ? "Registry 部署失败" : "Registry deploy failed"}</AlertTitle><AlertDescription>{registryError}</AlertDescription></Alert> : null}
           {registrySteps.length ? <StepLog steps={registrySteps} lang={lang} /> : null}
         </CollapsibleContent>
-      </Collapsible>
+      </Collapsible>}
     </DeployFormSection>
     <DeployFormSection title={zh ? "03 部署覆盖项" : "03 Deploy overrides"}>
       <FieldGroup className="grid grid-cols-1 items-start gap-4 @md:grid-cols-2">

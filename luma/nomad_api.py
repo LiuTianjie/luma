@@ -69,6 +69,36 @@ def nomad_addr(config: LumaConfig, state: Dict[str, Any]) -> str:
     return addr
 
 
+def _register_build_release(client, job: dict, release: dict) -> dict:
+    """Fence retried publication with a durable baseline and Nomad CAS.
+
+    A lost registration reply is reconciled through metadata before attempting
+    another write. A manual deployment after this release started also changes
+    the baseline and is never overwritten by an activity retry.
+    """
+    from .control.build_platform import request
+    path = "/v1/job/" + urllib.parse.quote(job["ID"], safe="")
+    try:
+        current = client.request("GET", path)
+    except LumaError as exc:
+        if not isinstance(exc.__cause__, urllib.error.HTTPError) or exc.__cause__.code != 404:
+            raise
+        current = None
+    meta = (current or {}).get("Meta") or {}
+    generation = int(meta.get("luma.release.generation") or 0)
+    if generation > release['generation']:
+        raise LumaError("release superseded by a newer Nomad generation")
+    if meta.get("luma.release.id") == release['id']:
+        return {"JobModifyIndex": current['JobModifyIndex'], "EvalID": ""}
+    index = int((current or {}).get('JobModifyIndex') or 0)
+    baseline = request('POST', '/v1/releases/' + release['id'] + '/baseline', {'index': index})['expectedIndex']
+    if index != baseline:
+        raise LumaError('deployment changed after this release started; submit a new release')
+    job['Meta'] = {**(job.get('Meta') or {}), 'luma.release.id': release['id'],
+                   'luma.release.generation': str(release['generation'])}
+    return client.request('POST', '/v1/jobs', {'Job': job, 'EnforceIndex': True, 'JobModifyIndex': baseline})
+
+
 def deploy_to_nomad(
     config: LumaConfig,
     job_json: str,
@@ -109,7 +139,12 @@ def deploy_to_nomad(
         rollout_timeout_seconds,
     )
     deadline = time.monotonic() + timeout_seconds
-    resp = client.request("POST", "/v1/jobs", {"Job": job})
+    from .release import release_context
+    release = release_context.get()
+    if release:
+        resp = _register_build_release(client, job, release)
+    else:
+        resp = client.request("POST", "/v1/jobs", {"Job": job})
     if not isinstance(resp, dict):
         raise LumaError(
             f"Nomad registration response for {slug} is invalid; rollout cannot be verified"

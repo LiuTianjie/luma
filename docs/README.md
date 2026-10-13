@@ -29,6 +29,7 @@ New to Luma? Read the first two pages in order, then pick guides as you need the
 | [Manifest reference](deployment-yaml.md) | Every field of a service manifest |
 | [CLI reference](luma-cli-reference.md) | Every command and option, generated from the CLI |
 | [Control storage and recovery](control-storage.md) | The manager's SQLite state, retention, backup and restore |
+| [Durable build platform](build-platform.md) | Self-hosted build orchestration, native execution pools and migration |
 | [Installation lifecycle](installation-lifecycle.md) | How installs and updates are validated on each machine |
 | [Bootstrap profiles](profiles.md) | Role sets used by `luma bootstrap --profile` |
 

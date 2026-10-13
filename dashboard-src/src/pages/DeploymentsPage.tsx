@@ -28,7 +28,7 @@ import type { Lang } from "../types";
 type LoadMode = "refresh" | "more";
 const EMPTY_PAGE: HistoryPage = { limit: 50, nextCursor: null, hasMore: false };
 const messageOf = (error: unknown) => error instanceof Error ? error.message : String(error);
-const STATUS_OPTIONS = ["queued", "running", "active", "succeeded", "failed", "failed_partial", "canceling", "canceled"];
+const STATUS_OPTIONS = ["queued", "running", "active", "succeeded", "failed", "failed_partial", "canceling", "canceled", "superseded"];
 
 function sourceLabel(source: string | undefined, lang: Lang) {
   if (source === "build") return lang === "zh" ? "构建" : "Build";
@@ -212,7 +212,7 @@ function HistoryDetailPage({ lang, token, selection, initialItem, onClose, onRef
 
   const item = data?.item || initialItem;
   const retentionNotice = historyRetentionNotice(item, lang);
-  const retryable = item?.kind === "build" && ["failed", "failed_partial", "canceled", "cancelled", "interrupted", "error"].includes(item.status || "");
+  const retryable = item?.kind === "build" && ["failed", "failed_partial", "canceled", "cancelled", "interrupted", "error", "superseded"].includes(item.status || "");
   const cancelable = item?.kind === "build" && ["queued", "running", "canceling"].includes(item.status || "");
   const retryBuild = async () => {
     setAction("retry"); setActionError(""); setActionNotice(""); setRetrySteps([]); setRetryTarget(null);

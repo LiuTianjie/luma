@@ -101,6 +101,8 @@ export type DashboardNodeJoin = {
 };
 
 export type DashboardBuildNode = {
+  platform?: string;
+  nodeId?: string;
   name?: string;
   region?: string;
   agentStatus?: string;
@@ -238,10 +240,13 @@ export type DashboardPayload = {
     warnings?: string[];
   };
   build?: {
+    executionBackend?: string;
+    configRevision?: number;
     defaultNode?: string;
     registryHost?: string;
     pushHost?: string;
     nodes?: DashboardBuildNode[];
+    availableNodes?: DashboardBuildNode[];
   };
   issues?: DashboardIssue[];
   errors?: string[];

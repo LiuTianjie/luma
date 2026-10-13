@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import secrets
 import sqlite3
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -21,6 +23,7 @@ DATABASE_FILE = "control.sqlite3"
 SCHEMA_VERSION = 1
 ENTITY_KINDS = frozenset({"nodes", "agentTasks", "builderTasks", "builderTaskIdempotency", "builderSourceSnapshots", "buildRuns", "deploymentEvents"})
 EVENT_STREAMS = ("events", "progress", "steps")
+LOG = logging.getLogger(__name__)
 
 
 def database_path() -> Path:
@@ -33,8 +36,35 @@ def _json(value: Any) -> str:
 
 
 def _private(path: Path) -> None:
-    if path.exists():
+    try:
         path.chmod(0o600)
+    except FileNotFoundError:
+        # SQLite can remove WAL/SHM when the last other connection closes.
+        pass
+
+
+def _create_database_file(path: Path) -> None:
+    if path.exists():
+        return
+    # Never open/close an existing database outside SQLite: POSIX close()
+    # drops this process's locks, including those held by other connections.
+    # Close a private new inode before publishing it, so simultaneous first
+    # connections cannot see the file until the non-SQLite close is finished.
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(name)
+    try:
+        os.close(fd)
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            pass  # Another initializer published its file first.
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _log_sqlite_error(exc: sqlite3.Error) -> None:
+    LOG.error("Control SQLite operation failed: %s (sqlite_errorcode=%s sqlite_errorname=%s)",
+              exc, getattr(exc, "sqlite_errorcode", None), getattr(exc, "sqlite_errorname", None))
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -68,8 +98,7 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     # Create with restrictive mode before SQLite opens it, including under a
     # permissive process umask. WAL/SHM inherit the main database permissions.
-    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
-    os.close(fd)
+    _create_database_file(path)
     _private(path)
     conn = None
     try:
@@ -84,6 +113,8 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
             _private(Path(str(path) + suffix))
         return conn
     except (sqlite3.Error, ValueError, LumaError) as exc:
+        if isinstance(exc, sqlite3.Error):
+            _log_sqlite_error(exc)
         if conn is not None:
             conn.close()
         if isinstance(exc, LumaError):
@@ -141,7 +172,9 @@ def transaction(*, immediate: bool = True) -> Iterator[sqlite3.Connection]:
         # import. A prepared manifest also blocks automatic stale JSON reuse
         # after a crash between commit and this marker write.
         _record_authority(conn)
-    except BaseException:
+    except BaseException as exc:
+        if isinstance(exc, sqlite3.Error):
+            _log_sqlite_error(exc)
         if not committed:
             conn.rollback()
             if not had_manifest:
@@ -301,11 +334,63 @@ def _write_entity(conn: sqlite3.Connection, kind: str, identifier: str, value: A
         conn.execute("DELETE FROM control_events WHERE kind=? AND entity_id=? AND stream=? AND position=?", (kind, identifier, stream, position))
 
 
-def read_entity(conn: sqlite3.Connection, kind: str, identifier: str) -> Any:
+def read_entity_metadata(conn: sqlite3.Connection, kind: str, identifier: str) -> Any:
+    """Read a task summary without materializing any of its log streams."""
     row = conn.execute("SELECT payload FROM control_entities WHERE kind=? AND id=?", (kind, identifier)).fetchone()
     if row is None:
         raise KeyError(identifier)
-    value = json.loads(row[0])
+    return json.loads(row[0])
+
+
+def update_entity_metadata(conn: sqlite3.Connection, kind: str, identifier: str, value: dict[str, Any]) -> None:
+    """Update an existing summary while preserving event rows and list order.
+
+    The caller owns the transaction. Stream mutation must use its own storage
+    operation, never a read/modify/write of the complete event history.
+    """
+    if any(key in value for key in EVENT_STREAMS):
+        raise ValueError("entity metadata must not contain event streams")
+    status, app, _, updated = _entity_fields(value)
+    result = conn.execute(
+        "UPDATE control_entities SET payload=?,status=?,app=?,updated_at=? WHERE kind=? AND id=?",
+        (_json(value), status, app, updated, kind, identifier),
+    )
+    if result.rowcount != 1:
+        raise KeyError(identifier)
+
+
+def append_entity_events(
+    conn: sqlite3.Connection,
+    kind: str,
+    identifier: str,
+    stream: str,
+    entries: list[dict[str, Any]],
+) -> int:
+    """Append only the new batch, with positions assigned under a writer lock.
+
+    Use inside transaction() so concurrent producers cannot reserve the same
+    position and summary/terminal changes commit atomically with the batch.
+    The primary key finds the tail without reading historical event payloads.
+    """
+    if stream not in EVENT_STREAMS:
+        raise ValueError(f"unsupported event stream: {stream}")
+    if not entries:
+        return 0
+    conn.execute("INSERT OR IGNORE INTO control_event_streams VALUES(?,?,?)", (kind, identifier, stream))
+    tail = conn.execute(
+        "SELECT position FROM control_events WHERE kind=? AND entity_id=? AND stream=? ORDER BY position DESC LIMIT 1",
+        (kind, identifier, stream),
+    ).fetchone()
+    start = int(tail[0]) + 1 if tail is not None else 0
+    conn.executemany(
+        "INSERT INTO control_events(kind,entity_id,stream,position,payload) VALUES(?,?,?,?,?)",
+        ((kind, identifier, stream, start + index, _json(entry)) for index, entry in enumerate(entries)),
+    )
+    return len(entries)
+
+
+def read_entity(conn: sqlite3.Connection, kind: str, identifier: str) -> Any:
+    value = read_entity_metadata(conn, kind, identifier)
     if isinstance(value, dict):
         for row in conn.execute("SELECT stream FROM control_event_streams WHERE kind=? AND entity_id=?", (kind, identifier)):
             value[row[0]] = []
