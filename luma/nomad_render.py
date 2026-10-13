@@ -25,7 +25,7 @@ import urllib.parse
 from typing import Any, Dict, List, Mapping, Sequence
 
 from .config import LumaConfig
-from .compose import render_storage_class_volume, resolve_storage_mounts
+from .compose import compose_replica_count, render_storage_class_volume, resolve_storage_mounts
 from .errors import LumaError
 from .observe_instrument import OBSERVE_STACK, apply_env as apply_observe_env, pin_observe_placement
 from .service import ServiceSpec, slugify
@@ -336,8 +336,9 @@ def render_compose_job(
     docker mount blocks (never the volumes shorthand). Exposed ports are
     published via group ReservedPorts matching the file-provider routes.
 
-    The group runs on one node (Nomad schedules a group atomically); if compose
-    services pin to different nodes this raises.
+    Each allocation runs on one node (Nomad schedules a group atomically).
+    Only a mount-free single-service group may have multiple allocations;
+    without a node pin Nomad places them across eligible nodes in the region.
     """
     if getattr(deployment, "slug", "") == OBSERVE_STACK and node_records:
         deployment = pin_observe_placement(deployment, node_records)
@@ -345,6 +346,7 @@ def render_compose_job(
     services = compose.get("services") if isinstance(compose.get("services"), dict) else {}
     if not services:
         raise LumaError("compose deployment has no services to render")
+    replicas = compose_replica_count(compose, deployment.services, deployment.volumes)
     name = deployment.slug
 
     region = deployment.region
@@ -609,7 +611,7 @@ def render_compose_job(
 
     group: Dict[str, Any] = {
         "Name": name,
-        "Count": 1,
+        "Count": replicas,
         "MaxClientDisconnect": 3_600_000_000_000,
         "Tasks": tasks,
     }
@@ -871,6 +873,8 @@ def _canary_before_promote(service: ServiceSpec) -> bool:
 
 
 def _compose_canary_before_promote(deployment: Any) -> bool:
+    if compose_replica_count(deployment.compose, deployment.services, deployment.volumes) != 1:
+        return False
     has_dynamic_edge = False
     for override in deployment.services.values():
         if override.publish_port is not None:

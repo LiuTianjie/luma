@@ -157,8 +157,11 @@ luma app restart luma-registry --mode recreate
 
 ## Compose And Storage Rules
 
+- Compose replicas resolve from `deploy.replicas`, Compose `scale`, or sidecar `services.<name>.replicas`; declarations must agree and default to 1. Multiple replicas require one mount-free service and bridge networking. Multi-service groups, volume mounts (including read-only and legacy NFS), sidecar volumes, host networking, static/relay ports and Compose placement/update/rollback overrides cannot scale. Split independently scaled workers into separate deployments; use region scheduling without a node pin when cross-node placement is intended.
+- Upgrading Control does not resubmit saved applications. Preview the rendered `Count` after upgrade, then explicitly redeploy through the recorded workflow to apply capacity. A successful old deployment with `Count=1` is not evidence that the requested replica count was honored.
+
 - New persistent deployments use local storage on the deployment node. Control saves the first owner before submission; updates and restarts keep that owner. An offline owner must not cause an empty database to start elsewhere.
-- Keep `docker-compose.yml` standard. Put local paths in `luma.compose.yml` using `volumes.<name>.local.path`. `local.node` inherits deployment placement when omitted; do not introduce a separate storage-node picker. The Compose stack stays in one region on one node.
+- Keep `docker-compose.yml` standard. Put local paths in `luma.compose.yml` using `volumes.<name>.local.path`. `local.node` inherits deployment placement when omitted; do not introduce a separate storage-node picker. A multi-service or persistent Compose stack stays in one region on one node.
 - New dashboard Compose paths are scoped by deployment; native volume names are scoped too. Preserve the exact actual source on existing applications. A new volume name is a data migration, even on the same machine.
 - Inspect live mounts before changing saved metadata: historical manifests can claim NFS while the running container uses a local Docker volume, or a migration may already have happened.
 - Use `adopted: true` only after verified migration, and remove old `initialize: empty` acknowledgements. Neither flag transfers an established local owner to another node.
@@ -279,7 +282,7 @@ Direct `compose render` with local paths requires an explicit node. Control dry-
 For generic CI, install a published PyPI version; verify publication before using the version example below. A source version bump or a successful Control rollout does not prove PyPI availability. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.2.6"
+python -m pip install "luma-infra==0.2.7"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:

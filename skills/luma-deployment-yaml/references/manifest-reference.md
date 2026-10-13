@@ -329,6 +329,8 @@ Do not add a second top-level field for this unless the Luma manifest schema cha
 
 ### Compose Repository Import
 
+`deploy.replicas`, Compose `scale` and sidecar service `replicas` must agree. Values default to 1 and must be positive integers. Only mount-free single-service bridge deployments support multiple replicas; multi-service groups stay at 1. Scaled services cannot use volumes, host networking, static/relay ports, `container_name`, or Compose placement/update/rollback overrides. Luma keeps per-replica resources and managed rolling updates. Upgrade Control and explicitly redeploy to apply new counts; CLI-only upgrades do not fix old server rendering.
+
 #### Dockerfile targets and additional Git contexts
 
 Single-service and Compose `build` blocks accept `target: <Dockerfile-stage>`. For additional repositories, remote import accepts `x-luma-git-contexts.<alias>.lock: <repository-relative-JSON-path>`:
@@ -545,7 +547,7 @@ CI:
 
 ```bash
 # Verify this version is published before installing.
-python -m pip install "luma-infra==0.2.6"
+python -m pip install "luma-infra==0.2.7"
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 luma validate service.yaml --format json
