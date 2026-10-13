@@ -6,7 +6,7 @@ Luma Control 在单个 Manager 使用本地 SQLite，作为 Control 状态及索
 
 默认数据库为 `/opt/luma/control/control.sqlite3`。可在 Control 进程环境设置 `LUMA_CONTROL_STATE_DIR` 更改目录。`control.sqlite3-wal`、`control.sqlite3-shm` 是 SQLite 运行时辅助文件，不能独立备份。
 
-## 写锁竞争与任务回执
+## 写锁竞争与任务回执 {#writer-contention-and-task-receipts}
 
 Control 的本地写入按先来后到排队，与 SQLite 共用 30 秒的取锁预算；读快照不进入写队列。
 慢写事务会记录调用归属、等待与持锁耗时，不记录 SQL 参数。数据库繁忙返回 HTTP 503、
