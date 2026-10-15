@@ -52,7 +52,7 @@ APPLICATION_PROGRESS_DEADLINE_NS = 2_400_000_000_000  # 40m
 # exceed it and make every public Control route return 502 until Nomad restarts
 # the task.  Reserve enough for the steady state and retain bounded burst room.
 CONTROL_CPU_MHZ = 500
-CONTROL_MEMORY_MB = 1024
+CONTROL_MEMORY_MB = 2048
 # Nomad ignores MemoryMaxMB unless memory oversubscription is enabled. Keep the
 # hard reservation equal to the actual Control ceiling so an OOM fix cannot be
 # silently discarded by the scheduler.
