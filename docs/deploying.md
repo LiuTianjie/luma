@@ -88,6 +88,21 @@ luma build config --node builder --default-node builder
 
 Luma picks the image architecture from the target region's nodes: an ARM node gets `linux/arm64`, a mixed region gets a multi-platform image. `--platform` is accepted only when it covers every target.
 
+### Native builders
+
+Register both builders to select a native machine for single-platform repository imports:
+
+```bash
+luma build config --node builder --node air3 --default-node builder \
+  --registry-host 100.64.0.70:5000 --push-host 100.64.0.70:5000
+```
+
+Upgrade Control and the builder agents first. Builders must advertise `repository-build-plan-v1`; macOS with OrbStack or Docker Desktop is supported. `luma status` reports each builder's native container platform.
+
+When declared builders have different native architectures, Control first resolves the repository manifest (including a selected Compose sidecar and per-service placement), locks its Git commit, then queues the build on a matching native builder. The builder verifies its Docker engine architecture before building. A busy or offline native builder remains queued; other builders can continue. Runtime secrets stay on Control until deployment.
+
+`--build-node` explicitly pins a builder and bypasses this selection. A build spanning multiple architectures, or with no matching native builder, retains the existing Buildx path; it is not split across native builders. `luma build local` still builds on the caller's computer. Set `pushHost` to an address reachable from every builder, rather than `localhost`.
+
 ### Build a local checkout
 
 ```bash
@@ -158,21 +173,6 @@ This requires a CLI that supports the flag, Control capability `required-build-c
 An external `--manifest` automatically requires the same capability, even without the flag. Builder uses its validated build and placement fields only when the repository has no manifest; a repository manifest takes precedence for both building and deployment. Runtime environment and secrets from the external manifest are never forwarded as build inputs. Upgrade Control and Builder before using an external manifest with this CLI.
 
 `luma build local` does not support `x-luma-git-contexts`, including in Compose builds. Use remote `luma import` for these inputs; do not move provider credentials into a Dockerfile to bypass the restriction. `build.target` alone does not require an additional Git input.
-
-### Native builders
-
-Register both builders to select a native machine for single-platform repository imports:
-
-```bash
-luma build config --node builder --node air3 --default-node builder \
-  --registry-host 100.64.0.70:5000 --push-host 100.64.0.70:5000
-```
-
-Upgrade Control and the builder agents first. Builders must advertise `repository-build-plan-v1`; macOS with OrbStack or Docker Desktop is supported. `luma status` reports each builder's native container platform.
-
-When declared builders have different native architectures, Control first resolves the repository manifest (including a selected Compose sidecar and per-service placement), locks its Git commit, then queues the build on a matching native builder. The builder verifies its Docker engine architecture before building. A busy or offline native builder remains queued; other builders can continue. Runtime secrets stay on Control until deployment.
-
-`--build-node` explicitly pins a builder and bypasses this selection. A build spanning multiple architectures, or with no matching native builder, retains the existing Buildx path; it is not split across native builders. `luma build local` still builds on the caller's computer. Set `pushHost` to an address reachable from every builder, rather than `localhost`.
 
 ### Build runs and the queue
 
