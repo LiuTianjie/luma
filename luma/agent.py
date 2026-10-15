@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping
 
 from . import __version__
+from .build_capabilities import REPOSITORY_BUILD_PLAN_CAPABILITY
 from .errors import LumaError
 from .installer import luma_installer_command
 from .installation import runtime_record, installer_environment
@@ -90,24 +91,31 @@ def _crane_binary() -> str | None:
 _BUILDX_AVAILABLE: bool | None = None
 
 
+def _docker_cli_plugin_dirs() -> list[str]:
+    # launchd agents run as root, and builds use an isolated DOCKER_CONFIG.
+    # Neither can depend on the logged-in user's Docker plugin symlinks.
+    directories = [
+        os.path.expanduser("~/.docker/cli-plugins"),
+        "/usr/local/lib/docker/cli-plugins",
+        "/usr/lib/docker/cli-plugins",
+        "/usr/libexec/docker/cli-plugins",
+        "/opt/homebrew/lib/docker/cli-plugins",
+        "/Applications/Docker.app/Contents/Resources/cli-plugins",
+        "/Applications/OrbStack.app/Contents/MacOS/xbin",
+    ]
+    binary = shutil.which("docker-buildx")
+    if binary:
+        directories.insert(0, str(Path(binary).parent))
+    return list(dict.fromkeys(d for d in directories if os.path.isfile(os.path.join(d, "docker-buildx"))))
+
+
 def _docker_buildx_available() -> bool:
     global _BUILDX_AVAILABLE
     if _BUILDX_AVAILABLE is not None:
         return _BUILDX_AVAILABLE
     # Detect the buildx CLI plugin by filesystem presence rather than shelling
     # out, so capability advertisement stays cheap on every agent poll.
-    found = bool(shutil.which("docker-buildx"))
-    if not found:
-        plugin_dirs = [
-            os.path.expanduser("~/.docker/cli-plugins"),
-            "/usr/local/lib/docker/cli-plugins",
-            "/usr/lib/docker/cli-plugins",
-            "/usr/libexec/docker/cli-plugins",
-            "/opt/homebrew/lib/docker/cli-plugins",
-            "/Applications/Docker.app/Contents/Resources/cli-plugins",
-        ]
-        found = any(os.path.exists(os.path.join(d, "docker-buildx")) for d in plugin_dirs)
-    _BUILDX_AVAILABLE = found
+    _BUILDX_AVAILABLE = bool(_docker_cli_plugin_dirs())
     return _BUILDX_AVAILABLE
 
 
@@ -157,6 +165,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
     if _docker_buildx_available():
         capabilities.append("docker-build")
         capabilities.append("repository-build-inputs-v1")
+        capabilities.append(REPOSITORY_BUILD_PLAN_CAPABILITY)
     if os_value == "linux" and _crane_binary():
         # Builders with crane installed can copy images registry-to-registry.
         # Control uses this
@@ -3027,11 +3036,17 @@ def _write_docker_auth_configs(
             "ascii"
         )
         auths[server] = {"auth": auth}
-    if not auths:
+    config: Dict[str, Any] = {}
+    if auths:
+        config["auths"] = auths
+    plugin_dirs = _docker_cli_plugin_dirs()
+    if plugin_dirs:
+        config["cliPluginsExtraDirs"] = plugin_dirs
+    if not config:
         return
     config_dir.mkdir(parents=True, exist_ok=True)
     config_file = config_dir / "config.json"
-    config_file.write_text(json.dumps({"auths": auths}), encoding="utf-8")
+    config_file.write_text(json.dumps(config), encoding="utf-8")
     try:
         os.chmod(config_file, 0o600)
     except OSError:
@@ -3798,6 +3813,41 @@ def _deployment_target_build_platform(
     return ",".join(sorted(target))
 
 
+def _repository_build_plan(
+    payload: Mapping[str, Any], src: Path, platforms: Iterable[str]
+) -> Dict[str, Any] | None:
+    from . import gitops
+
+    resolved = sorted({part for value in platforms for part in _build_platform_parts(value)})
+    expected = payload.get("plannedPlatforms")
+    if expected is not None and expected != resolved:
+        raise LumaError("deployment target architecture changed after build planning; retry the build")
+    if payload.get("planOnly") is True:
+        return {
+            "kind": "build-plan",
+            "commit": gitops.head_commit_full(src),
+            "platforms": resolved,
+            "buildCapabilities": ["repository-build-inputs-v1", REPOSITORY_BUILD_PLAN_CAPABILITY],
+            "message": "Resolved build platforms: " + (", ".join(resolved) or "no images to build"),
+        }
+    native = str(payload.get("nativePlatform") or "")
+    if native and resolved != [native]:
+        raise LumaError("native builder does not match the resolved build platforms")
+    return None
+
+
+def _verify_native_build_platform(docker: str, expected: str, *, env: Mapping[str, str] | None = None) -> None:
+    result = subprocess.run(
+        [docker, "info", "--format", "{{.OSType}}/{{.Architecture}}"],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False, timeout=30, env=env,
+    )
+    value = result.stdout.strip().lower()
+    os_name, _, arch = value.partition("/")
+    arch = {"aarch64": "arm64", "x86_64": "amd64"}.get(arch, arch)
+    if result.returncode != 0 or f"{os_name}/{arch}" != expected:
+        raise LumaError(f"native build requires Docker engine {expected}; reported {value or 'unknown'}")
+
+
 def _build_compose_images(
     *,
     src: Path,
@@ -3838,7 +3888,7 @@ def _build_compose_images(
     root_node = str(sidecar.get("node") or "").strip()
     root_region = str(payload.get("region") or sidecar.get("region") or "").strip()
 
-    build_services: list[tuple[str, Dict[str, Any], Dict[str, Any]]] = []
+    build_services: list[tuple[str, Dict[str, Any], Dict[str, Any], str]] = []
     build_source_images: Dict[str, str] = {}
     for service_name, service_body in services.items():
         if not isinstance(service_body, dict):
@@ -3851,12 +3901,25 @@ def _build_compose_images(
                     src, spec, payload=payload, workspace=None, proxy=proxy,
                     progress=progress, cancel_event=cancel_event,
                 )
-            build_services.append((str(service_name), service_body, spec))
+            sidecar_service = sidecar_services.get(service_name)
+            if not isinstance(sidecar_service, dict):
+                sidecar_service = {}
+            platform = _deployment_target_build_platform(
+                payload,
+                node=sidecar_service.get("node") or root_node,
+                region=sidecar_service.get("region") or root_region,
+                requested=payload.get("platform") or spec.get("platform") or service_body.get("platform"),
+            )
+            build_services.append((str(service_name), service_body, spec, platform))
             declared_image = str(service_body.get("image") or "").strip()
             if declared_image:
                 build_source_images[str(service_name)] = declared_image
         elif not isinstance(service_body.get("image"), str) or not service_body.get("image"):
             raise LumaError(f"compose service {service_name} requires image or build")
+
+    plan = _repository_build_plan(payload, src, (item[3] for item in build_services))
+    if plan is not None:
+        return plan
 
     no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
     buildx_env = _buildx_environment(
@@ -3873,7 +3936,7 @@ def _build_compose_images(
     shared_image_replacements: Dict[str, str] = {}
     ambiguous_shared_images: set[str] = set()
     single_build = len(build_services) == 1
-    for service_name, service_body, spec in build_services:
+    for service_name, service_body, spec, platform in build_services:
         if cancel_event is not None and cancel_event.is_set():
             raise TaskCanceled("build-image task canceled")
         context_rel = str(payload.get("context") or spec.get("context") or ".").strip() or "."
@@ -3882,17 +3945,6 @@ def _build_compose_images(
         dockerfile_path = _safe_repo_path_from(context_dir, src, dockerfile_rel)
         if not dockerfile_path.is_file():
             raise LumaError(f"Dockerfile not found in repository: {dockerfile_rel}")
-        sidecar_service = sidecar_services.get(service_name)
-        if not isinstance(sidecar_service, dict):
-            sidecar_service = {}
-        target_node = str(sidecar_service.get("node") or root_node).strip()
-        target_region = str(sidecar_service.get("region") or root_region).strip()
-        platform = _deployment_target_build_platform(
-            payload,
-            node=target_node,
-            region=target_region,
-            requested=payload.get("platform") or spec.get("platform") or service_body.get("platform"),
-        )
         repo_override = (
             str(spec.get("repo") or spec.get("x-luma-repo") or "").strip()
             if allow_repo_overrides
@@ -3997,6 +4049,10 @@ def build_image(
         raise LumaError("docker command not found on build node")
     if not _docker_buildx_available():
         raise LumaError("docker buildx is not available on build node")
+    native = str(payload.get("nativePlatform") or "")
+    build_capabilities = ["repository-build-inputs-v1"]
+    if payload.get("planOnly") is True or "plannedPlatforms" in payload:
+        build_capabilities.append(REPOSITORY_BUILD_PLAN_CAPABILITY)
 
     with tempfile.TemporaryDirectory(prefix="luma-build-") as workdir:
         if cancel_event is not None and cancel_event.is_set():
@@ -4006,13 +4062,21 @@ def build_image(
         if cancel_event is not None and cancel_event.is_set():
             raise TaskCanceled("build-image task canceled")
         sha = gitops.head_commit(src)
+        expected_commit = str(payload.get("expectedCommit") or "")
+        if expected_commit and gitops.head_commit_full(src) != expected_commit:
+            raise LumaError("repository commit changed after build planning; refusing to build")
         # A commit can be built with different refs, sidecars, arguments or
         # platforms while a previous deployment still resolves its image.
         # Each attempt owns its tag; keep the real Git SHA in source metadata.
         image_tag = f"{sha}-{secrets.token_hex(8)}"
 
         docker_config = Path(workdir) / "docker-config"
-        _write_docker_auth_config(docker_config, _auth_for_host(registry_auth, push_host))
+        if payload.get("planOnly") is not True:
+            _write_docker_auth_config(docker_config, _auth_for_host(registry_auth, push_host))
+            if native:
+                _verify_native_build_platform(docker, native, env=_buildx_environment(docker_config))
+                if progress:
+                    progress({"type": "output", "line": f"Verified native Docker engine: {native}"})
 
         selected_sidecar = str(payload.get("composeSidecar") or "")
         deployment_manifest = (
@@ -4038,7 +4102,7 @@ def build_image(
                 source_workspace=Path(workdir),
             )
             result["sha"] = sha
-            result["buildCapabilities"] = ["repository-build-inputs-v1"]
+            result["buildCapabilities"] = build_capabilities
             return result
 
         manifest_path = deployment_manifest[1] if deployment_manifest else None
@@ -4097,6 +4161,9 @@ def build_image(
             raise LumaError(f"Dockerfile not found in repository: {dockerfile_rel}")
 
         target = build_target(build_block)
+        plan = _repository_build_plan(payload, src, [platform])
+        if plan is not None:
+            return plan
         build_contexts = _prepare_build_git_contexts(
             src, build_block, payload=payload, workspace=Path(workdir),
             proxy=proxy or "", progress=progress, cancel_event=cancel_event,
@@ -4138,7 +4205,7 @@ def build_image(
 
     return {
         "kind": "service",
-        "buildCapabilities": ["repository-build-inputs-v1"],
+        "buildCapabilities": build_capabilities,
         "image": image,
         "sha": sha,
         "manifest": manifest_text,

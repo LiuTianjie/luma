@@ -167,6 +167,8 @@ def retry_recipe(args: argparse.Namespace) -> dict[str, Any]:
         "registryHost": "registry_host", "proxyMode": "proxy_mode",
     }
     for source, target in fields.items():
+        if source == "buildNode" and request.get("buildNodeMode") == "auto":
+            continue
         value = request.get(source)
         if value not in (None, "", False):
             parameters[target] = safe_url(str(value)) if target != "port" else value

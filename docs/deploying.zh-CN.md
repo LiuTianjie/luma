@@ -79,7 +79,7 @@ luma secret import .env.production --scope api          # every variable in the 
 
 ## 构建 {#builds}
 
-源码构建需要一个构建节点（任意装有 Docker Buildx 的 Linux 节点）和一个集群能拉取的镜像仓库：
+源码构建需要一个装有 Docker Buildx 的构建节点（Linux，或使用 OrbStack / Docker Desktop 的 macOS）和一个集群能拉取的镜像仓库：
 
 ```bash
 luma registry serve --node builder          # deploy the managed registry on a node
@@ -87,6 +87,19 @@ luma build config --node builder --default-node builder
 ```
 
 Luma 会根据目标区域的节点决定镜像架构：ARM 节点得到 `linux/arm64`，混合架构的区域得到多平台镜像。只有覆盖全部目标架构时才接受 `--platform`。
+
+### 原生架构构建节点 {#native-builders}
+
+先升级 Control 和构建节点 agent，再同时声明 AMD64 与 ARM64 构建节点：
+
+```bash
+luma build config --node builder --node air3 --default-node builder \
+  --registry-host 100.64.0.70:5000 --push-host 100.64.0.70:5000
+```
+
+当声明的构建节点具有不同架构时，Control 会先解析仓库 manifest（包括指定的 Compose sidecar 和服务级部署位置），锁定 Git commit，再把单一架构构建排到对应的原生节点。节点必须上报 `repository-build-plan-v1` 能力；`luma status` 会显示原生容器平台，macOS ARM 节点对应 `linux/arm64`。实际构建前还会核实 Docker 引擎架构。
+
+原生节点忙碌或离线时，任务继续排队，其他 builder 可以继续工作。运行时密钥只在部署阶段使用。显式 `--build-node` 会固定构建节点；多架构构建或没有对应原生节点时，继续使用现有 Buildx 路径，不拆分到多个原生节点。本地 `luma build local` 仍在调用者机器构建。`pushHost` 必须能被所有 builder 访问，不能使用指向各自机器的 `localhost`。
 
 ### 构建本地代码 {#build-a-local-checkout}
 
@@ -205,7 +218,7 @@ luma workflow run api --path ~/src/api
 CI 可以在不保存登录的情况下使用 CLI：
 
 ```bash
-python -m pip install "luma-infra==0.2.8"
+python -m pip install "luma-infra==0.2.9"
 export LUMA_CONTROL_URL=https://luma.example.com
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 

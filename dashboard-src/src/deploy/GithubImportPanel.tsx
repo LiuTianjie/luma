@@ -125,7 +125,7 @@ export function GithubImportPanel({
   const [refLoading, setRefLoading] = useState(false);
   const [sourceError, setSourceError] = useState("");
 
-  const [buildNode, setBuildNode] = useState(preferredBuildNode);
+  const [buildNode, setBuildNode] = useState("");
   const [ref, setRef] = useState("");
   const [region, setRegion] = useState<Region | "">("");
   const [exposure, setExposure] = useState<Exposure | "">("");
@@ -152,9 +152,8 @@ export function GithubImportPanel({
   const [registryDone, setRegistryDone] = useState("");
 
   useEffect(() => {
-    if (!buildNode && preferredBuildNode) setBuildNode(preferredBuildNode);
     if (!registryNode && preferredBuildNode) setRegistryNode(preferredBuildNode);
-  }, [buildNode, preferredBuildNode, registryNode]);
+  }, [preferredBuildNode, registryNode]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -241,12 +240,12 @@ export function GithubImportPanel({
     } else if (!repoUrl.trim()) {
       list.push(zh ? "仓库地址不能为空" : "Repository URL is required");
     }
-    if (!buildNode) list.push(zh ? "必须选择一个构建节点（需具备 docker-build 能力）" : "Select a build node (must have docker-build capability)");
+    if (!candidates.length) list.push(zh ? "当前没有可用的构建节点" : "No builder is currently available");
     if (exposure && exposure !== "none" && !domain.trim()) list.push(zh ? "公开入口必须填写域名" : "Public exposure requires a domain");
     if (port.trim() && !/^[0-9]+$/.test(port.trim())) list.push(zh ? "端口必须是正整数" : "Port must be a positive integer");
     for (const message of parsedEnv.errors) list.push(zh ? `环境变量 ${message}` : `Environment ${message}`);
     return list;
-  }, [buildNode, domain, envText, exposure, mode, port, providerId, repoUrl, repository, zh]);
+  }, [candidates.length, domain, envText, exposure, mode, port, providerId, repoUrl, repository, zh]);
 
   const run = async () => {
     if (errors.length) return;
@@ -311,7 +310,7 @@ export function GithubImportPanel({
     <PageHeader meta={{
       eyebrow: zh ? "应用 / 从 Git 构建" : "Applications / Build from Git",
       title: zh ? "从 Git 构建并部署" : "Build and deploy from Git",
-      description: zh ? "选择代码来源和构建节点。部署配置默认沿用仓库，也可以在下方覆盖。" : "Choose a source and build node. Use the repository’s deployment configuration or override it below.",
+      description: zh ? "选择代码来源，构建节点默认按目标架构自动选择。部署配置沿用仓库，也可以在下方覆盖。" : "Choose a source. The builder is selected for the target architecture. Use the repository’s deployment configuration or override it below.",
       metrics: [{ label: zh ? "可用构建节点" : "Build nodes", value: candidates.length }, { label: "Registry", value: clusterRegistryHost || (zh ? "尚未配置" : "Not configured") }],
     }} />
     <DeployFormSection title={zh ? "01 代码来源" : "01 Source repository"}>
@@ -347,9 +346,9 @@ export function GithubImportPanel({
     </DeployFormSection>
     <DeployFormSection title={zh ? "02 构建目标" : "02 Build target"}>
       <FieldGroup><DeploySelectField label={zh ? "构建节点" : "Build node"} value={buildNode} onChange={setBuildNode} options={[
-        { value: "", label: zh ? "选择构建节点" : "Select build node" },
+        { value: "", label: zh ? "自动选择（按目标架构）" : "Automatic (target architecture)" },
         ...candidates.map((node) => ({ value: node.name || "", label: node.displayName || node.name || "" })),
-      ]} description={!candidates.length ? (zh ? "当前没有可用的声明构建节点，节点需具备 docker-build 能力。" : "No declared builder node is currently available; the node must advertise docker-build.") : undefined} error={candidates.length && !buildNode ? (zh ? "请选择构建节点" : "Select a build node") : undefined} /></FieldGroup>
+      ]} description={!candidates.length ? (zh ? "当前没有可用的声明构建节点，节点需具备 docker-build 能力。" : "No declared builder node is currently available; the node must advertise docker-build.") : (zh ? "单一架构构建优先使用对应的原生节点；手动选择将固定构建节点。" : "Single-platform builds prefer a native builder; a manual selection pins the builder.")} /></FieldGroup>
       {clusterRegistryHost ? <Alert><Server /><AlertTitle>{zh ? "集群 Registry" : "Cluster registry"}</AlertTitle><AlertDescription>{clusterRegistryHost}</AlertDescription></Alert> : null}
       <Collapsible open={showRegistry} onOpenChange={setShowRegistry} className="flex flex-col gap-4">
         <CollapsibleTrigger render={<Button variant="outline" className="w-fit" />}>

@@ -411,6 +411,7 @@ def claim(*, concurrency: int | None = None) -> WorkItem | None:
 def execute(item: WorkItem) -> None:
     from . import server as srv
     build_id, payload = item
+    reroute: State | None = None
     try:
         token = str(load_auth_state().get("deployToken") or "")
         body = dict(payload["body"])
@@ -418,7 +419,14 @@ def execute(item: WorkItem) -> None:
         if payload["kind"] == "local":
             result = srv.handle_local_build_complete(token, build_id, body, _from_queue=True)
         else:
-            result = srv.handle_build_deploy(token, body, _queued_run_id=build_id)
+            plan = payload.get("buildPlan")
+            result = srv.handle_build_deploy(
+                token, body, _queued_run_id=build_id,
+                **({"_build_plan": plan} if isinstance(plan, dict) else {}),
+            )
+            if isinstance(result.get("requeueBuild"), dict):
+                reroute = result["requeueBuild"]
+                return
         if isinstance(workflow, dict):
             # Recording belongs to the accepted task too, not the waiting CLI.
             # Keep the existing expectedRevision guard; never overwrite a newer
@@ -446,6 +454,26 @@ def execute(item: WorkItem) -> None:
         def cleanup(state):
             run = _runs(state).get(build_id)
             if isinstance(run, dict):
+                if (reroute is not None and run.get("plannedCommit") == reroute["commit"]
+                        and run.get("buildNode") == reroute["node"]):
+                    # An ambiguous commit can be retried after the next worker
+                    # has already claimed this phase. Never release that owner.
+                    return
+                if (reroute is not None and run.get("status") == "running"
+                        and not run.get("cancelRequestedAt") and _safe_to_release(state, run)):
+                    # Preserve FIFO identity/order and the private request.
+                    # Until this transaction commits, the old agent reservation
+                    # remains owned; afterward the new builder admits the run.
+                    stored = state.setdefault("buildQueue", {}).get(build_id)
+                    if isinstance(stored, dict):
+                        stored["buildPlan"] = reroute
+                        run.update(status="queued", buildNode=reroute["node"],
+                                   buildPlatforms=reroute["platforms"], plannedCommit=reroute["commit"],
+                                   updatedAt=int(time.time()), message=f"Waiting for builder {reroute['node']}")
+                        run.setdefault("request", {})["buildNode"] = reroute["node"]
+                        run.pop("agentTaskId", None)
+                        run.pop("queueExecuting", None)
+                        return
                 if run.get("status") not in TERMINAL:
                     canceled = bool(run.get("cancelRequestedAt"))
                     run.update(status="canceled" if canceled else "failed", completedAt=int(time.time()),

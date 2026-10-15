@@ -8,6 +8,7 @@ from .errors import LumaError
 
 REQUIRED_BUILD_CAPABILITY = "required-build-capability-v1"
 REPOSITORY_BUILD_INPUTS_CAPABILITY = "repository-build-inputs-v1"
+REPOSITORY_BUILD_PLAN_CAPABILITY = "repository-build-plan-v1"
 
 
 def normalize_build_capabilities(value: Any) -> list[str]:

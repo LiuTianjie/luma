@@ -513,7 +513,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         request = (args._workflow_retry_run or {}).get("request") or {}
         required = repository_build_requirements(request.get("requireBuildCapabilities"), fallback_manifest=bool(request.get("manifest")))
         if required:
-            client.check_build_capabilities(required=required, build_node=str(request.get("buildNode") or ""))
+            client.check_build_capabilities(required=required, build_node="" if request.get("buildNodeMode") == "auto" else str(request.get("buildNode") or ""))
         _workflow_prepare(args, client, name=str(prior_result.get("service") or prior_result.get("deployment") or ""))
         env_secrets = _import_env_secrets(args.deploy_env_file)
         retry_kwargs = {"require_build_capabilities": required} if required else {}
@@ -568,10 +568,11 @@ def cmd_build(args: argparse.Namespace) -> int:
                 rows.append([
                     str(node.get("name") or ""),
                     str(node.get("region") or ""),
+                    str(node.get("nativePlatform") or "-"),
                     "yes" if node.get("ready") else "no",
                     ",".join(str(value) for value in node.get("storageCapabilities") or []) or "-",
                 ])
         if rows:
-            _print_table(["NODE", "REGION", "READY", "CAPABILITIES"], rows)
+            _print_table(["NODE", "REGION", "NATIVE PLATFORM", "READY", "CAPABILITIES"], rows)
         return 0
     raise LumaError(f"unknown build command: {args.build_command}")

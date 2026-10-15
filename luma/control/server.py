@@ -43,7 +43,7 @@ import yaml
 
 from ..registry_access import join_insecure_registries, registry_host_allows_http
 from ..assets import asset_path
-from ..build_capabilities import REQUIRED_BUILD_CAPABILITY, normalize_build_capabilities, repository_build_requirements, require_build_result_capabilities
+from ..build_capabilities import REQUIRED_BUILD_CAPABILITY, REPOSITORY_BUILD_PLAN_CAPABILITY, normalize_build_capabilities, repository_build_requirements, require_build_result_capabilities
 from ..cloudflare import CloudflareClient, delete_dns, sync_dns
 from ..dependencies import initialize_service_requirements, require_service_requirements, service_requirements
 from ..egress import minimal_mihomo_config_from_bytes
@@ -761,6 +761,56 @@ def _require_builder_capabilities(record: Dict[str, Any], node_name: str, requir
         )
 
 
+def _has_native_builder_choices(state: Dict[str, Any]) -> bool:
+    return len({
+        platform for record in _build_node_records(state, require_ready=False)
+        if (platform := _container_platform_for_node(record))
+    }) > 1
+
+
+def _busy_build_nodes(state: Dict[str, Any]) -> set[str]:
+    from .build_queue import _builder_owners, _current_runs
+
+    return set(_builder_owners(state, _current_runs(state)))
+
+
+def _select_native_build_node(
+    state: Dict[str, Any], platforms: list[str], *, fallback: str, required: list[str]
+) -> tuple[str, bool]:
+    # A request spanning multiple architectures retains its existing Buildx
+    # builder. Single-platform imports can run entirely on a native machine.
+    if len(platforms) != 1:
+        return fallback, False
+    candidates = [record for record in _build_node_records(state, require_ready=False)
+                  if _container_platform_for_node(record) == platforms[0]]
+    if not candidates:
+        return fallback, False
+    compatible = [record for record in candidates
+                  if set(["docker-build", *required]).issubset((record.get("agent") or {}).get("capabilities") or [])]
+    if not compatible:
+        raise LumaError(f"native builders for {platforms[0]} need an agent update supporting {', '.join(required)}")
+    # Retain an offline native builder in the plan: the durable queue waits for
+    # it to return instead of silently falling back to architecture emulation.
+    busy = _busy_build_nodes(state)
+    compatible.sort(key=lambda record: (
+        not _node_agent_is_ready(record, required_capability="docker-build"),
+        str(record.get("name")) in busy,
+        str(record.get("name")) != fallback,
+    ))
+    return str(compatible[0]["name"]), True
+
+
+def _checked_repository_build_plan(result: Dict[str, Any]) -> Dict[str, Any]:
+    require_build_result_capabilities(result, [REPOSITORY_BUILD_PLAN_CAPABILITY], owner="Builder")
+    commit = str(result.get("commit") or "")
+    platforms = result.get("platforms")
+    if (result.get("kind") != "build-plan" or not re.fullmatch(r"[0-9a-f]{40}", commit)
+            or not isinstance(platforms, list) or len(platforms) > 32
+            or any(not isinstance(value, str) or not re.fullmatch(r"[a-z0-9]+/[a-z0-9_]+(?:/[a-z0-9]+)?", value) for value in platforms)):
+        raise LumaError("Builder returned an invalid repository build plan")
+    return {"commit": commit, "platforms": sorted(set(platforms))}
+
+
 def _agent_tasks(state: Dict[str, Any]) -> Dict[str, Any]:
     tasks = state.setdefault("agentTasks", {})
     if not isinstance(tasks, dict):
@@ -825,6 +875,7 @@ def _sanitize_git_source(source: Dict[str, Any]) -> Dict[str, Any]:
         "repository",
         "ref",
         "buildNode",
+        "buildNodeMode",
         "context",
         "dockerfile",
         "platform",
@@ -3844,6 +3895,7 @@ def handle_build_deploy(
     progress: Callable[[dict[str, str]], None] | None = None,
     build_run_id: str = "",
     _queued_run_id: str = "",
+    _build_plan: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -3858,9 +3910,22 @@ def handle_build_deploy(
             raise LumaError("repoUrl or providerId + repository is required")
         provider = _require_git_provider(state, provider_id)
         repo_url = _git_provider_clone_url(provider, repository)
+    selection_mode = str(body.get("buildNodeMode") or ("pinned" if body.get("buildNode") else "auto"))
+    if selection_mode not in {"auto", "pinned"}:
+        raise LumaError("buildNodeMode must be auto or pinned")
+    needs_plan = selection_mode == "auto" and _build_plan is None and _has_native_builder_choices(state)
+    initial_node = str((_build_plan or {}).get("node") or body.get("buildNode") or build_config.get("defaultNode") or DEFAULT_BUILD_NODE_NAME).strip()
+    if needs_plan:
+        ready = _build_node_records(state)
+        planners = [record["name"] for record in ready if _node_agent_is_ready(record, required_capability=REPOSITORY_BUILD_PLAN_CAPABILITY)]
+        if not planners:
+            raise LumaError(f"automatic native builder selection requires a ready builder with {REPOSITORY_BUILD_PLAN_CAPABILITY}; update the builder node agent")
+        if not _queued_run_id:
+            busy = _busy_build_nodes(state)
+            initial_node = str(min(planners, key=lambda name: (name in busy, name != initial_node)))
     build_node = _require_build_node(
         state,
-        str(body.get("buildNode") or build_config.get("defaultNode") or DEFAULT_BUILD_NODE_NAME).strip(),
+        initial_node,
         purpose="repository build",
     )
     ref = str(body.get("ref") or "").strip()
@@ -3918,6 +3983,7 @@ def handle_build_deploy(
     run_body = dict(body)
     run_body["repoUrl"] = repo_url
     run_body["buildNode"] = build_node
+    run_body["buildNodeMode"] = selection_mode
     if required_build_capabilities:
         run_body["requireBuildCapabilities"] = required_build_capabilities
     if provider_id:
@@ -3963,6 +4029,60 @@ def handle_build_deploy(
             "name": "Build attempt", "status": "start", "message": "Build attempt created",
             "buildRunId": build_run_id, "retryOf": retry_of,
         })
+        if needs_plan:
+            planning_requirements = sorted(set(required_build_capabilities + [REPOSITORY_BUILD_PLAN_CAPABILITY]))
+            plan_result = _deploy_step(
+                steps, "Resolve build architecture",
+                lambda: _run_node_agent_task(
+                    state, build_node, "build-image",
+                    {**build_payload, "planOnly": True, "requireBuildCapabilities": planning_requirements},
+                    timeout=min(int(body.get("buildTimeout") or 7200), 600) + 120,
+                    required_capability=REPOSITORY_BUILD_PLAN_CAPABILITY,
+                    progress=run_progress, build_run_id=build_run_id, progress_batch=run_progress_batch,
+                ), progress=run_progress,
+            )
+            if _build_run_cancel_requested(build_run_id):
+                raise LumaError("build canceled")
+            _build_plan = _checked_repository_build_plan(plan_result)
+            state = load_state()
+            selected_node, native = _select_native_build_node(
+                state, _build_plan["platforms"],
+                fallback=str(_build_config(state).get("defaultNode") or DEFAULT_BUILD_NODE_NAME),
+                required=planning_requirements,
+            )
+            _build_plan.update(node=selected_node, native=native, planningNode=build_node)
+            run_progress({"name": "Select builder", "status": "ok", "message":
+                          f"{','.join(_build_plan['platforms']) or 'no build'} -> {selected_node}"
+                          + (" (native)" if native else " (default Buildx)")})
+            if _queued_run_id:
+                # The queue owner transfers its reservation atomically only
+                # after this completed planning task has released the agent.
+                return {"requeueBuild": _build_plan}
+
+        if _build_plan is not None:
+            build_node = _require_build_node(state, str(_build_plan["node"]), purpose="planned repository build")
+            planned_requirements = sorted(set(required_build_capabilities + [REPOSITORY_BUILD_PLAN_CAPABILITY]))
+            _require_builder_capabilities(_node_record_for_name(state.get("nodes") or {}, build_node) or {}, build_node, planned_requirements)
+            push_hostname = urllib.parse.urlsplit("//" + str(build_payload["pushHost"])).hostname
+            if build_node != _build_plan.get("planningNode") and push_hostname in {"localhost", "127.0.0.1", "::1"}:
+                raise LumaError("native builder routing requires a mesh-reachable build.pushHost; localhost refers to each builder separately")
+            build_payload.update(
+                ref=_build_plan["commit"], expectedCommit=_build_plan["commit"],
+                plannedPlatforms=_build_plan["platforms"], requireBuildCapabilities=planned_requirements,
+                proxy=_build_proxy_for_request(config, state, build_node, body),
+            )
+            if _build_plan.get("native"):
+                build_payload["nativePlatform"] = _build_plan["platforms"][0]
+            run_body["buildNode"] = build_node
+            git_source = _git_source_from_build_body(run_body, repo_url=repo_url, build_node=build_node, build_run_id=build_run_id)
+
+            def record_plan(current: Dict[str, Any]) -> None:
+                run = _build_runs(current).get(build_run_id)
+                if isinstance(run, dict):
+                    run.update(buildNode=build_node, buildPlatforms=_build_plan["platforms"], plannedCommit=_build_plan["commit"])
+                    run["request"]["buildNode"] = build_node
+            _mutate_control_state(record_plan)
+
         build_result = _deploy_step(
             steps,
             "Build image",
@@ -3982,6 +4102,8 @@ def handle_build_deploy(
         if _build_run_cancel_requested(build_run_id):
             raise LumaError("build canceled")
         require_build_result_capabilities(build_result, required_build_capabilities, owner="Builder")
+        if _build_plan is not None:
+            require_build_result_capabilities(build_result, [REPOSITORY_BUILD_PLAN_CAPABILITY], owner="Builder")
         built_image = str(build_result.get("image") or "").strip()
         built_images = build_result.get("images") if isinstance(build_result.get("images"), dict) else {}
         if not built_image and not built_images:
@@ -11679,6 +11801,7 @@ def _build_summary(state: Dict[str, Any]) -> Dict[str, Any]:
                 "region": str(record.get("region") or ""),
                 "agentStatus": _node_agent_status(record),
                 "agentOs": str(agent.get("os") or ""),
+                "nativePlatform": _container_platform_for_node(record),
                 "storageCapabilities": [str(value) for value in agent.get("capabilities") or []],
                 "ready": _node_agent_is_ready(record, required_capability="docker-build"),
             }

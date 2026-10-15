@@ -79,7 +79,7 @@ Secrets are scoped by application name, so `api/DATABASE_URL` and `worker/DATABA
 
 ## Builds
 
-Source builds need a builder node (any Linux node with Docker Buildx) and a registry the cluster can pull from:
+Source builds need a node with Docker Buildx (Linux, or macOS with OrbStack / Docker Desktop) and a registry the cluster can pull from:
 
 ```bash
 luma registry serve --node builder          # deploy the managed registry on a node
@@ -159,6 +159,21 @@ An external `--manifest` automatically requires the same capability, even withou
 
 `luma build local` does not support `x-luma-git-contexts`, including in Compose builds. Use remote `luma import` for these inputs; do not move provider credentials into a Dockerfile to bypass the restriction. `build.target` alone does not require an additional Git input.
 
+### Native builders
+
+Register both builders to select a native machine for single-platform repository imports:
+
+```bash
+luma build config --node builder --node air3 --default-node builder \
+  --registry-host 100.64.0.70:5000 --push-host 100.64.0.70:5000
+```
+
+Upgrade Control and the builder agents first. Builders must advertise `repository-build-plan-v1`; macOS with OrbStack or Docker Desktop is supported. `luma status` reports each builder's native container platform.
+
+When declared builders have different native architectures, Control first resolves the repository manifest (including a selected Compose sidecar and per-service placement), locks its Git commit, then queues the build on a matching native builder. The builder verifies its Docker engine architecture before building. A busy or offline native builder remains queued; other builders can continue. Runtime secrets stay on Control until deployment.
+
+`--build-node` explicitly pins a builder and bypasses this selection. A build spanning multiple architectures, or with no matching native builder, retains the existing Buildx path; it is not split across native builders. `luma build local` still builds on the caller's computer. Set `pushHost` to an address reachable from every builder, rather than `localhost`.
+
 ### Build runs and the queue
 
 Imports and retries enter a persistent queue per repository, ref and deployment target: a newer submission for the same target cancels older queued ones, while `main` and `dev` never block each other. A busy builder keeps its requests queued without holding up other builders.
@@ -205,7 +220,7 @@ Records never contain tokens or `.env` contents. Notes are free text; do not put
 CI can use the CLI without a saved login:
 
 ```bash
-python -m pip install "luma-infra==0.2.8"
+python -m pip install "luma-infra==0.2.9"
 export LUMA_CONTROL_URL=https://luma.example.com
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 

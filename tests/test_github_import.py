@@ -1786,7 +1786,7 @@ class GithubImportTests(unittest.TestCase):
         import luma.agent as agent
 
         agent._BUILDX_AVAILABLE = None
-        with patch("luma.agent.shutil.which", return_value="/usr/bin/docker-buildx"):
+        with patch("luma.agent.shutil.which", return_value="/usr/bin/docker-buildx"), patch("luma.agent.os.path.isfile", return_value=True):
             caps = agent.node_agent_capabilities("linux")
         agent._BUILDX_AVAILABLE = None
         self.assertIn("docker-build", caps)
@@ -1795,7 +1795,7 @@ class GithubImportTests(unittest.TestCase):
         import luma.agent as agent
 
         agent._BUILDX_AVAILABLE = None
-        with patch("luma.agent.shutil.which", return_value=None), patch("luma.agent.os.path.exists", return_value=False):
+        with patch("luma.agent.shutil.which", return_value=None), patch("luma.agent.os.path.isfile", return_value=False):
             caps = agent.node_agent_capabilities("linux")
         agent._BUILDX_AVAILABLE = None
         self.assertNotIn("docker-build", caps)

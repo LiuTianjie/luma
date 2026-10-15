@@ -258,7 +258,7 @@ def _add_deploy_commands(sub: argparse._SubParsersAction) -> None:
     import_cmd.add_argument("--domain", default="", help="Override the manifest's domain (single service)")
     import_cmd.add_argument("--port", type=int, default=None, help="Override the manifest's container port (single service)")
     import_cmd.add_argument("--env", dest="deploy_env_file", type=Path, help="Store variables from this .env file as application secrets")
-    import_cmd.add_argument("--build-node", dest="build_node", default="", help="Builder node to use instead of the default")
+    import_cmd.add_argument("--build-node", dest="build_node", default="", help="Pin a builder instead of selecting one for the target architecture")
     import_cmd.add_argument("--platform", default="", help="Build platform (default: linux/amd64 or the manifest's build.platform)")
     import_cmd.add_argument("--context", dest="build_context", default="", help="Docker build context inside the repository (default: .)")
     import_cmd.add_argument("--dockerfile", default="", help="Dockerfile inside the repository (default: Dockerfile)")
@@ -315,7 +315,7 @@ def _add_deploy_commands(sub: argparse._SubParsersAction) -> None:
     _add_output_arguments(build_cancel)
     build_config = _command(build_sub, "config", "Show or set builder nodes and the internal registry")
     build_config.add_argument("--node", action="append", dest="nodes", default=[], help="Builder node; repeat for several")
-    build_config.add_argument("--default-node", default="", help="Builder used by 'luma import' by default")
+    build_config.add_argument("--default-node", default="", help="Preferred builder for repository planning and multi-platform builds")
     build_config.add_argument("--registry-host", default="", help="Registry host that nodes pull from, for example 10.0.0.5:5000")
     build_config.add_argument("--push-host", default="", help="Registry host that builds push to (the builder's mesh address, not localhost)")
     build_config.add_argument("--direct-egress-node", action="append", dest="direct_egress_nodes", default=None, help="Builder with direct internet access; repeat for several")
@@ -451,7 +451,7 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
             "Update the local CLI. On a manager this also refreshes Luma Control, and on a joined "
             "node it refreshes the node agent."
         ),
-        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.8\n  luma update fleet",
+        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.9\n  luma update fleet",
     )
     _add_update_arguments(update)
     _add_control_arguments(update)

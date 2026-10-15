@@ -105,6 +105,7 @@ export type DashboardBuildNode = {
   region?: string;
   agentStatus?: string;
   agentOs?: string;
+  nativePlatform?: string;
   storageCapabilities?: string[];
   ready?: boolean;
 };

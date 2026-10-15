@@ -125,12 +125,12 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"  Default: {default_build_node}")
     if build_nodes:
         _print_table(
-            ["NAME", "REGION", "OS", "AGENT"],
+            ["NAME", "REGION", "NATIVE PLATFORM", "AGENT"],
             [
                 [
                     _status_value(item.get("name")),
                     _status_value(item.get("region")),
-                    _status_value(item.get("agentOs")),
+                    _status_value(item.get("nativePlatform") or item.get("agentOs")),
                     _status_value(item.get("agentStatus")),
                 ]
                 for item in build_nodes
