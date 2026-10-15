@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping
 
 from . import __version__
-from .build_capabilities import REPOSITORY_BUILD_PLAN_CAPABILITY
+from .build_capabilities import NATIVE_ARM_BUILD_CAPABILITY, REPOSITORY_BUILD_PLAN_CAPABILITY, native_arm_build_platform
 from .errors import LumaError
 from .installer import luma_installer_command
 from .installation import runtime_record, installer_environment
@@ -166,6 +166,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
         capabilities.append("docker-build")
         capabilities.append("repository-build-inputs-v1")
         capabilities.append(REPOSITORY_BUILD_PLAN_CAPABILITY)
+        capabilities.append(NATIVE_ARM_BUILD_CAPABILITY)
     if os_value == "linux" and _crane_binary():
         # Builders with crane installed can copy images registry-to-registry.
         # Control uses this
@@ -3612,6 +3613,14 @@ def _docker_buildx_build(
     def run_build() -> LocalResult:
         if cancel_event is not None and cancel_event.is_set():
             raise TaskCanceled("build-image task canceled")
+        # This shared boundary covers repository imports, Compose, retries and
+        # local builds, including explicitly selected Buildx builders. Never
+        # trust Buildx's platform list: it also advertises QEMU emulation.
+        native_arm = native_arm_build_platform([platform])
+        if native_arm:
+            _verify_native_arm_builder(docker, builder, native_arm, env=env)
+            if progress:
+                progress({"type": "output", "line": f"Verified native ARM builder: {builder} ({native_arm})"})
         return _run_process_streaming(
             command,
             env=env,
@@ -3827,25 +3836,47 @@ def _repository_build_plan(
             "kind": "build-plan",
             "commit": gitops.head_commit_full(src),
             "platforms": resolved,
-            "buildCapabilities": ["repository-build-inputs-v1", REPOSITORY_BUILD_PLAN_CAPABILITY],
+            "buildCapabilities": ["repository-build-inputs-v1", REPOSITORY_BUILD_PLAN_CAPABILITY, NATIVE_ARM_BUILD_CAPABILITY],
             "message": "Resolved build platforms: " + (", ".join(resolved) or "no images to build"),
         }
     native = str(payload.get("nativePlatform") or "")
-    if native and resolved != [native]:
+    if native and native not in resolved and native_arm_build_platform(resolved) != native:
         raise LumaError("native builder does not match the resolved build platforms")
     return None
 
 
-def _verify_native_build_platform(docker: str, expected: str, *, env: Mapping[str, str] | None = None) -> None:
+def _verify_native_build_platform(
+    docker: str, expected: str, *, env: Mapping[str, str] | None = None, endpoint: str = ""
+) -> None:
+    connection = ["--host" if "://" in endpoint or endpoint.startswith("/") else "--context", endpoint] if endpoint else []
     result = subprocess.run(
-        [docker, "info", "--format", "{{.OSType}}/{{.Architecture}}"],
+        [docker, *connection, "info", "--format", "{{.OSType}}/{{.Architecture}}"],
         text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False, timeout=30, env=env,
     )
     value = result.stdout.strip().lower()
     os_name, _, arch = value.partition("/")
     arch = {"aarch64": "arm64", "x86_64": "amd64"}.get(arch, arch)
-    if result.returncode != 0 or f"{os_name}/{arch}" != expected:
-        raise LumaError(f"native build requires Docker engine {expected}; reported {value or 'unknown'}")
+    actual = native_arm_build_platform([f"{os_name}/{arch}"]) or f"{os_name}/{arch}"
+    if result.returncode != 0 or actual != expected:
+        raise LumaError(f"native build requires Docker engine {expected}; reported {value or 'unknown'}; ARM builds cannot use emulation")
+
+
+def _verify_native_arm_builder(
+    docker: str, builder: str, expected: str, *, env: Mapping[str, str] | None = None
+) -> None:
+    result = subprocess.run(
+        [docker, "buildx", "inspect", builder],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False, timeout=30, env=env,
+    )
+    # Older Buildx (including OrbStack's bundled version) has no inspect JSON
+    # format. Its driver/endpoint labels are stable, and unknown output fails
+    # closed. Verify every worker so an emulating node cannot win scheduling.
+    drivers = re.findall(r"^Driver:\s*(\S+)", result.stdout, re.M)
+    endpoints = re.findall(r"^Endpoint:\s*(\S+)", result.stdout, re.M)
+    if result.returncode != 0 or drivers not in (["docker"], ["docker-container"]) or not endpoints:
+        raise LumaError("ARM builds require a verifiable native Docker builder; use Luma's managed builder on an ARM node")
+    for endpoint in set(endpoints):
+        _verify_native_build_platform(docker, expected, env=env, endpoint=endpoint)
 
 
 def _build_compose_images(
@@ -4004,6 +4035,7 @@ def _build_compose_images(
 
     result = {
         "kind": "compose",
+        "buildCapabilities": [NATIVE_ARM_BUILD_CAPABILITY],
         "manifest": sidecar_text,
         "composeContent": yaml.safe_dump(compose_data, sort_keys=False, allow_unicode=False),
         "images": images,
@@ -4050,7 +4082,7 @@ def build_image(
     if not _docker_buildx_available():
         raise LumaError("docker buildx is not available on build node")
     native = str(payload.get("nativePlatform") or "")
-    build_capabilities = ["repository-build-inputs-v1"]
+    build_capabilities = ["repository-build-inputs-v1", NATIVE_ARM_BUILD_CAPABILITY]
     if payload.get("planOnly") is True or "plannedPlatforms" in payload:
         build_capabilities.append(REPOSITORY_BUILD_PLAN_CAPABILITY)
 

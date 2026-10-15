@@ -97,9 +97,13 @@ luma build config --node builder --node air3 --default-node builder \
   --registry-host 100.64.0.70:5000 --push-host 100.64.0.70:5000
 ```
 
-当声明的构建节点具有不同架构时，Control 会先解析仓库 manifest（包括指定的 Compose sidecar 和服务级部署位置），锁定 Git commit，再把单一架构构建排到对应的原生节点。节点必须上报 `repository-build-plan-v1` 能力；`luma status` 会显示原生容器平台，macOS ARM 节点对应 `linux/arm64`。实际构建前还会核实 Docker 引擎架构。
+所有仓库构建节点必须上报 `native-arm-build-v1` 能力，自动选择还需要 `repository-build-plan-v1`。先升级 Control 和全部构建 agent。macOS 的 OrbStack 和 Docker Desktop 均受支持；`luma status` 会显示原生容器平台，macOS ARM 节点对应 `linux/arm64`。
 
-原生节点忙碌或离线时，任务继续排队，其他 builder 可以继续工作。运行时密钥只在部署阶段使用。显式 `--build-node` 会固定构建节点；多架构构建或没有对应原生节点时，继续使用现有 Buildx 路径，不拆分到多个原生节点。本地 `luma build local` 仍在调用者机器构建。`pushHost` 必须能被所有 builder 访问，不能使用指向各自机器的 `localhost`。
+当声明的构建节点具有不同架构时，Control 会先解析仓库 manifest（包括指定的 Compose sidecar 和服务级部署位置），锁定 Git commit，再选择原生构建节点。只要包含 ARM64，即使同时构建 AMD64，也必须使用原生 ARM64 builder。原生节点忙碌或离线时继续排队；没有对应 ARM 原生节点则报错，不能回退到模拟构建。运行时密钥只在部署阶段使用。
+
+显式 `--build-node` 只能固定兼容节点，不能绕过 ARM 要求。每次 ARM 构建前都会核实所有 Buildx worker 的实际 Docker 引擎架构，不能仅依据包含 QEMU 模拟架构的支持列表。该校验覆盖仓库导入、Compose、重试和 `luma build local`，也包括自定义 Buildx builder。本地旧 CLI 需要先升级；无法验证原生架构的 remote/Kubernetes Buildx driver 不允许执行 ARM 构建。
+
+混合 AMD64/ARM64 请求整体交给 ARM builder，其中 AMD64 部分可以使用模拟执行，不拆分到多台机器。不同 ARM 架构（例如 ARMv7 与 ARM64）需要分开提交。不含 ARM 的构建保留原有回退行为。`pushHost` 必须能被所有 builder 访问，不能使用指向各自机器的 `localhost`。
 
 ### 构建本地代码 {#build-a-local-checkout}
 
@@ -218,7 +222,7 @@ luma workflow run api --path ~/src/api
 CI 可以在不保存登录的情况下使用 CLI：
 
 ```bash
-python -m pip install "luma-infra==0.2.10"
+python -m pip install "luma-infra==0.2.11"
 export LUMA_CONTROL_URL=https://luma.example.com
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 

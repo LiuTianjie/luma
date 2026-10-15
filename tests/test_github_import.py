@@ -527,7 +527,7 @@ class GithubImportTests(unittest.TestCase):
                         "name": "builder",
                         "region": "home",
                         "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "ready", "os": "linux", "capabilities": ["docker-build"]},
+                        "agent": {"status": "ready", "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
                     }
                 }
                 state["gitProviders"] = {
@@ -547,6 +547,7 @@ class GithubImportTests(unittest.TestCase):
                 def fake_run_task(_state, node_name, action, payload, **_kwargs):
                     captured.update({"node": node_name, "action": action, "payload": payload})
                     return {
+                        "buildCapabilities": ["native-arm-build-v1"],
                         "image": "100.64.0.70:5000/gaojiuatech/price:abc123",
                         "manifest": "name: price\nimage: placeholder\nregion: cn\nexposure: none\n",
                     }
@@ -591,13 +592,13 @@ class GithubImportTests(unittest.TestCase):
                         "name": "builder",
                         "region": "home",
                         "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build", "docker-image"]},
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build", "docker-image"]},
                     },
                     "home-2": {
                         "name": "home-2",
                         "region": "cn",
                         "tailscaleIP": "100.84.163.118",
-                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build", "docker-image"]},
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build", "docker-image"]},
                     },
                 }
                 state["build"] = {"defaultNode": "builder", "nodes": ["builder"], "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
@@ -623,7 +624,7 @@ class GithubImportTests(unittest.TestCase):
                         "name": "builder",
                         "region": "home",
                         "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
                     }
                 }
                 save_state(state)
@@ -694,7 +695,7 @@ class GithubImportTests(unittest.TestCase):
                         "name": "builder",
                         "region": "home",
                         "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
                     }
                 }
                 state["build"] = {"defaultNode": "builder", "nodes": ["builder"], "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
@@ -862,7 +863,7 @@ class GithubImportTests(unittest.TestCase):
                         "name": "builder",
                         "region": "home",
                         "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
                     }
                 }
                 state["build"] = {"defaultNode": "builder", "nodes": ["builder"], "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
@@ -881,6 +882,7 @@ class GithubImportTests(unittest.TestCase):
                 with patch(
                     "luma.control.server._run_node_agent_task",
                     return_value={
+                        "buildCapabilities": ["native-arm-build-v1"],
                         "image": "100.64.0.70:5000/acme/app:abc123",
                         "manifest": "name: app\nimage: placeholder\nregion: cn\nexposure: none\n",
                     },
@@ -1012,7 +1014,7 @@ class GithubImportTests(unittest.TestCase):
                         "name": "builder",
                         "region": "home",
                         "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "online", "lastSeen": int(time.time()), "os": "linux", "capabilities": ["docker-build"]},
+                        "agent": {"status": "online", "lastSeen": int(time.time()), "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
                     }
                 }
                 state["build"] = {"defaultNode": "builder", "nodes": ["builder"], "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
@@ -1025,6 +1027,7 @@ class GithubImportTests(unittest.TestCase):
 
                 def fake_build(*_args, **_kwargs):
                     return {
+                        "buildCapabilities": ["native-arm-build-v1"],
                         "image": next(build_images),
                         "manifest": "name: app\nimage: placeholder\nregion: cn\nexposure: none\n",
                     }
@@ -1092,7 +1095,7 @@ class GithubImportTests(unittest.TestCase):
                         "name": "builder",
                         "region": "home",
                         "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
                     }
                 }
                 state["build"] = {"defaultNode": "builder", "nodes": ["builder"], "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
@@ -1107,6 +1110,7 @@ class GithubImportTests(unittest.TestCase):
                 with patch(
                     "luma.control.server._run_node_agent_task",
                     return_value={
+                        "buildCapabilities": ["native-arm-build-v1"],
                         "image": "100.64.0.70:5000/acme/app:abc123",
                         "manifest": "name: app\nimage: placeholder\nregion: cn\nexposure: none\nenv:\n  DATABASE_URL: ${DATABASE_URL}\n",
                     },
@@ -1206,7 +1210,7 @@ class GithubImportTests(unittest.TestCase):
                         "name": "builder",
                         "region": "home",
                         "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "ready", "os": "linux", "capabilities": ["docker-build"]},
+                        "agent": {"status": "ready", "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
                     }
                 }
                 state["build"] = {"defaultNode": "builder", "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
@@ -1216,6 +1220,7 @@ class GithubImportTests(unittest.TestCase):
                 def fake_run_task(_state, node_name, action, payload, **_kwargs):
                     captured.update({"node": node_name, "action": action, "payload": payload})
                     return {
+                        "buildCapabilities": ["native-arm-build-v1"],
                         "image": "100.64.0.70:5000/liutianjie/luxe-monitor:abc123",
                         "manifest": "name: luxe-monitor\nimage: placeholder\nregion: cn\nexposure: none\n",
                     }
@@ -1248,7 +1253,7 @@ class GithubImportTests(unittest.TestCase):
                         "name": "builder",
                         "region": "home",
                         "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "ready", "os": "linux", "capabilities": ["docker-build", "repository-build-inputs-v1"]},
+                        "agent": {"status": "ready", "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build", "repository-build-inputs-v1"]},
                     }
                 }
                 state["build"] = {"defaultNode": "builder", "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
@@ -1257,7 +1262,7 @@ class GithubImportTests(unittest.TestCase):
 
                 with patch(
                     "luma.control.server._run_node_agent_task",
-                    return_value={"image": "100.64.0.70:5000/gaojiuatech/price:abc123", "manifest": "", "buildCapabilities": ["repository-build-inputs-v1"], "fallbackManifestUsed": True},
+                    return_value={"image": "100.64.0.70:5000/gaojiuatech/price:abc123", "manifest": "", "buildCapabilities": ["repository-build-inputs-v1", "native-arm-build-v1"], "fallbackManifestUsed": True},
                 ), patch("luma.control.server.handle_deployment", return_value={"service": "price", "steps": []}) as deploy:
                     result = handle_build_deploy(
                         state["deployToken"],
@@ -1287,7 +1292,7 @@ class GithubImportTests(unittest.TestCase):
                         "name": "builder",
                         "region": "home",
                         "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "ready", "os": "linux", "capabilities": ["docker-build"]},
+                        "agent": {"status": "ready", "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
                     }
                 }
                 state["build"] = {"defaultNode": "builder", "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
@@ -1312,6 +1317,7 @@ class GithubImportTests(unittest.TestCase):
                 with patch(
                     "luma.control.server._run_node_agent_task",
                     return_value={
+                        "buildCapabilities": ["native-arm-build-v1"],
                         "kind": "compose",
                         "manifest": sidecar,
                         "composeContent": compose,
@@ -1372,7 +1378,7 @@ class GithubImportTests(unittest.TestCase):
                         "name": "builder",
                         "region": "home",
                         "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "ready", "os": "linux", "capabilities": ["docker-build"]},
+                        "agent": {"status": "ready", "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
                     }
                 }
                 state["build"] = {"defaultNode": "builder", "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
@@ -1382,6 +1388,7 @@ class GithubImportTests(unittest.TestCase):
                 with patch(
                     "luma.control.server._run_node_agent_task",
                     return_value={
+                        "buildCapabilities": ["native-arm-build-v1"],
                         "kind": "service",
                         "manifest": repo_manifest,
                         "image": "100.64.0.70:5000/acme/app:abc123",
@@ -2199,7 +2206,7 @@ class GithubImportTests(unittest.TestCase):
                         "name": "builder",
                         "region": "cn",
                         "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build", "docker-image"]},
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build", "docker-image"]},
                     },
                     "cn-2": {
                         "name": "cn-2",
@@ -2406,13 +2413,13 @@ class GithubImportTests(unittest.TestCase):
                         "name": "builder",
                         "region": "cn",
                         "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
                     },
                     "home-2": {
                         "name": "home-2",
                         "region": "cn",
                         "tailscaleIP": "100.84.163.118",
-                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
                     },
                 }
                 state["build"] = {"defaultNode": "builder", "nodes": ["builder"]}
@@ -2522,7 +2529,7 @@ class GithubImportTests(unittest.TestCase):
         from luma.control.server import _egress_proxy_for_node
 
         config = LumaConfig({"defaults": {"nomadServer": "100.64.0.1:4647"}}, None)
-        state = {"nodes": {"build-1": {"region": "cn", "agent": {"capabilities": ["docker-build"]}}}}
+        state = {"nodes": {"build-1": {"region": "cn", "agent": {"capabilities": ["native-arm-build-v1", "docker-build"]}}}}
         self.assertEqual(_egress_proxy_for_node(config, state, "build-1"), "http://100.64.0.1:7890")
 
     def test_egress_proxy_for_global_build_node_is_empty(self):
@@ -2530,7 +2537,7 @@ class GithubImportTests(unittest.TestCase):
         from luma.control.server import _egress_proxy_for_node
 
         config = LumaConfig({"defaults": {"nomadServer": "100.64.0.1:4647"}}, None)
-        state = {"nodes": {"build-2": {"region": "global", "agent": {"capabilities": ["docker-build"]}}}}
+        state = {"nodes": {"build-2": {"region": "global", "agent": {"capabilities": ["native-arm-build-v1", "docker-build"]}}}}
         self.assertEqual(_egress_proxy_for_node(config, state, "build-2"), "")
 
     def test_egress_proxy_for_unknown_node_is_empty(self):

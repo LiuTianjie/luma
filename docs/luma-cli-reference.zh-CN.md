@@ -372,7 +372,7 @@ arguments:
   --domain DOMAIN             Override the manifest's domain (single service)
   --port PORT                 Override the manifest's container port (single service)
   --env DEPLOY_ENV_FILE       Store variables from this .env file as application secrets
-  --build-node BUILD_NODE     Pin a builder instead of selecting one for the target architecture
+  --build-node BUILD_NODE     Pin a compatible builder; ARM builds still require a native ARM engine
   --platform PLATFORM         Build platform (default: linux/amd64 or the manifest's build.platform)
   --context BUILD_CONTEXT     Docker build context inside the repository (default: .)
   --dockerfile DOCKERFILE     Dockerfile inside the repository (default: Dockerfile)
@@ -603,7 +603,7 @@ arguments:
   -h, --help                  show this help message and exit
   --node NODES                Builder node; repeat for several
   --default-node DEFAULT_NODE
-                              Preferred builder for repository planning and multi-platform builds
+                              Preferred planner and fallback builder for builds without ARM
   --registry-host REGISTRY_HOST
                               Registry host that nodes pull from, for example 10.0.0.5:5000
   --push-host PUSH_HOST       Registry host that builds push to (the builder's mesh address, not
@@ -1213,7 +1213,7 @@ arguments:
 
 Examples:
   luma update
-  luma update --install-ref v0.2.10
+  luma update --install-ref v0.2.11
   luma update fleet
 ```
 

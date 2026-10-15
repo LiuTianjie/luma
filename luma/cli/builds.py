@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Dict
-from ..build_capabilities import repository_build_requirements, require_build_result_capabilities
+from ..build_capabilities import NATIVE_ARM_BUILD_CAPABILITY, repository_build_requirements, require_build_result_capabilities
 from ..control.client import ControlClient
 from ..errors import ControlRequestError, LumaError
 from ..service import slugify
@@ -405,6 +405,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         )
         prepare_body: Dict[str, Any] = {
             "repoUrl": metadata["repoUrl"],
+            "buildCapabilities": [NATIVE_ARM_BUILD_CAPABILITY],
             "sourceRevision": metadata["revision"],
             "ref": metadata.get("ref", ""),
             **target,

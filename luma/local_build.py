@@ -23,6 +23,7 @@ from .agent import (
     _write_docker_auth_config,
 )
 from .errors import LumaError
+from .build_capabilities import NATIVE_ARM_BUILD_CAPABILITY
 from .service import build_target
 
 
@@ -282,6 +283,7 @@ def build_and_push_local_source(
         )
         return {
             "kind": "service",
+            "buildCapabilities": [NATIVE_ARM_BUILD_CAPABILITY],
             "image": image,
             "sha": tag,
             "manifest": manifest_text,

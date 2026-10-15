@@ -43,7 +43,7 @@ import yaml
 
 from ..registry_access import join_insecure_registries, registry_host_allows_http
 from ..assets import asset_path
-from ..build_capabilities import REQUIRED_BUILD_CAPABILITY, REPOSITORY_BUILD_PLAN_CAPABILITY, normalize_build_capabilities, repository_build_requirements, require_build_result_capabilities
+from ..build_capabilities import NATIVE_ARM_BUILD_CAPABILITY, REQUIRED_BUILD_CAPABILITY, REPOSITORY_BUILD_PLAN_CAPABILITY, native_arm_build_platform, normalize_build_capabilities, repository_build_requirements, require_build_result_capabilities
 from ..cloudflare import CloudflareClient, delete_dns, sync_dns
 from ..dependencies import initialize_service_requirements, require_service_requirements, service_requirements
 from ..egress import minimal_mihomo_config_from_bytes
@@ -777,18 +777,22 @@ def _busy_build_nodes(state: Dict[str, Any]) -> set[str]:
 def _select_native_build_node(
     state: Dict[str, Any], platforms: list[str], *, fallback: str, required: list[str]
 ) -> tuple[str, bool]:
-    # A request spanning multiple architectures retains its existing Buildx
-    # builder. Single-platform imports can run entirely on a native machine.
-    if len(platforms) != 1:
+    # Any ARM output makes a native ARM builder mandatory, even when the same
+    # request also builds AMD64 images. Only non-ARM builds may use a fallback.
+    arm_platform = native_arm_build_platform(platforms)
+    if not arm_platform and len(platforms) != 1:
         return fallback, False
+    native_platform = arm_platform or platforms[0]
     candidates = [record for record in _build_node_records(state, require_ready=False)
-                  if _container_platform_for_node(record) == platforms[0]]
+                  if (native_arm_build_platform([_container_platform_for_node(record)]) or _container_platform_for_node(record)) == native_platform]
     if not candidates:
+        if arm_platform:
+            raise LumaError(f"no declared native builder for {arm_platform}; register an ARM builder such as air3; ARM emulation is disabled")
         return fallback, False
     compatible = [record for record in candidates
                   if set(["docker-build", *required]).issubset((record.get("agent") or {}).get("capabilities") or [])]
     if not compatible:
-        raise LumaError(f"native builders for {platforms[0]} need an agent update supporting {', '.join(required)}")
+        raise LumaError(f"native builders for {native_platform} need an agent update supporting {', '.join(required)}")
     # Retain an offline native builder in the plan: the durable queue waits for
     # it to return instead of silently falling back to architecture emulation.
     busy = _busy_build_nodes(state)
@@ -1494,8 +1498,9 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                     continue
                 if task.get("action") == "build-image":
                     try:
-                        required = normalize_build_capabilities((task.get("payload") or {}).get("requireBuildCapabilities"))
+                        required = sorted(set(normalize_build_capabilities((task.get("payload") or {}).get("requireBuildCapabilities")) + [NATIVE_ARM_BUILD_CAPABILITY]))
                         _require_builder_capabilities(record, canonical_node_name, required)
+                        task.setdefault("payload", {})["requireBuildCapabilities"] = required
                     except LumaError as exc:
                         task.update(status="failed", message=str(exc), result={}, completedAt=now, updatedAt=now)
                         changed = True
@@ -1816,6 +1821,10 @@ def _queue_node_agent_task(
     required_capability: str | None = "nfs-host",
     build_run_id: str = "",
 ) -> str:
+    if action == "build-image":
+        payload = {**payload, "requireBuildCapabilities": sorted(set(
+            normalize_build_capabilities(payload.get("requireBuildCapabilities")) + [NATIVE_ARM_BUILD_CAPABILITY]
+        ))}
     task_id = f"task-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
 
     def mutate(current: Dict[str, Any]) -> None:
@@ -3679,6 +3688,8 @@ def handle_local_build_prepare(token: str, body: Dict[str, Any]) -> Dict[str, An
         ),
         requested=body.get("platform"),
     )
+    if native_arm_build_platform(_platform_parts(build_platform)):
+        require_build_result_capabilities(body, [NATIVE_ARM_BUILD_CAPABILITY], owner="Local CLI; update it before building ARM images")
     now = int(time.time())
     expires_at = now + max(LOCAL_BUILD_LEASE_SECONDS, 300)
     request = dict(body)
@@ -3718,6 +3729,8 @@ def handle_local_build_prepare(token: str, body: Dict[str, Any]) -> Dict[str, An
 def _validate_local_build_result(run: Dict[str, Any], build_result: Dict[str, Any]) -> None:
     project_key = str(run.get("projectKey") or "")
     request = run.get("request") if isinstance(run.get("request"), dict) else {}
+    if native_arm_build_platform(_platform_parts(request.get("platform"))):
+        require_build_result_capabilities(build_result, [NATIVE_ARM_BUILD_CAPABILITY], owner="Local builder")
     registry_host = normalize_registry_host(str(request.get("registryHost") or "").strip())
     tag = f"local-{str(run.get('id') or '').removeprefix('build-')}"
     expected_root = f"{registry_host}/{project_key}"
@@ -3913,14 +3926,14 @@ def handle_build_deploy(
     selection_mode = str(body.get("buildNodeMode") or ("pinned" if body.get("buildNode") else "auto"))
     if selection_mode not in {"auto", "pinned"}:
         raise LumaError("buildNodeMode must be auto or pinned")
-    needs_plan = selection_mode == "auto" and _build_plan is None and _has_native_builder_choices(state)
+    needs_plan = _build_plan is None and _has_native_builder_choices(state)
     initial_node = str((_build_plan or {}).get("node") or body.get("buildNode") or build_config.get("defaultNode") or DEFAULT_BUILD_NODE_NAME).strip()
     if needs_plan:
         ready = _build_node_records(state)
         planners = [record["name"] for record in ready if _node_agent_is_ready(record, required_capability=REPOSITORY_BUILD_PLAN_CAPABILITY)]
         if not planners:
             raise LumaError(f"automatic native builder selection requires a ready builder with {REPOSITORY_BUILD_PLAN_CAPABILITY}; update the builder node agent")
-        if not _queued_run_id:
+        if not _queued_run_id and selection_mode == "auto":
             busy = _busy_build_nodes(state)
             initial_node = str(min(planners, key=lambda name: (name in busy, name != initial_node)))
     build_node = _require_build_node(
@@ -3938,7 +3951,10 @@ def handle_build_deploy(
             raise LumaError("composeSidecar cannot be combined with manifest")
     fallback_manifest = str(body.get("manifest") or "").strip()
     fallback_inputs = _repository_fallback_build_inputs(fallback_manifest, region=str(body.get("region") or "")) if fallback_manifest else {}
-    required_build_capabilities = repository_build_requirements(body.get("requireBuildCapabilities"), fallback_manifest=bool(fallback_manifest))
+    requested_build_capabilities = repository_build_requirements(body.get("requireBuildCapabilities"), fallback_manifest=bool(fallback_manifest))
+    # This is Control policy, not a user workflow option. Older clients and
+    # explicit pins must not be able to dispatch ARM work to emulating agents.
+    required_build_capabilities = sorted(set(requested_build_capabilities + [NATIVE_ARM_BUILD_CAPABILITY]))
     _require_builder_capabilities(
         _node_record_for_name(state.get("nodes") or {}, build_node) or {}, build_node, required_build_capabilities
     )
@@ -3984,8 +4000,8 @@ def handle_build_deploy(
     run_body["repoUrl"] = repo_url
     run_body["buildNode"] = build_node
     run_body["buildNodeMode"] = selection_mode
-    if required_build_capabilities:
-        run_body["requireBuildCapabilities"] = required_build_capabilities
+    if requested_build_capabilities:
+        run_body["requireBuildCapabilities"] = requested_build_capabilities
     if provider_id:
         run_body["providerId"] = provider_id
     # A retry is a new attempt. Never reset the parent's request, result or
@@ -4045,12 +4061,23 @@ def handle_build_deploy(
                 raise LumaError("build canceled")
             _build_plan = _checked_repository_build_plan(plan_result)
             state = load_state()
-            selected_node, native = _select_native_build_node(
-                state, _build_plan["platforms"],
-                fallback=str(_build_config(state).get("defaultNode") or DEFAULT_BUILD_NODE_NAME),
-                required=planning_requirements,
-            )
-            _build_plan.update(node=selected_node, native=native, planningNode=build_node)
+            arm_platform = native_arm_build_platform(_build_plan["platforms"])
+            if selection_mode == "pinned":
+                selected_node = build_node
+                record = _node_record_for_name(state.get("nodes") or {}, selected_node) or {}
+                engine = _container_platform_for_node(record)
+                engine = native_arm_build_platform([engine]) or engine
+                if arm_platform and engine != arm_platform:
+                    raise LumaError(f"ARM build requires a native {arm_platform} builder; pinned builder {selected_node} reports {engine or 'unknown'}; omit --build-node or select an ARM builder")
+                native = engine in _build_plan["platforms"] or bool(arm_platform)
+            else:
+                selected_node, native = _select_native_build_node(
+                    state, _build_plan["platforms"],
+                    fallback=str(_build_config(state).get("defaultNode") or DEFAULT_BUILD_NODE_NAME),
+                    required=planning_requirements,
+                )
+            _build_plan.update(node=selected_node, native=native, planningNode=build_node,
+                               nativePlatform=arm_platform or (_build_plan["platforms"][0] if native else ""))
             run_progress({"name": "Select builder", "status": "ok", "message":
                           f"{','.join(_build_plan['platforms']) or 'no build'} -> {selected_node}"
                           + (" (native)" if native else " (default Buildx)")})
@@ -4072,7 +4099,7 @@ def handle_build_deploy(
                 proxy=_build_proxy_for_request(config, state, build_node, body),
             )
             if _build_plan.get("native"):
-                build_payload["nativePlatform"] = _build_plan["platforms"][0]
+                build_payload["nativePlatform"] = _build_plan.get("nativePlatform") or native_arm_build_platform(_build_plan["platforms"]) or _build_plan["platforms"][0]
             run_body["buildNode"] = build_node
             git_source = _git_source_from_build_body(run_body, repo_url=repo_url, build_node=build_node, build_run_id=build_run_id)
 
@@ -14387,6 +14414,7 @@ async def _asgi_health(_: Request) -> JSONResponse:
                 "build-queue-v1",
                 "build-proxy-mode-v1",
                 REQUIRED_BUILD_CAPABILITY,
+                NATIVE_ARM_BUILD_CAPABILITY,
                 "system-update-v1",
                 "control-image-preparation-v1",
                 "route-sentinel-v1",

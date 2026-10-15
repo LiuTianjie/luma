@@ -28,7 +28,7 @@ class ControlRecoveryTests(unittest.TestCase):
         self.original = {
             "domain": "recovery.test", "clusterId": "test", "deployToken": "management",
             "build": {"defaultNode": "builder", "registryHost": "builder:5000"},
-            "nodes": {"builder": {"agent": {"status": "ready", "capabilities": ["docker-build"],
+            "nodes": {"builder": {"agent": {"status": "ready", "capabilities": ["docker-build", "native-arm-build-v1"],
                                              "tokenHash": server._hash_agent_token(self.token)}}},
             "agentTasks": {"task": {"id": "task", "nodeName": "builder", "status": "running", "progress": []}},
             "buildRuns": {},
@@ -60,7 +60,7 @@ class ControlRecoveryTests(unittest.TestCase):
         with patch.object(server, "load_config", return_value=Mock(defaults={})), patch.object(
             server, "_require_build_node", return_value="builder"
         ), patch.object(server, "_build_proxy_for_request", return_value=""), patch.object(
-            server, "_run_node_agent_task", return_value={"image": "registry/app:sha", "manifest": "name: app\nregion: cn\nexposure: none\n"}
+            server, "_run_node_agent_task", return_value={"image": "registry/app:sha", "manifest": "name: app\nregion: cn\nexposure: none\n", "buildCapabilities": ["native-arm-build-v1"]}
         ), patch.object(server, "handle_deployment", return_value={"service": "app", "image": "registry/app:sha"}) as deploy, patch.object(
             database, "update_entity_metadata", side_effect=locked_once
         ), patch.object(database_errors.time, "sleep", side_effect=retry_wait):

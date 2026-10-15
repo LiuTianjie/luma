@@ -90,18 +90,20 @@ Luma picks the image architecture from the target region's nodes: an ARM node ge
 
 ### Native builders
 
-Register both builders to select a native machine for single-platform repository imports:
+Register AMD64 and ARM64 builders to route builds by their target architecture:
 
 ```bash
 luma build config --node builder --node air3 --default-node builder \
   --registry-host 100.64.0.70:5000 --push-host 100.64.0.70:5000
 ```
 
-Upgrade Control and the builder agents first. Builders must advertise `repository-build-plan-v1`; macOS with OrbStack or Docker Desktop is supported. `luma status` reports each builder's native container platform.
+Upgrade Control and all builder agents first. Repository builders must advertise `native-arm-build-v1`; automatic selection also uses `repository-build-plan-v1`. macOS with OrbStack or Docker Desktop is supported. `luma status` reports each builder's native container platform.
 
-When declared builders have different native architectures, Control first resolves the repository manifest (including a selected Compose sidecar and per-service placement), locks its Git commit, then queues the build on a matching native builder. The builder verifies its Docker engine architecture before building. A busy or offline native builder remains queued; other builders can continue. Runtime secrets stay on Control until deployment.
+When declared builders have different native architectures, Control first resolves the repository manifest (including a selected Compose sidecar and per-service placement), locks its Git commit, then queues the build on a matching native builder. Any build containing ARM64, including mixed AMD64/ARM64 builds, must use a native ARM64 builder. A busy or offline native builder remains queued; a missing native ARM builder is an error. Runtime secrets stay on Control until deployment.
 
-`--build-node` explicitly pins a builder and bypasses this selection. A build spanning multiple architectures, or with no matching native builder, retains the existing Buildx path; it is not split across native builders. `luma build local` still builds on the caller's computer. Set `pushHost` to an address reachable from every builder, rather than `localhost`.
+`--build-node` can pin a compatible builder but cannot bypass the ARM requirement. Before every ARM build, Luma verifies the actual Docker engine of every Buildx worker; emulated platform advertisements are insufficient. This covers imports, Compose, retries and `luma build local`, including custom Buildx builders. Upgrade an older local CLI before building ARM images. Unverifiable remote/Kubernetes Buildx drivers are rejected for ARM builds.
+
+A mixed AMD64/ARM64 request runs on the ARM builder, where its AMD64 portion may use emulation; it is not split across machines. Different ARM architectures (for example ARMv7 and ARM64) require separate requests. Builds without ARM retain their existing fallback behavior. Set `pushHost` to an address reachable from every builder, rather than `localhost`.
 
 ### Build a local checkout
 
@@ -220,7 +222,7 @@ Records never contain tokens or `.env` contents. Notes are free text; do not put
 CI can use the CLI without a saved login:
 
 ```bash
-python -m pip install "luma-infra==0.2.10"
+python -m pip install "luma-infra==0.2.11"
 export LUMA_CONTROL_URL=https://luma.example.com
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 

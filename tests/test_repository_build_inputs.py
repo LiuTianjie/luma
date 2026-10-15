@@ -16,6 +16,11 @@ from luma.service import _load_service_build, build_target
 
 
 class RepositoryBuildInputsTests(unittest.TestCase):
+    def setUp(self):
+        native = patch("luma.agent._verify_native_arm_builder")
+        native.start()
+        self.addCleanup(native.stop)
+
     def write_project(self, root: Path, *, compose: bool, extra_sources: bool = True, target: object = "question-video") -> None:
         root.mkdir(parents=True, exist_ok=True)
         spec = {"context": ".", "dockerfile": "Dockerfile"}
@@ -87,7 +92,7 @@ class RepositoryBuildInputsTests(unittest.TestCase):
                 command = commands[0]
                 self.assertEqual(command[command.index("--target") + 1], "question-video")
                 self.assertEqual(command[command.index("--platform") + 1], "linux/arm64")
-                self.assertEqual(result["buildCapabilities"], ["repository-build-inputs-v1"])
+                self.assertEqual(result["buildCapabilities"], ["repository-build-inputs-v1", "native-arm-build-v1"])
                 self.assertFalse(directories[0].exists())
                 self.assertNotIn("private-git-token", str(result) + str(events))
                 if compose:
@@ -160,7 +165,7 @@ class RepositoryBuildInputsTests(unittest.TestCase):
         self.assertTrue(command[command.index("-f") + 1].endswith("/src/app/Dockerfile.worker"))
         self.assertIn("/acme/video-worker:", result["image"])
         self.assertEqual(result["manifest"], "")
-        self.assertEqual(result["buildCapabilities"], ["repository-build-inputs-v1"])
+        self.assertEqual(result["buildCapabilities"], ["repository-build-inputs-v1", "native-arm-build-v1"])
         self.assertIs(result["fallbackManifestUsed"], True)
         self.assertFalse(prepared_paths[0].exists())
 

@@ -18,13 +18,14 @@ from luma.deploy_workflow import comparison_fields, make_recipe, validate_recipe
 from luma.errors import LumaError
 
 CAPABILITY = "repository-build-inputs-v1"
+NATIVE = "native-arm-build-v1"
 
 
 def builder_state(capabilities=None):
     return {
         "build": {"defaultNode": "builder", "registryHost": "registry.internal:5000"},
         "nodes": {"builder": {"name": "builder", "region": "home", "agent": {
-            "status": "ready", "os": "linux", "capabilities": capabilities if capabilities is not None else ["docker-build", CAPABILITY],
+            "status": "ready", "os": "linux", "capabilities": capabilities if capabilities is not None else ["docker-build", CAPABILITY, NATIVE],
         }}},
     }
 
@@ -151,7 +152,7 @@ class BuildCapabilityControlTests(unittest.TestCase):
         }.items():
             self.stack.enter_context(patch.object(server, name, **kwargs))
         self.body = {"repoUrl": "https://github.com/acme/web.git", "requireBuildCapabilities": [CAPABILITY]}
-        self.build_result = {"image": "registry.internal/acme/web:abc", "manifest": "name: web\nregion: home\nexposure: none\n", "buildCapabilities": [CAPABILITY]}
+        self.build_result = {"image": "registry.internal/acme/web:abc", "manifest": "name: web\nregion: home\nexposure: none\n", "buildCapabilities": [CAPABILITY, NATIVE]}
 
     def test_old_builder_is_rejected_before_build_or_enqueue(self):
         self.state["nodes"]["builder"]["agent"]["capabilities"] = ["docker-build"]
@@ -174,8 +175,8 @@ class BuildCapabilityControlTests(unittest.TestCase):
     def test_requirement_reaches_agent_and_success_evidence(self):
         with patch.object(server, "_run_node_agent_task", return_value=self.build_result) as task, patch.object(server, "handle_deployment", return_value={"service": "web"}) as deploy:
             result = server.handle_build_deploy("test", self.body)
-            self.assertEqual(task.call_args.args[3]["requireBuildCapabilities"], [CAPABILITY])
-            self.assertEqual(result["buildCapabilities"], [CAPABILITY])
+            self.assertEqual(task.call_args.args[3]["requireBuildCapabilities"], [NATIVE, CAPABILITY])
+            self.assertEqual(result["buildCapabilities"], [NATIVE, CAPABILITY])
             self.assertEqual(deploy.call_args.args[1]["gitSource"]["requireBuildCapabilities"], [CAPABILITY])
 
     def test_external_manifest_sends_validated_build_and_placement_only(self):
@@ -206,8 +207,8 @@ labels:
         for secret in ("runtime-secret-never-on-builder", "RUNTIME_API_KEY", "runtime-sensitive-label", "DATABASE_PASSWORD"):
             self.assertNotIn(secret, json.dumps(payload))
         self.assertNotIn("manifest", payload)
-        self.assertEqual(payload["requireBuildCapabilities"], [CAPABILITY])
-        self.assertEqual(result["buildCapabilities"], [CAPABILITY])
+        self.assertEqual(payload["requireBuildCapabilities"], [NATIVE, CAPABILITY])
+        self.assertEqual(result["buildCapabilities"], [NATIVE, CAPABILITY])
         self.assertIn("runtime-secret-never-on-builder", deploy.call_args.args[1]["manifest"])
         self.assertEqual(server._create_build_run.call_args.args[0]["requireBuildCapabilities"], [CAPABILITY])
 
@@ -237,13 +238,13 @@ labels:
         self.assertIn("name: web", deploy.call_args.args[1]["manifest"])
         self.assertNotIn("external-worker", deploy.call_args.args[1]["manifest"])
 
-    def test_no_requirement_preserves_old_builder_behavior(self):
+    def test_omitting_requirements_cannot_use_a_pre_policy_builder(self):
         self.state["nodes"]["builder"]["agent"]["capabilities"] = ["docker-build"]
         self.build_result.pop("buildCapabilities")
         with patch.object(server, "_run_node_agent_task", return_value=self.build_result) as task, patch.object(server, "handle_deployment", return_value={"service": "web"}):
-            result = server.handle_build_deploy("test", {"repoUrl": self.body["repoUrl"]})
-            self.assertNotIn("requireBuildCapabilities", task.call_args.args[3])
-            self.assertNotIn("buildCapabilities", result)
+            with self.assertRaisesRegex(LumaError, NATIVE):
+                server.handle_build_deploy("test", {"repoUrl": self.body["repoUrl"]})
+            task.assert_not_called()
 
     def test_fresh_queue_state_rechecks_agent_before_creating_task(self):
         live = builder_state(["docker-build"])

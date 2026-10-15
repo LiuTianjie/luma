@@ -107,6 +107,10 @@ luma build local . --platform linux/amd64
 
 ## Builder Registry Workflow
 
+- ARM builds are native-only. Declare an ARM builder such as `air3` alongside the AMD64 builder. Any import containing ARM64, including mixed AMD64/ARM64 builds, must run on the ARM builder. Busy/offline native builders wait; a missing native builder or an incompatible explicit pin fails instead of using emulation.
+- Upgrade Control and all declared builders before using this policy. Repository agents must advertise `native-arm-build-v1`; automatic planning also requires `repository-build-plan-v1`. Local ARM builds require an updated CLI and an actual native ARM Docker engine for every selected Buildx worker. Never bypass these checks with an older client, another API or a QEMU-advertised platform list.
+- Mixed AMD64/ARM64 requests run on the ARM builder and may emulate the AMD64 portion. Different ARM architectures require separate requests. This does not split builds across machines.
+
 - Treat `luma import` / Dashboard Repository Import as a build pipeline, not just a manifest deploy: Git provider -> builder node clone/buildx -> internal registry push -> target node pull -> normal Luma deploy.
 - Treat ordinary `luma deploy` and `luma compose deploy` prebuilt images as a
   cache pipeline: external/private registry -> Builder `crane copy` -> Builder
@@ -282,7 +286,7 @@ Direct `compose render` with local paths requires an explicit node. Control dry-
 For generic CI, install a published PyPI version; verify publication before using the version example below. A source version bump or a successful Control rollout does not prove PyPI availability. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.2.10"
+python -m pip install "luma-infra==0.2.11"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:

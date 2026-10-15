@@ -279,7 +279,7 @@ class ImportComposeSidecarTests(unittest.TestCase):
                         "agent": {
                             "status": "ready",
                             "os": "linux",
-                            "capabilities": ["docker-build"],
+                            "capabilities": ["docker-build", "native-arm-build-v1"],
                         },
                     }
                 }
@@ -301,6 +301,7 @@ class ImportComposeSidecarTests(unittest.TestCase):
                     captured.update(payload)
                     return {
                         "kind": "compose",
+                        "buildCapabilities": ["native-arm-build-v1"],
                         "manifest": "name: app-staging\ncompose: docker-compose.yml\nregion: cn\nservices:\n  web:\n    exposure: none\n",
                         "composeContent": "services:\n  web:\n    image: registry.internal/acme/app:abc123\n",
                         "images": {"web": "registry.internal/acme/app:abc123"},
@@ -335,6 +336,7 @@ class ImportComposeSidecarTests(unittest.TestCase):
 
                 stale_builder_result = {
                     "kind": "compose",
+                    "buildCapabilities": ["native-arm-build-v1"],
                     "manifest": "name: production\ncompose: docker-compose.yml\nregion: cn\n",
                     "composeContent": "services:\n  web:\n    image: registry.internal/acme/app:abc123\n",
                     "images": {"web": "registry.internal/acme/app:abc123"},

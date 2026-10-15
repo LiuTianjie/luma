@@ -34,7 +34,7 @@ class BuildQueueTests(unittest.TestCase):
         state['nodes'] = {'cn': {'name': 'cn', 'region': 'cn', 'nomadStatus': 'ready',
                                   'agent': {'status': 'ready', 'os': 'linux', 'arch': 'amd64'}}}
         for name in ('builder', 'builder2'):
-            state['nodes'][name] = {'name': name, 'agent': {'status': 'ready', 'capabilities': ['docker-build']}}
+            state['nodes'][name] = {'name': name, 'agent': {'status': 'ready', 'capabilities': ['docker-build', 'native-arm-build-v1']}}
         save_state(state)
         self.token = state['deployToken']
 
@@ -47,7 +47,7 @@ class BuildQueueTests(unittest.TestCase):
 
     def submit(self, prepared, **extra):
         return srv.handle_local_build_complete(self.token, prepared['run']['id'], {'queue': True,
-            'buildResult': {'kind': 'service', 'image': prepared['upload']['image'],
+            'buildResult': {"buildCapabilities": ["native-arm-build-v1"], 'kind': 'service', 'image': prepared['upload']['image'],
                             'manifest': 'name: app\nregion: cn\nexposure: none\n'}, **extra})
 
     def finish(self, item, status='succeeded'):
@@ -386,7 +386,7 @@ class BuildQueueTests(unittest.TestCase):
                                         'action': 'build-image', 'payload': {}}
                                for task_id in ('task-1', 'task-2')}
         save_state(state)
-        body = {'nodeName': 'builder', 'os': 'linux', 'capabilities': ['docker-build'], 'activeTaskId': ''}
+        body = {'nodeName': 'builder', 'os': 'linux', 'capabilities': ['docker-build', 'native-arm-build-v1'], 'activeTaskId': ''}
         with patch.object(srv, '_record_metrics_history'), ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(lambda _: srv.handle_node_agent_lease(token, body), range(2)))
         self.assertEqual(len([result for result in results if result['task']]), 1)
@@ -621,6 +621,7 @@ class BuildQueueTests(unittest.TestCase):
         other = self.prepare()
         with self.assertRaisesRegex(LumaError, 'reserved project repository'):
             srv.handle_local_build_complete(self.token, other['run']['id'], {'queue': True, 'buildResult': {
+                "buildCapabilities": ["native-arm-build-v1"],
                 'image': 'evil:5000/other:latest', 'kind': 'service', 'manifest': 'name: app'}})
         self.assertEqual(load_state()['buildRuns'][other['run']['id']]['status'], 'running')
 
@@ -678,6 +679,7 @@ class BuildQueueTests(unittest.TestCase):
             build_id = response['buildRunId']
             self.assertEqual(response['run']['status'], 'queued')
             with patch.object(srv, '_run_node_agent_task', return_value={
+                "buildCapabilities": ["native-arm-build-v1"],
                 'kind': 'service', 'image': 'builder:5000/acme/app:immutable',
                 'manifest': 'name: app\nimage: placeholder\nregion: cn\nexposure: none\n',
             }), patch.object(srv, 'handle_deployment', return_value={'service': 'app'}) as deploy:
@@ -732,7 +734,7 @@ class BuildQueueTests(unittest.TestCase):
                     '--timeout', '10',
                     *(['--compose-sidecar', 'luma.compose.yml'] if kind == 'compose' else []),
                 ])
-                built = {'kind': kind, 'image': image, 'buildCapabilities': [capability],
+                built = {'kind': kind, 'image': image, 'buildCapabilities': ['native-arm-build-v1', capability],
                          'manifest': f'name: {name}\nregion: cn\nexposure: none\n'}
                 deployed = {'service': name}
                 if kind == 'compose':
@@ -782,13 +784,13 @@ class BuildQueueTests(unittest.TestCase):
                 self.assertTrue(readbacks)
                 for detail in readbacks:
                     self.assertEqual(detail['run']['status'], 'succeeded')
-                    self.assertEqual(detail['run']['result']['buildCapabilities'], [capability])
+                    self.assertEqual(detail['run']['result']['buildCapabilities'], ['native-arm-build-v1', capability])
                 saved = load_state()['buildRuns'][accepted_ids[0]]
-                self.assertEqual(saved['result']['buildCapabilities'], [capability])
+                self.assertEqual(saved['result']['buildCapabilities'], ['native-arm-build-v1', capability])
                 self.assertFalse(saved.get('queueExecuting'))
                 final = json.loads(output.getvalue())
                 self.assertTrue(final['ok'])
-                self.assertEqual(final['result']['buildCapabilities'], [capability])
+                self.assertEqual(final['result']['buildCapabilities'], ['native-arm-build-v1', capability])
                 self.assertEqual(final['result']['buildRunId'], accepted_ids[0])
 
     def test_queue_does_not_invent_result_capabilities_from_requested_capabilities(self):
@@ -827,7 +829,7 @@ class BuildQueueTests(unittest.TestCase):
             with TestClient(srv.create_app()) as client:
                 try:
                     response = client.post(f"/v1/builds/local/{prepared['run']['id']}/complete", headers={'Authorization': f'Bearer {self.token}'}, json={
-                        'queue': True, 'buildResult': {'kind': 'service', 'image': prepared['upload']['image'], 'manifest': 'name: app\nregion: cn\nexposure: none\n'}})
+                        'queue': True, 'buildResult': {"buildCapabilities": ["native-arm-build-v1"], 'kind': 'service', 'image': prepared['upload']['image'], 'manifest': 'name: app\nregion: cn\nexposure: none\n'}})
                     self.assertEqual(response.status_code, 200)
                     self.assertTrue(response.json()['queued'])
                     self.assertTrue(entered.wait(3))

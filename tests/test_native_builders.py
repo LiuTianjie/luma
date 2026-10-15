@@ -14,6 +14,7 @@ import yaml
 from luma import agent
 from luma.cli import build_parser
 from luma.build_capabilities import REPOSITORY_BUILD_PLAN_CAPABILITY as PLAN
+from luma.build_capabilities import NATIVE_ARM_BUILD_CAPABILITY as NATIVE, native_arm_build_platform
 from luma.control import build_queue as queue
 from luma.control import server as srv
 from luma.control.state import init_state, load_state, save_state
@@ -22,7 +23,7 @@ from luma.deploy_workflow import comparison_fields, make_recipe, validate_recipe
 
 
 COMMIT = "a" * 40
-CAPABILITIES = ["docker-build", "repository-build-inputs-v1", PLAN]
+CAPABILITIES = ["docker-build", "repository-build-inputs-v1", PLAN, NATIVE]
 
 
 class NativeBuildAgentTests(unittest.TestCase):
@@ -105,6 +106,51 @@ class NativeBuildAgentTests(unittest.TestCase):
             with self.assertRaisesRegex(LumaError, "requires Docker engine linux/arm64"):
                 agent._verify_native_build_platform("docker", "linux/arm64")
 
+    def test_arm_build_cannot_start_on_an_emulating_builder_even_without_a_native_hint(self):
+        for platform in ("linux/arm64", "linux/amd64,linux/arm64", "linux/arm64/v8"):
+            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                responses = [
+                    SimpleNamespace(returncode=0, stdout="Driver: docker-container\nEndpoint: amd64-context\nPlatforms: linux/arm64, linux/amd64\n"),
+                    SimpleNamespace(returncode=0, stdout="linux/x86_64\n"),
+                ]
+                with patch.object(agent.subprocess, "run", side_effect=responses) as run, patch.object(agent, "_run_process_streaming") as build:
+                    with self.assertRaisesRegex(LumaError, "ARM builds cannot use emulation"):
+                        agent._docker_buildx_build(docker="docker", builder="custom", docker_config=root,
+                            push_host="registry:5000", registry_host="registry:5000", repo="test/app", sha="test",
+                            context_dir=root, dockerfile_path=root / "Dockerfile", platform=platform, proxy="", build_timeout=60)
+                    self.assertEqual(run.call_args.args[0][:3], ["docker", "--context", "amd64-context"])
+                    build.assert_not_called()
+
+    def test_native_worker_allows_mixed_build_and_unknown_or_emulating_workers_are_rejected(self):
+        for driver, endpoints, rejected in (("docker-container", ["arm"], False),
+                                            ("docker-container", ["arm", "amd"], True),
+                                            ("remote", ["arm"], True)):
+            with self.subTest(driver=driver, endpoints=endpoints):
+                def run(command, **_kwargs):
+                    if "inspect" in command:
+                        text = f"Driver: {driver}\n" + "".join(f"Endpoint: {endpoint}\n" for endpoint in endpoints)
+                    else:
+                        text = "linux/aarch64" if command[2] == "arm" else "linux/x86_64"
+                    return SimpleNamespace(returncode=0, stdout=text)
+                with patch.object(agent.subprocess, "run", side_effect=run):
+                    if rejected:
+                        with self.assertRaises(LumaError):
+                            agent._verify_native_arm_builder("docker", "custom", "linux/arm64")
+                    else:
+                        agent._verify_native_arm_builder("docker", "custom", "linux/arm64")
+
+    def test_multiple_arm_architectures_cannot_fall_back_to_emulation(self):
+        self.assertEqual(native_arm_build_platform(["linux/amd64", "linux/arm64/v8"]), "linux/arm64")
+        self.assertEqual(native_arm_build_platform(["linux/arm/v7"]), "linux/arm/v7")
+        with self.assertRaisesRegex(LumaError, "must be submitted separately"):
+            native_arm_build_platform(["linux/arm/v7", "linux/arm64"])
+
+    def test_mixed_plan_accepts_arm_native_engine_and_preserves_all_planned_platforms(self):
+        platforms = ["linux/amd64", "linux/arm64"]
+        self.assertIsNone(agent._repository_build_plan(
+            {"nativePlatform": "linux/arm64", "plannedPlatforms": platforms}, Path("."), platforms))
+
     def test_orbstack_plugin_is_available_to_root_and_isolated_docker_config(self):
         directory = "/Applications/OrbStack.app/Contents/MacOS/xbin"
         with tempfile.TemporaryDirectory() as temp, patch.object(agent, "_BUILDX_AVAILABLE", None), patch.object(
@@ -152,8 +198,8 @@ class NativeBuildRoutingTests(unittest.TestCase):
                                            required_capability=kwargs["required_capability"], build_run_id=kwargs["build_run_id"])
         srv._mutate_control_state(lambda current: current["agentTasks"][task_id].update(status="succeeded"))
         if payload.get("planOnly"):
-            return {"kind": "build-plan", "commit": COMMIT, "platforms": self.platforms, "buildCapabilities": [PLAN]}
-        return {"kind": "service", "image": "100.64.0.70:5000/acme/app:aaaaaaa", "buildCapabilities": [PLAN],
+            return {"kind": "build-plan", "commit": COMMIT, "platforms": self.platforms, "buildCapabilities": [PLAN, NATIVE]}
+        return {"kind": "service", "image": "100.64.0.70:5000/acme/app:aaaaaaa", "buildCapabilities": [PLAN, NATIVE],
                 "manifest": "name: app\nregion: render\nexposure: none\n"}
 
     def execute(self, item):
@@ -250,27 +296,73 @@ class NativeBuildRoutingTests(unittest.TestCase):
         self.assertIsNone(queue.claim())
 
     def test_explicit_builder_is_honored(self):
+        self.platforms = ["linux/amd64"]
         build_id = self.submit(buildNode="builder")
         self.execute(queue.claim())
+        self.execute(queue.claim())
         self.assertEqual(load_state()["buildRuns"][build_id]["status"], "succeeded")
-        self.assertEqual(len(self.calls), 1)
-        self.assertEqual(self.calls[0][0], "builder")
-        self.assertNotIn("planOnly", self.calls[0][1])
+        self.assertEqual([node for node, _ in self.calls], ["builder", "builder"])
 
-    def test_mixed_platform_request_keeps_default_without_claiming_native_execution(self):
+    def test_explicit_amd_pin_is_rejected_after_planning_without_building(self):
+        build_id = self.submit(buildNode="builder")
+        self.execute(queue.claim()).assert_not_called()
+        run = load_state()["buildRuns"][build_id]
+        self.assertEqual(run["status"], "failed")
+        self.assertIn("pinned builder builder", run["message"])
+        self.assertEqual(len(self.calls), 1)
+        self.assertTrue(self.calls[0][1]["planOnly"])
+
+    def test_compatible_arm_pin_stays_pinned(self):
+        build_id = self.submit(buildNode="air3")
+        self.execute(queue.claim())
+        self.execute(queue.claim())
+        self.assertEqual(load_state()["buildRuns"][build_id]["status"], "succeeded")
+        self.assertEqual([node for node, _ in self.calls], ["air3", "air3"])
+
+    def test_mixed_platform_request_must_use_native_arm_builder(self):
         self.platforms = ["linux/amd64", "linux/arm64"]
         self.submit()
         self.execute(queue.claim())
         self.execute(queue.claim())
-        self.assertEqual([node for node, _ in self.calls], ["builder", "builder"])
-        self.assertNotIn("nativePlatform", self.calls[1][1])
+        self.assertEqual([node for node, _ in self.calls], ["builder", "air3"])
+        self.assertEqual(self.calls[1][1]["nativePlatform"], "linux/arm64")
+        self.assertEqual(self.calls[1][1]["plannedPlatforms"], ["linux/amd64", "linux/arm64"])
 
     def test_offline_native_candidate_is_selected_and_undeclared_nodes_are_not(self):
         state = load_state()
         state["nodes"]["air3"]["agent"]["status"] = "offline"
         self.assertEqual(srv._select_native_build_node(state, ["linux/arm64"], fallback="builder", required=[PLAN]), ("air3", True))
         state["build"]["nodes"] = ["builder"]
-        self.assertEqual(srv._select_native_build_node(state, ["linux/arm64"], fallback="builder", required=[PLAN]), ("builder", False))
+        with self.assertRaisesRegex(LumaError, "no declared native builder"):
+            srv._select_native_build_node(state, ["linux/arm64"], fallback="builder", required=[PLAN])
+
+    def test_old_agent_cannot_bypass_arm_policy_in_a_single_builder_cluster(self):
+        def old_cluster(state):
+            state["build"]["nodes"] = ["builder"]
+            state["nodes"]["builder"]["agent"]["capabilities"] = ["docker-build", PLAN]
+        srv._mutate_control_state(old_cluster)
+        with self.assertRaisesRegex(LumaError, NATIVE):
+            self.submit(buildNode="builder")
+        self.assertFalse(load_state().get("buildRuns"))
+
+    def test_direct_agent_queue_cannot_bypass_native_arm_capability(self):
+        srv._mutate_control_state(lambda state: state["nodes"]["builder"]["agent"].update(capabilities=["docker-build"]))
+        with self.assertRaisesRegex(LumaError, NATIVE):
+            srv._queue_node_agent_task(load_state(), "builder", "build-image", {}, required_capability="docker-build")
+        self.assertFalse(load_state().get("agentTasks"))
+
+    def test_old_local_cli_is_blocked_before_arm_build_and_result_must_confirm_enforcement(self):
+        body = {"repoUrl": "https://git.example.com/acme/local.git", "targetNode": "air3"}
+        with self.assertRaisesRegex(LumaError, "update it before building ARM"):
+            srv.handle_local_build_prepare(self.token, body)
+        self.assertFalse(load_state().get("buildRuns"))
+        prepared = srv.handle_local_build_prepare(self.token, {**body, "buildCapabilities": [NATIVE]})
+        self.assertEqual(prepared["upload"]["platform"], "linux/arm64")
+        run = load_state()["buildRuns"][prepared["run"]["id"]]
+        result = {"kind": "service", "image": prepared["upload"]["image"]}
+        with self.assertRaisesRegex(LumaError, "Local builder did not confirm"):
+            srv._validate_local_build_result(run, result)
+        srv._validate_local_build_result(run, {**result, "buildCapabilities": [NATIVE]})
 
     def test_invalid_or_unversioned_plan_is_rejected(self):
         for result in ({"kind": "build-plan", "commit": COMMIT, "platforms": ["linux/arm64"]},
