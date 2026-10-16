@@ -265,7 +265,7 @@ class ControlApiTests(unittest.TestCase):
                 "pushHost": "100.64.0.70:5000",
             }
         }
-        with patch(
+        with patch("luma.control.server.load_runtime_state", return_value=state), patch(
             "luma.control.server._require_build_node", return_value="builder"
         ), patch(
             "luma.control.server._run_node_agent_task",
@@ -302,7 +302,7 @@ class ControlApiTests(unittest.TestCase):
                 "pushHost": "100.64.0.70:5000",
             }
         }
-        with patch(
+        with patch("luma.control.server.load_runtime_state", return_value=state), patch(
             "luma.control.server._require_build_node", return_value="builder"
         ), patch("luma.control.server._run_node_agent_task") as task:
             result = _cache_runtime_image_on_builder(

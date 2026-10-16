@@ -152,11 +152,41 @@ class MacComposeNetworkTests(unittest.TestCase):
     def test_runtime_cache_normalizes_mac_platform_to_linux_container(self):
         from luma.control.server import _cache_runtime_image_on_builder
         state = {"build": {"registryHost": "registry.local:5000", "pushHost": "registry.local:5000"}}
-        with patch("luma.control.server._require_build_node", return_value="builder"), patch(
+        with patch("luma.control.server.load_runtime_state", return_value=state), patch("luma.control.server._require_build_node", return_value="builder"), patch(
             "luma.control.server._run_node_agent_task", return_value={"digest": "sha256:" + "a" * 64},
         ) as task:
             _cache_runtime_image_on_builder(self.config, state, "python:3.13-alpine", platform="darwin/arm64")
         self.assertEqual(task.call_args.args[3]["platform"], "linux/arm64")
+
+    def test_runtime_cache_uses_fresh_heartbeat_after_long_deployment(self):
+        from luma.control.server import AGENT_STALE_SECONDS, _cache_runtime_image_on_builder
+        captured = {
+            "build": {"defaultNode": "builder", "registryHost": "registry.local:5000", "pushHost": "registry.local:5000"},
+            "nodes": {"builder": {"agent": {"status": "online", "lastSeen": 1000, "capabilities": ["docker-build", "runtime-image-cache-v1"]}}},
+        }
+        now = 1000 + AGENT_STALE_SECONDS + 1
+        live = {"nodes": {"builder": {"agent": {**captured["nodes"]["builder"]["agent"], "lastSeen": now}}}}
+        with patch("luma.control.server.time.time", return_value=now), patch(
+            "luma.control.server.load_runtime_state", return_value=live,
+        ), patch("luma.control.server._run_node_agent_task", return_value={"digest": "sha256:" + "a" * 64}) as task:
+            result = _cache_runtime_image_on_builder(self.config, captured, "python:3.13-alpine")
+        self.assertTrue(result["cached"])
+        self.assertEqual(task.call_args.args[1], "builder")
+        self.assertEqual(captured["nodes"]["builder"]["agent"]["lastSeen"], 1000)
+
+    def test_runtime_cache_rejects_builder_that_went_offline(self):
+        from luma.control.server import _cache_runtime_image_on_builder
+        captured = {
+            "build": {"defaultNode": "builder", "registryHost": "registry.local:5000", "pushHost": "registry.local:5000"},
+            "nodes": {"builder": {"agent": {"status": "ready", "capabilities": ["docker-build", "runtime-image-cache-v1"]}}},
+        }
+        live = {"nodes": {"builder": {"agent": {**captured["nodes"]["builder"]["agent"], "status": "offline"}}}}
+        with patch("luma.control.server.load_runtime_state", return_value=live), patch(
+            "luma.control.server._run_node_agent_task", return_value={"digest": "sha256:" + "a" * 64},
+        ) as task:
+            with self.assertRaisesRegex(LumaError, "ready builder node"):
+                _cache_runtime_image_on_builder(self.config, captured, "python:3.13-alpine")
+        task.assert_not_called()
 
     def test_dashboard_hides_network_hooks_and_keeps_published_port(self):
         from luma.nomad_api import _job_task_summaries

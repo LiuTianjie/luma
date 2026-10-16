@@ -13413,6 +13413,10 @@ def _cache_runtime_image_on_builder(
         )
     pull_host = normalize_registry_host(pull_host_raw)
     push_host = normalize_registry_host(push_host_raw)
+    # A deployment can cache several large images. Its original node snapshot
+    # may outlive the heartbeat window while earlier copies are still running.
+    # Keep the deployment's build configuration, but validate current readiness.
+    state = {**state, "nodes": load_runtime_state().get("nodes") or {}}
     build_node = _require_build_node(
         state,
         str(build.get("defaultNode") or DEFAULT_BUILD_NODE_NAME),
