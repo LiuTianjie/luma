@@ -1,0 +1,133 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Compose 部署与本地存储 · Luma 文档</title><meta name="description" content="Compose 部署与本地存储 — Luma 文档"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">跳到正文</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../zh.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">文档</span><button class="menu-toggle" aria-label="展开导航" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="主导航"><a href="../zh.html#product">控制台</a><a href="../zh.html#docs">全部指南</a><a href="compose-storage.html" data-doc-language lang="en">English</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="文档"><strong>指南</strong><a class=""  href="README.zh-CN.html">概览</a><a class=""  href="getting-started.zh-CN.html">快速上手</a><a class=""  href="concepts.zh-CN.html">核心概念</a><a class=""  href="deploying.zh-CN.html">部署应用</a><a class=""  href="build-and-artifacts.zh-CN.html">构建与制品</a><a class=""  href="migration-guide.zh-CN.html">零停机迁移</a><a class=""  href="operations.zh-CN.html">日常运维</a><a class=""  href="deployment-yaml.zh-CN.html">部署 YAML</a><a class="active" aria-current=page href="compose-storage.zh-CN.html">Compose 与存储</a><a class=""  href="secrets.zh-CN.html">密钥与凭据</a><a class=""  href="exposure-model.zh-CN.html">暴露模型</a><a class=""  href="observability.zh-CN.html">可观测</a><a class=""  href="dashboard-guide.zh-CN.html">控制台指南</a><a class=""  href="troubleshooting.zh-CN.html">故障排查</a><a class=""  href="luma-cli-reference.zh-CN.html">CLI 命令参考</a><a class=""  href="ai-agent-skills.zh-CN.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../zh.html#docs">文档</a><span>/</span><span>Compose 部署与本地存储</span></div><h1 id="compose-deployments-and-local-storage">Compose 部署与本地存储<a class="headerlink" href="#compose-deployments-and-local-storage" title="章节链接">#</a></h1>
+<p>持久化数据属于运行应用的节点。新的控制台模板使用本地存储，无需 NFS 服务器或存储类。Control 在部署区域中选择一个就绪节点（或使用指定节点），在提交任务前记录数据归属，后续部署固定到该节点。归属节点不可用时会阻止调度，而不会在其他节点启动一个空数据库。</p>
+<p>多服务 Compose stack 中的服务一起运行在同一节点，只有一个 allocation。无挂载的单服务 stack 可以在所属 region 内运行多个 allocation。只读配置挂载和 Docker socket 不产生持久化数据归属。可写本地挂载需要稳定的节点位置。带持久化挂载的原生服务要求 <code>replicas: 1</code>；持久化工作负载不使用可能让两个写入进程同时操作同一目录的金丝雀晋级。</p>
+<h2 id="replicas">副本数<a class="headerlink" href="#replicas" title="章节链接">#</a></h2>
+<p>Luma 将 Docker Compose 的 <code>services.&lt;name&gt;.deploy.replicas</code> 与 sidecar 的
+<code>services.&lt;name&gt;.replicas</code> 解析为 Nomad group <code>Count</code>。两处任选其一；同时声明时
+必须一致。Compose <code>scale</code> 同样受支持，并且必须与其他副本声明一致。默认值为 <code>1</code>。
+副本数必须为正整数；零、布尔值、浮点数、null 和冲突值会在校验阶段报错，导入校验
+也执行相同规则。<code>deploy.mode</code> 只支持 <code>replicated</code>。</p>
+<p>多个副本要求恰好一个服务、没有 Compose volume 挂载，也没有 sidecar volume 声明。
+只读、匿名及历史 NFS 挂载也在限制范围内，目前尚不支持这些挂载的多副本语义。
+多服务 stack 中每个服务必须为一个副本，即使所有服务声明的副本数相同也不能扩容。
+同组服务共享 loopback；复制整个组会同时复制数据库和调度器。需要独立扩容的 worker
+应拆为独立部署，通过可跨节点访问的地址连接依赖。</p>
+<pre><code class="language-yaml"># docker-compose.yml
+services:
+  worker:
+    image: registry.example.com/worker:1
+    deploy:
+      replicas: 6
+      resources:
+        reservations: {memory: 2048M}
+        limits: {memory: 2048M}
+</code></pre>
+<pre><code class="language-yaml"># luma.compose.yml
+name: worker-pool
+region: render
+services:
+  worker:
+    exposure: none
+    replicas: 6
+</code></pre>
+<p>部署前需创建自定义 region。不设 <code>node</code> 时，Nomad 可将各 allocation 分配到该 region
+内任一符合条件的节点，不保证均匀分布。显式节点锁定会约束所有副本。资源预留和容器内
+进程数均按<strong>每副本</strong>计算；六个各预留 2 GiB 的 allocation 共需 12 GiB 可调度内存，
+物理空闲内存不等于可调度余量。</p>
+<p>多副本服务支持 bridge 网络和 <code>exposure: none</code>，或使用动态端口的 <code>cn-edge</code> /
+<code>external-edge</code>。host 网络、relay 暴露、<code>publishPort</code>、Compose <code>ports</code> 和
+<code>container_name</code> 会被拒绝。多副本的 <code>deploy.placement</code>、<code>deploy.update_config</code>
+和 <code>deploy.rollback_config</code> 也会报错：调度使用 Luma region/node，更新使用 Luma
+管理的滚动策略。更新保留 <code>MaxParallel: 1</code>、健康检查、自动回滚与 <code>stop_grace_period</code>；
+多副本不额外启动 canary。提交版本的全部所需 allocation 健康后才算部署成功。</p>
+<p>修复必须升级 <strong>Control</strong>，仅升级 CLI 无法改变旧服务端渲染的 jobspec。升级本身不会
+重新提交已有应用。升级后先预览保存的配置、确认 <code>Count</code>，再按应用原有流程主动重新
+部署，才会应用副本数。在此之前，已有应用保持原状。</p>
+<h2 id="compose-example">Compose 示例<a class="headerlink" href="#compose-example" title="章节链接">#</a></h2>
+<p>保持应用文件为标准格式：</p>
+<pre><code class="language-yaml"># docker-compose.yml
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+volumes:
+  pg-data: {}
+</code></pre>
+<p>在 Luma 旁车清单中使用本地路径：</p>
+<pre><code class="language-yaml"># luma.compose.yml
+name: app-stack
+compose: docker-compose.yml
+region: cn
+services:
+  postgres:
+    exposure: none
+volumes:
+  pg-data:
+    local:
+      path: /srv/luma/data/app-stack/pg-data
+</code></pre>
+<p>通过 Control 部署时，<code>local.node</code> 可选。路径跟随部署节点，不单独选择存储节点。要显式选择首次部署节点，设置 <code>services.postgres.node</code>。互相冲突的节点绑定会被拒绝。Control 将解析后的节点绑定和本地卷节点保存到部署配置。已有目录保留所有权和权限，包括 PostgreSQL 数据目录的严格权限。</p>
+<p>控制台为新的 Compose 卷生成 <code>/srv/luma/data/&lt;deployment-slug&gt;/&lt;volume-name&gt;</code> 路径。不同数据集应使用不同路径。也支持直接使用 Docker 命名卷，部署会固定到其归属节点；更新时保留现有卷名。</p>
+<h2 id="native-service-example">原生服务示例<a class="headerlink" href="#native-service-example" title="章节链接">#</a></h2>
+<pre><code class="language-yaml">name: app-postgres
+image: postgres:17
+region: cn
+exposure: none
+replicas: 1
+volumes:
+  - app-postgres-data:/var/lib/postgresql/data
+</code></pre>
+<p>Control 记录选中的节点。控制台按部署隔离新原生卷的名称。已有卷名和绑定路径保持不变：在显式迁移数据之前，不允许替换同一挂载目标的数据源。节点重命名或注册信息丢失时，必须先核对已有数据归属，再执行部署。</p>
+<h2 id="host-networking">主机网络<a class="headerlink" href="#host-networking" title="章节链接">#</a></h2>
+<p>普通 Compose 组共享 Nomad 桥接网络命名空间，同组服务名解析到 <code>127.0.0.1</code>。需要采集主机回环监听端点（Traefik 指标、本地 Nomad HTTP）的 stack，可以为<strong>每个</strong>服务设置 <code>network_mode: host</code>。同组混用 host 和 bridge 会被拒绝。使用主机网络的 Compose 要求 <code>exposure: none</code>，且不能设置 <code>publishPort</code>；它面向 <a href="https://github.com/LiuTianjie/luma/tree/main/observe"><code>luma-observe</code></a> 等内部采集器，而非公开应用。</p>
+<h2 id="deploy-and-update">部署与更新<a class="headerlink" href="#deploy-and-update" title="章节链接">#</a></h2>
+<pre><code class="language-bash">luma login https://luma.example.com --token &lt;management-token&gt;
+luma compose validate luma.compose.yml
+luma compose deploy luma.compose.yml --dry-run
+luma compose deploy luma.compose.yml --format ndjson
+</code></pre>
+<p>复用同一部署名会更新已有任务及存储归属。更改部署名会创建另一个部署。Control 预览会解析已保存的数据归属和当前候选节点；部署时还会检查已有 Nomad 任务及实例，以验证旧部署的数据归属。离线执行 <code>compose render</code> 必须显式指定本地节点，因为它无法持久化调度决策。</p>
+<p>应用设置保留在标准 Compose 文件中。旁车清单承载区域、暴露方式、路由及存储配置。路由字段参见<a href="deployment-yaml.zh-CN.html">部署 YAML</a>。</p>
+<h2 id="migrate-existing-nfs-data">迁移现有 NFS 数据<a class="headerlink" href="#migrate-existing-nfs-data" title="章节链接">#</a></h2>
+<p>更换后端不会自动复制数据。先检查实际运行的挂载：旧配置可能与早期渲染器实际挂载的内容不同。记录应用节点、源目录或 Docker 卷、数字用户与组归属、权限、数据大小及当前任务和配置。</p>
+<ol>
+<li>在现有应用节点准备目标目录并检查可用空间。</li>
+<li>创建可恢复的备份。最终复制前停止所有写入进程。适用时使用数据库原生备份与恢复；复制正在使用的数据库目录无法得到一致备份。</li>
+<li>复制时保留数字用户与组归属和权限；如果 NFS 从应用节点本身导出目录，也可复用同一宿主机目录。</li>
+<li>验证数据和权限，配置本地目标，并在该卷上设置 <code>adopted: true</code>。移除旧的 <code>initialize: empty</code> 确认。</li>
+<li>重新部署，检查应用与数据库健康状况，并读取有代表性的数据进行验证。保留原始数据及任务和配置以便回滚。发生新写入后，回滚还需处理这些新增数据。</li>
+</ol>
+<p>目标配置示例：</p>
+<pre><code class="language-yaml">volumes:
+  pg-data:
+    local:
+      node: manager
+      path: /srv/luma/data/app-stack/pg-data
+    adopted: true
+</code></pre>
+<p>输出手动迁移计划：</p>
+<pre><code class="language-bash">luma storage migrate luma.compose.yml \
+  --volume pg-data --from-node old-storage-node --from-volume old-docker-volume
+</code></pre>
+<p>该命令不会停止服务或复制数据。本地目标要求显式指定部署节点或本地节点。<code>adopted: true</code> 表示数据已验证，不允许将已确定的本地数据归属移到另一个节点。迁移归属节点需要运维人员管理数据迁移，并同步归属记录。</p>
+<h2 id="legacy-nfs-compatibility">旧版 NFS 兼容<a class="headerlink" href="#legacy-nfs-compatibility" title="章节链接">#</a></h2>
+<p>迁移数据期间，已有 <code>storageClass</code> 引用仍可使用。注册的类仍由 Manager 管理；提交的旁车清单中若包含非空 <code>storageClasses</code>，会被拒绝。<code>luma storage list</code>、<code>check</code>、<code>apply</code> 和 <code>remove</code> 继续管理这些旧类。本地存储无需存储类。</p>
+<p>检查完所有运行中和已停止的部署之前，不要移除存储类、卸载卷或关闭 NFS 服务器。没有运行实例的应用仍可能依赖旧数据。离线节点的数据应保留原位，直到能够检查该节点。</p>
+<h2 id="removal-and-recovery">移除与恢复<a class="headerlink" href="#removal-and-recovery" title="章节链接">#</a></h2>
+<p><code>luma app remove &lt;name&gt;</code> 删除应用任务和路由，默认保留数据。迁移期间避免使用 <code>--delete-storage</code>。删除部署也可能删除已保存的数据归属，因此删除前应保存其固定节点配置，并在恢复应用时使用。</p>
+<p>本地存储不提供跨节点故障转移。应恢复原节点，或从经过验证的备份恢复，并显式同步调度位置。备份应独立于应用所在磁盘保存。</p><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/compose-storage.zh-CN.md">在 GitHub 查看源码 ↗</a> · <a href="./compose-storage.zh-CN.md">原始 Markdown</a></div></article><aside class="docs-toc" aria-label="本页目录"><strong>本页目录</strong><div class="toc">
+<ul>
+<li><a href="#replicas">副本数</a></li>
+<li><a href="#compose-example">Compose 示例</a></li>
+<li><a href="#native-service-example">原生服务示例</a></li>
+<li><a href="#host-networking">主机网络</a></li>
+<li><a href="#deploy-and-update">部署与更新</a></li>
+<li><a href="#migrate-existing-nfs-data">迁移现有 NFS 数据</a></li>
+<li><a href="#legacy-nfs-compatibility">旧版 NFS 兼容</a></li>
+<li><a href="#removal-and-recovery">移除与恢复</a></li>
+</ul>
+</div>
+</aside></main></body></html>

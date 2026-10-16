@@ -1,0 +1,598 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Luma Deployment YAML · Luma Documentation</title><meta name="description" content="Luma Deployment YAML — Luma Documentation"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">Skip to content</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../index.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">Documentation</span><button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="Main navigation"><a href="../index.html#product">Console</a><a href="../index.html#docs">All guides</a><a href="deployment-yaml.zh-CN.html" data-doc-language lang="zh-CN">中文</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="Documentation"><strong>Guides</strong><a class=""  href="README.html">Overview</a><a class=""  href="getting-started.html">Getting started</a><a class=""  href="concepts.html">Core concepts</a><a class=""  href="deploying.html">Deploying applications</a><a class=""  href="build-and-artifacts.html">Build & OCI artifacts</a><a class=""  href="migration-guide.html">Migration guide</a><a class=""  href="operations.html">Operations</a><a class="active" aria-current=page href="deployment-yaml.html">Deployment YAML</a><a class=""  href="compose-storage.html">Compose & storage</a><a class=""  href="secrets.html">Secrets & credentials</a><a class=""  href="exposure-model.html">Exposure model</a><a class=""  href="observability.html">Observability</a><a class=""  href="dashboard-guide.html">Console guide</a><a class=""  href="troubleshooting.html">Troubleshooting</a><a class=""  href="luma-cli-reference.html">CLI reference</a><a class=""  href="ai-agent-skills.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../index.html#docs">Documentation</a><span>/</span><span>Luma Deployment YAML</span></div><h1 id="luma-deployment-yaml">Luma Deployment YAML<a class="headerlink" href="#luma-deployment-yaml" title="Permanent link">#</a></h1>
+<p>Luma 的部署文件不是 Docker Compose。它是一个更小的 service manifest，用户只描述服务入口、镜像、区域和少量运行参数。<code>luma deploy</code> 会把它提交给控制面，控制面再渲染成 Nomad jobspec、同步 DNS、配置 Traefik 路由，并通过 Nomad HTTP API 部署。</p>
+<h2 id="_1">最小公开服务<a class="headerlink" href="#_1" title="Permanent link">#</a></h2>
+<p>国内公开服务通常写成这样：</p>
+<pre><code class="language-yaml">name: status
+image: traefik/whoami:latest
+region: cn
+exposure: cn-edge
+domain: status.example.com
+port: 80
+replicas: 1
+</code></pre>
+<p>部署：</p>
+<pre><code class="language-bash">luma deploy status.yaml
+</code></pre>
+<p>结果：</p>
+<ul>
+<li>Cloudflare 写入 <code>status.example.com</code> 记录；</li>
+<li>Traefik 为 <code>Host(status.example.com)</code> 创建 HTTPS 路由；</li>
+<li>Nomad 部署 <code>status</code> job；</li>
+<li>请求转发到容器内 <code>port: 80</code>。</li>
+</ul>
+<h2 id="_2">字段参考<a class="headerlink" href="#_2" title="Permanent link">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>字段</th>
+<th>必填</th>
+<th>类型</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>是</td>
+<td>string</td>
+<td>服务名。Luma 会转成 slug，用作 Nomad job/group/task 名称。</td>
+</tr>
+<tr>
+<td><code>image</code></td>
+<td>是*</td>
+<td>string</td>
+<td>容器镜像，例如 <code>ghcr.io/acme/api:1.0.0</code>。<code>latest</code> 或未带 tag 会在部署时解析成 <code>name@sha256:...</code> 再部署。*提供 <code>build</code> 块时可省略，镜像由构建产出。</td>
+</tr>
+<tr>
+<td><code>build</code></td>
+<td>否</td>
+<td>map</td>
+<td>从源码构建镜像（<code>luma import</code>）。子字段：<code>context</code>（默认 <code>.</code>）、<code>dockerfile</code>（默认 <code>Dockerfile</code>）、<code>platform</code>（默认 <code>linux/amd64</code>）。提供 <code>build</code> 时 <code>image</code> 可省略。见下方「从 Git 仓库构建部署」。</td>
+</tr>
+<tr>
+<td><code>region</code></td>
+<td>是</td>
+<td><code>cn</code> / <code>global</code> / <code>home</code> 或已创建的自定义 Region</td>
+<td>服务运行区域。自定义 Region 需先 <code>luma region create</code>。</td>
+</tr>
+<tr>
+<td><code>engine</code></td>
+<td>否</td>
+<td><code>nomad</code></td>
+<td>该服务的编排后端。当前集群默认是 Nomad，通常不需要填。</td>
+</tr>
+<tr>
+<td><code>node</code></td>
+<td>否</td>
+<td>string</td>
+<td>指定 Luma 节点名，也就是 <code>luma node join --name</code> 的值。用于把服务钉到某台机器；控制面会渲染成 Nomad 的 <code>${node.unique.name}</code>（或 <code>meta.luma_node_name</code>）约束，仍会同时加 region 约束。</td>
+</tr>
+<tr>
+<td><code>exposure</code></td>
+<td>否</td>
+<td>见下方</td>
+<td>访问方式。新文件必须显式表达公开、隧道或内部访问语义。</td>
+</tr>
+<tr>
+<td><code>domain</code></td>
+<td>公开服务必填</td>
+<td>string</td>
+<td>用户访问的域名。</td>
+</tr>
+<tr>
+<td><code>port</code></td>
+<td>公开服务必填</td>
+<td>integer</td>
+<td>容器内部监听端口，不是云服务器安全组端口。</td>
+</tr>
+<tr>
+<td><code>replicas</code></td>
+<td>否</td>
+<td>integer</td>
+<td>副本数，渲染成 Nomad group <code>count</code>，默认 <code>1</code>，必须大于等于 <code>1</code>。</td>
+</tr>
+<tr>
+<td><code>env</code> / <code>environment</code></td>
+<td>否</td>
+<td>map</td>
+<td>环境变量，会写进 Nomad task 的 <code>env</code>。</td>
+</tr>
+<tr>
+<td><code>command</code></td>
+<td>否</td>
+<td>string/list</td>
+<td>覆盖容器启动命令。</td>
+</tr>
+<tr>
+<td><code>constraints</code></td>
+<td>否</td>
+<td>string[]</td>
+<td>追加 Nomad placement 约束。Luma 会自动加 region 约束。</td>
+</tr>
+<tr>
+<td><code>labels</code></td>
+<td>否</td>
+<td>string[]</td>
+<td>追加服务标签。公开 Traefik 路由所需的 service tags 会自动生成。</td>
+</tr>
+<tr>
+<td><code>networks</code></td>
+<td>否</td>
+<td>string[]</td>
+<td>追加网络声明。公开服务的入口由 Traefik Nomad provider 自动发现。</td>
+</tr>
+<tr>
+<td><code>proxy</code></td>
+<td>否</td>
+<td>boolean</td>
+<td>服务运行时是否需要走 egress proxy。为 <code>true</code> 时会自动挂上 egress 代理和代理环境变量。调度仍按 <code>region</code>。不是镜像拉取代理。</td>
+</tr>
+<tr>
+<td><code>resources</code></td>
+<td>否</td>
+<td>map</td>
+<td>渲染到 Nomad task 的 <code>resources</code> 块，CPU 使用 <code>reservations.cpus</code> 弹性共享，不执行 <code>limits.cpus</code>。内存 reservation 映射到 <code>memory</code>、limit 映射到 <code>memory_max</code>；首次部署这类任务时会自动启用 Nomad 内存超卖，确保 limit 真正成为容器硬上限。</td>
+</tr>
+<tr>
+<td><code>healthcheck</code></td>
+<td>否</td>
+<td>map</td>
+<td>渲染成 Nomad <code>check</code>（脚本/http）。公共 HTTP 服务建议探测本地端口，例如 <code>http://127.0.0.1:&lt;port&gt;/healthz</code>。</td>
+</tr>
+<tr>
+<td><code>requirements</code></td>
+<td>否</td>
+<td>map</td>
+<td>组件依赖契约。支持 <code>capabilities</code>（<code>cloudflare</code> / <code>tailscale</code> / <code>egress</code> / <code>registry</code>）、<code>secrets</code>、<code>init</code> 和 <code>notes</code>。<code>init</code> 支持 <code>cloudflare-dns</code>、<code>cloudflare-tunnel</code>、<code>tailscale-node</code>、<code>egress</code>、<code>registry</code>、<code>secrets</code>。部署预览会合并显式声明与运行时推导，并在必需项缺失时阻止提交；正式部署会先执行并记录初始化计划。</td>
+</tr>
+<tr>
+<td><code>publishPort</code></td>
+<td>公开服务可用</td>
+<td>integer</td>
+<td>显式启用 Nomad bridge 端口映射，把宿主机 <code>publishPort</code> 转到容器 <code>port</code>。Linux 节点可用；Mac/OrbStack 节点不要设置，保持 host mode 并让 route 指向真实 <code>port</code>。</td>
+</tr>
+<tr>
+<td><code>relay</code></td>
+<td>tailscale-relay 可选</td>
+<td>map</td>
+<td>覆盖 Tailscale relay 上游。默认跟随实际运行 allocation 所在的 home 节点自动推导。</td>
+</tr>
+<tr>
+<td><code>tcp</code></td>
+<td>tcp-relay 可选</td>
+<td>map</td>
+<td>TCP relay 高级上游覆盖。正常情况不需要填写；入口由 <code>publishPort</code> / <code>port</code> 自动派生。</td>
+</tr>
+<tr>
+<td><code>tunnel</code></td>
+<td>cloudflare-tunnel 可用</td>
+<td>map</td>
+<td>Cloudflare Tunnel token env 等设置。</td>
+</tr>
+<tr>
+<td><code>dns</code></td>
+<td>否</td>
+<td>map</td>
+<td>保留给 DNS 相关扩展。</td>
+</tr>
+<tr>
+<td><code>stackPath</code></td>
+<td>否</td>
+<td>string</td>
+<td>覆盖生成 jobspec 路径。通常不用。</td>
+</tr>
+<tr>
+<td><code>routePath</code></td>
+<td>否</td>
+<td>string</td>
+<td>覆盖 tailscale route 文件路径。通常不用。</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="_3">更新策略<a class="headerlink" href="#_3" title="Permanent link">#</a></h2>
+<p>Luma 渲染 Nomad <code>update</code> 策略时默认启用 <code>auto_revert</code>、<code>max_parallel = 1</code> 和健康窗口，失败发布会自动回滚到上一版。多副本服务按 Nomad rolling update 逐个替换。</p>
+<p>单副本的 <code>cn-edge</code> / <code>external-edge</code> 服务如果使用动态端口（未设置 <code>publishPort</code>），Luma 会渲染 Nomad canary + auto-promote：先启动一个新 allocation，等它健康后再提升为正式版本并停掉旧 allocation。建议公开 HTTP 服务都配置 <code>healthcheck</code>，这样 Nomad 会等 service check 稳定；没有 <code>healthcheck</code> 时只能按 task running 判断健康。</p>
+<p>显式 <code>publishPort</code>、<code>tailscale-relay</code> 默认 host network、<code>tcp-relay</code>、内部服务和有本地状态的服务不会默认启用 canary，因为新旧 allocation 同时存在可能撞宿主机端口或本地数据。它们仍然使用 <code>auto_revert</code> 和 <code>max_parallel = 1</code>，但无法保证单副本完全无中断。</p>
+<p>Compose 部署也渲染同样的 Nomad <code>update</code> 基线策略。多副本单服务使用逐个滚动更新，不额外启动 canary；副本配置与限制见 <a href="compose-storage.html#replicas">Compose 副本数</a>。单副本时，对没有 <code>publishPort</code> 的 <code>cn-edge</code> / <code>external-edge</code> compose 服务，Luma 使用 Nomad dynamic port，并在整组没有固定宿主机端口、<code>tailscale-relay</code> / <code>tcp-relay</code>、持久卷时启用 canary + auto-promote：先起新 compose allocation，健康后再切换。只要 compose 里任一服务需要固定宿主机端口或声明持久卷，就跳过 canary，避免新旧整组同时存在导致端口冲突或状态数据风险。</p>
+<h2 id="exposure">exposure 选择<a class="headerlink" href="#exposure" title="Permanent link">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>exposure</th>
+<th>region</th>
+<th>是否需要 domain/port</th>
+<th>适合场景</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cn-edge</code></td>
+<td><code>cn</code></td>
+<td>是</td>
+<td>国内公开 Web/API，走国内 Traefik 和备案域名。</td>
+</tr>
+<tr>
+<td><code>external-edge</code></td>
+<td><code>global</code></td>
+<td>是</td>
+<td>海外公开服务，例如外网 API 网关、低频海外工具。</td>
+</tr>
+<tr>
+<td><code>tailscale-relay</code></td>
+<td><code>home</code></td>
+<td>是</td>
+<td>家里服务通过国内 Traefik + Tailscale 暴露。</td>
+</tr>
+<tr>
+<td><code>tcp-relay</code></td>
+<td>任意</td>
+<td>是</td>
+<td>数据库等原生 TCP 服务，公网端口独占，走 Traefik TCP -&gt; task host port。</td>
+</tr>
+<tr>
+<td><code>cloudflare-tunnel</code></td>
+<td>通常 <code>home</code></td>
+<td>是</td>
+<td>家里/私有服务通过 Cloudflare Tunnel 暴露。</td>
+</tr>
+<tr>
+<td><code>none</code></td>
+<td><code>cn</code> / <code>global</code> / <code>home</code></td>
+<td>否</td>
+<td>内部任务、worker、队列消费者，不直接公开。</td>
+</tr>
+</tbody>
+</table></div>
+<p>规则：</p>
+<ul>
+<li><code>exposure: cn-edge</code> 必须配 <code>region: cn</code>。</li>
+<li><code>exposure: external-edge</code> 必须配 <code>region: global</code>。</li>
+<li><code>cn-edge</code> / <code>external-edge</code> 默认使用 Nomad 动态端口；如果要保留固定宿主端口，可显式设置 <code>publishPort</code>。</li>
+<li><code>exposure: tailscale-relay</code> 必须配 <code>region: home</code>。若未提供 <code>relay.host</code>/<code>relay.url</code>，控制面会在部署后根据实际 running task 所在节点自动推导上游。</li>
+<li><code>exposure: tcp-relay</code> 的 Traefik TCP entrypoint 由 <code>publishPort</code> 或 <code>port</code> 自动生成。普通 MySQL 不能可靠使用 SNI 分流，因此当前实现按端口独占转发。</li>
+<li>公开服务必须提供 <code>domain</code> 和整数 <code>port</code>。</li>
+<li><code>public</code> 已移除；请使用 <code>exposure</code>。</li>
+</ul>
+<h2 id="_4">常用模板<a class="headerlink" href="#_4" title="Permanent link">#</a></h2>
+<h3 id="api">国内公开 API<a class="headerlink" href="#api" title="Permanent link">#</a></h3>
+<pre><code class="language-yaml">name: api
+image: ghcr.io/acme/api:1.0.0
+region: cn
+exposure: cn-edge
+domain: api.example.com
+port: 3000
+replicas: 2
+env:
+  NODE_ENV: production
+  DATABASE_URL: ${DATABASE_URL}
+</code></pre>
+<h2 id="secret">环境变量和 Secret<a class="headerlink" href="#secret" title="Permanent link">#</a></h2>
+<p>普通非敏感配置可以直接写在 manifest 里：</p>
+<pre><code class="language-yaml">env:
+  NODE_ENV: production
+  LOG_LEVEL: info
+</code></pre>
+<p>敏感值不要写明文。可以手动把 secret 存到控制面：</p>
+<pre><code class="language-bash">luma secret set DATABASE_URL --scope api
+luma secret set OPENAI_API_KEY --scope api
+luma secret list
+</code></pre>
+<p>如果项目已经有 <code>.env</code> 文件，推荐直接在部署时提供它：</p>
+<pre><code class="language-bash">luma deploy service.yaml --env .env
+</code></pre>
+<p>Compose 部署同理：</p>
+<pre><code class="language-bash">luma compose deploy luma.compose.yml --env .env
+</code></pre>
+<p><code>--env</code> 会按当前应用名隔离保存 secret。比如 <code>name: api</code> 的服务会把 <code>.env</code> 中实际被 manifest 引用的 <code>DATABASE_URL</code> 保存为 <code>api/DATABASE_URL</code> 这个作用域内的值；另一个 <code>name: worker</code> 的服务即使也有 <code>DATABASE_URL</code>，也不会互相覆盖。<code>.env</code> 里没有被 YAML 引用的变量不会上传。</p>
+<p>然后在 YAML 里引用：</p>
+<pre><code class="language-yaml">env:
+  DATABASE_URL: ${DATABASE_URL}
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
+</code></pre>
+<p>部署时，客户端只提交 manifest。Luma Control 会从控制面 secret store 读取这些变量，并写入 Nomad task 的 <code>env</code>。<code>luma secret list</code> 只显示 key，不显示 value。</p>
+<p>如果缺少引用的变量，部署会失败并提示：</p>
+<pre><code class="language-text">missing deployment secrets: DATABASE_URL. Run: luma secret set &lt;NAME&gt;
+</code></pre>
+<h2 id="_5">私有镜像仓库<a class="headerlink" href="#_5" title="Permanent link">#</a></h2>
+<p>镜像拉取凭证不要写进 manifest，也不要作为容器环境变量传给业务服务。先在控制面保存 registry credential：</p>
+<pre><code class="language-bash">luma registry login ghcr.io --username &lt;user&gt; --password-stdin
+luma registry list
+</code></pre>
+<p>然后 manifest 仍然只写镜像：</p>
+<pre><code class="language-yaml">image: ghcr.io/acme/private-api:1.0.0
+</code></pre>
+<p>已配置 Builder Registry 时，Luma 将匹配外部 image 的源仓库凭据租给 Builder，由 Builder 复制镜像并返回已验证的内部镜像 digest。最终 Nomad job 使用内部镜像引用；只有内部仓库需要认证时，才把对应凭据写入 docker <code>config.auth</code>，不会把外部源仓库凭据交给运行节点。<code>luma registry list</code> 只显示 registry host 和 username，不显示 password/token。</p>
+<h2 id="compose">Compose 组件依赖<a class="headerlink" href="#compose" title="Permanent link">#</a></h2>
+<p>Compose sidecar 的 <code>services.&lt;name&gt;</code> 可以声明与单服务相同的 <code>requirements</code> 契约：</p>
+<pre><code class="language-yaml">services:
+  web:
+    exposure: cn-edge
+    domain: web.example.com
+    port: 3000
+    requirements:
+      capabilities: [cloudflare]
+      init: [cloudflare-dns]
+</code></pre>
+<p>Control 会在 Compose 预览和部署前逐服务检查这些依赖。未知 capability 或初始化动作会在解析阶段直接报错，不会被静默忽略。</p>
+<p>常见 GitHub 场景：GitHub Actions 把应用镜像推到私有 GHCR，同一个仓库还可以用 GitHub Pages 发布文档或营销页。在上述 Builder Registry 链路中，GHCR 凭据供 Builder 复制源镜像，运行节点拉取内部镜像，不需要把 GitHub token 写进 manifest，也不影响 GitHub Pages 的静态站点发布。</p>
+<p>镜像获取和服务运行时 <code>proxy: true</code> 是两条路径。<code>proxy: true</code> 只给容器里的出站 HTTP/HTTPS 请求注入代理。配置 Builder Registry 后，外部源镜像访问、进程级代理及 Docker Hub 风格镜像的 <code>defaults.imageMirrors</code> 回退由 Builder 负责；不会因为源仓库拉取失败就改运行节点的 Docker egress proxy。设置 <code>defaults.imageMirrors: []</code> 可以禁用镜像源回退。</p>
+<p>最终镜像使用托管 HTTP Registry 时，正式部署会在提交 Nomad job 前检查全部符合落点约束的 Docker 目标节点，并在修改任何配置前要求所有 agent 声明 <code>managed-registry-access-v2</code>。新 agent 保留 v1/v2 并共用同一修正实现，兼容仍要求 v1 的旧 Control。Linux 使用 Docker 实际代理字段；OrbStack 使用其原生代理设置及 <code>auto</code> 模式下的系统有效代理，不能仅凭内置 broker 地址判断外部代理。Manager 只做只读验证；配置修改要求空闲引擎。具体 HTTP 地址范围、历史兼容例外和维护边界见<a href="operations.zh-CN.html#private-registries-on-new-nodes">运维说明</a>。</p>
+<h2 id="git-provider">从 Git provider 构建部署<a class="headerlink" href="#git-provider" title="Permanent link">#</a></h2>
+<p>默认的 <code>luma deploy</code> 只部署已构建好的镜像。<code>luma import</code> 多走一步：在集群里的<strong>构建节点</strong>上 <code>git clone</code> 一个 GitHub/Gitea 仓库、自动发现 <code>.luma.yml</code> 或 <code>luma.compose.yml</code>、按仓库里的 Dockerfile 或 Compose <code>build:</code> 构建镜像、推送到集群内自托管 registry，再走正常部署链路。适合「源码到上线」的一条龙，不依赖外部 CI。</p>
+<p>前提（一次性）：</p>
+<ol>
+<li>至少一个节点装好 <code>docker buildx</code>（节点 agent 会自动 advertise <code>docker-build</code> 能力）。</li>
+<li>用 <code>luma registry serve --node &lt;build-node&gt;</code> 起一个集群内 registry（详见运维文档的接入 SOP）。</li>
+<li>私有仓库需先保存 Git provider 凭据；公开仓库可直接用 repo URL。</li>
+</ol>
+<pre><code class="language-bash">printf '%s' &quot;$GITEA_TOKEN&quot; | luma git-provider set gitea lin \
+  --base-url https://gcode.example.com \
+  --username lin \
+  --token-stdin
+
+luma git-provider repos gitea:lin
+</code></pre>
+<p>仓库根目录放一个 <code>.luma.yml</code>，就是普通的 service manifest，只是用 <code>build</code> 块代替 <code>image</code>：</p>
+<pre><code class="language-yaml">name: myapp
+region: cn
+exposure: cn-edge
+domain: myapp.example.com
+port: 8080
+build:
+  context: .
+  dockerfile: Dockerfile
+  platform: linux/amd64   # 默认值；构建节点是 arm64 而目标节点是 amd64 时尤其重要
+env:
+  NODE_ENV: production
+</code></pre>
+<p>部署：</p>
+<pre><code class="language-bash">luma import https://github.com/acme/myapp --build-node build-1
+</code></pre>
+<p>GitHub 仓库可以短写：</p>
+<pre><code class="language-bash">luma import acme/myapp --build-node build-1
+</code></pre>
+<p>短写只表示 GitHub <code>owner/repo</code>，会展开为 <code>https://github.com/acme/myapp.git</code>。Gitea/self-hosted Git 推荐用保存的 provider：</p>
+<p>也可以使用保存的 provider 账户：</p>
+<pre><code class="language-bash">luma build config --node builder --registry-host 100.64.0.70:5000 --push-host 100.64.0.70:5000
+luma import --provider-id gitea:lin --repository acme/myapp --env .env
+</code></pre>
+<p>Compose 仓库同样支持 import：<code>luma import</code> 会发现 <code>luma.compose.yml</code> / <code>.luma.compose.yml</code> / <code>*.luma.compose.yml</code> / <code>*.compose.luma.yml</code> / <code>docker-compose.luma.yml</code>，构建 <code>docker-compose.yml</code> 中带 <code>build:</code> 的服务，推送到 builder registry，并在最终部署 payload 中注入 <code>image:</code>。本地校验 build-only Compose 时用：</p>
+<pre><code class="language-bash">luma compose validate --import-mode luma.compose.yml
+</code></pre>
+<p>If a repository has separate staging/production sidecars, pass the exact
+repository-relative Compose sidecar to import:</p>
+<pre><code class="language-bash">luma import https://github.com/acme/app.git \
+  --ref v1.2.3 \
+  --compose-sidecar deploy/staging.luma.compose.yml
+</code></pre>
+<p>The path is resolved only after the Builder clones the repository. Absolute or
+non-normalized paths, <code>..</code>, missing files, invalid Luma Compose sidecars, and
+symlink escapes are rejected. Explicit selection is fail-closed and never
+falls back to another discovered manifest.</p>
+<p>普通 <code>luma compose validate</code> / <code>luma compose deploy</code> 不构建镜像，因此仍要求运行时 Compose 的每个 service 都已经有 <code>image:</code>。</p>
+<p>CLI 会流式回传 clone → build → push → deploy 每一步。构建节点来自控制面声明的 builder 节点；通常无需传 <code>--build-node</code>，只有临时覆盖时才传，且 Control 会拒绝未声明的构建节点。<code>--env .env</code> 会把运行时环境变量作为 scoped secrets 交给控制面，由最终 <code>.luma.yml</code> / Compose 内容过滤并保存。单服务 import 可用 <code>--region</code> / <code>--exposure</code> / <code>--domain</code> / <code>--port</code> / <code>--platform</code> 覆盖 <code>.luma.yml</code> 里的对应字段；Compose import 只接受 <code>--region</code> 覆盖 sidecar，服务级入口要写在 <code>luma.compose.yml</code> 的 <code>services:</code> 里。构建出的镜像 tag 形如 <code>&lt;build-node-tailscale-host&gt;:5000/acme/myapp:&lt;git-sha&gt;</code>，其它区域的节点经 Tailscale 内网拉取；HTTP 访问由目标节点在 join 或最终部署预检时按需准备，<code>luma registry serve</code> 不再为全体节点配置 <code>insecure-registries</code>。构建历史用 <code>luma build list</code> 查看，失败详情用 <code>luma build logs &lt;id&gt;</code>，修好凭据或配置后可 <code>luma build retry &lt;id&gt;</code>。</p>
+<p>dashboard 的「创建应用」页顶部也有「仓库导入」入口，可选择 Git provider/账户/仓库/ref 或手填 URL，进度实时显示。</p>
+<p><code>build</code> 块字段：</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>字段</th>
+<th>默认</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>context</code></td>
+<td><code>.</code></td>
+<td>Docker 构建上下文（仓库内相对路径）。</td>
+</tr>
+<tr>
+<td><code>dockerfile</code></td>
+<td><code>Dockerfile</code></td>
+<td>Dockerfile 路径（仓库内相对路径）。</td>
+</tr>
+<tr>
+<td><code>platform</code></td>
+<td><code>linux/amd64</code></td>
+<td><code>docker buildx build --platform</code> 的目标平台。</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="worker">海外 worker<a class="headerlink" href="#worker" title="Permanent link">#</a></h3>
+<pre><code class="language-yaml">name: fetch-worker
+image: ghcr.io/acme/fetch-worker:1.0.0
+region: global
+exposure: none
+replicas: 1
+env:
+  QUEUE_URL: redis://redis:6379/0
+  OPENAI_BASE_URL: https://api.openai.com/v1
+</code></pre>
+<p>渲染后会自动带上 region 约束：</p>
+<pre><code class="language-hcl">constraint {
+  attribute = &quot;${meta.region}&quot;
+  value     = &quot;global&quot;
+}
+</code></pre>
+<h3 id="_6">指定部署到某个节点<a class="headerlink" href="#_6" title="Permanent link">#</a></h3>
+<p>如果服务必须固定在某台机器上，例如有本地磁盘状态、只想跑在家里的 Mac mini、或临时调试某个 worker，可以使用 <code>node</code>：</p>
+<pre><code class="language-yaml">name: home-db
+image: postgres:16
+region: home
+node: mac-mini-home
+exposure: none
+volumes:
+  - home_db_data:/var/lib/postgresql/data
+</code></pre>
+<p>控制面部署时会同时保留 region 约束，并把 Luma 节点名渲染成 Nomad 的节点约束：</p>
+<pre><code class="language-hcl">constraint {
+  attribute = &quot;${meta.region}&quot;
+  value     = &quot;home&quot;
+}
+constraint {
+  attribute = &quot;${meta.luma_node_name}&quot;
+  value     = &quot;mac-mini-home&quot;
+}
+</code></pre>
+<p><code>node</code> 使用的是 Luma 节点名，不是 Docker hostname。这个区别对 OrbStack 很重要：多台 Mac 的 Docker hostname 可能都叫 <code>orbstack</code>，但 Luma 用 <code>meta.luma_node_name</code> 指向唯一节点，避免服务跑到错误机器。</p>
+<p>Nomad 节点身份是稳定的 UUID。节点离开集群后用同一个 Luma 节点名重新 join，<code>meta.luma_node_name</code> 不变，固定节点服务约束仍然有效；不用手工把 Docker hostname 写进 manifest。</p>
+<h3 id="local-volume">普通服务使用本地卷<a class="headerlink" href="#local-volume" title="Permanent link">#</a></h3>
+<p>新的持久化原生服务用 named volume 或 bind mount。Control 在首次部署前记录归属节点，后续更新钉在该节点；可写持久化挂载要求 <code>replicas: 1</code>。不要为新应用注册 storage class 或 NFS。</p>
+<pre><code class="language-yaml">name: home-db
+image: postgres:16
+region: home
+exposure: none
+replicas: 1
+volumes:
+  - home-db-data:/var/lib/postgresql/data
+</code></pre>
+<p>Compose sidecar 把宿主机路径写在 <code>volumes.&lt;name&gt;.local.path</code>，见 <a href="compose-storage.html">compose-storage.md</a>。</p>
+<h3 id="storageclass">旧 storageClass（仅迁移）<a class="headerlink" href="#storageclass" title="Permanent link">#</a></h3>
+<p>已有 NFS 部署仍可用顶层 <code>storage</code> 指向控制面登记的 class。<code>volumes</code> 仍是容器挂载声明；<code>storage</code> 只描述这些 named volume 落到哪个旧存储服务的哪个子目录。新文件不要再写这块。</p>
+<pre><code class="language-yaml">name: home-db
+image: postgres:16
+region: home
+exposure: none
+volumes:
+  - pg-data:/var/lib/postgresql/data
+storage:
+  pg-data:
+    storageClass: db-storage
+    path: home-db/pg-data
+    accessMode: ReadWriteOnce
+</code></pre>
+<p><code>luma storage list</code> / <code>check</code> / <code>apply</code> / <code>remove</code> 继续管理这些遗留 class。切换后端必须验证 <code>adopted: true</code> 或声明 <code>initialize: empty</code>。</p>
+<h3 id="worker_1">需要代理的 worker<a class="headerlink" href="#worker_1" title="Permanent link">#</a></h3>
+<p>如果服务运行时需要通过 Luma egress proxy 访问外网，声明 <code>proxy: true</code>。不要为了使用默认代理手写 <code>networks: [egress]</code> 或 <code>HTTP_PROXY</code> / <code>HTTPS_PROXY</code>；Luma 会自动渲染这些字段。如果你显式写了同名 env，Luma 会保留你的值。</p>
+<p><code>proxy: true</code> 只管容器自己的出站 HTTP/HTTPS 请求，和服务如何被访问是两件事。比如 <code>region: home</code> + <code>exposure: tailscale-relay</code> + <code>proxy: true</code> 是有效组合：用户入站流量走公网 Traefik -&gt; Tailscale -&gt; home task，容器访问外网时走 <code>egress_mihomo</code>。</p>
+<pre><code class="language-yaml">name: ai-worker
+image: ghcr.io/acme/ai-worker:1.0.0
+region: cn
+exposure: none
+proxy: true
+env:
+  OPENAI_BASE_URL: https://api.openai.com/v1
+</code></pre>
+<p>渲染后会自动带上：</p>
+<pre><code class="language-hcl">env {
+  HTTP_PROXY  = &quot;http://egress_mihomo:7890&quot;
+  HTTPS_PROXY = &quot;http://egress_mihomo:7890&quot;
+}
+constraint {
+  attribute = &quot;${meta.region}&quot;
+  value     = &quot;cn&quot;
+}
+</code></pre>
+<h3 id="_7">小机器资源限制<a class="headerlink" href="#_7" title="Permanent link">#</a></h3>
+<p>如果 manager 只有 2c2g，并且业务服务也部署在 manager 上，建议给每个非核心服务显式设置资源边界。CPU 只通过 <code>reservations.cpus</code> 声明调度份额，运行时可使用空闲 CPU，不设独立硬上限。<code>limits.memory</code> 是内存硬上限，<code>reservations.memory</code> 是调度预留量。未填 CPU 预留时使用 100 MHz；只填内存上限时预留 <code>min(256 MiB, 上限)</code>。旧 <code>limits.cpus</code> 会明确告警并忽略，不再预占调度额度；它不是可执行的 CPU 硬上限：</p>
+<pre><code class="language-yaml">name: api
+image: ghcr.io/acme/api:1.0.0
+region: cn
+exposure: cn-edge
+domain: api.example.com
+port: 3000
+resources:
+  limits:
+    memory: 512M
+  reservations:
+    cpus: &quot;0.10&quot;
+    memory: 128M
+</code></pre>
+<p>这些规则在普通服务和 Compose 的 <code>deploy.resources</code> 中一致。内存预留不能超过上限；不填内存上限时，保留 Nomad 以内存预留量为容器上限的行为。内存超额分配不等于增加物理内存，多个服务同时冲高仍可能 OOM。</p>
+<p>控制面升级只改变后续生成的 Job；已有服务需要重新部署才生效，不需要批量升级 worker。</p>
+<h3 id="_8">家里内部服务<a class="headerlink" href="#_8" title="Permanent link">#</a></h3>
+<pre><code class="language-yaml">name: backup-job
+image: ghcr.io/acme/backup-job:1.0.0
+region: home
+exposure: none
+replicas: 1
+</code></pre>
+<h3 id="tailscale-relay">家里服务通过 Tailscale Relay 暴露<a class="headerlink" href="#tailscale-relay" title="Permanent link">#</a></h3>
+<pre><code class="language-yaml">name: home-panel
+image: ghcr.io/acme/home-panel:1.0.0
+region: home
+exposure: tailscale-relay
+domain: panel.example.com
+port: 8080
+publishPort: 8080
+replicas: 1
+</code></pre>
+<p>默认情况下，Luma Control 会在服务部署后查看 Nomad allocation 实际运行在哪些 home 节点，并把 route 上游指向这些节点的 host port。若服务必须固定到某台机器，再显式指定 <code>node</code>：</p>
+<pre><code class="language-yaml">node: home-mac-mini
+</code></pre>
+<p>也可以手动覆盖完整上游 URL：</p>
+<pre><code class="language-yaml">relay:
+  url: http://home-1.your-tailnet.ts.net:8080
+</code></pre>
+<h3 id="tcp">公开 TCP 服务<a class="headerlink" href="#tcp" title="Permanent link">#</a></h3>
+<p>服务 manifest：</p>
+<pre><code class="language-yaml">name: ledger-db
+image: mysql:8.4.9
+region: home
+node: lab
+exposure: tcp-relay
+domain: ledger-db.example.net
+port: 3306
+publishPort: 3306
+replicas: 1
+</code></pre>
+<p>Luma 会把 DNS 指到公网 edge，自动确保 Traefik 监听 <code>tcp-3306</code> entrypoint，并写入 Traefik TCP route。<code>domain</code> 用于 DNS；普通 MySQL 连接无法提供 HTTP Host 或可靠起始 SNI，所以同一个发布端口一次只应给一个 TCP 服务使用。
+<code>publishPort</code> 是目标 task 节点上的宿主机端口，并会在 Nomad bridge 模式下映射到容器 <code>port</code>。如果同一台机器已有本机容器或非 Luma 服务占用 <code>3306</code>，请选择其它端口并同步调整客户端连接端口或入口配置。Mac/OrbStack 节点不支持这种映射，需省略 <code>publishPort</code> 并使用容器真实监听端口。</p>
+<h3 id="cloudflare-tunnel">Cloudflare Tunnel 服务<a class="headerlink" href="#cloudflare-tunnel" title="Permanent link">#</a></h3>
+<pre><code class="language-yaml">name: home-tool
+image: ghcr.io/acme/home-tool:1.0.0
+region: home
+exposure: cloudflare-tunnel
+domain: tool.example.com
+port: 8080
+replicas: 1
+tunnel:
+  tokenEnv: CLOUDFLARE_TUNNEL_TOKEN
+</code></pre>
+<h2 id="_9">生成前检查清单<a class="headerlink" href="#_9" title="Permanent link">#</a></h2>
+<ul>
+<li>域名是否是用户真正要访问的入口。</li>
+<li><code>port</code> 是否是容器内部监听端口，而不是公网端口。</li>
+<li><code>region</code> 和 <code>exposure</code> 是否匹配。</li>
+<li>公开服务是否填写了 <code>domain</code> 和 <code>port</code>。</li>
+<li>镜像是否带 tag；<code>latest</code>/未带 tag 会在部署时解析成 digest，但生产回滚仍建议使用固定版本 tag 或 digest，避免旧 Nomad job 版本重新拉到新镜像内容。</li>
+<li>secret 不要直接写明文，优先写 <code>${ENV_NAME}</code>，部署时用 <code>--env .env</code> 或 scoped <code>luma secret set --scope &lt;app&gt;</code> 提供值。</li>
+<li>worker 默认使用 <code>exposure: none</code>，不要给它配公网域名。</li>
+<li>home 节点不要承载核心高频公网服务。</li>
+</ul>
+<h2 id="_10">验证命令<a class="headerlink" href="#_10" title="Permanent link">#</a></h2>
+<pre><code class="language-bash">luma validate service.yaml
+luma deploy service.yaml --dry-run
+</code></pre>
+<p><code>validate</code> 会校验 manifest 并输出渲染后的 Nomad jobspec。<code>deploy --dry-run</code> 不会提交控制面，只展示会生成什么。若本地校验无法读取控制面的节点或 storageClass 信息，JSON 输出会带 <code>validationMode: "degraded"</code> 和 <code>warnings</code>，文本输出会打印 <code>[warn]</code>，表示这次校验没有覆盖真实集群放置/存储可达性。</p><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/deployment-yaml.md">View source on GitHub ↗</a> · <a href="./deployment-yaml.md">Raw Markdown</a></div></article><aside class="docs-toc" aria-label="On this page"><strong>On this page</strong><div class="toc">
+<ul>
+<li><a href="#_1">最小公开服务</a></li>
+<li><a href="#_2">字段参考</a></li>
+<li><a href="#_3">更新策略</a></li>
+<li><a href="#exposure">exposure 选择</a></li>
+<li><a href="#_4">常用模板</a><ul>
+<li><a href="#api">国内公开 API</a></li>
+</ul>
+</li>
+<li><a href="#secret">环境变量和 Secret</a></li>
+<li><a href="#_5">私有镜像仓库</a></li>
+<li><a href="#compose">Compose 组件依赖</a></li>
+<li><a href="#git-provider">从 Git provider 构建部署</a><ul>
+<li><a href="#worker">海外 worker</a></li>
+<li><a href="#_6">指定部署到某个节点</a></li>
+<li><a href="#local-volume">普通服务使用本地卷</a></li>
+<li><a href="#storageclass">旧 storageClass（仅迁移）</a></li>
+<li><a href="#worker_1">需要代理的 worker</a></li>
+<li><a href="#_7">小机器资源限制</a></li>
+<li><a href="#_8">家里内部服务</a></li>
+<li><a href="#tailscale-relay">家里服务通过 Tailscale Relay 暴露</a></li>
+<li><a href="#tcp">公开 TCP 服务</a></li>
+<li><a href="#cloudflare-tunnel">Cloudflare Tunnel 服务</a></li>
+</ul>
+</li>
+<li><a href="#_9">生成前检查清单</a></li>
+<li><a href="#_10">验证命令</a></li>
+</ul>
+</div>
+</aside></main></body></html>

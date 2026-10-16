@@ -1,0 +1,71 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Egress Gateway · Luma Documentation</title><meta name="description" content="Egress Gateway — Luma Documentation"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">Skip to content</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../index.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">Documentation</span><button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="Main navigation"><a href="../index.html#product">Console</a><a href="../index.html#docs">All guides</a><a href="egress-gateway.zh-CN.html" data-doc-language lang="zh-CN">中文</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="Documentation"><strong>Guides</strong><a class=""  href="README.html">Overview</a><a class=""  href="getting-started.html">Getting started</a><a class=""  href="concepts.html">Core concepts</a><a class=""  href="deploying.html">Deploying applications</a><a class=""  href="build-and-artifacts.html">Build & OCI artifacts</a><a class=""  href="migration-guide.html">Migration guide</a><a class=""  href="operations.html">Operations</a><a class=""  href="deployment-yaml.html">Deployment YAML</a><a class=""  href="compose-storage.html">Compose & storage</a><a class=""  href="secrets.html">Secrets & credentials</a><a class=""  href="exposure-model.html">Exposure model</a><a class=""  href="observability.html">Observability</a><a class=""  href="dashboard-guide.html">Console guide</a><a class=""  href="troubleshooting.html">Troubleshooting</a><a class=""  href="luma-cli-reference.html">CLI reference</a><a class=""  href="ai-agent-skills.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../index.html#docs">Documentation</a><span>/</span><span>Egress Gateway</span></div><h1 id="egress-gateway">Egress Gateway<a class="headerlink" href="#egress-gateway" title="Permanent link">#</a></h1>
+<p>Egress Gateway is Luma's outbound proxy plane.</p>
+<p>It solves two practical problems:</p>
+<ul>
+<li>domestic servers may fail to pull fresh images or dependencies directly;</li>
+<li>some services must access external networks while the public entrypoint remains domestic.</li>
+</ul>
+<p>Egress is not an ingress path. Public user traffic still enters through the selected <code>exposure</code> mode.</p>
+<h2 id="setup">Setup<a class="headerlink" href="#setup" title="Permanent link">#</a></h2>
+<pre><code class="language-bash">export EGRESS_SUBSCRIPTION_URL='...'
+luma manager egress
+</code></pre>
+<p>Luma will:</p>
+<ul>
+<li>download the subscription;</li>
+<li>convert YAML or base64 subscription output into a minimal Mihomo config;</li>
+<li>write <code>/opt/luma/egress-gateway/config.yaml</code> with mode <code>600</code>;</li>
+<li>configure stable system DNS resolvers for registry/bootstrap reliability;</li>
+<li>temporarily disable Docker daemon proxy for the first egress bootstrap;</li>
+<li>deploy the core <code>egress-mihomo</code> Nomad job using Luma's built-in egress image;</li>
+<li>mark the gateway host as <code>egress=true</code> (Nomad client meta) for the internal <code>egress_mihomo</code> service;</li>
+<li>install Docker-aware public port guards for the egress proxy;</li>
+<li>configure Docker daemon proxy to <code>127.0.0.1:7890</code>;</li>
+<li>restart Docker.</li>
+</ul>
+<p>The default egress image is a domestic registry mirror tested for first bootstrap:</p>
+<pre><code class="language-yaml">defaults:
+  images:
+    egressGateway: docker.1panel.live/metacubex/mihomo:latest
+</code></pre>
+<p>Most users do not need to configure an image. Advanced users can override <code>defaults.images.egressGateway</code> in <code>luma.yaml</code> when operating their own registry mirror.</p>
+<p>Refresh later:</p>
+<pre><code class="language-bash">luma manager egress
+</code></pre>
+<h2 id="runtime">Runtime<a class="headerlink" href="#runtime" title="Permanent link">#</a></h2>
+<p>The gateway listens on:</p>
+<pre><code class="language-text">127.0.0.1:7890
+</code></pre>
+<p>The egress proxy is reachable to local Docker and to services that opt in with <code>proxy: true</code>. Luma installs host firewall, raw <code>PREROUTING</code>, and Docker <code>DOCKER-USER</code> guards so Docker-published <code>7890/tcp</code> and <code>7890/udp</code> are blocked on the public default interface while local Docker and internal egress traffic can still use the proxy.</p>
+<p>Docker daemon proxy:</p>
+<pre><code class="language-text">HTTP_PROXY=http://127.0.0.1:7890
+HTTPS_PROXY=http://127.0.0.1:7890
+NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+</code></pre>
+<h2 id="verify">Verify<a class="headerlink" href="#verify" title="Permanent link">#</a></h2>
+<pre><code class="language-bash">nomad job status egress-mihomo
+sudo docker pull hello-world:latest
+</code></pre>
+<p>For a service that needs the runtime proxy, declare <code>proxy: true</code> in the service manifest:</p>
+<pre><code class="language-yaml">name: ai-worker
+image: ghcr.io/acme/ai-worker:1.0.0
+region: cn
+exposure: none
+proxy: true
+</code></pre>
+<p>Luma injects <code>HTTP_PROXY=http://egress_mihomo:7890</code> and <code>HTTPS_PROXY=http://egress_mihomo:7890</code> automatically. Scheduling still follows the service <code>region</code>. If the manifest already sets <code>HTTP_PROXY</code> or <code>HTTPS_PROXY</code>, Luma keeps the explicit value.</p>
+<h2 id="security">Security<a class="headerlink" href="#security" title="Permanent link">#</a></h2>
+<ul>
+<li>Do not commit <code>EGRESS_SUBSCRIPTION_URL</code>.</li>
+<li>Rotate subscription URLs that appear in chat, logs, or screenshots.</li>
+<li>Keep inbound <code>7890</code> blocked on public interfaces. Luma installs this guard during bootstrap and egress setup; re-run <code>luma manager egress</code> if host firewall rules were reset manually. Luma's built-in egress service also ships with conservative Nomad resource limits so a 2c2g manager keeps headroom for control-plane and app workloads.</li>
+<li>Prefer one egress gateway first. Add more only when scheduling or throughput requires it.</li>
+</ul><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/egress-gateway.md">View source on GitHub ↗</a> · <a href="./egress-gateway.md">Raw Markdown</a></div></article><aside class="docs-toc" aria-label="On this page"><strong>On this page</strong><div class="toc">
+<ul>
+<li><a href="#setup">Setup</a></li>
+<li><a href="#runtime">Runtime</a></li>
+<li><a href="#verify">Verify</a></li>
+<li><a href="#security">Security</a></li>
+</ul>
+</div>
+</aside></main></body></html>

@@ -1,0 +1,246 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Release · Luma Documentation</title><meta name="description" content="Release — Luma Documentation"><link rel="icon" href="../../favicon-32.png"><link rel="stylesheet" href="../../styles.css?v=1cac654f8e"><script src="../../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">Skip to content</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../../index.html"><img src="../../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">Documentation</span><button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="Main navigation"><a href="../../index.html#product">Console</a><a href="../../index.html#docs">All guides</a><a href="release.zh-CN.html" data-doc-language lang="zh-CN">中文</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="Documentation"><strong>Guides</strong><a class=""  href="../README.html">Overview</a><a class=""  href="../getting-started.html">Getting started</a><a class=""  href="../concepts.html">Core concepts</a><a class=""  href="../deploying.html">Deploying applications</a><a class=""  href="../build-and-artifacts.html">Build & OCI artifacts</a><a class=""  href="../migration-guide.html">Migration guide</a><a class=""  href="../operations.html">Operations</a><a class=""  href="../deployment-yaml.html">Deployment YAML</a><a class=""  href="../compose-storage.html">Compose & storage</a><a class=""  href="../secrets.html">Secrets & credentials</a><a class=""  href="../exposure-model.html">Exposure model</a><a class=""  href="../observability.html">Observability</a><a class=""  href="../dashboard-guide.html">Console guide</a><a class=""  href="../troubleshooting.html">Troubleshooting</a><a class=""  href="../luma-cli-reference.html">CLI reference</a><a class=""  href="../ai-agent-skills.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../../index.html#docs">Documentation</a><span>/</span><span>Release</span></div><h1 id="release">Release<a class="headerlink" href="#release" title="Permanent link">#</a></h1>
+<p>Luma can be distributed without asking users to clone the repository.</p>
+<h2 id="shared-source-validation">Shared source validation<a class="headerlink" href="#shared-source-validation" title="Permanent link">#</a></h2>
+<p>Pull requests, Python package releases and Control image releases run the same
+source gate. After installing the Python test extras and dashboard dependencies:</p>
+<pre><code class="language-bash">python -m pip install -e &quot;.[test]&quot;
+npm ci
+bash scripts/check-luma.sh
+</code></pre>
+<p>The gate checks synchronized versions, the generated CLI reference, all root
+<code>unittest</code> tests, Dashboard behavior tests, types/build and whitespace. After changing CLI
+arguments, run <code>python scripts/generate-cli-reference.py</code> and commit the updated
+reference. These
+checks validate source and build artifacts; they do not validate a live cluster.
+Both publishing workflows additionally reject release tags that do not match
+the package version, before any image or package publication.</p>
+<h2 id="recommended-release">Recommended Release<a class="headerlink" href="#recommended-release" title="Permanent link">#</a></h2>
+<ol>
+<li>Bump the package version before committing code that should be distinguishable by <code>luma version</code>:</li>
+</ol>
+<pre><code class="language-bash">python scripts/bump-version.py
+</code></pre>
+<p>Use <code>--minor</code>, <code>--major</code>, or <code>--set 0.2.0</code> when patch bumping is not appropriate. Verify without changing files:</p>
+<pre><code class="language-bash">python scripts/bump-version.py --check
+</code></pre>
+<ol start="2">
+<li>Push the repo to GitHub.</li>
+<li>Build and publish the control API image with GitHub Actions:</li>
+</ol>
+<pre><code class="language-bash">git push origin main
+</code></pre>
+<p>The <code>Build Control Image</code> workflow publishes:</p>
+<ul>
+<li><code>ghcr.io/liutianjie/luma-control:latest</code> from <code>main</code></li>
+<li><code>ghcr.io/liutianjie/luma-control:main-&lt;sha&gt;</code> from <code>main</code></li>
+<li><code>ghcr.io/liutianjie/luma-control:&lt;tag&gt;</code> from <code>v*</code> tags</li>
+<li><code>ghcr.io/liutianjie/luma-control:sha-&lt;7-char-sha&gt;</code> from an authorized
+  <code>workflow_dispatch</code> run on any branch or tag</li>
+</ul>
+<p>The manual tag is commit-scoped. It does not add <code>latest</code> to a topic branch or
+change the existing <code>main-*</code>/release-tag channels. Run the workflow only after
+the candidate ref is pushed, and verify that the completed run's <code>headSha</code>
+matches the commit you intend to install:</p>
+<pre><code class="language-bash">BRANCH=&lt;candidate-branch&gt;
+git fetch origin &quot;$BRANCH&quot;
+FULL_SHA=&quot;$(git rev-parse &quot;origin/$BRANCH^{commit}&quot;)&quot;
+SHORT_SHA=&quot;$(printf '%s' &quot;$FULL_SHA&quot; | cut -c1-7)&quot;
+
+gh workflow run control-image.yml --ref &quot;$BRANCH&quot;
+gh run list --workflow control-image.yml --branch &quot;$BRANCH&quot; \
+  --event workflow_dispatch --limit 5 \
+  --json databaseId,headSha,status,conclusion
+
+RUN_ID=&lt;database-id-for-the-matching-head-sha&gt;
+gh run watch &quot;$RUN_ID&quot; --exit-status
+test &quot;$(gh run view &quot;$RUN_ID&quot; --json headSha --jq .headSha)&quot; = &quot;$FULL_SHA&quot;
+test &quot;$(gh run view &quot;$RUN_ID&quot; --json conclusion --jq .conclusion)&quot; = success
+
+CONTROL_IMAGE=&quot;ghcr.io/liutianjie/luma-control:sha-$SHORT_SHA&quot;
+docker buildx imagetools inspect &quot;$CONTROL_IMAGE&quot;
+</code></pre>
+<p>Do not select a run only because it is the newest one; branch concurrency and
+re-runs can make that assumption wrong. A <code>workflow_dispatch</code> run can target a
+non-default branch with <code>--ref</code>, but the workflow itself must already be
+available to GitHub Actions from the repository's default branch.</p>
+<h2 id="candidate-manager-upgrade-and-rollback">Candidate Manager Upgrade And Rollback<a class="headerlink" href="#candidate-manager-upgrade-and-rollback" title="Permanent link">#</a></h2>
+<h3 id="first-json-to-sqlite-upgrade">First JSON-to-SQLite upgrade<a class="headerlink" href="#first-json-to-sqlite-upgrade" title="Permanent link">#</a></h3>
+<p>The first release using SQLite requires a short Control maintenance window.
+Pause new deploy/build requests and wait for active builds before starting the
+update. Capture the current Control job spec/image, CLI install ref, ingress
+baseline and a private backup of <code>/opt/luma/control</code>, <code>/opt/luma/luma.yaml</code> and
+the external configuration described in <a href="../control-storage.html">Control storage</a>.</p>
+<p>The updated CLI reads legacy configuration without importing it during role
+detection or image preparation. After prefetching the Control image, the
+installer stops only the <code>luma-control</code> Nomad job and waits until its allocations
+are confirmed terminated. Unknown, lost or still-running allocations, a Nomad
+query failure or a timeout abort the import. Nomad, Traefik and application jobs
+are not stopped by this storage cutover.</p>
+<p>After the old writer exits, the installer saves a private checkpoint in a
+<code>control-pre-sqlite-*</code> sibling directory, including the final legacy state,
+Control job spec and Luma configuration. It imports the latest JSON, merges only
+the installation fields and starts the new Control with <code>AutoRevert=false</code>.
+The pending cutover marker preserves this safeguard across a failed update
+retry. Fresh installs and later SQLite-to-SQLite updates do not stop Control for
+migration; normal compatible updates retain automatic rollback.</p>
+<p>Do not run new maintenance commands or manually call <code>load_state()</code> against a
+live legacy Manager before this fenced update: those entry points may initialize
+SQLite. If import or startup fails, the updater does not automatically restart
+the JSON-writing image. Retry the compatible release after fixing the reported
+problem.</p>
+<p><strong>The job-only rollback commands below are valid only between versions using
+the same state format. Never revert directly to a JSON-writing Control after
+SQLite cutover.</strong> It would read frozen JSON and lose subsequent state changes.
+To return to the pre-SQLite release, stop the new Control, preserve its SQLite
+directory separately, and restore the checkpoint's legacy <code>control</code> directory
+and matching configuration into a fresh directory. With no new writer running,
+point the old job at that restored state (or swap the stopped Manager's state
+directory), install the recorded old CLI and run the saved old job spec. This
+restores the checkpoint time and discards later Control changes; reconcile any
+application operations since that checkpoint before resuming clients. Prefer a
+fixed SQLite-compatible release when those later changes must be retained.</p>
+<h3 id="compatible-release-upgrades">Compatible release upgrades<a class="headerlink" href="#compatible-release-upgrades" title="Permanent link">#</a></h3>
+<p>Use the same full commit for the CLI source archive and the commit-scoped
+Control image. <code>install-luma.sh</code> accepts a full 40-character Git commit as
+<code>LUMA_INSTALL_REF</code>, so manager and fleet updates do not need a mutable branch
+name. Before changing the manager, record the current Nomad job version and
+image in the change record:</p>
+<pre><code class="language-bash">PREVIOUS_JOB_VERSION=&quot;$(nomad job inspect -json luma-control | jq -er .Version)&quot;
+PREVIOUS_CONTROL_IMAGE=&quot;$(nomad job inspect -json luma-control | \
+  jq -er '.TaskGroups[] | select(.Name == &quot;luma-control&quot;) | .Tasks[] | select(.Name == &quot;luma-control&quot;) | .Config.image')&quot;
+nomad job history -p luma-control
+</code></pre>
+<p>Also record a known-good Git install ref, normally the current release tag, as
+<code>PREVIOUS_INSTALL_REF</code>. Then run the candidate update on the manager:</p>
+<pre><code class="language-bash">FULL_SHA=&lt;verified-40-character-commit&gt;
+SHORT_SHA=&quot;$(printf '%s' &quot;$FULL_SHA&quot; | cut -c1-7)&quot;
+CONTROL_IMAGE=&quot;ghcr.io/liutianjie/luma-control:sha-$SHORT_SHA&quot;
+
+export LUMA_CONTROL_IMAGE=&quot;$CONTROL_IMAGE&quot;
+luma update manager --install-ref &quot;$FULL_SHA&quot; --domain luma.example.net
+
+luma version --control-url https://luma.example.net
+curl --fail --silent --show-error https://luma.example.net/v1/health
+nomad job status luma-control
+</code></pre>
+<p>The current manager update path preserves Control state and user jobs, but it
+does reconcile firewall TCP relay ports, Traefik when the manager has the
+<code>edge</code> role, the watchdog, installed config/state, and the <code>luma-control</code> Nomad
+job. It does not restart Docker or Nomad, run egress setup, or redeploy user
+applications. Treat it as a control-plane maintenance change and keep the
+pre-change values above until post-update checks pass.</p>
+<p>Compatible upgrades use Nomad <code>AutoRevert</code>, but operators must still verify the
+public health endpoint and the running image. If the new Control allocation is
+unhealthy, restore the prior Nomad job immediately:</p>
+<pre><code class="language-bash">nomad job revert luma-control &quot;$PREVIOUS_JOB_VERSION&quot;
+nomad job status luma-control
+curl --fail --silent --show-error https://luma.example.net/v1/health
+</code></pre>
+<p>That first rollback restores the Control job spec; it does not restore the
+locally installed CLI. After service recovery, return both CLI and image to the
+recorded release:</p>
+<pre><code class="language-bash">PREVIOUS_INSTALL_REF=&lt;known-good-tag-or-40-character-commit&gt;
+export LUMA_CONTROL_IMAGE=&quot;$PREVIOUS_CONTROL_IMAGE&quot;
+luma update manager --install-ref &quot;$PREVIOUS_INSTALL_REF&quot; --domain luma.example.net
+</code></pre>
+<p>If the candidate CLI itself cannot run the rollback, reinstall the known-good
+CLI first, then repeat the manager refresh:</p>
+<pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | \
+  LUMA_INSTALL_REF=&quot;$PREVIOUS_INSTALL_REF&quot; sh
+export LUMA_CONTROL_IMAGE=&quot;$PREVIOUS_CONTROL_IMAGE&quot;
+~/.local/bin/luma update manager --install-ref &quot;$PREVIOUS_INSTALL_REF&quot; \
+  --domain luma.example.net
+</code></pre>
+<ol start="4">
+<li>Configure PyPI Trusted Publishing once for the <code>luma-infra</code> project:</li>
+</ol>
+<ul>
+<li>owner: <code>LiuTianjie</code></li>
+<li>repository: <code>luma</code></li>
+<li>workflow: <code>pypi.yml</code></li>
+<li>environment: <code>pypi</code></li>
+</ul>
+<p>The package distribution name is <code>luma-infra</code>; the installed console command remains <code>luma</code>.</p>
+<ol start="5">
+<li>Create a tag to publish a versioned image, GitHub archive, and PyPI package:</li>
+</ol>
+<pre><code class="language-bash">git tag v0.2.11
+git push origin main --tags
+</code></pre>
+<p>The <code>Publish Python Package</code> workflow builds wheel and sdist, runs <code>twine check</code>, and publishes with <code>pypa/gh-action-pypi-publish@release/v1</code> through OIDC. Do not store a long-lived <code>PYPI_API_TOKEN</code> secret.</p>
+<ol start="6">
+<li>CI users install with:</li>
+</ol>
+<pre><code class="language-bash">python -m pip install &quot;luma-infra==0.2.11&quot;
+</code></pre>
+<p>Interactive users can still install with:</p>
+<pre><code class="language-bash">export LUMA_INSTALL_REF=v0.2.11
+curl -fsSL &quot;https://raw.githubusercontent.com/LiuTianjie/luma/$LUMA_INSTALL_REF/scripts/install-luma.sh&quot; -o /tmp/install-luma.sh &amp;&amp; sh /tmp/install-luma.sh
+</code></pre>
+<p>The installer downloads the GitHub archive for that tag, prepares an isolated runtime under <code>~/.local/share/luma/releases/</code>, installs the Python package, writes <code>~/.local/bin/luma</code>, and adds <code>~/.local/bin</code> to the user's shell profile when needed.</p>
+<h3 id="roll-out-a-published-release-from-dashboard">Roll Out A Published Release From Dashboard<a class="headerlink" href="#roll-out-a-published-release-from-dashboard" title="Permanent link">#</a></h3>
+<p>After both package and Control-image workflows succeed, open Dashboard → Settings → System maintenance. Use the immutable tag as the release ref and the same-tag Control image. The supported order is:</p>
+<ol>
+<li>capture the public-route baseline;</li>
+<li>confirm the Control update; the declared Builder first copies the external image into the internal registry through its managed egress proxy and verifies the digest;</li>
+<li>let the page start the manager rollout only after that preparation succeeds and reconnect automatically;</li>
+<li>verify the automatic post-update route sentinel;</li>
+<li>update only non-manager nodes whose reported agent version differs from the release;</li>
+<li>retry any failed or interrupted image, manager, or node operation from the same page.</li>
+</ol>
+<p>Control-image preparation and fleet operations are persisted by Control. The image preparation uses the Builder's <code>control-image-mirror-v1</code> capability and the configured <code>registryHost</code> / <code>pushHost</code>; its proxy is never exposed to the browser. Manager updates run in an independent transient systemd unit, so refreshing the manager node agent cannot terminate the rollout that started it. A fleet node is successful only after the installer finishes and a new heartbeat reports the target release version. CLI update commands remain break-glass and first-adoption fallbacks; they are not required for normal releases.</p>
+<p>Users can uninstall the local CLI with:</p>
+<pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninstall-luma.sh | sh
+</code></pre>
+<p>Use <code>--purge</code> to also remove local config and login contexts:</p>
+<pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninstall-luma.sh | sh -s -- --purge
+</code></pre>
+<p>The uninstall script is intentionally local-only. It does not remove server runtime components such as Docker, Nomad, Traefik, Luma Control, deployed services, or <code>/opt/luma</code>.</p>
+<p>The default control image is <code>ghcr.io/liutianjie/luma-control:latest</code>. If you want a fully pinned bootstrap, set this in <code>luma.yaml</code> before running manager bootstrap:</p>
+<pre><code class="language-yaml">defaults:
+  images:
+    lumaControl: ghcr.io/liutianjie/luma-control:v0.2.11
+</code></pre>
+<h2 id="latest-channel">Latest Channel<a class="headerlink" href="#latest-channel" title="Permanent link">#</a></h2>
+<p>For early testing, users can install <code>main</code>:</p>
+<pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
+</code></pre>
+<p>This is convenient but less reproducible than a tag. For real users, prefer a version tag.</p>
+<p>For CI, prefer the pinned PyPI package:</p>
+<pre><code class="language-bash">python -m pip install &quot;luma-infra==0.2.11&quot;
+</code></pre>
+<h2 id="custom-host-or-fork">Custom Host Or Fork<a class="headerlink" href="#custom-host-or-fork" title="Permanent link">#</a></h2>
+<p>Use these environment variables when the code is hosted somewhere else:</p>
+<pre><code class="language-bash">curl -fsSL https://example.com/install-luma.sh | \
+  LUMA_REPO_URL=https://github.com/acme/luma \
+  LUMA_INSTALL_REF=v0.2.11 \
+  sh
+</code></pre>
+<p>Use <code>LUMA_ARCHIVE_URL</code> to bypass GitHub archive URL conventions completely.</p>
+<h2 id="pypi-package-checks">PyPI Package Checks<a class="headerlink" href="#pypi-package-checks" title="Permanent link">#</a></h2>
+<p>Before tagging, verify the package locally:</p>
+<pre><code class="language-bash">rm -rf dist
+python -m pip install --upgrade build twine
+python -m build
+python -m twine check dist/*
+python -m venv /tmp/luma-package-test
+. /tmp/luma-package-test/bin/activate
+python -m pip install dist/*.whl
+luma version --local
+</code></pre>
+<p>The package includes runtime stack templates and dashboard assets as package data. The one-line installer remains useful for local preflight, venv creation, and PATH setup. Host-level changes such as Linux DNS repair are handled by manager bootstrap or node join, not by a CLI-only install.</p><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/maintainers/release.md">View source on GitHub ↗</a> · <a href="./release.md">Raw Markdown</a></div></article><aside class="docs-toc" aria-label="On this page"><strong>On this page</strong><div class="toc">
+<ul>
+<li><a href="#shared-source-validation">Shared source validation</a></li>
+<li><a href="#recommended-release">Recommended Release</a></li>
+<li><a href="#candidate-manager-upgrade-and-rollback">Candidate Manager Upgrade And Rollback</a><ul>
+<li><a href="#first-json-to-sqlite-upgrade">First JSON-to-SQLite upgrade</a></li>
+<li><a href="#compatible-release-upgrades">Compatible release upgrades</a></li>
+<li><a href="#roll-out-a-published-release-from-dashboard">Roll Out A Published Release From Dashboard</a></li>
+</ul>
+</li>
+<li><a href="#latest-channel">Latest Channel</a></li>
+<li><a href="#custom-host-or-fork">Custom Host Or Fork</a></li>
+<li><a href="#pypi-package-checks">PyPI Package Checks</a></li>
+</ul>
+</div>
+</aside></main></body></html>

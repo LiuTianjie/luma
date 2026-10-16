@@ -1,0 +1,215 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: luma-prepare-sources
+  namespace: luma-builds
+spec:
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+    - name: git-contexts-json
+      type: string
+      default: "{}"
+    - name: accelerate-apt-mirrors
+      type: string
+      default: "true"
+  workspaces:
+    - name: source
+  results:
+    - name: resolved-commit
+      description: Full 40-char commit SHA of the primary repository
+  steps:
+    - name: checkout-and-prepare
+      image: alpine/git:2.45.2
+      script: |
+        #!/bin/sh
+        set -eu
+        WORKSPACE="$(workspaces.source.path)"
+        mkdir -p "${WORKSPACE}/primary" "${WORKSPACE}/contexts"
+        git clone --no-checkout "$(params.repo-url)" "${WORKSPACE}/primary"
+        git -C "${WORKSPACE}/primary" fetch --depth 1 origin "$(params.revision)"
+        git -C "${WORKSPACE}/primary" checkout FETCH_HEAD
+        COMMIT="$(git -C "${WORKSPACE}/primary" rev-parse HEAD)"
+        printf "%s" "${COMMIT}" > "$(results.resolved-commit.path)"
+
+        if [ "$(params.accelerate-apt-mirrors)" = "true" ]; then
+          find "${WORKSPACE}/primary" -maxdepth 3 -name "Dockerfile*" -type f | while read -r df; do
+            sed -i 's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g' "$df" || true
+          done
+        fi
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: luma-buildkit-build-push
+  namespace: luma-builds
+spec:
+  params:
+    - name: buildkit-addr
+      type: string
+    - name: context-subpath
+      type: string
+      default: "."
+    - name: dockerfile-path
+      type: string
+      default: "Dockerfile"
+    - name: platform
+      type: string
+      default: "linux/amd64"
+    - name: image-ref
+      type: string
+    - name: cache-ref
+      type: string
+    - name: extra-contexts-flags
+      type: string
+      default: ""
+  workspaces:
+    - name: source
+  results:
+    - name: image-digest
+      description: Immutable OCI image digest pushed to Zot Registry
+    - name: build-metadata-json
+      description: BuildKit metadata JSON including layer timing and cache hit stats
+  steps:
+    - name: build-and-push
+      image: moby/buildkit:v0.16.0
+      script: |
+        #!/bin/sh
+        set -eu
+        SRC="$(workspaces.source.path)/primary/$(params.context-subpath)"
+        DOCKERFILE="$(workspaces.source.path)/primary/$(params.dockerfile-path)"
+        METADATA_FILE="/tmp/buildkit-metadata.json"
+
+        buildctl --addr "$(params.buildkit-addr)" build \
+          --frontend dockerfile.v0 \
+          --local context="${SRC}" \
+          --local dockerfile="$(dirname "${DOCKERFILE}")" \
+          --opt filename="$(basename "${DOCKERFILE}")" \
+          --opt platform="$(params.platform)" \
+          $(params.extra-contexts-flags) \
+          --export-cache "type=registry,ref=$(params.cache-ref),mode=max,registry.insecure=true" \
+          --import-cache "type=registry,ref=$(params.cache-ref),registry.insecure=true" \
+          --output "type=image,name=$(params.image-ref),push=true,registry.insecure=true" \
+          --metadata-file "${METADATA_FILE}" \
+          --progress=rawjson &
+        BUILDCTL_PID=$!
+        trap 'kill -TERM ${BUILDCTL_PID} 2>/dev/null || true' TERM INT
+        wait ${BUILDCTL_PID}
+        trap - TERM INT
+
+        DIGEST="$(sed -n 's/.*"containerimage.digest"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${METADATA_FILE}" | head -n 1)"
+        printf "%s" "${DIGEST}" > "$(results.image-digest.path)"
+        cat "${METADATA_FILE}" > "$(results.build-metadata-json.path)"
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: luma-build-cleanup-finally
+  namespace: luma-builds
+spec:
+  params:
+    - name: buildkit-addr
+      type: string
+      default: ""
+  workspaces:
+    - name: source
+  steps:
+    - name: cleanup-ephemeral-state
+      image: moby/buildkit:v0.16.0
+      script: |
+        #!/bin/sh
+        set +e
+        echo "Running finally cleanup for ephemeral buildkit sessions and workspaces..."
+        WS="$(workspaces.source.path)"
+        if [ -n "${WS}" ] && [ -d "${WS}" ]; then
+          rm -rf "${WS}/primary" "${WS}/contexts" 2>/dev/null || true
+        fi
+        rm -rf /tmp/buildkit-* /tmp/buildctl* /tmp/*.sock /run/buildkit/*.sock 2>/dev/null || true
+        exit 0
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: luma-paas-build-pipeline
+  namespace: luma-builds
+spec:
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+    - name: buildkit-addr
+      type: string
+    - name: platform
+      type: string
+    - name: context-subpath
+      type: string
+      default: "."
+    - name: dockerfile-path
+      type: string
+      default: "Dockerfile"
+    - name: image-ref
+      type: string
+    - name: cache-ref
+      type: string
+    - name: git-contexts-json
+      type: string
+      default: "{}"
+    - name: extra-contexts-flags
+      type: string
+      default: ""
+  workspaces:
+    - name: shared-source
+  results:
+    - name: resolved-commit
+      value: $(tasks.prepare-sources.results.resolved-commit)
+    - name: image-digest
+      value: $(tasks.buildkit-build-push.results.image-digest)
+  tasks:
+    - name: prepare-sources
+      taskRef:
+        name: luma-prepare-sources
+      params:
+        - name: repo-url
+          value: $(params.repo-url)
+        - name: revision
+          value: $(params.revision)
+        - name: git-contexts-json
+          value: $(params.git-contexts-json)
+      workspaces:
+        - name: source
+          workspace: shared-source
+    - name: buildkit-build-push
+      runAfter: ["prepare-sources"]
+      taskRef:
+        name: luma-buildkit-build-push
+      params:
+        - name: buildkit-addr
+          value: $(params.buildkit-addr)
+        - name: context-subpath
+          value: $(params.context-subpath)
+        - name: dockerfile-path
+          value: $(params.dockerfile-path)
+        - name: platform
+          value: $(params.platform)
+        - name: image-ref
+          value: $(params.image-ref)
+        - name: cache-ref
+          value: $(params.cache-ref)
+        - name: extra-contexts-flags
+          value: $(params.extra-contexts-flags)
+      workspaces:
+        - name: source
+          workspace: shared-source
+  finally:
+    - name: build-cleanup-finally
+      taskRef:
+        name: luma-build-cleanup-finally
+      params:
+        - name: buildkit-addr
+          value: $(params.buildkit-addr)
+      workspaces:
+        - name: source
+          workspace: shared-source

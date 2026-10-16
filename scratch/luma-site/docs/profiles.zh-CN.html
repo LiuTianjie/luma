@@ -1,0 +1,39 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>初始化配置预设 · Luma 文档</title><meta name="description" content="初始化配置预设 — Luma 文档"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">跳到正文</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../zh.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">文档</span><button class="menu-toggle" aria-label="展开导航" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="主导航"><a href="../zh.html#product">控制台</a><a href="../zh.html#docs">全部指南</a><a href="profiles.html" data-doc-language lang="en">English</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="文档"><strong>指南</strong><a class=""  href="README.zh-CN.html">概览</a><a class=""  href="getting-started.zh-CN.html">快速上手</a><a class=""  href="concepts.zh-CN.html">核心概念</a><a class=""  href="deploying.zh-CN.html">部署应用</a><a class=""  href="build-and-artifacts.zh-CN.html">构建与制品</a><a class=""  href="migration-guide.zh-CN.html">零停机迁移</a><a class=""  href="operations.zh-CN.html">日常运维</a><a class=""  href="deployment-yaml.zh-CN.html">部署 YAML</a><a class=""  href="compose-storage.zh-CN.html">Compose 与存储</a><a class=""  href="secrets.zh-CN.html">密钥与凭据</a><a class=""  href="exposure-model.zh-CN.html">暴露模型</a><a class=""  href="observability.zh-CN.html">可观测</a><a class=""  href="dashboard-guide.zh-CN.html">控制台指南</a><a class=""  href="troubleshooting.zh-CN.html">故障排查</a><a class=""  href="luma-cli-reference.zh-CN.html">CLI 命令参考</a><a class=""  href="ai-agent-skills.zh-CN.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../zh.html#docs">文档</a><span>/</span><span>初始化配置预设</span></div><h1 id="profiles">初始化配置预设<a class="headerlink" href="#profiles" title="章节链接">#</a></h1>
+<p>Profile 是 Manager 初始化预设。普通工作节点加入不使用 profile，应在各节点运行 <code>luma node join ... --region &lt;cn|global|home|custom&gt; --name &lt;node-name&gt;</code>。自定义区域用 <code>luma region create</code> 创建。</p>
+<h2 id="single-node"><code>single-node</code><a class="headerlink" href="#single-node" title="章节链接">#</a></h2>
+<p>在一台公共服务器运行：</p>
+<ul>
+<li>Docker</li>
+<li>Nomad server（同时作为 <code>region=cn</code> 的 client）</li>
+<li>Traefik</li>
+<li>Luma Control API</li>
+<li>出网网关</li>
+</ul>
+<p>用法：</p>
+<pre><code class="language-bash">luma bootstrap --domain luma.example.com --profile single-node
+</code></pre>
+<h2 id="cn-edge"><code>cn-edge</code><a class="headerlink" href="#cn-edge" title="章节链接">#</a></h2>
+<p>中国大陆公共边缘节点：</p>
+<ul>
+<li>Docker</li>
+<li>Nomad server</li>
+<li>Traefik</li>
+</ul>
+<h2 id="worker-regions">工作节点区域<a class="headerlink" href="#worker-regions" title="章节链接">#</a></h2>
+<p>工作节点采用区域优先的加入方式：</p>
+<pre><code class="language-bash">luma node join https://luma.example.com --token &lt;node-join-token&gt; --region cn --name cn-worker-1
+luma node join https://luma.example.com --token &lt;node-join-token&gt; --region global --name global-sg-1
+luma node join https://luma.example.com --token &lt;node-join-token&gt; --region home --name home-mac-mini
+</code></pre>
+<ul>
+<li><code>region</code> 是调度边界，写入 Nomad client 的 <code>meta.region</code>。</li>
+<li><code>name</code> 是状态输出和服务清单使用的 Luma 节点名，固定调度使用 <code>meta.luma_node_name</code>。</li>
+<li>需要代理的服务声明 <code>proxy: true</code>。</li>
+</ul><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/profiles.zh-CN.md">在 GitHub 查看源码 ↗</a> · <a href="./profiles.zh-CN.md">原始 Markdown</a></div></article><aside class="docs-toc" aria-label="本页目录"><strong>本页目录</strong><div class="toc">
+<ul>
+<li><a href="#single-node">single-node</a></li>
+<li><a href="#cn-edge">cn-edge</a></li>
+<li><a href="#worker-regions">工作节点区域</a></li>
+</ul>
+</div>
+</aside></main></body></html>

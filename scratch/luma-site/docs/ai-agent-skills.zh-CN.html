@@ -1,0 +1,53 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AI Agent Skills · Luma 文档</title><meta name="description" content="AI Agent Skills — Luma 文档"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">跳到正文</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../zh.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">文档</span><button class="menu-toggle" aria-label="展开导航" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="主导航"><a href="../zh.html#product">控制台</a><a href="../zh.html#docs">全部指南</a><a href="ai-agent-skills.html" data-doc-language lang="en">English</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="文档"><strong>指南</strong><a class=""  href="README.zh-CN.html">概览</a><a class=""  href="getting-started.zh-CN.html">快速上手</a><a class=""  href="concepts.zh-CN.html">核心概念</a><a class=""  href="deploying.zh-CN.html">部署应用</a><a class=""  href="build-and-artifacts.zh-CN.html">构建与制品</a><a class=""  href="migration-guide.zh-CN.html">零停机迁移</a><a class=""  href="operations.zh-CN.html">日常运维</a><a class=""  href="deployment-yaml.zh-CN.html">部署 YAML</a><a class=""  href="compose-storage.zh-CN.html">Compose 与存储</a><a class=""  href="secrets.zh-CN.html">密钥与凭据</a><a class=""  href="exposure-model.zh-CN.html">暴露模型</a><a class=""  href="observability.zh-CN.html">可观测</a><a class=""  href="dashboard-guide.zh-CN.html">控制台指南</a><a class=""  href="troubleshooting.zh-CN.html">故障排查</a><a class=""  href="luma-cli-reference.zh-CN.html">CLI 命令参考</a><a class="active" aria-current=page href="ai-agent-skills.zh-CN.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../zh.html#docs">文档</a><span>/</span><span>AI Agent Skills</span></div><h1 id="ai-agent-skills">AI Agent Skills<a class="headerlink" href="#ai-agent-skills" title="章节链接">#</a></h1>
+<p>Luma 提供两个面向 AI 编码助手的 Skill，包含项目专用的部署与可观测工作流、参考资料和校验规则。Skill 安装在助手中，不安装到运行中的集群。</p>
+<h2 id="deployment-workflows">部署工作流<a class="headerlink" href="#deployment-workflows" title="章节链接">#</a></h2>
+<p><a href="https://github.com/LiuTianjie/luma/tree/main/skills/luma-deployment-yaml"><code>luma-deployment-yaml</code></a> 帮助生成和审查单服务清单与 Compose 旁车配置，选择区域与暴露方式，配置本地存储，并排查构建和部署问题。</p>
+<p>对于已有应用，它会沿用记录的构建与部署方式。更改工作流时应说明差异并确认；仅安装 Skill 不会更新 CLI 或 Control。密钥使用 <code>${DATABASE_PASSWORD}</code> 等引用，不以明文写入 YAML。</p>
+<p>示例指令：</p>
+<blockquote>
+<p>检查这个 Compose 项目，生成 Luma 旁车配置并校验。沿用现有部署方式，持久化数据使用本地存储。</p>
+</blockquote>
+<h2 id="application-observability">应用可观测<a class="headerlink" href="#application-observability" title="章节链接">#</a></h2>
+<p><a href="https://github.com/LiuTianjie/luma/tree/main/skills/luma-observe"><code>luma-observe</code></a> 帮助部署和维护可选的独立可观测栈，涵盖 Traefik 请求指标、Nomad 实例失败、OTLP 采集和通知发送。</p>
+<p>安装 Skill 不会自动安装可观测栈。可观测栈需要单独部署；应用链路追踪还需要对应的 OpenTelemetry 运行时插桩。</p>
+<p>示例指令：</p>
+<blockquote>
+<p>为这个集群部署 luma-observe，验证应用指标和实例失败告警，并检查通知发送结果。</p>
+</blockquote>
+<h2 id="installation">安装<a class="headerlink" href="#installation" title="章节链接">#</a></h2>
+<p>在本地仓库目录中，将两个 Skill 文件夹复制到助手的用户级技能目录。Codex 使用：</p>
+<pre><code class="language-bash">mkdir -p ~/.codex/skills/luma-deployment-yaml ~/.codex/skills/luma-observe
+cp -R skills/luma-deployment-yaml/. ~/.codex/skills/luma-deployment-yaml/
+cp -R skills/luma-observe/. ~/.codex/skills/luma-observe/
+</code></pre>
+<p>Claude Code 使用：</p>
+<pre><code class="language-bash">mkdir -p ~/.claude/skills/luma-deployment-yaml ~/.claude/skills/luma-observe
+cp -R skills/luma-deployment-yaml/. ~/.claude/skills/luma-deployment-yaml/
+cp -R skills/luma-observe/. ~/.claude/skills/luma-observe/
+</code></pre>
+<p>没有本地仓库时，从 GitHub <code>main</code> 安装：</p>
+<pre><code class="language-bash">tmp=&quot;$(mktemp -d)&quot;
+git clone --depth 1 https://github.com/LiuTianjie/luma.git &quot;$tmp/luma&quot;
+for dest in ~/.claude/skills ~/.codex/skills; do
+  mkdir -p &quot;$dest/luma-deployment-yaml&quot; &quot;$dest/luma-observe&quot;
+  cp -R &quot;$tmp/luma/skills/luma-deployment-yaml/.&quot; &quot;$dest/luma-deployment-yaml/&quot;
+  cp -R &quot;$tmp/luma/skills/luma-observe/.&quot; &quot;$dest/luma-observe/&quot;
+done
+rm -rf &quot;$tmp&quot;
+</code></pre>
+<p>其他助手请通过其支持的 Skill 安装方式，使用上方链接的源码目录。安装后新开对话。更新 Luma 时，应从匹配版本的仓库同步 Skill，保持技能说明与安装版本一致。</p>
+<h2 id="references">参考文档<a class="headerlink" href="#references" title="章节链接">#</a></h2>
+<ul>
+<li><a href="deployment-yaml.zh-CN.html">部署 YAML</a></li>
+<li><a href="compose-storage.zh-CN.html">Compose 与本地存储</a></li>
+<li><a href="observability.zh-CN.html">可观测</a></li>
+<li><a href="https://github.com/LiuTianjie/luma/blob/main/skills/luma-deployment-yaml/references/deployment-workflow.md">部署工作流记录</a></li>
+</ul><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/ai-agent-skills.zh-CN.md">在 GitHub 查看源码 ↗</a> · <a href="./ai-agent-skills.zh-CN.md">原始 Markdown</a></div></article><aside class="docs-toc" aria-label="本页目录"><strong>本页目录</strong><div class="toc">
+<ul>
+<li><a href="#deployment-workflows">部署工作流</a></li>
+<li><a href="#application-observability">应用可观测</a></li>
+<li><a href="#installation">安装</a></li>
+<li><a href="#references">参考文档</a></li>
+</ul>
+</div>
+</aside></main></body></html>

@@ -14,9 +14,9 @@ from urllib.parse import urlsplit, urlunsplit
 import markdown
 
 ROOT = Path(__file__).resolve().parents[1]
-GUIDES = [('README', 'Overview'), ('getting-started', 'Getting started'), ('concepts', 'Core concepts'), ('deploying', 'Deploying applications'), ('operations', 'Operations'), ('deployment-yaml', 'Deployment YAML'), ('compose-storage', 'Compose & storage'), ('secrets', 'Secrets & credentials'), ('exposure-model', 'Exposure model'), ('observability', 'Observability'), ('dashboard-guide', 'Console guide'), ('troubleshooting', 'Troubleshooting'), ('luma-cli-reference', 'CLI reference'), ('ai-agent-skills', 'AI Agent Skills')]
+GUIDES = [('README', 'Overview'), ('getting-started', 'Getting started'), ('concepts', 'Core concepts'), ('deploying', 'Deploying applications'), ('build-and-artifacts', 'Build & OCI artifacts'), ('migration-guide', 'Migration guide'), ('operations', 'Operations'), ('deployment-yaml', 'Deployment YAML'), ('compose-storage', 'Compose & storage'), ('secrets', 'Secrets & credentials'), ('exposure-model', 'Exposure model'), ('observability', 'Observability'), ('dashboard-guide', 'Console guide'), ('troubleshooting', 'Troubleshooting'), ('luma-cli-reference', 'CLI reference'), ('ai-agent-skills', 'AI Agent Skills')]
 
-ZH_LABELS = ['概览', '快速上手', '核心概念', '部署应用', '日常运维', '部署 YAML', 'Compose 与存储', '密钥与凭据', '暴露模型', '可观测', '控制台指南', '故障排查', 'CLI 命令参考', 'AI Agent Skills']
+ZH_LABELS = ['概览', '快速上手', '核心概念', '部署应用', '构建与制品', '零停机迁移', '日常运维', '部署 YAML', 'Compose 与存储', '密钥与凭据', '暴露模型', '可观测', '控制台指南', '故障排查', 'CLI 命令参考', 'AI Agent Skills']
 
 def chinese_source(source):
     # Explicit translations or original Chinese prose; ignore command/help blocks.

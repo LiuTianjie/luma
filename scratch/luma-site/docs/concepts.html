@@ -1,0 +1,158 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Concepts · Luma Documentation</title><meta name="description" content="Concepts — Luma Documentation"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">Skip to content</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../index.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">Documentation</span><button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="Main navigation"><a href="../index.html#product">Console</a><a href="../index.html#docs">All guides</a><a href="concepts.zh-CN.html" data-doc-language lang="zh-CN">中文</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="Documentation"><strong>Guides</strong><a class=""  href="README.html">Overview</a><a class=""  href="getting-started.html">Getting started</a><a class="active" aria-current=page href="concepts.html">Core concepts</a><a class=""  href="deploying.html">Deploying applications</a><a class=""  href="build-and-artifacts.html">Build & OCI artifacts</a><a class=""  href="migration-guide.html">Migration guide</a><a class=""  href="operations.html">Operations</a><a class=""  href="deployment-yaml.html">Deployment YAML</a><a class=""  href="compose-storage.html">Compose & storage</a><a class=""  href="secrets.html">Secrets & credentials</a><a class=""  href="exposure-model.html">Exposure model</a><a class=""  href="observability.html">Observability</a><a class=""  href="dashboard-guide.html">Console guide</a><a class=""  href="troubleshooting.html">Troubleshooting</a><a class=""  href="luma-cli-reference.html">CLI reference</a><a class=""  href="ai-agent-skills.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../index.html#docs">Documentation</a><span>/</span><span>Concepts</span></div><h1 id="concepts">Concepts<a class="headerlink" href="#concepts" title="Permanent link">#</a></h1>
+<p>Luma turns a few servers into one deployment platform. Five ideas explain almost everything it does: <strong>node</strong>, <strong>region</strong>, <strong>exposure</strong>, <strong>egress</strong> and <strong>service</strong>.</p>
+<h2 id="how-the-pieces-fit">How the pieces fit<a class="headerlink" href="#how-the-pieces-fit" title="Permanent link">#</a></h2>
+<pre><code class="language-mermaid">flowchart LR
+  clients[&quot;CLI / CI / dashboard&quot;] --&gt;|management token| control[&quot;Luma Control&quot;]
+  control --&gt;|jobs| nomad[&quot;Nomad server&quot;]
+  control --&gt;|records| dns[&quot;Cloudflare DNS&quot;]
+  nomad --&gt; cn[&quot;cn nodes&quot;]
+  nomad --&gt; global[&quot;global nodes&quot;]
+  nomad --&gt; home[&quot;home nodes&quot;]
+  users[&quot;Visitors&quot;] --&gt; dns --&gt; traefik[&quot;Traefik on the manager&quot;]
+  traefik --&gt; cn
+  traefik --&gt;|Tailscale relay| home
+</code></pre>
+<ul>
+<li><strong>Luma Control</strong> runs on the manager. It authenticates clients, stores cluster state in SQLite, renders Nomad jobs, manages DNS and routes, and dispatches work to node agents.</li>
+<li><strong>Nomad</strong> schedules containers. The manager runs the Nomad server; every other node is a Nomad client running the Docker driver.</li>
+<li><strong>Traefik</strong> on the manager receives public HTTP(S) and TCP traffic.</li>
+<li><strong>Node agents</strong> run on every node. They poll Control for work (install, update, volume preparation, image builds, terminals); Control never connects to nodes directly.</li>
+<li><strong>Tailscale</strong> connects private and home nodes and carries <code>tailscale-relay</code> traffic. It is optional for a single cloud manager.</li>
+</ul>
+<p>Deploying and serving are separate paths: clients talk to Control, visitors talk to Traefik.</p>
+<h2 id="node">Node<a class="headerlink" href="#node" title="Permanent link">#</a></h2>
+<p>A machine that runs Luma. The first one is created with <code>luma bootstrap</code>; every other one joins itself with <code>luma node join</code>. No machine needs SSH access to another.</p>
+<pre><code class="language-bash">luma node join https://luma.example.com --token &lt;node-join-token&gt; --region global --name sg-1
+</code></pre>
+<p>The join writes Nomad client metadata that scheduling relies on:</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>Metadata</th>
+<th>Set from</th>
+<th>Used for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>region</code></td>
+<td><code>--region</code></td>
+<td>The service's <code>region</code> constraint</td>
+</tr>
+<tr>
+<td><code>luma_node_name</code></td>
+<td><code>--name</code></td>
+<td>Pinning a service with <code>node:</code></td>
+</tr>
+<tr>
+<td><code>ingress</code>, <code>egress</code></td>
+<td>node roles</td>
+<td>Placing Traefik and the egress proxy</td>
+</tr>
+</tbody>
+</table></div>
+<p>The Nomad node identity is a stable UUID, so a machine that rejoins under the same name keeps its pinned services valid. Metadata is maintained by Luma; do not edit it by hand. Inspect it on the manager with <code>nomad node status -verbose &lt;node-id&gt;</code>.</p>
+<h2 id="region">Region<a class="headerlink" href="#region" title="Permanent link">#</a></h2>
+<p><strong>Where a service may run.</strong> A node belongs to exactly one region; a service with <code>region: cn</code> is only scheduled on <code>cn</code> nodes, and <code>replicas</code> spread across the ready nodes of that region.</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>Region</th>
+<th>Intended for</th>
+<th>Allowed public exposure</th>
+<th>Join and image-pull egress</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cn</code></td>
+<td>Public web/API services, databases, Control</td>
+<td><code>cn-edge</code></td>
+<td>Through the manager proxy</td>
+</tr>
+<tr>
+<td><code>global</code></td>
+<td>Workers and services that need the open internet</td>
+<td><code>external-edge</code></td>
+<td>Direct</td>
+</tr>
+<tr>
+<td><code>home</code></td>
+<td>Home servers, NAS, backups, internal tools</td>
+<td><code>tailscale-relay</code></td>
+<td>Through the manager proxy</td>
+</tr>
+<tr>
+<td>custom</td>
+<td>Anything, created with <code>luma region create NAME --egress proxy\|direct</code></td>
+<td><code>none</code> by default</td>
+<td>As configured</td>
+</tr>
+</tbody>
+</table></div>
+<p>Home networks are less reliable than cloud servers, so keep core public services out of <code>home</code>. Prefer queues over real-time calls between regions.</p>
+<p>Set <code>node: &lt;name&gt;</code> in a manifest only when a service must stay on one machine (local disk, hardware). The region constraint still applies, so the node must be in that region.</p>
+<h2 id="exposure">Exposure<a class="headerlink" href="#exposure" title="Permanent link">#</a></h2>
+<p><strong>How traffic reaches a service.</strong> It is independent of region, but each public mode requires a matching region.</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>Exposure</th>
+<th>Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cn-edge</code></td>
+<td>Cloudflare DNS → Traefik on the manager → service in <code>cn</code></td>
+</tr>
+<tr>
+<td><code>external-edge</code></td>
+<td>Cloudflare DNS → a global edge → service in <code>global</code></td>
+</tr>
+<tr>
+<td><code>tailscale-relay</code></td>
+<td>Cloudflare DNS → Traefik → Tailscale → service on a home node</td>
+</tr>
+<tr>
+<td><code>tcp-relay</code></td>
+<td>A public TCP port on Traefik → service (for example a database)</td>
+</tr>
+<tr>
+<td><code>cloudflare-tunnel</code></td>
+<td>Cloudflare Tunnel → private service, bypassing Traefik</td>
+</tr>
+<tr>
+<td><code>none</code></td>
+<td>No public ingress</td>
+</tr>
+</tbody>
+</table></div>
+<p>See the <a href="exposure-model.html">exposure model</a> for every mode's requirements and examples.</p>
+<h2 id="egress">Egress<a class="headerlink" href="#egress" title="Permanent link">#</a></h2>
+<p><strong>How containers reach the outside world.</strong> The optional egress gateway is an outbound proxy on the manager. Nodes in proxied regions use it for joining and image pulls. A service uses it at runtime only when its manifest says <code>proxy: true</code>; Luma then injects <code>HTTP_PROXY</code>/<code>HTTPS_PROXY</code>. Egress never carries inbound traffic, and scheduling still follows <code>region</code>. See <a href="egress-gateway.html">Egress gateway</a>.</p>
+<h2 id="service">Service<a class="headerlink" href="#service" title="Permanent link">#</a></h2>
+<p><strong>A deployable unit</strong>, described by a small YAML manifest that Control turns into a Nomad job:</p>
+<pre><code class="language-yaml">name: app
+image: ghcr.io/acme/app:1.0.0
+region: cn
+exposure: cn-edge
+domain: app.example.com
+port: 3000
+replicas: 2
+</code></pre>
+<p>Multi-container applications use a standard <code>docker-compose.yml</code> plus a Luma sidecar; all of their services run together on one node. See <a href="deploying.html">Deploying applications</a> and the <a href="deployment-yaml.html">manifest reference</a>.</p>
+<h2 id="networking-boundaries">Networking boundaries<a class="headerlink" href="#networking-boundaries" title="Permanent link">#</a></h2>
+<p>Linux nodes use Docker bridge networking with dynamic host ports, which Traefik discovers from Nomad service tags. macOS nodes (Docker Desktop or OrbStack) use host networking. Management traffic between servers prefers Tailscale; only <code>tailscale-relay</code> services send visitor traffic over it.</p>
+<p>Nomad agents bind to <code>0.0.0.0</code> and advertise their Tailscale address; Luma's firewall rules open the Nomad ports only on <code>tailscale0</code>. If a Nomad client loses its connection briefly, its allocations keep running (<code>max_client_disconnect</code>) and reconnect afterwards.</p><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/concepts.md">View source on GitHub ↗</a> · <a href="./concepts.md">Raw Markdown</a></div></article><aside class="docs-toc" aria-label="On this page"><strong>On this page</strong><div class="toc">
+<ul>
+<li><a href="#how-the-pieces-fit">How the pieces fit</a></li>
+<li><a href="#node">Node</a></li>
+<li><a href="#region">Region</a></li>
+<li><a href="#exposure">Exposure</a></li>
+<li><a href="#egress">Egress</a></li>
+<li><a href="#service">Service</a></li>
+<li><a href="#networking-boundaries">Networking boundaries</a></li>
+</ul>
+</div>
+</aside></main></body></html>

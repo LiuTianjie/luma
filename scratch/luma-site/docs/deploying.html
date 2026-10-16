@@ -1,0 +1,200 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Deploying applications · Luma Documentation</title><meta name="description" content="Deploying applications — Luma Documentation"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">Skip to content</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../index.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">Documentation</span><button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="Main navigation"><a href="../index.html#product">Console</a><a href="../index.html#docs">All guides</a><a href="deploying.zh-CN.html" data-doc-language lang="zh-CN">中文</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="Documentation"><strong>Guides</strong><a class=""  href="README.html">Overview</a><a class=""  href="getting-started.html">Getting started</a><a class=""  href="concepts.html">Core concepts</a><a class="active" aria-current=page href="deploying.html">Deploying applications</a><a class=""  href="build-and-artifacts.html">Build & OCI artifacts</a><a class=""  href="migration-guide.html">Migration guide</a><a class=""  href="operations.html">Operations</a><a class=""  href="deployment-yaml.html">Deployment YAML</a><a class=""  href="compose-storage.html">Compose & storage</a><a class=""  href="secrets.html">Secrets & credentials</a><a class=""  href="exposure-model.html">Exposure model</a><a class=""  href="observability.html">Observability</a><a class=""  href="dashboard-guide.html">Console guide</a><a class=""  href="troubleshooting.html">Troubleshooting</a><a class=""  href="luma-cli-reference.html">CLI reference</a><a class=""  href="ai-agent-skills.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../index.html#docs">Documentation</a><span>/</span><span>Deploying applications</span></div><h1 id="deploying-applications">Deploying applications<a class="headerlink" href="#deploying-applications" title="Permanent link">#</a></h1>
+<p>Every deployment goes through Luma Control: the CLI sends a manifest, Control renders a Nomad job, updates DNS and routes, submits the job and streams progress back.</p>
+<pre><code class="language-text">luma deploy app.yaml -&gt; Luma Control -&gt; Nomad job -&gt; Nomad client -&gt; Docker container
+</code></pre>
+<h2 id="choose-a-workflow">Choose a workflow<a class="headerlink" href="#choose-a-workflow" title="Permanent link">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>You have</th>
+<th>Command</th>
+<th>What happens</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A published container image</td>
+<td><code>luma deploy app.yaml</code></td>
+<td>Deploys the image named in the manifest</td>
+</tr>
+<tr>
+<td>A local checkout</td>
+<td><code>luma build local .</code></td>
+<td>Builds with your Docker Buildx, pushes to the cluster registry, deploys</td>
+</tr>
+<tr>
+<td>A GitHub or Gitea repository</td>
+<td><code>luma import owner/repo</code></td>
+<td>A builder node clones, builds, pushes and deploys</td>
+</tr>
+<tr>
+<td>A <code>docker-compose.yml</code></td>
+<td><code>luma compose deploy luma.compose.yml</code></td>
+<td>Deploys all services together on one node</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>luma deploy</code> never builds source code. Building requires a builder node and a registry; see <a href="#builds">Builds</a>.</p>
+<h2 id="deploy-an-image">Deploy an image<a class="headerlink" href="#deploy-an-image" title="Permanent link">#</a></h2>
+<p>Create a manifest with <code>luma init</code> or write one by hand:</p>
+<pre><code class="language-yaml">name: api
+image: ghcr.io/acme/api:1.4.2
+region: cn
+exposure: cn-edge
+domain: api.example.com
+port: 3000
+replicas: 2
+resources:
+  limits:
+    memory: 512M
+healthcheck:
+  test: [&quot;CMD&quot;, &quot;curl&quot;, &quot;-f&quot;, &quot;http://localhost:3000/health&quot;]
+</code></pre>
+<p>Then:</p>
+<pre><code class="language-bash">luma validate api.yaml            # schema, region/exposure rules; no network
+luma deploy api.yaml --dry-run    # print the Nomad job Control will submit
+luma deploy api.yaml
+</code></pre>
+<p>Deploy is an upsert: redeploying the same <code>name</code> updates the existing Nomad job, and Nomad keeps the previous version for <a href="operations.html#roll-back">rollback</a>. Use immutable image tags or digests in production; a mutable tag such as <code>latest</code> makes rollback unpredictable.</p>
+<p>Control performs these steps and prints each one:</p>
+<ol>
+<li>store the manifest and scoped secrets;</li>
+<li>render the Nomad job and, for <code>tailscale-relay</code> or <code>tcp-relay</code>, a Traefik route file;</li>
+<li>create or update Cloudflare DNS (skip with <code>--skip-dns</code>);</li>
+<li>submit the job and wait for the rollout;</li>
+<li>probe the public route of <code>cn-edge</code> and <code>external-edge</code> services, recreating the allocation once if Traefik has not picked it up yet.</li>
+</ol>
+<p>The default wait is 3000 seconds (<code>--timeout</code>). If a step fails after earlier ones changed the cluster, the deployment is recorded as <code>failed_partial</code> so <code>luma app remove</code> can still clean it up.</p>
+<p>Every field is described in the <a href="deployment-yaml.html">manifest reference</a>; placement and ingress are explained in <a href="concepts.html">Concepts</a> and the <a href="exposure-model.html">exposure model</a>.</p>
+<h2 id="secrets">Secrets<a class="headerlink" href="#secrets" title="Permanent link">#</a></h2>
+<p>Reference variables in the manifest and keep their values out of Git:</p>
+<pre><code class="language-yaml">env:
+  DATABASE_URL: ${DATABASE_URL}
+</code></pre>
+<p>Provide them at deploy time from a <code>.env</code> file, or store them once:</p>
+<pre><code class="language-bash">luma deploy api.yaml --env .env                         # only referenced variables are sent
+luma secret set DATABASE_URL --scope api                # prompts for the value
+luma secret import .env.production --scope api          # every variable in the file
+</code></pre>
+<p>Secrets are scoped by application name, so <code>api/DATABASE_URL</code> and <code>worker/DATABASE_URL</code> are separate. Registry credentials for private images are set with <code>luma registry login</code>. See <a href="secrets.html">Secrets</a>.</p>
+<h2 id="builds">Builds<a class="headerlink" href="#builds" title="Permanent link">#</a></h2>
+<p>Source builds need a node with Docker Buildx (Linux, or macOS with OrbStack / Docker Desktop) and a registry the cluster can pull from:</p>
+<pre><code class="language-bash">luma registry serve --node builder          # deploy the managed registry on a node
+luma build config --node builder --default-node builder
+</code></pre>
+<p>Luma picks the image architecture from the target region's nodes: an ARM node gets <code>linux/arm64</code>, a mixed region gets a multi-platform image. <code>--platform</code> is accepted only when it covers every target.</p>
+<h3 id="native-builders">Native builders<a class="headerlink" href="#native-builders" title="Permanent link">#</a></h3>
+<p>Register AMD64 and ARM64 builders to route builds by their target architecture:</p>
+<pre><code class="language-bash">luma build config --node builder --node air3 --default-node builder \
+  --registry-host 100.64.0.70:5000 --push-host 100.64.0.70:5000
+</code></pre>
+<p>Upgrade Control and all builder agents first. Repository builders must advertise <code>native-arm-build-v1</code>; automatic selection also uses <code>repository-build-plan-v1</code>. macOS with OrbStack or Docker Desktop is supported. <code>luma status</code> reports each builder's native container platform.</p>
+<p>When declared builders have different native architectures, Control first resolves the repository manifest (including a selected Compose sidecar and per-service placement), locks its Git commit, then queues the build on a matching native builder. Any build containing ARM64, including mixed AMD64/ARM64 builds, must use a native ARM64 builder. A busy or offline native builder remains queued; a missing native ARM builder is an error. Runtime secrets stay on Control until deployment.</p>
+<p><code>--build-node</code> can pin a compatible builder but cannot bypass the ARM requirement. Before every ARM build, Luma verifies the actual Docker engine of every Buildx worker; emulated platform advertisements are insufficient. This covers imports, Compose, retries and <code>luma build local</code>, including custom Buildx builders. Upgrade an older local CLI before building ARM images. Unverifiable remote/Kubernetes Buildx drivers are rejected for ARM builds.</p>
+<p>A mixed AMD64/ARM64 request runs on the ARM builder, where its AMD64 portion may use emulation; it is not split across machines. Different ARM architectures (for example ARMv7 and ARM64) require separate requests. Builds without ARM retain their existing fallback behavior. Set <code>pushHost</code> to an address reachable from every builder, rather than <code>localhost</code>.</p>
+<h3 id="build-a-local-checkout">Build a local checkout<a class="headerlink" href="#build-a-local-checkout" title="Permanent link">#</a></h3>
+<pre><code class="language-bash">cd app
+luma build local . --env .env
+</code></pre>
+<p>The project identity comes from the <code>origin</code> remote (<code>--repo-url</code> otherwise). Luma builds with your local Docker Buildx, pushes to the cluster registry under the same repository path as <code>luma import</code>, then deploys. Your machine must reach the registry. Options: <code>--platform</code>, <code>--context</code>, <code>--dockerfile</code>, <code>--compose-sidecar</code>, <code>--builder</code> (reuse a Buildx builder) and <code>--proxy</code> (HTTP proxy for base images and <code>RUN</code> steps).</p>
+<h3 id="import-a-repository">Import a repository<a class="headerlink" href="#import-a-repository" title="Permanent link">#</a></h3>
+<pre><code class="language-bash">luma import acme/app --ref main --env .env                      # GitHub owner/repo
+luma import https://gitea.example.com/acme/app.git --ref v1.4.0
+</code></pre>
+<p>For private repositories, save a token once and refer to it:</p>
+<pre><code class="language-bash">printf '%s' &quot;$GITHUB_TOKEN&quot; | luma git-provider set github personal --username octo --token-stdin
+luma git-provider repos github:personal
+luma import --provider-id github:personal --repository acme/app --ref main
+</code></pre>
+<p>Import looks for a single-service manifest (<code>.luma.yml</code>, <code>luma.yml</code>, <code>*.luma.yml</code>) or a Compose sidecar (<code>luma.compose.yml</code>, <code>.luma.compose.yml</code>, <code>*.luma.compose.yml</code>, <code>docker-compose.luma.yml</code>). Select one explicitly with <code>--compose-sidecar path/in/repo.yml</code>, or pass <code>--manifest local.yml</code> when the repository has none. For Compose repositories, services with <code>build:</code> are built and rewritten to the pushed <code>image:</code>. Check that locally with <code>luma compose validate --import-mode luma.compose.yml</code>.</p>
+<h3 id="dockerfile-targets-and-pinned-git-inputs">Dockerfile targets and pinned Git inputs<a class="headerlink" href="#dockerfile-targets-and-pinned-git-inputs" title="Permanent link">#</a></h3>
+<p>Use <code>build.target</code> to select a literal Dockerfile stage. A remote repository build can also supply named source contexts from other repositories:</p>
+<pre><code class="language-yaml"># docker-compose.yml; the same build fields work in a single-service manifest
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: release
+      x-luma-git-contexts:
+        library:
+          lock: deploy/library.lock.json
+</code></pre>
+<p><code>lock</code> is a path relative to the primary repository root, not an inline object or a path relative to <code>build.context</code>. Its JSON contains exactly <code>repository</code>, <code>commit</code> and <code>archive_sha256</code>:</p>
+<pre><code class="language-json">{
+  &quot;repository&quot;: &quot;https://gitea.example.com/acme/library.git&quot;,
+  &quot;commit&quot;: &quot;0123456789abcdef0123456789abcdef01234567&quot;,
+  &quot;archive_sha256&quot;: &quot;0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef&quot;
+}
+</code></pre>
+<p>Replace these example hashes with the full lowercase commit and SHA256 of <code>git archive --format=tar.gz &lt;commit&gt;</code>. Builder verifies both before supplying the exported files as the BuildKit context <code>library</code>, usable with <code>COPY --from=library</code>. Hosted archive endpoints may produce different bytes and are not interchangeable with this archive.</p>
+<p>Additional repositories must use the same HTTPS origin (host and port) as the primary repository, without embedded credentials, query or fragment. They use the selected primary Git provider credential; that credential must have access to every locked repository. Fetching and verification happen outside Docker. Only verified exported source enters BuildKit; Git credentials, helpers and <code>.git</code> metadata do not enter Docker contexts or image layers.</p>
+<p>Require the protocol explicitly when importing:</p>
+<pre><code class="language-bash">luma import --provider-id gitea:team --repository acme/app --ref &quot;$APP_COMMIT&quot; \
+  --compose-sidecar deploy/luma.compose.yml \
+  --require-build-capability repository-build-inputs-v1
+</code></pre>
+<p>This requires a CLI that supports the flag, Control capability <code>required-build-capability-v1</code>, and the selected ready Builder advertising <code>repository-build-inputs-v1</code>. Control checks the live Builder again and requires the build result to confirm the capability before deployment; retries preserve the requirement. Missing support stops the operation rather than ignoring the additional inputs. Source implementation alone does not prove the feature is released or running: publish the supporting Luma version and upgrade Control and Builder before using this path.</p>
+<p>An external <code>--manifest</code> automatically requires the same capability, even without the flag. Builder uses its validated build and placement fields only when the repository has no manifest; a repository manifest takes precedence for both building and deployment. Runtime environment and secrets from the external manifest are never forwarded as build inputs. Upgrade Control and Builder before using an external manifest with this CLI.</p>
+<p><code>luma build local</code> does not support <code>x-luma-git-contexts</code>, including in Compose builds. Use remote <code>luma import</code> for these inputs; do not move provider credentials into a Dockerfile to bypass the restriction. <code>build.target</code> alone does not require an additional Git input.</p>
+<h3 id="build-runs-and-the-queue">Build runs and the queue<a class="headerlink" href="#build-runs-and-the-queue" title="Permanent link">#</a></h3>
+<p>Imports and retries enter a persistent queue per repository, ref and deployment target: a newer submission for the same target cancels older queued ones, while <code>main</code> and <code>dev</code> never block each other. A busy builder keeps its requests queued without holding up other builders.</p>
+<pre><code class="language-bash">luma build list --app api --status failed
+luma build logs &lt;build-id&gt;
+luma build retry &lt;build-id&gt;
+luma build cancel &lt;build-id&gt;
+</code></pre>
+<p>Closing the CLI after a build is accepted does not cancel it. Queued requests survive a Control restart; interrupted active builds are marked failed instead of being replayed.</p>
+<h2 id="compose-applications">Compose applications<a class="headerlink" href="#compose-applications" title="Permanent link">#</a></h2>
+<p>Keep <code>docker-compose.yml</code> standard and add a Luma sidecar that says where and how it runs:</p>
+<pre><code class="language-bash">luma compose init --compose docker-compose.yml --output luma.compose.yml
+luma compose validate luma.compose.yml
+luma compose deploy luma.compose.yml --dry-run
+luma compose deploy luma.compose.yml --env .env
+</code></pre>
+<p>All services of one application run on one node and share a network namespace. Persistent volumes use local storage on that node by default. <code>cloudflare-tunnel</code> is not supported for Compose. See <a href="compose-storage.html">Compose and storage</a>.</p>
+<h2 id="recorded-workflows">Recorded workflows<a class="headerlink" href="#recorded-workflows" title="Permanent link">#</a></h2>
+<p>Control remembers how each application was last built and deployed successfully (local build, import, image deploy or Compose, plus ref, builder, platform, region and similar options). The next <code>deploy</code>, <code>import</code>, <code>build local</code>, <code>build retry</code> or <code>compose deploy</code> compares itself with that record:</p>
+<ul>
+<li>no record, or a match: proceed and refresh the record;</li>
+<li>a difference: show it and stop until you confirm. In a terminal you are asked; in JSON, quiet or non-interactive mode the command exits nonzero. Rerun with <code>--accept-workflow-change</code> only after reviewing the difference.</li>
+</ul>
+<pre><code class="language-bash">luma workflow show api
+luma workflow record api --note &quot;Built on the builder node&quot; -- import acme/api --ref main
+luma workflow run api --path ~/src/api
+</code></pre>
+<p>Records never contain tokens or <code>.env</code> contents. Notes are free text; do not put secrets in them.</p>
+<h2 id="ci">CI<a class="headerlink" href="#ci" title="Permanent link">#</a></h2>
+<p>CI can use the CLI without a saved login:</p>
+<pre><code class="language-bash">python -m pip install &quot;luma-infra==0.2.11&quot;
+export LUMA_CONTROL_URL=https://luma.example.com
+export LUMA_DEPLOY_TOKEN=&quot;$CI_LUMA_MANAGEMENT_TOKEN&quot;
+
+luma validate deploy/app.yaml --format json
+luma deploy deploy/app.yaml --dry-run --format json
+luma deploy deploy/app.yaml --format ndjson --timeout 3000
+</code></pre>
+<p>Connection settings are resolved from command-line flags, then environment variables (<code>LUMA_CONTROL_URL</code>, <code>LUMA_DEPLOY_TOKEN</code>, <code>LUMA_CONTROL_CONTEXT</code>, <code>LUMA_INSECURE</code>, <code>LUMA_RESOLVE_IP</code>), then the saved login. A <code>--control-url</code> that differs from the saved login never borrows its token. Commands with <code>--format</code> support <code>text</code>, <code>json</code> and <code>ndjson</code>; always check the exit status too.</p>
+<p>On a workstation, keep several clusters as saved logins and pick one per command:</p>
+<pre><code class="language-bash">luma login https://staging.example.com --token-stdin &lt; staging.token
+luma context list
+luma deploy app.yaml --control-context staging
+</code></pre><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/deploying.md">View source on GitHub ↗</a> · <a href="./deploying.md">Raw Markdown</a></div></article><aside class="docs-toc" aria-label="On this page"><strong>On this page</strong><div class="toc">
+<ul>
+<li><a href="#choose-a-workflow">Choose a workflow</a></li>
+<li><a href="#deploy-an-image">Deploy an image</a></li>
+<li><a href="#secrets">Secrets</a></li>
+<li><a href="#builds">Builds</a><ul>
+<li><a href="#native-builders">Native builders</a></li>
+<li><a href="#build-a-local-checkout">Build a local checkout</a></li>
+<li><a href="#import-a-repository">Import a repository</a></li>
+<li><a href="#dockerfile-targets-and-pinned-git-inputs">Dockerfile targets and pinned Git inputs</a></li>
+<li><a href="#build-runs-and-the-queue">Build runs and the queue</a></li>
+</ul>
+</li>
+<li><a href="#compose-applications">Compose applications</a></li>
+<li><a href="#recorded-workflows">Recorded workflows</a></li>
+<li><a href="#ci">CI</a></li>
+</ul>
+</div>
+</aside></main></body></html>

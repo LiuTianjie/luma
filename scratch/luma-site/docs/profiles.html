@@ -1,0 +1,39 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Profiles · Luma Documentation</title><meta name="description" content="Profiles — Luma Documentation"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">Skip to content</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../index.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">Documentation</span><button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="Main navigation"><a href="../index.html#product">Console</a><a href="../index.html#docs">All guides</a><a href="profiles.zh-CN.html" data-doc-language lang="zh-CN">中文</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="Documentation"><strong>Guides</strong><a class=""  href="README.html">Overview</a><a class=""  href="getting-started.html">Getting started</a><a class=""  href="concepts.html">Core concepts</a><a class=""  href="deploying.html">Deploying applications</a><a class=""  href="build-and-artifacts.html">Build & OCI artifacts</a><a class=""  href="migration-guide.html">Migration guide</a><a class=""  href="operations.html">Operations</a><a class=""  href="deployment-yaml.html">Deployment YAML</a><a class=""  href="compose-storage.html">Compose & storage</a><a class=""  href="secrets.html">Secrets & credentials</a><a class=""  href="exposure-model.html">Exposure model</a><a class=""  href="observability.html">Observability</a><a class=""  href="dashboard-guide.html">Console guide</a><a class=""  href="troubleshooting.html">Troubleshooting</a><a class=""  href="luma-cli-reference.html">CLI reference</a><a class=""  href="ai-agent-skills.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../index.html#docs">Documentation</a><span>/</span><span>Profiles</span></div><h1 id="profiles">Profiles<a class="headerlink" href="#profiles" title="Permanent link">#</a></h1>
+<p>Profiles are Luma's manager bootstrap presets. Ordinary worker joins do not use profiles; run <code>luma node join ... --region &lt;cn|global|home|custom&gt; --name &lt;node-name&gt;</code> on each worker. Custom regions are created with <code>luma region create</code>.</p>
+<h2 id="single-node"><code>single-node</code><a class="headerlink" href="#single-node" title="Permanent link">#</a></h2>
+<p>One public server running:</p>
+<ul>
+<li>Docker</li>
+<li>Nomad server (also a client in <code>region=cn</code>)</li>
+<li>Traefik</li>
+<li>Luma Control API</li>
+<li>egress gateway</li>
+</ul>
+<p>Use:</p>
+<pre><code class="language-bash">luma bootstrap --domain luma.example.com --profile single-node
+</code></pre>
+<h2 id="cn-edge"><code>cn-edge</code><a class="headerlink" href="#cn-edge" title="Permanent link">#</a></h2>
+<p>Domestic public edge:</p>
+<ul>
+<li>Docker</li>
+<li>Nomad server</li>
+<li>Traefik</li>
+</ul>
+<h2 id="worker-regions">Worker regions<a class="headerlink" href="#worker-regions" title="Permanent link">#</a></h2>
+<p>Worker nodes are now region-first:</p>
+<pre><code class="language-bash">luma node join https://luma.example.com --token &lt;node-join-token&gt; --region cn --name cn-worker-1
+luma node join https://luma.example.com --token &lt;node-join-token&gt; --region global --name global-sg-1
+luma node join https://luma.example.com --token &lt;node-join-token&gt; --region home --name home-mac-mini
+</code></pre>
+<ul>
+<li><code>region</code> is the scheduling boundary, written to the Nomad client <code>meta.region</code>.</li>
+<li><code>name</code> is the Luma node name used in status output and service manifests; pinned scheduling uses <code>meta.luma_node_name</code>.</li>
+<li>Services that require the proxy declare <code>proxy: true</code>.</li>
+</ul><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/profiles.md">View source on GitHub ↗</a> · <a href="./profiles.md">Raw Markdown</a></div></article><aside class="docs-toc" aria-label="On this page"><strong>On this page</strong><div class="toc">
+<ul>
+<li><a href="#single-node">single-node</a></li>
+<li><a href="#cn-edge">cn-edge</a></li>
+<li><a href="#worker-regions">Worker regions</a></li>
+</ul>
+</div>
+</aside></main></body></html>

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from .errors import LumaError
 
@@ -10,6 +10,129 @@ REQUIRED_BUILD_CAPABILITY = "required-build-capability-v1"
 REPOSITORY_BUILD_INPUTS_CAPABILITY = "repository-build-inputs-v1"
 REPOSITORY_BUILD_PLAN_CAPABILITY = "repository-build-plan-v1"
 NATIVE_ARM_BUILD_CAPABILITY = "native-arm-build-v1"
+
+VALID_NATIVE_PLATFORMS: frozenset[str] = frozenset({
+    "linux/arm64",
+    "linux/amd64",
+    "darwin/arm64",
+    "darwin/amd64",
+})
+
+
+def validate_native_platform(platform: str) -> str:
+    """Validate and normalize a native single-architecture build platform.
+
+    Enforces strict native building:
+    - Multiple platforms or comma-separated lists are rejected with LumaError.
+    - Architecture aliases (arm64/v8, aarch64 -> arm64; x86_64 -> amd64) are normalized.
+    - Target must resolve to either linux/arm64, linux/amd64, or valid darwin/arm64 / darwin/amd64.
+    """
+    if platform is None:
+        raise LumaError("native build platform is required")
+    raw = str(platform).strip()
+    if "," in raw:
+        raise LumaError(
+            "cross-architecture emulation and multi-platform compilation are disabled; "
+            "submit builds separately for each native architecture"
+        )
+    if not raw:
+        raise LumaError("native build platform is required")
+
+    lowered = raw.lower()
+    parts = [p.strip() for p in lowered.split("/") if p.strip()]
+
+    if len(parts) == 1:
+        os_name = "linux"
+        arch = parts[0]
+        variant = ""
+    elif len(parts) == 2:
+        if parts[0] in {"linux", "darwin"}:
+            os_name = parts[0]
+            arch = parts[1]
+            variant = ""
+        elif parts[0] in {"arm64", "aarch64"} and parts[1] in {"v8", ""}:
+            os_name = "linux"
+            arch = parts[0]
+            variant = parts[1]
+        else:
+            os_name = parts[0]
+            arch = parts[1]
+            variant = ""
+    elif len(parts) == 3:
+        os_name, arch, variant = parts[0], parts[1], parts[2]
+    else:
+        raise LumaError(f"invalid platform format: {platform!r}")
+
+    if arch in {"arm64", "aarch64"}:
+        if variant not in {"", "v8"}:
+            raise LumaError(
+                f"unsupported architecture variant {variant!r} for {platform}; "
+                "only ARM64 (v8) is supported"
+            )
+        norm_arch = "arm64"
+    elif arch in {"amd64", "x86_64"}:
+        if variant:
+            raise LumaError(
+                f"unsupported architecture variant {variant!r} for {platform}; "
+                "AMD64 does not accept variants"
+            )
+        norm_arch = "amd64"
+    else:
+        raise LumaError(
+            f"unsupported native architecture {arch!r} in {platform!r}; "
+            "only arm64 and amd64 architectures are supported"
+        )
+
+    norm_platform = f"{os_name}/{norm_arch}"
+    if norm_platform not in VALID_NATIVE_PLATFORMS:
+        raise LumaError(
+            f"unsupported native platform: {platform!r}; "
+            "supported platforms are linux/arm64, linux/amd64 (or darwin/arm64, darwin/amd64)"
+        )
+    return norm_platform
+
+
+def infer_native_platform(
+    *,
+    platform: str = "",
+    target_node: str = "",
+    target_region: str = "",
+    node_architectures: Mapping[str, str] | None = None,
+) -> str:
+    """Infer the native target build platform based on deployment topology.
+
+    Inference priority:
+    1. If `platform` is provided and non-empty: validate and normalize via `validate_native_platform`.
+    2. If `platform` is empty:
+       - If `target_region == "home"` -> return "linux/arm64".
+       - If `target_node` in `node_architectures` -> return normalized architecture.
+       - If `target_node in {"macbook-pro", "air3"}` or `"arm64"` in `target_node.lower()` or `"aarch64"` in `target_node.lower()` -> return "linux/arm64".
+       - Otherwise default to "linux/amd64".
+    """
+    clean_platform = str(platform or "").strip()
+    if clean_platform:
+        return validate_native_platform(clean_platform)
+
+    clean_region = str(target_region or "").strip().lower()
+    if clean_region == "home":
+        return "linux/arm64"
+
+    clean_node = str(target_node or "").strip()
+    if clean_node and node_architectures:
+        node_arch = node_architectures.get(clean_node)
+        if not node_arch and clean_node.lower() in node_architectures:
+            node_arch = node_architectures[clean_node.lower()]
+        if node_arch:
+            norm = validate_native_platform(str(node_arch).strip())
+            if norm.startswith("darwin/"):
+                return f"linux/{norm.partition('/')[2]}"
+            return norm
+
+    lower_node = clean_node.lower()
+    if lower_node in {"macbook-pro", "air3"} or "arm64" in lower_node or "aarch64" in lower_node:
+        return "linux/arm64"
+
+    return "linux/amd64"
 
 
 def native_arm_build_platform(platforms: Iterable[str]) -> str:

@@ -1,0 +1,64 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>镜像构建流水线、BuildKit 集群池与 Zot OCI 制品管理 · Luma 文档</title><meta name="description" content="镜像构建流水线、BuildKit 集群池与 Zot OCI 制品管理 — Luma 文档"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">跳到正文</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../zh.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">文档</span><button class="menu-toggle" aria-label="展开导航" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="主导航"><a href="../zh.html#product">控制台</a><a href="../zh.html#docs">全部指南</a><a href="build-and-artifacts.html" data-doc-language lang="en">English</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="文档"><strong>指南</strong><a class=""  href="README.zh-CN.html">概览</a><a class=""  href="getting-started.zh-CN.html">快速上手</a><a class=""  href="concepts.zh-CN.html">核心概念</a><a class=""  href="deploying.zh-CN.html">部署应用</a><a class="active" aria-current=page href="build-and-artifacts.zh-CN.html">构建与制品</a><a class=""  href="migration-guide.zh-CN.html">零停机迁移</a><a class=""  href="operations.zh-CN.html">日常运维</a><a class=""  href="deployment-yaml.zh-CN.html">部署 YAML</a><a class=""  href="compose-storage.zh-CN.html">Compose 与存储</a><a class=""  href="secrets.zh-CN.html">密钥与凭据</a><a class=""  href="exposure-model.zh-CN.html">暴露模型</a><a class=""  href="observability.zh-CN.html">可观测</a><a class=""  href="dashboard-guide.zh-CN.html">控制台指南</a><a class=""  href="troubleshooting.zh-CN.html">故障排查</a><a class=""  href="luma-cli-reference.zh-CN.html">CLI 命令参考</a><a class=""  href="ai-agent-skills.zh-CN.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../zh.html#docs">文档</a><span>/</span><span>镜像构建流水线、BuildKit 集群池与 Zot OCI 制品管理</span></div><h1 id="build-pipeline-buildkit-pool-zot-oci-artifacts">镜像构建流水线、BuildKit 集群池与 Zot OCI 制品管理<a class="headerlink" href="#build-pipeline-buildkit-pool-zot-oci-artifacts" title="章节链接">#</a></h1>
+<p>Luma Next 通过 <strong>Tekton Pipelines</strong>、<strong>远程 BuildKit 守护进程池（<code>amd64</code> + <code>arm64</code>）</strong> 与 <strong>Zot OCI Registry</strong>，将<strong>镜像构建（<code>Artifact</code>）</strong>与<strong>应用发布（<code>Release</code>）</strong>彻底解耦，同时完整保留 Luma 的多 Region 与混合网络暴露面特性。</p>
+<h2 id="core-architecture">核心架构特性<a class="headerlink" href="#core-architecture" title="章节链接">#</a></h2>
+<ol>
+<li><strong>Tekton <code>PipelineRun</code> 原生隔离与秒级取消</strong>：
+   - 每次构建都是 K3s 集群中受资源配额约束的独立 Tekton <code>PipelineRun</code>。
+   - 执行 <code>luma build cancel &lt;ID&gt;</code> 或在 Web 控制台点击取消时，Tekton 通过 <code>CancelledRunFinally</code> 在 <code>&lt; 3s</code> 内终止整个构建进程组与远程 <code>buildctl</code> 会话，彻底根除孤儿构建与锁死。</li>
+<li><strong>远程 BuildKit 缓存池与跨架构路由</strong>：
+   - <code>linux/amd64</code> 构建直接调度至集群内 <code>buildkitd</code> StatefulSet（挂载 50 GiB 持久化构建缓存卷，30 GiB 水位线自动 GC）。
+   - <code>linux/arm64</code> 构建通过 Tailscale mTLS 路由至 Apple Silicon 原生 BuildKit 节点（<code>macbook-pro</code>）。
+   - 自动启用 <code>--export-cache type=registry,mode=max</code> 与 <code>--import-cache type=registry</code>，将构建层缓存持久化至 Zot。</li>
+<li><strong>Dockerfile APT / APK HTTPS 镜像源自动加速</strong>：
+   - <code>accelerate_dockerfile_mirrors()</code> 自动将 <code>deb.debian.org</code>、<code>archive.ubuntu.com</code>、<code>dl-cdn.alpinelinux.org</code> 重写为 HTTPS 国内镜像源（<code>mirrors.ustc.edu.cn</code>），根治 <code>apt-get</code> 经 HTTP 代理抓包导致的 <code>502 Bad Gateway</code> 与 SSL 握手错误。</li>
+<li><strong>多仓库构建上下文声明（<code>x-luma-git-contexts</code>）</strong>：
+   - 针对 <code>serverx</code> + <code>xui</code> 等多仓库联合构建场景，在 <code>luma.compose.yml</code> 中声明 <code>x-luma-git-contexts</code>，由 Tekton <code>git-clone</code> 并行拉取并注入 BuildKit <code>--opt context:&lt;name&gt;=...</code>，告别脆弱的 <code>../</code> 宿主机相对路径依赖。</li>
+</ol>
+<pre><code class="language-yaml">x-luma-git-contexts:
+  xui:
+    repo: https://gcode.gaojiua.com/Signal/xui.git
+    ref: main
+</code></pre>
+<h2 id="zot-oci-registry-retention-pinning">Zot OCI Registry 与回滚防删锁<a class="headerlink" href="#zot-oci-registry-retention-pinning" title="章节链接">#</a></h2>
+<p>Luma 采用 CNCF 生态单二进制 <strong>Zot OCI Registry</strong> 替代传统 <code>registry:2</code>：
+- <strong>零停机在线垃圾回收（Online GC）</strong>：Zot 内置后台在线 GC（<code>gc: true</code>），无需停机或中断推送/拉取即可自动清理无引用的孤立层与过期缓存。
+- <strong>Active 与最近 5 版回滚防删锁（<code>luma-pin-*</code>）</strong>：
+  - 每次部署或回滚时，<code>FluxReconciler</code> 自动为当前线上版本打上 <code>luma-pin-active-&lt;project&gt;-&lt;env&gt;</code> 标签，并为最近 $N = 5$ 个健康版本保留 <code>luma-pin-rollback-&lt;project&gt;-&lt;env&gt;-v&lt;gen&gt;</code> 标签。
+  - Zot 策略配置为永不回收带 <code>luma-pin-*</code> 标签的 Manifest，<strong>100% 保证最近 5 个历史版本随时可在 <code>&lt; 5s</code> 内秒级回滚，绝不出现 <code>manifest unknown</code></strong>。</p>
+<h2 id="luma-signature-features-in-kubernetes">Luma 特色能力在 Kubernetes 架构下的实现<a class="headerlink" href="#luma-signature-features-in-kubernetes" title="章节链接">#</a></h2>
+<p>Luma 极简的开发者契约（<code>luma.yaml</code> 与 <code>luma.compose.yml</code>）在底层被确定性地编译为 Kubernetes 与 Flux 原语，所有标志性的混合云拓扑与暴露能力均被原生继承：</p>
+<ol>
+<li><strong>多 Region 调度（<code>cn</code>、<code>global</code>、<code>home</code> 及自定义 Region）与节点亲和（<code>node</code>）</strong>：
+   - <code>region</code> 字段自动编译为 Pod 的 <code>nodeSelector</code>（<code>luma.io/region: &lt;region&gt;</code> 与 <code>topology.kubernetes.io/region: &lt;region&gt;</code>）。
+   - 若同时指定 <code>node</code>，则追加 <code>kubernetes.io/hostname: &lt;node&gt;</code> 精准绑定。</li>
+<li><strong>全部 6 种暴露模式（<code>exposure</code>）与 Region 强校验</strong>：
+   - <code>cn-edge</code>（要求 <code>region: cn</code>）：编译为绑定国内边缘网关的 Traefik <code>Ingress</code>，配合自动 HTTPS 与 Flux 升级后真路由探测。
+   - <code>external-edge</code>（要求 <code>region: global</code>）：编译为海外边缘 <code>Ingress</code>，联动 <code>external-dns</code> 自动同步 Cloudflare 域名解析。
+   - <code>tailscale-relay</code>（要求 <code>region: home</code>）：工作负载运行在家庭内网无公网 IP 的 <code>home</code> 节点（如 <code>macbook-pro</code>），边缘网关 Traefik 通过 Tailscale WireGuard 组网隧道（<code>luma.io/relay-transport: tailscale-mesh</code>）将公网 HTTPS 流量反代至家庭节点 Pod。
+   - <code>tcp-relay</code>：校验 <code>publishPort</code>（禁止占用 <code>80</code>/<code>443</code> 保留端口）并生成 Traefik <code>IngressRouteTCP</code>（<code>traefik.io/v1alpha1</code>），通过 <code>tcp-&lt;port&gt;</code> EntryPoint 实现四层 TCP 直通转发。
+   - <code>cloudflare-tunnel</code>：生成带 <code>luma.io/edge-gateway: cloudflare-tunnel</code> 注解的路由声明，由集群内 <code>cloudflared</code> 直接将域名流量代理至内部 <code>ClusterIP</code> Service。
+   - <code>none</code>：仅生成集群内部 <code>ClusterIP</code> <code>Service</code>，不暴露任何公网路由。</li>
+<li><strong>区域感知出口策略（<code>egress</code>）与 <code>proxy: true</code></strong>：
+   - 当服务声明 <code>proxy: true</code> 时，自动向容器注入 <code>HTTP_PROXY</code>、<code>HTTPS_PROXY</code>、<code>ALL_PROXY</code> 以及完备的 <code>NO_PROXY</code> 白名单（强制直连 <code>localhost</code>、K8s 集群网段 <code>.svc.cluster.local</code>、Zot <code>100.66.177.70:5000</code> 及 Gitea <code>gcode.gaojiua.com</code>）。</li>
+</ol>
+<h2 id="cli-web-console-workflows">CLI 与控制台常用命令<a class="headerlink" href="#cli-web-console-workflows" title="章节链接">#</a></h2>
+<pre><code class="language-bash"># List immutable build artifacts
+luma artifact list --project serverx
+
+# Inspect per-service sha256 digests and BuildKit stage waterfall timings
+luma artifact show art-serverx-9f8e7d6c
+
+# Deploy an existing artifact without rebuilding
+luma deploy luma.yaml --artifact art-serverx-9f8e7d6c
+
+# Promote a verified artifact from staging to prod (zero rebuild)
+luma artifact promote art-serverx-9f8e7d6c --from staging --to prod
+</code></pre><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/build-and-artifacts.zh-CN.md">在 GitHub 查看源码 ↗</a> · <a href="./build-and-artifacts.zh-CN.md">原始 Markdown</a></div></article><aside class="docs-toc" aria-label="本页目录"><strong>本页目录</strong><div class="toc">
+<ul>
+<li><a href="#core-architecture">核心架构特性</a></li>
+<li><a href="#zot-oci-registry-retention-pinning">Zot OCI Registry 与回滚防删锁</a></li>
+<li><a href="#luma-signature-features-in-kubernetes">Luma 特色能力在 Kubernetes 架构下的实现</a></li>
+<li><a href="#cli-web-console-workflows">CLI 与控制台常用命令</a></li>
+</ul>
+</div>
+</aside></main></body></html>

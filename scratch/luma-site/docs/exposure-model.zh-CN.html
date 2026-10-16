@@ -1,0 +1,217 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>入口模型 · Luma 文档</title><meta name="description" content="入口模型 — Luma 文档"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">跳到正文</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../zh.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">文档</span><button class="menu-toggle" aria-label="展开导航" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="主导航"><a href="../zh.html#product">控制台</a><a href="../zh.html#docs">全部指南</a><a href="exposure-model.html" data-doc-language lang="en">English</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="文档"><strong>指南</strong><a class=""  href="README.zh-CN.html">概览</a><a class=""  href="getting-started.zh-CN.html">快速上手</a><a class=""  href="concepts.zh-CN.html">核心概念</a><a class=""  href="deploying.zh-CN.html">部署应用</a><a class=""  href="build-and-artifacts.zh-CN.html">构建与制品</a><a class=""  href="migration-guide.zh-CN.html">零停机迁移</a><a class=""  href="operations.zh-CN.html">日常运维</a><a class=""  href="deployment-yaml.zh-CN.html">部署 YAML</a><a class=""  href="compose-storage.zh-CN.html">Compose 与存储</a><a class=""  href="secrets.zh-CN.html">密钥与凭据</a><a class="active" aria-current=page href="exposure-model.zh-CN.html">暴露模型</a><a class=""  href="observability.zh-CN.html">可观测</a><a class=""  href="dashboard-guide.zh-CN.html">控制台指南</a><a class=""  href="troubleshooting.zh-CN.html">故障排查</a><a class=""  href="luma-cli-reference.zh-CN.html">CLI 命令参考</a><a class=""  href="ai-agent-skills.zh-CN.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../zh.html#docs">文档</a><span>/</span><span>入口模型</span></div><h1 id="exposure-model">入口模型<a class="headerlink" href="#exposure-model" title="章节链接">#</a></h1>
+<p>Luma 将控制面和数据面分开。</p>
+<h2 id="roles">各组件职责<a class="headerlink" href="#roles" title="章节链接">#</a></h2>
+<ul>
+<li>Cloudflare：DNS 自动化、可选代理和 Tunnel 公共主机名。</li>
+<li>Traefik：<code>cn</code> 边缘的公共 HTTP/HTTPS 入口，以及 <code>tcp-relay</code> 发布端口。</li>
+<li>Tailscale：管理网络，以及所选 <code>home</code> 服务的显式中继路径。</li>
+<li>Luma Control：驱动 Nomad HTTP API 的部署控制面。</li>
+<li>Nomad / Docker：运行时执行层。</li>
+</ul>
+<p>Tailscale 不是默认业务数据面。只有服务明确选择 <code>exposure: tailscale-relay</code> 时才承载该中继数据流量。</p>
+<h2 id="exposure-modes">入口模式<a class="headerlink" href="#exposure-modes" title="章节链接">#</a></h2>
+<h3 id="cn-edge"><code>cn-edge</code><a class="headerlink" href="#cn-edge" title="章节链接">#</a></h3>
+<p>主要的中国大陆公共服务。</p>
+<pre><code class="language-text">User -&gt; Cloudflare DNS -&gt; CN Traefik -&gt; CN service
+</code></pre>
+<p>适用于：</p>
+<ul>
+<li>主站；</li>
+<li>公共 Web/API；</li>
+<li>登录、支付、控制台及常规产品流量。</li>
+</ul>
+<p>清单：</p>
+<pre><code class="language-yaml">name: app
+image: ghcr.io/your-org/app:latest
+region: cn
+exposure: cn-edge
+domain: app.example.com
+port: 3000
+replicas: 2
+</code></pre>
+<p>Luma 生成：</p>
+<ul>
+<li><code>stacks/cn/app/app.nomad.json</code>；</li>
+<li>Nomad provider 使用的 Traefik 服务标签；</li>
+<li>指向已配置中国大陆边缘目标的 Cloudflare DNS 记录。</li>
+</ul>
+<p>默认通过约束为 <code>${meta.region}=cn</code> 且 <code>${meta.ingress}=true</code> 的单个 Traefik 实例接入。存在多个 CN 节点时，DNS 仍指向配置的边缘目标，由该处 Traefik 接收请求，并转发给 Nomad provider 发现的匹配 allocation。</p>
+<h3 id="tailscale-relay"><code>tailscale-relay</code><a class="headerlink" href="#tailscale-relay" title="章节链接">#</a></h3>
+<p>通过中国大陆边缘节点，经 Tailscale 暴露所选家庭服务。</p>
+<pre><code class="language-text">User -&gt; Cloudflare DNS -&gt; CN Traefik -&gt; Tailscale -&gt; home service
+</code></pre>
+<p>适用于：</p>
+<ul>
+<li>低流量工具；</li>
+<li>预览环境；</li>
+<li>家庭管理面板；</li>
+<li>可以接受依赖家庭网络的服务。</li>
+</ul>
+<p>不适用于：</p>
+<ul>
+<li>核心 API；</li>
+<li>登录或支付；</li>
+<li>大文件下载；</li>
+<li>高频产品流量。</li>
+</ul>
+<p>清单：</p>
+<pre><code class="language-yaml">name: home-panel
+image: ghcr.io/your-org/home-panel:latest
+region: home
+exposure: tailscale-relay
+domain: panel.example.com
+port: 8080
+publishPort: 8080
+replicas: 1
+relay:
+  host: home-1.your-tailnet.ts.net
+</code></pre>
+<p>Luma 生成：</p>
+<ul>
+<li><code>stacks/home/home-panel/home-panel.nomad.json</code>，在家庭节点发布服务端口；</li>
+<li><code>routes/home-panel.yml</code>，由 Traefik file provider 加载；</li>
+<li>指向已配置中国大陆边缘目标的 Cloudflare DNS 记录。</li>
+</ul>
+<p>运维要求：</p>
+<ul>
+<li>家庭主机防火墙仅允许从 Tailscale 接口或 CN 边缘 Tailscale IP 访问发布端口；</li>
+<li>CN Traefik 节点的 <code>/opt/luma/routes</code> 必须能读取 <code>routes/</code>。</li>
+</ul>
+<h3 id="tcp-relay"><code>tcp-relay</code><a class="headerlink" href="#tcp-relay" title="章节链接">#</a></h3>
+<p>通过专用 Traefik TCP 入口提供原生公共 TCP 服务。</p>
+<pre><code class="language-text">Client -&gt; Cloudflare DNS -&gt; edge Traefik TCP entrypoint -&gt; task host port
+</code></pre>
+<p>适用于：</p>
+<ul>
+<li>必须从公网访问的 MySQL 或其他非 HTTP 协议；</li>
+<li>一个公共端口对应一个后端服务的场景。</li>
+</ul>
+<p>不适用于：</p>
+<ul>
+<li>按主机名在同一个端口复用多个普通 MySQL 服务；</li>
+<li>未配置数据库凭据、IP 白名单或防火墙控制就直接暴露公网。</li>
+</ul>
+<p>清单：</p>
+<pre><code class="language-yaml">name: ledger-db
+image: mysql:8.4.9
+region: home
+node: lab
+exposure: tcp-relay
+domain: ledger-db.example.net
+port: 3306
+publishPort: 3306
+</code></pre>
+<p>Luma 生成：</p>
+<ul>
+<li><code>stacks/home/ledger-db/ledger-db.nomad.json</code>，以 host 模式发布服务端口；</li>
+<li>更新 Traefik 服务，增加推导的 <code>tcp-3306</code> 入口和 host 模式发布端口；</li>
+<li><code>routes/ledger-db.yml</code>，使用 Traefik <code>tcp.routers</code> 与 <code>HostSNI("*")</code> / <code>HostSNI(\</code>*`)`；</li>
+<li>指向已配置边缘目标的 Cloudflare DNS 记录。</li>
+</ul>
+<p>普通 MySQL 客户端不会以 HTTP Host 请求头开始通信，也不能假定在服务端握手前提供可靠 TLS SNI。<code>tcp-relay</code> 应视为端口独占：一个发布端口路由到一个 TCP 服务。</p>
+<h3 id="cloudflare-tunnel"><code>cloudflare-tunnel</code><a class="headerlink" href="#cloudflare-tunnel" title="章节链接">#</a></h3>
+<p>直接通过 Cloudflare Tunnel 暴露家庭或私网服务。</p>
+<pre><code class="language-text">User -&gt; Cloudflare -&gt; cloudflared -&gt; service
+</code></pre>
+<p>适用于：</p>
+<ul>
+<li>没有公网 IP 的家庭服务；</li>
+<li>希望由 Cloudflare 承接公共路径的低频工具；</li>
+<li>不应经过 CN Traefik 节点的服务。</li>
+</ul>
+<p>清单：</p>
+<pre><code class="language-yaml">name: home-tool
+image: ghcr.io/your-org/home-tool:latest
+region: home
+exposure: cloudflare-tunnel
+domain: tool.example.com
+port: 8080
+replicas: 1
+tunnel:
+  tokenEnv: CLOUDFLARE_TUNNEL_TOKEN
+</code></pre>
+<p>Luma 生成：</p>
+<ul>
+<li>包含应用的服务 stack；</li>
+<li>使用 <code>${CLOUDFLARE_TUNNEL_TOKEN}</code> 的 <code>cloudflared</code> sidecar。</li>
+</ul>
+<p>Tunnel 公共主机名仍在 Cloudflare 管理。此模式跳过普通 DNS A 记录同步。</p>
+<h3 id="external-edge"><code>external-edge</code><a class="headerlink" href="#external-edge" title="章节链接">#</a></h3>
+<p>拥有独立海外/公共边缘入口的 global 服务。</p>
+<pre><code class="language-text">User -&gt; Cloudflare DNS -&gt; external/global edge -&gt; global service
+</code></pre>
+<p>适用于：</p>
+<ul>
+<li>AI 网关；</li>
+<li>海外 API 网关；</li>
+<li>代理服务；</li>
+<li>必须在 CN 网络之外执行的低频服务。</li>
+</ul>
+<p>清单：</p>
+<pre><code class="language-yaml">name: ai-gateway
+image: ghcr.io/your-org/ai-gateway:latest
+region: global
+exposure: external-edge
+domain: ai.example.com
+port: 3000
+replicas: 1
+dns:
+  target: 198.51.100.10
+</code></pre>
+<p>Luma 生成：</p>
+<ul>
+<li><code>stacks/global/ai-gateway/ai-gateway.nomad.json</code>；</li>
+<li>global 边缘环境使用的 Traefik 服务标签；</li>
+<li>指向 <code>dns.target</code> 的 Cloudflare DNS 记录。</li>
+</ul>
+<p>通过 <code>dns.target</code> 选择此服务的公共/global 边缘 IP。没有独立 global 边缘目标时，工作负载仍可调度到 <code>region: global</code>，但公共 HTTP 流量不会自动从所有 global 节点进入。</p>
+<h3 id="none"><code>none</code><a class="headerlink" href="#none" title="章节链接">#</a></h3>
+<p>内部服务与工作任务。</p>
+<pre><code class="language-text">No public route
+</code></pre>
+<p>适用于：</p>
+<ul>
+<li>工作任务；</li>
+<li>队列消费者；</li>
+<li>内部 job；</li>
+<li>备份任务。</li>
+</ul>
+<p>清单：</p>
+<pre><code class="language-yaml">name: fetch-worker
+image: ghcr.io/your-org/fetch-worker:latest
+region: global
+exposure: none
+replicas: 1
+env:
+  QUEUE_URL: redis://redis:6379/0
+</code></pre>
+<p>Luma 生成：</p>
+<ul>
+<li>包含放置约束的 stack；</li>
+<li>无 Traefik 标签；</li>
+<li>无 DNS 记录。</li>
+</ul>
+<h2 id="decision-rule">选择规则<a class="headerlink" href="#decision-rule" title="章节链接">#</a></h2>
+<ul>
+<li>默认公共产品流量：<code>cn-edge</code>。</li>
+<li>通过中国大陆边缘访问家庭服务：<code>tailscale-relay</code>。</li>
+<li>公共原生 TCP 服务：<code>tcp-relay</code>。</li>
+<li>经 Cloudflare 访问家庭/私网服务：<code>cloudflare-tunnel</code>。</li>
+<li>海外公共服务：<code>external-edge</code>。</li>
+<li>工作任务和内部服务：<code>none</code>。</li>
+</ul><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/exposure-model.zh-CN.md">在 GitHub 查看源码 ↗</a> · <a href="./exposure-model.zh-CN.md">原始 Markdown</a></div></article><aside class="docs-toc" aria-label="本页目录"><strong>本页目录</strong><div class="toc">
+<ul>
+<li><a href="#roles">各组件职责</a></li>
+<li><a href="#exposure-modes">入口模式</a><ul>
+<li><a href="#cn-edge">cn-edge</a></li>
+<li><a href="#tailscale-relay">tailscale-relay</a></li>
+<li><a href="#tcp-relay">tcp-relay</a></li>
+<li><a href="#cloudflare-tunnel">cloudflare-tunnel</a></li>
+<li><a href="#external-edge">external-edge</a></li>
+<li><a href="#none">none</a></li>
+</ul>
+</li>
+<li><a href="#decision-rule">选择规则</a></li>
+</ul>
+</div>
+</aside></main></body></html>

@@ -1,0 +1,163 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>存量应用零停机迁移指南（Nomad 迁移至 K3s + Flux PaaS） · Luma 文档</title><meta name="description" content="存量应用零停机迁移指南（Nomad 迁移至 K3s + Flux PaaS） — Luma 文档"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">跳到正文</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../zh.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">文档</span><button class="menu-toggle" aria-label="展开导航" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="主导航"><a href="../zh.html#product">控制台</a><a href="../zh.html#docs">全部指南</a><a href="migration-guide.html" data-doc-language lang="en">English</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="文档"><strong>指南</strong><a class=""  href="README.zh-CN.html">概览</a><a class=""  href="getting-started.zh-CN.html">快速上手</a><a class=""  href="concepts.zh-CN.html">核心概念</a><a class=""  href="deploying.zh-CN.html">部署应用</a><a class=""  href="build-and-artifacts.zh-CN.html">构建与制品</a><a class="active" aria-current=page href="migration-guide.zh-CN.html">零停机迁移</a><a class=""  href="operations.zh-CN.html">日常运维</a><a class=""  href="deployment-yaml.zh-CN.html">部署 YAML</a><a class=""  href="compose-storage.zh-CN.html">Compose 与存储</a><a class=""  href="secrets.zh-CN.html">密钥与凭据</a><a class=""  href="exposure-model.zh-CN.html">暴露模型</a><a class=""  href="observability.zh-CN.html">可观测</a><a class=""  href="dashboard-guide.zh-CN.html">控制台指南</a><a class=""  href="troubleshooting.zh-CN.html">故障排查</a><a class=""  href="luma-cli-reference.zh-CN.html">CLI 命令参考</a><a class=""  href="ai-agent-skills.zh-CN.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../zh.html#docs">文档</a><span>/</span><span>存量应用零停机迁移指南（Nomad 迁移至 K3s + Flux PaaS）</span></div><h1 id="zero-downtime-migration-guide-nomad-to-k3s-flux-paas">存量应用零停机迁移指南（Nomad 迁移至 K3s + Flux PaaS）<a class="headerlink" href="#zero-downtime-migration-guide-nomad-to-k3s-flux-paas" title="章节链接">#</a></h1>
+<p>Luma Next 提供完善的四步零停机迁移架构，支持将现有运行在 Nomad 上的生产应用平滑、无损地迁移至现代化的 <strong>K3s + Tekton + BuildKit + Zot + Flux</strong> PaaS 运行时底座。</p>
+<p>因为业务迁移属于集群升级过程中的<strong>一次性操作</strong>，Luma 提供了专门的独立迁移脚本（<code>scripts/migrate-nomad-to-k3s.py</code>），同时在日常永久 CLI（<code>luma --help</code>）中隐藏迁移子命令（通过 <code>argparse.SUPPRESS</code>），确保开源新用户的命令行界面清爽直观。</p>
+<h2 id="one-time-standalone-migration-runner">一次性独立迁移脚本<a class="headerlink" href="#one-time-standalone-migration-runner" title="章节链接">#</a></h2>
+<p>推荐的标准迁移执行入口是 <code>scripts/migrate-nomad-to-k3s.py</code>。该脚本自动执行集群前置检查、批次规划、并行影子发布、秒级流量切换及旧服务下线：</p>
+<ul>
+<li><code>--dry-run</code>：执行前置内存、端口与集群探针检查，评估迁移计划而不变更任何线上工作负载。</li>
+<li><code>--batch [1, 2, 3, all]</code>：执行指定批次（1、2、3）或全量批次的自动化迁移。</li>
+<li><code>--project &lt;name&gt;</code>（或 <code>--app &lt;name&gt;</code>）：迁移单个指定的应用程序。</li>
+<li><code>--state-file &lt;path&gt;</code>：记录迁移进度与切流状态文件（默认：<code>.luma-migration-state.json</code>）。</li>
+<li><code>--decommission-nomad</code>：在所有业务验证完成后，自动停止并禁用宿主机上的旧 Nomad 服务。</li>
+</ul>
+<pre><code class="language-bash"># Dry-run preflight checks and evaluate rollout plan
+python scripts/migrate-nomad-to-k3s.py --dry-run
+
+# Migrate a specific rollout batch (1, 2, or 3)
+python scripts/migrate-nomad-to-k3s.py --batch 1
+
+# Migrate a specific application
+python scripts/migrate-nomad-to-k3s.py --project serverx
+
+# Migrate all workloads and decommission Nomad upon completion
+python scripts/migrate-nomad-to-k3s.py --batch all --decommission-nomad
+</code></pre>
+<h2 id="four-step-migration-state-machine">四步零停机迁移状态机流程<a class="headerlink" href="#four-step-migration-state-machine" title="章节链接">#</a></h2>
+<p>底层迁移引擎执行严格的四步状态机（<code>plan -&gt; shadow -&gt; cutover -&gt; finalize</code>），具备亚秒级即时回滚能力：</p>
+<pre><code class="language-mermaid">flowchart LR
+  P[&quot;1. luma migrate plan&quot;] --&gt; S[&quot;2. luma migrate shadow&quot;]
+  S --&gt; C[&quot;3. luma migrate cutover&quot;]
+  C --&gt; F[&quot;4. luma migrate finalize&quot;]
+  C -. &quot;Instant &lt;1s Rollback&quot; .-&gt; A[&quot;luma migrate abort&quot;]
+</code></pre>
+<ol>
+<li><strong><code>plan</code>（干跑评估，<code>luma migrate plan &lt;app&gt;</code>）</strong>：
+   - 自动解析应用的 <code>luma.yaml</code> 或 <code>luma.compose.yml</code>，划分迁移批次，识别可拆分为独立 K8s <code>Deployment</code> 的子服务与共享网络栈（<code>network_mode: service:*</code>）Sidecar，并检查存储卷 hostPath 绑定与密钥完整性。</li>
+<li><strong><code>shadow</code>（影子拉起，<code>luma migrate shadow &lt;app&gt;</code>）</strong>：
+   - 直接纳管当前线上正在运行的容器镜像 <code>sha256</code> 摘要生成不可变 <code>BuildArtifact</code>（<code>art-adopted-&lt;app&gt;-...</code>），无需重新构建镜像。
+   - 在 K3s 中并行拉起 Shadow <code>HelmRelease</code> 并完成就绪探针校验，此时线上真实公网流量仍 100% 保持在原 Nomad 实例。</li>
+<li><strong><code>cutover</code>（秒级切流，<code>luma migrate cutover &lt;app&gt;</code>）</strong>：
+   - 将 Ingress 网关路由原子切换至已就绪的 K3s Service（<code>&lt; 1s</code>）。
+   - 旧 Nomad 任务进入温热备（<code>standby</code>）观察期（观察期内随时可执行 <code>luma migrate abort &lt;app&gt;</code> 在 <code>&lt; 1s</code> 内切回原 Nomad 实例）。</li>
+<li><strong><code>finalize</code>（确认收尾，<code>luma migrate finalize &lt;app&gt;</code>）</strong>：
+   - 24 小时观察期无异常后，自动停止并清理旧 Nomad Job，同时校验无双活孤儿队列消费者残留。</li>
+</ol>
+<h2 id="rollout-batches-for-existing-applications">存量应用分批迁移策略（3 个批次）<a class="headerlink" href="#rollout-batches-for-existing-applications" title="章节链接">#</a></h2>
+<p>根据应用状态与并发争抢风险，存量服务严格按 3 个批次分阶段推进：</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th style="text-align: left;">批次</th>
+<th style="text-align: left;">类别</th>
+<th style="text-align: left;">包含存量应用</th>
+<th style="text-align: left;">迁移策略</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Phase 0</strong></td>
+<td style="text-align: left;">构建面先行接管</td>
+<td style="text-align: left;">全部构建任务（<code>local</code> / <code>import</code>）</td>
+<td style="text-align: left;">率先切换至 Tekton + 远程 BuildKit 池 + Zot Registry</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Batch 1</strong></td>
+<td style="text-align: left;">无状态 Web 与轻量工具</td>
+<td style="text-align: left;"><code>tifenxia-fe</code>, <code>word2pdf</code>, <code>itool-tech</code>, <code>luxe-monitor</code>, <code>claude-remote</code></td>
+<td style="text-align: left;">影子拉起 K3s Deployment -&gt; 健康探针通过 -&gt; 蓝绿无感切流</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Batch 2</strong></td>
+<td style="text-align: left;">多服务 Compose 与异步队列</td>
+<td style="text-align: left;"><code>serverx</code>, <code>granary</code>, <code>codex-gitea</code></td>
+<td style="text-align: left;">先切流后台队列消费者（如 <code>video-worker</code>）避免双活争抢 -&gt; 影子验证 Web API -&gt; 网关切流</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Batch 3</strong></td>
+<td style="text-align: left;">带持久化本地卷的有状态服务</td>
+<td style="text-align: left;"><code>kato</code>, <code>bot</code></td>
+<td style="text-align: left;">原地 Local PV 挂载纳管（保留原宿主机目录与 UID/GID <code>fsGroup</code> 权限，零数据拷贝）-&gt; 受控切换</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="real-world-migration-hazards-and-safeguards">真实环境集群与节点迁移隐患防护<a class="headerlink" href="#real-world-migration-hazards-and-safeguards" title="章节链接">#</a></h2>
+<p>在同一物理宿主机上并存迁移生产工作负载会面临资源与状态冲突，Luma 在前置与运行时施加了严格防护：</p>
+<h3 id="same-node-traefik-port-coexistence-and-memory-headroom">1. 同节点 Traefik 端口冲突规避与内存余量检查<a class="headerlink" href="#same-node-traefik-port-coexistence-and-memory-headroom" title="章节链接">#</a></h3>
+<ul>
+<li><strong>端口冲突防范（<code>80</code>/<code>443</code> 与 <code>tcp-relay</code>）</strong>：
+  当 Nomad 与 K3s 同时运行在同一台主机时，绝不能尝试重复绑定宿主机的 <code>80</code> 或 <code>443</code> 端口。边缘流量通过 Traefik 动态路由与 SNI 多路复用实现平滑切流，不占用重复 hostPort。对于四层 TCP 透传服务（<code>exposure: tcp-relay</code>），迁移前置检查确保 <code>publishPort</code> 相互隔离且不占用保留端口。</li>
+<li><strong>节点内存余量保障（&gt;= 512 MB）</strong>：
+  在同一节点上并行拉起 shadow Pod 与存量 Nomad 实例会增加内存占用。迁移脚本前置校验宿主机可用内存（<code>SC_AVPHYS_PAGES</code>）；若空闲内存小于 512 MB 则阻断并行 shadow，防止触发 Linux OOM Killer 导致生产雪崩。</li>
+</ul>
+<h3 id="stateful-sqlite-flock-volumes-and-single-instance-bot-protection">2. 有状态 SQLite / flock 卷隔离与单实例 Bot 保护<a class="headerlink" href="#stateful-sqlite-flock-volumes-and-single-instance-bot-protection" title="章节链接">#</a></h3>
+<ul>
+<li><strong>存储卷防损坏保护（<code>kato</code>, <code>bot</code>）</strong>：
+  使用 SQLite 数据库或文件排他锁（<code>flock</code>）的应用，<strong>绝对不能</strong>在 Nomad 与 K3s 中同时挂载并写入同一个 hostPath 目录！双写会导致 SQLite WAL 日志损坏和文件锁失效。</li>
+<li><strong>单实例 Bot 长轮询连接保护</strong>：
+  Telegram / 飞书长轮询 Bot 不可双活并发运行，否则会导致 API 409 Conflict 冲突、消息重复消费与断连震荡。</li>
+<li><strong>Shadow 与 Cutover 阶段的严格保证</strong>：</li>
+<li><strong><code>shadow</code> 阶段</strong>：有状态与 Bot 应用的副本数强制保持为 <code>replicas: 0</code>。仅预拉取容器镜像、同步密钥并校验存储卷 hostPath 权限与节点亲和（node pin），绝不拉起活跃容器进程。</li>
+<li><strong><code>cutover</code> 阶段</strong>：迁移引擎严格在<strong>停掉旧 Nomad 实例之后</strong>，才将 K3s Deployment 扩容至 <code>1</code>，实现绝对的互斥与零锁争抢。</li>
+</ul>
+<h3 id="post-migration-nomad-decommission">3. 迁移后彻底下线 Nomad 服务<a class="headerlink" href="#post-migration-nomad-decommission" title="章节链接">#</a></h3>
+<p>当 Batch 1、2、3 所有业务全部完成 Finalize 确认并平稳运行后，执行旧 Nomad 守护进程的下线与停用，彻底释放系统内存、CPU 与网络套接字：</p>
+<pre><code class="language-bash"># Disable and stop legacy Nomad daemon after full cluster verification
+sudo systemctl disable --now nomad
+</code></pre>
+<h2 id="fresh-0-to-1-install-vs-existing-migration-compatibility">开源新手 0 到 1 安装体验与存量用户兼容性<a class="headerlink" href="#fresh-0-to-1-install-vs-existing-migration-compatibility" title="章节链接">#</a></h2>
+<p>Luma 既为存量集群提供 100% 平滑过渡，又为开源新用户提供零心智负担的现代化体验：</p>
+<ul>
+<li><strong>开源新手 0 到 1 体验</strong>：
+  新用户在空白 Linux 服务器上直接部署 K3s + Flux，完全无需了解 Nomad 概念或执行迁移脚本。全流程使用统一的现代化标准命令：
+  <code>luma bootstrap --domain ...</code>、<code>luma login</code>、<code>luma init</code>、<code>luma node join</code> 和 <code>luma manager cloudflare --zone ...</code>。</li>
+<li><strong>配置与环境变量零破坏性变更</strong>：
+  已有的 <code>.env</code> 环境变量保持 100% 向后兼容：
+  <code>CLOUDFLARE_API_TOKEN</code>、<code>CLOUDFLARE_ZONE_ID</code>、<code>EGRESS_SUBSCRIPTION_URL</code> 和 <code>LUMA_DEPLOY_TOKEN</code> 无需修改即可直接生效。</li>
+<li><strong>开箱即用的 Cloudflare 联动</strong>：
+  Cloudflare DNS 与 Cloudflare Tunnel（<code>exposure: cloudflare-tunnel</code>）直接通过 Luma 内置命令（<code>luma manager cloudflare --zone ...</code>）自动联动，用户完全不需要手动安装或配置 Kubernetes <code>external-dns</code> 或 <code>cloudflared</code> 的复杂 CRD 资源。</li>
+</ul>
+<pre><code class="language-bash"># 0-to-1 Fresh install on an empty Linux server (zero Nomad knowledge required)
+luma bootstrap --domain luma.example.com
+
+# Configure Cloudflare DNS &amp; Tunnel credentials seamlessly
+luma manager cloudflare --zone example.com
+
+# Deploy your first application directly to K3s + Flux
+luma init --name web --port 8080
+luma deploy web.yaml
+</code></pre>
+<h2 id="cli-reference">常用 CLI 命令<a class="headerlink" href="#cli-reference" title="章节链接">#</a></h2>
+<p>虽然推荐使用 <code>scripts/migrate-nomad-to-k3s.py</code> 脚本，但运维人员在需要逐步排查或精准控制时，仍可直接调用底层的 <code>luma migrate</code> 命令：</p>
+<pre><code class="language-bash"># View rollout batches and application classification
+luma migrate batches
+
+# Step 1: Generate migration plan
+luma migrate plan serverx
+
+# Step 2: Start parallel K3s shadow release (reusing existing image digest)
+luma migrate shadow serverx
+
+# Step 3: Cut over live traffic to K3s (keeps Nomad in standby)
+luma migrate cutover serverx
+
+# Optional: Instant &lt;1s rollback to standby Nomad job
+luma migrate abort serverx
+
+# Step 4: Purge legacy Nomad job after 24h observation
+luma migrate finalize serverx
+</code></pre><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/migration-guide.zh-CN.md">在 GitHub 查看源码 ↗</a> · <a href="./migration-guide.zh-CN.md">原始 Markdown</a></div></article><aside class="docs-toc" aria-label="本页目录"><strong>本页目录</strong><div class="toc">
+<ul>
+<li><a href="#one-time-standalone-migration-runner">一次性独立迁移脚本</a></li>
+<li><a href="#four-step-migration-state-machine">四步零停机迁移状态机流程</a></li>
+<li><a href="#rollout-batches-for-existing-applications">存量应用分批迁移策略（3 个批次）</a></li>
+<li><a href="#real-world-migration-hazards-and-safeguards">真实环境集群与节点迁移隐患防护</a><ul>
+<li><a href="#same-node-traefik-port-coexistence-and-memory-headroom">1. 同节点 Traefik 端口冲突规避与内存余量检查</a></li>
+<li><a href="#stateful-sqlite-flock-volumes-and-single-instance-bot-protection">2. 有状态 SQLite / flock 卷隔离与单实例 Bot 保护</a></li>
+<li><a href="#post-migration-nomad-decommission">3. 迁移后彻底下线 Nomad 服务</a></li>
+</ul>
+</li>
+<li><a href="#fresh-0-to-1-install-vs-existing-migration-compatibility">开源新手 0 到 1 安装体验与存量用户兼容性</a></li>
+<li><a href="#cli-reference">常用 CLI 命令</a></li>
+</ul>
+</div>
+</aside></main></body></html>

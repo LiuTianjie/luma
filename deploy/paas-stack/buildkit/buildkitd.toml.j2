@@ -1,0 +1,40 @@
+# Managed by Luma PaaS BuildKit Pool Reconciler
+# Native builder profile for x86_64 (builder) and Apple Silicon ARM64 (air3 / m4)
+debug = false
+root = "/var/lib/buildkit"
+
+[grpc]
+  address = ["tcp://0.0.0.0:1234", "unix:///run/buildkit/buildkitd.sock"]
+
+[worker.oci]
+  enabled = true
+  gc = true
+  gckeepstorage = "30GB"
+  max-parallelism = 4
+
+  # Tier 1: Ephemeral local source snapshots, git checkouts, and RUN cache mounts
+  [[worker.oci.gcpolicy]]
+    keepBytes = "10GB"
+    keepDuration = "48h"
+    filters = ["type==source.local", "type==exec.cachemount", "type==source.git.checkout"]
+
+  # Tier 2: Intermediate build layers older than 7 days
+  [[worker.oci.gcpolicy]]
+    keepBytes = "25GB"
+    keepDuration = "168h"
+
+  # Tier 3: Standard high watermark cap
+  [[worker.oci.gcpolicy]]
+    keepBytes = "30GB"
+
+  # Tier 4: Emergency hard ceiling to protect host disk & PVE thin pool
+  [[worker.oci.gcpolicy]]
+    all = true
+    keepBytes = "35GB"
+
+[registry."{{ zot_registry_host }}"]
+  http = true
+  insecure = true
+
+[registry."docker.io"]
+  mirrors = ["{{ zot_registry_host }}", "docker.1ms.run", "docker.m.daocloud.io"]

@@ -7,6 +7,7 @@ from typing import Any, Dict
 from ..errors import LumaError
 from . import common
 from .common import _control_context, _format_epoch, _history_query, _output_format, _print_deploy_step, _print_history_expiry, _print_history_page, _print_json, _print_success, _print_table, _quiet, _run_with_wait_heartbeat
+from .paas import cmd_app_scale
 
 
 def cmd_app(args: argparse.Namespace) -> int:
@@ -19,6 +20,7 @@ def cmd_app(args: argparse.Namespace) -> int:
         "versions": cmd_app_versions,
         "rollback": cmd_app_rollback,
         "restart": cmd_app_restart,
+        "scale": cmd_app_scale,
         "remove": cmd_app_remove,
     }
     return handlers[args.app_command](args)

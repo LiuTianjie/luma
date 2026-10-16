@@ -1,0 +1,107 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Luma documentation · Luma Documentation</title><meta name="description" content="Luma documentation — Luma Documentation"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">Skip to content</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../index.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">Documentation</span><button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="Main navigation"><a href="../index.html#product">Console</a><a href="../index.html#docs">All guides</a><a href="README.zh-CN.html" data-doc-language lang="zh-CN">中文</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="Documentation"><strong>Guides</strong><a class="active" aria-current=page href="README.html">Overview</a><a class=""  href="getting-started.html">Getting started</a><a class=""  href="concepts.html">Core concepts</a><a class=""  href="deploying.html">Deploying applications</a><a class=""  href="build-and-artifacts.html">Build & OCI artifacts</a><a class=""  href="migration-guide.html">Migration guide</a><a class=""  href="operations.html">Operations</a><a class=""  href="deployment-yaml.html">Deployment YAML</a><a class=""  href="compose-storage.html">Compose & storage</a><a class=""  href="secrets.html">Secrets & credentials</a><a class=""  href="exposure-model.html">Exposure model</a><a class=""  href="observability.html">Observability</a><a class=""  href="dashboard-guide.html">Console guide</a><a class=""  href="troubleshooting.html">Troubleshooting</a><a class=""  href="luma-cli-reference.html">CLI reference</a><a class=""  href="ai-agent-skills.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../index.html#docs">Documentation</a><span>/</span><span>Luma documentation</span></div><h1 id="luma-documentation">Luma documentation<a class="headerlink" href="#luma-documentation" title="Permanent link">#</a></h1>
+<p>New to Luma? Read the first two pages in order, then pick guides as you need them. <a href="README.zh-CN.html">简体中文</a></p>
+<h2 id="start-here">Start here<a class="headerlink" href="#start-here" title="Permanent link">#</a></h2>
+<ol>
+<li><a href="getting-started.html">Getting started</a>: install the CLI, bootstrap a manager, deploy a first application, add nodes.</li>
+<li><a href="concepts.html">Concepts</a>: nodes, regions, exposure, egress and services, and how they fit together.</li>
+</ol>
+<h2 id="guides">Guides<a class="headerlink" href="#guides" title="Permanent link">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>Guide</th>
+<th>Covers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="deploying.html">Deploying applications</a></td>
+<td>Images, local builds, repository imports, Compose, recorded workflows and CI</td>
+</tr>
+<tr>
+<td><a href="build-and-artifacts.html">Build &amp; OCI artifacts</a></td>
+<td>Tekton pipelines, Remote BuildKit (<code>amd64</code>/<code>arm64</code>), Zot OCI registry, retention pins and Luma signature K8s features</td>
+</tr>
+<tr>
+<td><a href="migration-guide.html">Zero-downtime migration</a></td>
+<td>4-step migration workflow (<code>plan -&gt; shadow -&gt; cutover -&gt; finalize</code>) from Nomad to K3s + Flux</td>
+</tr>
+<tr>
+<td><a href="operations.html">Operations</a></td>
+<td>Logs, history, rollback, restart, removal, updates and node maintenance</td>
+</tr>
+<tr>
+<td><a href="compose-storage.html">Compose and storage</a></td>
+<td>Multi-service applications and persistent volumes</td>
+</tr>
+<tr>
+<td><a href="secrets.html">Secrets</a></td>
+<td>Tokens, application secrets and registry credentials</td>
+</tr>
+<tr>
+<td><a href="exposure-model.html">Exposure model</a></td>
+<td>Every ingress mode with requirements and examples</td>
+</tr>
+<tr>
+<td><a href="egress-gateway.html">Egress gateway</a></td>
+<td>Outbound proxy for image pulls and <code>proxy: true</code> services</td>
+</tr>
+<tr>
+<td><a href="observability.html">Observability</a></td>
+<td>Metrics, alerts and the optional observe stack</td>
+</tr>
+<tr>
+<td><a href="dashboard-guide.html">Console guide</a></td>
+<td>The web dashboard</td>
+</tr>
+<tr>
+<td><a href="ai-agent-skills.html">AI agent skills</a></td>
+<td>Skills that teach coding assistants to deploy with Luma</td>
+</tr>
+<tr>
+<td><a href="troubleshooting.html">Troubleshooting</a></td>
+<td>Known failures and their fixes</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="reference">Reference<a class="headerlink" href="#reference" title="Permanent link">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>Reference</th>
+<th>Covers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="deployment-yaml.html">Manifest reference</a></td>
+<td>Every field of a service manifest</td>
+</tr>
+<tr>
+<td><a href="luma-cli-reference.html">CLI reference</a></td>
+<td>Every command and option, generated from the CLI</td>
+</tr>
+<tr>
+<td><a href="control-storage.html">Control storage and recovery</a></td>
+<td>The manager's SQLite state, retention, backup and restore</td>
+</tr>
+<tr>
+<td><a href="installation-lifecycle.html">Installation lifecycle</a></td>
+<td>How installs and updates are validated on each machine</td>
+</tr>
+<tr>
+<td><a href="profiles.html">Bootstrap profiles</a></td>
+<td>Role sets used by <code>luma bootstrap --profile</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="for-maintainers">For maintainers<a class="headerlink" href="#for-maintainers" title="Permanent link">#</a></h2>
+<p><a href="maintainers/release.html">Release process</a> · <a href="maintainers/website.html">Website</a> · <a href="maintainers/dashboard-design.html">Dashboard design</a></p><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/README.md">View source on GitHub ↗</a> · <a href="./README.md">Raw Markdown</a></div></article><aside class="docs-toc" aria-label="On this page"><strong>On this page</strong><div class="toc">
+<ul>
+<li><a href="#start-here">Start here</a></li>
+<li><a href="#guides">Guides</a></li>
+<li><a href="#reference">Reference</a></li>
+<li><a href="#for-maintainers">For maintainers</a></li>
+</ul>
+</div>
+</aside></main></body></html>

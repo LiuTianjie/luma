@@ -27,6 +27,7 @@ Deploy:
   compose       Deploy a Docker Compose application with a Luma sidecar
   import        Build a Git repository on a builder node and deploy it
   build         Build a local checkout, or inspect and retry build runs
+  artifact      Inspect immutable build artifacts or promote them across environments
   workflow      Show or record how an application is built and deployed
 
 Operate:
@@ -155,7 +156,7 @@ arguments:
 ## `luma doctor`
 
 ```text
-usage: luma doctor [-h] [--local] [--deep] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+usage: luma doctor [-h] [--local] [--deep] [--fix] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
 
 Check this machine, Control and nodes
 
@@ -163,6 +164,7 @@ arguments:
   -h, --help                  show this help message and exit
   --local                     Only inspect this machine's installation; do not contact Control
   --deep                      Also run slower live checks on every node
+  --fix                       Automatically run node self-heal and containerd/CNI/mirror repair
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -213,7 +215,7 @@ Use 'luma deploy FILE --dry-run' to see the rendered Nomad job.
 ## `luma deploy`
 
 ```text
-usage: luma deploy [-h] [--dry-run] [--env DEPLOY_ENV_FILE] [--timeout TIMEOUT] [--skip-dns] [--skip-orchestrator] [--workflow-app WORKFLOW_APP] [--accept-workflow-change] [--workflow-note WORKFLOW_NOTE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] FILE
+usage: luma deploy [-h] [--artifact ARTIFACT] [--dry-run] [--env DEPLOY_ENV_FILE] [--timeout TIMEOUT] [--skip-dns] [--skip-orchestrator] [--workflow-app WORKFLOW_APP] [--accept-workflow-change] [--workflow-note WORKFLOW_NOTE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] FILE
 
 Deploy a service manifest through Luma Control. The image must already exist; use 'luma build local'
 or 'luma import' to build one.
@@ -223,6 +225,7 @@ arguments:
 
 arguments:
   -h, --help                  show this help message and exit
+  --artifact ARTIFACT         Deploy an existing immutable BuildArtifact ID without rebuilding
   --dry-run                   Render the Nomad job locally and print it; nothing is deployed
   --env DEPLOY_ENV_FILE       Store the variables the manifest references from this .env file as
                               application secrets
@@ -312,7 +315,7 @@ arguments:
 ## `luma compose deploy`
 
 ```text
-usage: luma compose deploy [-h] [--dry-run] [--env DEPLOY_ENV_FILE] [--timeout TIMEOUT] [--skip-dns] [--skip-orchestrator] [--workflow-app WORKFLOW_APP] [--accept-workflow-change] [--workflow-note WORKFLOW_NOTE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] SIDECAR
+usage: luma compose deploy [-h] [--artifact ARTIFACT] [--dry-run] [--env DEPLOY_ENV_FILE] [--timeout TIMEOUT] [--skip-dns] [--skip-orchestrator] [--workflow-app WORKFLOW_APP] [--accept-workflow-change] [--workflow-note WORKFLOW_NOTE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] SIDECAR
 
 Deploy a Compose application
 
@@ -321,6 +324,7 @@ arguments:
 
 arguments:
   -h, --help                  show this help message and exit
+  --artifact ARTIFACT         Deploy an existing immutable BuildArtifact ID without rebuilding
   --dry-run                   Render the Nomad job and print it; nothing is deployed
   --env DEPLOY_ENV_FILE       Store referenced variables from this .env file as application secrets
   --timeout TIMEOUT           Seconds to wait for Control (default: 3000)
@@ -624,6 +628,99 @@ arguments:
   --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
 ```
 
+## `luma artifact`
+
+```text
+usage: luma artifact [-h] <command> ...
+
+Inspect immutable OCI build artifacts or promote an artifact across environments without rebuilding.
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  <command>
+    list      List immutable build artifacts
+    show      Inspect an artifact's service digests and BuildKit stage waterfall
+    promote   Promote an immutable artifact to another environment without rebuilding
+```
+
+## `luma artifact list`
+
+```text
+usage: luma artifact list [-h] [--project PROJECT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List immutable build artifacts
+
+arguments:
+  -h, --help                  show this help message and exit
+  --project PROJECT           Only artifacts belonging to this application
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma artifact show`
+
+```text
+usage: luma artifact show [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] ID
+
+Inspect an artifact's service digests and BuildKit stage waterfall
+
+arguments:
+  ID                          Artifact ID from 'luma artifact list'
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma artifact promote`
+
+```text
+usage: luma artifact promote [-h] [--project PROJECT] [--from FROM_ENV] [--to TO_ENV] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] ID
+
+Promote an immutable artifact to another environment without rebuilding
+
+arguments:
+  ID                          Artifact ID to promote
+
+arguments:
+  -h, --help                  show this help message and exit
+  --project PROJECT           Application name (default: inferred from artifact)
+  --from FROM_ENV             Source environment (default: staging)
+  --to TO_ENV                 Target environment (default: prod)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
 ## `luma workflow`
 
 ```text
@@ -794,6 +891,7 @@ arguments:
     versions  List the Nomad job versions that 'luma app rollback' can restore
     rollback  Restore a previous Nomad job version
     restart   Restart an application
+    scale     Scale an application or a specific Compose service independently
     remove    Remove an application, its routes and DNS records
 
 Examples:
@@ -1005,6 +1103,34 @@ arguments:
   --service SERVICE           Only this service of a Compose application
   --mode {recreate,task}      recreate replaces the allocation; task restarts in place
   --timeout TIMEOUT           Seconds to wait for Control (default: 120)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma app scale`
+
+```text
+usage: luma app scale [-h] [--service SERVICE] --replicas REPLICAS [--environment ENVIRONMENT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Scale an application or a specific Compose service independently
+
+arguments:
+  name                        Application name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --service SERVICE           Specific service of a Compose application (default: primary service)
+  --replicas REPLICAS         Desired replica count (0-64)
+  --environment ENVIRONMENT   Target environment (default: prod)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error

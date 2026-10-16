@@ -12,6 +12,8 @@ New to Luma? Read the first two pages in order, then pick guides as you need the
 | Guide | Covers |
 | --- | --- |
 | [Deploying applications](deploying.md) | Images, local builds, repository imports, Compose, recorded workflows and CI |
+| [Build & OCI artifacts](build-and-artifacts.md) | Tekton pipelines, Remote BuildKit (`amd64`/`arm64`), Zot OCI registry, retention pins and Luma signature K8s features |
+| [Zero-downtime migration](migration-guide.md) | 4-step migration workflow (`plan -> shadow -> cutover -> finalize`) from Nomad to K3s + Flux |
 | [Operations](operations.md) | Logs, history, rollback, restart, removal, updates and node maintenance |
 | [Compose and storage](compose-storage.md) | Multi-service applications and persistent volumes |
 | [Secrets](secrets.md) | Tokens, application secrets and registry credentials |

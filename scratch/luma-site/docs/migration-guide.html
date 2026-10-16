@@ -1,0 +1,163 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Zero-Downtime Migration Guide (Nomad to K3s + Flux PaaS) · Luma Documentation</title><meta name="description" content="Zero-Downtime Migration Guide (Nomad to K3s + Flux PaaS) — Luma Documentation"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">Skip to content</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../index.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">Documentation</span><button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="Main navigation"><a href="../index.html#product">Console</a><a href="../index.html#docs">All guides</a><a href="migration-guide.zh-CN.html" data-doc-language lang="zh-CN">中文</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="Documentation"><strong>Guides</strong><a class=""  href="README.html">Overview</a><a class=""  href="getting-started.html">Getting started</a><a class=""  href="concepts.html">Core concepts</a><a class=""  href="deploying.html">Deploying applications</a><a class=""  href="build-and-artifacts.html">Build & OCI artifacts</a><a class="active" aria-current=page href="migration-guide.html">Migration guide</a><a class=""  href="operations.html">Operations</a><a class=""  href="deployment-yaml.html">Deployment YAML</a><a class=""  href="compose-storage.html">Compose & storage</a><a class=""  href="secrets.html">Secrets & credentials</a><a class=""  href="exposure-model.html">Exposure model</a><a class=""  href="observability.html">Observability</a><a class=""  href="dashboard-guide.html">Console guide</a><a class=""  href="troubleshooting.html">Troubleshooting</a><a class=""  href="luma-cli-reference.html">CLI reference</a><a class=""  href="ai-agent-skills.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../index.html#docs">Documentation</a><span>/</span><span>Zero-Downtime Migration Guide (Nomad to K3s + Flux PaaS)</span></div><h1 id="zero-downtime-migration-guide-nomad-to-k3s-flux-paas">Zero-Downtime Migration Guide (Nomad to K3s + Flux PaaS)<a class="headerlink" href="#zero-downtime-migration-guide-nomad-to-k3s-flux-paas" title="Permanent link">#</a></h1>
+<p>Luma Next provides a robust, zero-downtime migration architecture to transition existing production applications from the legacy Nomad runtime to the modern <strong>K3s + Tekton + BuildKit + Zot + Flux</strong> PaaS runtime.</p>
+<p>Because migration is a <strong>one-time operation</strong> performed when upgrading a cluster, Luma provides a dedicated standalone runner (<code>scripts/migrate-nomad-to-k3s.py</code>) while keeping one-time migration commands hidden (<code>argparse.SUPPRESS</code>) from the permanent daily CLI (<code>luma --help</code>) to preserve a clean developer experience for new open-source users.</p>
+<h2 id="one-time-standalone-migration-runner">One-Time Standalone Migration Runner<a class="headerlink" href="#one-time-standalone-migration-runner" title="Permanent link">#</a></h2>
+<p>The canonical migration tool is <code>scripts/migrate-nomad-to-k3s.py</code>. It automates cluster preflight checks, batch planning, parallel shadow deployments, traffic cutover, and legacy service decommissioning:</p>
+<ul>
+<li><code>--dry-run</code>: Performs preflight memory, port, and cluster checks without modifying workloads.</li>
+<li><code>--batch [1, 2, 3, all]</code>: Executes migration for a targeted rollout batch or all batches.</li>
+<li><code>--project &lt;name&gt;</code> (or <code>--app &lt;name&gt;</code>): Migrates a single application.</li>
+<li><code>--state-file &lt;path&gt;</code>: Records migration progress and cutover states (default: <code>.luma-migration-state.json</code>).</li>
+<li><code>--decommission-nomad</code>: Automatically disables and stops the legacy Nomad service once all workloads are finalized.</li>
+</ul>
+<pre><code class="language-bash"># Dry-run preflight checks and evaluate rollout plan
+python scripts/migrate-nomad-to-k3s.py --dry-run
+
+# Migrate a specific rollout batch (1, 2, or 3)
+python scripts/migrate-nomad-to-k3s.py --batch 1
+
+# Migrate a specific application
+python scripts/migrate-nomad-to-k3s.py --project serverx
+
+# Migrate all workloads and decommission Nomad upon completion
+python scripts/migrate-nomad-to-k3s.py --batch all --decommission-nomad
+</code></pre>
+<h2 id="four-step-migration-state-machine">Four-Step Migration State Machine<a class="headerlink" href="#four-step-migration-state-machine" title="Permanent link">#</a></h2>
+<p>The underlying migration engine implements a 4-step state machine (<code>plan -&gt; shadow -&gt; cutover -&gt; finalize</code>) with sub-second rollback capabilities:</p>
+<pre><code class="language-mermaid">flowchart LR
+  P[&quot;1. luma migrate plan&quot;] --&gt; S[&quot;2. luma migrate shadow&quot;]
+  S --&gt; C[&quot;3. luma migrate cutover&quot;]
+  C --&gt; F[&quot;4. luma migrate finalize&quot;]
+  C -. &quot;Instant &lt;1s Rollback&quot; .-&gt; A[&quot;luma migrate abort&quot;]
+</code></pre>
+<ol>
+<li><strong><code>plan</code> (<code>luma migrate plan &lt;app&gt;</code>)</strong>:
+   - Inspects <code>luma.yaml</code> and <code>luma.compose.yml</code>, classifies the application into rollout batches, identifies independent <code>Deployment</code> workloads versus <code>network_mode: service:*</code> sidecars, and validates volume hostPath bindings and secrets.</li>
+<li><strong><code>shadow</code> (<code>luma migrate shadow &lt;app&gt;</code>)</strong>:
+   - Adopts currently running container image digests (<code>sha256:...</code>) into an immutable <code>BuildArtifact</code> (<code>art-adopted-&lt;app&gt;-...</code>) without rebuilding images.
+   - Deploys a parallel shadow Flux <code>HelmRelease</code> into K3s and validates health probes while production traffic remains on Nomad.</li>
+<li><strong><code>cutover</code> (<code>luma migrate cutover &lt;app&gt;</code>)</strong>:
+   - Atomically switches Ingress routing to the verified K3s release in <code>&lt; 1s</code>.
+   - Places the legacy Nomad allocation into warm <code>standby</code> during the 24-hour observation window (<code>abort</code> instantly restores traffic to Nomad if needed).</li>
+<li><strong><code>finalize</code> (<code>luma migrate finalize &lt;app&gt;</code>)</strong>:
+   - Purges the standby Nomad job after the observation window and confirms zero orphan queue workers remain.</li>
+</ol>
+<h2 id="rollout-batches-for-existing-applications">Rollout Batches for Existing Applications<a class="headerlink" href="#rollout-batches-for-existing-applications" title="Permanent link">#</a></h2>
+<p>Workloads are segregated into three phased batches according to statefulness and concurrency risk:</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th style="text-align: left;">Batch</th>
+<th style="text-align: left;">Category</th>
+<th style="text-align: left;">Applications</th>
+<th style="text-align: left;">Migration Strategy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Phase 0</strong></td>
+<td style="text-align: left;">Build Plane First</td>
+<td style="text-align: left;">All builds (<code>local</code> / <code>import</code>)</td>
+<td style="text-align: left;">Switch image builds to Tekton + Remote BuildKit + Zot Registry first</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Batch 1</strong></td>
+<td style="text-align: left;">Stateless Web &amp; Tools</td>
+<td style="text-align: left;"><code>tifenxia-fe</code>, <code>word2pdf</code>, <code>itool-tech</code>, <code>luxe-monitor</code>, <code>claude-remote</code></td>
+<td style="text-align: left;">Shadow K3s Deployment -&gt; Health Probe -&gt; Blue/Green Ingress Cutover</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Batch 2</strong></td>
+<td style="text-align: left;">Multi-Service Compose &amp; Queue Workers</td>
+<td style="text-align: left;"><code>serverx</code>, <code>granary</code>, <code>codex-gitea</code></td>
+<td style="text-align: left;">Drain/Switch Queue Workers (<code>video-worker</code>, <code>worker</code>) first -&gt; Shadow Web API -&gt; Ingress Cutover</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Batch 3</strong></td>
+<td style="text-align: left;">Stateful Services with Local Volumes</td>
+<td style="text-align: left;"><code>kato</code>, <code>bot</code></td>
+<td style="text-align: left;">In-Place Local PV Adoption (preserving host path &amp; <code>fsGroup</code> UID/GID) -&gt; Controlled Cutover</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="real-world-migration-hazards-and-safeguards">Real-World Migration Hazards &amp; Safeguards<a class="headerlink" href="#real-world-migration-hazards-and-safeguards" title="Permanent link">#</a></h2>
+<p>Migrating co-located workloads on production nodes introduces real-world resource and state hazards. Luma enforces strict preflight and runtime guards:</p>
+<h3 id="same-node-traefik-port-coexistence-and-memory-headroom">1. Same-Node Traefik Port Coexistence &amp; Memory Headroom<a class="headerlink" href="#same-node-traefik-port-coexistence-and-memory-headroom" title="Permanent link">#</a></h3>
+<ul>
+<li><strong>Port Conflict Prevention (<code>80</code>/<code>443</code> &amp; <code>tcp-relay</code>)</strong>:
+  When Nomad and K3s run concurrently on the same host, both runtimes must not attempt to bind duplicate host ports <code>80</code> or <code>443</code>. Edge traffic transitions cleanly through Traefik dynamic routing and SNI multiplexing without hostPort collisions. For raw L4 TCP services (<code>exposure: tcp-relay</code>), migration preflights ensure <code>publishPort</code> is distinct and never conflicts with reserved ports.</li>
+<li><strong>Node Memory Headroom (&gt;= 512 MB)</strong>:
+  Running parallel shadow Pods alongside existing Nomad allocations increases memory footprint. The migration runner checks available host memory (<code>SC_AVPHYS_PAGES</code>); if free memory is below 512 MB, shadow deployment is halted to prevent triggering the Linux Out-Of-Memory (OOM) killer.</li>
+</ul>
+<h3 id="stateful-sqlite-flock-volumes-and-single-instance-bot-protection">2. Stateful SQLite / flock Volumes &amp; Single-Instance Bot Protection<a class="headerlink" href="#stateful-sqlite-flock-volumes-and-single-instance-bot-protection" title="Permanent link">#</a></h3>
+<ul>
+<li><strong>Volume Corruption Prevention (<code>kato</code>, <code>bot</code>)</strong>:
+  Applications utilizing SQLite databases or file locks (<code>flock</code>) must <strong>never</strong> mount and write to the same hostPath directory concurrently from both Nomad and K3s. Concurrent writes corrupt the SQLite WAL journal and break file locks.</li>
+<li><strong>Single-Instance Bot Connection Protection</strong>:
+  Polling bots (e.g., Telegram and Feishu bots) must not run concurrently; dual polling creates API 409 Conflict errors, message duplicate processing, and event flapping.</li>
+<li><strong>Shadow &amp; Cutover Invariants</strong>:</li>
+<li>During <strong><code>shadow</code></strong>: Stateful and bot applications maintain <code>replicas: 0</code>. The shadow release pre-pulls container images, syncs secrets, and validates volume hostPath permissions and node pins without starting active processes.</li>
+<li>During <strong><code>cutover</code></strong>: The engine strictly stops the legacy Nomad allocation <strong>before</strong> scaling the K3s Deployment up to <code>1</code>. This guarantees mutual exclusion and zero lock contention.</li>
+</ul>
+<h3 id="post-migration-nomad-decommission">3. Post-Migration Nomad Decommission<a class="headerlink" href="#post-migration-nomad-decommission" title="Permanent link">#</a></h3>
+<p>After all applications in Batches 1, 2, and 3 are finalized and verified in production, decommission the legacy Nomad daemon to reclaim system memory, CPU cycles, and network sockets:</p>
+<pre><code class="language-bash"># Disable and stop legacy Nomad daemon after full cluster verification
+sudo systemctl disable --now nomad
+</code></pre>
+<h2 id="fresh-0-to-1-install-vs-existing-migration-compatibility">Fresh 0-to-1 Install vs. Existing Migration Compatibility<a class="headerlink" href="#fresh-0-to-1-install-vs-existing-migration-compatibility" title="Permanent link">#</a></h2>
+<p>Luma maintains strict backward compatibility for existing clusters while providing a seamless, zero-friction experience for new open-source adopters:</p>
+<ul>
+<li><strong>0-to-1 Fresh Install Experience</strong>:
+  New users bootstrap directly onto K3s and Flux without needing any prior Nomad knowledge or running migration tools. The entire workflow uses standard commands:
+  <code>luma bootstrap --domain ...</code>, <code>luma login</code>, <code>luma init</code>, <code>luma node join</code>, and <code>luma manager cloudflare --zone ...</code>.</li>
+<li><strong>Zero Breaking Changes to Configuration</strong>:
+  All existing environment variables in <code>.env</code> remain 100% compatible:
+  <code>CLOUDFLARE_API_TOKEN</code>, <code>CLOUDFLARE_ZONE_ID</code>, <code>EGRESS_SUBSCRIPTION_URL</code>, and <code>LUMA_DEPLOY_TOKEN</code>.</li>
+<li><strong>Seamless Cloudflare Integration</strong>:
+  Cloudflare DNS and Cloudflare Tunnel (<code>exposure: cloudflare-tunnel</code>) configure automatically through Luma's built-in manager commands (<code>luma manager cloudflare --zone ...</code>) without requiring manual installation of Kubernetes <code>external-dns</code> or <code>cloudflared</code> Custom Resource Definitions (CRDs).</li>
+</ul>
+<pre><code class="language-bash"># 0-to-1 Fresh install on an empty Linux server (zero Nomad knowledge required)
+luma bootstrap --domain luma.example.com
+
+# Configure Cloudflare DNS &amp; Tunnel credentials seamlessly
+luma manager cloudflare --zone example.com
+
+# Deploy your first application directly to K3s + Flux
+luma init --name web --port 8080
+luma deploy web.yaml
+</code></pre>
+<h2 id="cli-reference">CLI Reference<a class="headerlink" href="#cli-reference" title="Permanent link">#</a></h2>
+<p>While <code>scripts/migrate-nomad-to-k3s.py</code> is the recommended standalone entry point, operators can also invoke the underlying low-level <code>luma migrate</code> commands for manual inspection or step-by-step troubleshooting:</p>
+<pre><code class="language-bash"># View rollout batches and application classification
+luma migrate batches
+
+# Step 1: Generate migration plan
+luma migrate plan serverx
+
+# Step 2: Start parallel K3s shadow release (reusing existing image digest)
+luma migrate shadow serverx
+
+# Step 3: Cut over live traffic to K3s (keeps Nomad in standby)
+luma migrate cutover serverx
+
+# Optional: Instant &lt;1s rollback to standby Nomad job
+luma migrate abort serverx
+
+# Step 4: Purge legacy Nomad job after 24h observation
+luma migrate finalize serverx
+</code></pre><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/migration-guide.md">View source on GitHub ↗</a> · <a href="./migration-guide.md">Raw Markdown</a></div></article><aside class="docs-toc" aria-label="On this page"><strong>On this page</strong><div class="toc">
+<ul>
+<li><a href="#one-time-standalone-migration-runner">One-Time Standalone Migration Runner</a></li>
+<li><a href="#four-step-migration-state-machine">Four-Step Migration State Machine</a></li>
+<li><a href="#rollout-batches-for-existing-applications">Rollout Batches for Existing Applications</a></li>
+<li><a href="#real-world-migration-hazards-and-safeguards">Real-World Migration Hazards &amp; Safeguards</a><ul>
+<li><a href="#same-node-traefik-port-coexistence-and-memory-headroom">1. Same-Node Traefik Port Coexistence &amp; Memory Headroom</a></li>
+<li><a href="#stateful-sqlite-flock-volumes-and-single-instance-bot-protection">2. Stateful SQLite / flock Volumes &amp; Single-Instance Bot Protection</a></li>
+<li><a href="#post-migration-nomad-decommission">3. Post-Migration Nomad Decommission</a></li>
+</ul>
+</li>
+<li><a href="#fresh-0-to-1-install-vs-existing-migration-compatibility">Fresh 0-to-1 Install vs. Existing Migration Compatibility</a></li>
+<li><a href="#cli-reference">CLI Reference</a></li>
+</ul>
+</div>
+</aside></main></body></html>

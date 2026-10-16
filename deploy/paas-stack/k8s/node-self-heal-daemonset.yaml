@@ -1,0 +1,138 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: luma-node-self-heal
+  namespace: luma-system
+  labels:
+    app.kubernetes.io/name: luma-node-self-heal
+    app.kubernetes.io/part-of: luma-paas
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: luma-node-self-heal
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: luma-node-self-heal
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      hostPID: true
+      hostNetwork: true
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: reconciler
+          image: alpine:3.20
+          securityContext:
+            privileged: true
+          env:
+            - name: LUMA_ZOT_REGISTRY_HOST
+              value: "100.66.177.70:5000"
+            - name: LUMA_INTERNAL_GIT_HOSTS
+              value: "gcode.gaojiua.com"
+            - name: LUMA_EGRESS_PROXY
+              value: "http://127.0.0.1:7890"
+            - name: LUMA_FSTRIM_INTERVAL_SECONDS
+              value: "1800"
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+
+              IS_MICROOS=false
+              if [ -f /host/etc/os-release ] && grep -qi "microos" /host/etc/os-release; then
+                IS_MICROOS=true
+              fi
+
+              reconcile_writable_dirs() {
+                for dir in /host/etc/rancher/k3s /host/var/lib/rancher/k3s /host/var/lib/buildkit /host/var/run/luma; do
+                  mkdir -p "$dir" 2>/dev/null || nsenter -t 1 -m -u -i -n mkdir -p "${dir#/host}" 2>/dev/null || true
+                done
+              }
+
+              reconcile_selinux() {
+                if nsenter -t 1 -m -u -i -n command -v restorecon >/dev/null 2>&1; then
+                  nsenter -t 1 -m -u -i -n restorecon -Rv /etc/rancher/k3s /var/lib/rancher/k3s /var/lib/buildkit >/host/var/run/luma/last-restorecon.log 2>&1 || true
+                fi
+              }
+
+              reconcile_registries() {
+                desired="/host/etc/rancher/k3s/registries.yaml.luma-tmp"
+                cat > "$desired" <<EOF
+              mirrors:
+                "${LUMA_ZOT_REGISTRY_HOST}":
+                  endpoint:
+                    - "http://${LUMA_ZOT_REGISTRY_HOST}"
+                "docker.io":
+                  endpoint:
+                    - "http://${LUMA_ZOT_REGISTRY_HOST}"
+                    - "https://docker.1ms.run"
+              configs:
+                "${LUMA_ZOT_REGISTRY_HOST}":
+                  tls:
+                    insecure_skip_verify: true
+              EOF
+                if [ ! -f /host/etc/rancher/k3s/registries.yaml ] || ! cmp -s "$desired" /host/etc/rancher/k3s/registries.yaml; then
+                  mv "$desired" /host/etc/rancher/k3s/registries.yaml
+                  reconcile_selinux
+                else
+                  rm -f "$desired"
+                fi
+              }
+
+              run_maintenance_and_status() {
+                disk_pct=0
+                if [ -d /host/var ]; then
+                  disk_pct=$(df -P /host/var 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5}')
+                fi
+                if [ -z "$disk_pct" ] || ! [ "$disk_pct" -ge 0 ] 2>/dev/null; then
+                  disk_pct=0
+                fi
+
+                if [ "$IS_MICROOS" = "true" ] || [ "$disk_pct" -ge 75 ]; then
+                  if nsenter -t 1 -m -u -i -n command -v btrfs >/dev/null 2>&1; then
+                    if [ "$IS_MICROOS" = "true" ] || nsenter -t 1 -m -u -i -n stat -f -c %T /var 2>/dev/null | grep -qi "btrfs"; then
+                      nsenter -t 1 -m -u -i -n btrfs scrub start -B /var >/host/var/run/luma/last-btrfs-scrub.log 2>&1 || true
+                    fi
+                  fi
+                  nsenter -t 1 -m -u -i -n fstrim -v /var >/host/var/run/luma/last-fstrim.log 2>&1 || \
+                  nsenter -t 1 -m -u -i -n fstrim -v / >>/host/var/run/luma/last-fstrim.log 2>&1 || true
+                else
+                  nsenter -t 1 -m -u -i -n fstrim -v /var >/host/var/run/luma/last-fstrim.log 2>&1 || \
+                  nsenter -t 1 -m -u -i -n fstrim -v / >>/host/var/run/luma/last-fstrim.log 2>&1 || true
+                fi
+                date -u +"%Y-%m-%dT%H:%M:%SZ" >/host/var/run/luma/self-heal-heartbeat
+              }
+
+              while true; do
+                reconcile_writable_dirs
+                reconcile_registries
+                run_maintenance_and_status
+                sleep "${LUMA_FSTRIM_INTERVAL_SECONDS}"
+              done
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: host-etc
+              mountPath: /host/etc
+            - name: host-var
+              mountPath: /host/var
+            - name: host-run
+              mountPath: /host/var/run
+      volumes:
+        - name: host-etc
+          hostPath:
+            path: /etc
+        - name: host-var
+          hostPath:
+            path: /var
+        - name: host-run
+          hostPath:
+            path: /var/run

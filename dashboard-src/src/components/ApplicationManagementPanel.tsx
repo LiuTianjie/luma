@@ -13,6 +13,10 @@ import {
   ApplicationVersionEntry,
 } from "./ApplicationProperties";
 import {
+  ReleaseTimelineDiffCard,
+  ServiceReplicaScaler,
+} from "./ReleaseTimelinePanel";
+import {
   useCallback,
   useEffect,
   useMemo,
@@ -1177,6 +1181,14 @@ export function ApplicationManagementPanel({
                   loadingContent(t(lang, "loadingHistory"))
                 ) : selectedRollback.versions.length ? (
                   <div className="flex flex-col gap-4">
+                    <ReleaseTimelineDiffCard
+                      lang={lang}
+                      stack={selected.stack}
+                      versions={selectedRollback.versions}
+                      onRollbackVersion={(targetVer) =>
+                        void rollbackToVersion(selected, targetVer)
+                      }
+                    />
                     {selectedRollback.versions.map((version, index) => {
                       const targetVersion = versionNumber(version.version);
                       const isCurrent = index === 0;
@@ -1375,6 +1387,11 @@ export function ApplicationManagementPanel({
           ) : null}
           {tab === "services" ? (
             <>
+              <ServiceReplicaScaler
+                lang={lang}
+                stack={selected.stack}
+                services={selected.services}
+              />
               {route.service && !activeServices.length ? (
                 <Empty>
                   <EmptyHeader>

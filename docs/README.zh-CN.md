@@ -12,6 +12,8 @@
 | 指南 | 内容 |
 | --- | --- |
 | [部署应用](deploying.zh-CN.md) | 镜像部署、本地构建、仓库导入、Compose、部署方式记录与 CI |
+| [构建流水线与 OCI 制品](build-and-artifacts.zh-CN.md) | Tekton 流水线、远程 BuildKit 池（`amd64`/`arm64`）、Zot 制品库、回滚防删锁及 Luma 特色 K8s 能力 |
+| [存量应用零停机迁移](migration-guide.zh-CN.md) | 从 Nomad 迁移至 K3s + Flux 的四步平滑切流（`plan -> shadow -> cutover -> finalize`） |
 | [日常运维](operations.zh-CN.md) | 日志、历史、回滚、重启、删除、升级与节点维护 |
 | [Compose 与存储](compose-storage.zh-CN.md) | 多服务应用与持久卷 |
 | [密钥与凭据](secrets.zh-CN.md) | 令牌、应用密钥与镜像仓库凭据 |

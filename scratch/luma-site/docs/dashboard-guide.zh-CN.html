@@ -1,0 +1,92 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Luma 控制台指南 · Luma 文档</title><meta name="description" content="Luma 控制台指南 — Luma 文档"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">跳到正文</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../zh.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">文档</span><button class="menu-toggle" aria-label="展开导航" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="主导航"><a href="../zh.html#product">控制台</a><a href="../zh.html#docs">全部指南</a><a href="dashboard-guide.html" data-doc-language lang="en">English</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="文档"><strong>指南</strong><a class=""  href="README.zh-CN.html">概览</a><a class=""  href="getting-started.zh-CN.html">快速上手</a><a class=""  href="concepts.zh-CN.html">核心概念</a><a class=""  href="deploying.zh-CN.html">部署应用</a><a class=""  href="build-and-artifacts.zh-CN.html">构建与制品</a><a class=""  href="migration-guide.zh-CN.html">零停机迁移</a><a class=""  href="operations.zh-CN.html">日常运维</a><a class=""  href="deployment-yaml.zh-CN.html">部署 YAML</a><a class=""  href="compose-storage.zh-CN.html">Compose 与存储</a><a class=""  href="secrets.zh-CN.html">密钥与凭据</a><a class=""  href="exposure-model.zh-CN.html">暴露模型</a><a class=""  href="observability.zh-CN.html">可观测</a><a class="active" aria-current=page href="dashboard-guide.zh-CN.html">控制台指南</a><a class=""  href="troubleshooting.zh-CN.html">故障排查</a><a class=""  href="luma-cli-reference.zh-CN.html">CLI 命令参考</a><a class=""  href="ai-agent-skills.zh-CN.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../zh.html#docs">文档</a><span>/</span><span>Luma 控制台指南</span></div><h1 id="luma-console-guide">Luma 控制台指南<a class="headerlink" href="#luma-console-guide" title="章节链接">#</a></h1>
+<p>控制台地址为 <code>https://&lt;control-domain&gt;/dashboard/</code>。请在可信设备上使用管理令牌登录。控制台与 CLI 使用同一个 Control API。</p>
+<h2 id="first-hour-after-bootstrap">首次安装后的第一小时<a class="headerlink" href="#first-hour-after-bootstrap" title="章节链接">#</a></h2>
+<ol>
+<li>打开 <code>/dashboard/</code>，粘贴 bootstrap 给出的管理 Token。</li>
+<li>在 <strong>应用 → 创建应用</strong> 选择 <strong>hello-world 首装验证</strong>。它是内部服务（<code>exposure: none</code>），不需要额外 DNS、Tailscale 或 Registry。</li>
+<li><strong>首次安装</strong> 页只补集群可选项：Cloudflare zone、Tailscale、egress、内部 Registry。跳过可选项不等于安装失败。</li>
+<li>hello-world 健康后再创建 <code>cn-edge</code> / <code>external-edge</code> 的公开服务。</li>
+</ol>
+<h2 id="choose-a-workspace">选择工作空间<a class="headerlink" href="#choose-a-workspace" title="章节链接">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>工作空间</th>
+<th>功能</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>总览</td>
+<td>查看需要关注的应用和节点。</td>
+</tr>
+<tr>
+<td>应用</td>
+<td>查看服务、副本、访问地址、日志、指标、配置和版本历史。</td>
+</tr>
+<tr>
+<td>部署记录</td>
+<td>跟踪构建和部署结果。</td>
+</tr>
+<tr>
+<td>可观测</td>
+<td>查看告警事件、应用监控（请求、日志与链路）、资源指标、告警规则和通知渠道。</td>
+</tr>
+<tr>
+<td>基础设施</td>
+<td>管理节点（含加入新节点）、区域、网络路由、存储和镜像。</td>
+</tr>
+<tr>
+<td>设置</td>
+<td>管理密钥、镜像仓库凭据、Git 凭据和系统维护（Control 与 agent 升级）。</td>
+</tr>
+<tr>
+<td>首次安装</td>
+<td>配置并验证集群依赖。</td>
+</tr>
+</tbody>
+</table></div>
+<p>设置和首次安装位于侧边栏的“平台管理”分组。创建应用和从 Git 构建归属于“应用”。顶部栏显示当前位置。外观、语言和退出操作位于侧边栏。桌面端侧边栏收起为图标时，带二级页面的工作空间会弹出菜单。选择外观或语言后，偏好菜单会关闭。桌面端的折叠按钮位于侧边栏头部；窄屏通过顶部栏打开导航。</p>
+<h2 id="create-an-application">创建应用<a class="headerlink" href="#create-an-application" title="章节链接">#</a></h2>
+<p>打开 <strong>应用 → 创建应用</strong>，选择配置来源：</p>
+<ul>
+<li><strong>Git 仓库</strong>：选择已连接的提供方或输入仓库 URL，再选择构建节点。</li>
+<li><strong>容器镜像</strong>：配置镜像、区域、入口、资源和环境变量。</li>
+<li><strong>YAML 文件</strong>：直接编辑部署清单。</li>
+<li><strong>应用模板</strong>：搜索单服务或 Compose 模板，再调整配置。</li>
+</ul>
+<p>选择模板不会立即部署。提交前应检查并校验配置。手动编辑 YAML 后，校验与部署将以当前 YAML 为准；恢复表单前会确认是否丢弃这些编辑。</p>
+<p>字段定义见<a href="deployment-yaml.zh-CN.html">部署 YAML</a>，多服务和持久卷行为见 <a href="compose-storage.zh-CN.html">Compose 与存储</a>。</p>
+<h2 id="inspect-an-application">查看应用<a class="headerlink" href="#inspect-an-application" title="章节链接">#</a></h2>
+<p>应用详情中的标签页保持同一个应用上下文，可切换概览、服务与实例、日志、指标、配置和版本历史。</p>
+<ul>
+<li><strong>概览</strong>：显示运行状态、部署位置、访问地址、存储和诊断。</li>
+<li><strong>日志</strong>：提供按当前应用筛选的 VictoriaLogs 日志检索和 Tempo 链路追踪，支持放大与还原，需要启用可观测服务。<strong>实时日志</strong>保留通过 Control 读取服务与实例输出的入口，支持筛选、暂停、自动折行、复制和下载；从具体服务打开日志时直接进入此视图。运行事件与拉取诊断独立于应用日志输出。</li>
+<li><strong>配置</strong>：显示已登记的部署来源、更新时间和复制操作。有多个配置文件时才显示文件切换。</li>
+<li><strong>版本</strong>：区分加载失败、暂无历史和回滚失败。回滚需要确认，并会改变当前部署。</li>
+</ul>
+<p>路由配置为内部访问，并不代表该应用在所有私网中都不可达。修改入口前，请先检查入口类型与节点位置。</p>
+<h2 id="follow-a-route">查看完整路由<a class="headerlink" href="#follow-a-route" title="章节链接">#</a></h2>
+<p>打开 <strong>基础设施 → 网络 → 路由</strong>。可按域名、应用、节点或地址搜索，也可按入口类型筛选。选择路由后，会聚焦经过共享节点到达目标的完整配置路径。“节点拓扑”标签页单独展示集群关系。</p>
+<p>路由视图结合配置与运行实例之间的关系，<strong>不是逐跳连通性测试</strong>。DNS、证书、路由和服务健康状态可能各自出错，请使用相应诊断或路由检查功能排查。</p>
+<h2 id="metrics-and-notifications">指标与通知<a class="headerlink" href="#metrics-and-notifications" title="章节链接">#</a></h2>
+<p>资源图表将数值与历史曲线放在一起，提供时间轴和采样提示。采样缺口会保留断点，不会用虚构数据补齐。当前快照与最近历史采样的时间和值可能不同。</p>
+<p>告警事件、规则和通知渠道分别有独立页面。告警引擎摘要位于事件页；通知渠道显示配置和发送历史，排队并不代表发送成功。保存渠道不会自动发送测试消息。</p>
+<p>内置资源监控与可选的应用级可观测组件有不同的要求。区别和部署说明见<a href="observability.zh-CN.html">可观测</a>。</p>
+<h2 id="preview-versus-a-live-cluster">预览与真实集群<a class="headerlink" href="#preview-versus-a-live-cluster" title="章节链接">#</a></h2>
+<p>官网控制台示意使用示例名称与数值。本地开发数据可用于检查布局和交互，但官网示意图和本地预览都不能证明生产环境健康。请在自己的 Control 实例上验证实际行为。</p>
+<h2 id="application-secrets">应用密钥<a class="headerlink" href="#application-secrets" title="章节链接">#</a></h2>
+<p>进入应用 → 选择应用 → 密钥，即可管理该应用作用域的密钥。在详情页内新增或轮转，新值只写不回显。配置中引用的已保存全局密钥会单独标记来源；修改共享值使用“管理全局值”，也可设置应用专用覆盖值，保留其他应用的配置。部署配置读取失败时，仅展示已保存的应用密钥。</p>
+<p>保存密钥只更新 Control 存储，已有实例不会自动获得新值；需要更新或重新部署应用使其生效。保存成功不代表外部凭据已经轮转，也不代表运行中的应用已经使用新值。</p><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/dashboard-guide.zh-CN.md">在 GitHub 查看源码 ↗</a> · <a href="./dashboard-guide.zh-CN.md">原始 Markdown</a></div></article><aside class="docs-toc" aria-label="本页目录"><strong>本页目录</strong><div class="toc">
+<ul>
+<li><a href="#first-hour-after-bootstrap">首次安装后的第一小时</a></li>
+<li><a href="#choose-a-workspace">选择工作空间</a></li>
+<li><a href="#create-an-application">创建应用</a></li>
+<li><a href="#inspect-an-application">查看应用</a></li>
+<li><a href="#follow-a-route">查看完整路由</a></li>
+<li><a href="#metrics-and-notifications">指标与通知</a></li>
+<li><a href="#preview-versus-a-live-cluster">预览与真实集群</a></li>
+<li><a href="#application-secrets">应用密钥</a></li>
+</ul>
+</div>
+</aside></main></body></html>

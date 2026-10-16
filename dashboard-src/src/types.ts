@@ -266,3 +266,92 @@ export type MetricsHistoryPayload = {
   series?: MetricSeries;
   updatedAt?: number;
 };
+
+export type BuildStepTiming = {
+  stepId: string;
+  name: string;
+  durationMs: number;
+  cached: boolean;
+  startedAt?: number;
+  completedAt?: number;
+  layerBytes?: number;
+};
+
+export type ZotLayerMetadata = {
+  digest: string;
+  sizeBytes: number;
+  command?: string;
+  mediaType?: string;
+};
+
+export type ServiceImageArtifact = {
+  serviceName: string;
+  repository: string;
+  digest: string;
+  tag: string;
+  platform: string;
+  sizeBytes?: number;
+  cacheHitRatio?: number;
+  stepTimings?: BuildStepTiming[];
+  layers?: ZotLayerMetadata[];
+  immutableRef?: string;
+};
+
+export type BuildArtifact = {
+  artifactId: string;
+  project: string;
+  sourceRepo: string;
+  commitSha: string;
+  branch: string;
+  manifestKind: "service" | "compose";
+  images: Record<string, ServiceImageArtifact>;
+  createdAt: number;
+  buildDurationMs?: number;
+  builderNode?: string;
+  cacheHitRatio?: number;
+  totalSizeBytes?: number;
+  gitContexts?: Record<string, Record<string, string>>;
+};
+
+export type ReleaseDiff = {
+  previousReleaseId?: string | null;
+  currentReleaseId: string;
+  previousArtifactId?: string | null;
+  currentArtifactId: string;
+  imageChanges: Record<string, { from: string | null; to: string | null }>;
+  replicaChanges: Record<string, { from: number; to: number }>;
+  secretKeysAdded: string[];
+  secretKeysRemoved: string[];
+  envDigestChanged: boolean;
+};
+
+export type ReleaseRecord = {
+  releaseId: string;
+  project: string;
+  environment: string;
+  generation: number;
+  artifactId: string;
+  status: string;
+  replicasByService: Record<string, number>;
+  envDigest?: string;
+  secretKeys?: string[];
+  mountedSecretFiles?: Record<string, string>;
+  previousReleaseId?: string;
+  createdAt: number;
+  updatedAt: number;
+  message?: string;
+  gatewayProbeOk?: boolean;
+  diff?: ReleaseDiff;
+};
+
+export type NodeSelfHealStatus = {
+  nodeName: string;
+  registriesYamlConverged: boolean;
+  noProxyAligned: boolean;
+  zotDirectReachable: boolean;
+  buildkitCacheBytes: number;
+  buildkitCacheLimitBytes: number;
+  lastFstrimAt: number;
+  healthy: boolean;
+  repairedActions?: string[];
+};

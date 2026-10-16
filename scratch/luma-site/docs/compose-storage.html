@@ -1,0 +1,148 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Compose Deployments And Local Storage · Luma Documentation</title><meta name="description" content="Compose Deployments And Local Storage — Luma Documentation"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">Skip to content</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../index.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">Documentation</span><button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="Main navigation"><a href="../index.html#product">Console</a><a href="../index.html#docs">All guides</a><a href="compose-storage.zh-CN.html" data-doc-language lang="zh-CN">中文</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="Documentation"><strong>Guides</strong><a class=""  href="README.html">Overview</a><a class=""  href="getting-started.html">Getting started</a><a class=""  href="concepts.html">Core concepts</a><a class=""  href="deploying.html">Deploying applications</a><a class=""  href="build-and-artifacts.html">Build & OCI artifacts</a><a class=""  href="migration-guide.html">Migration guide</a><a class=""  href="operations.html">Operations</a><a class=""  href="deployment-yaml.html">Deployment YAML</a><a class="active" aria-current=page href="compose-storage.html">Compose & storage</a><a class=""  href="secrets.html">Secrets & credentials</a><a class=""  href="exposure-model.html">Exposure model</a><a class=""  href="observability.html">Observability</a><a class=""  href="dashboard-guide.html">Console guide</a><a class=""  href="troubleshooting.html">Troubleshooting</a><a class=""  href="luma-cli-reference.html">CLI reference</a><a class=""  href="ai-agent-skills.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../index.html#docs">Documentation</a><span>/</span><span>Compose Deployments And Local Storage</span></div><h1 id="compose-deployments-and-local-storage">Compose Deployments And Local Storage<a class="headerlink" href="#compose-deployments-and-local-storage" title="Permanent link">#</a></h1>
+<p>Persistent data belongs to the node running the application. New dashboard templates use local storage; no NFS server or storage class is needed. Control chooses a ready node in the deployment region (or uses the requested node), records that owner before submitting the job, and pins subsequent deployments to it. An unavailable owner blocks placement rather than starting an empty database elsewhere.</p>
+<p>A multi-service Compose stack runs together on one node, with one allocation. A mount-free single-service stack can run multiple allocations in its region. Read-only configuration mounts and Docker sockets do not create persistent-data ownership. Writable local mounts require stable node placement. Native services with persistent mounts require <code>replicas: 1</code>; persistent workloads do not use canary promotion that could start two writers against one directory.</p>
+<h2 id="replicas">Replicas<a class="headerlink" href="#replicas" title="Permanent link">#</a></h2>
+<p>Luma resolves <code>services.&lt;name&gt;.deploy.replicas</code> in Docker Compose and
+<code>services.&lt;name&gt;.replicas</code> in the Luma sidecar to Nomad group <code>Count</code>.
+Either declaration is sufficient; if both are present they must agree.
+Compose <code>scale</code> is also accepted and must agree with any other declaration.
+The default is <code>1</code>. Counts must be positive integers; zero, booleans, floats,
+null and conflicting declarations fail validation, including import validation.
+Only <code>deploy.mode: replicated</code> is supported.</p>
+<p>Multiple replicas require exactly one service, no Compose volume mounts and no
+sidecar volume declarations. This includes read-only, anonymous and legacy NFS
+mounts: replicated mount semantics are not supported yet. A multi-service stack
+requires every service to use one replica, even when all requested counts are
+equal. Siblings share loopback inside one allocation; scaling its group would
+also duplicate databases and schedulers. Put independently scaled workers in
+separate deployments using externally reachable dependencies.</p>
+<pre><code class="language-yaml"># docker-compose.yml
+services:
+  worker:
+    image: registry.example.com/worker:1
+    deploy:
+      replicas: 6
+      resources:
+        reservations: {memory: 2048M}
+        limits: {memory: 2048M}
+</code></pre>
+<pre><code class="language-yaml"># luma.compose.yml
+name: worker-pool
+region: render
+services:
+  worker:
+    exposure: none
+    replicas: 6
+</code></pre>
+<p>Create the custom region before deploying. With no <code>node</code> pin, Nomad can place
+each allocation on any eligible node in that region; an even split is not
+guaranteed. An explicit pin constrains all replicas to that node. Resource
+reservations and container process counts apply <strong>per replica</strong>. Six allocations
+with a 2 GiB reservation require 12 GiB of schedulable memory; spare physical
+memory alone does not prove scheduling capacity.</p>
+<p>Replicated services support bridge networking with <code>exposure: none</code>, or dynamic
+<code>cn-edge</code> / <code>external-edge</code> ports. Host networking, relay exposures, <code>publishPort</code>,
+Compose <code>ports</code> and <code>container_name</code> are rejected. <code>deploy.placement</code>,
+<code>deploy.update_config</code> and <code>deploy.rollback_config</code> are rejected for multiple
+replicas: use Luma region/node placement and its managed rolling update policy.
+Updates retain <code>MaxParallel: 1</code>, health gating, auto-revert and <code>stop_grace_period</code>;
+multiple replicas do not add a canary. Rollout success requires all requested
+allocations of the submitted job version to be healthy.</p>
+<p>This fix requires upgrading <strong>Control</strong>; installing only a newer CLI cannot
+change the jobspec rendered by an older server. An upgrade does not resubmit
+existing jobs. After upgrading, preview the saved deployment, check <code>Count</code>,
+then deliberately redeploy through the application's existing workflow to apply
+the requested count. Existing applications remain untouched until that action.</p>
+<h2 id="compose-example">Compose Example<a class="headerlink" href="#compose-example" title="Permanent link">#</a></h2>
+<p>Keep the application file standard:</p>
+<pre><code class="language-yaml"># docker-compose.yml
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+volumes:
+  pg-data: {}
+</code></pre>
+<p>Use a local path in the Luma sidecar:</p>
+<pre><code class="language-yaml"># luma.compose.yml
+name: app-stack
+compose: docker-compose.yml
+region: cn
+services:
+  postgres:
+    exposure: none
+volumes:
+  pg-data:
+    local:
+      path: /srv/luma/data/app-stack/pg-data
+</code></pre>
+<p><code>local.node</code> is optional for Control deployments. The path follows the deployment node; there is no separate storage-node choice. To select the first node explicitly, set <code>services.postgres.node</code>. Conflicting node pins are rejected. Control saves the resolved pins and local volume node in the deployment configuration. Existing directories keep their ownership and permissions, including PostgreSQL's restrictive data-directory mode.</p>
+<p>The dashboard generates <code>/srv/luma/data/&lt;deployment-slug&gt;/&lt;volume-name&gt;</code> for new Compose volumes. Use distinct paths for distinct data sets. Bare named Docker volumes are also supported and pin the deployment to their owning node; their existing names are preserved on updates.</p>
+<h2 id="native-service-example">Native Service Example<a class="headerlink" href="#native-service-example" title="Permanent link">#</a></h2>
+<pre><code class="language-yaml">name: app-postgres
+image: postgres:17
+region: cn
+exposure: none
+replicas: 1
+volumes:
+  - app-postgres-data:/var/lib/postgresql/data
+</code></pre>
+<p>Control records the selected node. The dashboard scopes new native volume names by deployment. Existing volume names and bind paths retain their identities: replacing a source at the same mount target is blocked until the data is explicitly migrated. A node rename or lost registration must be reconciled with the existing data owner before deployment.</p>
+<h2 id="host-networking">Host networking<a class="headerlink" href="#host-networking" title="Permanent link">#</a></h2>
+<p>Ordinary Compose groups share a Nomad bridge network namespace so sibling
+service names resolve on <code>127.0.0.1</code>. A stack that must scrape host-loopback
+listeners (Traefik metrics, local Nomad HTTP) may set <code>network_mode: host</code> on
+<strong>every</strong> service. Mixed host/bridge in one group is rejected. Host-network
+Compose requires <code>exposure: none</code> and cannot set <code>publishPort</code>; it is for
+internal collectors such as <a href="https://github.com/LiuTianjie/luma/tree/main/observe"><code>luma-observe</code></a>, not public apps.</p>
+<h2 id="deploy-and-update">Deploy And Update<a class="headerlink" href="#deploy-and-update" title="Permanent link">#</a></h2>
+<pre><code class="language-bash">luma login https://luma.example.com --token &lt;management-token&gt;
+luma compose validate luma.compose.yml
+luma compose deploy luma.compose.yml --dry-run
+luma compose deploy luma.compose.yml --format ndjson
+</code></pre>
+<p>Reusing the same deployment name updates its existing job and storage owner. Changing a deployment name creates another deployment. The Control preview resolves saved ownership and current node candidates; deployment additionally inspects the existing Nomad job and allocations to verify legacy ownership. Direct offline <code>compose render</code> needs an explicit local node because it cannot persist a placement decision.</p>
+<p>Application settings remain in the standard Compose file. The sidecar carries region, exposure, routing and storage. See <a href="deployment-yaml.html">deployment-yaml.md</a> for routing fields.</p>
+<h2 id="migrate-existing-nfs-data">Migrate Existing NFS Data<a class="headerlink" href="#migrate-existing-nfs-data" title="Permanent link">#</a></h2>
+<p>Backend changes do not copy data automatically. First inspect the actual running mount: old configuration may differ from what an earlier renderer mounted. Record the application node, source directory or Docker volume, numeric ownership, permissions, data size and current job/configuration.</p>
+<ol>
+<li>Prepare the destination on the existing application node and check free space.</li>
+<li>Capture a recoverable backup. Stop every writer before the final copy. Use database-native backup/restore when appropriate; copying an active database directory is not a consistent backup.</li>
+<li>Copy while preserving numeric ownership and permissions, or reuse the same host directory when NFS exports it from the application node itself.</li>
+<li>Verify data and permissions; configure the local destination and set <code>adopted: true</code> on that volume. Remove any old <code>initialize: empty</code> acknowledgement.</li>
+<li>Redeploy, check application/database health and read back representative data. Keep the original data and saved job/configuration for rollback. After new writes, rollback also requires reconciling those writes.</li>
+</ol>
+<p>Example destination:</p>
+<pre><code class="language-yaml">volumes:
+  pg-data:
+    local:
+      node: manager
+      path: /srv/luma/data/app-stack/pg-data
+    adopted: true
+</code></pre>
+<p>Print a manual migration plan:</p>
+<pre><code class="language-bash">luma storage migrate luma.compose.yml \
+  --volume pg-data --from-node old-storage-node --from-volume old-docker-volume
+</code></pre>
+<p>This command does not stop services or copy data. For a local destination it requires an explicit deployment/local node. <code>adopted: true</code> acknowledges verified data; it does not allow moving an established local owner to another node. Moving that owner requires an operator-managed data migration and ownership reconciliation.</p>
+<h2 id="legacy-nfs-compatibility">Legacy NFS Compatibility<a class="headerlink" href="#legacy-nfs-compatibility" title="Permanent link">#</a></h2>
+<p>Existing <code>storageClass</code> references remain usable while data is migrated. Registered classes remain manager-owned; non-empty <code>storageClasses</code> in submitted sidecars are rejected. <code>luma storage list</code>, <code>check</code>, <code>apply</code>, and <code>remove</code> continue to operate on those legacy classes. No class is required for local storage.</p>
+<p>Do not remove a class, unmount volumes or disable the NFS server until every active and stopped deployment has been checked. An application with no running allocations can still depend on its old data. Keep offline-node data in place until that node can be inspected.</p>
+<h2 id="removal-and-recovery">Removal And Recovery<a class="headerlink" href="#removal-and-recovery" title="Permanent link">#</a></h2>
+<p><code>luma app remove &lt;name&gt;</code> removes the application job and routes but retains data by default. Avoid <code>--delete-storage</code> during migrations. Removing a deployment can also remove its saved owner, so save its pinned configuration before removal and use it when restoring the application.</p>
+<p>Local storage does not provide cross-node failover. Recover the original node or restore a verified backup and explicitly reconcile placement. Maintain backups independently of the application's disk.</p><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/compose-storage.md">View source on GitHub ↗</a> · <a href="./compose-storage.md">Raw Markdown</a></div></article><aside class="docs-toc" aria-label="On this page"><strong>On this page</strong><div class="toc">
+<ul>
+<li><a href="#replicas">Replicas</a></li>
+<li><a href="#compose-example">Compose Example</a></li>
+<li><a href="#native-service-example">Native Service Example</a></li>
+<li><a href="#host-networking">Host networking</a></li>
+<li><a href="#deploy-and-update">Deploy And Update</a></li>
+<li><a href="#migrate-existing-nfs-data">Migrate Existing NFS Data</a></li>
+<li><a href="#legacy-nfs-compatibility">Legacy NFS Compatibility</a></li>
+<li><a href="#removal-and-recovery">Removal And Recovery</a></li>
+</ul>
+</div>
+</aside></main></body></html>

@@ -1,0 +1,278 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>故障排查 · Luma 文档</title><meta name="description" content="故障排查 — Luma 文档"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">跳到正文</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../zh.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">文档</span><button class="menu-toggle" aria-label="展开导航" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="主导航"><a href="../zh.html#product">控制台</a><a href="../zh.html#docs">全部指南</a><a href="troubleshooting.html" data-doc-language lang="en">English</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="文档"><strong>指南</strong><a class=""  href="README.zh-CN.html">概览</a><a class=""  href="getting-started.zh-CN.html">快速上手</a><a class=""  href="concepts.zh-CN.html">核心概念</a><a class=""  href="deploying.zh-CN.html">部署应用</a><a class=""  href="build-and-artifacts.zh-CN.html">构建与制品</a><a class=""  href="migration-guide.zh-CN.html">零停机迁移</a><a class=""  href="operations.zh-CN.html">日常运维</a><a class=""  href="deployment-yaml.zh-CN.html">部署 YAML</a><a class=""  href="compose-storage.zh-CN.html">Compose 与存储</a><a class=""  href="secrets.zh-CN.html">密钥与凭据</a><a class=""  href="exposure-model.zh-CN.html">暴露模型</a><a class=""  href="observability.zh-CN.html">可观测</a><a class=""  href="dashboard-guide.zh-CN.html">控制台指南</a><a class="active" aria-current=page href="troubleshooting.zh-CN.html">故障排查</a><a class=""  href="luma-cli-reference.zh-CN.html">CLI 命令参考</a><a class=""  href="ai-agent-skills.zh-CN.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../zh.html#docs">文档</a><span>/</span><span>故障排查</span></div><h1 id="troubleshooting">故障排查<a class="headerlink" href="#troubleshooting" title="章节链接">#</a></h1>
+<p>先运行：</p>
+<pre><code class="language-bash">luma doctor --local
+luma doctor
+</code></pre>
+<p>如果环境检查失败，创建或编辑 <code>.env</code>：</p>
+<pre><code class="language-bash">cp .env.example .env
+$EDITOR .env
+</code></pre>
+<h2 id="first-manager-bootstrap-failed">首次 bootstrap manager 失败<a class="headerlink" href="#first-manager-bootstrap-failed" title="章节链接">#</a></h2>
+<p>Bootstrap 可重复执行。失败步骤会打印 <code>[fail] &lt;标题&gt;: &lt;原因&gt;</code> 和 <code>Fix:</code>。修好对应层后重跑同一条命令：</p>
+<pre><code class="language-bash">luma bootstrap --domain luma.example.com
+</code></pre>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>失败步骤</th>
+<th>常见原因</th>
+<th>修复</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Install Docker</td>
+<td>没有 sudo，或访问不了 Docker 镜像源</td>
+<td>修好 sudo/网络后重跑 bootstrap</td>
+</tr>
+<tr>
+<td>Install Nomad binary / CNI</td>
+<td>访问不了 HashiCorp 下载</td>
+<td>国内 manager 配置 <code>EGRESS_SUBSCRIPTION_URL</code> 后重跑</td>
+</tr>
+<tr>
+<td>Install and connect Tailscale</td>
+<td>缺 auth key，或未登录 Tailscale</td>
+<td><code>luma node tailscale</code></td>
+</tr>
+<tr>
+<td>Deploy Traefik / Luma control</td>
+<td>Nomad 未就绪，或 control 镜像拉不下来</td>
+<td><code>nomad job status traefik</code> / <code>nomad job status luma-control</code>；国内默认 GHCR 不要用 <code>--skip-egress</code></td>
+</tr>
+<tr>
+<td>Sync control DNS</td>
+<td>Cloudflare token、zone 或 <code>LUMA_DNS_EDGE_TARGET</code></td>
+<td>修正 <code>.env</code> / 交互输入后重跑 bootstrap</td>
+</tr>
+<tr>
+<td>Deploy egress</td>
+<td>订阅 URL 或镜像源</td>
+<td><code>luma manager egress</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>控制面起来后用 <code>luma doctor</code> 看 Control 连通性和节点就绪。</p>
+<h2 id="local-cli-cannot-be-installed">无法安装本地 CLI<a class="headerlink" href="#local-cli-cannot-be-installed" title="章节链接">#</a></h2>
+<p>运行：</p>
+<pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
+</code></pre>
+<p>如果没有 <code>python3</code>，先安装：</p>
+<pre><code class="language-bash"># macOS
+brew install python
+
+# Ubuntu/Debian
+sudo apt-get update
+sudo apt-get install -y python3 python3-venv python3-pip curl
+</code></pre>
+<p>客户端上的 Docker 是可选的。仅运行 Manager 或工作负载的服务器需要安装 Docker。</p>
+<h2 id="zsh-permission-denied-luma"><code>zsh: permission denied: luma</code><a class="headerlink" href="#zsh-permission-denied-luma" title="章节链接">#</a></h2>
+<p>Shell 把仓库中的 <code>luma/</code> 包目录识别为了命令，而不是已安装的 CLI。</p>
+<p>修复方法：</p>
+<pre><code class="language-bash">./scripts/install-luma.sh
+. .venv/bin/activate
+hash -r
+which luma
+luma doctor --local
+</code></pre>
+<p>备用方式：</p>
+<pre><code class="language-bash">.venv/bin/luma doctor --local
+./scripts/luma doctor --local
+</code></pre>
+<h2 id="tailscale-is-not-logged-in">Tailscale 尚未登录<a class="headerlink" href="#tailscale-is-not-logged-in" title="章节链接">#</a></h2>
+<p>在 Tailscale 创建临时或可复用 auth key，然后执行：</p>
+<pre><code class="language-bash">luma node tailscale
+</code></pre>
+<h2 id="docker-image-pulls-fail">Docker 镜像拉取失败<a class="headerlink" href="#docker-image-pulls-fail" title="章节链接">#</a></h2>
+<p>修复方法：</p>
+<pre><code class="language-bash">luma manager egress
+luma doctor --deep
+</code></pre>
+<p>私有仓库需要分别检查连通性、Docker daemon 代理和认证：</p>
+<pre><code class="language-bash"># run these on the node that receives the service task
+docker info --format '{{json .}}'
+curl -vk https://&lt;registry-host&gt;/v2/
+docker pull &lt;registry-host&gt;/&lt;org&gt;/&lt;image&gt;:&lt;tag&gt;
+</code></pre>
+<p><code>curl /v2/</code> 返回带 <code>docker-distribution-api-version</code> 的 <code>401</code>，说明该节点可以访问仓库，但不能单凭这一点证明 Docker 引擎的访问路径正常。Linux 应检查实际 JSON 字段 <code>HttpProxy</code>、<code>HttpsProxy</code> 和 <code>NoProxy</code>：存在有效代理时，需要匹配该仓库的绕过规则；字段缺失属于检查错误。OrbStack 应检查原生 <code>network_proxy</code>、<code>network.proxy.exclude</code>，以及 <code>auto</code> 模式下的 macOS 有效代理配置。Docker 中非空的 broker 地址可能只是 OrbStack 内部入口，不能据此认定存在外部代理。不要为验证猜测覆盖实际配置入口，或重启繁忙引擎。这与清单中的 <code>proxy: true</code> 无关，后者只控制容器运行时出站流量。托管仓库预检和 v2 升级边界见<a href="operations.zh-CN.html#private-registries-on-new-nodes">运维说明</a>。</p>
+<p>服务固定在 <code>home</code> 或 ARM 节点时，确认镜像提供目标平台：</p>
+<pre><code class="language-bash">docker buildx imagetools inspect &lt;image&gt;
+</code></pre>
+<p>Luma 按目标节点平台验证镜像拉取，并使用该平台拉取得到的 digest 部署。</p>
+<h2 id="fleet-update-fails">批量更新失败<a class="headerlink" href="#fleet-update-fails" title="章节链接">#</a></h2>
+<p>如果 <strong>控制台 → 节点 → 更新中心</strong>报告 Control 镜像准备失败，保留发布 ref，打开同一面板中持久化的镜像任务。错误会区分缺少 Builder 能力、缺少 <code>registryHost</code> / <code>pushHost</code>、外部仓库传输失败和内部 digest 验证失败。修复显示的配置或网络问题，再次点击更新 Control；无需 SSH 到 Manager 或重启应用。内部镜像通过验证前不会开始 Manager 滚动更新。</p>
+<p>如果 <code>luma update fleet</code> 报告 <code>HOME: parameter not set</code> 或 <code>HOME: unbound variable</code>，说明节点在没有 <code>HOME</code> 的服务环境中运行旧安装流程。将 Manager/CLI 升级到包含 HOME 回退逻辑的版本，再重新批量更新。</p>
+<p>如果节点报告 <code>unsupported node agent task action: update-luma</code> 或 <code>node agent does not support fleet update</code>，该节点 agent 太旧，无法通过批量任务更新自身。请在该节点执行一次：</p>
+<pre><code class="language-bash">luma update
+</code></pre>
+<p>如果节点没有保存本地 agent 元数据：</p>
+<pre><code class="language-bash">luma update --control-url https://luma.example.com --token &lt;node-join-token&gt;
+</code></pre>
+<p>此后即可通过 <code>luma update fleet</code> 远程更新。</p>
+<h2 id="application-is-running-but-its-public-domain-hangs-after-restart">应用运行正常，但重启后公网域名一直等待<a class="headerlink" href="#application-is-running-but-its-public-domain-hangs-after-restart" title="章节链接">#</a></h2>
+<p>运行状态和交付状态都正常，才能视为重启完成：</p>
+<pre><code class="language-bash">nomad job allocs &lt;stack&gt;
+curl -fsS --max-time 5 http://&lt;allocation-node-tailscale-ip&gt;:&lt;publish-port&gt;/
+curl -vk --max-time 15 https://&lt;domain&gt;/
+</code></pre>
+<p>然后检查 Manager 的 <code>/opt/luma/routes/&lt;stack&gt;.yml</code> 和 Nomad 服务注册。旧 <code>cn-edge</code> job 可能仍广播 <code>10.x.x.x</code> 等云厂商私网地址，而 Manager 实际需要节点的 Tailscale 地址。不要反复重启健康应用。在 Control <code>0.1.200+</code> 上执行一次正常的控制台/CLI 重启；Control 会从实际 allocation 推导 Luma 节点，原子发布更高优先级的文件路由，同步 DNS，等待公共探测通过后才返回 <code>delivery.status=ready</code>。</p>
+<p>若 Control 报告 <code>delivery reconcile skipped: deployment record is unavailable</code>，该 job 创建于 Luma 开始保存部署记录之前。重新导入/部署一次清单，让后续重启、删除和路由恢复有持久化依据。生成的路由正确但 Traefik 仍返回默认 404 时，使用路由重载/证书重试操作，或检查 Traefik file-provider 挂载；不要将 DNS 改为工作节点地址。</p>
+<p>Manager 更新也必须保留 <code>/opt/luma/luma.yaml</code>。更新后 <code>luma status</code> 应报告 DNS <code>ready=true</code>。若旧版丢失了 <code>providers.dns</code>，从最近的 <code>/opt/luma/backups/*/luma.yaml</code> 恢复，保留当前 Control 状态与令牌，并升级到 <code>0.1.198+</code>；该版本安装 Manager 配置时会深度合并运维人员维护的配置段。</p>
+<h2 id="manager-update-prints-tmpfs-unknown-parameter-noswap">Manager 更新输出 <code>tmpfs: Unknown parameter 'noswap'</code><a class="headerlink" href="#manager-update-prints-tmpfs-unknown-parameter-noswap" title="章节链接">#</a></h2>
+<p>该消息来自 Manager 上的 Nomad client 准备 allocation 密钥目录时，并非 Control 镜像。Nomad 尝试以 <code>noswap</code> 选项将每个任务的 <code>secrets/</code> 目录挂载为 tmpfs；旧 Linux 内核不支持该选项，可能输出：</p>
+<pre><code class="language-text">tmpfs: Unknown parameter 'noswap'
+</code></pre>
+<p>先确认更新确实失败，还是仅输出内核警告：</p>
+<pre><code class="language-bash">nomad job status luma-control
+nomad job allocs luma-control
+</code></pre>
+<p>Allocation 正在运行则无需修复；只有命令本身非零退出时，才重新执行 <code>luma update manager</code>。</p>
+<p>如果 allocation 因 task-dir 或 tmpfs 挂载错误失败，检查 Manager 内核和 Nomad 版本：</p>
+<pre><code class="language-bash">uname -r
+nomad version
+journalctl -u nomad -n 120 --no-pager
+</code></pre>
+<p>长期修复方法是使用在不支持 <code>noswap</code> 时会回退的 Nomad 版本，或升级到支持 <code>tmpfs noswap</code> 的内核。修复 Nomad 后，重启 Manager agent，再刷新控制面：</p>
+<pre><code class="language-bash">sudo systemctl restart nomad
+luma update manager
+</code></pre>
+<h2 id="dashboard-terminal-disconnects">控制台终端断开<a class="headerlink" href="#dashboard-terminal-disconnects" title="章节链接">#</a></h2>
+<p><code>terminal agent disconnected</code> 表示浏览器会话已连接，但节点侧终端 agent 的 WebSocket 断开。常见原因：</p>
+<ul>
+<li>节点 agent 失去 Control API 租约而重启；</li>
+<li>同一节点运行多个 <code>node-agent terminal-supervisor</code>，在控制面互相替换；</li>
+<li>节点 agent token 过期，导致 <code>/var/log/luma-node-agent.err</code> 反复出现 <code>401 unauthorized</code>。</li>
+</ul>
+<p>在节点上检查：</p>
+<pre><code class="language-bash">pgrep -af 'luma.*node-agent|terminal-supervisor'
+tail -n 120 /var/log/luma-node-agent.err
+</code></pre>
+<p>健康节点应有一个 <code>node-agent run</code> 进程和一个 <code>node-agent terminal-supervisor</code> 子进程。如有旧的孤儿 supervisor，清理后重启节点 agent：</p>
+<pre><code class="language-bash">sudo pkill -f 'node-agent terminal-supervisor'
+sudo systemctl restart luma-node-agent.service
+# macOS:
+sudo launchctl kickstart -k system/io.luma.node-agent
+</code></pre>
+<p>当前 Luma 会在短暂租约失败期间保持 agent 运行，并通过每节点锁确保只运行一个终端 supervisor。</p>
+<h2 id="application-container-shell-is-unavailable">无法打开应用容器 Shell<a class="headerlink" href="#application-container-shell-is-unavailable" title="章节链接">#</a></h2>
+<p>控制台应用详情可进入运行中的服务容器。Control 解析 Nomad allocation 后，节点 agent 对带对应 alloc/task 标签的容器执行 <code>docker exec</code>。常见失败原因：</p>
+<ul>
+<li>服务未运行，没有可进入的 allocation；</li>
+<li>节点 agent 太旧，没有声明 <code>container-terminal</code> 能力，更新后重试；</li>
+<li>终端 supervisor 断开，与节点终端故障相同；</li>
+<li>镜像是 distroless / scratch，没有 <code>bash</code>/<code>ash</code>/<code>sh</code>。</li>
+</ul>
+<p>该流程不会进入系统 stack（<code>traefik</code>、<code>egress</code>、<code>luma-control</code>、<code>luma-storage*</code>）。</p>
+<h2 id="nomad-client-is-disconnected-but-containers-still-run">Nomad client 已断开，但容器仍运行<a class="headerlink" href="#nomad-client-is-disconnected-but-containers-still-run" title="章节链接">#</a></h2>
+<p>这是预期行为。每个 Luma job 渲染 <code>max_client_disconnect = 1h</code>；Mac mini 等家庭节点失去到 Nomad server 的 tailnet 路径时，client 标记为 <code>disconnected</code>，但本地 allocation 保持运行，链路恢复后重新连接。短暂 WAN/DERP 波动不会立即终止任务并重新调度。</p>
+<p>先检查节点和 server RPC 路径，再判断应用问题：</p>
+<pre><code class="language-bash">nomad node status
+nomad node status -self
+tailscale ping &lt;node-tailscale-ip&gt;
+nc -vz &lt;server-tailscale-ip&gt; 4647
+nc -vz &lt;server-tailscale-ip&gt; 4648
+</code></pre>
+<p>如果 <code>tailscale ping</code> 正常，但 <code>4647</code>（RPC）超时，可能是 Tailscale 看起来在线、实际 tailnet 数据路径已卡住。在无法连接对端 TCP 的一侧重启 Tailscale：</p>
+<pre><code class="language-bash">sudo systemctl restart tailscaled
+# macOS:
+sudo launchctl kickstart -k system/W5364U7YZB.io.tailscale.ipn.macsys.network-extension
+</code></pre>
+<p>Manager 和节点更新会安装执行这些检查的 Tailscale 看门狗，仅在连续失败后重启本地 Tailscale。如果 client 断开超过 <code>max_client_disconnect</code> 窗口，Nomad 会在满足 job 区域/节点约束的其他位置重新调度 allocation。</p>
+<h2 id="not-logged-in">尚未登录<a class="headerlink" href="#not-logged-in" title="章节链接">#</a></h2>
+<p>部署提示 <code>not logged in</code> 时，向 Manager Control API 认证：</p>
+<pre><code class="language-bash">luma login https://luma.example.com --token &lt;management-token&gt;
+luma context list
+</code></pre>
+<h2 id="nomad-deploy-fails">Nomad 部署失败<a class="headerlink" href="#nomad-deploy-fails" title="章节链接">#</a></h2>
+<p>重新初始化 Manager，刷新 Nomad server 与 Manager Control 状态：</p>
+<pre><code class="language-bash">luma bootstrap --domain luma.example.com
+</code></pre>
+<p>如果还未放置任何 allocation 就失败，检查 Nomad server 是否运行且有 leader：</p>
+<pre><code class="language-bash">nomad server members
+nomad status               # leader + jobs
+nomad node status          # clients ready, meta.region correct
+</code></pre>
+<p>Job 持续 <code>pending</code> 并出现 <code>Placement Failures</code> 时，说明约束没有匹配到就绪 client。检查失败的 evaluation：</p>
+<pre><code class="language-bash">nomad job status &lt;service&gt;
+nomad eval status -verbose &lt;eval-id&gt;
+</code></pre>
+<p>常见原因包括：没有就绪 client 满足 <code>region</code>；通过 <code>meta.luma_node_name</code> 固定的节点处于 <code>disconnected</code>；镜像平台不匹配；唯一合格 client 的 CPU/内存耗尽。Apple Silicon client 的 CPU 指纹误读可能让 <code>cpu.totalcompute</code> 接近零而阻塞放置，需要显式设置 <code>cpu_total_compute</code>，Luma 节点配置会处理。</p>
+<p>如果 Luma Control 无法访问 Nomad server，确认 client 与 server 之间的 RPC 路径：</p>
+<pre><code class="language-bash">nc -vz &lt;server-tailscale-ip&gt; 4647
+nomad server members        # all servers alive, one leader
+</code></pre>
+<p><code>4647/tcp</code> 路径卡住会让 client 变为 <code>disconnected</code>，即使节点本地 <code>docker info</code> 仍正常。</p>
+<h2 id="public-route-unhealthy-traefik-router-not-found">公共路由不健康 / 找不到 Traefik router<a class="headerlink" href="#public-route-unhealthy-traefik-router-not-found" title="章节链接">#</a></h2>
+<p><code>cn-edge</code> 或 <code>external-edge</code> 服务可能已完成 Nomad allocation 放置，但公共路由探测失败：</p>
+<pre><code class="language-text">Public route unhealthy: https://myapp.example.com/ -&gt; HTTP 404 (Traefik router not found)
+</code></pre>
+<p>这表示探测到达边缘节点，但 Traefik 返回了自身默认的 <code>404 page not found</code>，即尚无匹配此主机名的 router。这不同于应用真实路由返回 404，应用 404 会被判断为可达。常见原因是 Traefik 尚未读取新发布的 file-provider 路由，或路由文件的主机名/标签与请求域名不一致。</p>
+<p>Luma 原子写入路由：验证渲染结果，在受监视目录之外暂存，再一次性移入最终文件，避免 Traefik 读到半写入内容。公共路由不健康（找不到 router 或短暂 <code>502</code>/<code>503</code>/<code>504</code>）时，Control 会先执行一次 <strong>Recover public route</strong>，重建服务 allocation 并重新探测，然后才判定部署失败。自动重试后仍失败，请检查：</p>
+<pre><code class="language-bash"># on the manager
+ls /opt/luma/routes/                      # the &lt;service&gt;.yml route file exists
+cat /opt/luma/routes/&lt;service&gt;.yml        # host rule matches the requested domain
+nomad job status &lt;service&gt;                # allocation is running/healthy
+</code></pre>
+<p>确认清单 <code>region</code> 和 <code>exposure</code> 确实生成边缘路由（仅 <code>cn-edge</code>/<code>external-edge</code> 有公共 Traefik router），<code>domain</code> 与 DNS 记录一致，且 Traefik 正在运行。重新执行 <code>luma deploy</code> 会重新发布路由文件。</p>
+<h2 id="macos-node-join-fails-at-docker">macOS 节点加入时在 Docker 步骤失败<a class="headerlink" href="#macos-node-join-fails-at-docker" title="章节链接">#</a></h2>
+<p>macOS 工作节点和家庭节点在执行 <code>luma node join</code> 前，必须已安装并启动 Docker Desktop。Luma 无法自动安装 Docker Desktop。</p>
+<p>加入前先在本地验证：</p>
+<pre><code class="language-bash">command -v docker
+docker info
+</code></pre>
+<p>Docker Desktop 缺失或仍在启动时，<code>luma node join</code> 会在向 Control 注册节点前停止。启动 Docker Desktop，等 <code>docker info</code> 成功后重试相同加入命令。</p>
+<h2 id="cloudflare-dns-fails">Cloudflare DNS 失败<a class="headerlink" href="#cloudflare-dns-fails" title="章节链接">#</a></h2>
+<p>使用限定 Zone 范围的 API 令牌：</p>
+<pre><code class="language-text">Zone / DNS / Edit
+Zone / Zone / Read
+Specific zone: your domain
+</code></pre>
+<p>然后执行：</p>
+<pre><code class="language-bash">luma manager cloudflare --zone example.com
+</code></pre>
+<h2 id="manager-public-ip-changed">Manager 公网 IP 变更<a class="headerlink" href="#manager-public-ip-changed" title="章节链接">#</a></h2>
+<p>不要从头初始化健康集群，也不要在 Manager Control 状态中全局替换旧 IP。迁移到 SQLite 后，旧 <code>control.json</code> 已不是权威数据源。先确认 Nomad allocation 和 Traefik 正常，再在 Manager 上预览有限范围的恢复操作：</p>
+<pre><code class="language-bash">luma manager ip-change --old &lt;old-ip&gt; --new &lt;new-ip&gt; --domain &lt;control-domain&gt; --dry-run
+</code></pre>
+<p>预览必须显示预期 Manager 节点、有类型的配置字段、仍指向旧地址的全部 Cloudflare A 记录、新地址直接 HTTPS 健康检查成功，以及当前运行的 <code>luma-control</code> 镜像。移除 <code>--dry-run</code> 后应用。命令保存带时间戳的配置备份，仅修改精确匹配的 A 记录内容，沿用当前运行镜像进行协调，再检查 <code>/v1/health</code> 和 <code>/dashboard/</code>。</p>
+<p>成功后，从不共享 Manager 解析缓存的网络验证普通 DNS 路径：</p>
+<pre><code class="language-bash">curl -fsS https://&lt;control-domain&gt;/v1/health
+curl -fsS https://&lt;control-domain&gt;/dashboard/ &gt;/dev/null
+luma status
+</code></pre>
+<p>如果新 IP 直连检查成功，但普通主机名仍失败，检查权威 DNS 并等待旧记录剩余 TTL。不要仅因某个本地解析器缓存过期，就把 DNS 改回已经停用的地址。</p>
+<h2 id="sudo-fails">Sudo 失败<a class="headerlink" href="#sudo-fails" title="章节链接">#</a></h2>
+<p>使用 sudo 执行初始化，配置免密 sudo，或设置：</p>
+<pre><code class="language-bash">LUMA_SUDO_PASSWORD=...
+</code></pre>
+<h2 id="nomad-server-is-not-reachable">无法访问 Nomad server<a class="headerlink" href="#nomad-server-is-not-reachable" title="章节链接">#</a></h2>
+<p>检查：</p>
+<pre><code class="language-bash">nomad server members
+ufw status
+</code></pre>
+<p>Nomad HTTP API 使用 <code>4646</code>，RPC 使用 <code>4647</code>，Serf gossip 使用 <code>4648</code>，均绑定 <code>0.0.0.0</code>，但 UFW 仅在 <code>tailscale0</code> 接口放行。如果 <code>ufw status</code> 未显示该接口的相应放行规则，或 <code>nomad server members</code> 为空，重新初始化以修复 agent 配置：</p>
+<pre><code class="language-bash">luma bootstrap --domain luma.example.com
+</code></pre><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/troubleshooting.zh-CN.md">在 GitHub 查看源码 ↗</a> · <a href="./troubleshooting.zh-CN.md">原始 Markdown</a></div></article><aside class="docs-toc" aria-label="本页目录"><strong>本页目录</strong><div class="toc">
+<ul>
+<li><a href="#first-manager-bootstrap-failed">首次 bootstrap manager 失败</a></li>
+<li><a href="#local-cli-cannot-be-installed">无法安装本地 CLI</a></li>
+<li><a href="#zsh-permission-denied-luma">zsh: permission denied: luma</a></li>
+<li><a href="#tailscale-is-not-logged-in">Tailscale 尚未登录</a></li>
+<li><a href="#docker-image-pulls-fail">Docker 镜像拉取失败</a></li>
+<li><a href="#fleet-update-fails">批量更新失败</a></li>
+<li><a href="#application-is-running-but-its-public-domain-hangs-after-restart">应用运行正常，但重启后公网域名一直等待</a></li>
+<li><a href="#manager-update-prints-tmpfs-unknown-parameter-noswap">Manager 更新输出 tmpfs: Unknown parameter 'noswap'</a></li>
+<li><a href="#dashboard-terminal-disconnects">控制台终端断开</a></li>
+<li><a href="#application-container-shell-is-unavailable">无法打开应用容器 Shell</a></li>
+<li><a href="#nomad-client-is-disconnected-but-containers-still-run">Nomad client 已断开，但容器仍运行</a></li>
+<li><a href="#not-logged-in">尚未登录</a></li>
+<li><a href="#nomad-deploy-fails">Nomad 部署失败</a></li>
+<li><a href="#public-route-unhealthy-traefik-router-not-found">公共路由不健康 / 找不到 Traefik router</a></li>
+<li><a href="#macos-node-join-fails-at-docker">macOS 节点加入时在 Docker 步骤失败</a></li>
+<li><a href="#cloudflare-dns-fails">Cloudflare DNS 失败</a></li>
+<li><a href="#manager-public-ip-changed">Manager 公网 IP 变更</a></li>
+<li><a href="#sudo-fails">Sudo 失败</a></li>
+<li><a href="#nomad-server-is-not-reachable">无法访问 Nomad server</a></li>
+</ul>
+</div>
+</aside></main></body></html>

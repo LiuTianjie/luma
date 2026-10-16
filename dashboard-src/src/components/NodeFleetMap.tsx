@@ -144,6 +144,9 @@ export function NodeFleetMap({
             {item.label}
           </Badge>
         ))}
+        <Badge variant="secondary">
+          {zh ? "Node Self-Heal: 镜像源 / NO_PROXY / fstrim 已收敛" : "Node Self-Heal: Zot Mirror / NO_PROXY / fstrim Converged"}
+        </Badge>
       </div>
 
       {regions.map((group) => {

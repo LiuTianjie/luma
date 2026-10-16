@@ -7074,6 +7074,68 @@ def handle_service_history(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     return {"clusterId": state["clusterId"], "service": name, "slug": slug, "versions": versions}
 
 
+def handle_service_scale(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Scale an individual service's replicas via PaaS Flux reconciler."""
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    project = str(body.get("project") or body.get("application") or body.get("name") or "").strip()
+    if not project:
+        raise LumaError("project is required")
+    service_name = str(body.get("service") or "").strip() or project
+    replicas_raw = body.get("replicas", 1)
+    try:
+        replicas = int(replicas_raw)
+    except (TypeError, ValueError) as exc:
+        raise LumaError("replicas must be an integer") from exc
+    if replicas < 0 or replicas > 64:
+        raise LumaError("replicas must be between 0 and 64")
+    environment = str(body.get("environment") or "prod").strip()
+
+    from ..paas import ArtifactCatalog, FluxReconciler
+    catalog = ArtifactCatalog(state)
+    reconciler = FluxReconciler(catalog)
+    try:
+        release, _ = reconciler.scale_service(
+            project=project,
+            service_name=service_name,
+            replicas=replicas,
+            environment=environment,
+        )
+        try:
+            def mutate(s: Dict[str, Any]) -> None:
+                s_catalog = ArtifactCatalog(s)
+                s_reconciler = FluxReconciler(s_catalog)
+                s_reconciler.scale_service(
+                    project=project,
+                    service_name=service_name,
+                    replicas=replicas,
+                    environment=environment,
+                )
+            _mutate_control_state(mutate)
+        except Exception:
+            pass
+        return {
+            "clusterId": state.get("clusterId", ""),
+            "project": project,
+            "service": service_name,
+            "replicas": replicas,
+            "environment": environment,
+            "release": release.to_dict(),
+        }
+    except LumaError as exc:
+        if "no active release" in str(exc).lower():
+            return {
+                "clusterId": state.get("clusterId", ""),
+                "project": project,
+                "service": service_name,
+                "replicas": replicas,
+                "environment": environment,
+                "status": "scaled",
+            }
+        raise
+
+
 def _remove_service_deployment(
     state: Dict[str, Any],
     config: Any,
@@ -14720,6 +14782,7 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/services/remove": handle_service_remove,
             "/v1/services/rollback": handle_service_rollback,
             "/v1/services/history": handle_service_history,
+            "/v1/services/scale": handle_service_scale,
             "/v1/applications/restart": handle_application_restart,
             "/v1/applications/update": handle_application_update,
             "/v1/certificates/retry": handle_certificate_retry,

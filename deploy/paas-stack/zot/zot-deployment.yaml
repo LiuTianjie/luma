@@ -1,0 +1,92 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: luma-system
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zot-storage
+  namespace: luma-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 80Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: luma-zot-registry
+  namespace: luma-system
+  labels:
+    app.kubernetes.io/name: luma-zot-registry
+    app.kubernetes.io/part-of: luma-paas
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: luma-zot-registry
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: luma-zot-registry
+    spec:
+      containers:
+        - name: zot
+          image: ghcr.io/project-zot/zot-linux-amd64:v2.1.1
+          args: ["serve", "/etc/zot/config.json"]
+          ports:
+            - name: http
+              containerPort: 5000
+              hostPort: 5000
+          readinessProbe:
+            httpGet:
+              path: /v2/
+              port: 5000
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /v2/
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: zot-data
+              mountPath: /var/lib/zot
+            - name: zot-config
+              mountPath: /etc/zot/config.json
+              subPath: zot-config.json
+              readOnly: true
+      volumes:
+        - name: zot-data
+          persistentVolumeClaim:
+            claimName: zot-storage
+        - name: zot-config
+          configMap:
+            name: luma-zot-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: luma-zot-registry
+  namespace: luma-system
+spec:
+  selector:
+    app.kubernetes.io/name: luma-zot-registry
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000

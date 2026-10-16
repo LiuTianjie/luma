@@ -1,0 +1,299 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Troubleshooting · Luma Documentation</title><meta name="description" content="Troubleshooting — Luma Documentation"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">Skip to content</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../index.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">Documentation</span><button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="Main navigation"><a href="../index.html#product">Console</a><a href="../index.html#docs">All guides</a><a href="troubleshooting.zh-CN.html" data-doc-language lang="zh-CN">中文</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="Documentation"><strong>Guides</strong><a class=""  href="README.html">Overview</a><a class=""  href="getting-started.html">Getting started</a><a class=""  href="concepts.html">Core concepts</a><a class=""  href="deploying.html">Deploying applications</a><a class=""  href="build-and-artifacts.html">Build & OCI artifacts</a><a class=""  href="migration-guide.html">Migration guide</a><a class=""  href="operations.html">Operations</a><a class=""  href="deployment-yaml.html">Deployment YAML</a><a class=""  href="compose-storage.html">Compose & storage</a><a class=""  href="secrets.html">Secrets & credentials</a><a class=""  href="exposure-model.html">Exposure model</a><a class=""  href="observability.html">Observability</a><a class=""  href="dashboard-guide.html">Console guide</a><a class="active" aria-current=page href="troubleshooting.html">Troubleshooting</a><a class=""  href="luma-cli-reference.html">CLI reference</a><a class=""  href="ai-agent-skills.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../index.html#docs">Documentation</a><span>/</span><span>Troubleshooting</span></div><h1 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">#</a></h1>
+<p>Start with:</p>
+<pre><code class="language-bash">luma doctor --local
+luma doctor
+</code></pre>
+<p>If env checks fail, create or edit <code>.env</code>:</p>
+<pre><code class="language-bash">cp .env.example .env
+$EDITOR .env
+</code></pre>
+<h2 id="first-manager-bootstrap-failed">First manager bootstrap failed<a class="headerlink" href="#first-manager-bootstrap-failed" title="Permanent link">#</a></h2>
+<p>Bootstrap is idempotent. A failed step prints <code>[fail] &lt;title&gt;: &lt;cause&gt;</code> and a <code>Fix:</code> line. Address that layer, then rerun the same command:</p>
+<pre><code class="language-bash">luma bootstrap --domain luma.example.com
+</code></pre>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>Failed step</th>
+<th>Typical cause</th>
+<th>Repair</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Install Docker</td>
+<td>no sudo, or the host cannot reach Docker mirrors</td>
+<td>fix sudo/network, rerun bootstrap</td>
+</tr>
+<tr>
+<td>Install Nomad binary / CNI</td>
+<td>HashiCorp downloads blocked</td>
+<td>set <code>EGRESS_SUBSCRIPTION_URL</code> on a mainland manager, rerun</td>
+</tr>
+<tr>
+<td>Install and connect Tailscale</td>
+<td>missing auth key, or Tailscale not logged in</td>
+<td><code>luma node tailscale</code></td>
+</tr>
+<tr>
+<td>Deploy Traefik / Luma control</td>
+<td>Nomad not ready, or the control image cannot be pulled</td>
+<td><code>nomad job status traefik</code> / <code>nomad job status luma-control</code>; for GHCR on a mainland host do not use <code>--skip-egress</code></td>
+</tr>
+<tr>
+<td>Sync control DNS</td>
+<td>Cloudflare token, zone, or <code>LUMA_DNS_EDGE_TARGET</code></td>
+<td>fix <code>.env</code> / prompts, rerun bootstrap</td>
+</tr>
+<tr>
+<td>Deploy egress</td>
+<td>subscription URL or image mirror</td>
+<td><code>luma manager egress</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><code>luma doctor</code> reports Control reachability and node readiness after the API is up.</p>
+<h2 id="local-cli-cannot-be-installed">Local CLI cannot be installed<a class="headerlink" href="#local-cli-cannot-be-installed" title="Permanent link">#</a></h2>
+<p>Run:</p>
+<pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
+</code></pre>
+<p>If <code>python3</code> is missing, install it first:</p>
+<pre><code class="language-bash"># macOS
+brew install python
+
+# Ubuntu/Debian
+sudo apt-get update
+sudo apt-get install -y python3 python3-venv python3-pip curl
+</code></pre>
+<p>Local Docker is optional on client machines. Install Docker only on servers that will run manager or worker workloads.</p>
+<h2 id="zsh-permission-denied-luma"><code>zsh: permission denied: luma</code><a class="headerlink" href="#zsh-permission-denied-luma" title="Permanent link">#</a></h2>
+<p>Your shell is resolving the repository's <code>luma/</code> package directory instead of the installed CLI command.</p>
+<p>Fix:</p>
+<pre><code class="language-bash">./scripts/install-luma.sh
+. .venv/bin/activate
+hash -r
+which luma
+luma doctor --local
+</code></pre>
+<p>Fallback:</p>
+<pre><code class="language-bash">.venv/bin/luma doctor --local
+./scripts/luma doctor --local
+</code></pre>
+<h2 id="tailscale-is-not-logged-in">Tailscale is not logged in<a class="headerlink" href="#tailscale-is-not-logged-in" title="Permanent link">#</a></h2>
+<p>Create an ephemeral or reusable auth key in Tailscale, then:</p>
+<pre><code class="language-bash">luma node tailscale
+</code></pre>
+<h2 id="docker-image-pulls-fail">Docker image pulls fail<a class="headerlink" href="#docker-image-pulls-fail" title="Permanent link">#</a></h2>
+<p>Fix:</p>
+<pre><code class="language-bash">luma manager egress
+luma doctor --deep
+</code></pre>
+<p>For private registries, separate reachability, Docker daemon proxying, and auth:</p>
+<pre><code class="language-bash"># run these on the node that receives the service task
+docker info --format '{{json .}}'
+curl -vk https://&lt;registry-host&gt;/v2/
+docker pull &lt;registry-host&gt;/&lt;org&gt;/&lt;image&gt;:&lt;tag&gt;
+</code></pre>
+<p>If <code>curl /v2/</code> returns <code>401</code> with <code>docker-distribution-api-version</code>, the registry is reachable from that node; this alone does not verify the Docker engine's path. On Linux, inspect the actual JSON fields <code>HttpProxy</code>, <code>HttpsProxy</code> and <code>NoProxy</code>: an active proxy requires a bypass that matches the registry, while missing fields are an inspection error. On OrbStack, inspect its native <code>network_proxy</code> and <code>network.proxy.exclude</code>, plus effective macOS proxy settings in <code>auto</code> mode. A nonempty Docker broker address can be internal to OrbStack and does not establish an external proxy. Do not overwrite the runtime owner's settings or restart a busy engine to test a guess. This is separate from manifest <code>proxy: true</code>, which only affects runtime outbound traffic from the container. The managed registry preflight and v2 upgrade boundary are described in <a href="operations.html#private-registries-on-new-nodes">Operations</a>.</p>
+<p>For services pinned to <code>home</code> or ARM nodes, make sure the image has the target platform:</p>
+<pre><code class="language-bash">docker buildx imagetools inspect &lt;image&gt;
+</code></pre>
+<p>Luma validates pulls for the target node platform and deploys the digest returned by that target-platform pull.</p>
+<h2 id="fleet-update-fails">Fleet update fails<a class="headerlink" href="#fleet-update-fails" title="Permanent link">#</a></h2>
+<p>If Dashboard → Nodes → Update center reports that Control image preparation failed, keep the release ref unchanged and open the persisted image task in the same panel. The message distinguishes a missing Builder capability, missing <code>registryHost</code> / <code>pushHost</code>, an external registry transfer failure, and internal digest verification failure. Fix the displayed configuration or network condition, then press Update Control again; do not SSH to the manager or restart applications. The manager rollout is not started until the internal image is verified.</p>
+<p>If <code>luma update fleet</code> reports <code>HOME: parameter not set</code> or <code>HOME: unbound variable</code>, the node is running an older installer path from a service environment without <code>HOME</code>. Update the manager/CLI to a version with the installer HOME fallback, then rerun fleet update.</p>
+<p>If a node reports <code>unsupported node agent task action: update-luma</code> or <code>node agent does not support fleet update</code>, that node's agent is too old to update itself through fleet tasks. Run once on that node:</p>
+<pre><code class="language-bash">luma update
+</code></pre>
+<p>If the node has no saved local agent metadata:</p>
+<pre><code class="language-bash">luma update --control-url https://luma.example.com --token &lt;node-join-token&gt;
+</code></pre>
+<p>After that, future <code>luma update fleet</code> runs can update it remotely.</p>
+<h2 id="application-is-running-but-its-public-domain-hangs-after-restart">Application is running but its public domain hangs after restart<a class="headerlink" href="#application-is-running-but-its-public-domain-hangs-after-restart" title="Permanent link">#</a></h2>
+<p>Treat restart as incomplete until runtime and delivery both agree:</p>
+<pre><code class="language-bash">nomad job allocs &lt;stack&gt;
+curl -fsS --max-time 5 http://&lt;allocation-node-tailscale-ip&gt;:&lt;publish-port&gt;/
+curl -vk --max-time 15 https://&lt;domain&gt;/
+</code></pre>
+<p>Then inspect <code>/opt/luma/routes/&lt;stack&gt;.yml</code> on the manager and the Nomad service registration. A legacy <code>cn-edge</code> job may still advertise a provider-private address such as <code>10.x.x.x</code> while the manager must use the node's Tailscale address. Do not repeatedly restart the healthy application. On Control <code>0.1.200+</code>, run the normal Dashboard/CLI restart once; Control infers the Luma node from the actual allocation, atomically republishes a higher-priority file route, synchronizes DNS, and waits for a public probe before returning <code>delivery.status=ready</code>.</p>
+<p>If Control reports <code>delivery reconcile skipped: deployment record is unavailable</code>, the job predates Luma's stored deployment records. Re-import/redeploy its manifest once so future restart, remove, and route recovery operations have a durable source of truth. If the generated route is correct but Traefik still serves its default 404, use the route reload/certificate retry action or inspect the Traefik file-provider mount; do not edit DNS to point at a worker node.</p>
+<p>Manager updates must also preserve <code>/opt/luma/luma.yaml</code>. After an update, <code>luma status</code> should report DNS <code>ready=true</code>. If <code>providers.dns</code> disappeared on an older release, restore it from the latest <code>/opt/luma/backups/*/luma.yaml</code>, keep the current control state/tokens, and update to <code>0.1.198+</code>, whose manager config installation deep-merges existing operator-managed sections.</p>
+<h2 id="manager-update-prints-tmpfs-unknown-parameter-noswap">Manager update prints <code>tmpfs: Unknown parameter 'noswap'</code><a class="headerlink" href="#manager-update-prints-tmpfs-unknown-parameter-noswap" title="Permanent link">#</a></h2>
+<p>This message comes from the manager's Nomad client when it prepares an
+allocation secrets directory, not from the Luma Control image. Nomad tries to
+mount the per-task <code>secrets/</code> directory as tmpfs with <code>noswap</code>; older Linux
+kernels do not support that mount option, so the kernel may print:</p>
+<pre><code class="language-text">tmpfs: Unknown parameter 'noswap'
+</code></pre>
+<p>First check whether the update actually failed or only printed the kernel
+warning:</p>
+<pre><code class="language-bash">nomad job status luma-control
+nomad job allocs luma-control
+</code></pre>
+<p>If an allocation is running, no repair is needed; rerun <code>luma update manager</code>
+only if the command itself exited non-zero.</p>
+<p>If the allocation failed with a task-dir or tmpfs mount error, check the manager
+kernel and Nomad version:</p>
+<pre><code class="language-bash">uname -r
+nomad version
+journalctl -u nomad -n 120 --no-pager
+</code></pre>
+<p>The durable fix is to run a Nomad release that falls back when <code>noswap</code> is not
+supported, or upgrade the manager kernel to one with <code>tmpfs noswap</code> support.
+After repairing Nomad, restart the manager agent and rerun the control-plane
+refresh:</p>
+<pre><code class="language-bash">sudo systemctl restart nomad
+luma update manager
+</code></pre>
+<h2 id="dashboard-terminal-disconnects">Dashboard terminal disconnects<a class="headerlink" href="#dashboard-terminal-disconnects" title="Permanent link">#</a></h2>
+<p><code>terminal agent disconnected</code> means the browser session was connected, but the node-side terminal agent WebSocket disappeared. Common causes:</p>
+<ul>
+<li>the node agent process restarted because it lost the control API lease;</li>
+<li>multiple <code>node-agent terminal-supervisor</code> processes are running for the same node and replacing each other at the control plane;</li>
+<li>the node's agent token is stale, causing repeated <code>401 unauthorized</code> in <code>/var/log/luma-node-agent.err</code>.</li>
+</ul>
+<p>Check on the node:</p>
+<pre><code class="language-bash">pgrep -af 'luma.*node-agent|terminal-supervisor'
+tail -n 120 /var/log/luma-node-agent.err
+</code></pre>
+<p>A healthy node should have one <code>node-agent run</code> process and one <code>node-agent terminal-supervisor</code> child. If old orphan supervisors remain, clear them and restart the node agent:</p>
+<pre><code class="language-bash">sudo pkill -f 'node-agent terminal-supervisor'
+sudo systemctl restart luma-node-agent.service
+# macOS:
+sudo launchctl kickstart -k system/io.luma.node-agent
+</code></pre>
+<p>Current Luma keeps the node agent alive across transient lease failures and uses a per-node lock so only one terminal supervisor runs.</p>
+<h2 id="application-container-shell-is-unavailable">Application container shell is unavailable<a class="headerlink" href="#application-container-shell-is-unavailable" title="Permanent link">#</a></h2>
+<p>Dashboard application details can open a shell inside a running service container. Control resolves the Nomad allocation, then the node agent runs <code>docker exec</code> against the container labeled with that alloc/task. Common failures:</p>
+<ul>
+<li>the service is not running, so there is no allocation to enter;</li>
+<li>the node agent is old and does not advertise <code>container-terminal</code> — update the node agent, then retry;</li>
+<li>the terminal supervisor is disconnected, same as a node terminal failure;</li>
+<li>the image is distroless / scratch and has no <code>bash</code>/<code>ash</code>/<code>sh</code>.</li>
+</ul>
+<p>This path never execs into system stacks (<code>traefik</code>, <code>egress</code>, <code>luma-control</code>, <code>luma-storage*</code>).</p>
+<h2 id="nomad-client-is-disconnected-but-containers-still-run">Nomad client is disconnected but containers still run<a class="headerlink" href="#nomad-client-is-disconnected-but-containers-still-run" title="Permanent link">#</a></h2>
+<p>This is expected behavior, not a failure. Each Luma job renders <code>max_client_disconnect = 1h</code>, so when a home node such as a Mac mini loses its tailnet path to the Nomad server, the client is marked <code>disconnected</code> but its local allocations keep running and reconnect cleanly when the link recovers. This is the whole point of running on Nomad: a transient WAN/DERP blip no longer kills and reschedules tasks.</p>
+<p>Check the node and the server RPC path before blaming the application:</p>
+<pre><code class="language-bash">nomad node status
+nomad node status -self
+tailscale ping &lt;node-tailscale-ip&gt;
+nc -vz &lt;server-tailscale-ip&gt; 4647
+nc -vz &lt;server-tailscale-ip&gt; 4648
+</code></pre>
+<p>If <code>tailscale ping</code> works but <code>4647</code> (RPC) times out, the tailnet data path can be wedged while Tailscale still appears online. Restart Tailscale on the side that cannot reach peer TCP:</p>
+<pre><code class="language-bash">sudo systemctl restart tailscaled
+# macOS:
+sudo launchctl kickstart -k system/W5364U7YZB.io.tailscale.ipn.macsys.network-extension
+</code></pre>
+<p>Manager and node updates install Tailscale watchdogs that perform these checks and restart local Tailscale only after consecutive failures. If a client stays <code>disconnected</code> past its <code>max_client_disconnect</code> window, Nomad reschedules the allocations elsewhere (subject to the job's region/node constraints).</p>
+<h2 id="not-logged-in">Not logged in<a class="headerlink" href="#not-logged-in" title="Permanent link">#</a></h2>
+<p>If deploy prints <code>not logged in</code>, authenticate against the manager's control API:</p>
+<pre><code class="language-bash">luma login https://luma.example.com --token &lt;management-token&gt;
+luma context list
+</code></pre>
+<h2 id="nomad-deploy-fails">Nomad deploy fails<a class="headerlink" href="#nomad-deploy-fails" title="Permanent link">#</a></h2>
+<p>Rerun manager bootstrap so the Nomad server and Manager Control state are refreshed:</p>
+<pre><code class="language-bash">luma bootstrap --domain luma.example.com
+</code></pre>
+<p>If deploy fails before any allocation is placed, check that the Nomad server is up and has a leader:</p>
+<pre><code class="language-bash">nomad server members
+nomad status               # leader + jobs
+nomad node status          # clients ready, meta.region correct
+</code></pre>
+<p>If a job stays <code>pending</code> with <code>Placement Failures</code>, the constraints did not match a ready client. Inspect the failed evaluation:</p>
+<pre><code class="language-bash">nomad job status &lt;service&gt;
+nomad eval status -verbose &lt;eval-id&gt;
+</code></pre>
+<p>Common causes are a <code>region</code> constraint that no ready client satisfies, a node pinned by <code>meta.luma_node_name</code> that is <code>disconnected</code>, an image whose platform does not match the target node, or exhausted CPU/memory on the only eligible client. On Apple Silicon clients, a misread CPU fingerprint can report near-zero <code>cpu.totalcompute</code> and block placement; the client needs <code>cpu_total_compute</code> set explicitly (Luma's node config handles this).</p>
+<p>If the Nomad server itself is unreachable from Luma Control, confirm the RPC path between clients and the server:</p>
+<pre><code class="language-bash">nc -vz &lt;server-tailscale-ip&gt; 4647
+nomad server members        # all servers alive, one leader
+</code></pre>
+<p>A wedged <code>4647/tcp</code> path makes clients drop to <code>disconnected</code> even though <code>docker info</code> on the node still works.</p>
+<h2 id="public-route-unhealthy-traefik-router-not-found">Public route unhealthy / Traefik router not found<a class="headerlink" href="#public-route-unhealthy-traefik-router-not-found" title="Permanent link">#</a></h2>
+<p>A deploy of a <code>cn-edge</code> or <code>external-edge</code> service can finish placing the Nomad allocation but then fail the public-route probe with:</p>
+<pre><code class="language-text">Public route unhealthy: https://myapp.example.com/ -&gt; HTTP 404 (Traefik router not found)
+</code></pre>
+<p>This means the probe reached the edge but Traefik returned its own default <code>404 page not found</code> — Traefik has no router matching that host yet, as opposed to your application returning a <code>404</code> from a real route (an application <code>404</code> is reported as reachable, not as a failed route). It usually appears when Traefik has not yet picked up the freshly published file-provider route, or the route file's host/labels do not match the requested domain.</p>
+<p>Luma writes the generated route file atomically: it validates the rendered Traefik file-provider route, stages it outside the watched routes directory, then publishes the final file in one move, so Traefik never observes a half-written route. On an unhealthy public route (Traefik router not found, or a transient <code>502</code>/<code>503</code>/<code>504</code>), Control runs a <strong>Recover public route</strong> step once — it recreates the service's allocation and re-probes — before failing the deploy. If it still fails after that automatic retry, check:</p>
+<pre><code class="language-bash"># on the manager
+ls /opt/luma/routes/                      # the &lt;service&gt;.yml route file exists
+cat /opt/luma/routes/&lt;service&gt;.yml        # host rule matches the requested domain
+nomad job status &lt;service&gt;                # allocation is running/healthy
+</code></pre>
+<p>Confirm the manifest's <code>region</code> and <code>exposure</code> actually produce an edge route (only <code>cn-edge</code>/<code>external-edge</code> get a public Traefik router), that the <code>domain</code> matches the DNS record, and that Traefik itself is running. Re-running <code>luma deploy</code> republishes the route file.</p>
+<h2 id="macos-node-join-fails-at-docker">macOS node join fails at Docker<a class="headerlink" href="#macos-node-join-fails-at-docker" title="Permanent link">#</a></h2>
+<p>macOS workers and home nodes must have Docker Desktop installed and running before <code>luma node join</code>.
+Luma cannot install Docker Desktop automatically.</p>
+<p>Verify locally before joining:</p>
+<pre><code class="language-bash">command -v docker
+docker info
+</code></pre>
+<p>If Docker Desktop is missing or still starting, <code>luma node join</code> stops before registering the node with Luma Control. Start Docker Desktop, wait until <code>docker info</code> succeeds, then rerun the same join command.</p>
+<h2 id="cloudflare-dns-fails">Cloudflare DNS fails<a class="headerlink" href="#cloudflare-dns-fails" title="Permanent link">#</a></h2>
+<p>Use a Zone-scoped API token:</p>
+<pre><code class="language-text">Zone / DNS / Edit
+Zone / Zone / Read
+Specific zone: your domain
+</code></pre>
+<p>Then:</p>
+<pre><code class="language-bash">luma manager cloudflare --zone example.com
+</code></pre>
+<h2 id="manager-public-ip-changed">Manager public IP changed<a class="headerlink" href="#manager-public-ip-changed" title="Permanent link">#</a></h2>
+<p>Do not bootstrap a healthy cluster from scratch and do not replace the old IP
+globally in Manager Control state. The legacy <code>control.json</code> is not authoritative after SQLite migration. First confirm that Nomad
+allocations and Traefik survived, then preview the bounded recovery on the
+manager:</p>
+<pre><code class="language-bash">luma manager ip-change --old &lt;old-ip&gt; --new &lt;new-ip&gt; --domain &lt;control-domain&gt; --dry-run
+</code></pre>
+<p>The preview must show the expected manager node, typed config fields, all
+Cloudflare A records still pointing to the old address, a valid direct HTTPS
+health check on the new address, and the currently running <code>luma-control</code>
+image. Apply by removing <code>--dry-run</code>. The command keeps a timestamped config
+backup, patches only exact A-record contents, reconciles with the already
+running control image, and checks <code>/v1/health</code> plus <code>/dashboard/</code> again.</p>
+<p>After it succeeds, validate the ordinary DNS path from a network that does not
+share the manager's resolver cache:</p>
+<pre><code class="language-bash">curl -fsS https://&lt;control-domain&gt;/v1/health
+curl -fsS https://&lt;control-domain&gt;/dashboard/ &gt;/dev/null
+luma status
+</code></pre>
+<p>If the direct new-IP checks pass but the ordinary hostname still fails, inspect
+authoritative DNS and wait for the old record's remaining TTL. Do not roll DNS
+back to a stopped address merely because one local resolver is stale.</p>
+<h2 id="sudo-fails">Sudo fails<a class="headerlink" href="#sudo-fails" title="Permanent link">#</a></h2>
+<p>Run bootstrap with sudo, configure passwordless sudo, or set:</p>
+<pre><code class="language-bash">LUMA_SUDO_PASSWORD=...
+</code></pre>
+<h2 id="nomad-server-is-not-reachable">Nomad server is not reachable<a class="headerlink" href="#nomad-server-is-not-reachable" title="Permanent link">#</a></h2>
+<p>Check:</p>
+<pre><code class="language-bash">nomad server members
+ufw status
+</code></pre>
+<p>The Nomad HTTP API listens on <code>4646</code>, RPC on <code>4647</code>, and Serf gossip on <code>4648</code>, all bound to <code>0.0.0.0</code> but only opened on the <code>tailscale0</code> interface by UFW. If <code>ufw status</code> does not show those ports allowed on <code>tailscale0</code>, or <code>nomad server members</code> is empty, rerun bootstrap to repair the agent config:</p>
+<pre><code class="language-bash">luma bootstrap --domain luma.example.com
+</code></pre><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/troubleshooting.md">View source on GitHub ↗</a> · <a href="./troubleshooting.md">Raw Markdown</a></div></article><aside class="docs-toc" aria-label="On this page"><strong>On this page</strong><div class="toc">
+<ul>
+<li><a href="#first-manager-bootstrap-failed">First manager bootstrap failed</a></li>
+<li><a href="#local-cli-cannot-be-installed">Local CLI cannot be installed</a></li>
+<li><a href="#zsh-permission-denied-luma">zsh: permission denied: luma</a></li>
+<li><a href="#tailscale-is-not-logged-in">Tailscale is not logged in</a></li>
+<li><a href="#docker-image-pulls-fail">Docker image pulls fail</a></li>
+<li><a href="#fleet-update-fails">Fleet update fails</a></li>
+<li><a href="#application-is-running-but-its-public-domain-hangs-after-restart">Application is running but its public domain hangs after restart</a></li>
+<li><a href="#manager-update-prints-tmpfs-unknown-parameter-noswap">Manager update prints tmpfs: Unknown parameter 'noswap'</a></li>
+<li><a href="#dashboard-terminal-disconnects">Dashboard terminal disconnects</a></li>
+<li><a href="#application-container-shell-is-unavailable">Application container shell is unavailable</a></li>
+<li><a href="#nomad-client-is-disconnected-but-containers-still-run">Nomad client is disconnected but containers still run</a></li>
+<li><a href="#not-logged-in">Not logged in</a></li>
+<li><a href="#nomad-deploy-fails">Nomad deploy fails</a></li>
+<li><a href="#public-route-unhealthy-traefik-router-not-found">Public route unhealthy / Traefik router not found</a></li>
+<li><a href="#macos-node-join-fails-at-docker">macOS node join fails at Docker</a></li>
+<li><a href="#cloudflare-dns-fails">Cloudflare DNS fails</a></li>
+<li><a href="#manager-public-ip-changed">Manager public IP changed</a></li>
+<li><a href="#sudo-fails">Sudo fails</a></li>
+<li><a href="#nomad-server-is-not-reachable">Nomad server is not reachable</a></li>
+</ul>
+</div>
+</aside></main></body></html>

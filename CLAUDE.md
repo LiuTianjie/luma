@@ -102,13 +102,17 @@ python scripts/bump-version.py --minor    # 或 --major / --set x.y.z
 - 安装：`installer.py`（默认安装最新发布 tag）、`scripts/install-luma.sh`、`installation.py`。
 - `luma/local.py` / `remote.py`：本地与远程命令执行器。
 - `luma/assets/dashboard/`：vite 产物，经 `package-data` 打包，`luma/assets.py` 读取。
+- `luma/paas/` 与 `deploy/paas-stack/`：下一代 K3s + Tekton Pipelines + 远程 BuildKit 池（`amd64` + `arm64`）+ Zot OCI Registry + Flux Helm Controller PaaS 引擎：
+  - `luma/paas/build/artifact_store.py` & `controller.py`：不可变 `BuildArtifact` 账本、Zot 在线 GC 与 `luma-pin-active-*` / `luma-pin-rollback-*` 防删锁、APT/APK HTTPS 镜像源加速、BuildKit 阶段耗时瀑布解析、Tekton `CancelledRunFinally` 秒级取消。
+  - `luma/paas/release/helm_compiler.py` & `flux_reconciler.py`：将 `luma.yaml` / `luma.compose.yml` 编译为独立 K8s `Deployment`（`network_mode: service:*` 转为同 Pod Sidecar）、全部 6 种 `exposure` 暴露模式（含 `tailscale-relay`、`tcp-relay` `IngressRouteTCP`、`cloudflare-tunnel`）、`region` 节点亲和与 `proxy: true` 出站代理注入，以及 Flux `HelmRelease` 零重构晋升、`< 5s` 秒级回滚与子服务独立扩缩容。
+  - `luma/paas/migration/migrator.py`：`luma migrate plan -> shadow -> cutover -> abort -> finalize` 四步零停机存量应用迁移状态机与节点 `node-self-heal` 自愈诊断。
 
 ### 两条部署路径
 
-1. **原生 manifest**：`luma deploy app.yaml` → `cli/deploy.py` → Control `/v1/deployments` → `render_nomad_job`。`--dry-run` 完全本地渲染。
-2. **compose sidecar**：`luma compose deploy` → Control `/v1/compose-deployments` → `render_compose_job`。所有 compose service 渲染成**一个 group 的多个 task**（共享网络命名空间、同节点）。dry-run 需要 Control 在线。不支持 cloudflare-tunnel。
+1. **原生 manifest**：`luma deploy app.yaml` → `cli/deploy.py` → Control `/v1/deployments` → `render_nomad_job`（或通过 `luma/paas` 编译为 K8s `Deployment` + Flux `HelmRelease`）。`--dry-run` 完全本地渲染；支持 `--artifact <ID>` 零重构直接部署已有制品。
+2. **compose sidecar**：`luma compose deploy` → Control `/v1/compose-deployments` → `render_compose_job`（或在 K8s PaaS 模式下将各独立子服务拆分为独立 `Deployment`，`network_mode: service:*` 作为同 Pod Sidecar）。
 
-`luma import` / `luma build local` 先构建镜像，再走上面两条路径之一。
+`luma import` / `luma build local` 先构建镜像，再走上面两条路径之一；`luma artifact list|show|promote|gc` 管理不可变 OCI 制品，`luma app scale <app> --service <svc>=<N>` 独立扩缩容子服务，`luma migrate batches|plan|shadow|cutover|abort|finalize` 负责存量应用平滑迁移。
 
 ## 测试约定
 

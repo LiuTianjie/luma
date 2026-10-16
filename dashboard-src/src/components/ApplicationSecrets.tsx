@@ -196,8 +196,8 @@ export function ApplicationSecrets({
           <CardTitle>{zh ? "应用密钥" : "Application secrets"}</CardTitle>
           <CardDescription>
             {zh
-              ? "敏感值只写不回显。新增和轮转仅保存到当前应用作用域。"
-              : "Values are write-only. New and rotated secrets are saved to this application's scope."}
+              ? "敏感值只写不回显，保存至当前应用作用域。支持作为环境变量 (${NAME}) 或 K8s Secret 文件 (/run/secrets/...) 挂载。"
+              : "Values are write-only and scoped to this application. Can be referenced as ${NAME} env vars or mounted as K8s Secret files (/run/secrets/...)."}
           </CardDescription>
           <CardAction>
             <Button

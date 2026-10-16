@@ -52,7 +52,13 @@ def _parse_env_value(value: str, *, path: Path, lineno: int) -> str:
 # Settings Luma reads from the implicit ./.env. Control credentials are excluded
 # because that file usually belongs to the application being deployed.
 LUMA_SETTING_NAMES = frozenset(
-    {"CLOUDFLARE_API_TOKEN", "EGRESS_SUBSCRIPTION_URL", "TAILSCALE_AUTHKEY", "TRAEFIK_ACME_EMAIL"}
+    {
+        "CLOUDFLARE_API_TOKEN",
+        "CLOUDFLARE_ZONE_ID",
+        "EGRESS_SUBSCRIPTION_URL",
+        "TAILSCALE_AUTHKEY",
+        "TRAEFIK_ACME_EMAIL",
+    }
 )
 LUMA_CREDENTIAL_NAMES = frozenset({"LUMA_CONTROL_URL", "LUMA_DEPLOY_TOKEN", "LUMA_CONTROL_CONTEXT"})
 

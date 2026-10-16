@@ -1,0 +1,158 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>核心概念 · Luma 文档</title><meta name="description" content="核心概念 — Luma 文档"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">跳到正文</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../zh.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">文档</span><button class="menu-toggle" aria-label="展开导航" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="主导航"><a href="../zh.html#product">控制台</a><a href="../zh.html#docs">全部指南</a><a href="concepts.html" data-doc-language lang="en">English</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="文档"><strong>指南</strong><a class=""  href="README.zh-CN.html">概览</a><a class=""  href="getting-started.zh-CN.html">快速上手</a><a class="active" aria-current=page href="concepts.zh-CN.html">核心概念</a><a class=""  href="deploying.zh-CN.html">部署应用</a><a class=""  href="build-and-artifacts.zh-CN.html">构建与制品</a><a class=""  href="migration-guide.zh-CN.html">零停机迁移</a><a class=""  href="operations.zh-CN.html">日常运维</a><a class=""  href="deployment-yaml.zh-CN.html">部署 YAML</a><a class=""  href="compose-storage.zh-CN.html">Compose 与存储</a><a class=""  href="secrets.zh-CN.html">密钥与凭据</a><a class=""  href="exposure-model.zh-CN.html">暴露模型</a><a class=""  href="observability.zh-CN.html">可观测</a><a class=""  href="dashboard-guide.zh-CN.html">控制台指南</a><a class=""  href="troubleshooting.zh-CN.html">故障排查</a><a class=""  href="luma-cli-reference.zh-CN.html">CLI 命令参考</a><a class=""  href="ai-agent-skills.zh-CN.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../zh.html#docs">文档</a><span>/</span><span>核心概念</span></div><h1 id="concepts">核心概念<a class="headerlink" href="#concepts" title="章节链接">#</a></h1>
+<p>Luma 把几台服务器变成一个部署平台。理解五个概念就能理解它的大部分行为：<strong>节点</strong>、<strong>区域</strong>、<strong>暴露方式</strong>、<strong>出站代理</strong>和<strong>服务</strong>。</p>
+<h2 id="how-the-pieces-fit">整体结构<a class="headerlink" href="#how-the-pieces-fit" title="章节链接">#</a></h2>
+<pre><code class="language-mermaid">flowchart LR
+  clients[&quot;CLI / CI / dashboard&quot;] --&gt;|management token| control[&quot;Luma Control&quot;]
+  control --&gt;|jobs| nomad[&quot;Nomad server&quot;]
+  control --&gt;|records| dns[&quot;Cloudflare DNS&quot;]
+  nomad --&gt; cn[&quot;cn nodes&quot;]
+  nomad --&gt; global[&quot;global nodes&quot;]
+  nomad --&gt; home[&quot;home nodes&quot;]
+  users[&quot;Visitors&quot;] --&gt; dns --&gt; traefik[&quot;Traefik on the manager&quot;]
+  traefik --&gt; cn
+  traefik --&gt;|Tailscale relay| home
+</code></pre>
+<ul>
+<li><strong>Luma Control</strong> 运行在 Manager 上：认证客户端、用 SQLite 保存集群状态、渲染 Nomad job、管理 DNS 和路由，并向节点 agent 派发任务。</li>
+<li><strong>Nomad</strong> 负责调度容器。Manager 运行 Nomad server，其余节点都是使用 Docker 驱动的 Nomad client。</li>
+<li>Manager 上的 <strong>Traefik</strong> 接收公网 HTTP(S) 和 TCP 流量。</li>
+<li>每个节点都运行 <strong>节点 agent</strong>。它向 Control 轮询任务（安装、升级、卷准备、镜像构建、终端）；Control 从不主动连接节点。</li>
+<li><strong>Tailscale</strong> 连接私网和家庭节点，并承载 <code>tailscale-relay</code> 流量。单台云端 Manager 可以不用。</li>
+</ul>
+<p>部署路径和访问路径是分开的：客户端和 Control 通信，访问者和 Traefik 通信。</p>
+<h2 id="node">节点（Node）<a class="headerlink" href="#node" title="章节链接">#</a></h2>
+<p>运行 Luma 的机器。第一台用 <code>luma bootstrap</code> 创建，其余机器各自执行 <code>luma node join</code> 加入。任何机器都不需要 SSH 到另一台机器。</p>
+<pre><code class="language-bash">luma node join https://luma.example.com --token &lt;node-join-token&gt; --region global --name sg-1
+</code></pre>
+<p>加入时会写入调度依赖的 Nomad client 元数据：</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>元数据</th>
+<th>来源</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>region</code></td>
+<td><code>--region</code></td>
+<td>服务的 <code>region</code> 约束</td>
+</tr>
+<tr>
+<td><code>luma_node_name</code></td>
+<td><code>--name</code></td>
+<td>用 <code>node:</code> 固定服务</td>
+</tr>
+<tr>
+<td><code>ingress</code>、<code>egress</code></td>
+<td>节点角色</td>
+<td>放置 Traefik 和出站代理</td>
+</tr>
+</tbody>
+</table></div>
+<p>Nomad 节点身份是稳定的 UUID，同名重新加入后，固定到该节点的服务仍然有效。元数据由 Luma 维护，不要手动修改；需要查看时在 Manager 上执行 <code>nomad node status -verbose &lt;node-id&gt;</code>。</p>
+<h2 id="region">区域（Region）<a class="headerlink" href="#region" title="章节链接">#</a></h2>
+<p><strong>服务可以运行在哪里。</strong> 每个节点只属于一个区域；<code>region: cn</code> 的服务只会调度到 <code>cn</code> 节点，<code>replicas</code> 会分布到该区域的就绪节点上。</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>区域</th>
+<th>适合</th>
+<th>允许的公网暴露方式</th>
+<th>加入与镜像拉取的出站</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cn</code></td>
+<td>公开 Web/API、数据库、Control</td>
+<td><code>cn-edge</code></td>
+<td>经 Manager 代理</td>
+</tr>
+<tr>
+<td><code>global</code></td>
+<td>需要访问外网的 worker 和服务</td>
+<td><code>external-edge</code></td>
+<td>直连</td>
+</tr>
+<tr>
+<td><code>home</code></td>
+<td>家庭服务器、NAS、备份、内部工具</td>
+<td><code>tailscale-relay</code></td>
+<td>经 Manager 代理</td>
+</tr>
+<tr>
+<td>自定义</td>
+<td>任意用途，用 <code>luma region create NAME --egress proxy\|direct</code> 创建</td>
+<td>默认 <code>none</code></td>
+<td>按创建时配置</td>
+</tr>
+</tbody>
+</table></div>
+<p>家庭网络不如云服务器稳定，核心公网服务不要放在 <code>home</code>。跨区域通信优先使用队列，而不是实时 HTTP 调用。</p>
+<p>只有服务必须留在某台机器上（本地磁盘、特定硬件）时，才在 manifest 中写 <code>node: &lt;节点名&gt;</code>。区域约束仍然生效，所以该节点必须属于同一区域。</p>
+<h2 id="exposure">暴露方式（Exposure）<a class="headerlink" href="#exposure" title="章节链接">#</a></h2>
+<p><strong>流量如何到达服务。</strong> 它和区域是两个独立维度，但每种公网方式都要求匹配的区域。</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>暴露方式</th>
+<th>路径</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cn-edge</code></td>
+<td>Cloudflare DNS → Manager 上的 Traefik → <code>cn</code> 中的服务</td>
+</tr>
+<tr>
+<td><code>external-edge</code></td>
+<td>Cloudflare DNS → global 入口 → <code>global</code> 中的服务</td>
+</tr>
+<tr>
+<td><code>tailscale-relay</code></td>
+<td>Cloudflare DNS → Traefik → Tailscale → 家庭节点上的服务</td>
+</tr>
+<tr>
+<td><code>tcp-relay</code></td>
+<td>Traefik 上的公网 TCP 端口 → 服务（例如数据库）</td>
+</tr>
+<tr>
+<td><code>cloudflare-tunnel</code></td>
+<td>Cloudflare Tunnel → 私网服务，不经过 Traefik</td>
+</tr>
+<tr>
+<td><code>none</code></td>
+<td>无公网入口</td>
+</tr>
+</tbody>
+</table></div>
+<p>每种方式的要求和示例见<a href="exposure-model.zh-CN.html">暴露模型</a>。</p>
+<h2 id="egress">出站代理（Egress）<a class="headerlink" href="#egress" title="章节链接">#</a></h2>
+<p><strong>容器如何访问外部网络。</strong> 可选的出站代理运行在 Manager 上。使用代理的区域在加入集群和拉取镜像时会经过它。服务只有在 manifest 中写 <code>proxy: true</code> 时才在运行时使用它，此时 Luma 会注入 <code>HTTP_PROXY</code>/<code>HTTPS_PROXY</code>。出站代理从不承载入站流量，调度仍然按 <code>region</code>。详见<a href="egress-gateway.zh-CN.html">出站代理</a>。</p>
+<h2 id="service">服务（Service）<a class="headerlink" href="#service" title="章节链接">#</a></h2>
+<p><strong>一个可部署单元</strong>，由一份简短的 YAML manifest 描述，Control 会把它转换为 Nomad job：</p>
+<pre><code class="language-yaml">name: app
+image: ghcr.io/acme/app:1.0.0
+region: cn
+exposure: cn-edge
+domain: app.example.com
+port: 3000
+replicas: 2
+</code></pre>
+<p>多容器应用使用标准的 <code>docker-compose.yml</code> 加一个 Luma sidecar，所有服务一起运行在同一节点上。见<a href="deploying.zh-CN.html">部署应用</a>和<a href="deployment-yaml.zh-CN.html">部署 YAML 参考</a>。</p>
+<h2 id="networking-boundaries">网络边界<a class="headerlink" href="#networking-boundaries" title="章节链接">#</a></h2>
+<p>Linux 节点使用 Docker bridge 网络和动态宿主机端口，Traefik 通过 Nomad 服务标签发现它们。macOS 节点（Docker Desktop 或 OrbStack）使用 host 网络。服务器之间的管理流量优先走 Tailscale；只有 <code>tailscale-relay</code> 服务会让访问流量经过 Tailscale。</p>
+<p>Nomad agent 绑定 <code>0.0.0.0</code>，对外宣告 Tailscale 地址；Luma 的防火墙规则只在 <code>tailscale0</code> 上开放 Nomad 端口。Nomad client 短暂失联时，其上的 allocation 会继续运行（<code>max_client_disconnect</code>），恢复后自动重连。</p><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/concepts.zh-CN.md">在 GitHub 查看源码 ↗</a> · <a href="./concepts.zh-CN.md">原始 Markdown</a></div></article><aside class="docs-toc" aria-label="本页目录"><strong>本页目录</strong><div class="toc">
+<ul>
+<li><a href="#how-the-pieces-fit">整体结构</a></li>
+<li><a href="#node">节点（Node）</a></li>
+<li><a href="#region">区域（Region）</a></li>
+<li><a href="#exposure">暴露方式（Exposure）</a></li>
+<li><a href="#egress">出站代理（Egress）</a></li>
+<li><a href="#service">服务（Service）</a></li>
+<li><a href="#networking-boundaries">网络边界</a></li>
+</ul>
+</div>
+</aside></main></body></html>

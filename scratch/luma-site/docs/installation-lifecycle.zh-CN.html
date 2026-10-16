@@ -1,0 +1,69 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>托管安装与本地诊断 · Luma 文档</title><meta name="description" content="托管安装与本地诊断 — Luma 文档"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">跳到正文</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../zh.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">文档</span><button class="menu-toggle" aria-label="展开导航" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="主导航"><a href="../zh.html#product">控制台</a><a href="../zh.html#docs">全部指南</a><a href="installation-lifecycle.html" data-doc-language lang="en">English</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="文档"><strong>指南</strong><a class=""  href="README.zh-CN.html">概览</a><a class=""  href="getting-started.zh-CN.html">快速上手</a><a class=""  href="concepts.zh-CN.html">核心概念</a><a class=""  href="deploying.zh-CN.html">部署应用</a><a class=""  href="build-and-artifacts.zh-CN.html">构建与制品</a><a class=""  href="migration-guide.zh-CN.html">零停机迁移</a><a class=""  href="operations.zh-CN.html">日常运维</a><a class=""  href="deployment-yaml.zh-CN.html">部署 YAML</a><a class=""  href="compose-storage.zh-CN.html">Compose 与存储</a><a class=""  href="secrets.zh-CN.html">密钥与凭据</a><a class=""  href="exposure-model.zh-CN.html">暴露模型</a><a class=""  href="observability.zh-CN.html">可观测</a><a class=""  href="dashboard-guide.zh-CN.html">控制台指南</a><a class=""  href="troubleshooting.zh-CN.html">故障排查</a><a class=""  href="luma-cli-reference.zh-CN.html">CLI 命令参考</a><a class=""  href="ai-agent-skills.zh-CN.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../zh.html#docs">文档</a><span>/</span><span>托管安装与本地诊断</span></div><h1 id="managed-installation-and-local-diagnosis">托管安装与本地诊断<a class="headerlink" href="#managed-installation-and-local-diagnosis" title="章节链接">#</a></h1>
+<blockquote>
+<p>v0.1.317 引入了首批托管安装加固。候选环境准备相互隔离。后续变更新增独立节点 agent 切换监督器，新进程无法证明自身是目标运行时时会回滚命令 shim。Manager 更新获取 Control 维护租约，拒绝并发部署/构建，并要求镜像已缓存。本文不代表已完成的全节点迁移流程。</p>
+</blockquote>
+<h2 id="installation-identity">安装身份<a class="headerlink" href="#installation-identity" title="章节链接">#</a></h2>
+<p>托管安装在 <code>&lt;runtime&gt;/luma-installation.json</code> 记录实际运行时、源码目录、安装根目录、命令目录、所有者 UID、版本及依赖策略。CLI 和 agent 更新优先读取正在运行的 Python 环境（<code>sys.prefix</code>），而非 root PATH 中无关命令。常规更新拒绝冲突的显式安装路径。目录别名会规范化，但不会把虚拟环境 Python 可执行文件解析成系统解释器。准备更新后，通过稳定命令 shim 重新执行，不使用保留的旧 Python/源码。</p>
+<p>历史用户安装（<code>~/.local/share/luma/venv</code>）保留原用户 home 和命令目录；其他既有 venv（如 <code>/opt/luma-cli</code>）保留自身根目录与 <code>bin</code>。仓库 <code>.venv</code> 仍属开发安装，不会被静默接管。这是基于运行时的兼容，不是完整的任意路径/服务接管向导。模糊安装仍需规划中的显式接管和服务路径协调流程。</p>
+<p>新托管运行时直接在 <code>&lt;install-root&gt;/releases/candidate.*/{src,venv}</code> 最终路径准备，不覆盖活动源码/venv。依赖安装和运行时验证通过后才原子替换命令 shim。候选准备独立于调用者 umask，移除组/其他用户写权限，并在发布前通过 agent 身份验证器回读安装记录。既有环境诊断保持只读，不安全权限会失败。托管包安装失败不回退到源码加残留依赖。安装级锁拒绝并发准备，但不是持久化分布式维护租约，也不保证服务健康。</p>
+<p>旧环境会保留。正常更新不要移动 venv（入口可能包含绝对路径）、删除旧安装或手动重定向运行中的服务。首版未包含自动候选保留/清理。</p>
+<h2 id="dependency-policy">依赖策略<a class="headerlink" href="#dependency-policy" title="章节链接">#</a></h2>
+<p>托管安装忽略主机/全局/用户/site pip 配置和继承的 <code>PIP_*</code>，也防止外部 Python 模块路径补入候选环境缺失的依赖。不会修改系统 <code>pip.conf</code>。</p>
+<p>支持的显式输入：</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>输入</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>LUMA_PIP_INDEX_URL</code></td>
+<td>单一 HTTPS 包索引，默认 <code>https://pypi.org/simple</code>。</td>
+</tr>
+<tr>
+<td><code>LUMA_PIP_WHEELHOUSE</code></td>
+<td>已存在的本地绝对目录，使 pip 禁用索引访问。</td>
+</tr>
+<tr>
+<td><code>LUMA_PIP_CA_BUNDLE</code></td>
+<td>已存在的 CA bundle 绝对文件路径，仍执行正常证书验证。</td>
+</tr>
+</tbody>
+</table></div>
+<p>成功安装会保存有效策略，后续 CLI/agent 更新复用。显式 Luma 输入覆盖保存策略，不隐式增加公共索引或 <code>trusted-host</code> 回退。拒绝带凭据或查询字符串的 URL、非 HTTPS 索引和缺失本地路径。尚不支持需认证的包索引流程。进程代理设置与包索引选择分开。</p>
+<p>已安装 CLI 可为下次更新选择批准的依赖源：</p>
+<pre><code class="language-sh">LUMA_PIP_INDEX_URL=https://packages.example.com/simple luma update --install-ref &lt;release-tag&gt;
+</code></pre>
+<p>对于已从<strong>同一</strong>目标版本下载的初始化脚本：</p>
+<pre><code class="language-sh">LUMA_INSTALL_REF=&lt;release-tag&gt; \
+LUMA_PIP_INDEX_URL=https://packages.example.com/simple \
+sh ./install-luma.sh
+</code></pre>
+<p><code>LUMA_PIP_WHEELHOUSE</code> 仅让 <strong>pip</strong> 离线；初始化/源码归档仍需网络或独立提供源码。Wheelhouse 必须包含目标 Python/平台的构建后端和全部传递依赖，不只是 Luma wheel。缺少 wheel/构建依赖会让候选准备失败，不切换索引。</p>
+<p>要停用保存的 wheelhouse 或自定义 CA，请在此次更新显式传入空的 <code>LUMA_PIP_WHEELHOUSE</code> 或 <code>LUMA_PIP_CA_BUNDLE</code>。新环境安装并启动前，活动进程保持原环境。</p>
+<h2 id="read-only-diagnosis">只读诊断<a class="headerlink" href="#read-only-diagnosis" title="章节链接">#</a></h2>
+<pre><code class="language-sh">luma doctor --local
+luma doctor --local --format json
+</code></pre>
+<p>报告实际运行时、检测到的安装、有效依赖源、被忽略的 pip 环境变量<strong>键名</strong>、隔离依赖导入和 <code>pip check</code>。不包含网络请求、凭据、服务修改或状态写入。即使旧元数据让 <code>pip check</code> 通过，导入失败仍非零退出。严重损坏到无法启动 CLI 的环境不能使用此入口，独立恢复仍是规划中的能力。</p>
+<p>Control 与节点健康使用 <code>luma doctor</code> / <code>luma doctor --deep</code>。本地诊断健康不证明 agent 正在运行、服务管理器正常或部署成功。</p>
+<h2 id="node-join-acceptance">节点加入验收<a class="headerlink" href="#node-join-acceptance" title="章节链接">#</a></h2>
+<p>Control 未返回 agent 凭据时，<code>luma node join</code> 不再报告完成。本地服务安装后，最多等待 60 秒，让 Control 确认使用新凭据认证的新鲜心跳/租约。只读 <code>/v1/node-agent/readiness</code> 限定对应节点凭据，轮询不能令节点就绪。重新签发凭据会使加入验证失效，即使旧心跳仍新鲜。</p>
+<p>凭据缺失、就绪超时或旧 Control 不支持端点时，CLI 返回失败与可操作原因，不删除已注册节点。修复连接/升级 Control 后重试常规加入。应先发布兼容 Control 端点，再使用新加入客户端。这是加入验证，不是规划中的持久化加入操作、完整角色能力预检或更新 nonce 验证。</p>
+<h2 id="node-agent-cutover">节点 agent 切换<a class="headerlink" href="#node-agent-cutover" title="章节链接">#</a></h2>
+<p>托管安装发布新命令 shim 后，写入 <code>&lt;install-root&gt;/lifecycle/target.json</code> 并保留旧 shim。<code>update-luma</code> 启动独立 systemd/launchd 监督器（<code>python -m luma.node_lifecycle switch</code>），不从运行中任务内部重启 agent。监督器重启节点 agent，等待新进程证明是目标运行时（或新 agent 记录切换 nonce）；证明始终未出现时恢复旧 shim。</p>
+<p>这尚不是持久化分布式维护租约；无 systemd-run/launchd 的主机不能使用监督流程。混合版本 agent 未发现 <code>target.json</code> 时，沿用进程内服务刷新。</p>
+<h2 id="not-yet-covered">尚未覆盖<a class="headerlink" href="#not-yet-covered" title="章节链接">#</a></h2>
+<p>切换中途监督器崩溃恢复、公开接管/修复、控制台生命周期 UI、稳定版本默认解析、Builder/Registry 验证、Manager 维护门禁和 observe/备份标准化仍待完成。不能仅凭候选准备测试就判断可安全进行真实升级。</p><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/installation-lifecycle.zh-CN.md">在 GitHub 查看源码 ↗</a> · <a href="./installation-lifecycle.zh-CN.md">原始 Markdown</a></div></article><aside class="docs-toc" aria-label="本页目录"><strong>本页目录</strong><div class="toc">
+<ul>
+<li><a href="#installation-identity">安装身份</a></li>
+<li><a href="#dependency-policy">依赖策略</a></li>
+<li><a href="#read-only-diagnosis">只读诊断</a></li>
+<li><a href="#node-join-acceptance">节点加入验收</a></li>
+<li><a href="#node-agent-cutover">节点 agent 切换</a></li>
+<li><a href="#not-yet-covered">尚未覆盖</a></li>
+</ul>
+</div>
+</aside></main></body></html>

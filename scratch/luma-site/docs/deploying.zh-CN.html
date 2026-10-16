@@ -1,0 +1,200 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>部署应用 · Luma 文档</title><meta name="description" content="部署应用 — Luma 文档"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">跳到正文</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../zh.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">文档</span><button class="menu-toggle" aria-label="展开导航" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="主导航"><a href="../zh.html#product">控制台</a><a href="../zh.html#docs">全部指南</a><a href="deploying.html" data-doc-language lang="en">English</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="文档"><strong>指南</strong><a class=""  href="README.zh-CN.html">概览</a><a class=""  href="getting-started.zh-CN.html">快速上手</a><a class=""  href="concepts.zh-CN.html">核心概念</a><a class="active" aria-current=page href="deploying.zh-CN.html">部署应用</a><a class=""  href="build-and-artifacts.zh-CN.html">构建与制品</a><a class=""  href="migration-guide.zh-CN.html">零停机迁移</a><a class=""  href="operations.zh-CN.html">日常运维</a><a class=""  href="deployment-yaml.zh-CN.html">部署 YAML</a><a class=""  href="compose-storage.zh-CN.html">Compose 与存储</a><a class=""  href="secrets.zh-CN.html">密钥与凭据</a><a class=""  href="exposure-model.zh-CN.html">暴露模型</a><a class=""  href="observability.zh-CN.html">可观测</a><a class=""  href="dashboard-guide.zh-CN.html">控制台指南</a><a class=""  href="troubleshooting.zh-CN.html">故障排查</a><a class=""  href="luma-cli-reference.zh-CN.html">CLI 命令参考</a><a class=""  href="ai-agent-skills.zh-CN.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../zh.html#docs">文档</a><span>/</span><span>部署应用</span></div><h1 id="deploying-applications">部署应用<a class="headerlink" href="#deploying-applications" title="章节链接">#</a></h1>
+<p>所有部署都经过 Luma Control：CLI 发送 manifest，Control 渲染 Nomad job、更新 DNS 和路由、提交 job，并把进度实时返回。</p>
+<pre><code class="language-text">luma deploy app.yaml -&gt; Luma Control -&gt; Nomad job -&gt; Nomad client -&gt; Docker container
+</code></pre>
+<h2 id="choose-a-workflow">选择部署方式<a class="headerlink" href="#choose-a-workflow" title="章节链接">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>你手上有</th>
+<th>命令</th>
+<th>过程</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>已发布的容器镜像</td>
+<td><code>luma deploy app.yaml</code></td>
+<td>部署 manifest 中写明的镜像</td>
+</tr>
+<tr>
+<td>本地代码目录</td>
+<td><code>luma build local .</code></td>
+<td>用本机 Docker Buildx 构建，推送到集群镜像仓库，然后部署</td>
+</tr>
+<tr>
+<td>GitHub 或 Gitea 仓库</td>
+<td><code>luma import owner/repo</code></td>
+<td>由构建节点克隆、构建、推送并部署</td>
+</tr>
+<tr>
+<td><code>docker-compose.yml</code></td>
+<td><code>luma compose deploy luma.compose.yml</code></td>
+<td>把所有服务一起部署到同一个节点</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>luma deploy</code> 从不构建源码。构建需要构建节点和镜像仓库，见<a href="#builds">构建</a>。</p>
+<h2 id="deploy-an-image">部署镜像<a class="headerlink" href="#deploy-an-image" title="章节链接">#</a></h2>
+<p>用 <code>luma init</code> 生成 manifest，或手写一份：</p>
+<pre><code class="language-yaml">name: api
+image: ghcr.io/acme/api:1.4.2
+region: cn
+exposure: cn-edge
+domain: api.example.com
+port: 3000
+replicas: 2
+resources:
+  limits:
+    memory: 512M
+healthcheck:
+  test: [&quot;CMD&quot;, &quot;curl&quot;, &quot;-f&quot;, &quot;http://localhost:3000/health&quot;]
+</code></pre>
+<p>然后：</p>
+<pre><code class="language-bash">luma validate api.yaml            # schema, region/exposure rules; no network
+luma deploy api.yaml --dry-run    # print the Nomad job Control will submit
+luma deploy api.yaml
+</code></pre>
+<p>部署是 upsert：用同一个 <code>name</code> 重新部署会更新已有的 Nomad job，Nomad 会保留上一个版本用于<a href="operations.zh-CN.html#roll-back">回滚</a>。生产环境请使用不可变的镜像 tag 或 digest；<code>latest</code> 这类可变 tag 会让回滚结果不可预测。</p>
+<p>Control 按以下步骤执行并逐步输出：</p>
+<ol>
+<li>保存 manifest 和作用域密钥；</li>
+<li>渲染 Nomad job；<code>tailscale-relay</code> 和 <code>tcp-relay</code> 还会渲染 Traefik 路由文件；</li>
+<li>创建或更新 Cloudflare DNS（<code>--skip-dns</code> 跳过）；</li>
+<li>提交 job 并等待滚动发布完成；</li>
+<li>探测 <code>cn-edge</code> 和 <code>external-edge</code> 服务的公网路由；如果 Traefik 尚未识别，会重建一次 allocation。</li>
+</ol>
+<p>默认等待 3000 秒（<code>--timeout</code>）。如果某一步在前面步骤已经修改集群后失败，部署会记录为 <code>failed_partial</code>，之后仍可用 <code>luma app remove</code> 清理。</p>
+<p>所有字段见 <a href="deployment-yaml.zh-CN.html">部署 YAML 参考</a>；调度与入口的含义见<a href="concepts.zh-CN.html">核心概念</a>和<a href="exposure-model.zh-CN.html">暴露模型</a>。</p>
+<h2 id="secrets">密钥<a class="headerlink" href="#secrets" title="章节链接">#</a></h2>
+<p>在 manifest 中引用变量，不要把值写进 Git：</p>
+<pre><code class="language-yaml">env:
+  DATABASE_URL: ${DATABASE_URL}
+</code></pre>
+<p>部署时从 <code>.env</code> 提供，或提前保存：</p>
+<pre><code class="language-bash">luma deploy api.yaml --env .env                         # only referenced variables are sent
+luma secret set DATABASE_URL --scope api                # prompts for the value
+luma secret import .env.production --scope api          # every variable in the file
+</code></pre>
+<p>密钥按应用名隔离，<code>api/DATABASE_URL</code> 和 <code>worker/DATABASE_URL</code> 互不影响。私有镜像的仓库凭据用 <code>luma registry login</code> 设置。详见<a href="secrets.zh-CN.html">密钥与凭据</a>。</p>
+<h2 id="builds">构建<a class="headerlink" href="#builds" title="章节链接">#</a></h2>
+<p>源码构建需要一个装有 Docker Buildx 的构建节点（Linux，或使用 OrbStack / Docker Desktop 的 macOS）和一个集群能拉取的镜像仓库：</p>
+<pre><code class="language-bash">luma registry serve --node builder          # deploy the managed registry on a node
+luma build config --node builder --default-node builder
+</code></pre>
+<p>Luma 会根据目标区域的节点决定镜像架构：ARM 节点得到 <code>linux/arm64</code>，混合架构的区域得到多平台镜像。只有覆盖全部目标架构时才接受 <code>--platform</code>。</p>
+<h3 id="native-builders">原生架构构建节点<a class="headerlink" href="#native-builders" title="章节链接">#</a></h3>
+<p>先升级 Control 和构建节点 agent，再同时声明 AMD64 与 ARM64 构建节点：</p>
+<pre><code class="language-bash">luma build config --node builder --node air3 --default-node builder \
+  --registry-host 100.64.0.70:5000 --push-host 100.64.0.70:5000
+</code></pre>
+<p>所有仓库构建节点必须上报 <code>native-arm-build-v1</code> 能力，自动选择还需要 <code>repository-build-plan-v1</code>。先升级 Control 和全部构建 agent。macOS 的 OrbStack 和 Docker Desktop 均受支持；<code>luma status</code> 会显示原生容器平台，macOS ARM 节点对应 <code>linux/arm64</code>。</p>
+<p>当声明的构建节点具有不同架构时，Control 会先解析仓库 manifest（包括指定的 Compose sidecar 和服务级部署位置），锁定 Git commit，再选择原生构建节点。只要包含 ARM64，即使同时构建 AMD64，也必须使用原生 ARM64 builder。原生节点忙碌或离线时继续排队；没有对应 ARM 原生节点则报错，不能回退到模拟构建。运行时密钥只在部署阶段使用。</p>
+<p>显式 <code>--build-node</code> 只能固定兼容节点，不能绕过 ARM 要求。每次 ARM 构建前都会核实所有 Buildx worker 的实际 Docker 引擎架构，不能仅依据包含 QEMU 模拟架构的支持列表。该校验覆盖仓库导入、Compose、重试和 <code>luma build local</code>，也包括自定义 Buildx builder。本地旧 CLI 需要先升级；无法验证原生架构的 remote/Kubernetes Buildx driver 不允许执行 ARM 构建。</p>
+<p>混合 AMD64/ARM64 请求整体交给 ARM builder，其中 AMD64 部分可以使用模拟执行，不拆分到多台机器。不同 ARM 架构（例如 ARMv7 与 ARM64）需要分开提交。不含 ARM 的构建保留原有回退行为。<code>pushHost</code> 必须能被所有 builder 访问，不能使用指向各自机器的 <code>localhost</code>。</p>
+<h3 id="build-a-local-checkout">构建本地代码<a class="headerlink" href="#build-a-local-checkout" title="章节链接">#</a></h3>
+<pre><code class="language-bash">cd app
+luma build local . --env .env
+</code></pre>
+<p>项目身份取自 <code>origin</code> 远程地址（没有时用 <code>--repo-url</code>）。Luma 用本机 Docker Buildx 构建，按与 <code>luma import</code> 相同的仓库路径推送到集群镜像仓库，然后部署。本机必须能访问该镜像仓库。可选参数：<code>--platform</code>、<code>--context</code>、<code>--dockerfile</code>、<code>--compose-sidecar</code>、<code>--builder</code>（复用已有 Buildx builder）和 <code>--proxy</code>（基础镜像和 <code>RUN</code> 步骤使用的 HTTP 代理）。</p>
+<h3 id="import-a-repository">导入仓库<a class="headerlink" href="#import-a-repository" title="章节链接">#</a></h3>
+<pre><code class="language-bash">luma import acme/app --ref main --env .env                      # GitHub owner/repo
+luma import https://gitea.example.com/acme/app.git --ref v1.4.0
+</code></pre>
+<p>私有仓库先保存一次令牌，之后引用它：</p>
+<pre><code class="language-bash">printf '%s' &quot;$GITHUB_TOKEN&quot; | luma git-provider set github personal --username octo --token-stdin
+luma git-provider repos github:personal
+luma import --provider-id github:personal --repository acme/app --ref main
+</code></pre>
+<p>导入会查找单服务 manifest（<code>.luma.yml</code>、<code>luma.yml</code>、<code>*.luma.yml</code>）或 Compose sidecar（<code>luma.compose.yml</code>、<code>.luma.compose.yml</code>、<code>*.luma.compose.yml</code>、<code>docker-compose.luma.yml</code>）。可以用 <code>--compose-sidecar 仓库内路径</code> 明确指定；仓库里没有部署文件时用 <code>--manifest 本地文件</code>。对 Compose 仓库，带 <code>build:</code> 的服务会被构建并改写为推送后的 <code>image:</code>。本地用 <code>luma compose validate --import-mode luma.compose.yml</code> 检查这一路径。</p>
+<h3 id="dockerfile-targets-and-pinned-git-inputs">Dockerfile 阶段与固定 Git 输入<a class="headerlink" href="#dockerfile-targets-and-pinned-git-inputs" title="章节链接">#</a></h3>
+<p><code>build.target</code> 选择一个字面量 Dockerfile 阶段名。远程仓库构建还可以把其他仓库作为具名源码上下文：</p>
+<pre><code class="language-yaml"># docker-compose.yml; the same build fields work in a single-service manifest
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: release
+      x-luma-git-contexts:
+        library:
+          lock: deploy/library.lock.json
+</code></pre>
+<p><code>lock</code> 是相对主仓库根目录的文件路径，不是内联对象，也不相对 <code>build.context</code>。该 JSON 文件必须且只能包含 <code>repository</code>、<code>commit</code>、<code>archive_sha256</code>：</p>
+<pre><code class="language-json">{
+  &quot;repository&quot;: &quot;https://gitea.example.com/acme/library.git&quot;,
+  &quot;commit&quot;: &quot;0123456789abcdef0123456789abcdef01234567&quot;,
+  &quot;archive_sha256&quot;: &quot;0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef&quot;
+}
+</code></pre>
+<p>将示例摘要替换为完整小写 commit 和 <code>git archive --format=tar.gz &lt;commit&gt;</code> 的 SHA256。Builder 在校验两者后才把导出的文件作为 BuildKit 具名上下文 <code>library</code>，Dockerfile 可用 <code>COPY --from=library</code> 引用。Git 托管平台的 archive 接口可能产生不同字节，不能代替该归档。</p>
+<p>额外仓库必须与主仓库具有相同 HTTPS origin（主机和端口），URL 不得包含凭据、query 或 fragment。读取使用主仓库选定的 Git provider 凭据，该凭据必须能访问每个锁定仓库。拉取和校验都发生在 Docker 之外；进入 BuildKit 的只有已验证源码，不包含 Git 凭据、凭据辅助文件或 <code>.git</code> 元数据。</p>
+<p>导入时显式要求协议能力：</p>
+<pre><code class="language-bash">luma import --provider-id gitea:team --repository acme/app --ref &quot;$APP_COMMIT&quot; \
+  --compose-sidecar deploy/luma.compose.yml \
+  --require-build-capability repository-build-inputs-v1
+</code></pre>
+<p>CLI 必须支持该参数，Control 必须声明 <code>required-build-capability-v1</code>，选中的就绪 Builder 必须声明 <code>repository-build-inputs-v1</code>。Control 在执行时再次检查实时 Builder，并在部署前要求构建结果确认能力；重试保留要求。缺能力会明确停止，不会静默忽略额外输入。源码实现不代表已发布或线上已加载：使用前需要发布相应 Luma 版本并升级 Control 与 Builder。</p>
+<p>外部 <code>--manifest</code> 会自动要求同一能力，无需重复传该参数。仅当仓库没有清单时，Builder 才使用外部清单中通过校验的构建和调度字段；仓库自带清单在构建与部署阶段都优先。外部清单的运行环境和密钥不会作为构建输入传递。使用新版 CLI 的外部清单入口前，必须升级 Control 与 Builder。</p>
+<p><code>luma build local</code> 不支持 <code>x-luma-git-contexts</code>，包括 Compose 构建。额外 Git 输入必须走远程 <code>luma import</code>，不能把 provider 凭据塞进 Dockerfile 绕过。仅使用 <code>build.target</code> 不代表必须有额外 Git 输入。</p>
+<h3 id="build-runs-and-the-queue">构建记录与队列<a class="headerlink" href="#build-runs-and-the-queue" title="章节链接">#</a></h3>
+<p>导入和重试会进入按仓库、ref 和部署目标划分的持久队列：同一目标的新提交会取消更早的排队请求，而 <code>main</code> 和 <code>dev</code> 互不阻塞。忙碌的构建节点只会让自己的请求排队，不会影响其他构建节点。</p>
+<pre><code class="language-bash">luma build list --app api --status failed
+luma build logs &lt;build-id&gt;
+luma build retry &lt;build-id&gt;
+luma build cancel &lt;build-id&gt;
+</code></pre>
+<p>构建被接受后关闭 CLI 不会取消构建。排队中的请求在 Control 重启后保留；被中断的进行中构建会标记为失败，而不是自动重放。</p>
+<h2 id="compose-applications">Compose 应用<a class="headerlink" href="#compose-applications" title="章节链接">#</a></h2>
+<p>保持标准的 <code>docker-compose.yml</code>，再加一个说明部署位置和方式的 Luma sidecar：</p>
+<pre><code class="language-bash">luma compose init --compose docker-compose.yml --output luma.compose.yml
+luma compose validate luma.compose.yml
+luma compose deploy luma.compose.yml --dry-run
+luma compose deploy luma.compose.yml --env .env
+</code></pre>
+<p>同一个应用的所有服务运行在同一个节点上，共享网络命名空间。持久卷默认使用该节点的本地存储。Compose 不支持 <code>cloudflare-tunnel</code>。详见 <a href="compose-storage.zh-CN.html">Compose 与存储</a>。</p>
+<h2 id="recorded-workflows">部署方式记录<a class="headerlink" href="#recorded-workflows" title="章节链接">#</a></h2>
+<p>Control 会记住每个应用上一次成功的构建部署方式（本地构建、导入、镜像部署或 Compose，以及 ref、构建节点、平台、区域等参数）。之后的 <code>deploy</code>、<code>import</code>、<code>build local</code>、<code>build retry</code> 或 <code>compose deploy</code> 会与记录对比：</p>
+<ul>
+<li>没有记录或完全一致：继续执行并刷新记录；</li>
+<li>存在差异：显示差异并停下等待确认。终端中会直接询问；JSON、quiet 或非交互模式会以非零状态退出。确认差异后才用 <code>--accept-workflow-change</code> 重试。</li>
+</ul>
+<pre><code class="language-bash">luma workflow show api
+luma workflow record api --note &quot;Built on the builder node&quot; -- import acme/api --ref main
+luma workflow run api --path ~/src/api
+</code></pre>
+<p>记录中不会包含令牌或 <code>.env</code> 内容。备注是自由文本，不要写入密钥。</p>
+<h2 id="ci">CI<a class="headerlink" href="#ci" title="章节链接">#</a></h2>
+<p>CI 可以在不保存登录的情况下使用 CLI：</p>
+<pre><code class="language-bash">python -m pip install &quot;luma-infra==0.2.11&quot;
+export LUMA_CONTROL_URL=https://luma.example.com
+export LUMA_DEPLOY_TOKEN=&quot;$CI_LUMA_MANAGEMENT_TOKEN&quot;
+
+luma validate deploy/app.yaml --format json
+luma deploy deploy/app.yaml --dry-run --format json
+luma deploy deploy/app.yaml --format ndjson --timeout 3000
+</code></pre>
+<p>连接参数的优先级为：命令行参数 &gt; 环境变量（<code>LUMA_CONTROL_URL</code>、<code>LUMA_DEPLOY_TOKEN</code>、<code>LUMA_CONTROL_CONTEXT</code>、<code>LUMA_INSECURE</code>、<code>LUMA_RESOLVE_IP</code>）&gt; 已保存的登录。与已保存登录不同的 <code>--control-url</code> 不会借用其令牌。支持 <code>--format</code> 的命令可输出 <code>text</code>、<code>json</code> 和 <code>ndjson</code>，请同时检查退出状态。</p>
+<p>在工作站上，可以把多个集群保存为登录，并按命令选择：</p>
+<pre><code class="language-bash">luma login https://staging.example.com --token-stdin &lt; staging.token
+luma context list
+luma deploy app.yaml --control-context staging
+</code></pre><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/deploying.zh-CN.md">在 GitHub 查看源码 ↗</a> · <a href="./deploying.zh-CN.md">原始 Markdown</a></div></article><aside class="docs-toc" aria-label="本页目录"><strong>本页目录</strong><div class="toc">
+<ul>
+<li><a href="#choose-a-workflow">选择部署方式</a></li>
+<li><a href="#deploy-an-image">部署镜像</a></li>
+<li><a href="#secrets">密钥</a></li>
+<li><a href="#builds">构建</a><ul>
+<li><a href="#native-builders">原生架构构建节点</a></li>
+<li><a href="#build-a-local-checkout">构建本地代码</a></li>
+<li><a href="#import-a-repository">导入仓库</a></li>
+<li><a href="#dockerfile-targets-and-pinned-git-inputs">Dockerfile 阶段与固定 Git 输入</a></li>
+<li><a href="#build-runs-and-the-queue">构建记录与队列</a></li>
+</ul>
+</li>
+<li><a href="#compose-applications">Compose 应用</a></li>
+<li><a href="#recorded-workflows">部署方式记录</a></li>
+<li><a href="#ci">CI</a></li>
+</ul>
+</div>
+</aside></main></body></html>

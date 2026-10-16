@@ -1,0 +1,64 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Build Pipeline, BuildKit Pool &amp; Zot OCI Artifacts · Luma Documentation</title><meta name="description" content="Build Pipeline, BuildKit Pool &amp; Zot OCI Artifacts — Luma Documentation"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">Skip to content</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../index.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">Documentation</span><button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="Main navigation"><a href="../index.html#product">Console</a><a href="../index.html#docs">All guides</a><a href="build-and-artifacts.zh-CN.html" data-doc-language lang="zh-CN">中文</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="Documentation"><strong>Guides</strong><a class=""  href="README.html">Overview</a><a class=""  href="getting-started.html">Getting started</a><a class=""  href="concepts.html">Core concepts</a><a class=""  href="deploying.html">Deploying applications</a><a class="active" aria-current=page href="build-and-artifacts.html">Build & OCI artifacts</a><a class=""  href="migration-guide.html">Migration guide</a><a class=""  href="operations.html">Operations</a><a class=""  href="deployment-yaml.html">Deployment YAML</a><a class=""  href="compose-storage.html">Compose & storage</a><a class=""  href="secrets.html">Secrets & credentials</a><a class=""  href="exposure-model.html">Exposure model</a><a class=""  href="observability.html">Observability</a><a class=""  href="dashboard-guide.html">Console guide</a><a class=""  href="troubleshooting.html">Troubleshooting</a><a class=""  href="luma-cli-reference.html">CLI reference</a><a class=""  href="ai-agent-skills.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../index.html#docs">Documentation</a><span>/</span><span>Build Pipeline, BuildKit Pool &amp; Zot OCI Artifacts</span></div><h1 id="build-pipeline-buildkit-pool-zot-oci-artifacts">Build Pipeline, BuildKit Pool &amp; Zot OCI Artifacts<a class="headerlink" href="#build-pipeline-buildkit-pool-zot-oci-artifacts" title="Permanent link">#</a></h1>
+<p>Luma Next decouples <strong>Image Building (<code>Artifact</code>)</strong> from <strong>Workload Deployment (<code>Release</code>)</strong> using <strong>Tekton Pipelines</strong>, a <strong>Remote BuildKit Pool (<code>amd64</code> + <code>arm64</code>)</strong>, and <strong>Zot OCI Registry</strong>, while preserving all of Luma's signature topology and exposure features.</p>
+<h2 id="core-architecture">Core Architecture<a class="headerlink" href="#core-architecture" title="Permanent link">#</a></h2>
+<ol>
+<li><strong>Tekton <code>PipelineRun</code> Execution</strong>:
+   - Every build runs inside an isolated Kubernetes Pod managed by Tekton.
+   - Cancelling a build (<code>luma build cancel &lt;ID&gt;</code> or via Web Console) patches <code>spec.status: CancelledRunFinally</code>, terminating active <code>buildctl</code> and <code>git</code> processes across the cluster in <code>&lt; 3s</code>.</li>
+<li><strong>Remote BuildKit Pool &amp; Persistent Cache</strong>:
+   - <code>linux/amd64</code> builds route to the in-cluster <code>buildkitd</code> StatefulSet with a dedicated NVMe cache volume (<code>max-used-space = "30GB"</code>).
+   - <code>linux/arm64</code> builds route over Tailscale mTLS to the dedicated Apple Silicon BuildKit daemon (<code>macbook-pro</code>).
+   - Every build exports and imports OCI layer cache manifests (<code>--export-cache type=registry,mode=max</code> / <code>--import-cache type=registry</code>) stored in Zot Registry.</li>
+<li><strong>APT / APK HTTPS Mirror Acceleration</strong>:
+   - Luma's <code>accelerate_dockerfile_mirrors()</code> automatically rewrites <code>deb.debian.org</code>, <code>archive.ubuntu.com</code>, and <code>dl-cdn.alpinelinux.org</code> to HTTPS mirrors (<code>mirrors.ustc.edu.cn</code>) to eliminate <code>apt-get</code> proxy TLS handshake failures and <code>502 Bad Gateway</code> errors.</li>
+<li><strong>Multi-Repo Compose Build Contexts (<code>x-luma-git-contexts</code>)</strong>:
+   - Multi-repo applications (such as <code>serverx</code> + <code>xui</code>) declare sibling Git repositories in <code>luma.compose.yml</code> under <code>x-luma-git-contexts</code> instead of relying on fragile <code>../</code> host path assumptions.</li>
+</ol>
+<pre><code class="language-yaml">x-luma-git-contexts:
+  xui:
+    repo: https://gcode.gaojiua.com/Signal/xui.git
+    ref: main
+</code></pre>
+<h2 id="zot-oci-registry-retention-pinning">Zot OCI Registry &amp; Retention Pinning<a class="headerlink" href="#zot-oci-registry-retention-pinning" title="Permanent link">#</a></h2>
+<p>Zot replaces <code>registry:2</code> as a lightweight, single-binary OCI v1.1 registry:
+- <strong>Zero-Downtime Online Garbage Collection</strong>: Zot continuously reclaims unreferenced blobs and untagged manifests online (<code>gc: true</code>, <code>delay: 24h</code>) without stopping the registry or blocking image pushes/pulls.
+- <strong>Active &amp; Rollback Guard Pins (<code>luma-pin-*</code>)</strong>:
+  - Whenever a <code>Release</code> is deployed, Luma's <code>FluxReconciler</code> automatically tags the active image digests (<code>luma-pin-active-&lt;project&gt;-&lt;env&gt;</code>) and the last $N = 5$ rollback digests (<code>luma-pin-rollback-&lt;project&gt;-&lt;env&gt;-v&lt;gen&gt;</code>).
+  - Because Zot retains tagged manifests (<code>keepTags</code>), <strong>rolling back to any of the last 5 releases is guaranteed to succeed in <code>&lt; 5s</code> without <code>manifest unknown</code> errors</strong>.</p>
+<h2 id="luma-signature-features-in-kubernetes">Luma Signature Features in Kubernetes<a class="headerlink" href="#luma-signature-features-in-kubernetes" title="Permanent link">#</a></h2>
+<p>Luma's thin developer contract (<code>luma.yaml</code> and <code>luma.compose.yml</code>) compiles deterministically into Kubernetes and Flux primitives without losing any of Luma's multi-region or hybrid-network capabilities:</p>
+<ol>
+<li><strong>Region Scheduling (<code>cn</code>, <code>global</code>, <code>home</code>, Custom Regions) &amp; Node Pinning</strong>:
+   - <code>region</code> compiles into Kubernetes <code>nodeSelector</code> labels (<code>luma.io/region: &lt;region&gt;</code> and <code>topology.kubernetes.io/region: &lt;region&gt;</code>).
+   - Optional <code>node</code> pinning adds <code>kubernetes.io/hostname: &lt;node&gt;</code>.</li>
+<li><strong>All 6 Exposure Modes (<code>exposure</code>)</strong>:
+   - <code>cn-edge</code> (<code>region: cn</code>): Compiles to a Traefik <code>Ingress</code> bound to the CN Edge gateway with automatic HTTPS and Flux post-upgrade route probing.
+   - <code>external-edge</code> (<code>region: global</code>): Compiles to a Global Edge <code>Ingress</code> with <code>external-dns</code> Cloudflare hostname synchronization.
+   - <code>tailscale-relay</code> (<code>region: home</code>): Runs the Pod on a private <code>home</code> K3s node behind NAT (<code>macbook-pro</code> or home server) while Edge Traefik relays public HTTPS traffic over the Tailscale WireGuard mesh (<code>luma.io/relay-transport: tailscale-mesh</code>).
+   - <code>tcp-relay</code>: Validates <code>publishPort</code> (forbidding reserved ports <code>80</code>/<code>443</code>) and renders a Traefik <code>IngressRouteTCP</code> (<code>traefik.io/v1alpha1</code>) on entrypoint <code>tcp-&lt;port&gt;</code> for raw L4 TCP forwarding.
+   - <code>cloudflare-tunnel</code>: Annotates the workload <code>Ingress</code> with <code>luma.io/edge-gateway: cloudflare-tunnel</code> so <code>cloudflared</code> exposes internal ClusterIP services without opening public node ports.
+   - <code>none</code>: Renders an internal <code>ClusterIP</code> <code>Service</code> only.</li>
+<li><strong>Region-Aware Egress &amp; <code>proxy: true</code></strong>:
+   - Setting <code>proxy: true</code> injects <code>HTTP_PROXY</code>, <code>HTTPS_PROXY</code>, <code>ALL_PROXY</code>, and a comprehensive <code>NO_PROXY</code> list that strictly bypasses <code>localhost</code>, Kubernetes cluster CIDRs (<code>10.0.0.0/8</code>, <code>.svc.cluster.local</code>), Zot (<code>100.66.177.70:5000</code>), and Gitea (<code>gcode.gaojiua.com</code>).</li>
+</ol>
+<h2 id="cli-web-console-workflows">CLI &amp; Web Console Workflows<a class="headerlink" href="#cli-web-console-workflows" title="Permanent link">#</a></h2>
+<pre><code class="language-bash"># List immutable build artifacts
+luma artifact list --project serverx
+
+# Inspect per-service sha256 digests and BuildKit stage waterfall timings
+luma artifact show art-serverx-9f8e7d6c
+
+# Deploy an existing artifact without rebuilding
+luma deploy luma.yaml --artifact art-serverx-9f8e7d6c
+
+# Promote a verified artifact from staging to prod (zero rebuild)
+luma artifact promote art-serverx-9f8e7d6c --from staging --to prod
+</code></pre><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/build-and-artifacts.md">View source on GitHub ↗</a> · <a href="./build-and-artifacts.md">Raw Markdown</a></div></article><aside class="docs-toc" aria-label="On this page"><strong>On this page</strong><div class="toc">
+<ul>
+<li><a href="#core-architecture">Core Architecture</a></li>
+<li><a href="#zot-oci-registry-retention-pinning">Zot OCI Registry &amp; Retention Pinning</a></li>
+<li><a href="#luma-signature-features-in-kubernetes">Luma Signature Features in Kubernetes</a></li>
+<li><a href="#cli-web-console-workflows">CLI &amp; Web Console Workflows</a></li>
+</ul>
+</div>
+</aside></main></body></html>

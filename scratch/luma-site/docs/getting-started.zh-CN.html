@@ -1,0 +1,167 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>快速上手 · Luma 文档</title><meta name="description" content="快速上手 — Luma 文档"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">跳到正文</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../zh.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">文档</span><button class="menu-toggle" aria-label="展开导航" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="主导航"><a href="../zh.html#product">控制台</a><a href="../zh.html#docs">全部指南</a><a href="getting-started.html" data-doc-language lang="en">English</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="文档"><strong>指南</strong><a class=""  href="README.zh-CN.html">概览</a><a class="active" aria-current=page href="getting-started.zh-CN.html">快速上手</a><a class=""  href="concepts.zh-CN.html">核心概念</a><a class=""  href="deploying.zh-CN.html">部署应用</a><a class=""  href="build-and-artifacts.zh-CN.html">构建与制品</a><a class=""  href="migration-guide.zh-CN.html">零停机迁移</a><a class=""  href="operations.zh-CN.html">日常运维</a><a class=""  href="deployment-yaml.zh-CN.html">部署 YAML</a><a class=""  href="compose-storage.zh-CN.html">Compose 与存储</a><a class=""  href="secrets.zh-CN.html">密钥与凭据</a><a class=""  href="exposure-model.zh-CN.html">暴露模型</a><a class=""  href="observability.zh-CN.html">可观测</a><a class=""  href="dashboard-guide.zh-CN.html">控制台指南</a><a class=""  href="troubleshooting.zh-CN.html">故障排查</a><a class=""  href="luma-cli-reference.zh-CN.html">CLI 命令参考</a><a class=""  href="ai-agent-skills.zh-CN.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../zh.html#docs">文档</a><span>/</span><span>快速上手</span></div><h1 id="getting-started">快速上手<a class="headerlink" href="#getting-started" title="章节链接">#</a></h1>
+<p>本文带你从一台空的 Linux 服务器走到一个运行中的应用：安装 CLI、初始化一台 Manager、部署第一个工作负载，再加入更多节点。不需要任何 Luma 前置配置。</p>
+<h2 id="what-you-need">准备条件<a class="headerlink" href="#what-you-need" title="章节链接">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>条件</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一台 Linux 服务器，推荐 Ubuntu 22.04+，起步 2 核 / 2 GB</td>
+<td>运行 Luma Control、Nomad 和 Traefik</td>
+</tr>
+<tr>
+<td>一个由 Cloudflare 托管 DNS 的域名</td>
+<td>Control API、控制台和应用域名</td>
+</tr>
+<tr>
+<td>该域名的 Cloudflare API Token，权限为 <strong>Zone Read</strong> 和 <strong>DNS Edit</strong></td>
+<td>Luma 创建和更新 DNS 记录</td>
+</tr>
+<tr>
+<td>公网开放 80 和 443 端口，以及一个用于 Let's Encrypt 的邮箱</td>
+<td>HTTPS 证书与入口</td>
+</tr>
+<tr>
+<td>能访问存放 Luma Control 镜像的仓库（默认 GHCR）</td>
+<td>Manager 从这里拉取 Control</td>
+</tr>
+</tbody>
+</table></div>
+<p>第一个工作负载<strong>不需要</strong> Tailscale、构建节点或私有镜像仓库。需要家庭节点、中继或源码构建时再添加。</p>
+<h2 id="1-install-the-cli">1. 安装 CLI<a class="headerlink" href="#1-install-the-cli" title="章节链接">#</a></h2>
+<p>在 Manager 以及所有要用来部署的机器上执行：</p>
+<pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
+~/.local/bin/luma doctor --local
+</code></pre>
+<p>安装脚本需要 Python 3.9+ 以及 curl 或 wget。它把最新发布版安装到 <code>~/.local/share/luma</code>，并把 <code>luma</code> 放到 <code>~/.local/bin</code>；如果该目录还不在 <code>PATH</code> 中，请打开一个新的 shell。安装过程不会改动 Docker、Nomad 或防火墙。</p>
+<p>其他安装方式：</p>
+<pre><code class="language-bash"># A specific release, a branch or a commit
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.2.11 sh
+
+# CI runners and virtual environments
+python -m pip install &quot;luma-infra==0.2.11&quot;
+</code></pre>
+<p>卸载 CLI 使用 <code>scripts/uninstall-luma.sh</code>（不会动 <code>/opt/luma</code> 下的服务器状态）；加 <code>--purge</code> 会同时删除本地保存的配置和登录信息。</p>
+<h2 id="2-bootstrap-the-manager">2. 初始化 Manager<a class="headerlink" href="#2-bootstrap-the-manager" title="章节链接">#</a></h2>
+<p><strong>在 Manager 服务器上</strong>执行：</p>
+<pre><code class="language-bash">luma bootstrap --domain luma.example.com
+</code></pre>
+<p><code>luma bootstrap</code> 会询问缺少的配置并解释每一项：</p>
+<ul>
+<li><code>CLOUDFLARE_API_TOKEN</code> 和 <code>TRAEFIK_ACME_EMAIL</code> 必填。</li>
+<li>无法自动推断时，会询问 <code>LUMA_DNS_EDGE_TARGET</code>（DNS 记录指向的公网 IP）。</li>
+<li><code>TAILSCALE_AUTHKEY</code> 和 <code>EGRESS_SUBSCRIPTION_URL</code> 可选，直接回车跳过。</li>
+</ul>
+<p>回答会保存到 <code>~/.luma.config.json</code>（权限 0600），重跑时不再询问。也可以用环境变量提供，或写在当前目录的 <code>.env</code> 中；Luma 只会从 <code>./.env</code> 读取它自己的配置项。</p>
+<p>如果 Manager 需要代理才能访问 GHCR（中国大陆服务器通常如此），请在初始化前设置 <code>EGRESS_SUBSCRIPTION_URL</code>；否则加 <code>--skip-egress</code>。</p>
+<p>初始化会安装 Docker 和 Nomad server、写入节点元数据、配置防火墙、以 Nomad job 方式部署 Traefik 和 Luma Control，并在 <code>/opt/luma/control/control.sqlite3</code> 创建 Control 数据库。每一步都会打印 <code>[start]</code>、<code>[ok]</code> 或 <code>[fail]</code>，失败时附带 <code>Fix:</code> 提示。修复后可以直接重跑；也可以单独修复某一层：<code>luma manager egress</code>、<code>luma node tailscale</code>、<code>luma doctor</code>。</p>
+<p>完成后会输出：</p>
+<pre><code class="language-text">Control URL: https://luma.example.com
+Management token: ...
+Node join token: ...
+Dashboard: https://luma.example.com/dashboard/
+</code></pre>
+<p>两个令牌都要保密：</p>
+<ul>
+<li><strong>管理令牌</strong>用于 CLI、CI 和控制台登录，拥有全部权限。对应的环境变量是 <code>LUMA_DEPLOY_TOKEN</code>。</li>
+<li><strong>节点加入令牌</strong>只用于服务器加入集群。</li>
+</ul>
+<p>节点 agent 的凭据由系统自动管理，你不需要接触。</p>
+<p>如需使用自己的 Control 镜像，请先发布镜像，并在初始化前设置 <code>LUMA_CONTROL_IMAGE</code>。初始化和升级过程中，Luma 不会构建或复用陈旧的本地镜像。</p>
+<h2 id="3-deploy-a-first-workload">3. 部署第一个工作负载<a class="headerlink" href="#3-deploy-a-first-workload" title="章节链接">#</a></h2>
+<p>最快的验证方式是控制台：打开 Dashboard 地址，粘贴管理令牌，选择 <strong>应用 → 创建应用 → hello-world 首装验证</strong>。它会部署一个不需要 DNS 和镜像仓库的内部服务，用来证明调度正常。</p>
+<p>在你的电脑上登录并部署一个公网服务：</p>
+<pre><code class="language-bash">luma login https://luma.example.com --token-stdin &lt; token.txt
+luma init --name status --image traefik/whoami:v1.10.3 --region cn --domain status.example.com --port 80
+luma validate status.yaml
+luma deploy status.yaml --dry-run
+luma deploy status.yaml
+luma app list
+</code></pre>
+<p><code>luma init</code> 会生成一份带注释的 manifest，包含内存上限和健康检查，按需修改即可。<code>--dry-run</code> 会打印 Control 将要提交的 Nomad job。请把 <code>status.example.com</code> 换成你 Cloudflare 域名下的主机名。本地构建、仓库导入和 Compose 应用见<a href="deploying.zh-CN.html">部署应用</a>。</p>
+<h2 id="4-add-nodes">4. 加入更多节点<a class="headerlink" href="#4-add-nodes" title="章节链接">#</a></h2>
+<p>使用节点加入令牌，<strong>在每台新服务器上</strong>执行：</p>
+<pre><code class="language-bash">luma node join https://luma.example.com --token &lt;node-join-token&gt; --region global --name sg-1
+</code></pre>
+<ul>
+<li><code>--region</code> 决定哪些服务可以运行在这里：<code>cn</code>、<code>global</code>、<code>home</code>，或通过 <code>luma region create</code> 创建的区域。</li>
+<li><code>--name</code> 是节点名，manifest 用 <code>node:</code> 固定服务时填写它。</li>
+</ul>
+<p>家庭节点和其他私网节点需要 Tailscale：先设置 <code>TAILSCALE_AUTHKEY</code> 或执行 <code>luma node tailscale</code>。macOS 节点还需要运行中的 Docker（Docker Desktop 或 OrbStack）。</p>
+<p><code>luma node list</code> 显示已注册节点及其 agent 状态。<code>luma node exit</code> 会停止本机的 Nomad 并删除本机的 Luma 状态；加上 <code>--endpoint</code> 和 <code>--token</code> 会同时从集群注销。</p>
+<h3 id="required-ports">所需端口<a class="headerlink" href="#required-ports" title="章节链接">#</a></h3>
+<p>Luma 会在 Linux 节点上配置 UFW。云安全组和 Tailscale ACL 请保持一致：</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>端口</th>
+<th>方向</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>80/tcp</code>、<code>443/tcp</code></td>
+<td>公网 → Manager</td>
+<td>HTTP(S) 入口和 Let's Encrypt</td>
+</tr>
+<tr>
+<td><code>tcp-relay</code> 端口</td>
+<td>公网 → Manager</td>
+<td>公网 TCP 中继，例如 <code>3306/tcp</code></td>
+</tr>
+<tr>
+<td><code>4646/tcp</code></td>
+<td>客户端和 Traefik → Nomad server</td>
+<td>Nomad HTTP API</td>
+</tr>
+<tr>
+<td><code>4647/tcp</code></td>
+<td>Nomad client → server</td>
+<td>Nomad RPC</td>
+</tr>
+<tr>
+<td><code>4648/tcp</code>、<code>4648/udp</code></td>
+<td>所有 Nomad agent 之间</td>
+<td>Nomad gossip</td>
+</tr>
+</tbody>
+</table></div>
+<p>Manager 有 Tailscale 地址时，Luma 只在 <code>tailscale0</code> 上开放 Nomad 端口。出站代理端口 <code>7890</code> 永远不会对公网开放。</p>
+<h2 id="5-keep-luma-up-to-date">5. 保持更新<a class="headerlink" href="#5-keep-luma-up-to-date" title="章节链接">#</a></h2>
+<pre><code class="language-bash">luma update            # on the manager: CLI and Control; on a node: CLI and agent; elsewhere: CLI
+luma update fleet      # from any client: every node with a ready agent (the manager is skipped)
+</code></pre>
+<p>未指定 <code>--install-ref</code> 时都会安装最新发布版。控制台的 <strong>节点 → 升级中心</strong> 提供带进度和路由检查的同等操作，是升级 Manager 的首选方式。<code>luma update</code> 不会重启 Docker 或 Nomad，也不会重新部署应用。</p>
+<h2 id="6-check-health">6. 检查健康状态<a class="headerlink" href="#6-check-health" title="章节链接">#</a></h2>
+<pre><code class="language-bash">luma status
+luma doctor
+luma doctor --deep
+</code></pre>
+<p><code>doctor</code> 会检查登录、Control、DNS 配置、节点 agent 和 Nomad；<code>--deep</code> 还会评估每个节点上报的 Docker 和 Nomad 诊断信息。</p>
+<h2 id="next-steps">下一步<a class="headerlink" href="#next-steps" title="章节链接">#</a></h2>
+<ul>
+<li><a href="concepts.zh-CN.html">核心概念</a>：区域、暴露方式和出站代理。</li>
+<li><a href="deploying.zh-CN.html">部署应用</a>：镜像、本地构建、仓库导入、Compose 与 CI。</li>
+<li><a href="operations.zh-CN.html">日常运维</a>：日志、回滚、重启、删除和节点维护。</li>
+<li><a href="troubleshooting.zh-CN.html">故障排查</a>：某一步失败时怎么办。</li>
+</ul><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/getting-started.zh-CN.md">在 GitHub 查看源码 ↗</a> · <a href="./getting-started.zh-CN.md">原始 Markdown</a></div></article><aside class="docs-toc" aria-label="本页目录"><strong>本页目录</strong><div class="toc">
+<ul>
+<li><a href="#what-you-need">准备条件</a></li>
+<li><a href="#1-install-the-cli">1. 安装 CLI</a></li>
+<li><a href="#2-bootstrap-the-manager">2. 初始化 Manager</a></li>
+<li><a href="#3-deploy-a-first-workload">3. 部署第一个工作负载</a></li>
+<li><a href="#4-add-nodes">4. 加入更多节点</a><ul>
+<li><a href="#required-ports">所需端口</a></li>
+</ul>
+</li>
+<li><a href="#5-keep-luma-up-to-date">5. 保持更新</a></li>
+<li><a href="#6-check-health">6. 检查健康状态</a></li>
+<li><a href="#next-steps">下一步</a></li>
+</ul>
+</div>
+</aside></main></body></html>

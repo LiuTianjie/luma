@@ -1,0 +1,2111 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Luma CLI 命令参考 · Luma 文档</title><meta name="description" content="Luma CLI 命令参考 — Luma 文档"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">跳到正文</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../zh.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">文档</span><button class="menu-toggle" aria-label="展开导航" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="主导航"><a href="../zh.html#product">控制台</a><a href="../zh.html#docs">全部指南</a><a href="luma-cli-reference.html" data-doc-language lang="en">English</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="文档"><strong>指南</strong><a class=""  href="README.zh-CN.html">概览</a><a class=""  href="getting-started.zh-CN.html">快速上手</a><a class=""  href="concepts.zh-CN.html">核心概念</a><a class=""  href="deploying.zh-CN.html">部署应用</a><a class=""  href="build-and-artifacts.zh-CN.html">构建与制品</a><a class=""  href="migration-guide.zh-CN.html">零停机迁移</a><a class=""  href="operations.zh-CN.html">日常运维</a><a class=""  href="deployment-yaml.zh-CN.html">部署 YAML</a><a class=""  href="compose-storage.zh-CN.html">Compose 与存储</a><a class=""  href="secrets.zh-CN.html">密钥与凭据</a><a class=""  href="exposure-model.zh-CN.html">暴露模型</a><a class=""  href="observability.zh-CN.html">可观测</a><a class=""  href="dashboard-guide.zh-CN.html">控制台指南</a><a class=""  href="troubleshooting.zh-CN.html">故障排查</a><a class="active" aria-current=page href="luma-cli-reference.zh-CN.html">CLI 命令参考</a><a class=""  href="ai-agent-skills.zh-CN.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../zh.html#docs">文档</a><span>/</span><span>Luma CLI 命令参考</span></div><h1 id="luma-cli-command-reference">Luma CLI 命令参考<a class="headerlink" href="#luma-cli-command-reference" title="章节链接">#</a></h1>
+<!-- 由 scripts/generate-cli-reference.py 生成，请勿手动编辑。 -->
+
+<p>本页由当前 CLI 解析器自动生成，帮助文本保持英文原样，便于与终端输出逐项核对。
+使用 <code>python scripts/generate-cli-reference.py</code> 重新生成，CI 通过 <code>--check</code> 校验。
+按任务组织的说明见<a href="getting-started.zh-CN.html">快速上手</a>、<a href="deploying.zh-CN.html">部署应用</a>和<a href="operations.zh-CN.html">日常运维</a>。
+全局选项写在命令之前，命令选项写在命令之后。</p>
+<h2 id="luma"><code>luma</code><a class="headerlink" href="#luma" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma &lt;command&gt; [options]
+
+Deploy containers to your own servers through Luma Control.
+
+Get started:
+  init          Create a service manifest
+  login         Save a Control endpoint and management token
+  context       List or switch saved Control logins
+  doctor        Check this machine, Control and nodes
+  version       Show CLI and Control versions
+
+Deploy:
+  validate      Check a service manifest without contacting Control
+  deploy        Deploy a service manifest
+  compose       Deploy a Docker Compose application with a Luma sidecar
+  import        Build a Git repository on a builder node and deploy it
+  build         Build a local checkout, or inspect and retry build runs
+  artifact      Inspect immutable build artifacts or promote them across environments
+  workflow      Show or record how an application is built and deployed
+
+Operate:
+  status        Show cluster, node and application health
+  app           Inspect, restart, roll back or remove deployed applications
+  secret        Manage application secrets
+
+Cluster administration:
+  bootstrap     Install the Luma manager on this machine
+  update        Update the CLI, the manager or every node
+  node          Join, list and remove nodes
+  region        Manage scheduling regions
+  storage       Manage NFS storage classes
+  registry      Manage registry credentials and the managed registry
+  git-provider  Manage saved GitHub and Gitea credentials
+  manager       Repair manager networking, DNS and IP changes
+
+arguments:
+  -h, --help           show this help message and exit
+  --version            show program's version number and exit
+  --config CONFIG      Cluster config file, used on the manager (default: ./luma.yaml if present)
+  --env-file ENV_FILE  Load environment variables from this file (default: Luma settings from
+                       ./.env)
+  --no-env             Do not load ./.env or saved local settings
+
+Run 'luma &lt;command&gt; --help' for the options of a command.
+Documentation: https://liutianjie.github.io/luma/
+</code></pre>
+<h2 id="luma-init"><code>luma init</code><a class="headerlink" href="#luma-init" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma init [-h] [--name NAME] [--image IMAGE] [--region REGION] [--exposure {cloudflare-tunnel,cn-edge,external-edge,none,tailscale-relay,tcp-relay}] [--domain DOMAIN] [--port PORT] [--replicas REPLICAS] [--output OUTPUT] [--force]
+
+Create a service manifest. Prompts for missing values in a terminal; without a terminal every value
+comes from flags or defaults.
+
+arguments:
+  -h, --help                  show this help message and exit
+  --name NAME                 Application name (default: app)
+  --image IMAGE               Container image (default: ghcr.io/your-org/&lt;name&gt;:latest)
+  --region REGION             Where the service runs: cn, global, home or a created region (default:
+                              cn)
+  --exposure {cloudflare-tunnel,cn-edge,external-edge,none,tailscale-relay,tcp-relay}
+                              How traffic reaches the service (default: cn-edge)
+  --domain DOMAIN             Public hostname for edge and tunnel exposures
+  --port PORT                 Container port (default: 3000)
+  --replicas REPLICAS         Number of instances (default: 1)
+  --output OUTPUT             Manifest path (default: &lt;name&gt;.yaml)
+  --force                     Overwrite an existing manifest
+
+Example: luma init --name web --image nginx:1.27 --region cn --exposure cn-edge --domain
+web.example.com --port 80
+</code></pre>
+<h2 id="luma-login"><code>luma login</code><a class="headerlink" href="#luma-login" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma login [-h] [--token TOKEN | --token-stdin] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] endpoint
+
+Save a Control endpoint and management token
+
+arguments:
+  endpoint                    Control URL, for example https://luma.example.com
+
+arguments:
+  -h, --help                  show this help message and exit
+  --token TOKEN               Management token (prefer --token-stdin or LUMA_DEPLOY_TOKEN)
+  --token-stdin               Read the management token from stdin
+  --insecure                  Skip TLS verification for self-signed endpoints
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the endpoint hostname as Host
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+Example: luma login https://luma.example.com --token-stdin &lt; token.txt
+</code></pre>
+<h2 id="luma-context"><code>luma context</code><a class="headerlink" href="#luma-context" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma context [-h] &lt;command&gt; ...
+
+List or switch saved Control logins
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  &lt;command&gt;
+    list      List saved logins
+    use       Switch the current login
+</code></pre>
+<h2 id="luma-context-list"><code>luma context list</code><a class="headerlink" href="#luma-context-list" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma context list [-h] [--format {text,json,ndjson}] [--quiet]
+
+List saved logins
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+</code></pre>
+<h2 id="luma-context-use"><code>luma context use</code><a class="headerlink" href="#luma-context-use" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma context use [-h] [--format {text,json,ndjson}] [--quiet] cluster
+
+Switch the current login
+
+arguments:
+  cluster                     Cluster ID or name shown by 'luma context list'
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+</code></pre>
+<h2 id="luma-doctor"><code>luma doctor</code><a class="headerlink" href="#luma-doctor" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma doctor [-h] [--local] [--deep] [--fix] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+Check this machine, Control and nodes
+
+arguments:
+  -h, --help                  show this help message and exit
+  --local                     Only inspect this machine's installation; do not contact Control
+  --deep                      Also run slower live checks on every node
+  --fix                       Automatically run node self-heal and containerd/CNI/mirror repair
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-version"><code>luma version</code><a class="headerlink" href="#luma-version" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma version [-h] [--local] [--control-url CONTROL_URL] [--insecure] [--resolve-ip RESOLVE_IP]
+
+Show CLI and Control versions
+
+arguments:
+  -h, --help                 show this help message and exit
+  --local                    Only print the local CLI version
+  --control-url CONTROL_URL  Control URL to check instead of the current login
+  --insecure                 Skip TLS verification for the Control check
+  --resolve-ip RESOLVE_IP    Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-validate"><code>luma validate</code><a class="headerlink" href="#luma-validate" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma validate [-h] [--format {text,json,ndjson}] [--quiet] FILE
+
+Check a service manifest without contacting Control
+
+arguments:
+  FILE                        Service manifest
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+Use 'luma deploy FILE --dry-run' to see the rendered Nomad job.
+</code></pre>
+<h2 id="luma-deploy"><code>luma deploy</code><a class="headerlink" href="#luma-deploy" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma deploy [-h] [--artifact ARTIFACT] [--dry-run] [--env DEPLOY_ENV_FILE] [--timeout TIMEOUT] [--skip-dns] [--skip-orchestrator] [--workflow-app WORKFLOW_APP] [--accept-workflow-change] [--workflow-note WORKFLOW_NOTE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] FILE
+
+Deploy a service manifest through Luma Control. The image must already exist; use 'luma build local'
+or 'luma import' to build one.
+
+arguments:
+  FILE                        Service manifest
+
+arguments:
+  -h, --help                  show this help message and exit
+  --artifact ARTIFACT         Deploy an existing immutable BuildArtifact ID without rebuilding
+  --dry-run                   Render the Nomad job locally and print it; nothing is deployed
+  --env DEPLOY_ENV_FILE       Store the variables the manifest references from this .env file as
+                              application secrets
+  --timeout TIMEOUT           Seconds to wait for Control (default: 3000)
+  --skip-dns                  Do not create or update Cloudflare DNS records
+  --skip-orchestrator         Update routes and DNS without submitting the Nomad job
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --workflow-app WORKFLOW_APP
+                              Application whose workflow to check, when a repository has several
+  --accept-workflow-change    Proceed after reviewing the reported workflow differences
+  --workflow-note WORKFLOW_NOTE
+                              Record why this workflow is used; never include secrets
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+
+Examples:
+  luma deploy app.yaml --dry-run
+  luma deploy app.yaml --env .env
+</code></pre>
+<h2 id="luma-compose"><code>luma compose</code><a class="headerlink" href="#luma-compose" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma compose [-h] &lt;command&gt; ...
+
+Deploy a Docker Compose application with a Luma sidecar
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  &lt;command&gt;
+    init      Create a Luma sidecar for a docker-compose.yml
+    validate  Check a Compose sidecar and the Compose file it references
+    deploy    Deploy a Compose application
+</code></pre>
+<h2 id="luma-compose-init"><code>luma compose init</code><a class="headerlink" href="#luma-compose-init" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma compose init [-h] [--compose COMPOSE] [--output OUTPUT]
+
+Create a Luma sidecar for a docker-compose.yml
+
+arguments:
+  -h, --help         show this help message and exit
+  --compose COMPOSE  Compose file (default: docker-compose.yml)
+  --output OUTPUT    Sidecar path (default: luma.compose.yml)
+</code></pre>
+<h2 id="luma-compose-validate"><code>luma compose validate</code><a class="headerlink" href="#luma-compose-validate" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma compose validate [-h] [--import-mode] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] SIDECAR
+
+Check a Compose sidecar and the Compose file it references
+
+arguments:
+  SIDECAR                     Luma Compose sidecar, for example luma.compose.yml
+
+arguments:
+  -h, --help                  show this help message and exit
+  --import-mode               Allow services with build: as 'luma import' does
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-compose-deploy"><code>luma compose deploy</code><a class="headerlink" href="#luma-compose-deploy" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma compose deploy [-h] [--artifact ARTIFACT] [--dry-run] [--env DEPLOY_ENV_FILE] [--timeout TIMEOUT] [--skip-dns] [--skip-orchestrator] [--workflow-app WORKFLOW_APP] [--accept-workflow-change] [--workflow-note WORKFLOW_NOTE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] SIDECAR
+
+Deploy a Compose application
+
+arguments:
+  SIDECAR                     Luma Compose sidecar, for example luma.compose.yml
+
+arguments:
+  -h, --help                  show this help message and exit
+  --artifact ARTIFACT         Deploy an existing immutable BuildArtifact ID without rebuilding
+  --dry-run                   Render the Nomad job and print it; nothing is deployed
+  --env DEPLOY_ENV_FILE       Store referenced variables from this .env file as application secrets
+  --timeout TIMEOUT           Seconds to wait for Control (default: 3000)
+  --skip-dns                  Do not create or update Cloudflare DNS records
+  --skip-orchestrator         Update routes and DNS without submitting the Nomad job
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --workflow-app WORKFLOW_APP
+                              Application whose workflow to check, when a repository has several
+  --accept-workflow-change    Proceed after reviewing the reported workflow differences
+  --workflow-note WORKFLOW_NOTE
+                              Record why this workflow is used; never include secrets
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-import"><code>luma import</code><a class="headerlink" href="#luma-import" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma import [-h] [--ref REF] [--provider-id PROVIDER_ID] [--repository REPOSITORY] [--manifest MANIFEST] [--compose-sidecar COMPOSE_SIDECAR] [--region REGION] [--exposure EXPOSURE] [--domain DOMAIN] [--port PORT] [--env DEPLOY_ENV_FILE] [--build-node BUILD_NODE] [--platform PLATFORM] [--context BUILD_CONTEXT] [--dockerfile DOCKERFILE] [--registry-host REGISTRY_HOST] [--require-build-capability REQUIRE_BUILD_CAPABILITIES] [--proxy-mode {auto,direct}] [--timeout TIMEOUT] [--workflow-app WORKFLOW_APP] [--accept-workflow-change] [--workflow-note WORKFLOW_NOTE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] [repo]
+
+Build and deploy a Git repository on a builder node. Luma looks for a .luma.yml service manifest or
+a luma.compose.yml sidecar; Compose services with build: are built, pushed to the internal registry
+and deployed.
+
+arguments:
+  repo                        Repository URL or owner/name (GitHub); omit with --provider-id and
+                              --repository
+
+arguments:
+  -h, --help                  show this help message and exit
+  --ref REF                   Branch or tag to build (default: the repository's default branch)
+  --provider-id PROVIDER_ID   Saved Git provider credential, for example github:personal
+  --repository REPOSITORY     Repository full name for --provider-id, for example owner/name
+  --manifest MANIFEST         Local manifest to use when the repository has none
+  --compose-sidecar COMPOSE_SIDECAR
+                              Repository-relative Compose sidecar to use instead of auto-discovery
+  --region REGION             Override the manifest's region
+  --exposure EXPOSURE         Override the manifest's exposure (single service)
+  --domain DOMAIN             Override the manifest's domain (single service)
+  --port PORT                 Override the manifest's container port (single service)
+  --env DEPLOY_ENV_FILE       Store variables from this .env file as application secrets
+  --build-node BUILD_NODE     Pin a compatible builder; ARM builds still require a native ARM engine
+  --platform PLATFORM         Build platform (default: linux/amd64 or the manifest's build.platform)
+  --context BUILD_CONTEXT     Docker build context inside the repository (default: .)
+  --dockerfile DOCKERFILE     Dockerfile inside the repository (default: Dockerfile)
+  --registry-host REGISTRY_HOST
+                              Registry host that nodes pull from (default: &lt;build-node&gt;:5000)
+  --require-build-capability REQUIRE_BUILD_CAPABILITIES
+                              Require a versioned Builder capability (repeatable); unsupported
+                              Control or Builder fails before deployment
+  --proxy-mode {auto,direct}  Builder network: auto follows the node's region policy, direct
+                              disables the proxy
+  --timeout TIMEOUT           Seconds to wait for build and deploy (default: 3600)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --workflow-app WORKFLOW_APP
+                              Application whose workflow to check, when a repository has several
+  --accept-workflow-change    Proceed after reviewing the reported workflow differences
+  --workflow-note WORKFLOW_NOTE
+                              Record why this workflow is used; never include secrets
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+
+Examples:
+  luma import acme/web
+  luma import https://gitea.example.com/acme/web.git --ref v1.2.0
+</code></pre>
+<h2 id="luma-build"><code>luma build</code><a class="headerlink" href="#luma-build" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma build [-h] &lt;command&gt; ...
+
+Build a local checkout, or inspect and retry build runs
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  &lt;command&gt;
+    local     Build a local checkout with Docker Buildx, push it and deploy it
+    list      List recent build runs
+    logs      Show the step log of a build run
+    retry     Run a recorded build again
+    cancel    Cancel a running build
+    config    Show or set builder nodes and the internal registry
+</code></pre>
+<h2 id="luma-build-local"><code>luma build local</code><a class="headerlink" href="#luma-build-local" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma build local [-h] [--compose-sidecar COMPOSE_SIDECAR] [--region REGION] [--exposure EXPOSURE] [--domain DOMAIN] [--port PORT] [--platform PLATFORM] [--builder BUILDER] [--proxy PROXY] [--context BUILD_CONTEXT] [--dockerfile DOCKERFILE] [--repo-url REPO_URL] [--env DEPLOY_ENV_FILE] [--timeout TIMEOUT] [--workflow-app WORKFLOW_APP] [--accept-workflow-change] [--workflow-note WORKFLOW_NOTE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] [path]
+
+Build a local checkout with Docker Buildx, push it and deploy it
+
+arguments:
+  path                        Project directory (default: .)
+
+arguments:
+  -h, --help                  show this help message and exit
+  --compose-sidecar COMPOSE_SIDECAR
+                              Repository-relative Compose sidecar to use
+  --region REGION             Override the manifest's region
+  --exposure EXPOSURE         Override the manifest's exposure (single service)
+  --domain DOMAIN             Override the manifest's domain (single service)
+  --port PORT                 Override the manifest's container port (single service)
+  --platform PLATFORM         Build platform, for example linux/amd64
+  --builder BUILDER           Existing local Docker Buildx builder
+  --proxy PROXY               HTTP proxy for base image pulls and RUN steps
+  --context BUILD_CONTEXT     Docker build context inside the project
+  --dockerfile DOCKERFILE     Dockerfile inside the project
+  --repo-url REPO_URL         Project Git URL used to name the image (default: the origin remote)
+  --env DEPLOY_ENV_FILE       Store variables from this .env file as application secrets
+  --timeout TIMEOUT           Seconds allowed for build and deploy (default: 7200)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --workflow-app WORKFLOW_APP
+                              Application whose workflow to check, when a repository has several
+  --accept-workflow-change    Proceed after reviewing the reported workflow differences
+  --workflow-note WORKFLOW_NOTE
+                              Record why this workflow is used; never include secrets
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+
+Example: luma build local . --platform linux/amd64
+</code></pre>
+<h2 id="luma-build-list"><code>luma build list</code><a class="headerlink" href="#luma-build-list" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma build list [-h] [--limit LIMIT] [--cursor CURSOR] [--app APP] [--status STATUS] [--source {build,cli,dashboard}] [--since SINCE] [--until UNTIL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List recent build runs
+
+arguments:
+  -h, --help                  show this help message and exit
+  --limit LIMIT               Records per page, 1-100 (default: 50)
+  --cursor CURSOR             nextCursor from the previous page with the same filters
+  --app APP                   Only this application
+  --status STATUS             Only this recorded status
+  --source {build,cli,dashboard}
+                              Only records from this source
+  --since SINCE               Created at or after (Unix seconds or RFC 3339)
+  --until UNTIL               Created at or before (Unix seconds or RFC 3339)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-build-logs"><code>luma build logs</code><a class="headerlink" href="#luma-build-logs" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma build logs [-h] [--limit LIMIT] [--cursor CURSOR] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] id
+
+Show the step log of a build run
+
+arguments:
+  id                          Build run ID from 'luma build list'
+
+arguments:
+  -h, --help                  show this help message and exit
+  --limit LIMIT               Records per page, 1-100 (default: 50)
+  --cursor CURSOR             nextCursor from the previous page with the same filters
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-build-retry"><code>luma build retry</code><a class="headerlink" href="#luma-build-retry" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma build retry [-h] [--env DEPLOY_ENV_FILE] [--timeout TIMEOUT] [--workflow-app WORKFLOW_APP] [--accept-workflow-change] [--workflow-note WORKFLOW_NOTE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] id
+
+Run a recorded build again
+
+arguments:
+  id                          Build run ID from 'luma build list'
+
+arguments:
+  -h, --help                  show this help message and exit
+  --env DEPLOY_ENV_FILE       Store variables from this .env file as application secrets
+  --timeout TIMEOUT           Seconds to wait for build and deploy (default: 3600)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --workflow-app WORKFLOW_APP
+                              Application whose workflow to check, when a repository has several
+  --accept-workflow-change    Proceed after reviewing the reported workflow differences
+  --workflow-note WORKFLOW_NOTE
+                              Record why this workflow is used; never include secrets
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-build-cancel"><code>luma build cancel</code><a class="headerlink" href="#luma-build-cancel" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma build cancel [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] id
+
+Cancel a running build
+
+arguments:
+  id                          Build run ID from 'luma build list'
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-build-config"><code>luma build config</code><a class="headerlink" href="#luma-build-config" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma build config [-h] [--node NODES] [--default-node DEFAULT_NODE] [--registry-host REGISTRY_HOST] [--push-host PUSH_HOST] [--direct-egress-node DIRECT_EGRESS_NODES] [--clear-direct-egress] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+Show or set builder nodes and the internal registry
+
+arguments:
+  -h, --help                  show this help message and exit
+  --node NODES                Builder node; repeat for several
+  --default-node DEFAULT_NODE
+                              Preferred planner and fallback builder for builds without ARM
+  --registry-host REGISTRY_HOST
+                              Registry host that nodes pull from, for example 10.0.0.5:5000
+  --push-host PUSH_HOST       Registry host that builds push to (the builder's mesh address, not
+                              localhost)
+  --direct-egress-node DIRECT_EGRESS_NODES
+                              Builder with direct internet access; repeat for several
+  --clear-direct-egress       Clear the direct-egress builder list
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-artifact"><code>luma artifact</code><a class="headerlink" href="#luma-artifact" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma artifact [-h] &lt;command&gt; ...
+
+Inspect immutable OCI build artifacts or promote an artifact across environments without rebuilding.
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  &lt;command&gt;
+    list      List immutable build artifacts
+    show      Inspect an artifact's service digests and BuildKit stage waterfall
+    promote   Promote an immutable artifact to another environment without rebuilding
+</code></pre>
+<h2 id="luma-artifact-list"><code>luma artifact list</code><a class="headerlink" href="#luma-artifact-list" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma artifact list [-h] [--project PROJECT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List immutable build artifacts
+
+arguments:
+  -h, --help                  show this help message and exit
+  --project PROJECT           Only artifacts belonging to this application
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-artifact-show"><code>luma artifact show</code><a class="headerlink" href="#luma-artifact-show" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma artifact show [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] ID
+
+Inspect an artifact's service digests and BuildKit stage waterfall
+
+arguments:
+  ID                          Artifact ID from 'luma artifact list'
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-artifact-promote"><code>luma artifact promote</code><a class="headerlink" href="#luma-artifact-promote" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma artifact promote [-h] [--project PROJECT] [--from FROM_ENV] [--to TO_ENV] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] ID
+
+Promote an immutable artifact to another environment without rebuilding
+
+arguments:
+  ID                          Artifact ID to promote
+
+arguments:
+  -h, --help                  show this help message and exit
+  --project PROJECT           Application name (default: inferred from artifact)
+  --from FROM_ENV             Source environment (default: staging)
+  --to TO_ENV                 Target environment (default: prod)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-workflow"><code>luma workflow</code><a class="headerlink" href="#luma-workflow" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma workflow [-h] &lt;command&gt; ...
+
+Show or record how an application is built and deployed. Deploy, import and build commands compare
+themselves with the recorded workflow and stop on changes.
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  &lt;command&gt;
+    list      List recorded workflows
+    show      Show an application's recorded command and notes
+    record    Record a workflow without deploying
+    run       Run the recorded command from a local checkout
+</code></pre>
+<h2 id="luma-workflow-list"><code>luma workflow list</code><a class="headerlink" href="#luma-workflow-list" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma workflow list [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List recorded workflows
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-workflow-show"><code>luma workflow show</code><a class="headerlink" href="#luma-workflow-show" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma workflow show [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Show an application's recorded command and notes
+
+arguments:
+  name                        Application name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-workflow-record"><code>luma workflow record</code><a class="headerlink" href="#luma-workflow-record" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma workflow record [-h] [--note WORKFLOW_NOTE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name COMMAND [COMMAND ...]
+
+Record a workflow without deploying
+
+arguments:
+  name                        Application name
+  COMMAND                     The luma command, after --
+
+arguments:
+  -h, --help                  show this help message and exit
+  --note WORKFLOW_NOTE        Why this workflow is used; never include secrets
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+
+Example: luma workflow record web -- luma build local . --platform linux/amd64
+</code></pre>
+<h2 id="luma-workflow-run"><code>luma workflow run</code><a class="headerlink" href="#luma-workflow-run" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma workflow run [-h] [--path PATH] [--workflow-app WORKFLOW_APP] [--accept-workflow-change] [--workflow-note WORKFLOW_NOTE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Run the recorded command from a local checkout
+
+arguments:
+  name                        Application name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --path PATH                 Local project checkout (default: .)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --workflow-app WORKFLOW_APP
+                              Application whose workflow to check, when a repository has several
+  --accept-workflow-change    Proceed after reviewing the reported workflow differences
+  --workflow-note WORKFLOW_NOTE
+                              Record why this workflow is used; never include secrets
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-status"><code>luma status</code><a class="headerlink" href="#luma-status" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma status [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+Show cluster, node and application health
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-app"><code>luma app</code><a class="headerlink" href="#luma-app" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma app [-h] &lt;command&gt; ...
+
+Inspect, restart, roll back or remove deployed applications
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  &lt;command&gt;
+    list      List deployed services and their replica health
+    show      Show an application or one of its services
+    logs      Read application logs
+    events    Show recent runtime events of the latest allocation
+    history   Page through build and deployment attempts
+    versions  List the Nomad job versions that 'luma app rollback' can restore
+    rollback  Restore a previous Nomad job version
+    restart   Restart an application
+    scale     Scale an application or a specific Compose service independently
+    remove    Remove an application, its routes and DNS records
+
+Examples:
+  luma app list
+  luma app logs web --follow
+  luma app rollback web
+</code></pre>
+<h2 id="luma-app-list"><code>luma app list</code><a class="headerlink" href="#luma-app-list" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma app list [-h] [--region REGION] [--app STACK] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List deployed services and their replica health
+
+arguments:
+  -h, --help                  show this help message and exit
+  --region REGION             Only this region
+  --app STACK                 Only this application
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-app-show"><code>luma app show</code><a class="headerlink" href="#luma-app-show" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma app show [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Show an application or one of its services
+
+arguments:
+  name                        Application or full service name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-app-logs"><code>luma app logs</code><a class="headerlink" href="#luma-app-logs" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma app logs [-h] [--follow] [--tail TAIL] [--previous] [--allocation ALLOCATION] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Read application logs
+
+arguments:
+  name                        Full service name from 'luma app list'
+
+arguments:
+  -h, --help                  show this help message and exit
+  --follow, -f                Keep streaming new lines until interrupted
+  --tail TAIL                 Recent lines to read across all sources, 1-500 (default: 120)
+  --previous                  Read stopped allocations instead of running ones
+  --allocation ALLOCATION     Only this allocation ID
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-app-events"><code>luma app events</code><a class="headerlink" href="#luma-app-events" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma app events [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Show recent runtime events of the latest allocation
+
+arguments:
+  name                        Full service name from 'luma app list'
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-app-history"><code>luma app history</code><a class="headerlink" href="#luma-app-history" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma app history [-h] [--kind {build,deployment}] [--id RECORD_ID] [--limit LIMIT] [--cursor CURSOR] [--status STATUS] [--source {build,cli,dashboard}] [--since SINCE] [--until UNTIL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] [name]
+
+Page through build and deployment attempts
+
+arguments:
+  name                        Only this application
+
+arguments:
+  -h, --help                  show this help message and exit
+  --kind {build,deployment}   Only this record type, or the type of --id
+  --id RECORD_ID              Show one record and its step log; requires --kind
+  --limit LIMIT               Records per page, 1-100 (default: 50)
+  --cursor CURSOR             nextCursor from the previous page with the same filters
+  --status STATUS             Only this recorded status
+  --source {build,cli,dashboard}
+                              Only records from this source
+  --since SINCE               Created at or after (Unix seconds or RFC 3339)
+  --until UNTIL               Created at or before (Unix seconds or RFC 3339)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-app-versions"><code>luma app versions</code><a class="headerlink" href="#luma-app-versions" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma app versions [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+List the Nomad job versions that 'luma app rollback' can restore
+
+arguments:
+  name                        Application name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-app-rollback"><code>luma app rollback</code><a class="headerlink" href="#luma-app-rollback" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma app rollback [-h] [--to-version TO_VERSION] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Restore a previous Nomad job version. This does not restore application data.
+
+arguments:
+  name                        Application name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --to-version TO_VERSION     Version from 'luma app versions' (default: the previous one)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-app-restart"><code>luma app restart</code><a class="headerlink" href="#luma-app-restart" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma app restart [-h] [--service SERVICE] [--mode {recreate,task}] [--timeout TIMEOUT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Restart an application
+
+arguments:
+  name                        Application name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --service SERVICE           Only this service of a Compose application
+  --mode {recreate,task}      recreate replaces the allocation; task restarts in place
+  --timeout TIMEOUT           Seconds to wait for Control (default: 120)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-app-scale"><code>luma app scale</code><a class="headerlink" href="#luma-app-scale" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma app scale [-h] [--service SERVICE] --replicas REPLICAS [--environment ENVIRONMENT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Scale an application or a specific Compose service independently
+
+arguments:
+  name                        Application name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --service SERVICE           Specific service of a Compose application (default: primary service)
+  --replicas REPLICAS         Desired replica count (0-64)
+  --environment ENVIRONMENT   Target environment (default: prod)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-app-remove"><code>luma app remove</code><a class="headerlink" href="#luma-app-remove" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma app remove [-h] [--dry-run] [--delete-storage] [--skip-dns] [--skip-orchestrator] [--timeout TIMEOUT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Remove an application, its routes and DNS records
+
+arguments:
+  name                        Application name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --dry-run                   Show what would be removed
+  --delete-storage            Also delete removable storage recorded for the deployment
+  --skip-dns                  Keep Cloudflare DNS records
+  --skip-orchestrator         Keep the Nomad job running
+  --timeout TIMEOUT           Seconds to wait for Control (default: 300)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-secret"><code>luma secret</code><a class="headerlink" href="#luma-secret" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma secret [-h] &lt;command&gt; ...
+
+Manage application secrets. Manifests reference them as ${NAME}; the scope is the application name.
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  &lt;command&gt;
+    list      List secret names
+    set       Set a secret; prompts for the value when neither --value nor --value-stdin is given
+    import    Import every variable of a .env file into an application scope
+    remove    Remove a secret
+</code></pre>
+<h2 id="luma-secret-list"><code>luma secret list</code><a class="headerlink" href="#luma-secret-list" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma secret list [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List secret names
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-secret-set"><code>luma secret set</code><a class="headerlink" href="#luma-secret-set" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma secret set [-h] [--scope SCOPE] [--value VALUE] [--value-stdin] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] name
+
+Set a secret; prompts for the value when neither --value nor --value-stdin is given
+
+arguments:
+  name                        Variable name, for example DATABASE_URL
+
+arguments:
+  -h, --help                  show this help message and exit
+  --scope SCOPE               Application name the secret belongs to
+  --value VALUE               Secret value (visible in shell history; prefer the prompt or --value-
+                              stdin)
+  --value-stdin               Read the value from stdin
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-secret-import"><code>luma secret import</code><a class="headerlink" href="#luma-secret-import" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma secret import [-h] --scope SCOPE [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] ENV_FILE
+
+Import every variable of a .env file into an application scope
+
+arguments:
+  ENV_FILE                    .env file to import
+
+arguments:
+  -h, --help                  show this help message and exit
+  --scope SCOPE               Application name the secrets belong to
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-secret-remove"><code>luma secret remove</code><a class="headerlink" href="#luma-secret-remove" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma secret remove [-h] [--scope SCOPE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] name
+
+Remove a secret
+
+arguments:
+  name                        Variable name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --scope SCOPE               Application name the secret belongs to
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-bootstrap"><code>luma bootstrap</code><a class="headerlink" href="#luma-bootstrap" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma bootstrap [-h] --domain DOMAIN [--node NODE] [--profile {cn-edge,egress-gateway,global-worker,home-node,single-node}] [--http-port HTTP_PORT] [--https-port HTTPS_PORT] [--skip-egress] [--overwrite-control-state]
+
+Install the Luma manager on this Linux server: Docker, Nomad, Traefik, Luma Control and, when
+EGRESS_SUBSCRIPTION_URL is set, the egress proxy. Prompts for missing settings. Safe to rerun to
+repair a layer.
+
+arguments:
+  -h, --help                  show this help message and exit
+  --domain DOMAIN             Hostname for the Control API and dashboard
+  --node NODE                 Manager node name from the cluster config (default: this host)
+  --profile {cn-edge,egress-gateway,global-worker,home-node,single-node}
+                              Roles installed on this host (default: single-node)
+  --http-port HTTP_PORT       Public HTTP port for Traefik (default: 80)
+  --https-port HTTPS_PORT     Public HTTPS port for Traefik (default: 443)
+  --skip-egress               Do not install the egress proxy
+  --overwrite-control-state   Create new Control state and tokens instead of reusing the existing
+                              ones
+
+Example: luma bootstrap --domain luma.example.com
+</code></pre>
+<h2 id="luma-update"><code>luma update</code><a class="headerlink" href="#luma-update" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma update [-h] [--install-ref INSTALL_REF] [--domain DOMAIN] [--detach] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [target] ...
+
+Update the local CLI. On a manager this also refreshes Luma Control, and on a joined node it
+refreshes the node agent.
+
+arguments:
+  -h, --help                  show this help message and exit
+  --install-ref INSTALL_REF   Git tag, branch or commit to install (default: the latest release)
+  --domain DOMAIN             Control domain, when it changed (default: the domain in Control state)
+  --detach                    Run a manager update in the background and log progress locally
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+
+arguments:
+  [target]
+    manager                   Force a manager control-plane refresh
+    fleet                     Update Luma on every registered node with a ready agent
+
+Examples:
+  luma update
+  luma update --install-ref v0.2.11
+  luma update fleet
+</code></pre>
+<h2 id="luma-update-manager"><code>luma update manager</code><a class="headerlink" href="#luma-update-manager" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma update manager [-h] [--install-ref INSTALL_REF] [--domain DOMAIN] [--detach] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP]
+
+Force a manager control-plane refresh
+
+arguments:
+  -h, --help                  show this help message and exit
+  --install-ref INSTALL_REF   Git tag, branch or commit to install (default: the latest release)
+  --domain DOMAIN             Control domain, when it changed (default: the domain in Control state)
+  --detach                    Run a manager update in the background and log progress locally
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-update-fleet"><code>luma update fleet</code><a class="headerlink" href="#luma-update-fleet" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma update fleet [-h] [--install-ref FLEET_INSTALL_REF] [--all] [--include-manager] [--timeout TIMEOUT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+Update Luma on every registered node with a ready agent
+
+arguments:
+  -h, --help                  show this help message and exit
+  --install-ref FLEET_INSTALL_REF
+                              Git ref installed on every node
+  --all                       Also list offline nodes as skipped
+  --include-manager           Also update manager nodes
+  --timeout TIMEOUT           Per-node timeout in seconds (default: 900)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-node"><code>luma node</code><a class="headerlink" href="#luma-node" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma node [-h] &lt;command&gt; ...
+
+Join, list and remove nodes
+
+arguments:
+  -h, --help    show this help message and exit
+
+arguments:
+  &lt;command&gt;
+    join        Join this machine to the cluster
+    list        List registered nodes
+    status      Show node readiness, agent and resource details
+    remove      Unregister a node from Control
+    exit        Stop Nomad on this machine and remove its Luma state
+    tailscale   Install Tailscale on this machine and join the tailnet (needs TAILSCALE_AUTHKEY)
+    nomad-join  Ask a ready node's agent to reinstall Nomad and rejoin
+</code></pre>
+<h2 id="luma-node-join"><code>luma node join</code><a class="headerlink" href="#luma-node-join" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma node join [-h] --token TOKEN [--region REGION] [--name NAME] [--insecure] [--resolve-ip RESOLVE_IP] endpoint
+
+Join this machine to the cluster
+
+arguments:
+  endpoint                 Control URL
+
+arguments:
+  -h, --help               show this help message and exit
+  --token TOKEN            Node join token printed by 'luma bootstrap'
+  --region REGION          cn, global, home or a region from 'luma region create'
+  --name NAME              Node name used by manifests' node field (default: hostname)
+  --insecure               Skip TLS verification for self-signed endpoints
+  --resolve-ip RESOLVE_IP  Connect to this IP while keeping the endpoint hostname as Host
+
+Example: luma node join https://luma.example.com --token &lt;node-join-token&gt; --region global --name
+sg-1
+</code></pre>
+<h2 id="luma-node-list"><code>luma node list</code><a class="headerlink" href="#luma-node-list" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma node list [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List registered nodes
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-node-status"><code>luma node status</code><a class="headerlink" href="#luma-node-status" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma node status [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] [name]
+
+Show node readiness, agent and resource details
+
+arguments:
+  name                        Only this node (name, hostname or alias)
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-node-remove"><code>luma node remove</code><a class="headerlink" href="#luma-node-remove" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma node remove [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] name
+
+Unregister a node from Control
+
+arguments:
+  name                        Node name
+
+arguments:
+  -h, --help                  show this help message and exit
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-node-exit"><code>luma node exit</code><a class="headerlink" href="#luma-node-exit" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma node exit [-h] [--endpoint ENDPOINT] [--token TOKEN] [--name NAME] [--tailscale] [--prune-docker] [--insecure] [--resolve-ip RESOLVE_IP]
+
+Stop Nomad on this machine and remove its Luma state
+
+arguments:
+  -h, --help               show this help message and exit
+  --endpoint ENDPOINT      Control URL; also unregister this node
+  --token TOKEN            Management or node join token used with --endpoint
+  --name NAME              Node name to unregister (default: this node's registered name)
+  --tailscale              Also log out of Tailscale
+  --prune-docker           Also prune unused Docker containers, networks, images and volumes
+  --insecure               Skip TLS verification for self-signed endpoints
+  --resolve-ip RESOLVE_IP  Connect to this IP while keeping the endpoint hostname as Host
+</code></pre>
+<h2 id="luma-node-tailscale"><code>luma node tailscale</code><a class="headerlink" href="#luma-node-tailscale" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma node tailscale [-h]
+
+Install Tailscale on this machine and join the tailnet (needs TAILSCALE_AUTHKEY)
+
+arguments:
+  -h, --help  show this help message and exit
+</code></pre>
+<h2 id="luma-node-nomad-join"><code>luma node nomad-join</code><a class="headerlink" href="#luma-node-nomad-join" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma node nomad-join [-h] [--region REGION] [--server-addr SERVER_ADDR] [--timeout TIMEOUT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Ask a ready node's agent to reinstall Nomad and rejoin
+
+arguments:
+  name                        Node name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --region REGION             Override the node's registered region
+  --server-addr SERVER_ADDR   Nomad RPC address (default: the manager's join address)
+  --timeout TIMEOUT           Seconds to wait (default: 1200)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-region"><code>luma region</code><a class="headerlink" href="#luma-region" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma region [-h] &lt;command&gt; ...
+
+Manage scheduling regions
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  &lt;command&gt;
+    list      List built-in and custom regions
+    create    Create a custom region
+    remove    Remove an unused custom region
+</code></pre>
+<h2 id="luma-region-list"><code>luma region list</code><a class="headerlink" href="#luma-region-list" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma region list [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List built-in and custom regions
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-region-create"><code>luma region create</code><a class="headerlink" href="#luma-region-create" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma region create [-h] [--egress {proxy,direct}] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Create a custom region
+
+arguments:
+  name                        Region name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --egress {proxy,direct}     Joins and image pulls use the manager proxy or go direct (default:
+                              proxy)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-region-remove"><code>luma region remove</code><a class="headerlink" href="#luma-region-remove" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma region remove [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Remove an unused custom region
+
+arguments:
+  name                        Region name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-storage"><code>luma storage</code><a class="headerlink" href="#luma-storage" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma storage [-h] &lt;command&gt; ...
+
+Manage NFS storage classes
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  &lt;command&gt;
+    list      List storage classes
+    set       Create or update an NFS storage class
+    remove    Remove a storage class
+    apply     Prepare the volumes a Compose sidecar needs
+    check     Check that a sidecar's volumes can be mounted where it runs
+    migrate   Print a manual plan for moving a volume's data
+</code></pre>
+<h2 id="luma-storage-list"><code>luma storage list</code><a class="headerlink" href="#luma-storage-list" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma storage list [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List storage classes
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-storage-set"><code>luma storage set</code><a class="headerlink" href="#luma-storage-set" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma storage set [-h] [--provider {nfs}] [--node NODE] [--path PATH] [--external] [--endpoint ENDPOINT] [--mount-options MOUNT_OPTIONS] [--region REGIONS] [--eligible-node NODES] [--timeout TIMEOUT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] name
+
+Create or update an NFS storage class
+
+arguments:
+  name                        Storage class name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --provider {nfs}            Storage provider (default: nfs)
+  --node NODE                 Node that serves a managed NFS export
+  --path PATH                 Export path on the NFS server
+  --external                  Use an existing NFS server instead of preparing one
+  --endpoint ENDPOINT         Address of an external NFS server
+  --mount-options MOUNT_OPTIONS
+                              NFS mount options (default:
+                              nfsvers=4,rw,soft,timeo=100,retrans=10,noresvport)
+  --region REGIONS            Region allowed to mount it; repeat for several
+  --eligible-node NODES       Node allowed to mount it; repeat for several
+  --timeout TIMEOUT           Seconds to wait for host preparation (default: 360)
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-storage-remove"><code>luma storage remove</code><a class="headerlink" href="#luma-storage-remove" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma storage remove [-h] [--timeout TIMEOUT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] name
+
+Remove a storage class
+
+arguments:
+  name                        Storage class name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --timeout TIMEOUT           Seconds to wait for host cleanup (default: 360)
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-storage-apply"><code>luma storage apply</code><a class="headerlink" href="#luma-storage-apply" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma storage apply [-h] [--dry-run] [--timeout TIMEOUT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] SIDECAR
+
+Prepare the volumes a Compose sidecar needs
+
+arguments:
+  SIDECAR                     Luma Compose sidecar
+
+arguments:
+  -h, --help                  show this help message and exit
+  --dry-run                   Show the plan without preparing anything
+  --timeout TIMEOUT           Seconds to wait (default: 300)
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-storage-check"><code>luma storage check</code><a class="headerlink" href="#luma-storage-check" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma storage check [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] SIDECAR
+
+Check that a sidecar's volumes can be mounted where it runs
+
+arguments:
+  SIDECAR                     Luma Compose sidecar
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-storage-migrate"><code>luma storage migrate</code><a class="headerlink" href="#luma-storage-migrate" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma storage migrate [-h] --volume VOLUME --from-node FROM_NODE --from-volume FROM_VOLUME [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] SIDECAR
+
+Print a manual plan for moving a volume's data
+
+arguments:
+  SIDECAR                     Luma Compose sidecar
+
+arguments:
+  -h, --help                  show this help message and exit
+  --volume VOLUME             Volume in the sidecar
+  --from-node FROM_NODE       Node that holds the current data
+  --from-volume FROM_VOLUME   Current Docker volume or path
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-registry"><code>luma registry</code><a class="headerlink" href="#luma-registry" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma registry [-h] &lt;command&gt; ...
+
+Manage registry credentials and the managed registry
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  &lt;command&gt;
+    list      List saved registry credentials
+    login     Save credentials for pulling private images
+    remove    Remove saved registry credentials
+    serve     Deploy the managed registry on a Linux node
+    images    List images in the managed registry and their protection state
+    delete    Queue a manifest for deletion after a protection check
+    deletion  Cancel, execute or restore a queued deletion
+    gc        Preview or run registry garbage collection (irreversible)
+    policy    Show or change the retention policy
+</code></pre>
+<h2 id="luma-registry-list"><code>luma registry list</code><a class="headerlink" href="#luma-registry-list" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma registry list [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List saved registry credentials
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-registry-login"><code>luma registry login</code><a class="headerlink" href="#luma-registry-login" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma registry login [-h] --username USERNAME [--password-stdin] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] host
+
+Save credentials for pulling private images
+
+arguments:
+  host                        Registry host, for example ghcr.io
+
+arguments:
+  -h, --help                  show this help message and exit
+  --username USERNAME         Registry user name
+  --password-stdin            Read the password or token from stdin (otherwise prompt)
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-registry-remove"><code>luma registry remove</code><a class="headerlink" href="#luma-registry-remove" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma registry remove [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] host
+
+Remove saved registry credentials
+
+arguments:
+  host                        Registry host
+
+arguments:
+  -h, --help                  show this help message and exit
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-registry-serve"><code>luma registry serve</code><a class="headerlink" href="#luma-registry-serve" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma registry serve [-h] --node NODE [--port PORT] [--domain DOMAIN] [--username USERNAME] [--password-stdin] [--storage-class STORAGE_CLASS] [--image IMAGE] [--name NAME] [--no-activate] [--timeout TIMEOUT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+Deploy the managed registry on a Linux node
+
+arguments:
+  -h, --help                  show this help message and exit
+  --node NODE                 Ready Linux node that hosts the registry
+  --port PORT                 Host port (default: 5000)
+  --domain DOMAIN             TLS hostname; avoids reconfiguring Docker on every node
+  --username USERNAME         Basic Auth user for --domain
+  --password-stdin            Read the --domain password from stdin
+  --storage-class STORAGE_CLASS
+                              Storage class for images (default: a node-local volume)
+  --image IMAGE               Registry image (default: registry:2)
+  --name NAME                 Service name (default: luma-registry)
+  --no-activate               Do not make it the builders' push and pull registry
+  --timeout TIMEOUT           Seconds to wait (default: 1800)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-registry-images"><code>luma registry images</code><a class="headerlink" href="#luma-registry-images" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma registry images [-h] [--refresh] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List images in the managed registry and their protection state
+
+arguments:
+  -h, --help                  show this help message and exit
+  --refresh                   Rescan the registry instead of using the cache
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-registry-delete"><code>luma registry delete</code><a class="headerlink" href="#luma-registry-delete" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma registry delete [-h] [--execute-now] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] repository digest
+
+Queue a manifest for deletion after a protection check
+
+arguments:
+  repository                  Repository, for example acme/web
+  digest                      Manifest digest (sha256:...)
+
+arguments:
+  -h, --help                  show this help message and exit
+  --execute-now               Skip the grace period after a fresh protection check
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-registry-deletion"><code>luma registry deletion</code><a class="headerlink" href="#luma-registry-deletion" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma registry deletion [-h] [--force] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] id {cancel,execute,restore}
+
+Cancel, execute or restore a queued deletion
+
+arguments:
+  id                          Deletion ID
+  {cancel,execute,restore}    What to do
+
+arguments:
+  -h, --help                  show this help message and exit
+  --force                     Proceed despite warnings
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-registry-gc"><code>luma registry gc</code><a class="headerlink" href="#luma-registry-gc" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma registry gc [-h] [--execute] [--force] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+Preview or run registry garbage collection (irreversible)
+
+arguments:
+  -h, --help                  show this help message and exit
+  --execute                   Run it instead of previewing
+  --force                     Proceed despite warnings
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-registry-policy"><code>luma registry policy</code><a class="headerlink" href="#luma-registry-policy" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma registry policy [-h] [--mode {off,recommend,enforce}] [--keep-last KEEP_LAST] [--max-age-days MAX_AGE_DAYS] [--system-keep-last SYSTEM_KEEP_LAST] [--queue-grace-hours QUEUE_GRACE_HOURS] [--gc-grace-days GC_GRACE_DAYS] [--warning-percent WARNING_PERCENT] [--critical-percent CRITICAL_PERCENT] [--emergency-percent EMERGENCY_PERCENT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+Show or change the retention policy
+
+arguments:
+  -h, --help                  show this help message and exit
+  --mode {off,recommend,enforce}
+                              off, recommend deletions, or enforce them
+  --keep-last KEEP_LAST       Tags to keep per repository
+  --max-age-days MAX_AGE_DAYS
+                              Delete older unprotected images
+  --system-keep-last SYSTEM_KEEP_LAST
+                              Tags to keep for Luma system images
+  --queue-grace-hours QUEUE_GRACE_HOURS
+                              Hours before queued deletions run
+  --gc-grace-days GC_GRACE_DAYS
+                              Days before garbage collection runs
+  --warning-percent WARNING_PERCENT
+                              Disk usage that raises a warning
+  --critical-percent CRITICAL_PERCENT
+                              Disk usage that raises a critical alert
+  --emergency-percent EMERGENCY_PERCENT
+                              Disk usage that triggers emergency cleanup
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-git-provider"><code>luma git-provider</code><a class="headerlink" href="#luma-git-provider" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma git-provider [-h] &lt;command&gt; ...
+
+Manage saved GitHub and Gitea credentials
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  &lt;command&gt;
+    list      List saved provider credentials
+    set       Save a GitHub or Gitea access token
+    remove    Remove a saved credential
+    repos     List repositories a credential can read
+    refs      List branches and tags of a repository
+</code></pre>
+<h2 id="luma-git-provider-list"><code>luma git-provider list</code><a class="headerlink" href="#luma-git-provider-list" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma git-provider list [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List saved provider credentials
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-git-provider-set"><code>luma git-provider set</code><a class="headerlink" href="#luma-git-provider-set" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma git-provider set [-h] [--token-stdin] [--git-token PROVIDER_TOKEN] [--username USERNAME] [--base-url BASE_URL] [--clone-base-url CLONE_BASE_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] {github,gitea} account
+
+Save a GitHub or Gitea access token
+
+arguments:
+  {github,gitea}              Provider type
+  account                     Label, for example personal or work
+
+arguments:
+  -h, --help                  show this help message and exit
+  --token-stdin               Read the token from stdin
+  --git-token PROVIDER_TOKEN  Token (visible in shell history; prefer --token-stdin)
+  --username USERNAME         Git user name for HTTPS clones
+  --base-url BASE_URL         API base URL; required for Gitea
+  --clone-base-url CLONE_BASE_URL
+                              Clone URL base (default: derived from the base URL)
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-git-provider-remove"><code>luma git-provider remove</code><a class="headerlink" href="#luma-git-provider-remove" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma git-provider remove [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] id
+
+Remove a saved credential
+
+arguments:
+  id                          Credential ID, for example github:personal
+
+arguments:
+  -h, --help                  show this help message and exit
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-git-provider-repos"><code>luma git-provider repos</code><a class="headerlink" href="#luma-git-provider-repos" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma git-provider repos [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] id
+
+List repositories a credential can read
+
+arguments:
+  id                          Credential ID
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-git-provider-refs"><code>luma git-provider refs</code><a class="headerlink" href="#luma-git-provider-refs" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma git-provider refs [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] id repository
+
+List branches and tags of a repository
+
+arguments:
+  id                          Credential ID
+  repository                  Repository full name, for example owner/name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+</code></pre>
+<h2 id="luma-manager"><code>luma manager</code><a class="headerlink" href="#luma-manager" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma manager [-h] &lt;command&gt; ...
+
+Repair the manager. Run these on the manager itself.
+
+arguments:
+  -h, --help    show this help message and exit
+
+arguments:
+  &lt;command&gt;
+    egress      Install or refresh the egress proxy (needs EGRESS_SUBSCRIPTION_URL)
+    cloudflare  Point the cluster config at a Cloudflare zone
+    ip-change   Recover Control after the manager's public IPv4 address changes
+</code></pre>
+<h2 id="luma-manager-egress"><code>luma manager egress</code><a class="headerlink" href="#luma-manager-egress" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma manager egress [-h]
+
+Install or refresh the egress proxy (needs EGRESS_SUBSCRIPTION_URL)
+
+arguments:
+  -h, --help  show this help message and exit
+</code></pre>
+<h2 id="luma-manager-cloudflare"><code>luma manager cloudflare</code><a class="headerlink" href="#luma-manager-cloudflare" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma manager cloudflare [-h] --zone ZONE
+
+Point the cluster config at a Cloudflare zone
+
+arguments:
+  -h, --help   show this help message and exit
+  --zone ZONE  Zone name, for example example.com
+</code></pre>
+<h2 id="luma-manager-ip-change"><code>luma manager ip-change</code><a class="headerlink" href="#luma-manager-ip-change" title="章节链接">#</a></h2>
+<pre><code class="language-text">usage: luma manager ip-change [-h] --old OLD_IP --new NEW_IP --domain DOMAIN [--dry-run]
+
+Recover Control after the manager's public IPv4 address changes
+
+arguments:
+  -h, --help       show this help message and exit
+  --old OLD_IP     Previous public IPv4 address
+  --new NEW_IP     New public IPv4 address
+  --domain DOMAIN  Control hostname, without scheme
+  --dry-run        Show the recovery plan without changing anything
+</code></pre><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/luma-cli-reference.zh-CN.md">在 GitHub 查看源码 ↗</a> · <a href="./luma-cli-reference.zh-CN.md">原始 Markdown</a></div></article><aside class="docs-toc" aria-label="本页目录"><strong>本页目录</strong><div class="toc">
+<ul>
+<li><a href="#luma">luma</a></li>
+<li><a href="#luma-init">luma init</a></li>
+<li><a href="#luma-login">luma login</a></li>
+<li><a href="#luma-context">luma context</a></li>
+<li><a href="#luma-context-list">luma context list</a></li>
+<li><a href="#luma-context-use">luma context use</a></li>
+<li><a href="#luma-doctor">luma doctor</a></li>
+<li><a href="#luma-version">luma version</a></li>
+<li><a href="#luma-validate">luma validate</a></li>
+<li><a href="#luma-deploy">luma deploy</a></li>
+<li><a href="#luma-compose">luma compose</a></li>
+<li><a href="#luma-compose-init">luma compose init</a></li>
+<li><a href="#luma-compose-validate">luma compose validate</a></li>
+<li><a href="#luma-compose-deploy">luma compose deploy</a></li>
+<li><a href="#luma-import">luma import</a></li>
+<li><a href="#luma-build">luma build</a></li>
+<li><a href="#luma-build-local">luma build local</a></li>
+<li><a href="#luma-build-list">luma build list</a></li>
+<li><a href="#luma-build-logs">luma build logs</a></li>
+<li><a href="#luma-build-retry">luma build retry</a></li>
+<li><a href="#luma-build-cancel">luma build cancel</a></li>
+<li><a href="#luma-build-config">luma build config</a></li>
+<li><a href="#luma-artifact">luma artifact</a></li>
+<li><a href="#luma-artifact-list">luma artifact list</a></li>
+<li><a href="#luma-artifact-show">luma artifact show</a></li>
+<li><a href="#luma-artifact-promote">luma artifact promote</a></li>
+<li><a href="#luma-workflow">luma workflow</a></li>
+<li><a href="#luma-workflow-list">luma workflow list</a></li>
+<li><a href="#luma-workflow-show">luma workflow show</a></li>
+<li><a href="#luma-workflow-record">luma workflow record</a></li>
+<li><a href="#luma-workflow-run">luma workflow run</a></li>
+<li><a href="#luma-status">luma status</a></li>
+<li><a href="#luma-app">luma app</a></li>
+<li><a href="#luma-app-list">luma app list</a></li>
+<li><a href="#luma-app-show">luma app show</a></li>
+<li><a href="#luma-app-logs">luma app logs</a></li>
+<li><a href="#luma-app-events">luma app events</a></li>
+<li><a href="#luma-app-history">luma app history</a></li>
+<li><a href="#luma-app-versions">luma app versions</a></li>
+<li><a href="#luma-app-rollback">luma app rollback</a></li>
+<li><a href="#luma-app-restart">luma app restart</a></li>
+<li><a href="#luma-app-scale">luma app scale</a></li>
+<li><a href="#luma-app-remove">luma app remove</a></li>
+<li><a href="#luma-secret">luma secret</a></li>
+<li><a href="#luma-secret-list">luma secret list</a></li>
+<li><a href="#luma-secret-set">luma secret set</a></li>
+<li><a href="#luma-secret-import">luma secret import</a></li>
+<li><a href="#luma-secret-remove">luma secret remove</a></li>
+<li><a href="#luma-bootstrap">luma bootstrap</a></li>
+<li><a href="#luma-update">luma update</a></li>
+<li><a href="#luma-update-manager">luma update manager</a></li>
+<li><a href="#luma-update-fleet">luma update fleet</a></li>
+<li><a href="#luma-node">luma node</a></li>
+<li><a href="#luma-node-join">luma node join</a></li>
+<li><a href="#luma-node-list">luma node list</a></li>
+<li><a href="#luma-node-status">luma node status</a></li>
+<li><a href="#luma-node-remove">luma node remove</a></li>
+<li><a href="#luma-node-exit">luma node exit</a></li>
+<li><a href="#luma-node-tailscale">luma node tailscale</a></li>
+<li><a href="#luma-node-nomad-join">luma node nomad-join</a></li>
+<li><a href="#luma-region">luma region</a></li>
+<li><a href="#luma-region-list">luma region list</a></li>
+<li><a href="#luma-region-create">luma region create</a></li>
+<li><a href="#luma-region-remove">luma region remove</a></li>
+<li><a href="#luma-storage">luma storage</a></li>
+<li><a href="#luma-storage-list">luma storage list</a></li>
+<li><a href="#luma-storage-set">luma storage set</a></li>
+<li><a href="#luma-storage-remove">luma storage remove</a></li>
+<li><a href="#luma-storage-apply">luma storage apply</a></li>
+<li><a href="#luma-storage-check">luma storage check</a></li>
+<li><a href="#luma-storage-migrate">luma storage migrate</a></li>
+<li><a href="#luma-registry">luma registry</a></li>
+<li><a href="#luma-registry-list">luma registry list</a></li>
+<li><a href="#luma-registry-login">luma registry login</a></li>
+<li><a href="#luma-registry-remove">luma registry remove</a></li>
+<li><a href="#luma-registry-serve">luma registry serve</a></li>
+<li><a href="#luma-registry-images">luma registry images</a></li>
+<li><a href="#luma-registry-delete">luma registry delete</a></li>
+<li><a href="#luma-registry-deletion">luma registry deletion</a></li>
+<li><a href="#luma-registry-gc">luma registry gc</a></li>
+<li><a href="#luma-registry-policy">luma registry policy</a></li>
+<li><a href="#luma-git-provider">luma git-provider</a></li>
+<li><a href="#luma-git-provider-list">luma git-provider list</a></li>
+<li><a href="#luma-git-provider-set">luma git-provider set</a></li>
+<li><a href="#luma-git-provider-remove">luma git-provider remove</a></li>
+<li><a href="#luma-git-provider-repos">luma git-provider repos</a></li>
+<li><a href="#luma-git-provider-refs">luma git-provider refs</a></li>
+<li><a href="#luma-manager">luma manager</a></li>
+<li><a href="#luma-manager-egress">luma manager egress</a></li>
+<li><a href="#luma-manager-cloudflare">luma manager cloudflare</a></li>
+<li><a href="#luma-manager-ip-change">luma manager ip-change</a></li>
+</ul>
+</div>
+</aside></main></body></html>

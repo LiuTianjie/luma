@@ -1,0 +1,53 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AI Agent Skills · Luma Documentation</title><meta name="description" content="AI Agent Skills — Luma Documentation"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">Skip to content</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../index.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">Documentation</span><button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="Main navigation"><a href="../index.html#product">Console</a><a href="../index.html#docs">All guides</a><a href="ai-agent-skills.zh-CN.html" data-doc-language lang="zh-CN">中文</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="Documentation"><strong>Guides</strong><a class=""  href="README.html">Overview</a><a class=""  href="getting-started.html">Getting started</a><a class=""  href="concepts.html">Core concepts</a><a class=""  href="deploying.html">Deploying applications</a><a class=""  href="build-and-artifacts.html">Build & OCI artifacts</a><a class=""  href="migration-guide.html">Migration guide</a><a class=""  href="operations.html">Operations</a><a class=""  href="deployment-yaml.html">Deployment YAML</a><a class=""  href="compose-storage.html">Compose & storage</a><a class=""  href="secrets.html">Secrets & credentials</a><a class=""  href="exposure-model.html">Exposure model</a><a class=""  href="observability.html">Observability</a><a class=""  href="dashboard-guide.html">Console guide</a><a class=""  href="troubleshooting.html">Troubleshooting</a><a class=""  href="luma-cli-reference.html">CLI reference</a><a class="active" aria-current=page href="ai-agent-skills.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../index.html#docs">Documentation</a><span>/</span><span>AI Agent Skills</span></div><h1 id="ai-agent-skills">AI Agent Skills<a class="headerlink" href="#ai-agent-skills" title="Permanent link">#</a></h1>
+<p>Luma includes two skills for AI coding assistants. They give the assistant repository-specific deployment and observability workflows, reference material and validation rules. They are installed in the assistant, not in the running cluster.</p>
+<h2 id="deployment-workflows">Deployment workflows<a class="headerlink" href="#deployment-workflows" title="Permanent link">#</a></h2>
+<p><a href="https://github.com/LiuTianjie/luma/tree/main/skills/luma-deployment-yaml"><code>luma-deployment-yaml</code></a> helps generate and review single-service manifests and Compose sidecars, choose region and exposure, configure local storage, and troubleshoot builds or deployments.</p>
+<p>For an existing application, it follows the recorded build and deployment workflow. A change of workflow must be explained and confirmed; a skill installation alone does not update the CLI or Control. Secrets remain references such as <code>${DATABASE_PASSWORD}</code>, not plaintext in YAML.</p>
+<p>Example request:</p>
+<blockquote>
+<p>Review this Compose project, generate its Luma sidecar, and validate it. Keep the existing deployment workflow and use local persistent storage.</p>
+</blockquote>
+<h2 id="application-observability">Application observability<a class="headerlink" href="#application-observability" title="Permanent link">#</a></h2>
+<p><a href="https://github.com/LiuTianjie/luma/tree/main/skills/luma-observe"><code>luma-observe</code></a> helps deploy and operate the optional, independent observability stack: Traefik request metrics, Nomad allocation failures, OTLP collection and notification delivery.</p>
+<p>Installing the skill does not install the stack. The stack requires its own deployment; application tracing also requires the appropriate OpenTelemetry runtime instrumentation.</p>
+<p>Example request:</p>
+<blockquote>
+<p>Set up luma-observe for this cluster, verify application metrics and failed-allocation alerts, and check notification delivery.</p>
+</blockquote>
+<h2 id="installation">Installation<a class="headerlink" href="#installation" title="Permanent link">#</a></h2>
+<p>From a local checkout, copy both skill folders to the assistant's user-level skills directory. For Codex:</p>
+<pre><code class="language-bash">mkdir -p ~/.codex/skills/luma-deployment-yaml ~/.codex/skills/luma-observe
+cp -R skills/luma-deployment-yaml/. ~/.codex/skills/luma-deployment-yaml/
+cp -R skills/luma-observe/. ~/.codex/skills/luma-observe/
+</code></pre>
+<p>For Claude Code:</p>
+<pre><code class="language-bash">mkdir -p ~/.claude/skills/luma-deployment-yaml ~/.claude/skills/luma-observe
+cp -R skills/luma-deployment-yaml/. ~/.claude/skills/luma-deployment-yaml/
+cp -R skills/luma-observe/. ~/.claude/skills/luma-observe/
+</code></pre>
+<p>Without a checkout, install from GitHub <code>main</code>:</p>
+<pre><code class="language-bash">tmp=&quot;$(mktemp -d)&quot;
+git clone --depth 1 https://github.com/LiuTianjie/luma.git &quot;$tmp/luma&quot;
+for dest in ~/.claude/skills ~/.codex/skills; do
+  mkdir -p &quot;$dest/luma-deployment-yaml&quot; &quot;$dest/luma-observe&quot;
+  cp -R &quot;$tmp/luma/skills/luma-deployment-yaml/.&quot; &quot;$dest/luma-deployment-yaml/&quot;
+  cp -R &quot;$tmp/luma/skills/luma-observe/.&quot; &quot;$dest/luma-observe/&quot;
+done
+rm -rf &quot;$tmp&quot;
+</code></pre>
+<p>For other assistants, use their supported skill installation mechanism with the linked source directories. Start a new conversation after installation. When updating Luma, refresh the skills from the matching checkout so their instructions stay aligned with the installed version.</p>
+<h2 id="references">References<a class="headerlink" href="#references" title="Permanent link">#</a></h2>
+<ul>
+<li><a href="deployment-yaml.html">Deployment YAML</a></li>
+<li><a href="compose-storage.html">Compose and local storage</a></li>
+<li><a href="observability.html">Observability</a></li>
+<li><a href="https://github.com/LiuTianjie/luma/blob/main/skills/luma-deployment-yaml/references/deployment-workflow.md">Deployment workflow records</a></li>
+</ul><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/ai-agent-skills.md">View source on GitHub ↗</a> · <a href="./ai-agent-skills.md">Raw Markdown</a></div></article><aside class="docs-toc" aria-label="On this page"><strong>On this page</strong><div class="toc">
+<ul>
+<li><a href="#deployment-workflows">Deployment workflows</a></li>
+<li><a href="#application-observability">Application observability</a></li>
+<li><a href="#installation">Installation</a></li>
+<li><a href="#references">References</a></li>
+</ul>
+</div>
+</aside></main></body></html>

@@ -1,0 +1,35 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Luma 控制台设计规范 · Luma 文档</title><meta name="description" content="Luma 控制台设计规范 — Luma 文档"><link rel="icon" href="../../favicon-32.png"><link rel="stylesheet" href="../../styles.css?v=1cac654f8e"><script src="../../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">跳到正文</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../../zh.html"><img src="../../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">文档</span><button class="menu-toggle" aria-label="展开导航" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="主导航"><a href="../../zh.html#product">控制台</a><a href="../../zh.html#docs">全部指南</a><a href="dashboard-design.html" data-doc-language lang="en">English</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="文档"><strong>指南</strong><a class=""  href="../README.zh-CN.html">概览</a><a class=""  href="../getting-started.zh-CN.html">快速上手</a><a class=""  href="../concepts.zh-CN.html">核心概念</a><a class=""  href="../deploying.zh-CN.html">部署应用</a><a class=""  href="../build-and-artifacts.zh-CN.html">构建与制品</a><a class=""  href="../migration-guide.zh-CN.html">零停机迁移</a><a class=""  href="../operations.zh-CN.html">日常运维</a><a class=""  href="../deployment-yaml.zh-CN.html">部署 YAML</a><a class=""  href="../compose-storage.zh-CN.html">Compose 与存储</a><a class=""  href="../secrets.zh-CN.html">密钥与凭据</a><a class=""  href="../exposure-model.zh-CN.html">暴露模型</a><a class=""  href="../observability.zh-CN.html">可观测</a><a class=""  href="../dashboard-guide.zh-CN.html">控制台指南</a><a class=""  href="../troubleshooting.zh-CN.html">故障排查</a><a class=""  href="../luma-cli-reference.zh-CN.html">CLI 命令参考</a><a class=""  href="../ai-agent-skills.zh-CN.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../../zh.html#docs">文档</a><span>/</span><span>Luma 控制台设计规范</span></div><h1 id="luma-console-design">Luma 控制台设计规范<a class="headerlink" href="#luma-console-design" title="章节链接">#</a></h1>
+<p>参考于 2026-09-12 审阅：用户提供的 Cloudflare 路由截图。其信息层级应用于整个控制台，包括应用、交付、基础设施、可观测和设置。</p>
+<h2 id="sources-and-component-decision">参考来源与组件选择<a class="headerlink" href="#sources-and-component-decision" title="章节链接">#</a></h2>
+<ul>
+<li><a href="https://github.com/cloudflare/kumo">Kumo</a> 是 Cloudflare 基于 Base UI 的公开 React 组件库，其<a href="https://github.com/cloudflare/kumo/blob/main/packages/kumo/src/blocks/resource-list/resource-list.tsx">资源列表布局</a>约束页面宽度并统一标题、说明和资源内容。</li>
+<li><a href="https://kumo-ui.com/components/flow/">Flow</a> 支持有向关系、并行分支和自定义节点。已确认存在此组件，但不能仅凭截图判断具体页面用了它。</li>
+<li><a href="https://github.com/cloudflare/cf-ui">cf-ui</a> 已于 2021 年归档，不适合作为新增依赖。</li>
+</ul>
+<p>保留现有 React 19、Base UI、Tailwind 4 和 shadcn，通过共享语义 token 和组件吸收参考设计。图交互保留 Cytoscape 与 Dagre，不仅为外观引入第二套组件或图框架。</p>
+<h2 id="shared-rules">通用规则<a class="headerlink" href="#shared-rules" title="章节链接">#</a></h2>
+<ul>
+<li>中性页面底色、白色内容面、细边框、8px 基础圆角。蓝色用于主操作、链接和选中态。健康语义色必须有证据，入口或路由配置不代表健康。</li>
+<li>固定顶部栏显示工作空间及同步状态。偏好与退出仅在侧边栏，无全局刷新按钮。桌面折叠操作位于侧栏头部，收起后仍可见；移动端侧栏在画外，保留导航入口。侧栏维持工作空间归属和嵌套路由，保留品牌与集群身份。</li>
+<li>主内容最大 1400px，横向留白响应式变化，章节间距 24px。终端工作区使用完整可用尺寸。</li>
+<li>一个页面标题，桌面操作右对齐。可观测子页用紧凑 22px 标题，不重复工作空间说明。应用详情面包屑位于顶栏，正文用紧凑对象标题和标签页。指标是标题下带标签的计数，仅展示信息，不伪装筛选按钮。</li>
+<li>表格使用浅色表头底带、细分隔线、统一单元格内边距并约束横向溢出。表单与浮层沿用语义组件、焦点管理和校验。</li>
+<li>页面级导航标签页（应用详情、存储、网络）使用带下划线的 <code>line</code> 变体；卡片内的视图切换保留默认分段样式。</li>
+<li>状态颜色统一经 <code>StatePill</code>/<code>stateVariant</code>：成功为绿色，进行中或警告为琥珀色，失败为红色；未知状态保持中性，缺失值显示为 <code>—</code>。</li>
+<li>日期、容量和百分比统一经 <code>format.ts</code>（<code>formatDateTime</code>、二进制单位的 <code>formatBytes</code>、<code>formatPercent</code>），同一数值在各页面显示一致。应用内链接使用 <code>spaLink</code>，带修饰键的点击仍可新开标签页。</li>
+<li>网络页分开路由与节点拓扑。搜索和入口筛选同时作用于图与表格。选择路由聚焦完整当前路径，清空选择恢复筛选概览。证书重试按后端能力提供。</li>
+<li>保留明暗主题、键盘和窄屏导航。不要为了填满空状态而加入 API 诊断或无依据的健康结论。</li>
+</ul>
+<h2 id="validation-boundary">验证边界<a class="headerlink" href="#validation-boundary" title="章节链接">#</a></h2>
+<p>本地开发数据用于布局与交互检查，不证明生产健康，也不改变真实路由、证书或部署。</p>
+<h2 id="public-website">公开网站<a class="headerlink" href="#public-website" title="章节链接">#</a></h2>
+<p>GitHub Pages 沿用中性底色、8px 卡片、细边框和蓝色操作。宣传页使用更大标题，嵌入控制台示意保持紧凑。中英文首页内容对应，示意使用示例域名并明确标注示例数据，不声称生产健康。</p>
+<p>仓库 Markdown 构建为有导航、表格和目录的独立文档页。构建发布流程见<a href="website.zh-CN.html">网站维护</a>。</p><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/maintainers/dashboard-design.zh-CN.md">在 GitHub 查看源码 ↗</a> · <a href="./dashboard-design.zh-CN.md">原始 Markdown</a></div></article><aside class="docs-toc" aria-label="本页目录"><strong>本页目录</strong><div class="toc">
+<ul>
+<li><a href="#sources-and-component-decision">参考来源与组件选择</a></li>
+<li><a href="#shared-rules">通用规则</a></li>
+<li><a href="#validation-boundary">验证边界</a></li>
+<li><a href="#public-website">公开网站</a></li>
+</ul>
+</div>
+</aside></main></body></html>

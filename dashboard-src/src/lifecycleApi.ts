@@ -79,3 +79,35 @@ export async function retryCertificate({
 }) {
   return apiPost("/v1/certificates/retry", token, { domain, routeId });
 }
+
+export type ServiceScaleResult = {
+  clusterId?: string;
+  project: string;
+  service: string;
+  replicas: number;
+  environment?: string;
+  release?: Record<string, unknown>;
+  status?: string;
+  message?: string;
+};
+
+export async function scaleService({
+  token,
+  project,
+  service,
+  replicas,
+  environment = "prod",
+}: {
+  token: string;
+  project: string;
+  service: string;
+  replicas: number;
+  environment?: string;
+}): Promise<ServiceScaleResult> {
+  return apiPost<ServiceScaleResult>("/v1/services/scale", token, {
+    project,
+    service,
+    replicas,
+    environment,
+  });
+}

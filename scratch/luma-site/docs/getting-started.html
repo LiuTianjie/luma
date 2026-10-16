@@ -1,0 +1,167 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Getting started · Luma Documentation</title><meta name="description" content="Getting started — Luma Documentation"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">Skip to content</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../index.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">Documentation</span><button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="Main navigation"><a href="../index.html#product">Console</a><a href="../index.html#docs">All guides</a><a href="getting-started.zh-CN.html" data-doc-language lang="zh-CN">中文</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="Documentation"><strong>Guides</strong><a class=""  href="README.html">Overview</a><a class="active" aria-current=page href="getting-started.html">Getting started</a><a class=""  href="concepts.html">Core concepts</a><a class=""  href="deploying.html">Deploying applications</a><a class=""  href="build-and-artifacts.html">Build & OCI artifacts</a><a class=""  href="migration-guide.html">Migration guide</a><a class=""  href="operations.html">Operations</a><a class=""  href="deployment-yaml.html">Deployment YAML</a><a class=""  href="compose-storage.html">Compose & storage</a><a class=""  href="secrets.html">Secrets & credentials</a><a class=""  href="exposure-model.html">Exposure model</a><a class=""  href="observability.html">Observability</a><a class=""  href="dashboard-guide.html">Console guide</a><a class=""  href="troubleshooting.html">Troubleshooting</a><a class=""  href="luma-cli-reference.html">CLI reference</a><a class=""  href="ai-agent-skills.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../index.html#docs">Documentation</a><span>/</span><span>Getting started</span></div><h1 id="getting-started">Getting started<a class="headerlink" href="#getting-started" title="Permanent link">#</a></h1>
+<p>This guide takes you from an empty Linux server to a running application: install the CLI, bootstrap one manager, deploy a first workload, then add more nodes. It assumes no prior Luma setup.</p>
+<h2 id="what-you-need">What you need<a class="headerlink" href="#what-you-need" title="Permanent link">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>Requirement</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A Linux server, Ubuntu 22.04+ recommended, 2 CPU / 2 GB RAM to start</td>
+<td>Runs Luma Control, Nomad and Traefik</td>
+</tr>
+<tr>
+<td>A domain whose DNS is managed by Cloudflare</td>
+<td>Control API, dashboard and application hostnames</td>
+</tr>
+<tr>
+<td>A Cloudflare API token with <strong>Zone Read</strong> and <strong>DNS Edit</strong> for that zone</td>
+<td>Luma creates and updates DNS records</td>
+</tr>
+<tr>
+<td>Public ports 80 and 443 open, and an email address for Let's Encrypt</td>
+<td>HTTPS certificates and ingress</td>
+</tr>
+<tr>
+<td>Access to the container registry that hosts the Luma Control image (GHCR by default)</td>
+<td>The manager pulls Control from it</td>
+</tr>
+</tbody>
+</table></div>
+<p>Tailscale, a builder node and a private registry are <strong>not</strong> needed for the first workload. Add them later when you need home nodes, relays or source builds.</p>
+<h2 id="1-install-the-cli">1. Install the CLI<a class="headerlink" href="#1-install-the-cli" title="Permanent link">#</a></h2>
+<p>Run this on the manager and on every machine you want to deploy from:</p>
+<pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
+~/.local/bin/luma doctor --local
+</code></pre>
+<p>The installer needs Python 3.9+ and curl or wget. It installs the latest release into <code>~/.local/share/luma</code> and puts <code>luma</code> in <code>~/.local/bin</code>; open a new shell if that directory is not on your <code>PATH</code> yet. It does not change Docker, Nomad or firewall settings.</p>
+<p>Other ways to install:</p>
+<pre><code class="language-bash"># A specific release, a branch or a commit
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.2.11 sh
+
+# CI runners and virtual environments
+python -m pip install &quot;luma-infra==0.2.11&quot;
+</code></pre>
+<p>To uninstall the CLI (server state under <code>/opt/luma</code> is not touched), run <code>scripts/uninstall-luma.sh</code>; add <code>--purge</code> to also remove saved settings and logins.</p>
+<h2 id="2-bootstrap-the-manager">2. Bootstrap the manager<a class="headerlink" href="#2-bootstrap-the-manager" title="Permanent link">#</a></h2>
+<p>Run this <strong>on the manager server</strong>:</p>
+<pre><code class="language-bash">luma bootstrap --domain luma.example.com
+</code></pre>
+<p><code>luma bootstrap</code> asks for anything it is missing and explains each value:</p>
+<ul>
+<li><code>CLOUDFLARE_API_TOKEN</code> and <code>TRAEFIK_ACME_EMAIL</code> are required.</li>
+<li><code>LUMA_DNS_EDGE_TARGET</code> (the public IP that DNS records point to) is asked when it cannot be inferred.</li>
+<li><code>TAILSCALE_AUTHKEY</code> and <code>EGRESS_SUBSCRIPTION_URL</code> are optional; press Enter to skip.</li>
+</ul>
+<p>Answers are saved to <code>~/.luma.config.json</code> (mode 0600) so reruns do not ask again. You can also export them as environment variables or put them in a <code>.env</code> file in the current directory; Luma reads only its own settings from <code>./.env</code>.</p>
+<p>If the manager needs a proxy to reach GHCR, which is usually the case on mainland China hosts, set <code>EGRESS_SUBSCRIPTION_URL</code> before bootstrapping. Otherwise pass <code>--skip-egress</code>.</p>
+<p>Bootstrap installs Docker and the Nomad server, applies node metadata, configures the firewall, deploys Traefik and Luma Control as Nomad jobs and creates the Control database at <code>/opt/luma/control/control.sqlite3</code>. Each step prints <code>[start]</code>, <code>[ok]</code> or <code>[fail]</code> with a <code>Fix:</code> hint. Bootstrap is safe to rerun after fixing a failure; individual layers can also be repaired with <code>luma manager egress</code>, <code>luma node tailscale</code> and <code>luma doctor</code>.</p>
+<p>When it finishes, it prints:</p>
+<pre><code class="language-text">Control URL: https://luma.example.com
+Management token: ...
+Node join token: ...
+Dashboard: https://luma.example.com/dashboard/
+</code></pre>
+<p>Keep both tokens private:</p>
+<ul>
+<li>The <strong>management token</strong> signs in the CLI, CI and dashboard, and allows every operation. Its environment variable is <code>LUMA_DEPLOY_TOKEN</code>.</li>
+<li>The <strong>node join token</strong> is only used by servers joining the cluster.</li>
+</ul>
+<p>Node agents get their own internal credentials automatically; you never handle them.</p>
+<p>To use your own Control image, publish it and set <code>LUMA_CONTROL_IMAGE</code> before bootstrapping. Luma never builds or reuses a stale local image during bootstrap or update.</p>
+<h2 id="3-deploy-a-first-workload">3. Deploy a first workload<a class="headerlink" href="#3-deploy-a-first-workload" title="Permanent link">#</a></h2>
+<p>The fastest check is the dashboard: open the dashboard URL, paste the management token and choose <strong>Applications → Create application → hello-world first install</strong>. It deploys an internal service with no DNS or registry requirements and proves that scheduling works.</p>
+<p>From your laptop, sign in and deploy a public service:</p>
+<pre><code class="language-bash">luma login https://luma.example.com --token-stdin &lt; token.txt
+luma init --name status --image traefik/whoami:v1.10.3 --region cn --domain status.example.com --port 80
+luma validate status.yaml
+luma deploy status.yaml --dry-run
+luma deploy status.yaml
+luma app list
+</code></pre>
+<p><code>luma init</code> writes a commented manifest with a memory limit and a health check; edit it as needed. <code>--dry-run</code> shows the Nomad job that Control will submit. Replace <code>status.example.com</code> with a hostname in your Cloudflare zone. See <a href="deploying.html">Deploying applications</a> for local builds, repository imports and Compose applications.</p>
+<h2 id="4-add-nodes">4. Add nodes<a class="headerlink" href="#4-add-nodes" title="Permanent link">#</a></h2>
+<p>Run this <strong>on each additional server</strong>, using the node join token:</p>
+<pre><code class="language-bash">luma node join https://luma.example.com --token &lt;node-join-token&gt; --region global --name sg-1
+</code></pre>
+<ul>
+<li><code>--region</code> decides which services may run there: <code>cn</code>, <code>global</code>, <code>home</code>, or a region created with <code>luma region create</code>.</li>
+<li><code>--name</code> is the node name that manifests use to pin a service with <code>node:</code>.</li>
+</ul>
+<p>Home and other private nodes need Tailscale: set <code>TAILSCALE_AUTHKEY</code> or run <code>luma node tailscale</code> first. macOS nodes also need a running Docker (Docker Desktop or OrbStack).</p>
+<p><code>luma node list</code> shows registered nodes and their agents. <code>luma node exit</code> stops Nomad on the current machine and removes its Luma state; add <code>--endpoint</code> and <code>--token</code> to unregister it too.</p>
+<h3 id="required-ports">Required ports<a class="headerlink" href="#required-ports" title="Permanent link">#</a></h3>
+<p>Luma configures UFW on Linux nodes. Mirror these rules in cloud security groups and Tailscale ACLs:</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>Port</th>
+<th>Between</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>80/tcp</code>, <code>443/tcp</code></td>
+<td>Internet → manager</td>
+<td>HTTP(S) ingress and Let's Encrypt</td>
+</tr>
+<tr>
+<td><code>tcp-relay</code> ports</td>
+<td>Internet → manager</td>
+<td>Public TCP relays, for example <code>3306/tcp</code></td>
+</tr>
+<tr>
+<td><code>4646/tcp</code></td>
+<td>Clients and Traefik → Nomad server</td>
+<td>Nomad HTTP API</td>
+</tr>
+<tr>
+<td><code>4647/tcp</code></td>
+<td>Nomad clients → server</td>
+<td>Nomad RPC</td>
+</tr>
+<tr>
+<td><code>4648/tcp</code>, <code>4648/udp</code></td>
+<td>All Nomad agents</td>
+<td>Nomad gossip</td>
+</tr>
+</tbody>
+</table></div>
+<p>When the manager has a Tailscale address, Luma opens the Nomad ports only on <code>tailscale0</code>. Port <code>7890</code> (the egress proxy) is never exposed publicly.</p>
+<h2 id="5-keep-luma-up-to-date">5. Keep Luma up to date<a class="headerlink" href="#5-keep-luma-up-to-date" title="Permanent link">#</a></h2>
+<pre><code class="language-bash">luma update            # on the manager: CLI and Control; on a node: CLI and agent; elsewhere: CLI
+luma update fleet      # from any client: every node with a ready agent (the manager is skipped)
+</code></pre>
+<p>Both install the latest release unless you pass <code>--install-ref</code>. The dashboard's <strong>Nodes → Update center</strong> does the same with progress and route checks, and is the preferred way to update the manager. <code>luma update</code> never restarts Docker or Nomad and never redeploys applications.</p>
+<h2 id="6-check-health">6. Check health<a class="headerlink" href="#6-check-health" title="Permanent link">#</a></h2>
+<pre><code class="language-bash">luma status
+luma doctor
+luma doctor --deep
+</code></pre>
+<p><code>doctor</code> checks the login, Control, DNS configuration, node agents and Nomad; <code>--deep</code> also evaluates Docker and Nomad diagnostics reported by each node.</p>
+<h2 id="next-steps">Next steps<a class="headerlink" href="#next-steps" title="Permanent link">#</a></h2>
+<ul>
+<li><a href="concepts.html">Concepts</a>: regions, exposure and egress.</li>
+<li><a href="deploying.html">Deploying applications</a>: images, local builds, repository imports, Compose and CI.</li>
+<li><a href="operations.html">Operations</a>: logs, rollback, restart, removal and node maintenance.</li>
+<li><a href="troubleshooting.html">Troubleshooting</a>: what to do when a step fails.</li>
+</ul><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/getting-started.md">View source on GitHub ↗</a> · <a href="./getting-started.md">Raw Markdown</a></div></article><aside class="docs-toc" aria-label="On this page"><strong>On this page</strong><div class="toc">
+<ul>
+<li><a href="#what-you-need">What you need</a></li>
+<li><a href="#1-install-the-cli">1. Install the CLI</a></li>
+<li><a href="#2-bootstrap-the-manager">2. Bootstrap the manager</a></li>
+<li><a href="#3-deploy-a-first-workload">3. Deploy a first workload</a></li>
+<li><a href="#4-add-nodes">4. Add nodes</a><ul>
+<li><a href="#required-ports">Required ports</a></li>
+</ul>
+</li>
+<li><a href="#5-keep-luma-up-to-date">5. Keep Luma up to date</a></li>
+<li><a href="#6-check-health">6. Check health</a></li>
+<li><a href="#next-steps">Next steps</a></li>
+</ul>
+</div>
+</aside></main></body></html>

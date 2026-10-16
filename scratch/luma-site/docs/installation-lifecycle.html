@@ -1,0 +1,137 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Managed installation and local diagnosis · Luma Documentation</title><meta name="description" content="Managed installation and local diagnosis — Luma Documentation"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">Skip to content</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../index.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">Documentation</span><button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="Main navigation"><a href="../index.html#product">Console</a><a href="../index.html#docs">All guides</a><a href="installation-lifecycle.zh-CN.html" data-doc-language lang="zh-CN">中文</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="Documentation"><strong>Guides</strong><a class=""  href="README.html">Overview</a><a class=""  href="getting-started.html">Getting started</a><a class=""  href="concepts.html">Core concepts</a><a class=""  href="deploying.html">Deploying applications</a><a class=""  href="build-and-artifacts.html">Build & OCI artifacts</a><a class=""  href="migration-guide.html">Migration guide</a><a class=""  href="operations.html">Operations</a><a class=""  href="deployment-yaml.html">Deployment YAML</a><a class=""  href="compose-storage.html">Compose & storage</a><a class=""  href="secrets.html">Secrets & credentials</a><a class=""  href="exposure-model.html">Exposure model</a><a class=""  href="observability.html">Observability</a><a class=""  href="dashboard-guide.html">Console guide</a><a class=""  href="troubleshooting.html">Troubleshooting</a><a class=""  href="luma-cli-reference.html">CLI reference</a><a class=""  href="ai-agent-skills.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../index.html#docs">Documentation</a><span>/</span><span>Managed installation and local diagnosis</span></div><h1 id="managed-installation-and-local-diagnosis">Managed installation and local diagnosis<a class="headerlink" href="#managed-installation-and-local-diagnosis" title="Permanent link">#</a></h1>
+<blockquote>
+<p>Introduced in v0.1.317: the initial managed-installation hardening batch.
+Candidate preparation is isolated. A later change adds an independent
+node-agent cutover supervisor with shim rollback when the new process does
+not prove it is the target runtime. Manager updates take a Control
+maintenance lease that rejects concurrent deploys/builds and requires a
+cached Control image. Do not treat this document as a completed fleet
+migration procedure.</p>
+</blockquote>
+<h2 id="installation-identity">Installation identity<a class="headerlink" href="#installation-identity" title="Permanent link">#</a></h2>
+<p>Managed installations record their actual runtime, source directory, installation
+root, command directory, owner UID, version and dependency policy in
+<code>&lt;runtime&gt;/luma-installation.json</code>. CLI updates and node-agent updates read the
+running Python environment (<code>sys.prefix</code>) first, not an unrelated command found
+in root's PATH. Ordinary updates reject conflicting explicit installation paths. Directory aliases are canonicalized without resolving the venv Python executable into the system interpreter. After preparing an update, managed CLI re-execution uses the stable command shim, not the preserved old Python/source.</p>
+<p>Historical user installations (<code>~/.local/share/luma/venv</code>) retain their original
+user home and command directory. Other existing venv installations (for example,
+<code>/opt/luma-cli</code>) retain their own root and <code>bin</code> directory. Repository <code>.venv</code>
+environments remain development installations; they are not silently adopted.
+This is runtime-based compatibility, not a complete arbitrary-path/service
+adoption wizard. Ambiguous installations still need the planned explicit adoption
+and service-path reconciliation flow.</p>
+<p>New managed runtimes are prepared at their final path under
+<code>&lt;install-root&gt;/releases/candidate.*/{src,venv}</code>. The installer does not overwrite
+the active source/venv. Dependency installation and runtime validation must pass
+before the command shim is atomically replaced. Candidate preparation removes group/world write permissions from the runtime directory, independent of the caller's umask, and reads the installation record back through the agent's identity validator before publication. Existing runtime diagnosis remains read-only and fails closed on unsafe permissions. Managed package installation
+failures do not fall back to source code plus residual dependencies. An
+installation-scoped lock rejects simultaneous prepares. This is a prepare lock,
+not a durable distributed maintenance lease or a service-health guarantee.</p>
+<p>Old environments are retained. Do not move venv directories (entrypoints can
+contain absolute paths), delete previous installations, or manually repoint a
+running service as part of a normal update. Automatic candidate retention/cleanup
+is not included in this first implementation.</p>
+<h2 id="dependency-policy">Dependency policy<a class="headerlink" href="#dependency-policy" title="Permanent link">#</a></h2>
+<p>The managed installer ignores host/global/user/site pip configuration and
+inherited <code>PIP_*</code> settings. It also prevents an ambient Python module path from
+providing missing candidate dependencies. It does not edit system <code>pip.conf</code>.</p>
+<p>Supported explicit inputs:</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>LUMA_PIP_INDEX_URL</code></td>
+<td>Single HTTPS package index; default <code>https://pypi.org/simple</code></td>
+</tr>
+<tr>
+<td><code>LUMA_PIP_WHEELHOUSE</code></td>
+<td>Absolute existing local directory; disables index access for pip</td>
+</tr>
+<tr>
+<td><code>LUMA_PIP_CA_BUNDLE</code></td>
+<td>Absolute existing CA bundle file; normal certificate verification remains enabled</td>
+</tr>
+</tbody>
+</table></div>
+<p>The effective policy is saved with a successful managed installation and reused
+by subsequent CLI/agent updates. Explicit Luma inputs override the saved policy.
+There is no implicit extra public index or <code>trusted-host</code> fallback. Credentialed
+URLs, query strings, non-HTTPS indexes and missing local paths are rejected.
+Authenticated package-index workflows are not yet supported by this policy.
+Process proxy settings remain separate from package-index selection.</p>
+<p>For an installed CLI, choose an approved dependency source for the next update:</p>
+<pre><code class="language-sh">LUMA_PIP_INDEX_URL=https://packages.example.com/simple luma update --install-ref &lt;release-tag&gt;
+</code></pre>
+<p>For a bootstrap script already downloaded from the <strong>same</strong> intended release:</p>
+<pre><code class="language-sh">LUMA_INSTALL_REF=&lt;release-tag&gt; \
+LUMA_PIP_INDEX_URL=https://packages.example.com/simple \
+sh ./install-luma.sh
+</code></pre>
+<p><code>LUMA_PIP_WHEELHOUSE</code> only makes <strong>pip</strong> offline: bootstrap/source archive downloads
+still require connectivity or separately supplied source. A wheelhouse must
+contain the build backend and all transitive dependencies for the target
+Python/platform, not just the Luma wheel. Unavailable wheels/build dependencies
+fail candidate preparation; they do not trigger a different index.</p>
+<p>To switch away from a saved wheelhouse or custom CA, explicitly pass an empty
+<code>LUMA_PIP_WHEELHOUSE</code> or <code>LUMA_PIP_CA_BUNDLE</code> for that update. The active process
+retains its existing environment until a replacement is installed and started.</p>
+<h2 id="read-only-diagnosis">Read-only diagnosis<a class="headerlink" href="#read-only-diagnosis" title="Permanent link">#</a></h2>
+<pre><code class="language-sh">luma doctor --local
+luma doctor --local --format json
+</code></pre>
+<p>Reports the actual runtime, detected installation, effective dependency source,
+ignored pip environment <strong>key names only</strong>, isolated dependency imports and
+<code>pip check</code>. No network calls, credentials, service changes or state writes are
+part of these checks. An import failure returns a nonzero status even if old
+package metadata lets <code>pip check</code> pass. A severely broken runtime that cannot
+start the CLI cannot use this entrypoint; standalone recovery remains a separate
+planned feature.</p>
+<p>For Control and node health, use the existing <code>luma doctor</code> / <code>luma doctor --deep</code>.
+A healthy local diagnostic is not proof of a running agent, working service
+manager, or successful deployment.</p>
+<h2 id="node-join-acceptance">Node-join acceptance<a class="headerlink" href="#node-join-acceptance" title="Permanent link">#</a></h2>
+<p><code>luma node join</code> no longer reports completion when Control omits agent
+credentials. After local service installation it waits up to 60 seconds for
+Control to confirm a fresh heartbeat/lease authenticated with the newly issued
+agent credential. The read-only <code>/v1/node-agent/readiness</code> endpoint is scoped to
+that node credential; polling cannot make a node ready. Reissuing credentials
+invalidates join verification even when an old heartbeat remains recent.</p>
+<p>On missing credentials, readiness timeout or an unsupported old Control endpoint,
+the CLI returns failure with an actionable reason and does not remove the
+registered node. Resolve connectivity / upgrade Control, then rerun the normal
+join command. Roll out the compatible Control endpoint <strong>before</strong> new joining
+clients. This is join verification, not the planned persistent join operation,
+full role-capability preflight or update nonce verification.</p>
+<h2 id="node-agent-cutover">Node-agent cutover<a class="headerlink" href="#node-agent-cutover" title="Permanent link">#</a></h2>
+<p>After a managed installer publishes a new command shim it writes
+<code>&lt;install-root&gt;/lifecycle/target.json</code> and copies the previous shim aside.
+<code>update-luma</code> then starts an independent systemd/launchd supervisor
+(<code>python -m luma.node_lifecycle switch</code>) instead of restarting the agent from
+inside the running task. The supervisor restarts the node-agent service, waits
+until the new process is the target runtime (or the new agent records the
+cutover nonce), and restores the previous shim if that proof never appears.</p>
+<p>This is not yet a durable distributed maintenance lease, and a host without
+systemd-run/launchd cannot use the supervised path. Mixed-version agents that
+do not find <code>target.json</code> keep the previous in-process service refresh.</p>
+<h2 id="not-yet-covered">Not yet covered<a class="headerlink" href="#not-yet-covered" title="Permanent link">#</a></h2>
+<p>Crash recovery of a supervisor that died mid-switch, public adoption/repair,
+Dashboard lifecycle UI, stable-release default resolution, builder/registry
+validation, manager maintenance gates and observe/backup standardization remain
+open. No live upgrade should
+be justified by candidate-preparation tests alone.</p><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/installation-lifecycle.md">View source on GitHub ↗</a> · <a href="./installation-lifecycle.md">Raw Markdown</a></div></article><aside class="docs-toc" aria-label="On this page"><strong>On this page</strong><div class="toc">
+<ul>
+<li><a href="#installation-identity">Installation identity</a></li>
+<li><a href="#dependency-policy">Dependency policy</a></li>
+<li><a href="#read-only-diagnosis">Read-only diagnosis</a></li>
+<li><a href="#node-join-acceptance">Node-join acceptance</a></li>
+<li><a href="#node-agent-cutover">Node-agent cutover</a></li>
+<li><a href="#not-yet-covered">Not yet covered</a></li>
+</ul>
+</div>
+</aside></main></body></html>

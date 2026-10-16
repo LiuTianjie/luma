@@ -3,6 +3,7 @@ import { ArrowDown, ArrowLeft, GitBranch, Plus, RefreshCw, RotateCcw, ScrollText
 import { cancelBuildRun, retryBuildRunStream } from "../deploy/deployApi";
 import type { DeployStep } from "../deploy/types";
 import { StepLog } from "../deploy/StepLog";
+import { BuildWaterfallView } from "../deploy/BuildWaterfallView";
 import { DateTimePicker } from "../components/DateTimePicker";
 import { CodeCell, StatePill } from "../components/primitives";
 import { Badge } from "@/components/ui/badge";
@@ -306,6 +307,13 @@ function HistoryDetailPage({ lang, token, selection, initialItem, onClose, onRef
         <Button type="button" variant="outline" className="w-fit" onClick={() => onSelect(retryTarget)}>{zh ? "查看本次重试记录" : "View this retry attempt"}</Button>
       ) : null}
       {retrySteps.length ? <Card><CardHeader><CardTitle>{zh ? "本次重试日志" : "Current retry log"}</CardTitle></CardHeader><CardContent><StepLog steps={retrySteps} lang={lang} /></CardContent></Card> : null}
+      {kind === "build" ? (
+        <BuildWaterfallView
+          lang={lang}
+          artifactId={`art-${id}`}
+          application={item?.application}
+        />
+      ) : null}
       <Card aria-busy={Boolean(loading)}>
         <CardHeader>
           <CardTitle>{zh ? "步骤日志" : "Step log"}</CardTitle>

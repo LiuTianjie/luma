@@ -1,0 +1,229 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Operations · Luma Documentation</title><meta name="description" content="Operations — Luma Documentation"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">Skip to content</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../index.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">Documentation</span><button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="Main navigation"><a href="../index.html#product">Console</a><a href="../index.html#docs">All guides</a><a href="operations.zh-CN.html" data-doc-language lang="zh-CN">中文</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="Documentation"><strong>Guides</strong><a class=""  href="README.html">Overview</a><a class=""  href="getting-started.html">Getting started</a><a class=""  href="concepts.html">Core concepts</a><a class=""  href="deploying.html">Deploying applications</a><a class=""  href="build-and-artifacts.html">Build & OCI artifacts</a><a class=""  href="migration-guide.html">Migration guide</a><a class="active" aria-current=page href="operations.html">Operations</a><a class=""  href="deployment-yaml.html">Deployment YAML</a><a class=""  href="compose-storage.html">Compose & storage</a><a class=""  href="secrets.html">Secrets & credentials</a><a class=""  href="exposure-model.html">Exposure model</a><a class=""  href="observability.html">Observability</a><a class=""  href="dashboard-guide.html">Console guide</a><a class=""  href="troubleshooting.html">Troubleshooting</a><a class=""  href="luma-cli-reference.html">CLI reference</a><a class=""  href="ai-agent-skills.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../index.html#docs">Documentation</a><span>/</span><span>Operations</span></div><h1 id="operations">Operations<a class="headerlink" href="#operations" title="Permanent link">#</a></h1>
+<p>Resource history, resumable logs, disk samples, alerts and authenticated Prometheus scraping are described in <a href="observability.html">Observability</a>. For the single Manager SQLite store, history retention, backups and Manager recovery, see <a href="control-storage.html">Control storage and recovery</a>.</p>
+<p>Day-2 tasks for running applications and nodes. Deploying is covered in <a href="deploying.html">Deploying applications</a>.</p>
+<h2 id="inspect-applications">Inspect Applications<a class="headerlink" href="#inspect-applications" title="Permanent link">#</a></h2>
+<pre><code class="language-bash">luma status                                   # cluster, nodes and application health
+luma app list --region cn                     # services and replica health
+luma app show api                             # one application or service
+luma app events api                           # recent runtime events of the latest allocation
+luma app logs api --tail 100
+luma app logs api --allocation &lt;alloc-id&gt; --previous
+luma app logs api --follow --format ndjson
+</code></pre>
+<p><code>--tail</code> is a 1-500 line budget shared by all selected sources. Text output labels every line with <code>[allocation/task/stream]</code>; <code>[partial]</code> and <code>[continued]</code> mark fragments. Use JSON or NDJSON to keep the source and cursor metadata. <code>--follow</code> resumes from the last cursor after a dropped connection (backoff up to 15 seconds, at most eight reconnects without progress); press Ctrl-C to stop.</p>
+<p>Control also keeps a searchable history of build and deployment attempts, separate from application logs:</p>
+<pre><code class="language-bash">luma app history api --kind deployment --status failed
+luma app history --source dashboard --since 2026-09-01T00:00:00+08:00 --format json
+luma app history --id &lt;record-id&gt; --kind deployment
+luma build logs &lt;build-id&gt;
+</code></pre>
+<p>Pages hold 50 records by default (maximum 100); pass <code>nextCursor</code> as <code>--cursor</code> with the same filters. Retention is described in <a href="control-storage.html">Control storage</a>.</p>
+<p>On the manager, Nomad's own tools work too: <code>nomad job status &lt;app&gt;</code>, <code>nomad alloc logs -f &lt;alloc-id&gt;</code>.</p>
+<h2 id="update-image-tag">Update Image Tag<a class="headerlink" href="#update-image-tag" title="Permanent link">#</a></h2>
+<p>Change the manifest:</p>
+<pre><code class="language-yaml">image: ghcr.io/me/api:2026-05-29-2
+</code></pre>
+<p>Then deploy:</p>
+<pre><code class="language-bash">luma deploy api.yaml
+</code></pre>
+<h2 id="scale-replicas">Scale Replicas<a class="headerlink" href="#scale-replicas" title="Permanent link">#</a></h2>
+<p>Change the manifest:</p>
+<pre><code class="language-yaml">replicas: 3
+</code></pre>
+<p>Then deploy:</p>
+<pre><code class="language-bash">luma deploy api.yaml
+</code></pre>
+<p>Temporary scale from a manager node:</p>
+<pre><code class="language-bash">nomad job scale api 3
+</code></pre>
+<p>Temporary commands do not update Git. Commit the manifest change afterward if it should persist.</p>
+<h2 id="pin-to-one-node">Pin To One Node<a class="headerlink" href="#pin-to-one-node" title="Permanent link">#</a></h2>
+<p>Use this only when the service depends on local disk, hardware, or a specific home/worker machine:</p>
+<pre><code class="language-yaml">region: home
+node: home-mac-mini
+</code></pre>
+<p><code>node</code> must be the Luma node name passed to <code>luma node join --name</code>. Luma renders it as a Nomad constraint on <code>${node.unique.name}</code> (or <code>meta.luma_node_name</code>) and still keeps the <code>region</code> constraint on <code>${meta.region}</code>, so the selected node must also be in that region. The Nomad node identity is stable across rejoins, so pinned placement does not need to be refreshed.</p>
+<h2 id="roll-back">Roll Back<a class="headerlink" href="#roll-back" title="Permanent link">#</a></h2>
+<p>Nomad keeps a version history per job, so Luma exposes runtime rollback through both the dashboard and CLI.</p>
+<p>From the dashboard, open <code>https://&lt;control-domain&gt;/dashboard/</code>, choose <strong>Applications -&gt; Versions</strong>, inspect the job versions, then choose a previous version and confirm rollback.</p>
+<p>From the CLI:</p>
+<pre><code class="language-bash">luma app versions &lt;app&gt;
+luma app rollback &lt;app&gt;
+luma app rollback &lt;app&gt; --to-version &lt;N&gt;
+</code></pre>
+<p><code>luma app versions</code> lists prior versions of the Nomad job (<code>GET /v1/job/&lt;id&gt;/versions</code>). <code>luma app rollback</code> reverts to the previous version, or the version chosen with <code>--to-version</code>, through Nomad job revert (<code>POST /v1/job/&lt;id&gt;/revert</code>). Jobspecs also render <code>update { auto_revert = true }</code>, so a new version that fails its health checks rolls back to the last healthy version automatically.</p>
+<p>This is a running job rollback. It does not rewrite Git history, change the stored manifest/YAML in Luma Control, reverse database migrations, or restore volume contents. Compose rollback applies to the whole Compose job/stack. Use pinned image tags or digests for production; mutable tags such as <code>latest</code> can make an old Nomad job version pull newer bytes.</p>
+<p>Git-first path, when you want the manifest and the running job to stay in sync:</p>
+<pre><code class="language-bash">git revert &lt;deploy-commit&gt;
+luma deploy &lt;app&gt;.yaml
+</code></pre>
+<h2 id="restart-a-service">Restart A Service<a class="headerlink" href="#restart-a-service" title="Permanent link">#</a></h2>
+<p>Restart a running deployment without pulling a new image or changing its stored manifest. Restart is a delivery reconcile, not merely a process signal: Control waits for replacement allocations, refreshes Nomad CNI host-port state, reconstructs HTTP/TCP route files from the stored deployment record and actual allocation node, synchronizes DNS, and verifies every public HTTP endpoint before returning success.</p>
+<pre><code class="language-bash">luma app restart &lt;app&gt;
+luma app restart &lt;app&gt; --service &lt;task&gt;
+luma app restart &lt;app&gt; --mode task
+</code></pre>
+<p>There are two restart modes:</p>
+<ul>
+<li><code>recreate</code> — stops the allocation so Nomad reschedules a fresh one (picks up placement/rescheduling). This is the default for a whole stack.</li>
+<li><code>task</code> — restarts the task in place inside the existing allocation. This is the default when <code>--service</code> targets one task.</li>
+</ul>
+<p>Omitting <code>--mode</code> uses <code>recreate</code> for the whole stack and <code>task</code> when <code>--service</code> is set; pass <code>--mode</code> explicitly to override. For a Compose application, <code>luma app restart &lt;app&gt; --service &lt;svc&gt;</code> restarts one service's task in place, while <code>luma app restart &lt;app&gt;</code> recreates every allocation in the stack. Use <code>--timeout &lt;seconds&gt;</code> (default <code>120</code>) to bound the control-plane response wait.</p>
+<p>From Dashboard → Applications → application → Services, each running service has a <strong>Shell</strong> action. Nodes have their own Shell action under Infrastructure → Nodes. Both open dedicated terminal pages; leaving the page ends that browser session. That opens an interactive terminal in the service container through the node agent (<code>docker exec</code>), using the same terminal supervisor as node shells. It is for live diagnosis, not a substitute for logs or a restart. System stacks are blocked. Node agents need the <code>container-terminal</code> capability; update them if the action reports that the agent does not support container terminal.</p>
+<p>The response includes <code>replacementAllocations</code> and a structured <code>delivery</code> result (<code>routes</code>, <code>dns</code>, and <code>probes</code>). A platform-managed deployment with no saved record reports delivery reconciliation as skipped; a managed public deployment does not report <code>delivery.status=ready</code> until its public probe succeeds. Reconciled file-provider HTTP routes use explicit priority so they safely override stale legacy Nomad-provider routes that advertise an unreachable provider-private node address.</p>
+<p>Restart refuses the system stacks <code>traefik</code>, <code>egress</code>, and <code>luma-control</code> (Control runs inside the <code>luma-control</code> allocation, so cycling it from application management would kill Control itself).</p>
+<h2 id="remove-a-deployment">Remove A Deployment<a class="headerlink" href="#remove-a-deployment" title="Permanent link">#</a></h2>
+<p>Use the deployed service or Compose application name:</p>
+<pre><code class="language-bash">luma app remove &lt;app&gt;
+</code></pre>
+<p>The control plane uses the manifest recorded during the last successful deploy, deletes the Luma-managed Cloudflare DNS record for public services, deregisters and purges the Nomad job (<code>DELETE /v1/job/&lt;id&gt;?purge=true</code>), and deletes generated manager files. The same command removes single-service and Compose deployments. Because the control plane stores the manifest, this also works for deployments created through the web UI when the client no longer has a local YAML file. For <code>tailscale-relay</code>, it also deletes <code>/opt/luma/routes/&lt;service&gt;.yml</code>. For <code>cloudflare-tunnel</code>, Cloudflare Tunnel public hostname cleanup is skipped because that hostname is still managed in Cloudflare Zero Trust.</p>
+<p>Storage data is preserved by default. To intentionally delete removable storage referenced by the recorded deployment, preview and then run:</p>
+<pre><code class="language-bash">luma app remove &lt;app&gt; --dry-run --delete-storage
+luma app remove &lt;app&gt; --delete-storage
+</code></pre>
+<p>For single-service deployments, this deletes managed storage paths referenced by <code>storage.&lt;volume&gt;.path</code> and removes named Docker volume objects declared in the manifest; bind mounts are skipped. For Compose deployments, this deletes managed volume subdirectories referenced by the sidecar, not the storage class itself. It cannot be combined with <code>--skip-orchestrator</code>.</p>
+<p>Preview the cleanup without changing the manager:</p>
+<pre><code class="language-bash">luma app remove &lt;app&gt; --dry-run
+</code></pre>
+<p>Keep DNS or the running Nomad job when you are doing a partial cleanup. <code>--skip-orchestrator</code> leaves the Nomad job in place:</p>
+<pre><code class="language-bash">luma app remove &lt;app&gt; --skip-dns
+luma app remove &lt;app&gt; --skip-orchestrator
+</code></pre>
+<p>If the control plane is unavailable, remove the Nomad job directly on the manager, then remove generated files:</p>
+<pre><code class="language-bash">nomad job stop -purge &lt;service&gt;
+sudo rm -rf /opt/luma/stacks/&lt;region&gt;/&lt;service&gt;
+sudo rm -f /opt/luma/routes/&lt;service&gt;.yml
+</code></pre>
+<h2 id="remove-a-node">Remove A Node<a class="headerlink" href="#remove-a-node" title="Permanent link">#</a></h2>
+<p>From any logged-in client:</p>
+<pre><code class="language-bash">luma node remove &lt;node-name&gt;
+</code></pre>
+<p>The request is handled by Luma Control on the manager. It deletes the Luma node registration and drains the matching Nomad client (<code>PUT /v1/node/&lt;id&gt;/drain</code>); a dead client is then garbage-collected by Nomad automatically. If Nomad returns 404 or <code>node not found</code> for that ID, Control skips drain (<code>nomadDrainSkipped: nomad_node_not_found</code>) and still deletes the Luma registration. Network, auth, and Nomad-unavailable errors still fail the remove. Use this for stale nodes that already left locally, failed joins, or decommissioned worker/home machines. Manager nodes (Nomad servers) are protected and must not be removed through this command.</p>
+<p>Because the Nomad node identity is a stable UUID, a worker/home machine that leaves and rejoins with the same Luma node name keeps the same <code>meta.luma_node_name</code>, so services pinned by Luma node name do not need a NodeID refresh. Keep manifests pinned by Luma node name; do not replace them with Docker hostnames.</p>
+<h2 id="drain-a-node">Drain A Node<a class="headerlink" href="#drain-a-node" title="Permanent link">#</a></h2>
+<pre><code class="language-bash">nomad node drain -enable &lt;node-id&gt;
+</code></pre>
+<p>Restore it:</p>
+<pre><code class="language-bash">nomad node drain -disable &lt;node-id&gt;
+</code></pre>
+<h2 id="refresh-egress">Refresh Egress<a class="headerlink" href="#refresh-egress" title="Permanent link">#</a></h2>
+<pre><code class="language-bash">export EGRESS_SUBSCRIPTION_URL='...'
+luma manager egress
+</code></pre>
+<p>Verify image pulls on the target node:</p>
+<pre><code class="language-bash">sudo docker pull hello-world:latest
+</code></pre>
+<h2 id="update-luma">Update Luma<a class="headerlink" href="#update-luma" title="Permanent link">#</a></h2>
+<pre><code class="language-bash">luma update                                  # manager: CLI + Control; node: CLI + agent; client: CLI
+luma update --install-ref v0.2.11           # a specific release, branch or full commit
+luma update fleet                            # every non-manager node with a ready agent
+luma update fleet --include-manager          # explicit repair only
+</code></pre>
+<p>Updates install the latest release unless <code>--install-ref</code> is given; use a full commit for a coordinated candidate rollout. The dashboard's <strong>Nodes → Update center</strong> is the preferred manager path: it mirrors the Control image into the internal registry first, then rolls out with progress and route checks. A direct <code>luma update</code> on the manager pulls the image itself; where GHCR is unreachable, set <code>LUMA_CONTROL_IMAGE</code> to a pullable image.</p>
+<p>On the manager, <code>luma update</code> refreshes the firewall, Traefik, the Tailscale watchdog, Control configuration and the <code>luma-control</code> job (with Nomad auto-revert), then refreshes the local node agent. It does not restart Docker or the Nomad agent, run egress setup, or redeploy applications. Manager state under <code>/opt/luma/control</code> is root-only; without passwordless sudo run <code>sudo ~/.local/bin/luma update</code>.</p>
+<p>On a joined node, <code>luma update</code> refreshes the CLI and the node agent. A node whose agent is too old for fleet updates is reported as skipped; run <code>luma update</code> on it once. For an old node without saved agent metadata, pass <code>--control-url https://luma.example.com --token &lt;node-join-token&gt;</code>.</p>
+<p>Managers and nodes run a small Tailscale watchdog that restarts Tailscale after consecutive peer failures, without touching Docker, Nomad or applications.</p>
+<h2 id="repair-the-control-plane">Repair The Control Plane<a class="headerlink" href="#repair-the-control-plane" title="Permanent link">#</a></h2>
+<pre><code class="language-bash">luma bootstrap --domain luma.example.com
+luma doctor
+</code></pre>
+<p>Bootstrap is idempotent but touches Docker, the firewall, Traefik, Nomad and egress; treat a full rerun as a maintenance-window operation.</p>
+<h2 id="manager-ip-change">Manager IP Change<a class="headerlink" href="#manager-ip-change" title="Permanent link">#</a></h2>
+<p>Run on the manager, preview first:</p>
+<pre><code class="language-bash">luma manager ip-change --old 203.0.113.10 --new 203.0.113.20 --domain luma.example.com --dry-run
+luma manager ip-change --old 203.0.113.10 --new 203.0.113.20 --domain luma.example.com
+</code></pre>
+<p>It verifies the new address over HTTPS, then updates only the manager's <code>publicIp</code>, <code>providers.dns.edgeTarget</code> and the Cloudflare A records that exactly match the old address. It backs up <code>luma.yaml</code>, reuses the running Control image and does not redeploy applications. Rerunning finishes any records left by a partial failure.</p>
+<h2 id="private-registries-on-new-nodes">Private Registries On New Nodes<a class="headerlink" href="#private-registries-on-new-nodes" title="Permanent link">#</a></h2>
+<p><code>luma node join</code> and <code>luma node nomad-join</code> prepare managed HTTP registry access after Docker and Tailscale are set up and before Nomad starts. The host list comes from the control plane's recorded HTTP transports. A narrow legacy exception remains for the configured Builder Registry at a registered node's Tailscale IP on port <code>5000</code>, when neither an explicit transport nor registry credentials are recorded. Other private hosts, public registries and recorded HTTPS endpoints are not inferred to use HTTP.</p>
+<p>Before a single-service or Compose deployment submits its final Nomad job, Control checks the managed HTTP hosts in the resolved Docker images on every eligible target matching the job's placement and healthy task drivers. Every target must advertise <code>managed-registry-access-v2</code> before any target configuration changes. Regional deployments also check newly joined eligible nodes; an old agent, unknown runtime or unsupported placement constraint stops submission. Manager targets are verification-only: missing configuration requires host-owned maintenance, and this preflight never changes the manager's Docker or proxy settings.</p>
+<p>For rolling upgrades, the corrected agent advertises both v1 and v2 and routes the unchanged public action and payload to one implementation. Existing v1 Control clients can use the corrected agent; the new Control requires v2 and rejects v1-only agents. Upgrade all eligible target agents before upgrading Control.</p>
+<p>Linux setup uses the local <code>/var/run/docker.sock</code> and reads Docker's actual JSON fields <code>HttpProxy</code>, <code>HttpsProxy</code> and <code>NoProxy</code>. It adds exact managed hosts only when transport or active proxy bypass needs configuration, preserving unrelated settings and backing up <code>daemon.json</code> before a change. Missing proxy facts are errors, not evidence of direct access.</p>
+<p>On macOS, Luma identifies the actual OrbStack socket owner. It manages HTTP transport in that user's <code>~/.orbstack/config/docker.json</code>, but reads proxy policy from OrbStack's native <code>network_proxy</code> and <code>network.proxy.exclude</code> settings. In <code>auto</code> mode it also checks the effective macOS system proxy settings. Docker's internal OrbStack broker address alone does not prove that an external proxy is active. Where a verified upstream proxy needs a bypass, Luma preserves existing exclusions and appends only the missing managed hosts through the native settings owner. Unknown modes, unsupported PAC/WPAD configurations, incomplete inspection results and other macOS Docker runtimes fail explicitly. Active state is read back and each registry's <code>/v2/</code> is probed over HTTP; a saved file alone is not a successful verification.</p>
+<p>When existing settings and the active engine state already satisfy the request, verification can run while containers are running. Any required configuration change, including native proxy exclusions that can apply without a Docker restart, requires an idle engine; otherwise drain the node in a maintenance window and retry. Luma restarts Docker only when transport settings require it and reports whether a restart occurred. Agent updates alone do not configure or restart Docker; the next normal join or deployment performs the required verification and, where permitted, setup.</p>
+<p><code>luma registry serve</code> records whether the managed registry uses HTTP or HTTPS and deploys the registry service. It no longer configures every node in the cluster. Its own resolved image uses the same target preflight; consumers prepare access to the new registry on their own join or deployment.</p>
+<h2 id="required-network-ports">Required Network Ports<a class="headerlink" href="#required-network-ports" title="Permanent link">#</a></h2>
+<p>For Linux nodes, Luma configures UFW during bootstrap/join. Mirror the same access in cloud security groups or Tailscale ACLs:</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>Port</th>
+<th>Required between</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>80/tcp</code></td>
+<td>public clients -&gt; edge manager</td>
+<td>HTTP redirect and Let's Encrypt challenge.</td>
+</tr>
+<tr>
+<td><code>443/tcp</code></td>
+<td>public clients -&gt; edge manager</td>
+<td>HTTPS ingress for Luma Control and public services.</td>
+</tr>
+<tr>
+<td><code>tcp-relay</code> published ports</td>
+<td>public clients -&gt; edge manager</td>
+<td>Public TCP relay ports, for example <code>3306/tcp</code> for MySQL. Luma restores Traefik listeners from Control state; cloud firewalls/security groups must allow the same ports.</td>
+</tr>
+<tr>
+<td><code>4646/tcp</code></td>
+<td>clients/Traefik -&gt; Nomad server</td>
+<td>Nomad HTTP API (deploy, status, service discovery).</td>
+</tr>
+<tr>
+<td><code>4647/tcp</code></td>
+<td>Nomad clients -&gt; Nomad server</td>
+<td>Nomad RPC.</td>
+</tr>
+<tr>
+<td><code>4648/tcp</code>, <code>4648/udp</code></td>
+<td>all Nomad agents</td>
+<td>Nomad Serf gossip (server membership).</td>
+</tr>
+</tbody>
+</table></div>
+<p>Nomad agents bind to <code>0.0.0.0</code> and advertise their Tailscale address. Luma-managed UFW rules only open <code>4646/4647/4648</code> on <code>tailscale0</code>; public isolation depends on those firewall rules, not on the advertise address. On hosts without UFW, configure equivalent host firewall rules and cloud security groups, and verify the ports are unreachable through the public interface.</p>
+<h2 id="tailscale-relay">Tailscale Relay<a class="headerlink" href="#tailscale-relay" title="Permanent link">#</a></h2>
+<p><code>tailscale-relay</code> is explicit per service. It is suitable for home tools, previews, or low-frequency internal panels that need a public domain.</p>
+<p>It is not the default path for normal public traffic.</p>
+<h2 id="node-agent-fails-after-an-installer-path-change">Node agent fails after an installer path change<a class="headerlink" href="#node-agent-fails-after-an-installer-path-change" title="Permanent link">#</a></h2>
+<p>A Nomad node can remain <code>ready</code> while its Luma agent is offline. Before installing
+missing Python packages, inspect the service's actual <code>ExecStart</code>, its launcher,
+and the Python environment it selects. Hosts may have a working installation
+under <code>/opt/luma-cli</code> alongside an incomplete user-local installation.</p>
+<p>The installer validates the target runtime before publishing its command shim or
+refreshing the node agent service: dependency imports, CLI/agent command loading,
+and <code>pip check</code> must succeed. A failed package installation can use source fallback
+only when these checks pass. The shim runs the validated Python with <code>-m luma.cli</code>,
+not an existing console script whose shebang may refer to a different environment.
+Validation failure returns nonzero and does not publish an installation-success
+message, replace the shim, or refresh/restart the service.</p>
+<p>This publication gate is not a transactional rollback of source or package changes
+already made inside the target install directory. For an affected existing host,
+restore the service to a verified working environment, then check both systemd
+restart counts and fresh Control heartbeats; a running process alone does not prove
+that the agent has reconnected.</p><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/operations.md">View source on GitHub ↗</a> · <a href="./operations.md">Raw Markdown</a></div></article><aside class="docs-toc" aria-label="On this page"><strong>On this page</strong><div class="toc">
+<ul>
+<li><a href="#inspect-applications">Inspect Applications</a></li>
+<li><a href="#update-image-tag">Update Image Tag</a></li>
+<li><a href="#scale-replicas">Scale Replicas</a></li>
+<li><a href="#pin-to-one-node">Pin To One Node</a></li>
+<li><a href="#roll-back">Roll Back</a></li>
+<li><a href="#restart-a-service">Restart A Service</a></li>
+<li><a href="#remove-a-deployment">Remove A Deployment</a></li>
+<li><a href="#remove-a-node">Remove A Node</a></li>
+<li><a href="#drain-a-node">Drain A Node</a></li>
+<li><a href="#refresh-egress">Refresh Egress</a></li>
+<li><a href="#update-luma">Update Luma</a></li>
+<li><a href="#repair-the-control-plane">Repair The Control Plane</a></li>
+<li><a href="#manager-ip-change">Manager IP Change</a></li>
+<li><a href="#private-registries-on-new-nodes">Private Registries On New Nodes</a></li>
+<li><a href="#required-network-ports">Required Network Ports</a></li>
+<li><a href="#tailscale-relay">Tailscale Relay</a></li>
+<li><a href="#node-agent-fails-after-an-installer-path-change">Node agent fails after an installer path change</a></li>
+</ul>
+</div>
+</aside></main></body></html>

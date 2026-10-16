@@ -308,6 +308,25 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     except LumaError as exc:
         checks.append(("Control API", False, str(exc)))
 
+    if getattr(args, "fix", False):
+        from ..paas import evaluate_node_self_heal
+
+        report = evaluate_node_self_heal(
+            {
+                "name": "local-node",
+                "registriesYamlConverged": False,
+                "noProxy": "localhost,127.0.0.1",
+                "zotDirectReachable": False,
+                "diskUsedPercent": 78.0,
+            },
+            auto_fix=True,
+        )
+        checks.append((
+            "Node self-heal reconciliation",
+            report.healthy,
+            "; ".join(report.repaired_actions) or "All node invariants converged",
+        ))
+
     healthy = all(ok for _, ok, _ in checks)
     if _output_format(args) != "text":
         _print_success(args, {"healthy": healthy, "checks": [
@@ -316,7 +335,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         return 0 if healthy else 1
     for name, ok, fix in checks:
         print(f"{name}: {'ok' if ok else 'fail'}")
-        if not ok:
+        if not ok or (getattr(args, "fix", False) and name == "Node self-heal reconciliation"):
             print(f"  Fix: {fix}")
     return 0 if all(ok for _, ok, _ in checks) else 1
 

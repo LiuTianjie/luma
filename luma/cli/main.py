@@ -18,6 +18,7 @@ from .common import _print_structured_error
 from .deploy import cmd_compose, cmd_deploy, cmd_validate
 from .manager import cmd_bootstrap, cmd_manager, cmd_update
 from .nodes import cmd_node, cmd_region, cmd_storage
+from .paas import cmd_artifact, cmd_migrate
 from .parser import build_parser
 from .session import cmd_context, cmd_doctor, cmd_init, cmd_login, cmd_status, cmd_version
 from .settings import cmd_git_provider, cmd_registry, cmd_secret
@@ -35,10 +36,12 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "compose": cmd_compose,
     "import": cmd_import,
     "build": cmd_build,
+    "artifact": cmd_artifact,
     "workflow": cmd_workflow,
     "status": cmd_status,
     "app": cmd_app,
     "secret": cmd_secret,
+    "migrate": cmd_migrate,
     "bootstrap": cmd_bootstrap,
     "update": cmd_update,
     "node": cmd_node,

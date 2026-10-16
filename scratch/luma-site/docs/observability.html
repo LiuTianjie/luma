@@ -1,0 +1,249 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Observability · Luma Documentation</title><meta name="description" content="Observability — Luma Documentation"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">Skip to content</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../index.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">Documentation</span><button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="Main navigation"><a href="../index.html#product">Console</a><a href="../index.html#docs">All guides</a><a href="observability.zh-CN.html" data-doc-language lang="zh-CN">中文</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="Documentation"><strong>Guides</strong><a class=""  href="README.html">Overview</a><a class=""  href="getting-started.html">Getting started</a><a class=""  href="concepts.html">Core concepts</a><a class=""  href="deploying.html">Deploying applications</a><a class=""  href="build-and-artifacts.html">Build & OCI artifacts</a><a class=""  href="migration-guide.html">Migration guide</a><a class=""  href="operations.html">Operations</a><a class=""  href="deployment-yaml.html">Deployment YAML</a><a class=""  href="compose-storage.html">Compose & storage</a><a class=""  href="secrets.html">Secrets & credentials</a><a class=""  href="exposure-model.html">Exposure model</a><a class="active" aria-current=page href="observability.html">Observability</a><a class=""  href="dashboard-guide.html">Console guide</a><a class=""  href="troubleshooting.html">Troubleshooting</a><a class=""  href="luma-cli-reference.html">CLI reference</a><a class=""  href="ai-agent-skills.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../index.html#docs">Documentation</a><span>/</span><span>Observability</span></div><h1 id="observability">Observability<a class="headerlink" href="#observability" title="Permanent link">#</a></h1>
+<p>Luma exposes node/container samples, current task queues, resource history, runtime events, persistent alerts and resumable application logs. These observations are not a measurement of end-user availability. Public-route verification during deploy/restart remains a separate capability.</p>
+<h2 id="console-navigation">Console navigation<a class="headerlink" href="#console-navigation" title="Permanent link">#</a></h2>
+<p>Observability has separate pages for alert incidents, application monitoring, resource metrics, logs, alert rules and notification channels. Each uses its own compact page title. The engine summary belongs to alert incidents; notification channels focus on channel configuration and delivery history. Built-in alert pages refresh every 15 seconds, and resource history refreshes every 30 seconds. See the <a href="dashboard-guide.html">console guide</a> for UI workflows and the distinction between route relationships and connectivity probes.</p>
+<h2 id="application-alerts-luma-observe">Application alerts (<code>luma-observe</code>)<a class="headerlink" href="#application-alerts-luma-observe" title="Permanent link">#</a></h2>
+<p>Control dashboards show node/container samples. Live allocation tails remain
+an on-demand Control proxy. Application HTTP 5xx, latency (p90/p95/p99), Nomad
+failed allocations, restart storms, traces and searchable stdout/stderr are an
+optional <a href="https://github.com/LiuTianjie/luma/tree/main/observe"><code>observe/</code></a> Compose app. Deploy it with Luma; skip it
+and Control still runs. Operators look at Dashboard → Observability → App monitoring,
+which embeds Grafana at <code>/grafana</code> on the Control domain. HTTP, Nomad and trace series are labeled with the Luma app/stack name as soon as
+observe is deployed; applications do not opt in. Failed gauges are the
+allocations Nomad still wants to run, not lifetime failure counters.
+The stack uses host networking and loopback listeners (<code>127.0.0.1:8082</code> Prometheus,
+<code>127.0.0.1:4318</code> OTLP, <code>127.0.0.1:3200</code> Tempo). Application tasks send traces to the manager Tailscale mesh listener on port 4319 with a Control-issued bearer token. Control uses host networking and queries <code>http://127.0.0.1:8428</code> when observe is present. Grafana on <code>127.0.0.1:3100</code>
+is local debug only. Alerts evaluate in vmalert/Alertmanager. Control SQLite
+is not on this path. Trace storage retains 14 days; logs and metrics retain 15 days.</p>
+<p>Deploy from <code>observe/</code> with <code>luma build local . --platform linux/amd64</code>. First deploy does not require secrets; add Feishu later with scoped secrets if needed.
+Refresh Traefik after the current CLI includes the loopback metrics/OTLP flags
+so RED rules have a scrape target. Operators look at Dashboard → Observability → App monitoring.
+The charts are per Luma app (Traefik HTTP rate, 5xx and p90/p95/p99 latency + Nomad health), not each container's <code>/metrics</code>. Traefik histogram buckets are <code>0.05,0.1,0.25,0.5,1,2.5,5,10</code> seconds so those quantiles are distinguishable.
+Selecting observe also injects official OpenTelemetry environment variables into later Luma deploys (<code>OTEL_SERVICE_NAME</code>, <code>luma.stack</code> / <code>luma.task</code> / <code>luma.region</code>, OTLP HTTP to the mesh listener). Apps that already ship an OpenTelemetry distro emit spans without a Luma SDK. Redeploy existing apps after observe is first enabled. Apps export traces fail-open; the collector keeps HTTP 5xx, OTel errors, and traces slower than 1s, plus a 10% baseline. The collector uses a Go memory target, a memory limiter and bounded queues; sustained overload can refuse or drop telemetry.
+Do not ship raw access logs or traces off the manager public interface.</p>
+<h2 id="application-integration">Application integration<a class="headerlink" href="#application-integration" title="Permanent link">#</a></h2>
+<p>Deploying <a href="https://github.com/LiuTianjie/luma/tree/main/observe"><code>observe/</code></a> is the cluster opt-in. After that, new Luma
+deploys get OTel wiring automatically. A process restart of an old job is not
+enough; the Nomad job must be rendered again. There is no Luma telemetry SDK
+and no language agent injection.</p>
+<p>What you get without changing the app:</p>
+<ul>
+<li>Traefik HTTP RED (rate, 5xx, p90/p95/p99) labeled by Luma app name</li>
+<li>Nomad running / current failed / restart counts labeled by Luma app name</li>
+<li>An ingress span for public HTTP (<code>cn-edge</code> / <code>external-edge</code>) stored in Tempo</li>
+</ul>
+<p>What you get after a new deploy, only if the image already speaks OpenTelemetry:</p>
+<ul>
+<li>Process spans exported to Tempo with <code>luma.stack</code> / <code>luma.task</code> / <code>luma.region</code></li>
+<li>Look at Dashboard → Observability → App monitoring → Traces, or Grafana <code>/grafana/d/luma-traces</code></li>
+</ul>
+<p>What you still do not get: nginx / static Go / images with no OTel SDK, traffic
+that never hits Traefik, request bodies, SQL text, or every successful fast
+request (5xx and &gt;1s traces are kept; the rest are sampled at 10%). Export is
+fail-open.</p>
+<h3 id="manual-spans">Manual spans<a class="headerlink" href="#manual-spans" title="Permanent link">#</a></h3>
+<p>Do not set <code>OTEL_EXPORTER_OTLP_ENDPOINT</code> or the bearer header. Control already
+injects them. Use the official OpenTelemetry API and keep exporters fail-open.</p>
+<p>Install the official distro plus OTLP exporter in the image, for example Python:</p>
+<pre><code class="language-text">opentelemetry-distro
+opentelemetry-exporter-otlp
+</code></pre>
+<p>Then start with <code>opentelemetry-instrument</code> (or the equivalent for Node/Java) so
+the SDK reads the injected env. Add a span around a business step:</p>
+<pre><code class="language-python">from opentelemetry import trace
+
+tracer = trace.get_tracer(&quot;orders&quot;)
+
+def charge(order_id: str) -&gt; None:
+    with tracer.start_as_current_span(&quot;charge_card&quot;) as span:
+        span.set_attribute(&quot;order.id&quot;, order_id)
+        provider.charge(order_id)
+</code></pre>
+<p>Node:</p>
+<pre><code class="language-javascript">const { trace } = require(&quot;@opentelemetry/api&quot;);
+const tracer = trace.getTracer(&quot;orders&quot;);
+
+async function charge(orderId) {
+  return tracer.startActiveSpan(&quot;charge_card&quot;, async (span) =&gt; {
+    span.setAttribute(&quot;order.id&quot;, orderId);
+    try {
+      return await provider.charge(orderId);
+    } finally {
+      span.end();
+    }
+  });
+}
+</code></pre>
+<p>Do not put secrets, tokens, or full request bodies on span attributes. Custom
+span names show up under the same <code>luma.stack</code> as the process. If the image has
+no OpenTelemetry SDK, these calls are no-ops unless you add the distro.</p>
+<h2 id="dashboard-and-logs">Dashboard and logs<a class="headerlink" href="#dashboard-and-logs" title="Permanent link">#</a></h2>
+<p>Dashboard → Observability opens incidents. Metrics have a dedicated page; the
+Logs view of App monitoring opens Grafana Explore against VictoriaLogs (15 days).
+Rules and notification channels have separate list and edit URLs. Storage
+governance is under Infrastructure → Storage → Capacity and cleanup.</p>
+<p>The metrics page shows the actual sampled time span and retention, separates missing/stale/failed queries, and breaks resource lines across sampling gaps. Select a service for its resource history, or open observability logs filtered by its stack.</p>
+<p>Observability logs are Nomad allocation stdout/stderr shipped by luma-observe
+into VictoriaLogs. Filter by <code>app</code> (the Nomad job / Luma stack). Traefik JSON
+access logs are the <code>traefik</code> job's stdout; unpack with LogsQL <code>unpack_json</code>.
+Line time is observation time because Nomad frames have no event timestamps.
+<code>luma service logs</code> and the application-detail live tail still follow Nomad
+files through Control and are bounded excerpts, not this 15-day store.</p>
+<p>Resources are retained in 30-second buckets, independently of the number of nodes reporting a service. <code>LUMA_METRICS_HISTORY_POINTS</code> defaults to 720 (approximately six hours), bounded between 60 and 10000. Resource history remains a separate bounded <code>metrics-history.json</code> file in the Control state directory; collection outside Control is still useful for longer investigations and independent outage detection. See <a href="control-storage.html">Control storage and recovery</a> for backup scope. A service aggregate covers reporting nodes; missing contributions expire after 180 seconds. It is not proof that all replicas have reported.</p>
+<h2 id="built-in-alert-rules-and-notifications">Built-in alert rules and notifications<a class="headerlink" href="#built-in-alert-rules-and-notifications" title="Permanent link">#</a></h2>
+<p>The Dashboard alerting page manages rules, notification channels and incidents.
+Rules, incident transitions and the notification outbox persist in the Control
+SQLite database. The evaluator uses samples and task state already reported to
+Control; creating a resource rule does not start a public HTTP probe.</p>
+<p>Available presets cover node heartbeat age, sustained CPU, memory, disk and
+inode usage, queued-task age, the latest failed build per application, and —
+when luma-observe is deployed — application p95 latency, HTTP 5xx ratio and
+Nomad failed allocations. Observe samples are instant PromQL reads from
+VictoriaMetrics; if observe is down those rules keep their last state
+(<code>noData: keep</code>) instead of firing.
+Thresholds and the required continuous duration are configurable. A pending
+incident becomes firing only when its condition lasts for that duration; a
+healthy observation resolves it. One active incident is maintained per rule
+and target, with a configurable repeat interval for continued failures.</p>
+<p>Missing data is explicit: the <code>keep</code> policy preserves an existing firing state
+without treating missing samples as recovery, while <code>alert</code> treats missing data
+as a condition to evaluate. CPU rules use fresh Linux host CPU observations;
+macOS load averages are not interpreted as CPU percentages.</p>
+<p>Acknowledging an incident records an acknowledgement and stops its repeated
+notifications; it does not mark the underlying condition healthy. Global and
+per-rule timed silences suppress notifications while keeping evaluation and
+incident history available. Pending/retry deliveries wait until silence expiry;
+a silence cannot retract an HTTPS request already in flight. Changing a rule's
+condition gives its old incidents the <code>closed</code> status with a rule-change event,
+not a healthy <code>resolved</code> transition.
+Dashboard overview cards that are temporarily hidden in one browser are a different UI preference and do not silence alerts.</p>
+<p>The built-in Feishu channel uses an application bot. Fill in <strong>App ID</strong>,
+<strong>App Secret</strong> and the destination <strong>group chat ID</strong> in the channel form.
+Enable the application's bot capability, grant and publish
+<code>im:message:send_as_bot</code>, and add the application bot to that group. Associate
+the saved channel with a rule, then explicitly send a test notification.
+Channel tests send a real message to the configured group and bypass silences.</p>
+<p>Luma requests the tenant access token automatically and caches it only in
+process memory, refreshing before expiry. Operators do not configure a tenant
+access token. Channel reads return App ID, chat ID and <code>appSecretConfigured</code>;
+they never return App Secret. The App Secret is stored in the private Control
+SQLite database and therefore belongs to its protected backup scope. Omitting
+App Secret while editing preserves the stored value; replace it to rotate the
+credential and obtain a new cached token.</p>
+<p>Evaluation runs independently about every 15 seconds. A separate delivery loop
+checks the persistent outbox about every second, so a slow provider request
+does not pause evaluation. Pending, sent, retrying and failed deliveries remain
+visible. Network/rate-limit failures retry with backoff up to eight attempts;
+invalid credentials, missing permission and an inaccessible group fail with an
+actionable category. Each HTTPS request has an eight-second timeout within a
+16-second delivery budget.</p>
+<p>A successful response confirms acceptance by Feishu, not that a human read the
+message. Outbox retries reuse a stable message UUID for provider deduplication;
+this remains at-least-once delivery, not an unlimited exactly-once guarantee.
+Check delivery history for failures before changing a rule to make it fire
+again.
+Resolved/closed incidents and final deliveries enter the reviewed storage
+retention plan after its summary retention period (90 days by default); active
+incidents and outstanding deliveries are protected. See <a href="control-storage.html">Control storage</a>.</p>
+<p>Alerting management APIs under <code>/v1/alerting/</code> require the management token;
+the metrics-only token cannot manage them. No notification channel is
+provisioned automatically. The Control must remain available to evaluate and deliver its own alerts; retain an independent
+Prometheus scrape or external probe for Manager/Control outages. Built-in
+resource alerts do not probe public URLs. Application p95, 5xx ratio and
+failed-allocation presets read luma-observe; they are not a substitute for an
+external Control-down probe.</p>
+<h2 id="host-disk-samples">Host disk samples<a class="headerlink" href="#host-disk-samples" title="Permanent link">#</a></h2>
+<p>Updated node agents sample the filesystem containing <code>/opt/luma</code>, or <code>/</code> if that directory does not exist. Set <code>LUMA_METRICS_DISK_PATH</code> in the node agent service environment to select another absolute path. The Dashboard identifies the sampled path; this does not measure every mount, remote NFS server capacity or Docker VM capacity on macOS. A missing filesystem or unsupported inode counter is unavailable, not zero usage.</p>
+<p>Disk usage excludes reserved blocks from usable capacity, matching the usual <code>df</code> interpretation. The available-bytes value excludes reserved blocks too. Existing agents continue to work but will not supply these additional samples until updated.</p>
+<h2 id="prometheus-endpoint">Prometheus endpoint<a class="headerlink" href="#prometheus-endpoint" title="Permanent link">#</a></h2>
+<p><code>GET /v1/metrics</code> emits Prometheus text exposition. It reads the persisted heartbeat snapshot without contacting Nomad, contacting agents or changing control state. It supports the management token. A remote collector should use a dedicated read-only metrics token.</p>
+<p>The bundled luma-observe collector colocates on the manager host network and scrapes <code>http://127.0.0.1:8080/v1/metrics</code> without a token — the same loopback trust as Traefik <code>:8082</code>. A request that presents an <code>Authorization</code> header is still validated. Remote Prometheus scrapes continue to need the dedicated token.</p>
+<p>On the manager, provision a random token of at least 32 ASCII characters in <code>/opt/luma/control/metrics-token</code>. The file must be a private regular file, readable by the Control process (typically mode 0600), not a symlink. The existing <code>/opt/luma</code> Control mount makes this default path visible to the container. It is read on each request, allowing atomic rotation without restarting Control. No token is created automatically.</p>
+<p>An explicitly configured <code>LUMA_METRICS_TOKEN_FILE</code> overrides that path. For custom Control installations, expose the absolute path inside the process/container and set the environment variable there; an arbitrary manager shell environment is not automatically forwarded to the Nomad job.</p>
+<p>Copy the token securely into the Prometheus collector's credentials file. This dedicated token is accepted only by <code>/v1/metrics</code>; it cannot query the Dashboard, read application logs, deploy or restart. Keep it distinct from every other Luma token. Endpoint output includes infrastructure names and region labels. Remote scrapes remain authenticated; the colocated luma-observe scrape is loopback-only.</p>
+<p>The example <a href="./examples/monitoring/prometheus.yml">Prometheus scrape config</a> and <a href="./examples/monitoring/luma-alerts.yml">alert rules</a> are opt-in templates. Replace the hostname and credential path, check with your Prometheus version, and configure an Alertmanager destination before expecting notifications. These external templates are separate from Luma's built-in alert rules and Feishu channels described above. Applying Prometheus/Alertmanager configuration is a separate infrastructure change; it does not create a Luma notification channel.</p>
+<p>Important metrics:</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Prometheus <code>up{job="luma-control"}</code></td>
+<td>Scrape success, including connectivity and authentication; not application health</td>
+</tr>
+<tr>
+<td><code>luma_node_agent_up</code></td>
+<td>Heartbeat within 120 seconds; not Nomad scheduling eligibility</td>
+</tr>
+<tr>
+<td><code>luma_node_heartbeat_timestamp_seconds</code></td>
+<td>Last heartbeat received by Control</td>
+</tr>
+<tr>
+<td><code>luma_node_metrics_timestamp_seconds</code></td>
+<td>Last host sample received by Control</td>
+</tr>
+<tr>
+<td><code>luma_node_cpu_used_ratio</code></td>
+<td>Linux host CPU fraction; Darwin load estimate is deliberately excluded</td>
+</tr>
+<tr>
+<td><code>luma_node_load1</code></td>
+<td>Host one-minute load average</td>
+</tr>
+<tr>
+<td><code>luma_node_memory_*</code></td>
+<td>Host memory capacity, availability and used fraction</td>
+</tr>
+<tr>
+<td><code>luma_node_filesystem_*</code></td>
+<td>Sampled filesystem capacity, availability, usage and inode fraction, labeled by path</td>
+</tr>
+<tr>
+<td><code>luma_service_cpu_cores</code></td>
+<td>Container CPU summed by service and node, expressed in cores</td>
+</tr>
+<tr>
+<td><code>luma_service_memory_bytes</code></td>
+<td>Container memory summed by service and node</td>
+</tr>
+<tr>
+<td><code>luma_service_observed_containers</code></td>
+<td>Containers present in the agent snapshot, not desired replica count</td>
+</tr>
+<tr>
+<td><code>luma_node_unresolved_containers</code></td>
+<td>Containers lacking a persisted job identity and omitted from service gauges</td>
+</tr>
+<tr>
+<td><code>luma_tasks</code></td>
+<td>Current queued/running records by task kind, not a cumulative counter</td>
+</tr>
+<tr>
+<td><code>luma_task_queue_oldest_age_seconds</code></td>
+<td>Oldest dated queued task; kinds can refer to the same workflow and must not be summed blindly</td>
+</tr>
+</tbody>
+</table></div>
+<p>Host/container resource series expire after 120 seconds without fresh samples; they are omitted rather than kept at stale values or reported as zero. Separate collection timestamps are available after Control is updated; older stored records fall back to their heartbeat time until replaced. Historical counters, latency percentiles, desired replicas and HTTP error rates cannot be derived from this endpoint.</p>
+<p>Service resource labels preserve the reported task identity. Registered Compose jobs map <code>job + task</code> to the Dashboard's <code>job_task</code> name; other jobs retain their job name plus a separate task label. Containers known only by allocation ID are counted as unresolved instead of guessing a service name or making a scrape query Nomad. Check that unresolved count when judging coverage.</p>
+<p>For request rate, status codes and latency, enable Traefik metrics and join the router/service labels to Luma application identity. Private workers and routes that bypass Traefik need separate instrumentation. For Control outages, run the collector or an independent probe outside the Control process/failure domain.</p>
+<p>Official references: <a href="https://prometheus.io/docs/prometheus/latest/configuration/configuration/">Prometheus scrape configuration</a>, <a href="https://doc.traefik.io/traefik/observe/metrics/">Traefik metrics</a>, <a href="https://prometheus.io/docs/alerting/latest/alertmanager/">Alertmanager grouping and silences</a>.</p><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/observability.md">View source on GitHub ↗</a> · <a href="./observability.md">Raw Markdown</a></div></article><aside class="docs-toc" aria-label="On this page"><strong>On this page</strong><div class="toc">
+<ul>
+<li><a href="#console-navigation">Console navigation</a></li>
+<li><a href="#application-alerts-luma-observe">Application alerts (luma-observe)</a></li>
+<li><a href="#application-integration">Application integration</a><ul>
+<li><a href="#manual-spans">Manual spans</a></li>
+</ul>
+</li>
+<li><a href="#dashboard-and-logs">Dashboard and logs</a></li>
+<li><a href="#built-in-alert-rules-and-notifications">Built-in alert rules and notifications</a></li>
+<li><a href="#host-disk-samples">Host disk samples</a></li>
+<li><a href="#prometheus-endpoint">Prometheus endpoint</a></li>
+</ul>
+</div>
+</aside></main></body></html>

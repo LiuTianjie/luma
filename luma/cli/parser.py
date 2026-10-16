@@ -33,6 +33,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("compose", "Deploy a Docker Compose application with a Luma sidecar"),
         ("import", "Build a Git repository on a builder node and deploy it"),
         ("build", "Build a local checkout, or inspect and retry build runs"),
+        ("artifact", "Inspect immutable build artifacts or promote them across environments"),
         ("workflow", "Show or record how an application is built and deployed"),
     )),
     ("Operate", (
@@ -107,9 +108,10 @@ def _top_level_description() -> str:
 
 
 def _command(sub: argparse._SubParsersAction, name: str, summary: str = "", **kwargs) -> argparse.ArgumentParser:
-    summary = summary or SUMMARIES[name]
+    summary = summary or SUMMARIES.get(name, "")
     kwargs.setdefault("description", summary)
-    return sub.add_parser(name, help=summary, formatter_class=LumaHelpFormatter, **kwargs)
+    kwargs.setdefault("help", summary)
+    return sub.add_parser(name, formatter_class=LumaHelpFormatter, **kwargs)
 
 
 def _commands(parser: argparse.ArgumentParser, dest: str) -> argparse._SubParsersAction:
@@ -184,6 +186,7 @@ def _add_get_started_commands(sub: argparse._SubParsersAction) -> None:
     doctor = _command(sub, "doctor")
     doctor.add_argument("--local", action="store_true", help="Only inspect this machine's installation; do not contact Control")
     doctor.add_argument("--deep", action="store_true", help="Also run slower live checks on every node")
+    doctor.add_argument("--fix", action="store_true", help="Automatically run node self-heal and containerd/CNI/mirror repair")
     _add_control_arguments(doctor)
     _add_output_arguments(doctor)
 
@@ -206,6 +209,7 @@ def _add_deploy_commands(sub: argparse._SubParsersAction) -> None:
         epilog="Examples:\n  luma deploy app.yaml --dry-run\n  luma deploy app.yaml --env .env",
     )
     deploy.add_argument("service", type=Path, metavar="FILE", help="Service manifest")
+    deploy.add_argument("--artifact", default="", help="Deploy an existing immutable BuildArtifact ID without rebuilding")
     deploy.add_argument("--dry-run", action="store_true", help="Render the Nomad job locally and print it; nothing is deployed")
     deploy.add_argument("--env", dest="deploy_env_file", type=Path, help="Store the variables the manifest references from this .env file as application secrets")
     deploy.add_argument("--timeout", type=int, default=3000, help="Seconds to wait for Control (default: 3000)")
@@ -228,6 +232,7 @@ def _add_deploy_commands(sub: argparse._SubParsersAction) -> None:
     _add_output_arguments(compose_validate)
     compose_deploy = _command(compose_sub, "deploy", "Deploy a Compose application")
     compose_deploy.add_argument("sidecar", type=Path, metavar="SIDECAR", help="Luma Compose sidecar, for example luma.compose.yml")
+    compose_deploy.add_argument("--artifact", default="", help="Deploy an existing immutable BuildArtifact ID without rebuilding")
     compose_deploy.add_argument("--dry-run", action="store_true", help="Render the Nomad job and print it; nothing is deployed")
     compose_deploy.add_argument("--env", dest="deploy_env_file", type=Path, help="Store referenced variables from this .env file as application secrets")
     compose_deploy.add_argument("--timeout", type=int, default=3000, help="Seconds to wait for Control (default: 3000)")
@@ -323,6 +328,27 @@ def _add_deploy_commands(sub: argparse._SubParsersAction) -> None:
     _add_control_arguments(build_config)
     _add_output_arguments(build_config)
 
+    artifact = _command(
+        sub, "artifact",
+        description="Inspect immutable OCI build artifacts or promote an artifact across environments without rebuilding.",
+    )
+    artifact_sub = _commands(artifact, "artifact_command")
+    artifact_list = _command(artifact_sub, "list", "List immutable build artifacts")
+    artifact_list.add_argument("--project", default="", help="Only artifacts belonging to this application")
+    _add_control_arguments(artifact_list)
+    _add_output_arguments(artifact_list)
+    artifact_show = _command(artifact_sub, "show", "Inspect an artifact's service digests and BuildKit stage waterfall")
+    artifact_show.add_argument("artifact_id", metavar="ID", help="Artifact ID from 'luma artifact list'")
+    _add_control_arguments(artifact_show)
+    _add_output_arguments(artifact_show)
+    artifact_promote = _command(artifact_sub, "promote", "Promote an immutable artifact to another environment without rebuilding")
+    artifact_promote.add_argument("artifact_id", metavar="ID", help="Artifact ID to promote")
+    artifact_promote.add_argument("--project", default="", help="Application name (default: inferred from artifact)")
+    artifact_promote.add_argument("--from", dest="from_env", default="staging", help="Source environment (default: staging)")
+    artifact_promote.add_argument("--to", dest="to_env", default="prod", help="Target environment (default: prod)")
+    _add_control_arguments(artifact_promote)
+    _add_output_arguments(artifact_promote)
+
     workflow = _command(
         sub, "workflow",
         description="Show or record how an application is built and deployed. Deploy, import and "
@@ -393,6 +419,13 @@ def _add_operate_commands(sub: argparse._SubParsersAction) -> None:
     app_restart.add_argument("--timeout", type=int, default=120, help="Seconds to wait for Control (default: 120)")
     _add_control_arguments(app_restart)
     _add_output_arguments(app_restart)
+    app_scale = _command(app_sub, "scale", "Scale an application or a specific Compose service independently")
+    app_scale.add_argument("name", help="Application name")
+    app_scale.add_argument("--service", default="", help="Specific service of a Compose application (default: primary service)")
+    app_scale.add_argument("--replicas", type=int, required=True, help="Desired replica count (0-64)")
+    app_scale.add_argument("--environment", default="prod", help="Target environment (default: prod)")
+    _add_control_arguments(app_scale)
+    _add_output_arguments(app_scale)
     app_remove = _command(app_sub, "remove", "Remove an application, its routes and DNS records")
     app_remove.add_argument("service", metavar="name", help="Application name")
     app_remove.add_argument("--dry-run", action="store_true", help="Show what would be removed")
@@ -425,6 +458,42 @@ def _add_operate_commands(sub: argparse._SubParsersAction) -> None:
     secret_remove.add_argument("name", help="Variable name")
     secret_remove.add_argument("--scope", default="", help="Application name the secret belongs to")
     _add_control_arguments(secret_remove)
+
+    # Migration is a one-time operation. Hidden from public help to keep CLI clean.
+    migrate = _command(
+        sub,
+        "migrate",
+        summary="Migrate existing Nomad applications to the K8s + Flux PaaS runtime",
+        help=argparse.SUPPRESS,
+        description="Execute 4-step zero-downtime migration (plan -> shadow -> cutover -> finalize) from Nomad to K3s + Flux.",
+    )
+    migrate_sub = _commands(migrate, "migrate_command")
+    migrate_batches = _command(migrate_sub, "batches", "List rollout batches and application classification")
+    _add_control_arguments(migrate_batches)
+    _add_output_arguments(migrate_batches)
+    migrate_plan = _command(migrate_sub, "plan", "Generate a zero-downtime K8s + Flux migration plan for an application")
+    migrate_plan.add_argument("name", help="Application name")
+    migrate_plan.add_argument("--manifest", type=Path, help="Optional path to luma.yaml or luma.compose.yml")
+    _add_control_arguments(migrate_plan)
+    _add_output_arguments(migrate_plan)
+    migrate_shadow = _command(migrate_sub, "shadow", "Deploy a shadow K8s release using existing running image digests")
+    migrate_shadow.add_argument("name", help="Application name")
+    migrate_shadow.add_argument("--manifest", type=Path, help="Optional path to luma.yaml or luma.compose.yml")
+    migrate_shadow.add_argument("--digest", default="", help="Explicit sha256:... digest to adopt into the shadow release")
+    _add_control_arguments(migrate_shadow)
+    _add_output_arguments(migrate_shadow)
+    migrate_cutover = _command(migrate_sub, "cutover", "Switch Ingress traffic from Nomad to the verified K8s shadow release")
+    migrate_cutover.add_argument("name", help="Application name")
+    _add_control_arguments(migrate_cutover)
+    _add_output_arguments(migrate_cutover)
+    migrate_abort = _command(migrate_sub, "abort", "Instantly revert Ingress traffic back to the standby Nomad job")
+    migrate_abort.add_argument("name", help="Application name")
+    _add_control_arguments(migrate_abort)
+    _add_output_arguments(migrate_abort)
+    migrate_finalize = _command(migrate_sub, "finalize", "Purge the standby Nomad job after the observation window")
+    migrate_finalize.add_argument("name", help="Application name")
+    _add_control_arguments(migrate_finalize)
+    _add_output_arguments(migrate_finalize)
 
 
 def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:

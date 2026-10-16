@@ -1,0 +1,71 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>出网网关 · Luma 文档</title><meta name="description" content="出网网关 — Luma 文档"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">跳到正文</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../zh.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">文档</span><button class="menu-toggle" aria-label="展开导航" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="主导航"><a href="../zh.html#product">控制台</a><a href="../zh.html#docs">全部指南</a><a href="egress-gateway.html" data-doc-language lang="en">English</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="文档"><strong>指南</strong><a class=""  href="README.zh-CN.html">概览</a><a class=""  href="getting-started.zh-CN.html">快速上手</a><a class=""  href="concepts.zh-CN.html">核心概念</a><a class=""  href="deploying.zh-CN.html">部署应用</a><a class=""  href="build-and-artifacts.zh-CN.html">构建与制品</a><a class=""  href="migration-guide.zh-CN.html">零停机迁移</a><a class=""  href="operations.zh-CN.html">日常运维</a><a class=""  href="deployment-yaml.zh-CN.html">部署 YAML</a><a class=""  href="compose-storage.zh-CN.html">Compose 与存储</a><a class=""  href="secrets.zh-CN.html">密钥与凭据</a><a class=""  href="exposure-model.zh-CN.html">暴露模型</a><a class=""  href="observability.zh-CN.html">可观测</a><a class=""  href="dashboard-guide.zh-CN.html">控制台指南</a><a class=""  href="troubleshooting.zh-CN.html">故障排查</a><a class=""  href="luma-cli-reference.zh-CN.html">CLI 命令参考</a><a class=""  href="ai-agent-skills.zh-CN.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../zh.html#docs">文档</a><span>/</span><span>出网网关</span></div><h1 id="egress-gateway">出网网关<a class="headerlink" href="#egress-gateway" title="章节链接">#</a></h1>
+<p>Egress Gateway 是 Luma 的出站代理层。</p>
+<p>它解决两个实际问题：</p>
+<ul>
+<li>中国大陆服务器可能无法直连拉取新镜像或依赖；</li>
+<li>某些服务需要访问外网，同时公共入口仍留在中国大陆。</li>
+</ul>
+<p>出网不是入站路径。用户流量仍由选择的 <code>exposure</code> 模式接入。</p>
+<h2 id="setup">设置<a class="headerlink" href="#setup" title="章节链接">#</a></h2>
+<pre><code class="language-bash">export EGRESS_SUBSCRIPTION_URL='...'
+luma manager egress
+</code></pre>
+<p>Luma 会：</p>
+<ul>
+<li>下载订阅；</li>
+<li>将 YAML 或 base64 订阅转换成最小 Mihomo 配置；</li>
+<li>以 <code>600</code> 权限写入 <code>/opt/luma/egress-gateway/config.yaml</code>；</li>
+<li>配置稳定系统 DNS，保障镜像仓库和初始化可靠性；</li>
+<li>首次初始化出网时临时禁用 Docker daemon 代理；</li>
+<li>使用内置出网镜像部署核心 <code>egress-mihomo</code> Nomad job；</li>
+<li>将网关主机 Nomad client meta 标为 <code>egress=true</code>，供内部 <code>egress_mihomo</code> 服务使用；</li>
+<li>安装适配 Docker 的公网端口防护；</li>
+<li>将 Docker daemon 代理配置为 <code>127.0.0.1:7890</code>；</li>
+<li>重启 Docker。</li>
+</ul>
+<p>默认出网镜像来自已验证可用于首次初始化的中国大陆镜像源：</p>
+<pre><code class="language-yaml">defaults:
+  images:
+    egressGateway: docker.1panel.live/metacubex/mihomo:latest
+</code></pre>
+<p>多数用户无需配置镜像。自行维护镜像源时，可在 <code>luma.yaml</code> 覆盖 <code>defaults.images.egressGateway</code>。</p>
+<p>后续刷新：</p>
+<pre><code class="language-bash">luma manager egress
+</code></pre>
+<h2 id="runtime">运行方式<a class="headerlink" href="#runtime" title="章节链接">#</a></h2>
+<p>网关监听：</p>
+<pre><code class="language-text">127.0.0.1:7890
+</code></pre>
+<p>本地 Docker 和显式设置 <code>proxy: true</code> 的服务可以访问出网代理。Luma 安装主机防火墙、raw <code>PREROUTING</code> 和 Docker <code>DOCKER-USER</code> 防护，禁止 Docker 发布的 <code>7890/tcp</code> 和 <code>7890/udp</code> 从默认公网接口进入，同时允许本地 Docker 和内部出网流量使用。</p>
+<p>Docker daemon 代理：</p>
+<pre><code class="language-text">HTTP_PROXY=http://127.0.0.1:7890
+HTTPS_PROXY=http://127.0.0.1:7890
+NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+</code></pre>
+<h2 id="verify">验证<a class="headerlink" href="#verify" title="章节链接">#</a></h2>
+<pre><code class="language-bash">nomad job status egress-mihomo
+sudo docker pull hello-world:latest
+</code></pre>
+<p>服务需要运行时代理时，在清单声明 <code>proxy: true</code>：</p>
+<pre><code class="language-yaml">name: ai-worker
+image: ghcr.io/acme/ai-worker:1.0.0
+region: cn
+exposure: none
+proxy: true
+</code></pre>
+<p>Luma 自动注入 <code>HTTP_PROXY=http://egress_mihomo:7890</code> 和 <code>HTTPS_PROXY=http://egress_mihomo:7890</code>，调度仍按 <code>region</code>。清单已显式设置对应变量时，保留原值。</p>
+<h2 id="security">安全<a class="headerlink" href="#security" title="章节链接">#</a></h2>
+<ul>
+<li>不要提交 <code>EGRESS_SUBSCRIPTION_URL</code>。</li>
+<li>订阅 URL 出现在聊天、日志或截图中时应轮换。</li>
+<li>公网接口保持禁止 <code>7890</code> 入站。初始化和出网设置会安装防护；手动重置防火墙后可重跑 <code>luma manager egress</code>。内置出网服务有保守的 Nomad 资源限制，为 2 核 2 GiB Manager 的控制面及应用保留余量。</li>
+<li>优先使用一个网关，只有调度或吞吐需要时再增加。</li>
+</ul><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/egress-gateway.zh-CN.md">在 GitHub 查看源码 ↗</a> · <a href="./egress-gateway.zh-CN.md">原始 Markdown</a></div></article><aside class="docs-toc" aria-label="本页目录"><strong>本页目录</strong><div class="toc">
+<ul>
+<li><a href="#setup">设置</a></li>
+<li><a href="#runtime">运行方式</a></li>
+<li><a href="#verify">验证</a></li>
+<li><a href="#security">安全</a></li>
+</ul>
+</div>
+</aside></main></body></html>

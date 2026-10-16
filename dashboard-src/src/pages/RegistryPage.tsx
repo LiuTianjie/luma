@@ -220,8 +220,8 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
     }
   };
 
-  // One request does the whole job: stop Registry, delete the manifests,
-  // garbage-collect their blobs, restart. Not recoverable by design.
+  // One request deletes the manifests and reclaims unpinned layers via Zot Online GC.
+  // Not recoverable by design.
   const purgeSelection = async () => {
     if (!preview?.allowed || !preview.selected?.length) return;
     setBusy("purge");
@@ -469,6 +469,18 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
                 <div className="flex min-w-0 flex-col gap-2"><dt className="text-sm text-muted-foreground">{zh ? "媒体类型" : "Media type"}</dt><dd className="break-all">{detail.mediaType || "—"}</dd></div>
               </dl>
               <Card size="sm"><CardHeader><CardTitle>{zh ? "引用关系" : "References"}</CardTitle></CardHeader><CardContent>{detail.protectionReasons?.length ? <Table containerProps={{ tabIndex: 0, role: "region", "aria-label": zh ? "镜像引用，可横向滚动" : "Image references, horizontally scrollable" }}><TableHeader><TableRow><TableHead>{zh ? "类型" : "Kind"}</TableHead><TableHead>{zh ? "来源" : "Source"}</TableHead><TableHead>{zh ? "引用" : "Reference"}</TableHead></TableRow></TableHeader><TableBody>{detail.protectionReasons.map((reason, index) => <TableRow key={index}><TableCell><Badge variant="outline">{reason.kind}</Badge></TableCell><TableCell>{reason.source || "—"}</TableCell><TableCell><CodeCell value={reason.reference || "—"} /></TableCell></TableRow>)}</TableBody></Table> : <Empty><EmptyHeader><EmptyTitle>{zh ? "没有已知引用" : "No known references"}</EmptyTitle></EmptyHeader></Empty>}</CardContent></Card>
+              <Card size="sm">
+                <CardHeader>
+                  <CardTitle>{zh ? "Zot OCI 层浏览器与在线 GC 锁" : "Zot OCI Layer Explorer & Online GC Pinning"}</CardTitle>
+                  <CardDescription>{zh ? "Zot Registry 在线垃圾回收 (Online GC) 无需停机，自动保护 luma-pin-active-*、luma-pin-rollback-* 与 BuildKit 缓存层。" : "Zot Registry runs zero-downtime Online GC while protecting luma-pin-active-*, luma-pin-rollback-*, and BuildKit cache layers."}</CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-col gap-2">
+                  <div className="flex flex-wrap gap-2">
+                    <Badge variant="secondary">{zh ? "Zot Online GC: 在线运行中（零停机）" : "Zot Online GC: Active (Zero Downtime)"}</Badge>
+                    <Badge variant="outline">{detail.protectionStatus === "protected" ? (zh ? "luma-pin-* 引用锁已生效" : "luma-pin-* Retention Pin Active") : (zh ? "未加锁（可按保留策略在线回收）" : "Unpinned (Eligible for Online GC)")}</Badge>
+                  </div>
+                </CardContent>
+              </Card>
               <Card size="sm"><CardHeader><CardTitle>{zh ? "平台镜像清单" : "Platform manifests"}</CardTitle></CardHeader><CardContent>{detail.childManifestDigests?.length ? <Table containerProps={{ tabIndex: 0, role: "region", "aria-label": zh ? "平台镜像清单，可横向滚动" : "Platform manifests, horizontally scrollable" }}><TableHeader><TableRow><TableHead>{zh ? "镜像摘要" : "Digest"}</TableHead></TableRow></TableHeader><TableBody>{detail.childManifestDigests.map((digest) => <TableRow key={digest}><TableCell><CodeCell value={digest} /></TableCell></TableRow>)}</TableBody></Table> : <Empty><EmptyHeader><EmptyTitle>{zh ? "没有独立平台清单" : "No separate platform manifests"}</EmptyTitle></EmptyHeader></Empty>}</CardContent></Card>
             </> : detailStatus === "loading" || detailStatus === "pending" ? <div className="flex flex-col gap-4" role="status" aria-busy="true"><p className="text-sm text-muted-foreground">{detailStatus === "pending" ? (zh ? "镜像索引正在建立，完成后将自动刷新。" : "Building image index; this page will refresh when ready.") : (zh ? "正在查询镜像…" : "Loading image…")}</p><Skeleton className="h-5 w-3/4" /><Skeleton className="h-5 w-1/2" /><Skeleton className="h-24 w-full" /></div> : detailStatus === "error" ? <Alert variant="destructive"><AlertTriangle /><AlertTitle>{zh ? "镜像查询失败" : "Image lookup failed"}</AlertTitle><AlertDescription>{detailState.error}</AlertDescription><AlertAction><Button variant="outline" type="button" size="sm" onClick={() => setDetailRevision((value) => value + 1)}>{zh ? "重新查询" : "Retry lookup"}</Button></AlertAction></Alert> : <Empty><EmptyHeader><EmptyMedia variant="icon"><Boxes /></EmptyMedia><EmptyTitle>{zh ? "未找到此镜像" : "Image not found"}</EmptyTitle><EmptyDescription>{zh ? "它可能已经删除或不在当前索引中。" : "It may have been deleted or is absent from the current index."}</EmptyDescription></EmptyHeader><EmptyContent><Button variant="outline" type="button" onClick={() => setDetailRevision((value) => value + 1)}>{zh ? "重新查询" : "Retry lookup"}</Button></EmptyContent></Empty>}
           </CardContent>
@@ -486,7 +498,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
                 </TableBody>)}
               </Table>
             <Alert><Info /><AlertTitle>{zh ? "释放空间以清理结果为准" : "Freed space is measured after cleanup"}</AlertTitle><AlertDescription>{zh ? "其他镜像仍在使用的共享层会保留。清理完成后将显示实际释放空间。" : "Layers still used by other images are retained. Actual reclaimed space is shown when cleanup completes."}</AlertDescription></Alert>
-            <Alert variant="destructive"><AlertTriangle /><AlertTitle>{zh ? "删除后无法恢复" : "Deletion is permanent"}</AlertTitle><AlertDescription>{zh ? "此操作不创建备份。删除与回收期间 Registry 暂停服务，无法推送或拉取镜像。" : "No backup is created. The registry is unavailable for pushes and pulls during deletion and reclamation."}</AlertDescription></Alert>
+            <Alert variant="destructive"><AlertTriangle /><AlertTitle>{zh ? "删除后无法恢复" : "Deletion is permanent"}</AlertTitle><AlertDescription>{zh ? "此操作不创建备份。未加锁的镜像数据由 Zot 在线垃圾回收（Online GC）自动释放，期间 Registry 保持正常运行。" : "No backup is created. Unpinned image data is reclaimed via Zot Online GC while the registry remains fully operational."}</AlertDescription></Alert>
             {preview.risks?.length ? <Alert variant="destructive"><AlertTriangle /><AlertTitle>{zh ? "存在引用风险" : "Referenced images are included"}</AlertTitle><AlertDescription>{zh ? "部分镜像仍有服务引用，或引用扫描不完整。删除后，相关服务重启或回滚时可能无法拉取镜像。" : "Some images remain referenced, or reference scanning is incomplete. Affected services may fail to pull their image on restart or rollback."}</AlertDescription></Alert> : null}
             {preview.blocked?.length ? <Alert variant="destructive"><AlertTriangle /><AlertTitle>{zh ? "当前范围无法执行" : "This selection cannot be processed"}</AlertTitle><AlertDescription>{zh ? `${preview.blocked.length} 项因镜像不存在或批量范围过大而无法处理，请返回调整。` : `${preview.blocked.length} items are missing or exceed the batch limit. Go back to adjust the selection.`}</AlertDescription></Alert> : null}
             {busy === "purge" ? <Alert role="status"><Spinner aria-hidden="true" /><AlertTitle>{zh ? "正在删除镜像" : "Deleting images"}</AlertTitle><AlertDescription>{zh ? `已等待 ${purgeElapsed} 秒。正在删除镜像并清理空间，完成后会自动返回列表。` : `Elapsed: ${purgeElapsed}s. Deleting images and freeing space; you will return to the list when complete.`}</AlertDescription></Alert> : null}

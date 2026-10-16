@@ -1,0 +1,217 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Exposure Model · Luma Documentation</title><meta name="description" content="Exposure Model — Luma Documentation"><link rel="icon" href="../favicon-32.png"><link rel="stylesheet" href="../styles.css?v=1cac654f8e"><script src="../app.js?v=1cac654f8e" defer></script></head><body><a class="skip-link" href="#doc">Skip to content</a><header class="site-header"><div class="nav-shell"><a class="brand" href="../index.html"><img src="../assets/luma-logo-mark.png" width="30" height="30" alt=""><span>Luma</span></a><span class="brand-caption">Documentation</span><button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navigation">☰</button><nav id="navigation" aria-label="Main navigation"><a href="../index.html#product">Console</a><a href="../index.html#docs">All guides</a><a href="exposure-model.zh-CN.html" data-doc-language lang="zh-CN">中文</a><a class="button small" href="https://github.com/LiuTianjie/luma">GitHub ↗</a></nav></div></header><main class="docs-layout"><nav class="docs-sidebar" aria-label="Documentation"><strong>Guides</strong><a class=""  href="README.html">Overview</a><a class=""  href="getting-started.html">Getting started</a><a class=""  href="concepts.html">Core concepts</a><a class=""  href="deploying.html">Deploying applications</a><a class=""  href="build-and-artifacts.html">Build & OCI artifacts</a><a class=""  href="migration-guide.html">Migration guide</a><a class=""  href="operations.html">Operations</a><a class=""  href="deployment-yaml.html">Deployment YAML</a><a class=""  href="compose-storage.html">Compose & storage</a><a class=""  href="secrets.html">Secrets & credentials</a><a class="active" aria-current=page href="exposure-model.html">Exposure model</a><a class=""  href="observability.html">Observability</a><a class=""  href="dashboard-guide.html">Console guide</a><a class=""  href="troubleshooting.html">Troubleshooting</a><a class=""  href="luma-cli-reference.html">CLI reference</a><a class=""  href="ai-agent-skills.html">AI Agent Skills</a></nav><article class="doc-article" id="doc"><div class="doc-breadcrumb"><a href="../index.html#docs">Documentation</a><span>/</span><span>Exposure Model</span></div><h1 id="exposure-model">Exposure Model<a class="headerlink" href="#exposure-model" title="Permanent link">#</a></h1>
+<p>Luma separates the control plane from the data plane.</p>
+<h2 id="roles">Roles<a class="headerlink" href="#roles" title="Permanent link">#</a></h2>
+<ul>
+<li>Cloudflare: DNS automation, optional proxy, optional Tunnel public hostname.</li>
+<li>Traefik: main public HTTP/HTTPS ingress for the <code>cn</code> edge, plus <code>tcp-relay</code> published ports.</li>
+<li>Tailscale: management network and explicit relay path for selected <code>home</code> services.</li>
+<li>Luma Control: deployment control plane, driving the Nomad HTTP API.</li>
+<li>Nomad / Docker: runtime execution layer.</li>
+</ul>
+<p>Tailscale is not the default business data plane. It only carries data traffic when a service explicitly chooses <code>exposure: tailscale-relay</code>.</p>
+<h2 id="exposure-modes">Exposure modes<a class="headerlink" href="#exposure-modes" title="Permanent link">#</a></h2>
+<h3 id="cn-edge"><code>cn-edge</code><a class="headerlink" href="#cn-edge" title="Permanent link">#</a></h3>
+<p>Primary domestic public services.</p>
+<pre><code class="language-text">User -&gt; Cloudflare DNS -&gt; CN Traefik -&gt; CN service
+</code></pre>
+<p>Use for:</p>
+<ul>
+<li>main websites;</li>
+<li>public Web/API;</li>
+<li>login, payments, dashboards, normal product traffic.</li>
+</ul>
+<p>Manifest:</p>
+<pre><code class="language-yaml">name: app
+image: ghcr.io/your-org/app:latest
+region: cn
+exposure: cn-edge
+domain: app.example.com
+port: 3000
+replicas: 2
+</code></pre>
+<p>Luma generates:</p>
+<ul>
+<li><code>stacks/cn/app/app.nomad.json</code>;</li>
+<li>Traefik service tags for the Nomad provider;</li>
+<li>Cloudflare DNS record pointing to the configured CN edge target.</li>
+</ul>
+<p>By default, public traffic enters through one Traefik instance constrained to <code>${meta.region}=cn</code> and <code>${meta.ingress}=true</code>. If you have multiple CN nodes, DNS still points to the configured edge target; Traefik receives the request there and forwards to matching service allocations discovered through the Nomad provider.</p>
+<h3 id="tailscale-relay"><code>tailscale-relay</code><a class="headerlink" href="#tailscale-relay" title="Permanent link">#</a></h3>
+<p>Selected home services exposed through the CN edge over Tailscale.</p>
+<pre><code class="language-text">User -&gt; Cloudflare DNS -&gt; CN Traefik -&gt; Tailscale -&gt; home service
+</code></pre>
+<p>Use for:</p>
+<ul>
+<li>low-traffic tools;</li>
+<li>preview environments;</li>
+<li>home admin panels;</li>
+<li>services that are acceptable to depend on the home network.</li>
+</ul>
+<p>Do not use for:</p>
+<ul>
+<li>core APIs;</li>
+<li>login or payment;</li>
+<li>large downloads;</li>
+<li>high-frequency product traffic.</li>
+</ul>
+<p>Manifest:</p>
+<pre><code class="language-yaml">name: home-panel
+image: ghcr.io/your-org/home-panel:latest
+region: home
+exposure: tailscale-relay
+domain: panel.example.com
+port: 8080
+publishPort: 8080
+replicas: 1
+relay:
+  host: home-1.your-tailnet.ts.net
+</code></pre>
+<p>Luma generates:</p>
+<ul>
+<li><code>stacks/home/home-panel/home-panel.nomad.json</code>, which publishes the service port on the home node;</li>
+<li><code>routes/home-panel.yml</code>, which Traefik loads through the file provider;</li>
+<li>Cloudflare DNS record pointing to the configured CN edge target.</li>
+</ul>
+<p>Operational requirement:</p>
+<ul>
+<li>the home host firewall should only allow the published service port from the Tailscale interface or from the CN edge Tailscale IP;</li>
+<li><code>routes/</code> must be available on the CN Traefik node at <code>/opt/luma/routes</code>.</li>
+</ul>
+<h3 id="tcp-relay"><code>tcp-relay</code><a class="headerlink" href="#tcp-relay" title="Permanent link">#</a></h3>
+<p>Public native TCP services through a dedicated Traefik TCP entrypoint.</p>
+<pre><code class="language-text">Client -&gt; Cloudflare DNS -&gt; edge Traefik TCP entrypoint -&gt; task host port
+</code></pre>
+<p>Use for:</p>
+<ul>
+<li>MySQL or another non-HTTP protocol that must be reachable from the public internet;</li>
+<li>a service where one public port maps to one backend service.</li>
+</ul>
+<p>Do not use for:</p>
+<ul>
+<li>multiplexing multiple ordinary MySQL services on the same port by hostname;</li>
+<li>public exposure without database credentials, IP allowlists, or firewall controls.</li>
+</ul>
+<p>Manifest:</p>
+<pre><code class="language-yaml">name: ledger-db
+image: mysql:8.4.9
+region: home
+node: lab
+exposure: tcp-relay
+domain: ledger-db.example.net
+port: 3306
+publishPort: 3306
+</code></pre>
+<p>Luma generates:</p>
+<ul>
+<li><code>stacks/home/ledger-db/ledger-db.nomad.json</code>, which publishes the service port in host mode;</li>
+<li>Traefik service update for the derived <code>tcp-3306</code> entrypoint and host-mode published port;</li>
+<li><code>routes/ledger-db.yml</code>, which uses Traefik <code>tcp.routers</code> with <code>HostSNI("*")</code> / <code>HostSNI(\</code>*`)`;</li>
+<li>Cloudflare DNS record pointing to the configured edge target.</li>
+</ul>
+<p>Ordinary MySQL clients do not start with an HTTP Host header, and should not be assumed to provide reliable TLS SNI before the server handshake. Treat <code>tcp-relay</code> as port-exclusive: one published port routes to one TCP service.</p>
+<h3 id="cloudflare-tunnel"><code>cloudflare-tunnel</code><a class="headerlink" href="#cloudflare-tunnel" title="Permanent link">#</a></h3>
+<p>Home or private services exposed directly through Cloudflare Tunnel.</p>
+<pre><code class="language-text">User -&gt; Cloudflare -&gt; cloudflared -&gt; service
+</code></pre>
+<p>Use for:</p>
+<ul>
+<li>home services without a public IP;</li>
+<li>low-frequency tools where you prefer Cloudflare to terminate the public path;</li>
+<li>services that should not route through the CN Traefik node.</li>
+</ul>
+<p>Manifest:</p>
+<pre><code class="language-yaml">name: home-tool
+image: ghcr.io/your-org/home-tool:latest
+region: home
+exposure: cloudflare-tunnel
+domain: tool.example.com
+port: 8080
+replicas: 1
+tunnel:
+  tokenEnv: CLOUDFLARE_TUNNEL_TOKEN
+</code></pre>
+<p>Luma generates:</p>
+<ul>
+<li>a service stack containing the app;</li>
+<li>a <code>cloudflared</code> sidecar service using <code>${CLOUDFLARE_TUNNEL_TOKEN}</code>.</li>
+</ul>
+<p>Cloudflare Tunnel public hostname configuration is still managed in Cloudflare. Luma skips normal DNS A-record sync for this mode.</p>
+<h3 id="external-edge"><code>external-edge</code><a class="headerlink" href="#external-edge" title="Permanent link">#</a></h3>
+<p>Global services with their own overseas/public edge.</p>
+<pre><code class="language-text">User -&gt; Cloudflare DNS -&gt; external/global edge -&gt; global service
+</code></pre>
+<p>Use for:</p>
+<ul>
+<li>AI gateway;</li>
+<li>overseas API gateway;</li>
+<li>proxy services;</li>
+<li>low-frequency services that must execute outside the CN network.</li>
+</ul>
+<p>Manifest:</p>
+<pre><code class="language-yaml">name: ai-gateway
+image: ghcr.io/your-org/ai-gateway:latest
+region: global
+exposure: external-edge
+domain: ai.example.com
+port: 3000
+replicas: 1
+dns:
+  target: 198.51.100.10
+</code></pre>
+<p>Luma generates:</p>
+<ul>
+<li><code>stacks/global/ai-gateway/ai-gateway.nomad.json</code>;</li>
+<li>Traefik service tags for the global edge environment;</li>
+<li>Cloudflare DNS record pointing to <code>dns.target</code>.</li>
+</ul>
+<p>Use <code>dns.target</code> to choose the public/global edge IP for this service. Without a separate global edge target, a global workload can still be scheduled in <code>region: global</code>, but public HTTP traffic will not magically enter through every global node.</p>
+<h3 id="none"><code>none</code><a class="headerlink" href="#none" title="Permanent link">#</a></h3>
+<p>Internal services and workers.</p>
+<pre><code class="language-text">No public route
+</code></pre>
+<p>Use for:</p>
+<ul>
+<li>workers;</li>
+<li>queue consumers;</li>
+<li>internal jobs;</li>
+<li>backup tasks.</li>
+</ul>
+<p>Manifest:</p>
+<pre><code class="language-yaml">name: fetch-worker
+image: ghcr.io/your-org/fetch-worker:latest
+region: global
+exposure: none
+replicas: 1
+env:
+  QUEUE_URL: redis://redis:6379/0
+</code></pre>
+<p>Luma generates:</p>
+<ul>
+<li>a stack with placement constraints;</li>
+<li>no Traefik labels;</li>
+<li>no DNS record.</li>
+</ul>
+<h2 id="decision-rule">Decision rule<a class="headerlink" href="#decision-rule" title="Permanent link">#</a></h2>
+<ul>
+<li>Default public product traffic: <code>cn-edge</code>.</li>
+<li>Home service through the domestic edge: <code>tailscale-relay</code>.</li>
+<li>Public native TCP service: <code>tcp-relay</code>.</li>
+<li>Home/private service through Cloudflare: <code>cloudflare-tunnel</code>.</li>
+<li>Overseas public execution: <code>external-edge</code>.</li>
+<li>Workers and internal services: <code>none</code>.</li>
+</ul><div class="doc-source"><a href="https://github.com/LiuTianjie/luma/blob/main/docs/exposure-model.md">View source on GitHub ↗</a> · <a href="./exposure-model.md">Raw Markdown</a></div></article><aside class="docs-toc" aria-label="On this page"><strong>On this page</strong><div class="toc">
+<ul>
+<li><a href="#roles">Roles</a></li>
+<li><a href="#exposure-modes">Exposure modes</a><ul>
+<li><a href="#cn-edge">cn-edge</a></li>
+<li><a href="#tailscale-relay">tailscale-relay</a></li>
+<li><a href="#tcp-relay">tcp-relay</a></li>
+<li><a href="#cloudflare-tunnel">cloudflare-tunnel</a></li>
+<li><a href="#external-edge">external-edge</a></li>
+<li><a href="#none">none</a></li>
+</ul>
+</li>
+<li><a href="#decision-rule">Decision rule</a></li>
+</ul>
+</div>
+</aside></main></body></html>
