@@ -93,7 +93,7 @@ python -m pip install "luma-infra==0.2.14"
 
 | 要求 | 用途 |
 | --- | --- |
-| 一台 Linux 服务器；文档以 Ubuntu 22.04+ 为起点 | 运行 Luma Control、Nomad 和 Traefik；2 核 / 2 GB 内存可作为体验起点 |
+| 一台 Linux 服务器；文档以 Ubuntu 22.04+ 为起点 | 运行 Luma Control、Nomad 和 Traefik；建议起步 2 核 / 8 GiB 内存，其中 Control 预留 4 GiB |
 | 一个由 Cloudflare 管理的域名 | 控制面与应用域名 |
 | 具有 Zone Read 和 DNS Edit 权限的 Cloudflare API Token | 管理 DNS 记录 |
 | 公网 80/443 端口与 ACME 邮箱 | HTTP 入口与 HTTPS 证书 |

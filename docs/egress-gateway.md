@@ -86,5 +86,5 @@ Luma injects `HTTP_PROXY=http://egress_mihomo:7890` and `HTTPS_PROXY=http://egre
 
 - Do not commit `EGRESS_SUBSCRIPTION_URL`.
 - Rotate subscription URLs that appear in chat, logs, or screenshots.
-- Keep inbound `7890` blocked on public interfaces. Luma installs this guard during bootstrap and egress setup; re-run `luma manager egress` if host firewall rules were reset manually. Luma's built-in egress service also ships with conservative Nomad resource limits so a 2c2g manager keeps headroom for control-plane and app workloads.
+- Keep inbound `7890` blocked on public interfaces. Luma installs this guard during bootstrap and egress setup; re-run `luma manager egress` if host firewall rules were reset manually. Luma's built-in egress service has its own Nomad resource limits. Budget its memory in addition to Control's 4 GiB reservation, the operating system and other workloads.
 - Prefer one egress gateway first. Add more only when scheduling or throughput requires it.

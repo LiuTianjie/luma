@@ -4,6 +4,12 @@
 
 本文介绍应用和节点的日常运维。部署见[部署应用](deploying.zh-CN.md)。
 
+## 控制面内存 {#control-memory}
+
+Control job 预留 4 GiB（`MemoryMB: 4096`），`MemoryMaxMB: 0`，因此预留值也是其内存上限。初始化和 Manager 升级共用同一个渲染器，每次提交 Control job 都会应用这一默认值。手动修改 Nomad job 不会形成跨 Manager 升级保留的配置覆盖。
+
+规划 Manager 容量时，除这部分预留外，还需为操作系统、Nomad、Traefik 和其他负载留出内存，建议以 8 GiB 起步。较小的 Manager 应在升级前确认可调度内存充足。升级后在 Manager 上执行 `nomad job inspect -json luma-control`，确认 `luma-control` task 的 `Resources.MemoryMB` 为 `4096`。
+
 ## 查看应用 {#inspect-applications}
 
 ```bash

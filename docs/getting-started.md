@@ -6,7 +6,7 @@ This guide takes you from an empty Linux server to a running application: instal
 
 | Requirement | Why |
 | --- | --- |
-| A Linux server, Ubuntu 22.04+ recommended, 2 CPU / 2 GB RAM to start | Runs Luma Control, Nomad and Traefik |
+| A Linux server, Ubuntu 22.04+ recommended, 2 CPU / 8 GiB RAM to start | Runs Luma Control, Nomad and Traefik; Control reserves 4 GiB |
 | A domain whose DNS is managed by Cloudflare | Control API, dashboard and application hostnames |
 | A Cloudflare API token with **Zone Read** and **DNS Edit** for that zone | Luma creates and updates DNS records |
 | Public ports 80 and 443 open, and an email address for Let's Encrypt | HTTPS certificates and ingress |

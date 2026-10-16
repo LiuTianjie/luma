@@ -551,7 +551,7 @@ port: 3000
         task = job["TaskGroups"][0]["Tasks"][0]
         self.assertEqual(
             task["Resources"],
-            {"CPU": 500, "MemoryMB": 2048, "MemoryMaxMB": 0},
+            {"CPU": 500, "MemoryMB": 4096, "MemoryMaxMB": 0},
         )
         # host network + port 8080 (reachable by Traefik; observe is loopback)
         self.assertEqual(job["TaskGroups"][0]["Networks"][0]["Mode"], "host")

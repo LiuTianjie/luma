@@ -6,7 +6,7 @@
 
 | 条件 | 用途 |
 | --- | --- |
-| 一台 Linux 服务器，推荐 Ubuntu 22.04+，起步 2 核 / 2 GB | 运行 Luma Control、Nomad 和 Traefik |
+| 一台 Linux 服务器，推荐 Ubuntu 22.04+，建议起步 2 核 / 8 GiB | 运行 Luma Control、Nomad 和 Traefik；Control 预留 4 GiB |
 | 一个由 Cloudflare 托管 DNS 的域名 | Control API、控制台和应用域名 |
 | 该域名的 Cloudflare API Token，权限为 **Zone Read** 和 **DNS Edit** | Luma 创建和更新 DNS 记录 |
 | 公网开放 80 和 443 端口，以及一个用于 Let's Encrypt 的邮箱 | HTTPS 证书与入口 |

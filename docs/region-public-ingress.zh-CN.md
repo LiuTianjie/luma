@@ -10,7 +10,7 @@ Client -> public HTTPS / Traefik -> Tailscale -> render node -> application
 
 ## 升级集群 {#upgrade-the-cluster}
 
-CLI、Control 和节点 Agent 使用同一已发布版本。先等该版本的 Python 包与 Control 镜像流水线成功，再安装。只升级 CLI 不会改变服务端的校验和 jobspec 渲染。
+CLI、Control 和节点 Agent 使用同一已发布版本。先等该版本的 Python 包与 Control 镜像流水线成功，再安装。只升级 CLI 不会改变服务端的校验和 jobspec 渲染。升级前确认 Manager 有足够容量容纳 Control 的 4 GiB 预留和其他系统服务，升级后按[控制面内存](operations.zh-CN.md#control-memory)核对实际 job。
 
 1. 在控制台「设置 → 系统维护」保存当前公网路由基线，记录旧版本 ref 和 Control 镜像，按 [Control 存储](control-storage.zh-CN.md#backup-scope)完成私有备份。
 2. 升级本地 CLI，并更新 CI 的版本：
@@ -59,12 +59,12 @@ Region 配置只是允许某种入口；目标节点仍需 Tailscale、Docker、
 Mac 上的原生单服务 API 继续使用 Docker host 网络。填写应用真实监听端口，省略 `publishPort`。测试和生产同机时，使用不同监听端口。
 
 ```yaml
-name: teachvideo-api-test
-image: registry.example.com/teachvideo-api:release
+name: api-test
+image: registry.example.com/api:release
 region: render
-node: air1
+node: mac-worker-1
 exposure: tailscale-relay
-domain: teachvideo-test.example.com
+domain: app-test.example.com
 port: 18080
 replicas: 1
 env:
@@ -92,7 +92,7 @@ Mac 上的多服务或公网 Compose 栈，需要固定整组运行节点；Cont
 # compose.yml
 services:
   api:
-    image: registry.example.com/teachvideo-api:release
+    image: registry.example.com/api:release
     environment:
       PORT: "8080"
       DATABASE_URL: postgres://app:${DB_PASSWORD}@database:5432/app
@@ -103,28 +103,28 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: app
     volumes:
-      - teachvideo-test-db:/var/lib/postgresql/data
+      - app-test-db:/var/lib/postgresql/data
 volumes:
-  teachvideo-test-db: {}
+  app-test-db: {}
 ```
 
 ```yaml
 # luma.compose.yml
-name: teachvideo-test
+name: app-test
 compose: compose.yml
 region: render
 services:
   api:
-    node: air1
+    node: mac-worker-1
     exposure: tailscale-relay
-    domain: teachvideo-test.example.com
+    domain: app-test.example.com
     port: 8080
     publishPort: 18080
   database:
     exposure: none
 ```
 
-此配置将 `air1:18080` 转到 API 容器的 `8080`。第二套部署可保留 `port: 8080`，改用 `publishPort: 18081`；部署名必须不同，独立数据也必须使用不同卷名。裸 Docker 卷名会保持原名，不会自动加部署前缀。`database:5432` 仅供同一 allocation 内的服务访问；独立部署的 worker 需要单独配置可达的私网数据库地址，Compose 服务名不跨 allocation。
+此配置将 `mac-worker-1:18080` 转到 API 容器的 `8080`。第二套部署可保留 `port: 8080`，改用 `publishPort: 18081`；部署名必须不同，独立数据也必须使用不同卷名。裸 Docker 卷名会保持原名，不会自动加部署前缀。`database:5432` 仅供同一 allocation 内的服务访问；独立部署的 worker 需要单独配置可达的私网数据库地址，Compose 服务名不跨 allocation。
 
 发布端口的 Compose 栈在固定节点上只允许一个副本。单服务内部 worker 池仍可使用 Region 调度和多副本。新 Mac 路径支持 `none`、`tailscale-relay`、`tcp-relay`；所有服务显式 `network_mode: host` 仍只用于内部服务。不要给上面的公开服务示例补 Compose `ports` 或 host 网络。
 
@@ -137,13 +137,13 @@ luma compose deploy luma.compose.yml --dry-run
 
 ## 验收与回退 {#verify-and-roll-back}
 
-先检查目标 allocation，再检查边缘节点到目标端口、DNS、公网 HTTPS。验收真实健康接口、带鉴权的 API、SSE 流，以及仍由应用提供的视频接口的 HTTP Range。同时从 tailnet 外和边缘节点验证；allocation 就绪不能证明公网已通。已有 OSS 成片继续直连 OSS。
+先检查目标 allocation，再检查边缘节点到目标端口、DNS、公网 HTTPS。验收真实健康接口、带鉴权的 API，以及应用支持的 SSE 流和文件下载 HTTP Range。同时从 tailnet 外和边缘节点验证；allocation 就绪不能证明公网已通。由对象存储直接提供的文件继续使用其原有访问地址。
 
 ```bash
-curl --fail --show-error https://teachvideo-test.example.com/healthz
-curl --no-buffer --max-time 15 https://teachvideo-test.example.com/events
+curl --fail --show-error https://app-test.example.com/healthz
+curl --no-buffer --max-time 15 https://app-test.example.com/events
 curl --fail --show-error -D - -H 'Range: bytes=0-1023' \
-  https://teachvideo-test.example.com/video/example.mp4 -o /dev/null
+  https://app-test.example.com/files/example.bin -o /dev/null
 ```
 
 按实际应用替换路径和鉴权。持续 SSE 在限定时间后超时是正常现象。在迁移有状态应用之前，重建可丢弃的测试 allocation，确认路由恢复且另一套部署仍可访问。
@@ -154,7 +154,7 @@ curl --fail --show-error -D - -H 'Range: bytes=0-1023' \
 luma region update render --exposure none
 ```
 
-只要保存的原生或 Compose 部署仍使用中继，包括部分失败记录，Control 就会拒绝关闭。回退 Control 不会改写已有 job 和应用数据；保留匹配的 job 制品、旧安装 ref 和镜像。本次网络能力与未来 PaaS 迁移独立。
+只要保存的原生或 Compose 部署仍使用中继，包括部分失败记录，Control 就会拒绝关闭。回退 Control 不会改写已有 job 和应用数据；保留匹配的 job 制品、旧安装 ref 和镜像。
 
 维护者可用独立 Nomad 二进制和本机已有的 Python 镜像复现 Mac 联调：
 

@@ -93,7 +93,7 @@ Have these ready:
 
 | Requirement | Purpose |
 | --- | --- |
-| A Linux server; Ubuntu 22.04+ is the documented starting point | Runs Luma Control, Nomad, and Traefik; 2 CPU cores / 2 GB RAM is an evaluation starting point |
+| A Linux server; Ubuntu 22.04+ is the documented starting point | Runs Luma Control, Nomad, and Traefik; start with 2 CPU cores / 8 GiB RAM, including Control's 4 GiB reservation |
 | A domain managed in Cloudflare | Control API and application domains |
 | A Cloudflare API token with Zone Read and DNS Edit | DNS record management |
 | Public ports 80/443 and an ACME email address | HTTP ingress and HTTPS certificates |

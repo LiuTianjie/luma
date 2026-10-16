@@ -86,5 +86,5 @@ Luma 自动注入 `HTTP_PROXY=http://egress_mihomo:7890` 和 `HTTPS_PROXY=http:/
 
 - 不要提交 `EGRESS_SUBSCRIPTION_URL`。
 - 订阅 URL 出现在聊天、日志或截图中时应轮换。
-- 公网接口保持禁止 `7890` 入站。初始化和出网设置会安装防护；手动重置防火墙后可重跑 `luma manager egress`。内置出网服务有保守的 Nomad 资源限制，为 2 核 2 GiB Manager 的控制面及应用保留余量。
+- 公网接口保持禁止 `7890` 入站。初始化和出网设置会安装防护；手动重置防火墙后可重跑 `luma manager egress`。内置出网服务有独立的 Nomad 资源限制；规划容量时，在 Control 预留的 4 GiB 之外，还需为出网服务、操作系统和其他负载留出内存。
 - 优先使用一个网关，只有调度或吞吐需要时再增加。

@@ -4,6 +4,12 @@ Resource history, resumable logs, disk samples, alerts and authenticated Prometh
 
 Day-2 tasks for running applications and nodes. Deploying is covered in [Deploying applications](deploying.md).
 
+## Control Memory
+
+The Control job reserves 4 GiB (`MemoryMB: 4096`) with `MemoryMaxMB: 0`, so the reservation is also its memory limit. Bootstrap and Manager upgrades use the same renderer and apply this default each time they submit the Control job. A manual Nomad job edit is not a persistent override across Manager upgrades.
+
+Size the Manager for this reservation plus the operating system, Nomad, Traefik and any other workloads; 8 GiB is the recommended starting point. Before upgrading a smaller Manager, check its available schedulable memory. After upgrading, run `nomad job inspect -json luma-control` on the Manager and confirm that the `luma-control` task has `Resources.MemoryMB` set to `4096`.
+
 ## Inspect Applications
 
 ```bash

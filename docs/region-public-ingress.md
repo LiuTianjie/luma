@@ -10,7 +10,7 @@ Enable ingress on the region, then select it on the application. Workers and dat
 
 ## Upgrade the cluster
 
-Use one published release for the CLI, Control and node agents. Wait for that release's Python package and Control image workflows to succeed before installation. A CLI-only upgrade cannot change the server's validation or jobspec renderer.
+Use one published release for the CLI, Control and node agents. Wait for that release's Python package and Control image workflows to succeed before installation. A CLI-only upgrade cannot change the server's validation or jobspec renderer. Before upgrading, ensure the Manager can accommodate Control's 4 GiB reservation and other system services. Verify the resulting job as described in [Control memory](operations.md#control-memory).
 
 1. In Dashboard → Settings → System maintenance, capture the current public-route baseline. Record the current release ref and Control image, and take the private backup described in [Control storage](control-storage.md#backup-scope).
 2. Install the CLI release locally and in CI:
@@ -59,12 +59,12 @@ Region configuration allows an ingress mode; the target node still needs working
 A native single-service API on a Mac retains Docker host networking. Set the application's actual listening port and omit `publishPort`. Give test and production different listening ports if they share a node.
 
 ```yaml
-name: teachvideo-api-test
-image: registry.example.com/teachvideo-api:release
+name: api-test
+image: registry.example.com/api:release
 region: render
-node: air1
+node: mac-worker-1
 exposure: tailscale-relay
-domain: teachvideo-test.example.com
+domain: app-test.example.com
 port: 18080
 replicas: 1
 env:
@@ -92,7 +92,7 @@ For a multi-service or public Compose stack on a Mac, use one node pin for the g
 # compose.yml
 services:
   api:
-    image: registry.example.com/teachvideo-api:release
+    image: registry.example.com/api:release
     environment:
       PORT: "8080"
       DATABASE_URL: postgres://app:${DB_PASSWORD}@database:5432/app
@@ -103,28 +103,28 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: app
     volumes:
-      - teachvideo-test-db:/var/lib/postgresql/data
+      - app-test-db:/var/lib/postgresql/data
 volumes:
-  teachvideo-test-db: {}
+  app-test-db: {}
 ```
 
 ```yaml
 # luma.compose.yml
-name: teachvideo-test
+name: app-test
 compose: compose.yml
 region: render
 services:
   api:
-    node: air1
+    node: mac-worker-1
     exposure: tailscale-relay
-    domain: teachvideo-test.example.com
+    domain: app-test.example.com
     port: 8080
     publishPort: 18080
   database:
     exposure: none
 ```
 
-This forwards `air1:18080` to the API's container port `8080`. A second deployment can keep `port: 8080` and use `publishPort: 18081`; it must have a different deployment name and a different volume identity for independent data. Bare Docker volume names are preserved, not automatically scoped. Databases at `database:5432` are reachable only by siblings in that allocation. Workers deployed separately need a deliberately reachable private database endpoint; a Compose service name does not cross allocation boundaries.
+This forwards `mac-worker-1:18080` to the API's container port `8080`. A second deployment can keep `port: 8080` and use `publishPort: 18081`; it must have a different deployment name and a different volume identity for independent data. Bare Docker volume names are preserved, not automatically scoped. Databases at `database:5432` are reachable only by siblings in that allocation. Workers deployed separately need a deliberately reachable private database endpoint; a Compose service name does not cross allocation boundaries.
 
 Published Compose stacks require one replica on the pinned node. Internal single-service worker pools can still use region scheduling and multiple replicas. The new Mac path supports `none`, `tailscale-relay` and `tcp-relay`; explicit all-service `network_mode: host` remains an internal-only opt-in. Do not add Compose `ports` or host networking to the public example.
 
@@ -137,13 +137,13 @@ luma compose deploy luma.compose.yml --dry-run
 
 ## Verify and roll back
 
-First check the target allocation, then edge-to-node reachability, DNS, and public HTTPS. Verify the application's health path, authenticated API, streaming SSE, and HTTP Range for any video endpoint still served by the application. Test from outside the tailnet as well as from the edge. Allocation readiness alone does not prove public delivery. Existing OSS video playback can remain direct to OSS.
+Check the target allocation, edge-to-node connectivity, DNS and public HTTPS in that order. Verify the real health endpoint, authenticated APIs, and any SSE streams or HTTP Range downloads supported by the application. Test from outside the tailnet and from the edge; a healthy allocation does not prove public reachability. Files served directly by object storage keep their existing URLs.
 
 ```bash
-curl --fail --show-error https://teachvideo-test.example.com/healthz
-curl --no-buffer --max-time 15 https://teachvideo-test.example.com/events
+curl --fail --show-error https://app-test.example.com/healthz
+curl --no-buffer --max-time 15 https://app-test.example.com/events
 curl --fail --show-error -D - -H 'Range: bytes=0-1023' \
-  https://teachvideo-test.example.com/video/example.mp4 -o /dev/null
+  https://app-test.example.com/files/example.bin -o /dev/null
 ```
 
 Adapt the paths and authentication to the real application. A finite SSE timeout is expected for a persistent stream. Recreate a disposable test allocation and confirm its route recovers and another deployment remains reachable before migrating stateful applications.
@@ -154,7 +154,7 @@ If the application rollout fails, restore its recorded prior revision first. To 
 luma region update render --exposure none
 ```
 
-Control rejects this change while saved native or Compose deployments still use relay, including partial failures. A Control rollback does not rewrite existing jobs or application data; preserve the matching job artifacts and previous install ref/image. Keep this networking change separate from any future PaaS migration.
+Control rejects this change while saved native or Compose deployments still use relay, including partial failures. A Control rollback does not rewrite existing jobs or application data; preserve the matching job artifacts and previous install ref/image.
 
 Maintainers can reproduce the local Mac checks with an isolated Nomad binary and an already available Python image:
 

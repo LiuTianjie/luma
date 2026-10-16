@@ -52,13 +52,11 @@ DEFAULT_MEMORY_MB = 256
 APPLICATION_HEALTHY_DEADLINE_NS = 1_800_000_000_000  # 30m
 APPLICATION_PROGRESS_DEADLINE_NS = 2_400_000_000_000  # 40m
 
-# Control owns persistent orchestration state, active WebSocket sessions, and
-# streamed Builder progress.  A tenant-sized 256 MiB hard limit is too small:
-# serializing a multi-megabyte control.json while a build stream is active can
-# exceed it and make every public Control route return 502 until Nomad restarts
-# the task.  Reserve enough for the steady state and retain bounded burst room.
+# Concurrent state snapshots, task leases, WebSocket sessions and Builder
+# progress can exceed 2 GiB during maintenance. Bootstrap and Manager upgrades
+# share this 4 GiB reservation so re-rendering does not restore the lower limit.
 CONTROL_CPU_MHZ = 500
-CONTROL_MEMORY_MB = 2048
+CONTROL_MEMORY_MB = 4096
 # Nomad ignores MemoryMaxMB unless memory oversubscription is enabled. Keep the
 # hard reservation equal to the actual Control ceiling so an OOM fix cannot be
 # silently discarded by the scheduler.
