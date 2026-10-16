@@ -273,6 +273,27 @@ class NomadApiTests(unittest.TestCase):
         self.assertEqual(healthy, 0)
         self.assertIn("healthy=0", detail)
 
+    def test_allocation_health_respects_lifecycle_and_requires_running_sidecar(self):
+        allocation = _allocation(alloc_id="alloc-network", version=2)
+        allocation["TaskStates"].update({
+            "init": {"State": "dead", "Failed": False},
+            "watch": {"State": "running", "Failed": False},
+            "cleanup": {"State": "pending", "Failed": False},
+        })
+        lifecycles = {"app": {
+            "init": {"Hook": "prestart", "Sidecar": False},
+            "watch": {"Hook": "poststart", "Sidecar": True},
+            "cleanup": {"Hook": "poststop", "Sidecar": False},
+        }}
+        def healthy():
+            return nomad_api._allocation_health([allocation], target_version=2, expected_groups={"app": 1}, task_lifecycles=lifecycles)[0]
+        self.assertTrue(healthy())
+        allocation["TaskStates"]["init"]["Failed"] = True
+        self.assertFalse(healthy())
+        allocation["TaskStates"]["init"]["Failed"] = False
+        allocation["TaskStates"]["watch"]["State"] = "dead"
+        self.assertFalse(healthy())
+
     def test_deploy_rejects_blocked_evaluation_with_placement_context(self):
         fake = _FakeApi(
             {

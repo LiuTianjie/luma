@@ -148,8 +148,12 @@ export async function removeGitProvider({ token, id }: { token: string; id: stri
   return apiPost("/v1/git-providers/remove", token, { id });
 }
 
-export async function createRegion({ token, name, egress }: { token: string; name: string; egress: "proxy" | "direct" }) {
-  return apiPost("/v1/regions", token, { name, egress });
+export async function createRegion({ token, name, egress, exposures }: { token: string; name: string; egress: "proxy" | "direct"; exposures?: string[] }) {
+  return apiPost("/v1/regions", token, { name, egress, ...(exposures ? { exposures } : {}) });
+}
+
+export async function updateRegion({ token, name, exposures }: { token: string; name: string; exposures: string[] }) {
+  return apiPost("/v1/regions/update", token, { name, exposures });
 }
 
 export async function removeRegion({ token, name }: { token: string; name: string }) {

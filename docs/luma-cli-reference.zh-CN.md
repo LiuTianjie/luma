@@ -1213,7 +1213,7 @@ arguments:
 
 Examples:
   luma update
-  luma update --install-ref v0.2.11
+  luma update --install-ref v0.2.12
   luma update fleet
 ```
 
@@ -1449,6 +1449,7 @@ arguments:
   <command>
     list      List built-in and custom regions
     create    Create a custom region
+    update    Update a custom region's egress and allowed ingress
     remove    Remove an unused custom region
 ```
 
@@ -1477,7 +1478,7 @@ arguments:
 ## `luma region create`
 
 ```text
-usage: luma region create [-h] [--egress {proxy,direct}] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+usage: luma region create [-h] [--egress {proxy,direct}] [--exposure {none,tailscale-relay,cloudflare-tunnel,tcp-relay}] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
 
 Create a custom region
 
@@ -1488,6 +1489,37 @@ arguments:
   -h, --help                  show this help message and exit
   --egress {proxy,direct}     Joins and image pulls use the manager proxy or go direct (default:
                               proxy)
+  --exposure {none,tailscale-relay,cloudflare-tunnel,tcp-relay}
+                              Allowed ingress; repeat for multiple modes (none is always allowed)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma region update`
+
+```text
+usage: luma region update [-h] [--egress {proxy,direct}] [--exposure {none,tailscale-relay,cloudflare-tunnel,tcp-relay}] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Update a custom region's egress and allowed ingress
+
+arguments:
+  name                        Region name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --egress {proxy,direct}     Replace the egress policy
+  --exposure {none,tailscale-relay,cloudflare-tunnel,tcp-relay}
+                              Replace allowed ingress; repeat for multiple modes (none is always
+                              allowed)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error

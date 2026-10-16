@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from .errors import LumaError
 from .dependencies import validate_requirement_block
 from .io import load_yaml
-from .regions import parse_region_name, validate_region_exposure
+from .regions import parse_region_name, validate_region_exposure_syntax
 
 VALID_EXPOSURES = {"none", "cn-edge", "tailscale-relay", "cloudflare-tunnel", "external-edge", "tcp-relay"}
 VALID_ACCESS_MODES = {"ReadWriteOnce", "ReadWriteMany"}
@@ -193,7 +193,7 @@ def load_service(path: Path) -> ServiceSpec:
             raise LumaError("public service requires string field: domain")
         if not isinstance(port, int):
             raise LumaError("public service requires integer field: port")
-    validate_region_exposure(region, exposure)
+    validate_region_exposure_syntax(region, exposure)
 
     relay = raw.get("relay") or {}
     if not isinstance(relay, dict):

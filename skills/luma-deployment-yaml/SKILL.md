@@ -87,10 +87,10 @@ luma build local . --platform linux/amd64
   inject them into the runtime job; only internal-registry credentials, when
   configured, belong in the Nomad docker auth block.
 - For repository import builds, prefer omitting `image` and adding `build:`. Luma builds and pushes to the configured builder registry, removes the `build` block from the runtime deploy payload, and injects the built image reference.
-- Valid regions: built-in `cn`, `global`, `home`, or a custom region created with `luma region create` / the Nodes page. Custom regions only allow `exposure: none` unless later extended.
+- Valid regions: built-in `cn`, `global`, `home`, or a custom region created with `luma region create` / the Nodes page. Custom regions default to `none`; query `luma region list` for their live capabilities and enable relay with `luma region update NAME --exposure tailscale-relay`.
 - Valid exposures: `none`, `cn-edge`, `external-edge`, `tailscale-relay`, `cloudflare-tunnel`, `tcp-relay`.
 - Public exposures require `domain` and integer `port`.
-- `cn-edge` requires `region: cn`; `external-edge` requires `region: global`; `tailscale-relay` requires `region: home`.
+- `cn-edge` requires `region: cn`; `external-edge` requires `region: global`; `tailscale-relay` requires `home` or a custom region that has enabled it.
 - `tcp-relay` derives its entrypoint from `publishPort` or `port`. It is port-exclusive; ordinary MySQL should not be modeled as same-port SNI multiplexing.
 - `port` is the container's internal listening port, not a cloud firewall or host port. For `tcp-relay`, `publishPort` is the task node host port that Traefik forwards to.
 - `replicas` defaults to `1` and must be at least `1`.
@@ -205,7 +205,7 @@ publishPort: 8080
 replicas: 1
 ```
 
-If the target home node already has something bound to host `8080`, keep container `port: 8080` but choose a free `publishPort`, for example `publishPort: 18080`. `publishPort` is the task node host port, not the container port.
+On Linux, if host `8080` is occupied, keep container `port: 8080` and choose a free `publishPort`, such as `18080`. Native Mac services must omit `publishPort` and change their actual listening port instead. Mac Compose supports this remapping through a private allocation-owned Docker namespace; pin the group to one node. Internal single-service worker pools can remain region-scheduled. `publishPort` is the task node host port, not the container port.
 
 Bounded worker on a small manager:
 
@@ -286,7 +286,7 @@ Direct `compose render` with local paths requires an explicit node. Control dry-
 For generic CI, install a published PyPI version; verify publication before using the version example below. A source version bump or a successful Control rollout does not prove PyPI availability. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.2.11"
+python -m pip install "luma-infra==0.2.12"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:

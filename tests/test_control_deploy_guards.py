@@ -1,5 +1,6 @@
 """Deployment guards: secret isolation, locking, publish ports and terminal states."""
 import tempfile
+import shutil
 import threading
 import time
 import unittest
@@ -263,15 +264,14 @@ class MacPublishPortGuardTests(unittest.TestCase):
             resolve_service_node_pin(spec, self._mac_state_real_shape())
         self.assertIn("publishPort", str(ctx.exception))
 
-    def test_compose_mac_node_real_record_shape_bridge_exposure_raises(self):
-        with self.assertRaises(LumaError) as ctx:
-            _ensure_compose_exposure_supported_on_nodes(
-                self._mac_state_real_shape(), self._compose_dep("macmini")
-            )
-        self.assertIn("macOS", str(ctx.exception))
+    def test_compose_mac_node_real_record_shape_uses_managed_network(self):
+        _ensure_compose_exposure_supported_on_nodes(
+            self._mac_state_real_shape(), self._compose_dep("macmini")
+        )
 
     def _compose_dep(self, node: str, exposure: str = "tailscale-relay"):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
         (Path(d) / "docker-compose.yml").write_text("services:\n  app:\n    image: nginx:latest\n")
         sidecar = (
             "name: tool\ncompose: docker-compose.yml\nregion: home\nservices:\n"
@@ -283,12 +283,8 @@ class MacPublishPortGuardTests(unittest.TestCase):
         sc.write_text(sidecar)
         return load_compose_deployment(sc)
 
-    def test_compose_mac_node_bridge_exposure_raises(self):
-        # compose render has no host-mode path; a bridge exposure on a Mac node
-        # would silently 502. Must fail fast like the native path does.
-        with self.assertRaises(LumaError) as ctx:
-            _ensure_compose_exposure_supported_on_nodes(self._mac_state(), self._compose_dep("macmini"))
-        self.assertIn("macOS", str(ctx.exception))
+    def test_compose_mac_node_relay_exposure_passes(self):
+        _ensure_compose_exposure_supported_on_nodes(self._mac_state(), self._compose_dep("macmini"))
 
     def test_compose_linux_node_bridge_exposure_passes(self):
         _ensure_compose_exposure_supported_on_nodes(self._linux_state(), self._compose_dep("lab"))
@@ -299,10 +295,10 @@ class MacPublishPortGuardTests(unittest.TestCase):
     def _compose_dep_sibling_pin(self, pin_node: str):
         # Exposed service carries NO node of its own; a sibling (db) pins the
         # whole group to pin_node. Since a compose group runs on one node (the
-        # union of all pins), the exposed service still lands on pin_node and
-        # renders a bridge port there. The guard must catch this, not skip it
-        # because the exposed service's own .node is None.
+        # union of all pins), networking must use that node's platform even
+        # when the exposed service's own .node is None.
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
         (Path(d) / "docker-compose.yml").write_text(
             "services:\n  app:\n    image: nginx:latest\n  db:\n    image: postgres:16\n"
         )
@@ -315,15 +311,13 @@ class MacPublishPortGuardTests(unittest.TestCase):
         sc.write_text(sidecar)
         return load_compose_deployment(sc)
 
-    def test_compose_mac_group_pin_via_sibling_raises(self):
+    def test_compose_mac_group_pin_via_sibling_uses_managed_network(self):
         # Regression: the exposed service has no node pin, but its db sibling
-        # pins the group to a Mac node -> the exposed bridge port lands on Mac
-        # and silently 502s. The guard must fire on the group's resolved node.
-        with self.assertRaises(LumaError) as ctx:
-            _ensure_compose_exposure_supported_on_nodes(
-                self._mac_state(), self._compose_dep_sibling_pin("macmini")
-            )
-        self.assertIn("macOS", str(ctx.exception))
+        # pins the group to a Mac node. The allocation-owned Docker namespace
+        # now provides reachable ports without using host CNI.
+        _ensure_compose_exposure_supported_on_nodes(
+            self._mac_state(), self._compose_dep_sibling_pin("macmini")
+        )
 
     def test_compose_linux_group_pin_via_sibling_passes(self):
         _ensure_compose_exposure_supported_on_nodes(

@@ -69,7 +69,7 @@ python scripts/bump-version.py --minor    # 或 --major / --set x.y.z
 
 - `node`：加入 Nomad 集群并安装 Luma agent 的机器（manager / worker / home）。
 - `region`：调度边界（`cn` / `global` / `home` / 自定义），决定服务**跑在哪**。
-- `exposure`：流量**怎么进**，共六种（`cn-edge` / `external-edge` / `tailscale-relay` / `tcp-relay` / `cloudflare-tunnel` / `none`）。region 与 exposure 强绑定：cn-edge⇒cn、external-edge⇒global、tailscale-relay⇒home。全部模式见 `docs/exposure-model.md`。
+- `exposure`：流量**怎么进**，共六种（`cn-edge` / `external-edge` / `tailscale-relay` / `tcp-relay` / `cloudflare-tunnel` / `none`）。cn-edge⇒cn、external-edge⇒global；tailscale-relay 可用于 home 或已启用该能力的自定义 Region（`luma region update NAME --exposure tailscale-relay`）。Control 按实时 Region 目录校验，离线解析只校验语法。全部模式见 `docs/exposure-model.md`。
 - `egress`：出站代理（镜像拉取 + `proxy: true` 服务的运行时 HTTP/HTTPS 代理）。
 - `service`：一个 Luma YAML manifest 描述的部署单元。
 

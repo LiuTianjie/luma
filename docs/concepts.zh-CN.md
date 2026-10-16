@@ -60,13 +60,13 @@ Nomad 节点身份是稳定的 UUID，同名重新加入后，固定到该节点
 
 ## 暴露方式（Exposure） {#exposure}
 
-**流量如何到达服务。** 它和区域是两个独立维度，但每种公网方式都要求匹配的区域。
+**流量如何到达服务。** 它与调度位置独立，但 Control 会检查目标 Region 是否允许该入口。自定义 Region 可通过 `luma region update NAME --exposure tailscale-relay` 开启中继，仍保留 `none`。
 
 | 暴露方式 | 路径 |
 | --- | --- |
 | `cn-edge` | Cloudflare DNS → Manager 上的 Traefik → `cn` 中的服务 |
 | `external-edge` | Cloudflare DNS → global 入口 → `global` 中的服务 |
-| `tailscale-relay` | Cloudflare DNS → Traefik → Tailscale → 家庭节点上的服务 |
+| `tailscale-relay` | Cloudflare DNS → Traefik → Tailscale → 家庭或已启用中继的自定义 Region 节点上的服务 |
 | `tcp-relay` | Traefik 上的公网 TCP 端口 → 服务（例如数据库） |
 | `cloudflare-tunnel` | Cloudflare Tunnel → 私网服务，不经过 Traefik |
 | `none` | 无公网入口 |
@@ -95,6 +95,6 @@ replicas: 2
 
 ## 网络边界 {#networking-boundaries}
 
-Linux 节点使用 Docker bridge 网络和动态宿主机端口，Traefik 通过 Nomad 服务标签发现它们。macOS 节点（Docker Desktop 或 OrbStack）使用 host 网络。服务器之间的管理流量优先走 Tailscale；只有 `tailscale-relay` 服务会让访问流量经过 Tailscale。
+Linux 节点使用 Docker bridge 网络和动态宿主机端口，Traefik 通过 Nomad 服务标签发现它们。原生 macOS 单服务仍使用 host 网络。多服务或公网 Mac Compose 使用每个 allocation 独立的 Docker 网络空间，只发布声明的端口；已在 OrbStack 验证。见[自定义 Region 公网入口](region-public-ingress.zh-CN.md)。服务器之间的管理流量优先走 Tailscale；只有 `tailscale-relay` 服务会让访问流量经过 Tailscale。
 
 Nomad agent 绑定 `0.0.0.0`，对外宣告 Tailscale 地址；Luma 的防火墙规则只在 `tailscale0` 上开放 Nomad 端口。Nomad client 短暂失联时，其上的 allocation 会继续运行（`max_client_disconnect`），恢复后自动重连。

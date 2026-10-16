@@ -14,6 +14,7 @@ EGRESS_PROXY = "proxy"
 EGRESS_DIRECT = "direct"
 VALID_EGRESS_MODES = {EGRESS_PROXY, EGRESS_DIRECT}
 CUSTOM_REGION_EXPOSURES = ("none",)
+CONFIGURABLE_REGION_EXPOSURES = ("none", "tailscale-relay", "cloudflare-tunnel", "tcp-relay")
 
 BUILTIN_REGIONS: dict[str, dict[str, Any]] = {
     "cn": {
@@ -78,12 +79,23 @@ def public_region_record(record: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def custom_region_record(name: str, *, egress: str, created_at: int = 0) -> dict[str, Any]:
+def parse_region_exposures(value: Any) -> list[str]:
+    if value is None:
+        return list(CUSTOM_REGION_EXPOSURES)
+    if not isinstance(value, list) or not value or any(not isinstance(item, str) for item in value):
+        raise LumaError("region exposures must be a non-empty list")
+    unknown = set(value) - set(CONFIGURABLE_REGION_EXPOSURES)
+    if unknown:
+        raise LumaError(f"unsupported custom region exposures: {sorted(unknown)}")
+    return [item for item in CONFIGURABLE_REGION_EXPOSURES if item == "none" or item in value]
+
+
+def custom_region_record(name: str, *, egress: str, created_at: int = 0, exposures: Any = None) -> dict[str, Any]:
     return {
         "name": name,
         "builtin": False,
         "egress": egress,
-        "exposures": list(CUSTOM_REGION_EXPOSURES),
+        "exposures": parse_region_exposures(exposures),
         "createdAt": int(created_at or 0),
     }
 
@@ -156,14 +168,18 @@ def allowed_exposures_for_region(region: str, state: Mapping[str, Any] | None = 
     return set(CUSTOM_REGION_EXPOSURES)
 
 
-def validate_region_exposure(region: str, exposure: str, *, state: Mapping[str, Any] | None = None) -> None:
+def validate_region_exposure_syntax(region: str, exposure: str) -> None:
+    """Offline parsing must not invent a custom region's live capabilities."""
     name = parse_region_name(region)
     if exposure == "cn-edge" and name != "cn":
         raise LumaError("exposure=cn-edge requires region=cn")
     if exposure == "external-edge" and name != "global":
         raise LumaError("exposure=external-edge requires region=global")
-    if exposure == "tailscale-relay" and name != "home":
-        raise LumaError("exposure=tailscale-relay requires region=home")
+
+
+def validate_region_exposure(region: str, exposure: str, *, state: Mapping[str, Any] | None = None) -> None:
+    name = parse_region_name(region)
+    validate_region_exposure_syntax(name, exposure)
     allowed = allowed_exposures_for_region(name, state)
     if exposure not in allowed:
         raise LumaError(

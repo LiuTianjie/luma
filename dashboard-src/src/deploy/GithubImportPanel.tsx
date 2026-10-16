@@ -10,9 +10,9 @@ import {
 } from "../controlResourcesApi";
 import { useRouter } from "../router";
 import { ROUTE_BY_PAGE } from "../routes";
-import type { DashboardBuildNode, DashboardNode, Lang } from "../types";
+import type { DashboardBuildNode, DashboardNode, DashboardRegion, Lang } from "../types";
 import { buildImportStream, registryServeStream } from "./deployApi";
-import { isReadyNode, regionChoices } from "./options";
+import { EXPOSURES, exposureAllowedInRegion, isReadyNode, regionChoices } from "./options";
 import { StepLog } from "./StepLog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,7 +24,6 @@ import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { DeployFormSection, DeploySelectField, DeployTextareaField, DeployTextField } from "./DeployFormFields";
 import { PageHeader } from "../pages/PageHeader";
 import type { DeployStep, Exposure, Region } from "./types";
-const EXPOSURES: Exposure[] = ["none", "cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel", "tcp-relay"];
 const PROVIDER_TYPES = ["github", "gitea"] as const;
 
 function buildNodes(nodes: DashboardNode[], declared: DashboardBuildNode[] = []): DashboardNode[] {
@@ -84,6 +83,7 @@ export function GithubImportPanel({
   nodes,
   build,
   regions,
+  regionCatalog,
   onBack,
   onRefresh,
   onImported,
@@ -92,6 +92,7 @@ export function GithubImportPanel({
   token: string;
   nodes: DashboardNode[];
   regions?: Region[];
+  regionCatalog?: DashboardRegion[];
   build?: {
     defaultNode?: string;
     registryHost?: string;
@@ -103,7 +104,7 @@ export function GithubImportPanel({
   onImported?: () => void;
 }) {
   const zh = lang === "zh";
-  const regionOptions = regions && regions.length ? regions : regionChoices([], nodes);
+  const regionOptions = regions && regions.length ? regions : regionChoices(regionCatalog, nodes);
   const router = useRouter();
   const candidates = useMemo(() => buildNodes(nodes, build?.nodes || []), [build?.nodes, nodes]);
   const preferredBuildNode = useMemo(() => {
@@ -242,10 +243,11 @@ export function GithubImportPanel({
     }
     if (!candidates.length) list.push(zh ? "当前没有可用的构建节点" : "No builder is currently available");
     if (exposure && exposure !== "none" && !domain.trim()) list.push(zh ? "公开入口必须填写域名" : "Public exposure requires a domain");
+    if (region && exposure && !exposureAllowedInRegion(exposure, region, regionCatalog)) list.push(zh ? `区域 ${region} 尚未启用 ${exposure}` : `Region ${region} has not enabled ${exposure}`);
     if (port.trim() && !/^[0-9]+$/.test(port.trim())) list.push(zh ? "端口必须是正整数" : "Port must be a positive integer");
     for (const message of parsedEnv.errors) list.push(zh ? `环境变量 ${message}` : `Environment ${message}`);
     return list;
-  }, [candidates.length, domain, envText, exposure, mode, port, providerId, repoUrl, repository, zh]);
+  }, [candidates.length, domain, envText, exposure, mode, port, providerId, region, regionCatalog, repoUrl, repository, zh]);
 
   const run = async () => {
     if (errors.length) return;
@@ -376,7 +378,7 @@ export function GithubImportPanel({
         ]} />
         <DeploySelectField label={zh ? "入口模式" : "Exposure"} value={exposure} onChange={(value) => setExposure(value as Exposure | "")} options={[
           { value: "", label: zh ? "不覆盖（跟随仓库）" : "No override (use repo)" },
-          ...EXPOSURES.map((value) => ({ value, label: value })),
+          ...EXPOSURES.map((value) => ({ value, label: value, disabled: Boolean(region && !exposureAllowedInRegion(value, region, regionCatalog)) })),
         ]} />
         <DeployTextField label={zh ? "域名" : "Domain"} type="text" value={domain} placeholder="app.example.com" onChange={(event) => setDomain(event.target.value)} error={exposure && exposure !== "none" && !domain.trim() ? (zh ? "请输入域名" : "Enter a domain") : undefined} />
         <DeployTextField label={zh ? "端口" : "Port"} type="text" inputMode="numeric" value={port} placeholder="8080" onChange={(event) => setPort(event.target.value)} error={port.trim() && !/^[0-9]+$/.test(port.trim()) ? (zh ? "端口必须是正整数" : "Port must be a positive integer") : undefined} />

@@ -2,9 +2,9 @@ import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { FieldGroup, FieldLegend, FieldSet } from "@/components/ui/field";
-import type { DashboardNode, DashboardStorageClass, Lang } from "../types";
+import type { DashboardNode, DashboardRegion, DashboardStorageClass, Lang } from "../types";
 import type { Exposure, Region, ServiceManifestDraft, ServiceVolumeDraft } from "./types";
-import { clearNodeIfIncompatible, EXPOSURES, exposureOptionLabel, hasReadyNodeInRegion, nodesForRegion, regionChoices, requiredRegionForExposure, regionOptionLabel } from "./options";
+import { clearNodeIfIncompatible, EXPOSURES, exposureAllowedInRegion, exposureOptionLabel, hasReadyNodeInRegion, nodesForRegion, regionChoices, requiredRegionForExposure, regionOptionLabel } from "./options";
 import { serviceExposureRegion } from "./yaml";
 import { DeployCheckboxField, DeployEnvironmentFields, DeployFormSection, DeploySelectField, DeployTextareaField, DeployTextField } from "./DeployFormFields";
 
@@ -14,6 +14,7 @@ export function SingleServiceDeployForm({
   nodes,
   storageClasses,
   regions,
+  regionCatalog = [],
   onChange,
 }: {
   lang: Lang;
@@ -21,6 +22,7 @@ export function SingleServiceDeployForm({
   nodes: DashboardNode[];
   storageClasses: DashboardStorageClass[];
   regions?: Region[];
+  regionCatalog?: DashboardRegion[];
   onChange: (draft: ServiceManifestDraft) => void;
 }) {
   const zh = lang === "zh";
@@ -74,7 +76,7 @@ export function SingleServiceDeployForm({
         <FieldGroup className="grid grid-cols-1 items-start gap-4 @md:grid-cols-2">
           <DeploySelectField label={zh ? "入口类型" : "Exposure"} value={draft.exposure} onChange={(value) => patchExposure(value as Exposure)} options={EXPOSURES.map((exposure) => {
             const requiredRegion = requiredRegionForExposure(exposure);
-            return { value: exposure, label: exposureOptionLabel(nodes, exposure, lang), disabled: Boolean(requiredRegion && nodes.length > 0 && !hasReadyNodeInRegion(nodes, requiredRegion)) };
+            return { value: exposure, label: exposureOptionLabel(nodes, exposure, lang), disabled: !exposureAllowedInRegion(exposure, draft.region, regionCatalog) || Boolean(requiredRegion && nodes.length > 0 && !hasReadyNodeInRegion(nodes, requiredRegion)) };
           })} />
           <DeployTextField label={zh ? "域名" : "Domain"} value={draft.domain} disabled={draft.exposure === "none"} onChange={(event) => patch({ domain: event.target.value })} error={draft.exposure !== "none" && !draft.domain.trim() ? (zh ? "请输入域名" : "Enter a domain") : undefined} />
           <DeployTextField label={zh ? "容器端口" : "Container port"} value={draft.port} inputMode="numeric" disabled={draft.exposure === "none"} onChange={(event) => patch({ port: event.target.value })} error={draft.exposure !== "none" && (!Number.isInteger(Number(draft.port)) || Number(draft.port) < 1) ? (zh ? "请输入有效的正整数端口" : "Enter a positive integer port") : undefined} />

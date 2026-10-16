@@ -11,7 +11,7 @@ import { PageHeader } from "../pages/PageHeader";
 import { StepLog } from "./StepLog";
 import { ArrowLeft, ArrowRight, FileCode2, ListChecks, Rocket } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import type { DashboardPayload, Lang } from "../types";
+import type { DashboardPayload, DashboardRegion, Lang } from "../types";
 import { ComposeDeployForm } from "./ComposeDeployForm";
 import { deployStream, previewCompose, previewService } from "./deployApi";
 import { DeploySummary } from "./DeploySummary";
@@ -19,7 +19,7 @@ import { DeployTemplates } from "./DeployTemplates";
 import { GithubImportEntryCard, GithubImportPanel } from "./GithubImportPanel";
 import { DEPLOY_TEMPLATES } from "./templates";
 import type { ComposeDeploymentDraft, DeployMode, DeployPreviewResult, DeployStep, DeploymentHealth, DeployTemplate, ServiceManifestDraft } from "./types";
-import { findNode, hasReadyNodeInRegion, isReadyNode, nodesForRegion, regionChoices } from "./options";
+import { exposureAllowedInRegion, findNode, hasReadyNodeInRegion, isReadyNode, nodesForRegion, regionChoices } from "./options";
 import { composeDraftToSidecarYaml, serviceDraftToYaml, syncComposeYamlWithDraft } from "./yaml";
 import { SingleServiceDeployForm } from "./SingleServiceDeployForm";
 import { YamlPreviewEditor } from "./YamlPreviewEditor";
@@ -91,10 +91,10 @@ function isPositiveInteger(value: string | number) {
   return Number.isInteger(numeric) && numeric > 0;
 }
 
-function exposureRegionError(exposure: ServiceManifestDraft["exposure"], region: ServiceManifestDraft["region"] | "", label: string, lang: Lang) {
+function exposureRegionError(exposure: ServiceManifestDraft["exposure"], region: ServiceManifestDraft["region"] | "", label: string, lang: Lang, catalog: DashboardRegion[]) {
   if (exposure === "cn-edge" && region !== "cn") return lang === "zh" ? `${label} exposure=cn-edge 必须使用 region=cn` : `${label} exposure=cn-edge requires region=cn`;
   if (exposure === "external-edge" && region !== "global") return lang === "zh" ? `${label} exposure=external-edge 必须使用 region=global` : `${label} exposure=external-edge requires region=global`;
-  if (exposure === "tailscale-relay" && region !== "home") return lang === "zh" ? `${label} exposure=tailscale-relay 必须使用 region=home` : `${label} exposure=tailscale-relay requires region=home`;
+  if (!exposureAllowedInRegion(exposure, region, catalog)) return lang === "zh" ? `${label}：区域 ${region} 尚未启用 ${exposure}，请先在区域管理中配置入口` : `${label}: region ${region} has not enabled ${exposure}; configure ingress in Regions first`;
   return "";
 }
 
@@ -113,13 +113,13 @@ function regionNodeErrors(nodes: NonNullable<DashboardPayload["nodes"]>, region:
   return errors;
 }
 
-function serviceErrors(draft: ServiceManifestDraft, yamlDirty: boolean, serviceYaml: string, nodes: NonNullable<DashboardPayload["nodes"]>, lang: Lang) {
+function serviceErrors(draft: ServiceManifestDraft, yamlDirty: boolean, serviceYaml: string, nodes: NonNullable<DashboardPayload["nodes"]>, lang: Lang, catalog: DashboardRegion[]) {
   const serviceLabel = lang === "zh" ? "服务" : "service";
   if (yamlDirty) return serviceYaml.trim() ? [] : [lang === "zh" ? "service.yaml 不能为空" : "service.yaml cannot be empty"];
   const errors = [];
   if (!draft.name.trim()) errors.push(lang === "zh" ? "服务名不能为空" : "Service name cannot be empty");
   if (!draft.image.trim()) errors.push(lang === "zh" ? "镜像不能为空" : "Image cannot be empty");
-  const regionError = exposureRegionError(draft.exposure, draft.region, draft.name || serviceLabel, lang);
+  const regionError = exposureRegionError(draft.exposure, draft.region, draft.name || serviceLabel, lang, catalog);
   if (regionError) errors.push(regionError);
   errors.push(...regionNodeErrors(nodes, draft.region, draft.node, draft.name || serviceLabel, lang));
   if (draft.exposure !== "none" && !draft.domain.trim()) errors.push(lang === "zh" ? "公开入口必须填写域名" : "Public exposure requires a domain");
@@ -143,7 +143,7 @@ function serviceErrors(draft: ServiceManifestDraft, yamlDirty: boolean, serviceY
   return errors;
 }
 
-function composeErrors(draft: ComposeDeploymentDraft, yamlDirty: boolean, composeYaml: string, sidecarYaml: string, nodes: NonNullable<DashboardPayload["nodes"]>, lang: Lang) {
+function composeErrors(draft: ComposeDeploymentDraft, yamlDirty: boolean, composeYaml: string, sidecarYaml: string, nodes: NonNullable<DashboardPayload["nodes"]>, lang: Lang, catalog: DashboardRegion[]) {
   if (yamlDirty) {
     const errors = [];
     if (!composeYaml.trim()) errors.push(lang === "zh" ? "docker-compose.yml 不能为空" : "docker-compose.yml cannot be empty");
@@ -155,7 +155,7 @@ function composeErrors(draft: ComposeDeploymentDraft, yamlDirty: boolean, compos
   errors.push(...regionNodeErrors(nodes, draft.region, "", draft.name || (lang === "zh" ? "应用" : "application"), lang));
   for (const service of draft.services) {
     const region = service.region || draft.region;
-    const regionError = exposureRegionError(service.exposure, region, service.name, lang);
+    const regionError = exposureRegionError(service.exposure, region, service.name, lang, catalog);
     if (regionError) errors.push(regionError);
     errors.push(...regionNodeErrors(nodes, region, service.node, service.name, lang));
     if (service.exposure !== "none" && !service.domain.trim()) errors.push(lang === "zh" ? `${service.name} 必须填写域名` : `${service.name} requires a domain`);
@@ -285,9 +285,9 @@ export function DeployWorkspace({
 
   const validationErrors = useMemo(
     () => mode === "service"
-      ? serviceErrors(serviceDraft, yamlDirty, serviceYaml, nodes, lang)
-      : composeErrors(composeDraft, yamlDirty, composeYaml, sidecarYaml, nodes, lang),
-    [composeDraft, composeYaml, lang, mode, nodes, serviceDraft, serviceYaml, sidecarYaml, yamlDirty],
+      ? serviceErrors(serviceDraft, yamlDirty, serviceYaml, nodes, lang, payload?.regions || [])
+      : composeErrors(composeDraft, yamlDirty, composeYaml, sidecarYaml, nodes, lang, payload?.regions || []),
+    [composeDraft, composeYaml, lang, mode, nodes, serviceDraft, serviceYaml, sidecarYaml, yamlDirty, payload?.regions],
   );
   const router = useRouter();
   const submitted = useMemo(() => {
@@ -436,7 +436,7 @@ export function DeployWorkspace({
 
   return <Tabs value={editorMode} onValueChange={(value) => { if (value === "form" || value === "yaml") setEditorMode(value); }} className="min-w-0 gap-6">
     <section className="flex min-w-0 flex-col gap-6">
-      {importView ? <GithubImportPanel lang={lang} token={token} nodes={nodes} build={payload?.build} regions={regions} onBack={showTemplates ? () => setImportView(false) : undefined} onRefresh={onRefresh} /> : <>
+      {importView ? <GithubImportPanel lang={lang} token={token} nodes={nodes} build={payload?.build} regions={regions} regionCatalog={payload?.regions} onBack={showTemplates ? () => setImportView(false) : undefined} onRefresh={onRefresh} /> : <>
         {!templateLanding ? <>
           {onClose || showTemplates ? <Button variant="outline" type="button" className="w-fit" disabled={status !== "idle"} onClick={() => onClose ? onClose() : showTemplates ? backToTemplates() : router.navigate("/create")}>
             <ArrowLeft data-icon="inline-start" />{onClose ? (lang === "zh" ? "返回应用" : "Back to application") : showTemplates ? (lang === "zh" ? "返回模板" : "Back to templates") : (lang === "zh" ? "返回创建" : "Back to create")}
@@ -485,8 +485,8 @@ export function DeployWorkspace({
               </Alert> : null}
               <TabsContent value="form">
                 {mode === "service"
-                  ? <SingleServiceDeployForm lang={lang} draft={serviceDraft} nodes={nodes} storageClasses={storageClasses} regions={regions} onChange={updateServiceDraft} />
-                  : <ComposeDeployForm lang={lang} draft={composeDraft} nodes={nodes} storageClasses={storageClasses} regions={regions} onChange={updateComposeDraft} onEditYaml={() => setEditorMode("yaml")} />}
+                  ? <SingleServiceDeployForm lang={lang} draft={serviceDraft} nodes={nodes} storageClasses={storageClasses} regions={regions} regionCatalog={payload?.regions} onChange={updateServiceDraft} />
+                  : <ComposeDeployForm lang={lang} draft={composeDraft} nodes={nodes} storageClasses={storageClasses} regions={regions} regionCatalog={payload?.regions} onChange={updateComposeDraft} onEditYaml={() => setEditorMode("yaml")} />}
               </TabsContent>
               <TabsContent value="yaml">
                 <YamlPreviewEditor lang={lang} mode={mode} serviceYaml={serviceYaml} composeYaml={composeYaml} sidecarYaml={sidecarYaml}

@@ -26,6 +26,12 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 from .config import LumaConfig
 from .compose import compose_replica_count, render_storage_class_volume, resolve_storage_mounts
+from .compose_network import (
+    NETWORK_CONTAINER,
+    macos_compose_network_tasks,
+    macos_compose_ports,
+    uses_macos_compose_network,
+)
 from .errors import LumaError
 from .observe_instrument import OBSERVE_STACK, apply_env as apply_observe_env, pin_observe_placement
 from .service import ServiceSpec, slugify
@@ -386,6 +392,9 @@ def render_compose_job(
     # over the shared group loopback.
     extra_hosts = [f"{svc}:127.0.0.1" for svc in services.keys()]
     host_network = _compose_host_network(services, deployment)
+    mac_network = uses_macos_compose_network(deployment, node_records)
+    if mac_network and macos_compose_ports(deployment) and replicas != 1:
+        raise LumaError("Mac Compose with published ports requires replicas: 1 on its pinned node")
 
     reserved_ports: List[Dict[str, Any]] = []
     dynamic_ports: List[Dict[str, Any]] = []
@@ -416,6 +425,11 @@ def render_compose_job(
         publish = publish_port or port
 
         docker_config: Dict[str, Any] = {"image": image, "extra_hosts": list(extra_hosts)}
+        if mac_network:
+            # Docker owns this namespace inside its Linux VM. Service aliases
+            # live on its owner and are inherited by every sibling container.
+            docker_config.pop("extra_hosts")
+            docker_config["network_mode"] = f"container:{NETWORK_CONTAINER}"
         registry_auth = registry_auth_resolver(image) if callable(registry_auth_resolver) else None
         if registry_auth and registry_auth.get("username") and registry_auth.get("password"):
             docker_config["auth"] = {
@@ -432,7 +446,8 @@ def render_compose_job(
                 dynamic_ports.append({"Label": label, "To": int(port), "HostNetwork": "default"})
             else:
                 reserved_ports.append({"Label": label, "Value": int(publish), "To": int(port), "HostNetwork": "default"})
-            docker_config["ports"] = [label]
+            if not mac_network:
+                docker_config["ports"] = [label]
         mounts: List[Dict[str, Any]] = []
         for vspec in (body.get("volumes") or []):
             if isinstance(vspec, dict):
@@ -562,6 +577,8 @@ def render_compose_job(
         resources = _resource_values((body.get("deploy") or {}).get("resources") or {})
 
         task: Dict[str, Any] = {"Name": str(svc_name), "Driver": "docker", "Config": docker_config, "Resources": resources}
+        if mac_network and port and exposure in HOST_PORT_EXPOSURES:
+            task["Meta"] = {"luma.port-label": label}
         stop_grace_period = body.get("stop_grace_period")
         if stop_grace_period is not None:
             task["KillTimeout"] = _duration_ns(stop_grace_period)
@@ -609,6 +626,8 @@ def render_compose_job(
                 }
             )
 
+    if mac_network:
+        tasks.extend(macos_compose_network_tasks(deployment, config, registry_auth_resolver))
     group: Dict[str, Any] = {
         "Name": name,
         "Count": replicas,
@@ -623,8 +642,10 @@ def render_compose_job(
     # service publishes a port. Without it, an all-exposure:none multi-service
     # stack renders with no Networks block, each task gets its own loopback, and
     # inter-service connections silently fail while the deploy reports healthy.
-    if not host_network and (len(tasks) > 1 or reserved_ports or dynamic_ports):
-        network: Dict[str, Any] = {"Mode": "bridge"}
+    if mac_network or (not host_network and (len(tasks) > 1 or reserved_ports or dynamic_ports)):
+        # On Mac this only reserves host ports in Nomad. The trusted prestart
+        # task publishes them using Docker's wildcard binding inside OrbStack.
+        network: Dict[str, Any] = {"Mode": "host" if mac_network else "bridge"}
         if reserved_ports:
             network["ReservedPorts"] = reserved_ports
         if dynamic_ports:

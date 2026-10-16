@@ -120,7 +120,9 @@ Control records the selected node. The dashboard scopes new native volume names 
 
 ## Host networking
 
-Ordinary Compose groups share a Nomad bridge network namespace so sibling
+On Mac/OrbStack, multi-service or public Compose uses a Docker-owned namespace per allocation with a group node pin. `publishPort` maps only explicitly exposed services; siblings retain private loopback aliases. Single internal workers keep ordinary Docker networking and can remain unpinned. See [Mac Compose networking](region-public-ingress.md#mac-compose-networking).
+
+On Linux, ordinary Compose groups share a Nomad bridge network namespace so sibling
 service names resolve on `127.0.0.1`. A stack that must scrape host-loopback
 listeners (Traefik metrics, local Nomad HTTP) may set `network_mode: host` on
 **every** service. Mixed host/bridge in one group is rejected. Host-network

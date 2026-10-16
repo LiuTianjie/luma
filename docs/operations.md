@@ -208,7 +208,7 @@ sudo docker pull hello-world:latest
 
 ```bash
 luma update                                  # manager: CLI + Control; node: CLI + agent; client: CLI
-luma update --install-ref v0.2.11           # a specific release, branch or full commit
+luma update --install-ref v0.2.12           # a specific release, branch or full commit
 luma update fleet                            # every non-manager node with a ready agent
 luma update fleet --include-manager          # explicit repair only
 ```
@@ -276,7 +276,7 @@ Nomad agents bind to `0.0.0.0` and advertise their Tailscale address. Luma-manag
 
 `tailscale-relay` is explicit per service. It is suitable for home tools, previews, or low-frequency internal panels that need a public domain.
 
-It is not the default path for normal public traffic.
+Custom regions can opt in without moving their nodes: `luma region update render --exposure tailscale-relay`. See [custom-region ingress](region-public-ingress.md) for cluster upgrade order, Mac networking, validation and rollback. It is not the default path for normal public traffic.
 
 ## Node agent fails after an installer path change
 

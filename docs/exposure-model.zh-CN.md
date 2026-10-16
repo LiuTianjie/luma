@@ -6,7 +6,7 @@ Luma 将控制面和数据面分开。
 
 - Cloudflare：DNS 自动化、可选代理和 Tunnel 公共主机名。
 - Traefik：`cn` 边缘的公共 HTTP/HTTPS 入口，以及 `tcp-relay` 发布端口。
-- Tailscale：管理网络，以及所选 `home` 服务的显式中继路径。
+- Tailscale：管理网络，以及 `home` 或已启用中继的自定义 Region 服务的显式中继路径。
 - Luma Control：驱动 Nomad HTTP API 的部署控制面。
 - Nomad / Docker：运行时执行层。
 
@@ -50,7 +50,7 @@ Luma 生成：
 
 ### `tailscale-relay` {#tailscale-relay}
 
-通过中国大陆边缘节点，经 Tailscale 暴露所选家庭服务。
+通过现有边缘节点，经 Tailscale 暴露家庭或自定义 Region 服务。自定义 Region 先运行 `luma region update render --exposure tailscale-relay`，再在应用清单选择该模式；见[升级与实施指南](region-public-ingress.zh-CN.md)。
 
 ```text
 User -> Cloudflare DNS -> CN Traefik -> Tailscale -> home service

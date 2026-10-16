@@ -364,8 +364,19 @@ class ControlClient:
     def list_regions(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/regions")
 
-    def create_region(self, *, name: str, egress: str = "proxy") -> Dict[str, Any]:
-        return self.request("POST", "/v1/regions", {"name": name, "egress": egress})
+    def create_region(self, *, name: str, egress: str = "proxy", exposures: list[str] | None = None) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"name": name, "egress": egress}
+        if exposures is not None:
+            body["exposures"] = exposures
+        return self.request("POST", "/v1/regions", body)
+
+    def update_region(self, *, name: str, egress: str | None = None, exposures: list[str] | None = None) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"name": name}
+        if egress is not None:
+            body["egress"] = egress
+        if exposures is not None:
+            body["exposures"] = exposures
+        return self.request("POST", "/v1/regions/update", body)
 
     def remove_region(self, *, name: str) -> Dict[str, Any]:
         return self.request("POST", "/v1/regions/remove", {"name": name})

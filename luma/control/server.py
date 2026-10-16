@@ -62,6 +62,7 @@ from ..compose import (
     storage_summary,
 )
 from ..config import LumaConfig, load_config, save_config
+from ..compose_network import compose_network_image, macos_compose_ports, uses_macos_compose_network
 from ..errors import LumaError
 from .build_events import append_build_run_events
 from .database_errors import is_database_busy, persist_receipt
@@ -107,6 +108,7 @@ from ..regions import (
     is_builtin_region,
     listed_regions,
     parse_egress_mode,
+    parse_region_exposures,
     parse_region_name,
     public_region_record,
     region_names_in_use,
@@ -2935,15 +2937,71 @@ def handle_region_create(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if is_builtin_region(name):
         raise LumaError(f"region {name} already exists")
     egress = parse_egress_mode(body.get("egress"))
+    exposures = parse_region_exposures(body.get("exposures"))
 
     def mutate(state: Dict[str, Any]) -> Dict[str, Any]:
         require_token(state, token, token_type="deploy")
         custom = ensure_regions_state(state)
         if is_builtin_region(name) or name in custom:
             raise LumaError(f"region {name} already exists")
-        record = custom_region_record(name, egress=egress, created_at=int(time.time()))
+        record = custom_region_record(name, egress=egress, created_at=int(time.time()), exposures=exposures)
         custom[name] = record
         return public_region_record(record)
+
+    return mutate_state(mutate)
+
+
+def _region_exposure_users(state: Dict[str, Any], name: str, exposures: set[str]) -> list[str]:
+    users: set[str] = set()
+    deployments = state.get("deployments") or {}
+    for kind in ("services", "compose"):
+        for slug, record in (deployments.get(kind) or {}).items():
+            if not isinstance(record, dict):
+                continue
+            try:
+                manifest = yaml.safe_load(record.get("manifest") or "") or {}
+            except yaml.YAMLError as exc:
+                raise LumaError(f"cannot check region usage in deployment {slug}") from exc
+            if not isinstance(manifest, dict):
+                raise LumaError(f"cannot check region usage in deployment {slug}")
+            if kind == "services":
+                services = {slug: manifest}
+            else:
+                services = manifest.get("services") or {}
+            for service_name, service in services.items():
+                if not isinstance(service, dict):
+                    continue
+                region = service.get("region") or manifest.get("region") or "cn"
+                if region == name and service.get("exposure", "none") in exposures:
+                    users.add(f"{slug}/{service_name}" if kind == "compose" else str(slug))
+    return sorted(users)
+
+
+@_serialize_deploy
+def handle_region_update(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    name = parse_region_name(body.get("name"))
+    if is_builtin_region(name):
+        raise LumaError(f"built-in region {name} is read-only")
+    if not any(key in body for key in ("egress", "exposures")):
+        raise LumaError("region update requires egress or exposures")
+    exposures = parse_region_exposures(body["exposures"]) if "exposures" in body else None
+    egress = parse_egress_mode(body["egress"]) if "egress" in body else None
+
+    def mutate(state: Dict[str, Any]) -> Dict[str, Any]:
+        require_token(state, token, token_type="deploy")
+        current = require_registered_region(state, name)
+        if exposures is not None:
+            removed = set(current["exposures"]) - set(exposures)
+            users = _region_exposure_users(state, name, removed) if removed else []
+            if users:
+                raise LumaError("cannot disable region exposures still used by deployments: " + ", ".join(users))
+        record = dict(ensure_regions_state(state)[name])
+        if egress is not None:
+            record["egress"] = egress
+        if exposures is not None:
+            record["exposures"] = exposures
+        state["regions"][name] = record
+        return public_region_record({**current, **record})
 
     return mutate_state(mutate)
 
@@ -6176,45 +6234,16 @@ def _compose_tcp_relay_ports(deployment: ComposeDeploymentSpec) -> list[int]:
 
 
 def _ensure_compose_exposure_supported_on_nodes(state: Dict[str, Any], deployment: ComposeDeploymentSpec) -> None:
-    """Reject a compose service pinned to a Mac node with a bridge-port exposure.
-
-    render_compose_job always maps exposed ports via a Nomad bridge ReservedPort
-    (nomad_render.py); it has no docker host-mode path (compose tasks share one
-    netns, which conflicts with host mode). On macOS/OrbStack that bridge mapping
-    binds a Mac host NIC IP absent inside the OrbStack VM, so the port silently
-    502s. Native manifests get host mode on Mac; compose does not, so fail fast
-    and point at the working alternatives instead of deploying an unreachable job.
-    """
+    """Mac Compose uses an allocation-owned Docker network instead of host CNI."""
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-    bridge_exposures = {"tcp-relay", "tailscale-relay", "cn-edge", "external-edge"}
-    # A compose deployment renders as ONE Nomad group constrained to a single
-    # node (render_compose_job: the union of every service's node pin, capped at
-    # one distinct node). The exposed service need not be the one carrying the
-    # pin — a sibling (e.g. a DB needing a local volume) can pin the whole group
-    # to a Mac node while the exposed service declares no node of its own. So the
-    # guard keys on the group's resolved node, not each service's own .node.
-    exposed = [
-        service
-        for service in deployment.services.values()
-        if service.exposure in bridge_exposures and service.port
-    ]
-    if not exposed:
-        return
-    pinned_nodes = {service.node for service in deployment.services.values() if service.node}
-    for node_name in pinned_nodes:
-        record = _node_record_for_name(nodes, node_name)
-        if not record:
-            continue
-        platform = _nomad_node_platform_from_record(record)
-        if (platform or "").split("/")[0] == "darwin":
-            culprit = exposed[0]
-            raise LumaError(
-                f"compose service {culprit.name} exposure={culprit.exposure} would run on "
-                f"Mac/OrbStack node {node_name} (the deployment group is pinned there), but "
-                "compose port mapping uses Nomad bridge mode which is unreachable on macOS. "
-                "Deploy this group on a Linux node, or use a native luma manifest (which "
-                "renders docker host mode on Mac)."
-            )
+    mac_network = uses_macos_compose_network(deployment, nodes)
+    if mac_network:
+        macos_compose_ports(deployment)
+    for service in deployment.services.values():
+        resolve_service_node_pin(
+            _compose_service_as_service_spec(deployment, service), state,
+            macos_compose_network=mac_network,
+        )
 
 
 def _ensure_tcp_relay_ports_available(state: Dict[str, Any], *, kind: str, slug: str, ports: list[int]) -> None:
@@ -6599,12 +6628,12 @@ def _bind_compose_local_storage(
         name: replace(deployment.services.get(name) or ComposeServiceSpec(name=name), node=node)
         for name in deployment.compose.get("services") or {}
     }
-    for service in services.values():
-        resolve_service_node_pin(_compose_service_as_service_spec(deployment, service), state)
     volumes = {
         name: replace(volume, local_node=node) if volume.kind == "local" else volume
         for name, volume in deployment.volumes.items()
     }
+    deployment = replace(deployment, services=services, volumes=volumes)
+    _ensure_compose_exposure_supported_on_nodes(state, deployment)
     raw = _safe_yaml_mapping(str(body.get("manifest") or ""))
     raw_services = raw.setdefault("services", {})
     for name in services:
@@ -6612,7 +6641,7 @@ def _bind_compose_local_storage(
     for name, volume in volumes.items():
         if volume.kind == "local":
             raw["volumes"][name]["local"]["node"] = node
-    return replace(deployment, services=services, volumes=volumes), {
+    return deployment, {
         **body, "manifest": yaml.safe_dump(raw, sort_keys=False, allow_unicode=True),
     }
 
@@ -7749,6 +7778,10 @@ def _refresh_nomad_cni_hostports_for_nodes(state: Dict[str, Any], node_names: se
             "hostPorts": [],
         }
     for node_name in normalized_nodes:
+        record = _node_record_for_name(_state_nodes(state), node_name)
+        if record and _nomad_node_platform_from_record(record).startswith("darwin/"):
+            skipped.append({"node": node_name, "reason": "Docker manages published ports on macOS; no host CNI repair"})
+            continue
         if not _node_agent_has_capability(state, node_name, "nomad-cni-repair"):
             skipped.append({"node": node_name, "reason": "node agent is not ready for nomad-cni-repair"})
             continue
@@ -9040,7 +9073,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         )
         cni_hostports = (
             {}
-            if _skip_orchestrator(body)
+            if _skip_orchestrator(body) or uses_macos_compose_network(deployment, _state_nodes(state))
             else _deploy_step(
                 steps,
                 "Refresh Nomad CNI hostports",
@@ -10170,12 +10203,18 @@ def _config_with_state_nodes(config: LumaConfig, state: Dict[str, Any]) -> LumaC
 
 
 def _compose_service_as_service_spec(deployment: ComposeDeploymentSpec, service: Any) -> ServiceSpec:
+    # All siblings share one Nomad group. Its node pin may be carried by a
+    # database or local volume while the API has no explicit pin of its own.
+    nodes = {item.node for item in deployment.services.values() if item.node}
+    nodes.update(volume.local_node for volume in deployment.volumes.values() if volume.kind == "local" and volume.local_node)
+    if len(nodes) > 1:
+        raise LumaError("a Compose network runs on one node; service and volume pins must agree")
     return ServiceSpec(
         source=deployment.source,
         name=f"{deployment.slug}-{service.name}",
         image="compose",
         region=service.region or deployment.region,
-        node=service.node,
+        node=next(iter(nodes), None),
         public=service.exposure != "none",
         exposure=service.exposure,
         domain=service.domain,
@@ -11607,7 +11646,9 @@ def labels_for_node(region: str, *, luma_name: str, node_id: str = "") -> Dict[s
     return labels
 
 
-def resolve_service_node_pin(service: ServiceSpec, state: Dict[str, Any], *, engine: str = "nomad") -> ServiceSpec:
+def resolve_service_node_pin(
+    service: ServiceSpec, state: Dict[str, Any], *, engine: str = "nomad", macos_compose_network: bool = False,
+) -> ServiceSpec:
     _require_nomad_engine(engine)
     if not service.node:
         return service
@@ -11623,7 +11664,7 @@ def resolve_service_node_pin(service: ServiceSpec, state: Dict[str, Any], *, eng
     labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
     node_id = str(record.get("nodeId") or record.get("nomadNodeId") or labels.get("luma.node.id") or "").strip()
     node_platform = _nomad_node_platform_from_record(record)
-    if service.publish_port and (node_platform or "").split("/")[0] == "darwin":
+    if service.publish_port and (node_platform or "").split("/")[0] == "darwin" and not macos_compose_network:
         # Nomad bridge port mapping is unreachable on macOS/OrbStack: the
         # published port binds to a Mac host NIC IP that does not exist inside
         # the OrbStack VM where the container runs, so the port silently 502s.
@@ -13388,6 +13429,8 @@ def _cache_runtime_image_on_builder(
         }
 
     selected_platform = str(platform or "").strip()
+    if selected_platform.startswith("darwin/"):
+        selected_platform = "linux/" + selected_platform.split("/", 1)[1]
     if selected_platform and selected_platform not in {"linux/amd64", "linux/arm64"}:
         raise LumaError(f"unsupported runtime image platform: {selected_platform}")
     repository = _runtime_image_cache_repository(image)
@@ -13443,6 +13486,7 @@ def _cache_compose_images_on_builder(
         }
     compose = copy.deepcopy(deployment.compose)
     services = compose.get("services") if isinstance(compose.get("services"), dict) else {}
+    mac_network = uses_macos_compose_network(deployment, _state_nodes(state))
     cached_by_key: Dict[tuple[str, str], Dict[str, Any]] = {}
     results: Dict[str, Dict[str, Any]] = {}
     for service_name, raw_service in services.items():
@@ -13489,10 +13533,20 @@ def _cache_compose_images_on_builder(
             cached_by_key[key] = cached
         raw_service["image"] = str(cached["deployed"])
         results[str(service_name)] = dict(cached)
+    network_image = None
+    network_cache = None
+    if mac_network:
+        # Cache the multi-platform helper separately; never overwrite a user's
+        # Compose service to inject an infrastructure image.
+        network_cache = _cache_runtime_image_on_builder(
+            config, state, compose_network_image(config), progress=progress,
+        )
+        network_image = str(network_cache["deployed"])
     cached_count = sum(1 for item in results.values() if item.get("cached"))
-    return replace(deployment, compose=compose), {
+    return replace(deployment, compose=compose, network_image=network_image), {
         "message": f"{len(results)} Compose image(s) ready in Builder Registry ({cached_count} cached)",
         "images": results,
+        **({"networkImage": network_cache} if network_cache else {}),
     }
 
 
@@ -14404,6 +14458,8 @@ async def _asgi_health(_: Request) -> JSONResponse:
             "nodeJoinModel": "region-first",
             "capabilities": [
                 "node-region",
+                "region-exposures-v1",
+                "macos-compose-network-v1",
                 "service-proxy",
                 "dashboard",
                 "service-remove",
@@ -14668,6 +14724,7 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/secrets/remove": handle_secret_remove,
             "/v1/regions": handle_region_create,
             "/v1/regions/remove": handle_region_remove,
+            "/v1/regions/update": handle_region_update,
             "/v1/dashboard/metrics/history/batch": handle_metrics_history_batch,
             "/v1/git-providers": handle_git_provider_set,
             "/v1/git-providers/remove": handle_git_provider_remove,

@@ -2,9 +2,9 @@ import { FileCode2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldGroup, FieldLegend, FieldSet, FieldTitle } from "@/components/ui/field";
-import type { DashboardNode, DashboardStorageClass, Lang } from "../types";
+import type { DashboardNode, DashboardRegion, DashboardStorageClass, Lang } from "../types";
 import type { ComposeDeploymentDraft, ComposeServiceDraft, ComposeVolumeDraft, Exposure, Region } from "./types";
-import { clearNodeIfIncompatible, EXPOSURES, exposureOptionLabel, hasReadyNodeInRegion, nodesForRegion, regionChoices, requiredRegionForExposure, regionOptionLabel } from "./options";
+import { clearNodeIfIncompatible, EXPOSURES, exposureAllowedInRegion, exposureOptionLabel, hasReadyNodeInRegion, nodesForRegion, regionChoices, requiredRegionForExposure, regionOptionLabel } from "./options";
 import { defaultLocalVolumePath, updateComposeServiceExposure } from "./yaml";
 import { DeployCheckboxField, DeployEnvironmentFields, DeployFormSection, DeploySelectField, DeployTextField } from "./DeployFormFields";
 
@@ -14,6 +14,7 @@ export function ComposeDeployForm({
   nodes,
   storageClasses,
   regions,
+  regionCatalog = [],
   onChange,
   onEditYaml,
 }: {
@@ -22,6 +23,7 @@ export function ComposeDeployForm({
   nodes: DashboardNode[];
   storageClasses: DashboardStorageClass[];
   regions?: Region[];
+  regionCatalog?: DashboardRegion[];
   onChange: (draft: ComposeDeploymentDraft) => void;
   onEditYaml: () => void;
 }) {
@@ -76,7 +78,7 @@ export function ComposeDeployForm({
             <FieldGroup className="grid grid-cols-1 items-start gap-4 @md:grid-cols-2">
               <DeploySelectField label={zh ? "入口" : "Exposure"} value={service.exposure} onChange={(value) => updateServiceExposureSafe(service, value as Exposure)} options={EXPOSURES.map((exposure) => {
                 const requiredRegion = requiredRegionForExposure(exposure);
-                return { value: exposure, label: exposureOptionLabel(nodes, exposure, lang), disabled: Boolean(requiredRegion && nodes.length > 0 && !hasReadyNodeInRegion(nodes, requiredRegion)) };
+                return { value: exposure, label: exposureOptionLabel(nodes, exposure, lang), disabled: !exposureAllowedInRegion(exposure, effectiveRegion, regionCatalog) || Boolean(requiredRegion && nodes.length > 0 && !hasReadyNodeInRegion(nodes, requiredRegion)) };
               })} />
               <DeploySelectField label={zh ? "区域" : "Region"} value={service.region} onChange={(value) => updateServiceRegion(service, value as Region | "")} options={[
                 { value: "", label: zh ? `默认 (${draft.region})` : `Default (${draft.region})` },

@@ -8,7 +8,7 @@ from .config import LumaConfig
 from .errors import LumaError
 from .dependencies import validate_requirement_block
 from .io import dump_yaml, load_yaml
-from .regions import parse_region_name, validate_region_exposure
+from .regions import parse_region_name, validate_region_exposure_syntax
 from .service import VALID_EXPOSURES, slugify, tcp_entrypoint_name
 
 
@@ -82,6 +82,7 @@ class ComposeDeploymentSpec:
     volumes: Dict[str, ComposeVolumeSpec]
     services: Dict[str, ComposeServiceSpec]
     warnings: List[str] = field(default_factory=list)
+    network_image: Optional[str] = None
 
     @property
     def slug(self) -> str:
@@ -336,7 +337,7 @@ def validate_compose_deployment_data(
             if not isinstance(override.port, int):
                 raise LumaError(f"compose service {service_name} public exposure requires integer port")
         try:
-            validate_region_exposure(region, override.exposure)
+            validate_region_exposure_syntax(region, override.exposure)
         except LumaError as exc:
             raise LumaError(f"compose service {service_name} {exc}") from exc
     tcp_ports: dict[int, str] = {}

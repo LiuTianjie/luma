@@ -709,7 +709,9 @@ def _wait_for_deployment(
         _poll(deadline)
 
 
-def _allocation_is_healthy(allocation: Mapping[str, Any]) -> bool:
+def _allocation_is_healthy(
+    allocation: Mapping[str, Any], *, task_lifecycles: Mapping[str, Any] | None = None,
+) -> bool:
     if str(allocation.get("DesiredStatus") or "run").strip().lower() not in {
         "run",
         "running",
@@ -718,11 +720,20 @@ def _allocation_is_healthy(allocation: Mapping[str, Any]) -> bool:
     if str(allocation.get("ClientStatus") or "").strip().lower() != "running":
         return False
     task_states = allocation.get("TaskStates")
+
+    def task_ready(name: str, task: Any) -> bool:
+        if not isinstance(task, dict) or task.get("Failed") is True:
+            return False
+        lifecycle = (task_lifecycles or {}).get(name) or {}
+        state = str(task.get("State") or "").strip().lower()
+        if lifecycle.get("Hook") == "poststop":
+            return state == "pending"
+        if lifecycle.get("Hook") in {"prestart", "poststart"} and not lifecycle.get("Sidecar"):
+            return state == "dead"
+        return state == "running"
+
     tasks_are_running = isinstance(task_states, dict) and bool(task_states) and all(
-        isinstance(task, dict)
-        and str(task.get("State") or "").strip().lower() == "running"
-        and task.get("Failed") is not True
-        for task in task_states.values()
+        task_ready(name, task) for name, task in task_states.items()
     )
     if isinstance(task_states, dict) and task_states and not tasks_are_running:
         return False
@@ -737,6 +748,7 @@ def _allocation_health(
     *,
     target_version: int,
     expected_groups: Mapping[str, int],
+    task_lifecycles: Mapping[str, Any] | None = None,
 ) -> tuple[bool, int, str]:
     active_by_group: Dict[str, List[Mapping[str, Any]]] = {
         name: [] for name in expected_groups
@@ -771,7 +783,10 @@ def _allocation_health(
     parts: List[str] = []
     for group, desired in expected_groups.items():
         active = active_by_group.get(group, [])
-        healthy = [allocation for allocation in active if _allocation_is_healthy(allocation)]
+        healthy = [
+            allocation for allocation in active
+            if _allocation_is_healthy(allocation, task_lifecycles=(task_lifecycles or {}).get(group))
+        ]
         healthy_total += len(healthy)
         if len(active) != desired or len(healthy) != desired:
             ready = False
@@ -808,7 +823,7 @@ def _wait_for_healthy_allocations(
                 f"healthy allocations for job v{target_version}",
                 last_status,
             )
-        _read_target_job(
+        target_job = _read_target_job(
             client,
             job_id=job_id,
             slug=slug,
@@ -824,6 +839,10 @@ def _wait_for_healthy_allocations(
             allocations,
             target_version=target_version,
             expected_groups=expected_groups,
+            task_lifecycles={
+                group["Name"]: {task["Name"]: task["Lifecycle"] for task in group.get("Tasks") or [] if task.get("Lifecycle")}
+                for group in target_job.get("TaskGroups") or []
+            },
         )
         if ready:
             return healthy_total
@@ -1176,6 +1195,8 @@ def _job_task_summaries(
         for task in tasks:
             if not isinstance(task, dict):
                 continue
+            if (task.get("Meta") or {}).get("luma.compose-network") == "true":
+                continue
             task_name = str(task.get("Name") or "")
             if not task_name:
                 continue
@@ -1242,6 +1263,9 @@ def _task_port_label(task: Dict[str, Any], group_services: List[Dict[str, Any]])
     ports = config.get("ports") if isinstance(config.get("ports"), list) else []
     if ports:
         return str(ports[0])
+    managed_port = (task.get("Meta") or {}).get("luma.port-label")
+    if managed_port:
+        return str(managed_port)
     task_name = str(task.get("Name") or "")
     for svc in group_services:
         if str(svc.get("Name") or "") == task_name and svc.get("PortLabel"):

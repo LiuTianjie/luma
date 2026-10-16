@@ -7,13 +7,13 @@
 | `name` | yes | string | Service name. Luma slugifies it for stack, service, route, and deployment records. |
 | `image` | required unless `build` is set | string | Prebuilt container image. With Builder Registry configured, Luma copies external/private images into the internal cache and deploys the verified internal digest. For Repository Import, omit `image` and use `build:` so Luma can inject the built internal-registry image. |
 | `build` | no | map | Source-to-image build for `luma import` / Dashboard Repository Import. Subfields: `build.context` (default `.`), `build.dockerfile` (default `Dockerfile`), `build.platform` (default `linux/amd64`), optional `build.repo`, literal Dockerfile stage `build.target`, and remote-only `build.x-luma-git-contexts` with reviewed lock files (see below). When present, `image` may be omitted. Not used by plain `luma deploy`. |
-| `region` | yes | `cn` / `global` / `home` or a custom region | Runtime placement region. Custom regions from `luma region create` only allow `exposure: none` unless later extended. |
+| `region` | yes | `cn` / `global` / `home` or a custom region | Runtime placement region. Custom regions default to `none`; live capabilities are in `luma region list`. Enable relay with `luma region update NAME --exposure tailscale-relay`. |
 | `engine` | no | `nomad` | Orchestrator override. Omit to inherit the cluster default. |
 | `node` | no | string | Luma node name from `luma node join --name`; control-plane deploy resolves it to a node-meta placement constraint and keeps the region constraint. Stable across node restarts. Do not use Docker hostnames for normal pins. |
 | `exposure` | recommended | `none` / `cn-edge` / `external-edge` / `tailscale-relay` / `tcp-relay` / `cloudflare-tunnel` | Access mode. Use explicit exposure in new files. |
 | `domain` | public only | string | Public hostname for exposed services. |
 | `port` | public only | integer | Container internal port, not the cloud firewall or host port. |
-| `publishPort` | public services | integer | Explicit Nomad bridge port mapping on Linux nodes: host `publishPort` -> container `port`. For `cn-edge` / `external-edge`, omit for dynamic ports. For Mac/OrbStack relay services, omit because they use docker host mode and routes target the real `port`. |
+| `publishPort` | public services | integer | Explicit Nomad bridge port mapping on Linux nodes: host `publishPort` -> container `port`. For `cn-edge` / `external-edge`, omit for dynamic ports. For native Mac/OrbStack relay services, omit because they use Docker host mode and routes target the real `port`. Mac Compose supports remapping through allocation-owned Docker networking. |
 | `replicas` | no | integer | Defaults to `1`; must be at least `1`. |
 | `env` / `environment` | no | map | Service environment. Use direct values for non-sensitive settings and `${SECRET_NAME}` for deployment secrets supplied by `--env` or stored with scoped `luma secret set`. |
 | `command` | no | string/list | Overrides container command. |
@@ -55,7 +55,7 @@ Rules:
 
 - `cn-edge` requires `region: cn`.
 - `external-edge` requires `region: global`.
-- `tailscale-relay` requires `region: home`.
+- `tailscale-relay` requires `home` or an enabled custom region; Control validates its live exposure list.
 - `tcp-relay` derives its Traefik entrypoint from `publishPort` or `port`; ordinary MySQL should use port-exclusive routing instead of SNI multiplexing.
 - Public services require `domain` and integer `port`.
 - `public` has been removed. Use `exposure`.
@@ -65,7 +65,7 @@ Rules:
 - Every service gets a `${meta.region} == <region>` placement constraint.
 - If `node` is set, Luma renders a `${meta.luma_node_name} == <node>` constraint. Node identities are stable across restarts, so a rejoining node keeps its pin with no constraint rewrite.
 - `cn-edge` and `external-edge` register Traefik routing via the Nomad service provider (service tags), using a bridge network with `port` as the load-balancer target.
-- `tailscale-relay` runs the container in docker host network mode and routes through the published port on the actual home node via a Traefik file-provider route, unless `relay.host`/`relay.url` overrides are set.
+- `tailscale-relay` runs the container in docker host network mode and routes through the published port on the pinned node via a Traefik file-provider route, unless `relay.host`/`relay.url` overrides are set.
 - `tcp-relay` adds the derived TCP entrypoint to Traefik, writes a TCP route, and forwards to the host port; the published port is exclusive to that TCP service.
 - `cloudflare-tunnel` adds a `cloudflared` sidecar task in the same group using `${<tokenEnv>}`.
 - `proxy: true` injects default `HTTP_PROXY`/`HTTPS_PROXY` pointing at the egress proxy unless those env vars are already present.
@@ -474,7 +474,7 @@ Control records the first deployment node and preserves it on updates. Keep the 
 | --- | --- | --- |
 | `name` | yes | Stack/deployment name. Reusing it updates the same Nomad job. |
 | `compose` | yes | Relative path to the standard Compose file. Control-plane deploy rejects absolute paths and `..`. |
-| `region` | yes | Default service region: `cn`, `global`, or `home`. |
+| `region` | yes | Default service region: `cn`, `global`, `home`, or a registered custom region. |
 | `volumes.<name>.storageClass` | no | Legacy registered shared-storage class; omit for local storage. |
 | `volumes.<name>.path` | no | Subdirectory under the storage class export. Defaults to volume name when omitted. |
 | `volumes.<name>.accessMode` | no | `ReadWriteOnce` or `ReadWriteMany`; informational and dashboard-facing. |
@@ -487,7 +487,7 @@ Control records the first deployment node and preserves it on updates. Keep the 
 | `services.<name>.exposure` | no | `none`, `cn-edge`, `external-edge`, `tailscale-relay`, `tcp-relay`, or `cloudflare-tunnel`. |
 | `services.<name>.domain` | public only | Public hostname. |
 | `services.<name>.port` | public only | Container internal port. |
-| `services.<name>.publishPort` | relay only | Explicit Nomad bridge port mapping on Linux nodes for `tailscale-relay` or `tcp-relay`; omit on Mac/OrbStack nodes. |
+| `services.<name>.publishPort` | relay only | Host-to-container mapping for `tailscale-relay` or `tcp-relay`: Nomad CNI on Linux, allocation-owned Docker publication on Mac/OrbStack. Public Mac Compose requires one replica and one group node pin; only declared ports are published. |
 | `services.<name>.replicas` | no | Replica count; must be at least `1`. |
 | `services.<name>.proxy` | no | Adds Luma egress env/network for runtime outbound traffic. |
 | `services.<name>.relay` | relay only | Optional relay override. Usually omit. |
@@ -547,7 +547,7 @@ CI:
 
 ```bash
 # Verify this version is published before installing.
-python -m pip install "luma-infra==0.2.11"
+python -m pip install "luma-infra==0.2.12"
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 luma validate service.yaml --format json

@@ -110,7 +110,9 @@ Control 记录选中的节点。控制台按部署隔离新原生卷的名称。
 
 ## 主机网络 {#host-networking}
 
-普通 Compose 组共享 Nomad 桥接网络命名空间，同组服务名解析到 `127.0.0.1`。需要采集主机回环监听端点（Traefik 指标、本地 Nomad HTTP）的 stack，可以为**每个**服务设置 `network_mode: host`。同组混用 host 和 bridge 会被拒绝。使用主机网络的 Compose 要求 `exposure: none`，且不能设置 `publishPort`；它面向 [`luma-observe`](../observe/) 等内部采集器，而非公开应用。
+Mac/OrbStack 的多服务或公网 Compose 为每个 allocation 创建独立 Docker 网络空间，并固定整组节点。`publishPort` 只映射明确暴露的服务，同组名称仍解析到私有 loopback。单服务内部 worker 保持普通 Docker 网络，可以不固定节点。见 [Mac Compose 网络](region-public-ingress.zh-CN.md#mac-compose-networking)。
+
+Linux 上的普通 Compose 组共享 Nomad 桥接网络命名空间，同组服务名解析到 `127.0.0.1`。需要采集主机回环监听端点（Traefik 指标、本地 Nomad HTTP）的 stack，可以为**每个**服务设置 `network_mode: host`。同组混用 host 和 bridge 会被拒绝。使用主机网络的 Compose 要求 `exposure: none`，且不能设置 `publishPort`；它面向 [`luma-observe`](../observe/) 等内部采集器，而非公开应用。
 
 ## 部署与更新 {#deploy-and-update}
 

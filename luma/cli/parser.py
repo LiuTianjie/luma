@@ -451,7 +451,7 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
             "Update the local CLI. On a manager this also refreshes Luma Control, and on a joined "
             "node it refreshes the node agent."
         ),
-        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.11\n  luma update fleet",
+        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.12\n  luma update fleet",
     )
     _add_update_arguments(update)
     _add_control_arguments(update)
@@ -514,8 +514,15 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
     region_create = _command(region_sub, "create", "Create a custom region")
     region_create.add_argument("name", help="Region name")
     region_create.add_argument("--egress", choices=("proxy", "direct"), default="proxy", help="Joins and image pulls use the manager proxy or go direct (default: proxy)")
+    region_create.add_argument("--exposure", action="append", choices=("none", "tailscale-relay", "cloudflare-tunnel", "tcp-relay"), help="Allowed ingress; repeat for multiple modes (none is always allowed)")
     _add_control_arguments(region_create)
     _add_output_arguments(region_create)
+    region_update = _command(region_sub, "update", "Update a custom region's egress and allowed ingress")
+    region_update.add_argument("name", help="Region name")
+    region_update.add_argument("--egress", choices=("proxy", "direct"), help="Replace the egress policy")
+    region_update.add_argument("--exposure", action="append", choices=("none", "tailscale-relay", "cloudflare-tunnel", "tcp-relay"), help="Replace allowed ingress; repeat for multiple modes (none is always allowed)")
+    _add_control_arguments(region_update)
+    _add_output_arguments(region_update)
     region_remove = _command(region_sub, "remove", "Remove an unused custom region")
     region_remove.add_argument("name", help="Region name")
     _add_control_arguments(region_remove)

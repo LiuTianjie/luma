@@ -52,8 +52,8 @@ luma deploy status.yaml
 | `resources` | 否 | map | 渲染到 Nomad task 的 `resources` 块，CPU 使用 `reservations.cpus` 弹性共享，不执行 `limits.cpus`。内存 reservation 映射到 `memory`、limit 映射到 `memory_max`；首次部署这类任务时会自动启用 Nomad 内存超卖，确保 limit 真正成为容器硬上限。 |
 | `healthcheck` | 否 | map | 渲染成 Nomad `check`（脚本/http）。公共 HTTP 服务建议探测本地端口，例如 `http://127.0.0.1:<port>/healthz`。 |
 | `requirements` | 否 | map | 组件依赖契约。支持 `capabilities`（`cloudflare` / `tailscale` / `egress` / `registry`）、`secrets`、`init` 和 `notes`。`init` 支持 `cloudflare-dns`、`cloudflare-tunnel`、`tailscale-node`、`egress`、`registry`、`secrets`。部署预览会合并显式声明与运行时推导，并在必需项缺失时阻止提交；正式部署会先执行并记录初始化计划。 |
-| `publishPort` | 公开服务可用 | integer | 显式启用 Nomad bridge 端口映射，把宿主机 `publishPort` 转到容器 `port`。Linux 节点可用；Mac/OrbStack 节点不要设置，保持 host mode 并让 route 指向真实 `port`。 |
-| `relay` | tailscale-relay 可选 | map | 覆盖 Tailscale relay 上游。默认跟随实际运行 allocation 所在的 home 节点自动推导。 |
+| `publishPort` | 公开服务可用 | integer | 显式启用 Nomad bridge 端口映射，把宿主机 `publishPort` 转到容器 `port`。原生 Mac/OrbStack 单服务仍需省略此项；Mac Compose 支持 Docker 管理的端口映射，见[自定义 Region 公网入口](region-public-ingress.zh-CN.md#mac-compose-networking)。 |
+| `relay` | tailscale-relay 可选 | map | 覆盖 Tailscale relay 上游。默认由 `node` 指定的节点及其 Tailscale 地址推导；Compose 可继承同组服务或本地卷的节点约束。 |
 | `tcp` | tcp-relay 可选 | map | TCP relay 高级上游覆盖。正常情况不需要填写；入口由 `publishPort` / `port` 自动派生。 |
 | `tunnel` | cloudflare-tunnel 可用 | map | Cloudflare Tunnel token env 等设置。 |
 | `dns` | 否 | map | 保留给 DNS 相关扩展。 |
@@ -76,17 +76,17 @@ Compose 部署也渲染同样的 Nomad `update` 基线策略。多副本单服�
 | --- | --- | --- | --- |
 | `cn-edge` | `cn` | 是 | 国内公开 Web/API，走国内 Traefik 和备案域名。 |
 | `external-edge` | `global` | 是 | 海外公开服务，例如外网 API 网关、低频海外工具。 |
-| `tailscale-relay` | `home` | 是 | 家里服务通过国内 Traefik + Tailscale 暴露。 |
-| `tcp-relay` | 任意 | 是 | 数据库等原生 TCP 服务，公网端口独占，走 Traefik TCP -> task host port。 |
+| `tailscale-relay` | `home` 或已开启此能力的自定义 Region | 是 | 通过现有 Traefik + Tailscale 暴露私网节点服务。 |
+| `tcp-relay` | 已允许此入口的 Region | 是 | 数据库等原生 TCP 服务，公网端口独占，走 Traefik TCP -> task host port。 |
 | `cloudflare-tunnel` | 通常 `home` | 是 | 家里/私有服务通过 Cloudflare Tunnel 暴露。 |
-| `none` | `cn` / `global` / `home` | 否 | 内部任务、worker、队列消费者，不直接公开。 |
+| `none` | 任意已注册 Region | 否 | 内部任务、worker、队列消费者，不直接公开。 |
 
 规则：
 
 - `exposure: cn-edge` 必须配 `region: cn`。
 - `exposure: external-edge` 必须配 `region: global`。
 - `cn-edge` / `external-edge` 默认使用 Nomad 动态端口；如果要保留固定宿主端口，可显式设置 `publishPort`。
-- `exposure: tailscale-relay` 必须配 `region: home`。若未提供 `relay.host`/`relay.url`，控制面会在部署后根据实际 running task 所在节点自动推导上游。
+- `exposure: tailscale-relay` 可用于 `home`，也可用于执行过 `luma region update render --exposure tailscale-relay` 的自定义 Region。未提供 `relay.host`/`relay.url` 时需要节点约束；Compose 可继承同组节点。离线校验只检查语法，Control 按实时 Region 能力校验。
 - `exposure: tcp-relay` 的 Traefik TCP entrypoint 由 `publishPort` 或 `port` 自动生成。普通 MySQL 不能可靠使用 SNI 分流，因此当前实现按端口独占转发。
 - 公开服务必须提供 `domain` 和整数 `port`。
 - `public` 已移除；请使用 `exposure`。
@@ -476,7 +476,7 @@ replicas: 1
 ```
 
 Luma 会把 DNS 指到公网 edge，自动确保 Traefik 监听 `tcp-3306` entrypoint，并写入 Traefik TCP route。`domain` 用于 DNS；普通 MySQL 连接无法提供 HTTP Host 或可靠起始 SNI，所以同一个发布端口一次只应给一个 TCP 服务使用。
-`publishPort` 是目标 task 节点上的宿主机端口，并会在 Nomad bridge 模式下映射到容器 `port`。如果同一台机器已有本机容器或非 Luma 服务占用 `3306`，请选择其它端口并同步调整客户端连接端口或入口配置。Mac/OrbStack 节点不支持这种映射，需省略 `publishPort` 并使用容器真实监听端口。
+`publishPort` 是目标 task 节点上的宿主机端口，并会在 Nomad bridge 模式下映射到容器 `port`。如果同一台机器已有本机容器或非 Luma 服务占用 `3306`，请选择其它端口并同步调整客户端连接端口或入口配置。原生 Mac/OrbStack 单服务需省略 `publishPort` 并使用真实监听端口；Mac Compose 则支持独立的 `publishPort`。
 
 ### Cloudflare Tunnel 服务 {#cloudflare-tunnel}
 

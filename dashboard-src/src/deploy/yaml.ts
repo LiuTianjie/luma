@@ -197,13 +197,11 @@ export function composeVolumeNamesFromYaml(yaml: string): string[] {
 export function updateComposeServiceExposure(service: ComposeServiceDraft, exposure: ComposeServiceDraft["exposure"]): ComposeServiceDraft {
   if (exposure === "cn-edge") return { ...service, exposure, region: "cn" };
   if (exposure === "external-edge") return { ...service, exposure, region: "global" };
-  if (exposure === "tailscale-relay") return { ...service, exposure, region: "home" };
   return { ...service, exposure };
 }
 
 export function serviceExposureRegion(exposure: ServiceManifestDraft["exposure"], current: ServiceManifestDraft["region"]): ServiceManifestDraft["region"] {
   if (exposure === "cn-edge") return "cn";
   if (exposure === "external-edge") return "global";
-  if (exposure === "tailscale-relay") return "home";
   return current;
 }

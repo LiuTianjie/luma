@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { AlertCircle, Plus, Trash2 } from "lucide-react";
-import { createRegion, removeRegion } from "../controlResourcesApi";
+import { createRegion, removeRegion, updateRegion } from "../controlResourcesApi";
 import { BUILTIN_REGIONS, regionChoices } from "../deploy/options";
 import type { DashboardNode, DashboardRegion, Lang } from "../types";
 import { useConfirm } from "./ConfirmDialog";
@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Switch } from "@/components/ui/switch";
 
 function egressLabel(egress: string, zh: boolean) {
   if (egress === "proxy") return zh ? "网关代理" : "Proxy";
@@ -37,6 +38,7 @@ export function RegionPanel({
   const { confirm, element } = useConfirm(lang);
   const [name, setName] = useState("");
   const [egress, setEgress] = useState<"proxy" | "direct">("proxy");
+  const [relay, setRelay] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
 
@@ -69,8 +71,26 @@ export function RegionPanel({
     setBusy("create");
     setError("");
     try {
-      await createRegion({ token, name: trimmed, egress });
+      await createRegion({ token, name: trimmed, egress, exposures: relay ? ["none", "tailscale-relay"] : ["none"] });
       setName("");
+      setRelay(false);
+      await onRefresh();
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const toggleRelay = async (region: DashboardRegion) => {
+    setBusy(`update:${region.name}`);
+    setError("");
+    const current = region.exposures || ["none"];
+    const exposures = current.includes("tailscale-relay")
+      ? current.filter((value) => value !== "tailscale-relay")
+      : [...current, "tailscale-relay"];
+    try {
+      await updateRegion({ token, name: region.name, exposures });
       await onRefresh();
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : String(exc));
@@ -144,6 +164,10 @@ export function RegionPanel({
                   {egress === "proxy" ? (zh ? "通过 manager 网关访问外网。" : "Access the internet through the manager gateway.") : (zh ? "直接访问外网，不经过网关。" : "Access the internet directly without a gateway.")}
                 </FieldDescription>
               </Field>
+              <Field orientation="horizontal">
+                <Switch id="region-relay" checked={relay} onCheckedChange={setRelay} disabled={Boolean(busy)} />
+                <FieldLabel htmlFor="region-relay">{zh ? "允许通过公网网关接入 HTTP 服务" : "Allow HTTP services through the public gateway"}</FieldLabel>
+              </Field>
             </FieldGroup>
           </CardContent>
           <CardFooter>
@@ -187,10 +211,16 @@ export function RegionPanel({
               </TableCell>
               <TableCell>
                 {region.builtin ? null : (
+                  <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" size="sm" disabled={Boolean(busy)} aria-label={`${region.name} HTTP Relay`} onClick={() => void toggleRelay(region)}>
+                    {busy === `update:${region.name}` ? <Spinner aria-hidden="true" data-icon="inline-start" /> : null}
+                    {region.exposures?.includes("tailscale-relay") ? (zh ? "关闭 HTTP Relay" : "Disable HTTP Relay") : (zh ? "启用 HTTP Relay" : "Enable HTTP Relay")}
+                  </Button>
                   <Button variant="destructive" size="sm" disabled={Boolean(busy)} aria-label={zh ? `删除区域 ${region.name}` : `Remove region ${region.name}`} onClick={() => void remove(region)}>
                     {busy === `remove:${region.name}` ? <Spinner aria-hidden="true" data-icon="inline-start" /> : <Trash2 data-icon="inline-start" />}
                     {zh ? "删除" : "Remove"}
                   </Button>
+                  </div>
                 )}
               </TableCell>
             </TableRow>

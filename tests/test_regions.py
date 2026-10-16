@@ -15,10 +15,11 @@ from luma.control.server import (
     handle_region_create,
     handle_region_list,
     handle_region_remove,
+    handle_region_update,
 )
-from luma.control.state import init_state, save_state
+from luma.control.state import init_state, load_state, save_state
 from luma.errors import LumaError
-from luma.regions import parse_region_name, region_uses_egress_proxy, validate_region_exposure
+from luma.regions import parse_region_name, region_uses_egress_proxy, require_region_exposure, validate_region_exposure
 from luma.service import load_service
 
 
@@ -39,6 +40,16 @@ def _restore_env(name: str, old: str | None) -> None:
 
 
 class RegionNameTests(unittest.TestCase):
+    def test_custom_relay_manifest_parses_before_live_capability_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "service.yml"
+            path.write_text("name: api\nimage: nginx:alpine\nregion: render\nnode: air1\nexposure: tailscale-relay\ndomain: api.example.com\nport: 8080\n")
+            self.assertEqual(load_service(path).region, "render")
+        with self.assertRaisesRegex(LumaError, "does not allow"):
+            require_region_exposure({"regions": {"render": {"egress": "direct"}}}, "render", "tailscale-relay")
+        enabled = {"regions": {"render": {"egress": "direct", "exposures": ["none", "tailscale-relay"]}}}
+        self.assertEqual(require_region_exposure(enabled, "render", "tailscale-relay")["egress"], "direct")
+
     def test_parse_accepts_custom_slug(self) -> None:
         self.assertEqual(parse_region_name("Batch-A"), "batch-a")
 
@@ -89,6 +100,71 @@ class RegionNameTests(unittest.TestCase):
 
 
 class RegionControlApiTests(unittest.TestCase):
+    def test_region_update_cli_and_client_only_send_requested_fields(self) -> None:
+        from luma.cli import build_parser
+        from luma.cli.nodes import cmd_region
+        from luma.control.client import ControlClient
+        args = build_parser().parse_args(["region", "update", "render", "--exposure", "tailscale-relay", "--format", "json"])
+        with patch("luma.cli.nodes._control_context", return_value=("https://luma.example.com", "test-token", False, None)), patch.object(
+            ControlClient, "request", return_value={"name": "render", "exposures": ["none", "tailscale-relay"]},
+        ) as request, patch("builtins.print"):
+            self.assertEqual(cmd_region(args), 0)
+        request.assert_called_once_with("POST", "/v1/regions/update", {"name": "render", "exposures": ["tailscale-relay"]})
+
+    def test_update_preserves_region_identity_and_egress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"LUMA_CONTROL_STATE_DIR": tmp}):
+            state = init_state(domain="luma.example.com", cluster_id="test", overwrite=True)
+            token = state["deployToken"]
+            original = handle_region_create(token, {"name": "render", "egress": "direct"})
+            result = handle_region_update(token, {"name": "render", "exposures": ["tailscale-relay"]})
+            self.assertEqual(result["exposures"], ["none", "tailscale-relay"])
+            self.assertEqual(result["createdAt"], original["createdAt"])
+            self.assertEqual(result["egress"], "direct")
+            require_region_exposure(load_state(), "render", "tailscale-relay")
+            result = handle_region_update(token, {"name": "render", "egress": "proxy"})
+            self.assertEqual(result["exposures"], ["none", "tailscale-relay"])
+            with self.assertRaises(LumaError):
+                handle_region_update(state["joinToken"], {"name": "render", "exposures": ["none"]})
+            self.assertEqual(load_state()["regions"]["render"]["exposures"], ["none", "tailscale-relay"])
+
+    def test_capability_removal_rejects_native_and_compose_users(self) -> None:
+        for kind in ("services", "compose"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"LUMA_CONTROL_STATE_DIR": tmp}):
+                state = init_state(domain="luma.example.com", cluster_id="test", overwrite=True)
+                token = state["deployToken"]
+                handle_region_create(token, {"name": "render", "exposures": ["tailscale-relay"]})
+                state = load_state()
+                manifest = {"region": "render", "exposure": "tailscale-relay"}
+                if kind == "compose":
+                    manifest = {"region": "render", "services": {"api": {"exposure": "tailscale-relay"}}}
+                state["deployments"] = {kind: {"teachvideo": {"manifest": yaml.safe_dump(manifest), "status": "failed_partial"}}}
+                save_state(state)
+                with self.assertRaisesRegex(LumaError, "still used.*teachvideo"):
+                    handle_region_update(token, {"name": "render", "exposures": ["none"]})
+                self.assertIn("tailscale-relay", load_state()["regions"]["render"]["exposures"])
+                state["deployments"] = {}
+                save_state(state)
+                self.assertEqual(handle_region_update(token, {"name": "render", "exposures": ["none"]})["exposures"], ["none"])
+
+    def test_region_exposure_validation_and_update_http_route(self) -> None:
+        from starlette.testclient import TestClient
+        from luma.control.server import create_app
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"LUMA_CONTROL_STATE_DIR": tmp}):
+            state = init_state(domain="luma.example.com", cluster_id="test", overwrite=True)
+            token = state["deployToken"]
+            handle_region_create(token, {"name": "render"})
+            for invalid in ([], "tailscale-relay", ["cn-edge"], ["typo"], [True]):
+                with self.subTest(exposures=invalid), self.assertRaises(LumaError):
+                    handle_region_update(token, {"name": "render", "exposures": invalid})
+            with self.assertRaisesRegex(LumaError, "read-only"):
+                handle_region_update(token, {"name": "home", "exposures": ["none"]})
+            with self.assertRaisesRegex(LumaError, "requires egress or exposures"):
+                handle_region_update(token, {"name": "render"})
+            with TestClient(create_app()) as client:
+                response = client.post("/v1/regions/update", headers={"Authorization": f"Bearer {token}"}, json={"name": "render", "exposures": ["tailscale-relay"]})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertIn("tailscale-relay", load_state()["regions"]["render"]["exposures"])
+
     def test_create_list_join_and_preview(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

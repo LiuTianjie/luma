@@ -22,6 +22,7 @@ export function BuilderPage({
         token={token}
         nodes={payload.nodes || []}
         build={payload.build}
+        regionCatalog={payload.regions}
         onRefresh={onRefresh}
       />
     </section>

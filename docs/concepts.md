@@ -60,13 +60,13 @@ Set `node: <name>` in a manifest only when a service must stay on one machine (l
 
 ## Exposure
 
-**How traffic reaches a service.** It is independent of region, but each public mode requires a matching region.
+**How traffic reaches a service.** It is independent of placement, but Control checks that the selected region allows that ingress mode. Custom regions can opt in with `luma region update NAME --exposure tailscale-relay`; `none` remains available.
 
 | Exposure | Path |
 | --- | --- |
 | `cn-edge` | Cloudflare DNS → Traefik on the manager → service in `cn` |
 | `external-edge` | Cloudflare DNS → a global edge → service in `global` |
-| `tailscale-relay` | Cloudflare DNS → Traefik → Tailscale → service on a home node |
+| `tailscale-relay` | Cloudflare DNS → Traefik → Tailscale → service on a home or relay-enabled custom-region node |
 | `tcp-relay` | A public TCP port on Traefik → service (for example a database) |
 | `cloudflare-tunnel` | Cloudflare Tunnel → private service, bypassing Traefik |
 | `none` | No public ingress |
@@ -95,6 +95,6 @@ Multi-container applications use a standard `docker-compose.yml` plus a Luma sid
 
 ## Networking boundaries
 
-Linux nodes use Docker bridge networking with dynamic host ports, which Traefik discovers from Nomad service tags. macOS nodes (Docker Desktop or OrbStack) use host networking. Management traffic between servers prefers Tailscale; only `tailscale-relay` services send visitor traffic over it.
+Linux nodes use Docker bridge networking with dynamic host ports, which Traefik discovers from Nomad service tags. Native macOS services retain host networking. Multi-service or public Mac Compose stacks use an allocation-owned Docker namespace with explicit port publication, verified on OrbStack. See [custom-region ingress](region-public-ingress.md). Management traffic between servers prefers Tailscale; only `tailscale-relay` services send visitor traffic over it.
 
 Nomad agents bind to `0.0.0.0` and advertise their Tailscale address; Luma's firewall rules open the Nomad ports only on `tailscale0`. If a Nomad client loses its connection briefly, its allocations keep running (`max_client_disconnect`) and reconnect afterwards.

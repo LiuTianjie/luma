@@ -6,7 +6,7 @@ Luma separates the control plane from the data plane.
 
 - Cloudflare: DNS automation, optional proxy, optional Tunnel public hostname.
 - Traefik: main public HTTP/HTTPS ingress for the `cn` edge, plus `tcp-relay` published ports.
-- Tailscale: management network and explicit relay path for selected `home` services.
+- Tailscale: management network and explicit relay path for `home` or enabled custom-region services.
 - Luma Control: deployment control plane, driving the Nomad HTTP API.
 - Nomad / Docker: runtime execution layer.
 
@@ -50,7 +50,7 @@ By default, public traffic enters through one Traefik instance constrained to `$
 
 ### `tailscale-relay`
 
-Selected home services exposed through the CN edge over Tailscale.
+Home or custom-region services exposed through the existing edge over Tailscale. For a custom region, run `luma region update render --exposure tailscale-relay` before selecting that exposure in the app manifest. See the [upgrade and rollout guide](region-public-ingress.md).
 
 ```text
 User -> Cloudflare DNS -> CN Traefik -> Tailscale -> home service

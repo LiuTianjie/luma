@@ -379,6 +379,8 @@ def cmd_region(args: argparse.Namespace) -> int:
         return cmd_region_list(args)
     if args.region_command == "create":
         return cmd_region_create(args)
+    if args.region_command == "update":
+        return cmd_region_update(args)
     if args.region_command == "remove":
         return cmd_region_remove(args)
     raise LumaError(f"unknown region command: {args.region_command}")
@@ -409,11 +411,27 @@ def cmd_region_create(args: argparse.Namespace) -> int:
     result = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).create_region(
         name=name,
         egress=str(args.egress or "proxy"),
+        exposures=getattr(args, "exposure", None),
     )
     if _output_format(args) != "text":
         _print_success(args, result)
         return 0
     print(f"Region created: {result.get('name') or name} (egress={result.get('egress') or args.egress})")
+    return 0
+
+
+def cmd_region_update(args: argparse.Namespace) -> int:
+    name = parse_region_name(args.name)
+    if args.egress is None and args.exposure is None:
+        raise LumaError("region update requires --egress or --exposure")
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    result = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).update_region(
+        name=name, egress=args.egress, exposures=args.exposure,
+    )
+    if _output_format(args) != "text":
+        _print_success(args, result)
+        return 0
+    print(f"Region updated: {name} (egress={result.get('egress')}; exposures={','.join(result.get('exposures') or [])})")
     return 0
 
 

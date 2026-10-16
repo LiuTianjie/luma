@@ -1,4 +1,4 @@
-import type { DashboardNode, Lang } from "../types";
+import type { DashboardNode, DashboardRegion, Lang } from "../types";
 import type { Exposure, Region } from "./types";
 
 export const BUILTIN_REGIONS: Region[] = ["cn", "global", "home"];
@@ -27,11 +27,21 @@ export const EXPOSURES: Exposure[] = ["none", "cn-edge", "external-edge", "tails
 const EXPOSURE_REGION: Partial<Record<Exposure, Region>> = {
   "cn-edge": "cn",
   "external-edge": "global",
-  "tailscale-relay": "home",
 };
 
 export function requiredRegionForExposure(exposure: Exposure): Region | "" {
   return EXPOSURE_REGION[exposure] || "";
+}
+
+const DEFAULT_EXPOSURES: Record<string, Exposure[]> = {
+  cn: ["none", "cn-edge", "cloudflare-tunnel", "tcp-relay"],
+  global: ["none", "external-edge", "cloudflare-tunnel", "tcp-relay"],
+  home: ["none", "tailscale-relay", "cloudflare-tunnel", "tcp-relay"],
+};
+
+export function exposureAllowedInRegion(exposure: Exposure, region: Region, catalog: DashboardRegion[] = []): boolean {
+  const allowed = catalog.find((item) => item.name === region)?.exposures ?? DEFAULT_EXPOSURES[region] ?? ["none"];
+  return allowed.includes(exposure);
 }
 
 export function isReadyNode(node: DashboardNode): boolean {

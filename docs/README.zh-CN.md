@@ -16,6 +16,7 @@
 | [Compose 与存储](compose-storage.zh-CN.md) | 多服务应用与持久卷 |
 | [密钥与凭据](secrets.zh-CN.md) | 令牌、应用密钥与镜像仓库凭据 |
 | [暴露模型](exposure-model.zh-CN.md) | 每种入口方式的要求与示例 |
+| [自定义 Region 公网入口](region-public-ingress.zh-CN.md) | 升级、开启 render 中继、Mac Compose 网络与回退 |
 | [出站代理](egress-gateway.zh-CN.md) | 镜像拉取与 `proxy: true` 服务使用的出站代理 |
 | [可观测](observability.zh-CN.md) | 指标、告警与可选的 observe 栈 |
 | [控制台指南](dashboard-guide.zh-CN.md) | Web 控制台 |

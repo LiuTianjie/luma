@@ -208,7 +208,7 @@ sudo docker pull hello-world:latest
 
 ```bash
 luma update                                  # manager: CLI + Control; node: CLI + agent; client: CLI
-luma update --install-ref v0.2.11           # a specific release, branch or full commit
+luma update --install-ref v0.2.12           # a specific release, branch or full commit
 luma update fleet                            # every non-manager node with a ready agent
 luma update fleet --include-manager          # explicit repair only
 ```
@@ -276,7 +276,7 @@ Nomad agent 绑定 `0.0.0.0` 并广播 Tailscale 地址。UFW 仅在 `tailscale0
 
 `tailscale-relay` 按服务显式选择，适合需要公网域名的家庭工具、预览或低频内部面板。
 
-它不是常规公共流量的默认路径。
+自定义 Region 可通过 `luma region update render --exposure tailscale-relay` 开启中继，无需移动节点。集群升级顺序、Mac 网络、验收与回退见[自定义 Region 公网入口](region-public-ingress.zh-CN.md)。它不是常规公共流量的默认路径。
 
 ## 安装路径变化后节点 agent 失败 {#node-agent-fails-after-an-installer-path-change}
 
