@@ -847,6 +847,16 @@ class BuildQueueTests(unittest.TestCase):
 
 
 class QueueClientTests(unittest.TestCase):
+    def test_lease_long_poll_reserves_time_to_receive_committed_task(self):
+        client = ControlClient('https://control.example.com', 'token')
+        for timeout in (5, 15, 30, 60, 120):
+            with self.subTest(timeout=timeout), patch.object(client, 'request', return_value={}) as request:
+                client.lease_agent_task(node_name='builder', timeout=timeout)
+            wait = request.call_args.args[2]['waitSeconds']
+            self.assertGreaterEqual(wait, 0)
+            self.assertLessEqual(wait, 30)
+            self.assertGreaterEqual(request.call_args.kwargs['timeout'] - wait, min(timeout, 15))
+
     def test_idle_lease_explicitly_reports_no_active_task(self):
         client = ControlClient('https://control.example.com', 'token')
         with patch.object(client, 'request', return_value={}) as request:

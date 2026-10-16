@@ -1,6 +1,7 @@
 """Repository assets, bootstrap profiles, user config and env files."""
 import base64
 import errno
+import io
 import json
 import os
 import re
@@ -198,6 +199,35 @@ class ProductConfigTests(unittest.TestCase):
             self.assertEqual(client.lease_agent_task.call_count, 2)
             terminal_supervisor.stop.assert_called_once()
             stats_sampler.stop.assert_called_once()
+
+    def test_node_agent_receives_task_when_control_response_takes_twenty_seconds(self):
+        from luma.agent import run_node_agent
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'agent.json'
+            config.write_text(json.dumps({'endpoint': 'https://control.example.com', 'token': 'agent-token', 'nodeName': 'worker'}))
+            elapsed = 0.0
+            task = {'id': 'slow-lease', 'action': 'managed-registry-access', 'payload': {}}
+
+            def slow_lease_response(request, **kwargs):
+                nonlocal elapsed
+                self.assertEqual(request.full_url, 'https://control.example.com/v1/node-agent/lease')
+                elapsed += 20
+                response = io.BytesIO(json.dumps({'task': task}).encode())
+                response.headers = {}
+                return response
+
+            with patch('urllib.request.urlopen', side_effect=slow_lease_response) as opened, patch(
+                'luma.control.client.time.monotonic', side_effect=lambda: elapsed
+            ), patch('luma.agent.node_agent_container_stats', return_value=[]), patch(
+                'luma.agent.node_agent_metrics', return_value={}
+            ), patch('luma.agent._agent_node_diagnostics', return_value={}), patch(
+                'luma.node_lifecycle.note_agent_started'
+            ), patch('luma.agent._complete_agent_task', return_value=False) as complete:
+                self.assertEqual(run_node_agent(config, once=True), 0)
+            opened.assert_called_once()
+            complete.assert_called_once()
+            self.assertEqual(complete.call_args.kwargs['task'], task)
 
     def test_node_agent_heartbeats_while_task_runs(self):
         client = Mock()

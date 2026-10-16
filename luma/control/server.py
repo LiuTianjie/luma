@@ -4470,6 +4470,9 @@ def _ensure_nodes_managed_registry_access(
     progress: Callable[[dict[str, str]], None] | None = None,
 ) -> Dict[str, Any]:
     """One daemon owner for explicit managed HTTP registries, never a fleet sweep."""
+    # Image preparation may outlive the heartbeat window. Keep the operation's
+    # registry policy, but validate targets against their current agent records.
+    state = {**state, "nodes": load_runtime_state().get("nodes") or {}}
     allowed = set(join_insecure_registries(state))
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     plan: list[tuple[str, list[str], bool]] = []
@@ -4534,6 +4537,7 @@ def _ensure_job_managed_registry_access(
     groups = registry_task_groups(job_json, join_insecure_registries(state))
     if not groups:
         return {"nodes": [], "message": "No managed HTTP registry images require node configuration"}
+    state = {**state, "nodes": load_runtime_state().get("nodes") or {}}
     api = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
     inventory = api.request("GET", "/v1/nodes")
     if not isinstance(inventory, list):

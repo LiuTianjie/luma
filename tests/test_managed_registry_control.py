@@ -58,6 +58,34 @@ class ManagedRegistryControlTests(unittest.TestCase):
                       'nodes': {name: registered(name) for name in ('air1', 'air2')}}
         self.live = [nomad_node('air1'), nomad_node('air2'), nomad_node('elsewhere', 'cn')]
         self.config = type('Config', (), {'defaults': {}})()
+        runtime = patch.object(server, 'load_runtime_state', side_effect=lambda: self.state)
+        runtime.start()
+        self.addCleanup(runtime.stop)
+
+    def test_registry_preflight_uses_fresh_heartbeat_after_slow_image_cache(self):
+        captured = copy.deepcopy(self.state)
+        captured['nodes']['air1']['agent'].update(status='online', lastSeen=1000)
+        now = 1000 + server.AGENT_STALE_SECONDS + 1
+        self.state['nodes']['air1']['agent'].update(status='online', lastSeen=now)
+        with patch.object(server.time, 'time', return_value=now), patch.object(
+            server, '_run_node_agent_task', return_value=receipt()
+        ) as task:
+            result = server._ensure_nodes_managed_registry_access(captured, {'air1': {HOST}})
+        self.assertEqual(result['nodes'][0]['node'], 'air1')
+        self.assertEqual(task.call_args.args[0]['nodes']['air1']['agent']['lastSeen'], now)
+        self.assertEqual(captured['nodes']['air1']['agent']['lastSeen'], 1000)
+
+    def test_registry_preflight_rejects_targets_that_lost_readiness_or_capability(self):
+        captured = copy.deepcopy(self.state)
+        for nodes in (
+            {},
+            {'air1': registered('air1', capabilities=[LEGACY_CAPABILITY])},
+            {'air1': {**registered('air1'), 'agent': {'status': 'offline', 'capabilities': [CAPABILITY]}}},
+        ):
+            with self.subTest(nodes=nodes), patch.object(server, 'load_runtime_state', return_value={'nodes': nodes}), patch.object(server, '_run_node_agent_task') as task:
+                with self.assertRaises(LumaError):
+                    server._ensure_nodes_managed_registry_access(captured, {'air1': {HOST}})
+                task.assert_not_called()
 
     def api(self, method, path, *args, **kwargs):
         self.assertEqual(method, 'GET')

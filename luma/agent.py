@@ -1420,7 +1420,10 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
                     metrics=node_agent_metrics(),
                     container_stats=container_stats,
                     diagnostics=diagnostics,
-                    timeout=max(interval + 5, 15),
+                    # Control caps idle long polling at 30 seconds. Leave room
+                    # for writer contention and telemetry after the lease is
+                    # committed, so a slow response does not lose the task.
+                    timeout=max(interval + 5, 60),
                 ).get("task")
             except Exception as exc:
                 if once:

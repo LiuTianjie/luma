@@ -454,7 +454,9 @@ class ControlClient:
             "arch": arch,
             "version": version,
             "capabilities": capabilities or [],
-            "waitSeconds": max(timeout - 5, 1),
+            # Durable lease and telemetry work can continue after the idle
+            # wait ends. Reserve response time within the total deadline.
+            "waitSeconds": min(max(timeout - 15, 0), 30),
             "activeTaskId": "",  # This endpoint is polled only by the idle serial agent.
         }
         if metrics:
