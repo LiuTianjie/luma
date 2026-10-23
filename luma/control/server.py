@@ -65,6 +65,7 @@ from ..config import LumaConfig, load_config, save_config
 from ..compose_network import compose_network_image, macos_compose_ports, uses_macos_compose_network
 from ..errors import LumaError
 from .build_events import append_build_run_events
+from .build_alert_details import result_fields as _build_alert_result_fields
 from .database_errors import is_database_busy, persist_receipt
 from .logs import LogReader, LogUnavailable, CAPABILITIES as LOG_CAPABILITIES, LIMITS as LOG_LIMITS, POLL_INTERVAL as LOG_POLL_INTERVAL, encode_event as _log_event
 from ..io import load_yaml
@@ -3864,6 +3865,7 @@ def handle_local_build_complete(token: str, build_id: str, body: Dict[str, Any],
             "name": "Local build upload",
             "status": "ok",
             "message": str(build_result.get("message") or "Local image uploaded"),
+            **_build_alert_result_fields(build_result),
         },
     )
 
@@ -11597,6 +11599,8 @@ def _deploy_step(steps: list[dict[str, str]], name: str, action: Any, *, progres
         raise
     message = _step_message(result)
     step = {"name": name, "status": "ok", "message": message}
+    if name == "Build image":
+        step.update(_build_alert_result_fields(result))
     steps.append(step)
     _emit_progress(progress, step)
     return result

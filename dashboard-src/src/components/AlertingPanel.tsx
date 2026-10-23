@@ -796,8 +796,13 @@ export function AlertingPanel({
                                 {item.ruleName}
                               </span>
                               <span className="text-muted-foreground">
-                                {item.target}
+                                {item.buildDetails?.service || item.target}
                               </span>
+                              {item.buildDetails?.reason && (
+                                <span className="max-w-lg line-clamp-2 wrap-anywhere text-sm text-muted-foreground">
+                                  {item.buildDetails.stage ? `${item.buildDetails.stage}: ` : ""}{item.buildDetails.reason}
+                                </span>
+                              )}
                               <Badge
                                 variant={
                                   item.severity === "critical"
@@ -992,6 +997,40 @@ export function AlertingPanel({
                     <dd>{stamp(detail.incident.startedAt, zh)}</dd>
                   </div>
                 </dl>
+                {detail.incident.metric === "build.failed" && (
+                  <div className="flex flex-col gap-4">
+                    <p className="text-sm text-muted-foreground">
+                      {zh ? "以下是关联失败构建的记录。持续提醒不代表发生了新构建；恢复后保留失败记录供追溯。" : "Details of the associated failed build. Reminders do not indicate a new build; failure details are retained after recovery."}
+                    </p>
+                    {detail.incident.buildDetails?.buildId ? <>
+                      <dl className="grid gap-4 sm:grid-cols-2">
+                        {[
+                          [zh ? "服务 / 应用" : "Service / application", detail.incident.buildDetails.service],
+                          [zh ? "构建编号" : "Build ID", detail.incident.buildDetails.buildId],
+                          [zh ? "镜像完整引用" : "Full image reference", detail.incident.buildDetails.image],
+                          [zh ? "目标镜像仓库" : "Target image repository", detail.incident.buildDetails.imageRepository],
+                          [zh ? "构建节点" : "Builder", detail.incident.buildDetails.buildNode],
+                          [zh ? "源码仓库" : "Source repository", detail.incident.buildDetails.repository],
+                          [zh ? "分支 / 提交" : "Ref / commit", detail.incident.buildDetails.ref],
+                          [zh ? "失败阶段" : "Failed stage", detail.incident.buildDetails.stage],
+                          [zh ? "构建开始" : "Build started", stamp(detail.incident.buildDetails.createdAt, zh)],
+                          [zh ? "失败时间" : "Failed at", stamp(detail.incident.buildDetails.failedAt, zh)],
+                          ...Object.entries(detail.incident.buildDetails.images || {}).map(([service, image]) => [`${zh ? "镜像" : "Image"} · ${service}`, image]),
+                        ].map(([label, value]) => <div key={label} className="flex flex-col gap-1">
+                          <dt className="text-muted-foreground">{label}</dt>
+                          <dd className="whitespace-pre-wrap wrap-anywhere">{value || (zh ? "未记录" : "Not recorded")}</dd>
+                        </div>)}
+                      </dl>
+                      <div className="flex flex-col gap-1">
+                        <span className="text-muted-foreground">{zh ? "失败原因" : "Failure reason"}</span>
+                        <p className="whitespace-pre-wrap wrap-anywhere">{detail.incident.buildDetails.reason || (zh ? "未记录，请查看构建日志" : "Not recorded; see build logs")}</p>
+                      </div>
+                      <Button className="self-start" variant="outline" onClick={() => navigate(`/deployments/build/${encodeURIComponent(detail.incident.buildDetails!.buildId!)}`)}>
+                        {zh ? "查看构建详情与日志" : "View build details and logs"}
+                      </Button>
+                    </> : <p className="text-muted-foreground">{zh ? "此历史告警尚无关联构建详情；仍在触发的告警将在下次评估时补充。" : "No build details are attached to this historical incident. Active failures are enriched on the next evaluation."}</p>}
+                  </div>
+                )}
                 {detail.events.length ? (
                   <Table>
                     <TableHeader>

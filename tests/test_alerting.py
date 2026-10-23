@@ -302,6 +302,69 @@ class AlertingTest(unittest.TestCase):
         self.assertEqual(snapshot['_alertQueueAge']['builder'],100)
         self.assertEqual(snapshot['nodes']['node-a'],state['nodes']['node-a'])
 
+    def test_build_details_backfill_reminder_and_recovery_keep_failure_snapshot(self):
+        from luma.control.state import save_state
+        ch = self.channel()
+        self.rule(name='构建失败',metric='build.failed',threshold=0,forSeconds=0,repeatSeconds=60,channelIds=[ch['id']])
+        run = {'id':'failed-build','projectKey':'traefik/whoami','status':'failed','createdAt':900,'updatedAt':990,
+               'buildNode':'air3','request':{'manifest':'name: native-probe\nbuild:\n  repo: verification/native\n'},
+               'events':[{'name':'Build image','status':'ok','message':'Built and pushed registry.test/probe:v1'},
+                         {'name':'Verify registry on gaojiu','status':'fail','message':'Cannot interpret system proxy settings','ts':990}]}
+        state = {'domain':'luma.test','clusterId':'test','buildRuns':{'failed-build':run}}
+        save_state(state)
+        alerting.tick(alerting.load_evaluation_state(now=1000),now=1000)
+        identifier = self.items('incidents')[0]['id']
+        # An active pre-upgrade incident has no snapshot. Enrich it without
+        # creating another incident or sending an extra firing notification.
+        with database.transaction() as conn:
+            conn.execute("UPDATE alert_incidents SET build_details='{}'")
+        alerting.tick(alerting.load_evaluation_state(now=1015),now=1015)
+        details = self.items('incidents')[0]['buildDetails']
+        self.assertEqual(details['service'],'native-probe')
+        self.assertEqual(details['image'],'registry.test/probe:v1')
+        self.assertEqual(details['imageRepository'],'verification/native')
+        self.assertEqual(details['stage'],'Verify registry on gaojiu')
+        self.assertEqual(details['failedAt'],990)
+        self.assertEqual(details['url'],'https://luma.test/dashboard/deployments/build/failed-build')
+        sent=[]
+        alerting.deliver_pending(now=1015,transport=lambda *a:sent.append(json.loads(a[3])))
+        alerting.tick(alerting.load_evaluation_state(now=1060),now=1060)
+        alerting.deliver_pending(now=1060,transport=lambda *a:sent.append(json.loads(a[3])))
+        self.assertIn('持续提醒',json.dumps(sent[-1],ensure_ascii=False))
+        self.assertIn('Cannot interpret system proxy settings',sent[-1]['fallback'])
+        self.assertIn(details['url'],json.dumps(sent[-1]['card']))
+        state['buildRuns'] = {'success':{'id':'success','projectKey':'traefik/whoami','status':'succeeded','createdAt':1070}}
+        save_state(state)
+        alerting.tick(alerting.load_evaluation_state(now=1080),now=1080)
+        incident = self.items('incidents')[0]
+        self.assertEqual(incident['id'],identifier)
+        self.assertEqual(incident['status'],'resolved')
+        self.assertEqual(incident['buildDetails'],details)
+        alerting.deliver_pending(now=1080,transport=lambda *a:sent.append(json.loads(a[3])))
+        self.assertIn('后续构建已成功',json.dumps(sent[-1],ensure_ascii=False))
+
+    def test_build_failure_snapshot_uses_durable_compose_context_and_redacts_errors(self):
+        from luma.control import build_events, server
+        from luma.control.state import save_state
+        self.rule(name='构建失败',metric='build.failed',threshold=0,forSeconds=0)
+        save_state({'domain':'luma.test','buildRuns':{'build':{'id':'build','projectKey':'example/app','status':'running','createdAt':900}}})
+        # Production progress producer preserves service/image metadata even
+        # when failure occurs more than 100 log lines after image upload.
+        server._deploy_step([], 'Build image', lambda: {'manifest':'name: worker-stack',
+            'images':{'api':'registry.test/api:v1','worker':'registry.test/worker:v2'}},
+            progress=lambda event: build_events.append_build_run_events('build',[event]))
+        build_events.append_build_run_events('build',[{'name':'Deploy','message':'progress'} for _ in range(150)])
+        build_events.append_build_run_events('build',[{'name':'Deploy worker','status':'fail',
+            'message':'https://user:private@registry.test timeout token=secret-value\n' + 'log\n'*500 + 'ERROR: worker readiness timed out'}])
+        alerting.tick(alerting.load_evaluation_state(now=1000),now=1000)
+        details = self.items('incidents')[0]['buildDetails']
+        self.assertEqual(details['service'],'worker-stack')
+        self.assertEqual(details['images']['worker'],'registry.test/worker:v2')
+        self.assertEqual(details['stage'],'Deploy worker')
+        self.assertIn('ERROR: worker readiness timed out',details['reason'])
+        self.assertNotIn('private',json.dumps(details))
+        self.assertNotIn('secret-value',json.dumps(details))
+
     def test_pagination_and_validation(self):
         self.rule(forSeconds=0)
         for now,value in [(1000,95),(1015,10),(1030,95),(1045,10)]: alerting.tick(self.state(now,value),now=now)

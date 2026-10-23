@@ -17,6 +17,7 @@ from .database import (
     transaction,
     update_entity_metadata,
 )
+from .build_alert_details import event_context
 
 
 def append_build_run_events(
@@ -46,5 +47,8 @@ def append_build_run_events(
                 run["status"] = "failed"
                 run["message"] = entry.get("message", "")
         run["updatedAt"] = now
+        context = event_context(entries)
+        if context:
+            run['buildContext'] = {**(run.get('buildContext') or {}), **context}
         append_entity_events(conn, "buildRuns", run_id, "events", entries)
         update_entity_metadata(conn, "buildRuns", run_id, run)

@@ -16,6 +16,7 @@ import urllib.error
 import urllib.request
 
 from ..errors import LumaError
+from .build_alert_details import detail_rows
 
 AUTH_URL = 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal'
 MESSAGE_URL = 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id'
@@ -160,6 +161,7 @@ def feishu_alert_card(
     value: str = '',
     threshold: str = '',
     incident_id: object = '',
+    build_details: dict | None = None,
 ) -> dict[str, object]:
     """Interactive card so firing and recovery are visually distinct in Feishu."""
     label, template = _KIND_HEADER.get(kind, ('告警通知', 'grey'))
@@ -175,6 +177,20 @@ def feishu_alert_card(
             'text': {'tag': 'lark_md', 'content': f"**{name}**\n{_plain(item, 80)}"},
         } for name, item in (('对象', target), ('级别', severity), ('当前值', value), ('阈值', threshold))]
         elements = [{'tag': 'div', 'fields': fields}]
+        if build_details:
+            elements = [{'tag': 'div', 'fields': [{
+                'is_short': True,
+                'text': {'tag': 'plain_text', 'content': f'{name}\n{_plain(item, 200)}'},
+            } for name,item in (('告警对象',target),('级别',severity),('状态',value))]}]
+            if kind == 'reminder':
+                elements.append({'tag':'div','text':{'tag':'plain_text','content':'同一告警的持续提醒；下方时间为构建失败时间，不代表刚发生了一次新失败。'}})
+            elif kind == 'resolved':
+                elements.append({'tag':'div','text':{'tag':'plain_text','content':'后续构建已成功。以下为本次告警关联的失败构建，供追溯。'}})
+            elements.extend({'tag':'div','text':{'tag':'plain_text','content':f'{name}\n{item}'}} for name,item in detail_rows(build_details))
+            if build_details.get('url'):
+                elements.append({'tag':'action','actions':[{'tag':'button','text':{'tag':'plain_text','content':'查看构建详情与日志'},'type':'primary','url':build_details['url']}]})
+            else:
+                elements.append({'tag':'div','text':{'tag':'plain_text','content':f"查看日志：luma build logs {build_details['buildId']}"}})
         subtitle_parts = [p for p in (f"集群 `{_plain(cluster, 80)}`" if cluster else '', f"事件 #{incident_id}" if incident_id not in ('', None) else '') if p]
         if subtitle_parts:
             elements.append({'tag': 'div', 'text': {'tag': 'lark_md', 'content': ' · '.join(subtitle_parts)}})

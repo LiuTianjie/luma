@@ -137,6 +137,21 @@ incident becomes firing only when its condition lasts for that duration; a
 healthy observation resolves it. One active incident is maintained per rule
 and target, with a configurable repeat interval for continued failures.
 
+Build-failure cards and incident details include available service names, build
+IDs, full image references (per service for Compose), image repositories, builder
+nodes, source repositories and refs, failed stages, failure times and error
+summaries, with an entry to the build logs. The failed stage distinguishes image
+building, uploading and deployment. Missing image references are explicitly
+marked as unrecorded; a repository alone is never presented as a complete tag.
+Long errors retain their beginning and end; full output stays in the build logs.
+
+Reminders refer to an existing failure, not a newly started build. Failure
+snapshots remain available after recovery. Following a Control upgrade, active
+failures with available build records are enriched on the next evaluation and
+subsequent notifications use the detailed format; messages already sent are
+unchanged. The Dashboard ships in the Control image, so this feature requires a
+Control/Manager upgrade without requiring Builder or other node Agent updates.
+
 Missing data is explicit: the `keep` policy preserves an existing firing state
 without treating missing samples as recovery, while `alert` treats missing data
 as a condition to evaluate. CPU rules use fresh Linux host CPU observations;

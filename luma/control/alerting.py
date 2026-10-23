@@ -16,6 +16,7 @@ from typing import Any, Callable
 from ..errors import LumaError
 from . import database
 from .alert_notifications import FeishuError, alert_outbox_text, feishu_alert_card, send_feishu, validate_credentials
+from .build_alert_details import build_details, detail_rows
 
 PRESETS = [
     dict(metric='node.offline', name='节点失联', description='Agent 心跳距今超过阈值；不是 Nomad 调度状态', threshold=120, forSeconds=60, unit='seconds'),
@@ -56,6 +57,8 @@ def _schema(conn):
     for name in ('app_id','app_secret','chat_id'):
         if name not in columns:
             conn.execute(f"ALTER TABLE alert_channels ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+    if 'build_details' not in {r[1] for r in conn.execute('PRAGMA table_info(alert_incidents)')}:
+        conn.execute("ALTER TABLE alert_incidents ADD COLUMN build_details TEXT NOT NULL DEFAULT '{}'")
 
 
 def _id(prefix):
@@ -103,7 +106,9 @@ def _channel(row):
 
 def _incident(row):
     mapping = {'rule_id':'ruleId','rule_name':'ruleName','no_data':'noData','started_at':'startedAt','fired_at':'firedAt','resolved_at':'resolvedAt','updated_at':'updatedAt','acknowledged_at':'acknowledgedAt','last_notified_at':'lastNotifiedAt'}
-    return {mapping.get(k,k): (bool(v) if k == 'no_data' else v) for k,v in dict(row).items()}
+    result = {mapping.get(k,k): (bool(v) if k == 'no_data' else v) for k,v in dict(row).items() if k != 'build_details'}
+    result['buildDetails'] = json.loads(row['build_details'])
+    return result
 
 
 def _delivery(row):
@@ -205,6 +210,11 @@ def _notify(conn,rule,incident,kind,now,cluster):
     value = '无新鲜数据' if incident['no_data'] else f"{incident['value']:g}"
     threshold = f"{rule['threshold']:g}"
     fallback = f"Luma {label} · {rule['name']}\n集群：{cluster}\n对象：{incident['target']}\n级别：{rule['severity']}\n当前值：{value}；阈值：{threshold}\n事件编号：{incident['id']}\n请在 Dashboard → 可观测 → 告警中心查看。"
+    details = json.loads(incident['build_details'])
+    if details:
+        value = '无新鲜数据' if incident['no_data'] else ('已恢复' if kind == 'resolved' else '失败')
+        fallback += '\n' + '\n'.join(f'{name}：{value}' for name,value in detail_rows(details))
+        fallback += '\n' + (details.get('url') or f"luma build logs {details['buildId']}")
     text = alert_outbox_text(
         kind=kind,
         fallback=fallback,
@@ -217,6 +227,7 @@ def _notify(conn,rule,incident,kind,now,cluster):
             value=value,
             threshold=threshold,
             incident_id=incident['id'],
+            build_details=details,
         ),
     )
     for channel in channels:
@@ -227,6 +238,37 @@ def _notify(conn,rule,incident,kind,now,cluster):
             conn.execute('UPDATE alert_outbox SET next_attempt_at=? WHERE id=?',(silence,delivery))
     conn.execute('UPDATE alert_incidents SET last_notified_at=? WHERE id=?',(now,incident['id']))
     return True
+
+
+def _latest_builds(state):
+    latest = {}
+    for identifier,item in (state.get('buildRuns') or {}).items():
+        if not isinstance(item,dict): continue
+        request = item.get('request') if isinstance(item.get('request'),dict) else {}
+        target = str(item.get('applicationRef') or item.get('slug') or request.get('name') or request.get('application') or item.get('projectKey') or item.get('app') or item.get('name') or item.get('service') or item.get('id') or '')
+        order = (_num(item.get('createdAt')) or 0, str(identifier))
+        if target and (target not in latest or order > latest[target][0]):
+            latest[target] = (order,{**item,'id':item.get('id') or identifier})
+    return {target:item for target,(_,item) in latest.items()}
+
+
+def _capture_build_details(conn, row, run, domain):
+    previous = json.loads(row['build_details'])
+    # Timestamps have second precision; final failure metadata can arrive in
+    # the same second as the first failing progress event.
+    revision = hashlib.sha256(json.dumps([run.get(k) for k in ('updatedAt','completedAt','message','buildContext')],sort_keys=True).encode()).hexdigest()
+    if previous.get('buildId') == run['id'] and previous.get('sourceRevision') == revision:
+        return
+    events = run.get('events')
+    if not isinstance(events,list):
+        # Read a bounded tail only when the failing build changes, not all logs
+        # on every evaluation. The snapshot survives history retention.
+        events = [json.loads(r[0]) for r in conn.execute("SELECT payload FROM control_events WHERE kind='buildRuns' AND entity_id=? AND stream='events' ORDER BY position DESC LIMIT 100",(run['id'],))][::-1]
+    details = build_details(run, events[-100:], domain)
+    if previous.get('buildId') == run['id']:
+        details = {**previous, **details}
+    details['sourceRevision'] = revision
+    conn.execute('UPDATE alert_incidents SET build_details=? WHERE id=?',(json.dumps(details,ensure_ascii=False),row['id']))
 
 
 def _observations(state,metric,now):
@@ -253,14 +295,7 @@ def _observations(state,metric,now):
             valid = [t for t in times if t and t<=now]
             result[kind] = now-min(valid) if valid else (None if times else 0)
     elif metric == 'build.failed':
-        latest = {}
-        for item in (state.get('buildRuns') or {}).values():
-            if not isinstance(item,dict): continue
-            request = item.get('request') if isinstance(item.get('request'),dict) else {}
-            target = str(item.get('applicationRef') or item.get('slug') or request.get('name') or request.get('application') or item.get('projectKey') or item.get('app') or item.get('name') or item.get('service') or item.get('id') or '')
-            when = _num(item.get('createdAt')) or 0
-            if target and (target not in latest or when > latest[target][0]): latest[target] = (when,item)
-        for target,(_,item) in latest.items():
+        for target,item in _latest_builds(state).items():
             result[target] = 1 if item.get('status') in ('failed','error') else (0 if item.get('status') in ('succeeded','success','completed') else None)
     elif metric in OBSERVE_ALERTS:
         return dict((state.get('_observeAlerts') or {}).get(metric) or {})
@@ -275,6 +310,7 @@ def tick(state: dict[str,Any], *, now=None, services=None):
         previous = float(_setting(conn,'last_evaluated_at'))
         rules = conn.execute('SELECT * FROM alert_rules WHERE enabled=1').fetchall()
         for rule in rules:
+            builds = _latest_builds(state) if rule['metric']=='build.failed' else {}
             observations = _observations(state,rule['metric'],now)
             if rule['target'] != '*': observations = {rule['target']:observations.get(rule['target'])}
             active = {r['target']:r for r in conn.execute("SELECT * FROM alert_incidents WHERE rule_id=? AND status IN ('pending','firing')",(rule['id'],))}
@@ -300,6 +336,9 @@ def tick(state: dict[str,Any], *, now=None, services=None):
                         start = now if row['status']=='pending' and restart else row['started_at']
                         conn.execute('UPDATE alert_incidents SET value=?,no_data=?,updated_at=?,started_at=? WHERE id=?',(value,int(no_data),now,start,identifier))
                     current = conn.execute('SELECT * FROM alert_incidents WHERE id=?',(identifier,)).fetchone()
+                    if target in builds and builds[target].get('status') in ('failed','error'):
+                        _capture_build_details(conn,current,builds[target],state.get('domain',''))
+                        current = conn.execute('SELECT * FROM alert_incidents WHERE id=?',(identifier,)).fetchone()
                     if current['status']=='pending' and now-current['started_at']>=rule['for_seconds']:
                         conn.execute("UPDATE alert_incidents SET status='firing',fired_at=? WHERE id=?",(now,identifier))
                         _event(conn,identifier,'firing',now)
@@ -393,6 +432,8 @@ def load_evaluation_state(*, now=None):
         database.ensure_initialized(conn)
         row = conn.execute("SELECT payload FROM control_config WHERE key='clusterId'").fetchone()
         result = {'clusterId':json.loads(row[0]) if row else '', 'nodes':{}, 'buildRuns':{}, '_alertQueueAge':{}}
+        row = conn.execute("SELECT payload FROM control_config WHERE key='domain'").fetchone()
+        result['domain'] = json.loads(row[0]) if row else ''
         for row in conn.execute("SELECT id,payload FROM control_entities WHERE kind='nodes'"):
             result['nodes'][row['id']] = json.loads(row['payload'])
         for collection,kind in [('agentTasks','agent'),('builderTasks','builder'),('buildRuns','build')]:
