@@ -43,7 +43,8 @@ jobs:
   runtime-python39:
     # Home nodes may self-update with macOS's system Python 3.9. The test suite
     # needs 3.10+, so this job checks that the package installs and runs on 3.9.
-    runs-on: ubuntu-latest
+    # Python 3.9 builds are unavailable on the newer ubuntu-latest images.
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4

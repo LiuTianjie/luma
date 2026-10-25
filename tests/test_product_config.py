@@ -192,6 +192,7 @@ class ProductConfigTests(unittest.TestCase):
                 "luma.agent._ContainerStatsSampler", return_value=stats_sampler
             ), patch("luma.agent._TerminalSupervisorProcess", return_value=terminal_supervisor), patch(
                 "luma.agent.node_agent_metrics", return_value={}
+            ), patch("luma.agent._agent_node_diagnostics", return_value={}
             ), patch("luma.agent.time.sleep", side_effect=[None, KeyboardInterrupt]), patch("sys.stderr"):
                 with self.assertRaises(KeyboardInterrupt):
                     run_node_agent(config, poll_interval=1)
