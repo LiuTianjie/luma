@@ -142,6 +142,8 @@ Reusing the same deployment name updates its existing job and storage owner. Cha
 
 Application settings remain in the standard Compose file. The sidecar carries region, exposure, routing and storage. See [deployment-yaml.md](deployment-yaml.md) for routing fields.
 
+Mount differences between generated jobs, including added or removed services, produce a `Runtime storage mounts` warning without blocking deployment. Check that surviving services still use the intended data; the warning does not migrate data. Changes to a volume's configured backend, node or path remain guarded and require migration acknowledgement with `adopted: true`, or `initialize: empty` for a fresh empty volume. Existing local storage ownership constraints still apply.
+
 ## Migrate Existing NFS Data
 
 Backend changes do not copy data automatically. First inspect the actual running mount: old configuration may differ from what an earlier renderer mounted. Record the application node, source directory or Docker volume, numeric ownership, permissions, data size and current job/configuration.

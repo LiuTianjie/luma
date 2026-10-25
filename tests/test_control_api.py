@@ -5706,8 +5706,8 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_compose_storage_guard_uses_previous_runtime_mount_when_record_drifted(self):
-        from luma.control.server import _guard_compose_storage_switch
+    def test_compose_storage_guard_warns_when_runtime_mount_drifted(self):
+        from luma.control.server import _emit_compose_storage_mount_warnings, _guard_compose_storage_switch
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -5783,16 +5783,20 @@ class ControlApiTests(unittest.TestCase):
                 }
             }
 
-            with self.assertRaisesRegex(LumaError, "runtime storage mount changed"):
-                _guard_compose_storage_switch(
-                    target,
-                    job("bind", "/opt/luma/state/app-stack/postgres"),
-                    deployment,
-                    previous_record=previous_record,
-                )
+            steps = []
+            progress = Mock()
+            _emit_compose_storage_mount_warnings(
+                steps, progress, target,
+                job("bind", "/opt/luma/state/app-stack/postgres"), deployment,
+            )
+            result = _guard_compose_storage_switch(target, deployment, previous_record=previous_record)
+            self.assertIn("unchanged", result)
+            self.assertEqual(steps[0]["status"], "warning")
+            self.assertIn("postgres:/var/lib/postgresql/data", steps[0]["message"])
+            progress.assert_called_once_with(steps[0])
 
     def test_compose_storage_guard_allows_verified_runtime_mount_adoption(self):
-        from luma.control.server import _guard_compose_storage_switch
+        from luma.control.server import _emit_compose_storage_mount_warnings, _guard_compose_storage_switch
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -5860,8 +5864,63 @@ class ControlApiTests(unittest.TestCase):
                 }
             )
 
-            result = _guard_compose_storage_switch(target, current, deployment)
+            steps = []
+            _emit_compose_storage_mount_warnings(steps, None, target, current, deployment)
+            result = _guard_compose_storage_switch(target, deployment)
             self.assertIn("unchanged", result)
+            self.assertEqual(steps, [])
+
+    def test_compose_deployment_continues_after_runtime_mount_and_worker_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.dict(os.environ, {
+                "LUMA_CONTROL_STATE_DIR": str(root / "state"),
+                "LUMA_CONTROL_CONFIG": str(root / "luma.yaml"),
+            }):
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["storageClasses"] = {
+                    "nfs": {"provider": "nfs", "mode": "external", "endpoint": "nas:/srv/luma", "regions": ["cn"]},
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8",
+                )
+                sidecar = yaml.safe_dump({
+                    "name": "workers", "compose": "docker-compose.yml", "region": "cn",
+                    "volumes": {
+                        name: {"storageClass": "nfs", "path": name}
+                        for name in ("sessions", "next-sessions")
+                    },
+                })
+
+                def deploy(services, progress=None):
+                    return handle_compose_deployment(state["deployToken"], {
+                        "manifest": sidecar,
+                        "composeContent": yaml.safe_dump({
+                            "services": services, "volumes": {"sessions": {}, "next-sessions": {}},
+                        }),
+                        "sourceName": "luma.compose.yml", "skipDns": True, "skipOrchestrator": True,
+                    }, progress=progress)
+
+                deploy({
+                    "background": {"image": "nginx:alpine", "volumes": ["sessions:/mnt/pi-sessions"]},
+                    "removed": {"image": "nginx:alpine", "volumes": ["sessions:/mnt/pi-sessions"]},
+                })
+                events = []
+                result = deploy({
+                    "background": {"image": "nginx:alpine", "volumes": ["next-sessions:/mnt/pi-sessions"]},
+                    "added": {"image": "nginx:alpine", "volumes": ["sessions:/mnt/pi-sessions"]},
+                }, progress=lambda step: events.append(dict(step)))
+
+                self.assertEqual(result["deployment"], "workers")
+                warning = next(step for step in events if step["name"] == "Runtime storage mounts")
+                self.assertEqual(warning["status"], "warning")
+                for service in ("background", "removed", "added"):
+                    self.assertIn(f"{service}:/mnt/pi-sessions", warning["message"])
+                self.assertTrue(any(step["name"] == "Deploy compose Nomad job" and step["status"] == "ok" for step in events))
+                job = json.loads((root / "stacks/compose/workers/workers.nomad.json").read_text(encoding="utf-8"))
+                tasks = [task for group in job["Job"]["TaskGroups"] for task in group["Tasks"]]
+                self.assertEqual({task["Name"] for task in tasks}, {"background", "added"})
 
     def test_compose_deployment_allows_storage_backend_switch_after_adoption(self):
         with tempfile.TemporaryDirectory() as tmp:

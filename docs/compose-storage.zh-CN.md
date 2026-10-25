@@ -127,6 +127,8 @@ luma compose deploy luma.compose.yml --format ndjson
 
 应用设置保留在标准 Compose 文件中。旁车清单承载区域、暴露方式、路由及存储配置。路由字段参见[部署 YAML](deployment-yaml.md)。
 
+新旧生成任务中的挂载差异（包括增删服务）只产生 `Runtime storage mounts` 警告，不再阻止部署。请检查存续服务是否仍使用预期数据；警告不会自动迁移数据。卷配置中的存储后端、节点或路径变更仍受检查约束，需要按迁移流程确认 `adopted: true`，或为新空卷设置 `initialize: empty`；已有本地存储归属约束仍然有效。
+
 ## 迁移现有 NFS 数据 {#migrate-existing-nfs-data}
 
 更换后端不会自动复制数据。先检查实际运行的挂载：旧配置可能与早期渲染器实际挂载的内容不同。记录应用节点、源目录或 Docker 卷、数字用户与组归属、权限、数据大小及当前任务和配置。

@@ -9042,10 +9042,11 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                 lambda: _ensure_job_managed_registry_access(config, state, stack_text, progress=progress),
                 progress=progress,
             )
+        _emit_compose_storage_mount_warnings(steps, progress, target, stack_text, deployment)
         _deploy_step(
             steps,
             "Check storage backend",
-            lambda: _guard_compose_storage_switch(target, stack_text, deployment, previous_record=previous_record),
+            lambda: _guard_compose_storage_switch(target, deployment, previous_record=previous_record),
             progress=progress,
         )
         storage_preparation = _deploy_step(
@@ -10243,18 +10244,16 @@ def _storage_stack_service_spec(stack_name: str) -> ServiceSpec:
     return ServiceSpec(source=Path("storage"), name=stack_name, image="storage", region="cn")
 
 
-def _guard_compose_storage_switch(
+def _emit_compose_storage_mount_warnings(
+    steps: list[dict[str, str]],
+    progress: Callable[[dict[str, str]], None] | None,
     target: Path,
     stack_text: str,
     deployment: ComposeDeploymentSpec,
-    *,
-    previous_record: Dict[str, Any] | None = None,
-) -> str:
-    # The generated Nomad job is the runtime source of truth.  Deployment
-    # records describe the manifest intent, but an older renderer may have
-    # produced a different mount (for example a Docker named volume instead of
-    # the bind mount declared by the sidecar).  Compare the previous and next
-    # job artifacts first so a Luma upgrade cannot silently orphan live data.
+) -> None:
+    # Generated job differences can also reflect service additions/removals or
+    # renderer changes. Surface them for review without blocking deployment;
+    # explicit volume backend changes are checked separately below.
     if target.exists():
         previous_mounts = _compose_nomad_mount_signatures(target.read_text(encoding="utf-8"))
         current_mounts = _compose_nomad_mount_signatures(stack_text)
@@ -10266,12 +10265,25 @@ def _guard_compose_storage_switch(
                 if previous_mounts.get(key) != current_mounts.get(key) and key not in exemptions
             ]
             if changed_mounts:
-                raise LumaError(
-                    "storage backend changed: runtime storage mount changed for "
-                    + ", ".join(changed_mounts)
-                    + "; preserve the existing mount, or run luma storage migrate and set adopted: true after verification"
-                )
+                step = {
+                    "name": "Runtime storage mounts",
+                    "status": "warning",
+                    "message": (
+                        "runtime storage mount changed for "
+                        + ", ".join(changed_mounts)
+                        + "; deployment will continue; verify that surviving services still use the intended data"
+                    ),
+                }
+                steps.append(step)
+                _emit_progress(progress, step)
 
+
+def _guard_compose_storage_switch(
+    target: Path,
+    deployment: ComposeDeploymentSpec,
+    *,
+    previous_record: Dict[str, Any] | None = None,
+) -> str:
     previous_volumes = _compose_storage_backend_signatures_from_record(previous_record)
     source = "deployment record"
     if previous_volumes is None:

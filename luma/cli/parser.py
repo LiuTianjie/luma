@@ -451,7 +451,7 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
             "Update the local CLI. On a manager this also refreshes Luma Control, and on a joined "
             "node it refreshes the node agent."
         ),
-        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.15\n  luma update fleet",
+        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.16\n  luma update fleet",
     )
     _add_update_arguments(update)
     _add_control_arguments(update)
