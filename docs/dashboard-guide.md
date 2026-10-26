@@ -1,13 +1,40 @@
 # Luma console guide
 
-The console is available at `https://<control-domain>/dashboard/`. Sign in with a management token on a trusted device. It shares the same Control API as the CLI.
+The console is available at `https://<control-domain>/dashboard/`. Sign in with a passkey, or with the management token on a trusted device. It shares the same Control API as the CLI. See [Sign-in and passkeys](#sign-in-and-passkeys).
 
 ## First hour after bootstrap
 
-1. Open `/dashboard/` and paste the management token from bootstrap.
+1. Open `/dashboard/` and paste the management token from bootstrap. Then add a passkey in **Settings → Sign-in** so later sign-ins do not need the token.
 2. Create **hello-world first install** (Applications → Create application). It is internal (`exposure: none`) and does not need extra DNS, Tailscale or registry.
 3. Use **First install** only for remaining cluster extras: Cloudflare zone details, Tailscale, egress, or a builder registry. A skipped optional check is not a failed install.
 4. After hello-world is healthy, create a public service with `cn-edge` / `external-edge`.
+
+## Sign-in and passkeys
+
+The browser never stores the management token. Signing in, with a passkey or by pasting the token once, makes Control set a session cookie (`HttpOnly`, `Secure`, `SameSite=Strict`) for the Control domain; Control keeps only a hash of it. A session ends when you sign out, after 2 hours without activity, or 24 hours after sign-in, whichever comes first. The CLI and CI keep using the management token unchanged.
+
+Add the first passkey in **Settings → Sign-in** after signing in with the token, or from a browser that is not signed in, through a one-time link:
+
+```bash
+luma passkey enroll --name "MacBook Touch ID"
+```
+
+The link opens `/dashboard/enroll`, works once and expires after 15 minutes. Finishing it signs that browser in, so treat the link like a password. A passkey is bound to the Control domain (the WebAuthn RP ID): open the console at `https://<control-domain>/dashboard/`, not through an IP address or another host name. Signed-in requests that change state must come from that origin; Control rejects them otherwise.
+
+**Settings → Sign-in** lists passkeys and browser sessions. Removing a passkey ends the sessions it opened. **Require a passkey** stops browsers from signing in with the management token and ends existing token sessions. It needs at least one passkey and turns off when the last passkey is removed.
+
+Recovery never depends on a browser:
+
+```bash
+luma passkey require off
+luma passkey list
+luma passkey remove <id>
+luma passkey sign-out
+```
+
+`luma passkey sign-out` ends every browser session, or one with `--session <id>`. The management token stays the root credential: whoever holds it can run these commands, so a leaked token still means rotating it.
+
+Passkey verification runs in the Control image, which installs the `control` extra (the pinned `webauthn` package, Python 3.10+). A Control without it still offers token sign-in and reports passkeys as unavailable. The embedded Grafana at `/grafana` sits behind the same sign-in: Traefik asks Control (`/v1/auth/forward`) on every request and lets it through only with a valid console session or the management token, otherwise it answers 401. Inside Grafana the access is still anonymous Viewer, so the console needs no second login. Because Control makes the decision, `/grafana` is unavailable while Control is down; on the manager, Grafana stays reachable at `127.0.0.1:3100` for debugging.
 
 ## Choose a workspace
 
@@ -18,7 +45,7 @@ The console is available at `https://<control-domain>/dashboard/`. Sign in with 
 | Deployments | Follow builds and deployment results. |
 | Observability | Review alert incidents, application monitoring (requests, logs and traces), resource metrics, alert rules and notification channels. |
 | Infrastructure | Manage nodes (including joining new ones), regions, network routes, storage and registry images. |
-| Settings | Manage secrets, registry credentials, Git credentials and system maintenance (Control and agent upgrades). |
+| Settings | Manage secrets, registry credentials, Git credentials, sign-in (passkeys and browser sessions) and system maintenance (Control and agent upgrades). |
 | First install | Configure cluster dependencies and verify them. |
 
 Settings and First install sit in the sidebar's Platform group. Creating an application and building from Git belong to Applications. The top bar shows your current location. Appearance, language and sign-out controls live in the sidebar. When the desktop sidebar is collapsed to icons, workspaces with secondary pages open a flyout menu. Choosing an appearance or language closes the preference menu. On desktop, the sidebar header contains the collapse control; narrow screens use the top-bar navigation opener.

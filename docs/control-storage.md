@@ -229,6 +229,10 @@ must remain private, and should be encrypted when transferred or stored off the
 Manager. Commands should report paths, counts and integrity results; there is
 no need to print token or key contents for verification.
 
+Dashboard passkeys (public keys only) and browser sessions (hashes only) are
+SQLite tables, so a restore brings back the sessions the snapshot held. If a
+backup may have been exposed, run `luma passkey sign-out` after restoring.
+
 The Control archive includes a consistent database snapshot and supported
 files inside the Control state directory, including private token files and
 fleet/prepare/Registry recovery artifacts. It excludes live WAL/SHM, lock and

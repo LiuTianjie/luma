@@ -255,6 +255,6 @@ PATH="$PWD/.venv/bin:$PATH" bash scripts/check-luma.sh
 
 ## 安全与许可证
 
-管理令牌拥有广泛的集群操作权限。控制台会将令牌存储在浏览器 Local Storage 中，请仅在可信设备上使用。Cloudflare 凭据、镜像仓库凭据、加入令牌和节点 Agent 凭据都不应进入仓库或 Issue。
+管理令牌拥有广泛的集群操作权限。控制台不保存令牌：它用 Passkey 或令牌登录，之后由 HttpOnly 会话 Cookie 维持登录（见[登录与 Passkey](docs/dashboard-guide.zh-CN.md#sign-in-and-passkeys)）。Cloudflare 凭据、镜像仓库凭据、加入令牌和节点 Agent 凭据都不应进入仓库或 Issue。
 
 Luma 使用 [MIT License](LICENSE) 发布。捆绑组件与外部依赖仍遵循各自的许可证。

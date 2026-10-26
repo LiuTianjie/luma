@@ -459,3 +459,16 @@ class GrafanaRouteTests(unittest.TestCase):
         self.assertIn("url: http://127.0.0.1:3100", text)
         self.assertNotIn("100.106.154.3:3000", text)
         self.assertNotIn(":3000", text.split("url:")[-1])
+
+    def test_grafana_route_requires_control_forward_auth(self):
+        import yaml
+        from luma.observe_grafana import grafana_route_yaml
+        http = yaml.safe_load(grafana_route_yaml("luma.example.net"))["http"]
+        router = http["routers"]["luma-observe-grafana"]
+        # Auth runs first; the token is dropped before Grafana sees the request.
+        self.assertEqual(router["middlewares"], ["luma-observe-grafana-auth", "luma-observe-grafana-strip-auth"])
+        auth = http["middlewares"]["luma-observe-grafana-auth"]["forwardAuth"]
+        self.assertEqual(auth, {"address": "http://127.0.0.1:8080/v1/auth/forward", "trustForwardHeader": False})
+        strip = http["middlewares"]["luma-observe-grafana-strip-auth"]["headers"]["customRequestHeaders"]
+        self.assertEqual(strip, {"Authorization": ""})
+        self.assertEqual(http["services"]["luma-observe-grafana"]["loadBalancer"]["servers"], [{"url": "http://127.0.0.1:3100"}])

@@ -1,13 +1,40 @@
 # Luma 控制台指南 {#luma-console-guide}
 
-控制台地址为 `https://<control-domain>/dashboard/`。请在可信设备上使用管理令牌登录。控制台与 CLI 使用同一个 Control API。
+控制台地址为 `https://<control-domain>/dashboard/`。可以用 Passkey 登录，也可以在可信设备上用管理令牌登录。控制台与 CLI 使用同一个 Control API。见[登录与 Passkey](#sign-in-and-passkeys)。
 
 ## 首次安装后的第一小时 {#first-hour-after-bootstrap}
 
-1. 打开 `/dashboard/`，粘贴 bootstrap 给出的管理 Token。
+1. 打开 `/dashboard/`，粘贴 bootstrap 给出的管理 Token。随后在 **设置 → 登录与 Passkey** 添加一个 Passkey，之后登录就不再需要 Token。
 2. 在 **应用 → 创建应用** 选择 **hello-world 首装验证**。它是内部服务（`exposure: none`），不需要额外 DNS、Tailscale 或 Registry。
 3. **首次安装** 页只补集群可选项：Cloudflare zone、Tailscale、egress、内部 Registry。跳过可选项不等于安装失败。
 4. hello-world 健康后再创建 `cn-edge` / `external-edge` 的公开服务。
+
+## 登录与 Passkey {#sign-in-and-passkeys}
+
+浏览器从不保存管理令牌。无论用 Passkey 登录，还是一次性粘贴令牌，Control 都会为 Control 域名设置会话 Cookie（`HttpOnly`、`Secure`、`SameSite=Strict`），服务端只保存它的哈希。退出登录、连续 2 小时无活动或登录满 24 小时（以先到者为准）时会话结束。CLI 和 CI 继续使用管理令牌，不受影响。
+
+用令牌登录后，可在 **设置 → 登录与 Passkey** 添加第一个 Passkey；也可以给尚未登录的浏览器生成一次性链接：
+
+```bash
+luma passkey enroll --name "MacBook Touch ID"
+```
+
+链接会打开 `/dashboard/enroll`，只能使用一次，15 分钟后失效。完成后该浏览器直接登录，因此要像对待密码一样对待这个链接。Passkey 绑定 Control 域名（WebAuthn RP ID）：请通过 `https://<control-domain>/dashboard/` 打开控制台，不要用 IP 地址或其他主机名。已登录浏览器发出的写操作必须来自这个 Origin，否则 Control 会拒绝。
+
+**设置 → 登录与 Passkey** 列出 Passkey 和浏览器会话。删除 Passkey 会结束用它登录的会话。**要求 Passkey 登录**开启后，浏览器不能再用管理令牌登录，已有的令牌会话会立即结束。开启前至少需要一个 Passkey；删除最后一个 Passkey 时该设置会自动关闭。
+
+恢复操作不依赖浏览器：
+
+```bash
+luma passkey require off
+luma passkey list
+luma passkey remove <id>
+luma passkey sign-out
+```
+
+`luma passkey sign-out` 结束所有浏览器会话，或用 `--session <id>` 只结束一个。管理令牌仍是最高权限凭据：持有它的人都能执行这些命令，所以令牌泄露时仍需轮换令牌。
+
+Passkey 校验在 Control 镜像中运行，镜像安装了 `control` 依赖组（固定版本的 `webauthn` 包，需要 Python 3.10+）。缺少该依赖的 Control 仍提供令牌登录，并显示 Passkey 不可用。嵌入的 Grafana（`/grafana`）受同一套登录保护：Traefik 对每个请求询问 Control（`/v1/auth/forward`），只有带有效控制台会话或管理令牌的请求才会放行，否则返回 401。Grafana 内部仍是匿名 Viewer，控制台无需再次登录。由于放行由 Control 决定，Control 不可用时 `/grafana` 也无法访问；在 Manager 上仍可通过 `127.0.0.1:3100` 调试 Grafana。
 
 ## 选择工作空间 {#choose-a-workspace}
 
@@ -18,7 +45,7 @@
 | 部署记录 | 跟踪构建和部署结果。 |
 | 可观测 | 查看告警事件、应用监控（请求、日志与链路）、资源指标、告警规则和通知渠道。 |
 | 基础设施 | 管理节点（含加入新节点）、区域、网络路由、存储和镜像。 |
-| 设置 | 管理密钥、镜像仓库凭据、Git 凭据和系统维护（Control 与 agent 升级）。 |
+| 设置 | 管理密钥、镜像仓库凭据、Git 凭据、登录（Passkey 与浏览器会话）和系统维护（Control 与 agent 升级）。 |
 | 首次安装 | 配置并验证集群依赖。 |
 
 设置和首次安装位于侧边栏的“平台管理”分组。创建应用和从 Git 构建归属于“应用”。顶部栏显示当前位置。外观、语言和退出操作位于侧边栏。桌面端侧边栏收起为图标时，带二级页面的工作空间会弹出菜单。选择外观或语言后，偏好菜单会关闭。桌面端的折叠按钮位于侧边栏头部；窄屏通过顶部栏打开导航。

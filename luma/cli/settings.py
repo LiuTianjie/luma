@@ -1,10 +1,11 @@
-"""Luma CLI: secret, registry and git-provider commands."""
+"""Luma CLI: secret, registry, git-provider and passkey commands."""
 from __future__ import annotations
 
 import argparse
 import getpass
 import json
 import sys
+import time
 from typing import Any, Dict
 from ..envfile import parse_env_file
 from ..errors import LumaError
@@ -318,3 +319,77 @@ def cmd_git_provider(args: argparse.Namespace) -> int:
                 print(f"{item.get('name')}\t{item.get('type')}")
         return 0
     raise LumaError(f"unknown git-provider command: {args.git_provider_command}")
+
+
+def _local_time(value: Any) -> str:
+    if not value:
+        return "-"
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(int(value)))
+
+
+def cmd_passkey(args: argparse.Namespace) -> int:
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    client = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    output_format = _output_format(args)
+    if args.passkey_command == "enroll":
+        result = client.create_passkey_enrollment(name=str(args.name or ""))
+        if output_format != "text":
+            _print_success(args, result)
+            return 0
+        print("Open this link in the browser that should hold the passkey:")
+        print(f"  {result.get('url')}")
+        print(f"The link works once and expires at {_local_time(result.get('expiresAt'))}. Treat it like a password.")
+        return 0
+    if args.passkey_command == "list":
+        result = client.list_passkeys()
+        items = [item for item in result.get("passkeys") or [] if isinstance(item, dict)]
+        if output_format != "text":
+            _print_success(args, {"passkeys": items})
+            return 0
+        if not items:
+            print("No passkeys registered. Add one with: luma passkey enroll")
+            return 0
+        rows = [
+            [str(item.get("id") or ""), str(item.get("name") or ""), _local_time(item.get("createdAt")), _local_time(item.get("lastUsedAt"))]
+            for item in items
+        ]
+        _print_table(["id", "name", "created", "last used"], rows)
+        return 0
+    if args.passkey_command == "remove":
+        result = client.remove_passkey(args.id)
+        print(f"Passkey removed: {result.get('removed', args.id)} (ended {result.get('signedOutSessions', 0)} browser sessions)")
+        return 0
+    if args.passkey_command == "require":
+        result = client.set_require_passkey(args.mode == "on")
+        if result.get("requirePasskey"):
+            print(f"Dashboard sign-in now requires a passkey; ended {result.get('signedOutSessions', 0)} token sessions.")
+            print("The management token still works for the CLI and CI. Undo with: luma passkey require off")
+        else:
+            print("Dashboard sign-in accepts a passkey or the management token.")
+        return 0
+    if args.passkey_command == "sessions":
+        result = client.list_browser_sessions()
+        items = [item for item in result.get("sessions") or [] if isinstance(item, dict)]
+        if output_format != "text":
+            _print_success(args, {"sessions": items})
+            return 0
+        if not items:
+            print("No active browser sessions")
+            return 0
+        rows = [
+            [
+                str(item.get("id") or ""),
+                str(item.get("passkeyName") or item.get("method") or ""),
+                _local_time(item.get("createdAt")),
+                _local_time(item.get("lastSeenAt")),
+                _local_time(item.get("expiresAt")),
+            ]
+            for item in items
+        ]
+        _print_table(["id", "signed in with", "created", "last seen", "expires"], rows)
+        return 0
+    if args.passkey_command == "sign-out":
+        result = client.revoke_browser_sessions(session_id=str(args.session or ""))
+        print(f"Ended {result.get('revoked', 0)} browser sessions")
+        return 0
+    raise LumaError(f"unknown passkey command: {args.passkey_command}")

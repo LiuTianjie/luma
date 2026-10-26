@@ -1,12 +1,26 @@
 // Shared HTTP helpers for the Control /v1 API.
 //
-// Every dashboard API call authenticates with the management token as a Bearer
-// header, parses JSON with the same error contract, and long-running actions
-// stream NDJSON. This module centralizes those three concerns so the per-resource
-// API files (lifecycleApi, controlResourcesApi, deployApi, logsApi, ...) stay thin.
+// Dashboard API calls authenticate with the browser's HttpOnly session cookie
+// (signed in with a passkey or the management token), parse JSON with the same
+// error contract, and long-running actions stream NDJSON. This module centralizes
+// those three concerns so the per-resource API files stay thin.
+
+// Pages receive a credential string. A signed-in browser holds a session marker,
+// never the management token: the cookie travels with same-origin requests and
+// no Authorization header is sent. Each sign-in gets a fresh marker so cached
+// snapshots never cross sessions.
+const SESSION_PREFIX = "session:";
+
+export function sessionCredential(): string {
+  return `${SESSION_PREFIX}${Date.now().toString(36)}`;
+}
+
+export function isSessionCredential(token: string): boolean {
+  return token.startsWith(SESSION_PREFIX);
+}
 
 export function authHeaders(token: string, json = false): Record<string, string> {
-  const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+  const headers: Record<string, string> = isSessionCredential(token) ? {} : { Authorization: `Bearer ${token}` };
   if (json) headers["Content-Type"] = "application/json";
   return headers;
 }

@@ -24,6 +24,7 @@ const WORKSPACE_BY_PAGE: Partial<Record<NavPage, NavPage>> = {
   storage: "nodes",
   registry: "nodes",
   maintenance: "credentials",
+  security: "credentials",
 };
 
 export function navWorkspace(page: NavPage): NavPage {
@@ -78,6 +79,7 @@ export function buildNavGroups(lang: Lang, vm: DashboardViewModel): NavGroup[] {
         { href: "/settings/secrets", label: zh ? "密钥" : "Secrets", detail: zh ? "管理控制面密钥" : "Manage control-plane secrets" },
         { href: "/settings/registries", label: zh ? "镜像仓库凭据" : "Registry credentials", detail: zh ? "私有镜像拉取凭据" : "Private image pull credentials" },
         { href: "/settings/git", label: zh ? "Git 凭据" : "Git credentials", detail: zh ? "代码仓库访问凭据" : "Source control credentials" },
+        { href: "/settings/security", label: zh ? "登录与 Passkey" : "Sign-in", detail: zh ? "Passkey、浏览器会话与登录策略" : "Passkeys, browser sessions and sign-in policy" },
         { href: "/settings/maintenance", label: zh ? "系统维护" : "Maintenance", detail: zh ? "升级控制面与节点、检查路由" : "Upgrades and route checks" },
       ] },
       { id: "setup", icon: WandSparkles, label: zh ? "首次安装" : "First install", detail: zh ? "配置依赖并验证集群" : "Configure dependencies and verify the cluster" },

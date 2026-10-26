@@ -592,6 +592,32 @@ class CliTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
 
+    def test_passkey_cli_enrolls_requires_and_signs_out_with_the_management_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))
+            try:
+                save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
+                client = Mock()
+                client.create_passkey_enrollment.return_value = {
+                    "url": "https://luma.example.com/dashboard/enroll#code=abc", "expiresAt": 1800000900,
+                }
+                client.set_require_passkey.return_value = {"requirePasskey": False, "passkeyCount": 1}
+                client.revoke_browser_sessions.return_value = {"revoked": 3}
+                with patch("luma.cli.common.ControlClient", return_value=client) as factory, patch("builtins.print") as printed:
+                    self.assertEqual(main(["passkey", "enroll", "--name", "YubiKey"]), 0)
+                    self.assertEqual(main(["passkey", "require", "off"]), 0)
+                    self.assertEqual(main(["passkey", "sign-out"]), 0)
+
+                self.assertEqual(factory.call_args.args[:2], ("https://luma.example.com", "deploy-token"))
+                client.create_passkey_enrollment.assert_called_once_with(name="YubiKey")
+                client.set_require_passkey.assert_called_once_with(False)
+                client.revoke_browser_sessions.assert_called_once_with(session_id="")
+                printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+                self.assertIn("https://luma.example.com/dashboard/enroll#code=abc", printed_text)
+                self.assertIn("Ended 3 browser sessions", printed_text)
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+
     def test_deploy_dry_run_json_does_not_create_control_client(self):
         with tempfile.TemporaryDirectory() as tmp:
             service_path = Path(tmp) / "service.yaml"

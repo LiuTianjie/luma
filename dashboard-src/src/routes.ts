@@ -15,6 +15,7 @@ export const ROUTE_BY_PAGE: Record<NavPage, string> = {
   registry: "/registry",
   credentials: "/settings/secrets",
   maintenance: "/settings/maintenance",
+  security: "/settings/security",
 };
 
 // Destinations that moved when the navigation was regrouped. Bookmarks and links in
@@ -49,6 +50,7 @@ export function pageForPath(path: string): ResolvedPage {
   if (path === "/storage" || path.startsWith("/storage/")) return "storage";
   if (path === "/registry" || path.startsWith("/registry/")) return "registry";
   if (path === "/settings/maintenance" || path.startsWith("/settings/maintenance/")) return "maintenance";
+  if (path === "/settings/security" || path.startsWith("/settings/security/")) return "security";
   if (path === "/settings" || path.startsWith("/settings/")) return "credentials";
   return "notfound";
 }
