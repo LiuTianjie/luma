@@ -125,6 +125,7 @@ from .metrics_api import handle_metrics_history_batch
 from .metrics import history_metadata, load_history, load_history_snapshot, record_samples, retention_seconds, sustained_breach
 from .observe import handle_observe_apps
 from .monitoring import CONTENT_TYPE as METRICS_CONTENT_TYPE, peer_is_loopback, render_metrics, require_metrics_token
+from . import dashboard_auth
 from . import operations as operations_api
 from .workflows import handle_workflow_check, handle_workflow_get, handle_workflow_list, handle_workflow_record
 from . import history as control_history
@@ -14332,6 +14333,14 @@ class TerminalBroker:
                     raise LumaError("terminal auth required")
                 token = str(auth.get("token") or "").strip()
                 if not token:
+                    # Cookies ride on every WebSocket handshake, so the session
+                    # path also requires an Origin equal to the Control domain.
+                    session_id = websocket.cookies.get(dashboard_auth.SESSION_COOKIE) or ""
+                    if session_id:
+                        token = await run_in_threadpool(
+                            dashboard_auth.session_credential, "WEBSOCKET", websocket.headers, session_id,
+                        )
+                if not token:
                     raise LumaError("terminal auth token required")
             except Exception:
                 await websocket.close(code=1008)
@@ -14640,15 +14649,127 @@ async def _asgi_health(_: Request) -> JSONResponse:
                 "control-image-preparation-v1",
                 "route-sentinel-v1",
                 "registry-management-v1",
+                "dashboard-sessions-v1",
             ],
         },
     )
 
 
+async def _request_credential(request: Request) -> str:
+    """Management token from the Bearer header, or from a dashboard session cookie.
+
+    An explicit Authorization header always wins, so the CLI and CI never touch
+    sessions. A valid session resolves to the management token server-side and
+    every handler keeps its existing ``require_token`` check.
+    """
+    session_id = request.cookies.get(dashboard_auth.SESSION_COOKIE) or ""
+    if request.headers.get("Authorization") or not session_id:
+        return bearer_token(request.headers)
+    return await run_in_threadpool(dashboard_auth.session_credential, request.method, request.headers, session_id)
+
+
+def _auth_json(payload: Dict[str, Any], *, status: int = 200, session_id: str = "", clear: bool = False) -> Response:
+    response = _json_response(status, payload)
+    response.headers["Cache-Control"] = "no-store"
+    if session_id:
+        response.set_cookie(
+            dashboard_auth.SESSION_COOKIE, session_id, max_age=dashboard_auth.SESSION_ABSOLUTE_SECONDS,
+            path="/", secure=True, httponly=True, samesite="strict",
+        )
+    elif clear:
+        response.delete_cookie(dashboard_auth.SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="strict")
+    return response
+
+
+async def _auth_authorized(request: Request) -> bool:
+    """True when the request carries the management authority (token or session)."""
+    token = await _request_credential(request)
+    await run_in_threadpool(lambda: require_token(load_auth_state(), token, token_type="deploy"))
+    return True
+
+
+async def _asgi_auth(request: Request) -> Response:
+    """Dashboard sign-in routes: sessions, passkeys and browser policy."""
+    path = request.url.path
+    method = request.method
+    if path == "/v1/auth/login/verify":
+        return await (_asgi_authenticated_post(request) if method == "POST" else _asgi_authenticated_get(request))
+    session_id = request.cookies.get(dashboard_auth.SESSION_COOKIE) or ""
+    try:
+        body: Dict[str, Any] = {}
+        if method == "POST":
+            raw = await request.body()
+            try:
+                body = json.loads(raw) if raw.strip() else {}
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise LumaError("request body contains malformed JSON") from exc
+            if not isinstance(body, dict):
+                raise LumaError("request body must be a JSON object")
+        # Public: what the sign-in screen needs, and the sign-in ceremonies themselves.
+        if method == "GET" and path == "/v1/auth/config":
+            return _auth_json(await run_in_threadpool(dashboard_auth.public_config))
+        if method == "GET" and path == "/v1/auth/session":
+            return _auth_json(await run_in_threadpool(dashboard_auth.current_session, session_id))
+        if method == "POST" and path == "/v1/auth/session":
+            payload, new_session = await run_in_threadpool(
+                dashboard_auth.exchange_token, bearer_token(request.headers), request.headers,
+            )
+            return _auth_json(payload, session_id=new_session)
+        if method == "POST" and path == "/v1/auth/logout":
+            if session_id:
+                await run_in_threadpool(lambda: dashboard_auth.require_same_origin(request.headers, load_auth_state()))
+            return _auth_json(await run_in_threadpool(dashboard_auth.logout, session_id), clear=True)
+        if method == "POST" and path == "/v1/auth/passkey/authenticate/options":
+            return _auth_json(await run_in_threadpool(dashboard_auth.authentication_options))
+        if method == "POST" and path == "/v1/auth/passkey/authenticate/verify":
+            payload, new_session = await run_in_threadpool(dashboard_auth.authentication_verify, body, request.headers)
+            return _auth_json(payload, session_id=new_session)
+        if method == "POST" and path in {"/v1/auth/passkey/register/options", "/v1/auth/passkey/register/verify"}:
+            # An operator adds passkeys with the token or a session; a browser with
+            # neither may still finish a one-time enrollment link.
+            try:
+                authenticated = await _auth_authorized(request)
+            except LumaError:
+                if request.headers.get("Authorization") or not (body.get("enrollmentCode") or path.endswith("/verify")):
+                    raise
+                authenticated = False
+            if path.endswith("/options"):
+                return _auth_json(await run_in_threadpool(
+                    functools.partial(dashboard_auth.registration_options, body, authenticated=authenticated)))
+            payload, new_session = await run_in_threadpool(
+                functools.partial(dashboard_auth.registration_verify, body, request.headers, authenticated=authenticated))
+            return _auth_json(payload, session_id=new_session)
+        # Everything else manages sign-in and needs the management authority.
+        await _auth_authorized(request)
+        if method == "GET" and path == "/v1/auth/passkeys":
+            return _auth_json(await run_in_threadpool(dashboard_auth.list_passkeys))
+        if method == "POST" and path == "/v1/auth/passkeys/remove":
+            return _auth_json(await run_in_threadpool(dashboard_auth.remove_passkey, body))
+        if method == "GET" and path == "/v1/auth/sessions":
+            current = "" if request.headers.get("Authorization") else session_id
+            return _auth_json(await run_in_threadpool(dashboard_auth.list_sessions, current))
+        if method == "POST" and path == "/v1/auth/sessions/revoke":
+            return _auth_json(await run_in_threadpool(dashboard_auth.revoke_sessions, body))
+        if method == "GET" and path == "/v1/auth/settings":
+            return _auth_json(await run_in_threadpool(dashboard_auth.get_settings))
+        if method == "POST" and path == "/v1/auth/settings":
+            return _auth_json(await run_in_threadpool(dashboard_auth.update_settings, body))
+        if method == "POST" and path == "/v1/auth/enrollments":
+            return _auth_json(await run_in_threadpool(dashboard_auth.create_enrollment, body))
+        return _json_response(404, _error_payload("not_found", "not found", request_id=_request_id()))
+    except dashboard_auth.AuthError as exc:
+        return _asgi_error(exc.status, exc, code=exc.code)
+    except LumaError as exc:
+        code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
+        return _asgi_error(code, exc, code="luma_error")
+    except Exception as exc:
+        return _asgi_error(500, exc, code="internal_error")
+
+
 async def _asgi_authenticated_get(request: Request) -> Response:
     parsed_path = request.url.path
     try:
-        token = bearer_token(request.headers)
+        token = await _request_credential(request)
         if operations_api.handles(parsed_path):
             result = await run_in_threadpool(functools.partial(operations_api.dispatch, token, "GET", parsed_path, query=dict(request.query_params)))
             return _json_response(200, result)
@@ -14806,6 +14927,8 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             return _json_response(200, await run_in_threadpool(handle_deployment_config, token, name))
     except LogUnavailable as exc:
         return _asgi_error(503, exc, code="logs_unavailable")
+    except dashboard_auth.AuthError as exc:
+        return _asgi_error(exc.status, exc, code=exc.code)
     except LumaError as exc:
         code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
         return _asgi_error(code, exc, code="luma_error")
@@ -14821,7 +14944,7 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             raise LumaError("request body contains malformed JSON") from exc
         if not isinstance(body, dict):
             raise LumaError("request body must be a JSON object")
-        token = bearer_token(request.headers)
+        token = await _request_credential(request)
         if operations_api.handles(path):
             result = await run_in_threadpool(functools.partial(operations_api.dispatch, token, "POST", path, body=body, query=dict(request.query_params)))
             return _json_response(200, result)
@@ -14949,6 +15072,8 @@ async def _asgi_authenticated_post(request: Request) -> Response:
         if handler:
             return _json_response(200, await run_in_threadpool(handler, token, body))
         return _json_response(404, _error_payload("not_found", "not found", request_id=_request_id()))
+    except dashboard_auth.AuthError as exc:
+        return _asgi_error(exc.status, exc, code=exc.code)
     except LumaError as exc:
         code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
         return _asgi_error(code, exc, code="luma_error")
@@ -15186,8 +15311,10 @@ async def _asgi_operations_delete(request: Request) -> Response:
     try:
         if not operations_api.handles(request.url.path):
             return _json_response(404, {"error": "not found"})
-        result = await run_in_threadpool(operations_api.dispatch, bearer_token(request.headers), "DELETE", request.url.path)
+        result = await run_in_threadpool(operations_api.dispatch, await _request_credential(request), "DELETE", request.url.path)
         return _json_response(200, result)
+    except dashboard_auth.AuthError as exc:
+        return _asgi_error(exc.status, exc, code=exc.code)
     except LumaError as exc:
         return _asgi_error(401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400, exc, code="luma_error")
 
@@ -15217,6 +15344,7 @@ def create_app() -> Starlette:
             Route("/dashboard/{path:path}", _asgi_dashboard_asset, methods=["GET"]),
             Route("/v1/health", _asgi_health, methods=["GET"]),
             Route("/v1/metrics", _asgi_metrics, methods=["GET"]),
+            Route("/v1/auth/{path:path}", _asgi_auth, methods=["GET", "POST"]),
             Route("/v1/{path:path}", _asgi_authenticated_get, methods=["GET"]),
             Route("/v1/{path:path}", _asgi_authenticated_post, methods=["POST"]),
             Route("/v1/{path:path}", _asgi_operations_delete, methods=["DELETE"]),

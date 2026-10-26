@@ -255,6 +255,6 @@ Focused fixes, reproducible bug reports, and documentation improvements are welc
 
 ## Security and license
 
-Management tokens grant broad access to your cluster. Use the dashboard only on trusted devices; it stores the token in browser local storage. Keep Cloudflare credentials, registry credentials, join tokens, and agent credentials out of repositories and issue reports.
+Management tokens grant broad access to your cluster. The dashboard does not store the token: it signs in with a passkey or the token and keeps an HttpOnly session cookie (see [Sign-in and passkeys](docs/dashboard-guide.md#sign-in-and-passkeys)). Keep Cloudflare credentials, registry credentials, join tokens, and agent credentials out of repositories and issue reports.
 
 Luma is released under the [MIT License](LICENSE). Bundled and external dependencies retain their own licenses.

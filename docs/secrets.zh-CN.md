@@ -113,7 +113,7 @@ Git 忽略 `.env` 和 `.env.*`，仅提交安全模板 `.env.example`。
 
 `~/.luma.config.json` 包含 Cloudflare、Tailscale、出网和 sudo 等本地安装密钥。Context 仅包含 Control 端点、集群 ID 和管理令牌。两者都应作为密钥保管。
 
-`https://<control-domain>/dashboard/` 的网页控制台也使用管理令牌。浏览器会在该 Control 域名的本地存储中保存令牌，因此只应在可信设备上使用。设备不再可信时，请清理浏览器存储或轮换管理令牌。
+`https://<control-domain>/dashboard/` 的网页控制台用 Passkey 或管理令牌登录，之后由 `HttpOnly` 会话 Cookie 维持登录，浏览器不保存令牌。设备不再可信时，请在 **设置 → 登录与 Passkey** 或用 `luma passkey sign-out` 结束它的会话；如果令牌可能已被复制，再轮换管理令牌。见[登录与 Passkey](dashboard-guide.zh-CN.md#sign-in-and-passkeys)。
 
 ## 轮换 {#rotation}
 

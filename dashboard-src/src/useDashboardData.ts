@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { authHeaders } from "./apiClient";
 import type { DashboardScope } from "./dashboardScope";
 import type { DashboardPayload, SyncStatus } from "./types";
 
-const TOKEN_KEY = "luma.dashboard.deployToken";
 const REFRESH_MS = 30000;
 const SNAPSHOT_TTL_MS = 60000;
 const SNAPSHOT_LIMIT = 8;
-const isDev = typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
 type Snapshot = { token: string; identity: string; payload: DashboardPayload; updatedAt: number };
 
-export function useDashboardData(scope: DashboardScope = "full", query = "") {
-  const [token, setTokenState] = useState(() => localStorage.getItem(TOKEN_KEY) || (isDev ? "dev-token" : ""));
+// `token` is the credential from useDashboardAuth: a session marker in a signed-in
+// browser. `onUnauthorized` runs when Control rejects it, for example after the
+// session expired or was revoked elsewhere.
+export function useDashboardData(scope: DashboardScope = "full", query = "", token = "", onUnauthorized?: () => void) {
+  const onUnauthorizedRef = useRef(onUnauthorized);
+  onUnauthorizedRef.current = onUnauthorized;
   // List filters retain their mounted view while refreshing; different objects do not.
   const identity = scope === "application" ? `${scope}:${query}` : scope;
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -30,22 +33,6 @@ export function useDashboardData(scope: DashboardScope = "full", query = "") {
   // (e.g. an in-flight 401 from an old token clearing a freshly logged-in session).
   const generationRef = useRef(0);
 
-  const setToken = useCallback((nextToken: string) => {
-    const trimmed = nextToken.trim();
-    cacheRef.current.clear();
-    setTokenState(trimmed);
-    if (trimmed) localStorage.setItem(TOKEN_KEY, trimmed);
-    else localStorage.removeItem(TOKEN_KEY);
-  }, []);
-
-  const signOut = useCallback(() => {
-    setToken("");
-    setSnapshot(null);
-    setErrors([]);
-    setSyncStatus("notConnected");
-    setLastUpdated(null);
-  }, [setToken]);
-
   const loadDashboard = useCallback((): Promise<void> => {
     if (requestRef.current) return requestRef.current.promise;
     if (scope === "none") return Promise.resolve();
@@ -59,7 +46,7 @@ export function useDashboardData(scope: DashboardScope = "full", query = "") {
       setSyncStatus("refreshing");
       try {
         const response = await fetch(`/v1/dashboard?scope=${scope}${query ? `&${query}` : ""}`, {
-          headers: { Authorization: `Bearer ${token}` },
+          headers: authHeaders(token),
           signal: controller.signal,
         });
         const text = await response.text();
@@ -92,6 +79,7 @@ export function useDashboardData(scope: DashboardScope = "full", query = "") {
           setSyncStatus("tokenRejected");
           cacheRef.current.clear();
           setSnapshot(null);
+          onUnauthorizedRef.current?.();
         } else {
           setSyncStatus("unavailable");
         }
@@ -150,8 +138,6 @@ export function useDashboardData(scope: DashboardScope = "full", query = "") {
     errors,
     syncStatus,
     lastUpdated,
-    setToken,
-    signOut,
     loadDashboard,
   };
 }

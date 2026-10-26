@@ -12,6 +12,7 @@ import { AlertCircle, ArrowLeft, Check, X } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import type { DashboardNode, DashboardService, Lang } from "../types";
 import { t } from "../i18n";
+import { isSessionCredential } from "../apiClient";
 import "./terminalSession.css";
 
 type TerminalStatus = "connecting" | "connected" | "ended" | "error";
@@ -134,7 +135,8 @@ function TerminalContent({ lang, target, token, onClose, inline = false }: Termi
       term.writeln(lang === "zh"
         ? (isContainer ? "正在连接容器终端..." : "正在连接节点终端...")
         : (isContainer ? "Connecting to container shell..." : "Connecting to node terminal..."));
-      socket.send(JSON.stringify({ type: "auth", token }));
+      // A signed-in browser authenticates with its session cookie on the handshake.
+      socket.send(JSON.stringify(isSessionCredential(token) ? { type: "auth" } : { type: "auth", token }));
     });
     socket.addEventListener("message", (event) => {
       if (!active) return;

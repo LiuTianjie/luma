@@ -15,6 +15,7 @@ export type PageId =
   | "setup"
   | "credentials"
   | "maintenance"
+  | "security"
   | "update";
 export type NavPage = Exclude<PageId, "update">;
 

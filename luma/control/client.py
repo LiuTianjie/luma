@@ -1112,6 +1112,24 @@ class ControlClient:
         path = "/v1/registry/gc/preview" if preview else "/v1/registry/gc"
         return self.request("POST", path, {"force": bool(force)}, timeout=timeout)
 
+    def create_passkey_enrollment(self, *, name: str = "") -> Dict[str, Any]:
+        return self.request("POST", "/v1/auth/enrollments", {"name": name} if name else {})
+
+    def list_passkeys(self) -> Dict[str, Any]:
+        return self.request("GET", "/v1/auth/passkeys")
+
+    def remove_passkey(self, passkey_id: str) -> Dict[str, Any]:
+        return self.request("POST", "/v1/auth/passkeys/remove", {"id": passkey_id})
+
+    def set_require_passkey(self, enabled: bool) -> Dict[str, Any]:
+        return self.request("POST", "/v1/auth/settings", {"requirePasskey": enabled})
+
+    def list_browser_sessions(self) -> Dict[str, Any]:
+        return self.request("GET", "/v1/auth/sessions")
+
+    def revoke_browser_sessions(self, *, session_id: str = "") -> Dict[str, Any]:
+        return self.request("POST", "/v1/auth/sessions/revoke", {"id": session_id} if session_id else {"all": True})
+
     def list_git_providers(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/git-providers")
 

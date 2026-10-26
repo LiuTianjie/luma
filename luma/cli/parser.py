@@ -48,6 +48,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("storage", "Manage NFS storage classes"),
         ("registry", "Manage registry credentials and the managed registry"),
         ("git-provider", "Manage saved GitHub and Gitea credentials"),
+        ("passkey", "Enroll dashboard passkeys and manage browser sign-in"),
         ("manager", "Repair manager networking, DNS and IP changes"),
     )),
 )
@@ -652,6 +653,35 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
     git_provider_refs.add_argument("repository", help="Repository full name, for example owner/name")
     _add_control_arguments(git_provider_refs)
     _add_output_arguments(git_provider_refs)
+
+    passkey = _command(
+        sub, "passkey",
+        description=(
+            "Enroll dashboard passkeys and manage browser sign-in. The management token keeps "
+            "working for the CLI and CI; these commands are also the recovery path when a browser "
+            "cannot sign in."
+        ),
+    )
+    passkey_sub = _commands(passkey, "passkey_command")
+    passkey_enroll = _command(passkey_sub, "enroll", "Print a one-time link that adds a passkey from a browser")
+    passkey_enroll.add_argument("--name", default="", help="Name for the new passkey, for example 'MacBook Touch ID'")
+    _add_control_arguments(passkey_enroll)
+    _add_output_arguments(passkey_enroll)
+    passkey_list = _command(passkey_sub, "list", "List registered passkeys")
+    _add_control_arguments(passkey_list)
+    _add_output_arguments(passkey_list)
+    passkey_remove = _command(passkey_sub, "remove", "Remove a passkey and end the browser sessions it opened")
+    passkey_remove.add_argument("id", help="Passkey ID from 'luma passkey list'")
+    _add_control_arguments(passkey_remove)
+    passkey_require = _command(passkey_sub, "require", "Require a passkey for dashboard sign-in, or allow the token again")
+    passkey_require.add_argument("mode", choices=("on", "off"), help="on: browsers must use a passkey; off: the token may also sign in")
+    _add_control_arguments(passkey_require)
+    passkey_sessions = _command(passkey_sub, "sessions", "List browser sessions")
+    _add_control_arguments(passkey_sessions)
+    _add_output_arguments(passkey_sessions)
+    passkey_sign_out = _command(passkey_sub, "sign-out", "End browser sessions (all of them unless --session is given)")
+    passkey_sign_out.add_argument("--session", default="", help="Session ID from 'luma passkey sessions'")
+    _add_control_arguments(passkey_sign_out)
 
     manager = _command(sub, "manager", description="Repair the manager. Run these on the manager itself.")
     manager_sub = _commands(manager, "manager_command")

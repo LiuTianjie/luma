@@ -43,6 +43,7 @@ Cluster administration:
   storage       Manage NFS storage classes
   registry      Manage registry credentials and the managed registry
   git-provider  Manage saved GitHub and Gitea credentials
+  passkey       Enroll dashboard passkeys and manage browser sign-in
   manager       Repair manager networking, DNS and IP changes
 
 arguments:
@@ -2131,6 +2132,158 @@ arguments:
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma passkey`
+
+```text
+usage: luma passkey [-h] <command> ...
+
+Enroll dashboard passkeys and manage browser sign-in. The management token keeps working for the CLI
+and CI; these commands are also the recovery path when a browser cannot sign in.
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  <command>
+    enroll    Print a one-time link that adds a passkey from a browser
+    list      List registered passkeys
+    remove    Remove a passkey and end the browser sessions it opened
+    require   Require a passkey for dashboard sign-in, or allow the token again
+    sessions  List browser sessions
+    sign-out  End browser sessions (all of them unless --session is given)
+```
+
+## `luma passkey enroll`
+
+```text
+usage: luma passkey enroll [-h] [--name NAME] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+Print a one-time link that adds a passkey from a browser
+
+arguments:
+  -h, --help                  show this help message and exit
+  --name NAME                 Name for the new passkey, for example 'MacBook Touch ID'
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma passkey list`
+
+```text
+usage: luma passkey list [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List registered passkeys
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma passkey remove`
+
+```text
+usage: luma passkey remove [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] id
+
+Remove a passkey and end the browser sessions it opened
+
+arguments:
+  id                          Passkey ID from 'luma passkey list'
+
+arguments:
+  -h, --help                  show this help message and exit
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma passkey require`
+
+```text
+usage: luma passkey require [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] {on,off}
+
+Require a passkey for dashboard sign-in, or allow the token again
+
+arguments:
+  {on,off}                    on: browsers must use a passkey; off: the token may also sign in
+
+arguments:
+  -h, --help                  show this help message and exit
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma passkey sessions`
+
+```text
+usage: luma passkey sessions [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List browser sessions
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma passkey sign-out`
+
+```text
+usage: luma passkey sign-out [-h] [--session SESSION] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP]
+
+End browser sessions (all of them unless --session is given)
+
+arguments:
+  -h, --help                  show this help message and exit
+  --session SESSION           Session ID from 'luma passkey sessions'
 
 arguments:
   --control-context CONTROL_CONTEXT
