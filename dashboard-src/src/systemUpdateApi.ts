@@ -7,8 +7,9 @@ export type FleetUpdateNode = {
   agentVersionBefore?: string;
   agentVersionAfter?: string;
   installRef?: string;
-  status?: "pending" | "succeeded" | "failed" | "skipped" | string;
+  status?: "pending" | "installing" | "verifying" | "retrying" | "succeeded" | "failed" | "skipped" | string;
   message?: string;
+  attempts?: number;
 };
 
 export type FleetUpdateOperation = {

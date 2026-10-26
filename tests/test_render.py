@@ -144,6 +144,41 @@ region: cn
             [{"address": "100.64.0.20:3306"}],
         )
 
+    def test_compose_tailscale_relay_route_matches_native_priority_and_urls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                yaml.safe_dump({"services": {"web": {"image": "nginx:alpine"}}}),
+                encoding="utf-8",
+            )
+            (root / "luma.compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "site",
+                        "compose": "docker-compose.yml",
+                        "region": "home",
+                        "services": {
+                            "web": {
+                                "region": "home",
+                                "exposure": "tailscale-relay",
+                                "domain": "site.example.com",
+                                "port": 8080,
+                                "relay": {"urls": ["http://100.64.0.20:8080", "http://100.64.0.21:8080"]},
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            deployment = load_compose_deployment(root / "luma.compose.yml")
+            route = yaml.safe_load(render_compose_routes(self.config(), deployment)["web"])
+        router = route["http"]["routers"]["site-web"]
+        self.assertEqual(router["priority"], 1000)
+        self.assertEqual(
+            route["http"]["services"]["site-web"]["loadBalancer"]["servers"],
+            [{"url": "http://100.64.0.20:8080"}, {"url": "http://100.64.0.21:8080"}],
+        )
+
     def test_storage_check_plan_uses_nomad_sidecar_storage_model(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

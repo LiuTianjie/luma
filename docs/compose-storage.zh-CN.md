@@ -127,7 +127,7 @@ luma compose deploy luma.compose.yml --format ndjson
 
 应用设置保留在标准 Compose 文件中。旁车清单承载区域、暴露方式、路由及存储配置。路由字段参见[部署 YAML](deployment-yaml.md)。
 
-新旧生成任务中的挂载差异（包括增删服务）只产生 `Runtime storage mounts` 警告，不再阻止部署。请检查存续服务是否仍使用预期数据；警告不会自动迁移数据。卷配置中的存储后端、节点或路径变更仍受检查约束，需要按迁移流程确认 `adopted: true`，或为新空卷设置 `initialize: empty`；已有本地存储归属约束仍然有效。
+新旧生成任务中的挂载差异（包括增删服务）只产生 `Runtime storage mounts` 警告，不再阻止部署。卷配置中的存储后端、节点或路径变更，以及与已保存本地存储归属不同的显式 `node`，会产生 `Storage placement` 警告，部署按新的位置继续。这些警告都不会迁移数据：请检查服务是否仍使用预期数据；旧数据仍有用时，按下面的迁移步骤操作。未显式指定节点时，重新部署仍留在已保存的归属节点。
 
 ## 迁移现有 NFS 数据 {#migrate-existing-nfs-data}
 
@@ -157,7 +157,7 @@ luma storage migrate luma.compose.yml \
   --volume pg-data --from-node old-storage-node --from-volume old-docker-volume
 ```
 
-该命令不会停止服务或复制数据。本地目标要求显式指定部署节点或本地节点。`adopted: true` 表示数据已验证，不允许将已确定的本地数据归属移到另一个节点。迁移归属节点需要运维人员管理数据迁移，并同步归属记录。
+该命令不会停止服务或复制数据。本地目标要求显式指定部署节点或本地节点。`adopted: true` 表示数据已验证，并消除后端变更警告。设置不同的 `node` 会迁移部署并给出 `Storage placement` 警告；如果旧节点上仍有数据，请先复制。
 
 ## 旧版 NFS 兼容 {#legacy-nfs-compatibility}
 

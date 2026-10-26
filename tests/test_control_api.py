@@ -1267,6 +1267,40 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
+    def test_fleet_update_retries_failed_nodes_and_runs_nodes_concurrently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                agent = {"status": "online", "lastSeen": int(time.time()), "os": "linux", "capabilities": ["luma-update"]}
+                state["nodes"] = {name: {"region": "home", "agent": dict(agent)} for name in ("flaky", "broken", "steady")}
+                save_state(state)
+                calls: dict[str, int] = {}
+                both_running = threading.Barrier(3, timeout=5)
+
+                def run_task(_state, node_name, _action, _payload, **_kwargs):
+                    calls[node_name] = calls.get(node_name, 0) + 1
+                    if calls[node_name] == 1:
+                        both_running.wait()
+                    if node_name == "broken" or (node_name == "flaky" and calls[node_name] < 3):
+                        raise LumaError("installer download reset")
+                    return {"taskId": f"task-{node_name}", "message": "Luma installer finished"}
+
+                events = []
+                with patch("luma.control.server._run_node_agent_task", side_effect=run_task), patch(
+                    "luma.control.server.time.sleep", return_value=None
+                ):
+                    result = handle_fleet_update(state["deployToken"], {"includeAll": True}, progress=events.append)
+
+                by_name = {item["nodeName"]: item for item in result["results"]}
+                self.assertEqual(calls, {"flaky": 3, "broken": 5, "steady": 1})
+                self.assertEqual((by_name["flaky"]["status"], by_name["flaky"]["attempts"]), ("succeeded", 3))
+                self.assertEqual((by_name["broken"]["status"], by_name["broken"]["attempts"]), ("failed", 5))
+                self.assertEqual(by_name["steady"]["attempts"], 1)
+                self.assertIn("retrying", [event["status"] for event in events])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
     def test_node_register_rejects_unknown_region(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
@@ -5666,7 +5700,7 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_compose_deployment_blocks_storage_backend_switch_without_initialize(self):
+    def test_compose_deployment_warns_on_storage_backend_switch_without_initialize(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -5697,11 +5731,14 @@ class ControlApiTests(unittest.TestCase):
                         "volumes": {"pg-data": {"storageClass": "nfs", "path": "pg-data"}},
                     }
                 )
-                with self.assertRaisesRegex(LumaError, "storage backend changed"):
-                    handle_compose_deployment(
-                        state["deployToken"],
-                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipOrchestrator": True},
-                    )
+                events = []
+                handle_compose_deployment(
+                    state["deployToken"],
+                    {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipOrchestrator": True},
+                    progress=events.append,
+                )
+                warnings = [event for event in events if event.get("status") == "warning" and event.get("name") == "Storage placement"]
+                self.assertTrue(any("storage backend changed for pg-data" in event["message"] for event in warnings))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -5962,10 +5999,9 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_compose_rejected_storage_switch_does_not_poison_baseline_on_retry(self):
-        # Regression: a rejected storage switch must NOT overwrite the stored
-        # backend baseline. Otherwise retrying the same (rejected) switch sees
-        # new-vs-new, slips past the guard, and orphans the old volume's data.
+    def test_compose_storage_switch_proceeds_with_warning_and_updates_baseline(self):
+        # Storage switches no longer block a rollout: the change is reported
+        # once, and the accepted backend becomes the new baseline.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -5988,28 +6024,24 @@ class ControlApiTests(unittest.TestCase):
                             "volumes": {"pg-data": {"storageClass": "nfs", "path": path}},
                         }
                     )
-                    return handle_compose_deployment(
+                    events = []
+                    handle_compose_deployment(
                         state["deployToken"],
                         {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipOrchestrator": True},
+                        progress=events.append,
                     )
+                    return [event["message"] for event in events if event.get("status") == "warning" and event.get("name") == "Storage placement"]
 
-                # 1) first deploy establishes backend baseline at path=pg-data
-                result = deploy("pg-data")
-                self.assertEqual(result["deployment"], "app-stack")
+                self.assertEqual(deploy("pg-data"), [])
                 record = load_state()["deployments"]["compose"]["app-stack"]
                 self.assertEqual(record["storageBackends"]["pg-data"]["path"], "pg-data")
 
-                # 2) switch to a different path is rejected
-                with self.assertRaisesRegex(LumaError, "storage backend changed"):
-                    deploy("pg-data-v2")
-                # the rejected switch must NOT have poisoned the baseline
+                warnings = deploy("pg-data-v2")
+                self.assertTrue(any("storage backend changed for pg-data" in message for message in warnings))
                 record = load_state()["deployments"]["compose"]["app-stack"]
-                self.assertEqual(record["status"], "failed_partial")
-                self.assertEqual(record["storageBackends"]["pg-data"]["path"], "pg-data")
+                self.assertEqual(record["storageBackends"]["pg-data"]["path"], "pg-data-v2")
 
-                # 3) retrying the same switch is STILL rejected (the bug: it passed)
-                with self.assertRaisesRegex(LumaError, "storage backend changed"):
-                    deploy("pg-data-v2")
+                self.assertEqual(deploy("pg-data-v2"), [])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -7427,7 +7459,7 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_compose_deployment_blocks_nfs_to_local_switch_before_path_creation(self):
+    def test_compose_deployment_warns_on_nfs_to_local_switch(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -7484,8 +7516,9 @@ class ControlApiTests(unittest.TestCase):
                         },
                     }
                 )
-                with patch("luma.control.server._run_node_agent_task") as run:
-                    with self.assertRaisesRegex(LumaError, "storage backend changed"):
+                events = []
+                with patch("luma.control.server._run_node_agent_task"):
+                    try:
                         handle_compose_deployment(
                             state["deployToken"],
                             {
@@ -7495,8 +7528,15 @@ class ControlApiTests(unittest.TestCase):
                                 "skipDns": True,
                                 "skipOrchestrator": True,
                             },
+                            progress=events.append,
                         )
-                run.assert_not_called()
+                    except LumaError as exc:
+                        # Later steps need a real node agent; the storage check must not be the blocker.
+                        self.assertNotIn("storage backend changed", str(exc))
+                self.assertTrue(any(
+                    event.get("status") == "warning" and "storage backend changed for data" in str(event.get("message"))
+                    for event in events
+                ))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)

@@ -92,6 +92,115 @@ def is_initialized() -> bool:
             conn.close()
 
 
+# Task receipts and build/deployment history have their own entity and paginated
+# readers. Hydrating them (with every event row) on each request made handlers
+# that only check a token take seconds once history grew, so a full snapshot
+# loads them only when a caller actually touches one of these keys.
+DEFERRED_KINDS = frozenset({
+    "agentTasks", "builderTasks", "builderTaskIdempotency", "builderSourceSnapshots",
+    "buildRuns", "deploymentEvents",
+})
+
+
+class _DeferredState(dict):
+    """Detached state snapshot whose history collections load on first access."""
+
+    def __init__(self, data: Dict[str, Any], deferred: set[str]):
+        super().__init__(data)
+        self._deferred = set(deferred)
+
+    def _resolve(self, key: Any) -> None:
+        pending = getattr(self, "_deferred", None)
+        if not pending or key not in pending:
+            return
+        pending.discard(key)
+        from .database import read_state, transaction
+        with transaction(immediate=False) as conn:
+            loaded = read_state(conn, kinds={key}, include_config=False)
+        if key in loaded:
+            dict.__setitem__(self, key, loaded[key])
+
+    def _resolve_all(self) -> None:
+        for key in list(getattr(self, "_deferred", ())):
+            self._resolve(key)
+
+    def __getitem__(self, key):
+        self._resolve(key)
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        self._resolve(key)
+        return super().get(key, default)
+
+    def __contains__(self, key):
+        return key in getattr(self, "_deferred", ()) or super().__contains__(key)
+
+    def setdefault(self, key, default=None):
+        self._resolve(key)
+        return super().setdefault(key, default)
+
+    def pop(self, key, *default):
+        self._resolve(key)
+        return super().pop(key, *default)
+
+    def __setitem__(self, key, value):
+        getattr(self, "_deferred", set()).discard(key)
+        super().__setitem__(key, value)
+
+    def __delitem__(self, key):
+        self._resolve(key)
+        super().__delitem__(key)
+
+    def update(self, *args, **kwargs):
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+    # Whole-snapshot views (iteration, copies, serialization) see every key.
+    def __iter__(self):
+        self._resolve_all()
+        return super().__iter__()
+
+    def __len__(self):
+        self._resolve_all()
+        return super().__len__()
+
+    def keys(self):
+        self._resolve_all()
+        return super().keys()
+
+    def items(self):
+        self._resolve_all()
+        return super().items()
+
+    def values(self):
+        self._resolve_all()
+        return super().values()
+
+    def copy(self):
+        self._resolve_all()
+        return dict(super().items())
+
+    def __eq__(self, other):
+        self._resolve_all()
+        return dict(super().items()) == other
+
+    __hash__ = None
+
+    def __repr__(self):
+        self._resolve_all()
+        return repr(dict(super().items()))
+
+    def __copy__(self):
+        return self.copy()
+
+    def __deepcopy__(self, memo):
+        import copy
+        return copy.deepcopy(self.copy(), memo)
+
+    def __reduce__(self):
+        return (dict, (self.copy(),))
+
+
 def load_state(path: Path | None = None) -> Dict[str, Any]:
     if not _main_path(path):
         return _load_json_state(Path(path))
@@ -101,7 +210,9 @@ def load_state(path: Path | None = None) -> Dict[str, Any]:
     # Import (only once) under a writer transaction before the read snapshot.
     ensure_initialized()
     with transaction(immediate=False) as conn:
-        return read_state(conn)
+        kinds = {row[0] for row in conn.execute("SELECT kind FROM control_collections")}
+        state = read_state(conn, kinds=kinds - DEFERRED_KINDS)
+    return _DeferredState(state, kinds & DEFERRED_KINDS)
 
 
 def load_runtime_state(*, task_id: str = "") -> Dict[str, Any]:

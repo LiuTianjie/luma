@@ -16,17 +16,17 @@ CLI、Control 和节点 Agent 使用同一已发布版本。先等该版本的 P
 2. 升级本地 CLI，并更新 CI 的版本：
 
 ```bash
-luma update --install-ref v0.2.17
-python -m pip install --upgrade "luma-infra==0.2.17"
+luma update --install-ref v0.2.18
+python -m pip install --upgrade "luma-infra==0.2.18"
 ```
 
 第一条升级本地 Luma 安装；如果本机已加入集群，也会刷新 Agent。第二条是 Python CI 环境的等效依赖固定方式，不需要为了执行两条命令而安装进无关的系统 Python。
 
-3. 在系统维护中填写上述版本 ref 和镜像 `ghcr.io/liutianjie/luma-control:v0.2.17`。先通过已配置的 Builder 准备镜像，再升级 Control，保留已核验的内部 Registry digest 和操作记录。Manager 升级也会刷新其 CLI 与 Agent；重连后检查自动路由哨兵结果。
+3. 在系统维护中填写上述版本 ref 和镜像 `ghcr.io/liutianjie/luma-control:v0.2.18`。先通过已配置的 Builder 准备镜像，再升级 Control，保留已核验的内部 Registry digest 和操作记录。Manager 升级也会刷新其 CLI 与 Agent；重连后检查自动路由哨兵结果。
 4. 从同一页面升级其余节点，或执行：
 
 ```bash
-luma update fleet --install-ref v0.2.17 --all
+luma update fleet --install-ref v0.2.18 --all
 luma node list
 luma version
 ```

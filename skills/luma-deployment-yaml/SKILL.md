@@ -168,7 +168,7 @@ luma app restart luma-registry --mode recreate
 - Keep `docker-compose.yml` standard. Put local paths in `luma.compose.yml` using `volumes.<name>.local.path`. `local.node` inherits deployment placement when omitted; do not introduce a separate storage-node picker. A multi-service or persistent Compose stack stays in one region on one node.
 - New dashboard Compose paths are scoped by deployment; native volume names are scoped too. Preserve the exact actual source on existing applications. A new volume name is a data migration, even on the same machine.
 - Inspect live mounts before changing saved metadata: historical manifests can claim NFS while the running container uses a local Docker volume, or a migration may already have happened.
-- Use `adopted: true` only after verified migration, and remove old `initialize: empty` acknowledgements. Neither flag transfers an established local owner to another node.
+- Storage backend/path changes and an explicit `node` different from the saved local owner no longer block deployment; Control reports a `Storage placement` warning and does not move data. Copy and verify data first when it matters, then set `adopted: true` and remove old `initialize: empty` acknowledgements.
 - Do not register NFS or restart an old NFS service to satisfy a new deployment. Retain legacy parsing only for inspection/recovery of old configurations. No allocations does not imply no data.
 - For migration, permission preservation, offline nodes, and shutdown verification, follow [Local Storage and Migration](references/local-storage.md).
 
@@ -286,7 +286,7 @@ Direct `compose render` with local paths requires an explicit node. Control dry-
 For generic CI, install a published PyPI version; verify publication before using the version example below. A source version bump or a successful Control rollout does not prove PyPI availability. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.2.17"
+python -m pip install "luma-infra==0.2.18"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:

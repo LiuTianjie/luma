@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
-from .registry import registry_host_from_image
+from .registry import DOCKER_HUB_HOSTS, registry_host_from_image
 from .errors import LumaError
 
 SECRET_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -141,7 +141,7 @@ def service_requirements(
     image = str(getattr(service, "image", "") or "")
     registry = registry_host_from_image(image) if image else ""
     registry_auth = state.get("registries") if isinstance(state.get("registries"), Mapping) else {}
-    public_registries = {"docker.io", "ghcr.io", "quay.io", "gcr.io", "registry-1.docker.io"}
+    public_registries = {"ghcr.io", "quay.io", "gcr.io", *DOCKER_HUB_HOSTS}
     private_registry_missing = bool(
         ("registry" in explicit_capabilities or (registry and registry not in public_registries))
         and registry not in registry_auth

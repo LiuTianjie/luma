@@ -9,6 +9,9 @@ from .errors import LumaError
 
 
 DEFAULT_DOCKER_REGISTRY = "registry-1.docker.io"
+# `docker login` records Docker Hub as index.docker.io; images name docker.io or
+# nothing at all. All of these address the same registry and credentials.
+DOCKER_HUB_HOSTS = frozenset({"docker.io", "index.docker.io", DEFAULT_DOCKER_REGISTRY})
 
 
 def registry_host_from_image(image: str) -> str:
@@ -39,7 +42,7 @@ def normalize_registry_host(value: str) -> str:
 
 def public_registry_url(host: str) -> str:
     host = normalize_registry_host(host)
-    if host == "docker.io":
+    if host in DOCKER_HUB_HOSTS:
         return DEFAULT_DOCKER_REGISTRY
     return host
 
@@ -47,10 +50,8 @@ def public_registry_url(host: str) -> str:
 def registry_auth_for_image(registries: Dict[str, Any], image: str) -> Dict[str, str] | None:
     host = registry_host_from_image(image)
     candidates = [host]
-    if host == DEFAULT_DOCKER_REGISTRY:
-        candidates.append("docker.io")
-    elif host == "docker.io":
-        candidates.append(DEFAULT_DOCKER_REGISTRY)
+    if host in DOCKER_HUB_HOSTS:
+        candidates.extend(sorted(DOCKER_HUB_HOSTS - {host}))
     for candidate in candidates:
         item = registries.get(candidate)
         if not isinstance(item, dict):
@@ -84,11 +85,7 @@ def registry_auth_matches_image(auth: Dict[str, str] | None, image: str) -> bool
         return False
     auth_host = normalize_registry_host(public_registry_url(auth.get("serveraddress") or ""))
     image_host = normalize_registry_host(public_registry_url(registry_host_from_image(image)))
-    aliases = {auth_host}
-    if auth_host == DEFAULT_DOCKER_REGISTRY:
-        aliases.add("docker.io")
-    if auth_host == "docker.io":
-        aliases.add(DEFAULT_DOCKER_REGISTRY)
+    aliases = set(DOCKER_HUB_HOSTS) if auth_host in DOCKER_HUB_HOSTS else {auth_host}
     return image_host in aliases
 
 
@@ -104,7 +101,7 @@ def image_uses_mutable_latest_tag(image: str) -> bool:
 
 def registry_provider_type(host: str) -> int:
     host = normalize_registry_host(host)
-    if host in {"docker.io", DEFAULT_DOCKER_REGISTRY}:
+    if host in DOCKER_HUB_HOSTS:
         return 6
     if host == "quay.io":
         return 1

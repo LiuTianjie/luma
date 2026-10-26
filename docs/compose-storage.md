@@ -142,7 +142,7 @@ Reusing the same deployment name updates its existing job and storage owner. Cha
 
 Application settings remain in the standard Compose file. The sidecar carries region, exposure, routing and storage. See [deployment-yaml.md](deployment-yaml.md) for routing fields.
 
-Mount differences between generated jobs, including added or removed services, produce a `Runtime storage mounts` warning without blocking deployment. Check that surviving services still use the intended data; the warning does not migrate data. Changes to a volume's configured backend, node or path remain guarded and require migration acknowledgement with `adopted: true`, or `initialize: empty` for a fresh empty volume. Existing local storage ownership constraints still apply.
+Mount differences between generated jobs, including added or removed services, produce a `Runtime storage mounts` warning without blocking deployment. Changes to a volume's configured backend, node or path, and an explicit `node` that differs from the saved local-storage owner, produce a `Storage placement` warning and the deployment continues on the new placement. None of these warnings migrate data: check that the services still use the intended data, and follow the migration steps below when the old data matters. Without an explicit node, a redeploy stays on the saved owner.
 
 ## Migrate Existing NFS Data
 
@@ -172,7 +172,7 @@ luma storage migrate luma.compose.yml \
   --volume pg-data --from-node old-storage-node --from-volume old-docker-volume
 ```
 
-This command does not stop services or copy data. For a local destination it requires an explicit deployment/local node. `adopted: true` acknowledges verified data; it does not allow moving an established local owner to another node. Moving that owner requires an operator-managed data migration and ownership reconciliation.
+This command does not stop services or copy data. For a local destination it requires an explicit deployment/local node. `adopted: true` records that the data was verified and suppresses the backend-change warning. Setting a different `node` moves the deployment and reports a `Storage placement` warning; copy the data first if the old node still holds it.
 
 ## Legacy NFS Compatibility
 

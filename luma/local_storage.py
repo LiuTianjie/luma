@@ -62,17 +62,28 @@ def compose_persistent_mounts(deployment: ComposeDeploymentSpec) -> list[dict[st
 
 def choose_storage_node(
     *, slug: str, requested: Iterable[str], previous: str = "", candidates: Iterable[str] = (),
+    warnings: list[str] | None = None,
 ) -> str:
+    """Pick the node that owns local data.
+
+    An explicit node always wins. Moving away from the previous owner does not
+    move the data, so it is reported through ``warnings`` (or raised when the
+    caller does not collect warnings) instead of silently ignored.
+    """
     requested_nodes = {node for node in requested if node}
     if len(requested_nodes) > 1:
         raise LumaError(f"deployment {slug} has conflicting local storage nodes: {sorted(requested_nodes)}")
     wanted = next(iter(requested_nodes), "")
     if previous:
         if wanted and wanted != previous:
-            raise LumaError(
-                f"deployment {slug} stores persistent data on node {previous}; cannot move it to {wanted}. "
-                "Migrate and verify the data before changing the storage owner."
+            message = (
+                f"deployment {slug} stored persistent data on node {previous}; it now runs on {wanted} "
+                "and the old data was not moved"
             )
+            if warnings is None:
+                raise LumaError(message)
+            warnings.append(message)
+            return wanted
         return previous
     if wanted:
         return wanted
@@ -82,12 +93,18 @@ def choose_storage_node(
     return available[0]
 
 
-def guard_storage_sources(previous: Iterable[dict[str, str]], current: Iterable[dict[str, str]]) -> None:
+def guard_storage_sources(
+    previous: Iterable[dict[str, str]], current: Iterable[dict[str, str]], *, warnings: list[str] | None = None,
+) -> None:
     old = {mount["target"]: (mount["type"], mount["source"]) for mount in previous}
     for mount in current:
         target = mount["target"]
         if target in old and old[target] != (mount["type"], mount["source"]):
-            raise LumaError(f"persistent storage source changed for {target}; migrate and verify the data before replacing its mount")
+            message = f"persistent storage source changed for {target}; the previous mount's data is not copied"
+            if warnings is None:
+                raise LumaError(message)
+            if message not in warnings:
+                warnings.append(message)
 
 
 def storage_owner_from_job(job: dict[str, Any], allocations: list[Any], node_name_for_id) -> str:

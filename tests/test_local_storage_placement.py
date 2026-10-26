@@ -42,8 +42,16 @@ class LocalStoragePlacementTests(unittest.TestCase):
 
     def test_previous_owner_never_falls_back_to_a_different_ready_node(self):
         self.assertEqual(choose_storage_node(slug="db", requested=[], previous="offline-node", candidates=["node-b"]), "offline-node")
-        with self.assertRaisesRegex(LumaError, "cannot move"):
+        with self.assertRaisesRegex(LumaError, "old data was not moved"):
             choose_storage_node(slug="db", requested=["node-b"], previous="node-a")
+
+    def test_explicit_node_change_proceeds_with_a_warning_when_collected(self):
+        warnings: list[str] = []
+        self.assertEqual(choose_storage_node(slug="db", requested=["node-b"], previous="node-a", warnings=warnings), "node-b")
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("node-a", warnings[0])
+        guard_storage_sources(persistent_mounts(["existing:/data"]), persistent_mounts(["fresh:/data"]), warnings=warnings)
+        self.assertIn("/data", warnings[-1])
 
     def test_read_only_configuration_and_sockets_do_not_pin_stateless_services(self):
         self.assertEqual(persistent_mounts(["/config:/config:ro", "/var/run/docker.sock:/var/run/docker.sock", {"type": "tmpfs", "target": "/tmp"}]), [])

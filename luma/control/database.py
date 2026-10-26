@@ -440,6 +440,20 @@ def read_entity(conn: sqlite3.Connection, kind: str, identifier: str) -> Any:
     return value
 
 
+def read_entities(conn: sqlite3.Connection, kind: str) -> dict[str, Any]:
+    """Bulk form of read_entity for a whole collection: three queries, not 3 per row."""
+    values = {row[0]: json.loads(row[1]) for row in conn.execute("SELECT id,payload FROM control_entities WHERE kind=?", (kind,))}
+    for entity_id, stream in conn.execute("SELECT entity_id,stream FROM control_event_streams WHERE kind=?", (kind,)):
+        if isinstance(values.get(entity_id), dict):
+            values[entity_id][stream] = []
+    for entity_id, stream, payload in conn.execute(
+        "SELECT entity_id,stream,payload FROM control_events WHERE kind=? ORDER BY entity_id,stream,position", (kind,),
+    ):
+        if isinstance(values.get(entity_id), dict):
+            values[entity_id].setdefault(stream, []).append(json.loads(payload))
+    return values
+
+
 class EntityMap(dict):
     """dict-compatible lazy collection, used only inside a live transaction.
 
@@ -506,6 +520,13 @@ class EntityMap(dict):
             self[key] = value
 
     def copy(self):
+        missing = [key for key in self if key not in self.loaded]
+        if missing and not self.metadata_only:
+            bulk = read_entities(self.conn, self.kind)
+            for key in missing:
+                if key in bulk:
+                    super().__setitem__(key, bulk[key])
+                    self.loaded.add(key)
         return dict(self.items())
 
     def __eq__(self, other):
@@ -699,8 +720,8 @@ class EntityList(list):
 
 
 def read_state(conn: sqlite3.Connection, *, lazy: bool = False, kinds: set[str] | None = None,
-               metadata_kinds: set[str] | None = None) -> dict[str, Any]:
-    state = {row[0]: json.loads(row[1]) for row in conn.execute("SELECT key,payload FROM control_config")}
+               metadata_kinds: set[str] | None = None, include_config: bool = True) -> dict[str, Any]:
+    state = {row[0]: json.loads(row[1]) for row in conn.execute("SELECT key,payload FROM control_config")} if include_config else {}
     for kind, shape in conn.execute("SELECT kind,shape FROM control_collections"):
         if kinds is not None and kind not in kinds:
             continue

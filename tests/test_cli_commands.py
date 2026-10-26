@@ -1480,6 +1480,25 @@ class CliTests(unittest.TestCase):
         self.assertIn("docker-home  home    labeled     ready  client", printed_text)
         self.assertIn("manager      cn      labeled     ready  client", printed_text)
 
+    def test_status_node_rows_match_by_nomad_id_when_hostnames_collide(self):
+        from luma.cli.session import _status_node_rows
+
+        registered = [
+            {"name": "air2", "region": "render", "status": "labeled", "displayName": "air2", "nodeId": "id-air2"},
+            {"name": "air3", "region": "render", "status": "labeled", "displayName": "air3", "nodeId": "id-air3"},
+        ]
+        nomad = [
+            {"id": "id-air2", "hostname": "Mac.lan", "lumaNode": "", "state": "ready", "role": "client", "availability": "eligible"},
+            {"id": "id-air3", "hostname": "Mac.lan", "lumaNode": "", "state": "ready", "role": "client", "availability": "eligible"},
+            {"id": "id-stray-1", "hostname": "Mac", "lumaNode": "", "state": "ready", "role": "client", "availability": "eligible"},
+            {"id": "id-stray-2", "hostname": "Mac", "lumaNode": "", "state": "down", "role": "client", "availability": "eligible"},
+        ]
+        rows = {row[0]: row for row in _status_node_rows(registered, nomad)}
+        self.assertEqual(rows["air2"][1:4], ["render", "labeled", "ready"])
+        self.assertEqual(rows["air3"][1:4], ["render", "labeled", "ready"])
+        self.assertEqual(rows["Mac"][3], "ready")
+        self.assertEqual(rows["Mac (id-stray)"][3], "down")
+
     def test_status_prints_dns_missing_reasons(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))

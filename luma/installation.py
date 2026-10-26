@@ -249,6 +249,91 @@ def read_operation(install_home: Path, operation_id: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+RELEASES = "releases"
+# A managed candidate holds exactly these; anything else (an operator's config,
+# notes, logs) means the directory is not ours to delete.
+RELEASE_PAYLOAD = frozenset({"src", "venv"})
+PRUNE_MIN_AGE_SECONDS = 600
+
+
+def _release_names(text: str, roots: tuple[Path, ...]) -> set[str]:
+    """Names of release directories referenced by absolute paths in ``text``."""
+    found = set()
+    for word in text.replace("=", " ").replace("'", " ").replace('"', " ").replace(":", " ").split():
+        if not word.startswith("/"):
+            continue
+        path = Path(word)
+        for candidate in (path, *path.parents):
+            if candidate.parent in roots:
+                found.add(candidate.name)
+                break
+    return found
+
+
+def _running_release_names(roots: tuple[Path, ...]) -> set[str] | None:
+    """Releases used by any live process, or None when processes can't be listed."""
+    try:
+        result = subprocess.run(["ps", "-axww", "-o", "command="], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode:
+        return None
+    return _release_names(result.stdout, roots)
+
+
+def _file_release_names(path: Path, roots: tuple[Path, ...]) -> set[str]:
+    try:
+        return _release_names(path.read_text(), roots)
+    except (OSError, UnicodeDecodeError):
+        return set()
+
+
+def prune_releases(install_home: Path, *, bin_dir: Path | None = None, keep_runtimes: tuple[str, ...] = (),
+                   now: float | None = None) -> list[str]:
+    """Remove superseded managed candidates.
+
+    Keeps the active and rollback runtimes, every release a running process
+    uses, recent candidates, and any directory holding more than src/venv.
+    Removes nothing when the active runtime or running processes are unknown.
+    """
+    home = _absolute(str(install_home))
+    releases = home / RELEASES
+    if not releases.is_dir() or releases.is_symlink():
+        return []
+    roots = tuple(dict.fromkeys((releases, releases.resolve())))
+    references = list(keep_runtimes)
+    lifecycle = lifecycle_dir(home)
+    for name in (TARGET, PREVIOUS_META):
+        try:
+            data = json.loads((lifecycle / name).read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            references.extend(str(data.get(key) or "") for key in ("runtime", "source", "previousRuntime"))
+    keep = _release_names(" ".join(references + [str(Path(ref).resolve()) for ref in references if ref.startswith("/")]), roots)
+    keep |= _file_release_names(lifecycle / PREVIOUS_SHIM, roots)
+    if bin_dir is not None:
+        keep |= _file_release_names(_absolute(str(bin_dir)) / "luma", roots)
+    running = _running_release_names(roots)
+    if not keep or running is None:
+        return []
+    keep |= running
+    now = time.time() if now is None else now
+    removed = []
+    for entry in sorted(releases.iterdir()):
+        if entry.name in keep or not entry.name.startswith("candidate.") or entry.is_symlink() or not entry.is_dir():
+            continue
+        try:
+            names = {child.name for child in entry.iterdir()}
+            if not names <= RELEASE_PAYLOAD or now - entry.stat().st_mtime < PRUNE_MIN_AGE_SECONDS:
+                continue
+            shutil.rmtree(entry)
+        except OSError:
+            continue
+        removed.append(entry.name)
+    return removed
+
+
 def write_record(prefix: Path, *, root: Path, bindir: Path, home: Path, source: Path,
                  policy: dict, version: str, previous_runtime: str = "") -> dict:
     for path in (prefix, root, bindir, home, source):
@@ -338,7 +423,7 @@ def installation_diagnostics(env: dict[str, str] | None = None) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("pip", "record", "shim", "backup-shim", "target", "restore-shim"))
+    parser.add_argument("action", choices=("pip", "record", "shim", "backup-shim", "target", "restore-shim", "prune"))
     args, rest = parser.parse_known_args()
     env = dict(os.environ)
     try:
@@ -351,6 +436,14 @@ def main() -> int:
             return 0
         if args.action == "restore-shim":
             restore_shim(Path(env["INSTALL_HOME"]), Path(env["BIN_DIR"]))
+            return 0
+        if args.action == "prune":
+            removed = prune_releases(
+                Path(env["INSTALL_HOME"]), bin_dir=Path(env["BIN_DIR"]),
+                keep_runtimes=(str(Path(sys.prefix)), env.get("LUMA_PREVIOUS_RUNTIME", "")),
+            )
+            if removed:
+                print(f"Removed {len(removed)} superseded Luma release(s)")
             return 0
         source = _absolute(env["SOURCE_DIR"])
         if args.action == "shim":

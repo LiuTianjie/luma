@@ -492,6 +492,11 @@ if [ "$LOCAL_CHECKOUT" -eq 0 ]; then
     refresh_node_agent_service
   fi
   chown_install_paths
+  # Keep the new and rollback runtimes plus anything a process still uses;
+  # cleanup is best effort and never fails an otherwise good install.
+  if [ "${LUMA_KEEP_RELEASES:-0}" != "1" ]; then
+    "$VENV_DIR/bin/python" "$SOURCE_DIR/luma/installation.py" prune || echo "[warn] could not prune superseded Luma releases"
+  fi
 fi
 
 echo "Luma installed in $VENV_DIR"

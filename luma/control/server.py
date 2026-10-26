@@ -82,6 +82,7 @@ from ..nomad_api import NomadApi, deploy_to_nomad, remove_from_nomad, revert_job
 from ..nomad_render import EDGE_EXPOSURES, render_nomad_job, render_compose_job, resource_policy_warnings
 from ..observe_instrument import OBSERVE_STACK, manager_tailscale_ip, mint_otlp_token, otlp_mesh_endpoint
 from ..registry import (
+    DOCKER_HUB_HOSTS,
     docker_registry_auth_header,
     public_registry_url,
     image_uses_mutable_latest_tag,
@@ -214,6 +215,9 @@ DOCKER_RESTART_RECOVERY_TIMEOUT_SECONDS = int(os.environ.get("LUMA_DOCKER_RESTAR
 # generated Nomad artifact.
 _DEPLOY_LOCK = threading.RLock()
 _FLEET_UPDATE_LOCK = threading.RLock()
+FLEET_UPDATE_CONCURRENCY = 4
+FLEET_UPDATE_ATTEMPTS = 5
+FLEET_UPDATE_RETRY_DELAY_SECONDS = 15
 _FLEET_UPDATE_THREADS: dict[str, threading.Thread] = {}
 _CONTROL_IMAGE_PREPARE_LOCK = threading.RLock()
 _CONTROL_IMAGE_PREPARE_THREADS: dict[str, threading.Thread] = {}
@@ -1987,6 +1991,11 @@ def handle_control_status(token: str) -> Dict[str, Any]:
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     registered_nodes = _registered_nodes_summary(nodes)
     orchestrator = nomad_status_summary(config, state)
+    regions = {str(item.get("name") or ""): str(item.get("region") or "") for item in registered_nodes}
+    orchestrator["nodes"] = [
+        {**node, "lumaNode": name or str(node.get("lumaNode") or ""), "region": str(node.get("region") or regions.get(name, ""))}
+        for node, name in _match_orchestrator_nodes(registered_nodes, list(orchestrator.get("nodes") or []))
+    ]
     nomad_services = nomad_services_summary(config, state)
     result = {
         "clusterId": state["clusterId"],
@@ -6336,6 +6345,19 @@ def _emit_tcp_ingress_refresh_advisory(
     _emit_progress(progress, step)
 
 
+def _emit_storage_warnings(
+    steps: list[dict[str, str]],
+    progress: Callable[[dict[str, str]], None] | None,
+    warnings: list[str],
+) -> None:
+    # Storage placement changes no longer block a rollout; data is not moved,
+    # so each change stays visible in the deployment record.
+    for message in warnings:
+        step = {"name": "Storage placement", "status": "warning", "message": message}
+        steps.append(step)
+        _emit_progress(progress, step)
+
+
 def _record_tcp_relay_ports(record: Dict[str, Any]) -> list[int]:
     ports: set[int] = set()
     for value in record.get("tcpRelayPorts") or []:
@@ -6524,7 +6546,7 @@ def _observe_otlp_settings(state: Dict[str, Any], stack: str) -> Dict[str, str] 
 
 def _local_storage_previous_node(
     config: LumaConfig, state: Dict[str, Any], slug: str, previous: Dict[str, Any], *, inspect_runtime: bool,
-    expected_mounts: list[dict[str, str]] | None = None,
+    expected_mounts: list[dict[str, str]] | None = None, warnings: list[str] | None = None,
 ) -> str:
     binding = previous.get("localStorage") or {}
     saved = str(binding.get("node") or "")
@@ -6548,7 +6570,10 @@ def _local_storage_previous_node(
     except LumaError as exc:
         if "Nomad API error 404" in str(exc):
             if previous and not saved:
-                raise LumaError(f"cannot locate existing storage for {slug}; select its original data node before redeploying") from exc
+                message = f"cannot locate existing storage for {slug}; it will be placed as a new deployment"
+                if warnings is None:
+                    raise LumaError(message) from exc
+                warnings.append(message)
             return saved
         raise
     if not isinstance(job, dict):
@@ -6556,7 +6581,7 @@ def _local_storage_previous_node(
     if expected_mounts is not None:
         for group in job.get("TaskGroups") or []:
             for task in group.get("Tasks") or []:
-                guard_storage_sources(persistent_mounts((task.get("Config") or {}).get("mount") or []), expected_mounts)
+                guard_storage_sources(persistent_mounts((task.get("Config") or {}).get("mount") or []), expected_mounts, warnings=warnings)
     allocations = client.request("GET", path + "/allocations")
     if not isinstance(allocations, list):
         raise LumaError(f"cannot inspect existing storage allocations for {slug}")
@@ -6571,7 +6596,10 @@ def _local_storage_previous_node(
         lambda node_id: _luma_node_name_for_nomad_allocation(state, {"NodeID": node_id}),
     )
     if saved and saved != observed:
-        raise LumaError(f"storage owner for {slug} differs between deployment record ({saved}) and runtime ({observed}); verify the data before redeploying")
+        message = f"storage owner for {slug} differs between deployment record ({saved}) and runtime ({observed}); using the runtime node"
+        if warnings is None:
+            raise LumaError(message)
+        warnings.append(message)
     return observed
 
 
@@ -6593,6 +6621,7 @@ def _local_storage_node_candidates(state: Dict[str, Any], region: str) -> list[s
 
 def _bind_service_local_storage(
     config: LumaConfig, state: Dict[str, Any], service: ServiceSpec, manifest: str, *, inspect_runtime: bool,
+    warnings: list[str] | None = None,
 ) -> tuple[ServiceSpec, str]:
     if not service_persistent_mounts(service):
         return service, manifest
@@ -6602,11 +6631,14 @@ def _bind_service_local_storage(
     mounts = service_persistent_mounts(service)
     binding = previous.get("localStorage") or {}
     previous_mounts = binding.get("mounts") or persistent_mounts(_safe_yaml_mapping(str(previous.get("manifest") or "")).get("volumes") or [])
-    guard_storage_sources(previous_mounts, mounts)
+    guard_storage_sources(previous_mounts, mounts, warnings=warnings)
     node = choose_storage_node(
         slug=service.slug, requested=[service.node or ""],
-        previous=_local_storage_previous_node(config, state, service.slug, previous, inspect_runtime=inspect_runtime, expected_mounts=mounts),
+        previous=_local_storage_previous_node(
+            config, state, service.slug, previous, inspect_runtime=inspect_runtime, expected_mounts=mounts, warnings=warnings,
+        ),
         candidates=_local_storage_node_candidates(state, service.region),
+        warnings=warnings,
     )
     raw = _safe_yaml_mapping(manifest)
     raw["node"] = node
@@ -6615,6 +6647,7 @@ def _bind_service_local_storage(
 
 def _bind_compose_local_storage(
     config: LumaConfig, state: Dict[str, Any], deployment: ComposeDeploymentSpec, body: Dict[str, Any], *, inspect_runtime: bool,
+    warnings: list[str] | None = None,
 ) -> tuple[ComposeDeploymentSpec, Dict[str, Any]]:
     if not compose_persistent_mounts(deployment):
         return deployment, body
@@ -6627,8 +6660,11 @@ def _bind_compose_local_storage(
     previous = _compose_deployment_record(state, deployment.slug) or {}
     node = choose_storage_node(
         slug=deployment.slug, requested=requested,
-        previous=_local_storage_previous_node(config, state, deployment.slug, previous, inspect_runtime=inspect_runtime),
+        previous=_local_storage_previous_node(
+            config, state, deployment.slug, previous, inspect_runtime=inspect_runtime, warnings=warnings,
+        ),
         candidates=_local_storage_node_candidates(state, region),
+        warnings=warnings,
     )
     services = {
         name: replace(deployment.services.get(name) or ComposeServiceSpec(name=name), node=node)
@@ -6729,12 +6765,14 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     effective_engine = _require_nomad_engine(service.engine or str(body.get("engine") or config.defaults.get("engine") or "nomad"))
     _require_nomad_engine(effective_engine)
     _ensure_deployment_slug_available(state, "service", service.slug, service.name)
+    storage_warnings: list[str] = []
     service, manifest = _bind_service_local_storage(
-        config, state, service, manifest, inspect_runtime=not _skip_orchestrator(body),
+        config, state, service, manifest, inspect_runtime=not _skip_orchestrator(body), warnings=storage_warnings,
     )
     parse_step = {"name": "Parse manifest", "status": "ok", "message": f"{service.name} -> {service.region}/{service.exposure}"}
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
+    _emit_storage_warnings(steps, progress, storage_warnings)
     # cloudflared's tunnel token is referenced via the plain manifest field
     # tunnel.tokenEnv (not a ${...} placeholder), so _render_secrets cannot see
     # it in the manifest text. Pass it explicitly or the scoped/--env paths drop
@@ -6970,7 +7008,7 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
     require_region_exposure(state, service.region, service.exposure)
     effective_engine = _require_nomad_engine(service.engine or str(body.get("engine") or config.defaults.get("engine") or "nomad"))
     _require_nomad_engine(effective_engine)
-    service, manifest = _bind_service_local_storage(config, state, service, manifest, inspect_runtime=False)
+    service, manifest = _bind_service_local_storage(config, state, service, manifest, inspect_runtime=False, warnings=[])
     service = resolve_service_node_pin(service, state, engine=effective_engine)
     requirements = service_requirements(
         service,
@@ -7887,179 +7925,37 @@ def handle_fleet_update(
     if unknown:
         raise LumaError("unknown fleet update node(s): " + ", ".join(unknown))
     candidates = sorted(target_names if raw_targets is not None else {str(name) for name in nodes})
-    results: list[Dict[str, Any]] = []
-    for node_name in candidates:
-        current_state = load_state()
-        require_token(current_state, token, token_type="deploy")
-        current_nodes = current_state.get("nodes") if isinstance(current_state.get("nodes"), dict) else {}
-        record = current_nodes.get(node_name)
-        if not isinstance(record, dict):
-            continue
-        ready_deadline = time.monotonic() + wait_ready_seconds
-        while wait_ready_seconds and not _node_agent_is_ready(record) and time.monotonic() < ready_deadline:
-            time.sleep(min(2.0, max(ready_deadline - time.monotonic(), 0.1)))
-            current_state = load_state()
-            current_nodes = current_state.get("nodes") if isinstance(current_state.get("nodes"), dict) else {}
-            refreshed = current_nodes.get(node_name)
-            if isinstance(refreshed, dict):
-                record = refreshed
-        agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
-        if not include_all and raw_targets is None and not _node_agent_is_ready(record):
-            continue
-        item: Dict[str, Any] = {
-            "nodeName": node_name,
-            "region": str(record.get("region") or ""),
-            "os": str(agent.get("os") or ""),
-            "agentVersionBefore": str(agent.get("version") or ""),
-            "status": "pending",
-        }
-        if progress:
-            progress(dict(item))
-        try:
-            _reject_control_maintenance(current_state)
-        except LumaError as exc:
-            item["status"] = "failed"
-            item["message"] = str(exc)
-            results.append(item)
-            if progress:
-                progress(dict(item))
-            continue
-        if _node_record_is_manager(record) and not include_manager:
-            item["status"] = "skipped"
-            item["message"] = (
-                "manager node is skipped by default and updated separately by the control-plane rollout"
-            )
-            results.append(item)
-            if progress:
-                progress(dict(item))
-            continue
-        agent_status = _node_agent_status(record)
-        capabilities = {str(value) for value in agent.get("capabilities") or []}
-        if agent_status != "ready":
-            item["status"] = "skipped"
-            item["message"] = f"node agent is not ready; status={agent_status}"
-            results.append(item)
-            if progress:
-                progress(dict(item))
-            continue
-        if "luma-update" not in capabilities:
-            item["status"] = "skipped"
-            item["message"] = (
-                "node agent does not support fleet update; managed fleet update capability is missing"
-            )
-            results.append(item)
-            if progress:
-                progress(dict(item))
-            continue
-        config = load_config(_control_config_path())
-        install_proxy = _egress_proxy_for_node(config, current_state, node_name)
-        if install_proxy and "luma-update-proxy-v1" not in capabilities:
-            item["status"] = "failed"
-            item["message"] = (
-                "node requires egress for the Luma installer, but its current agent predates "
-                "luma-update-proxy-v1; perform the documented one-time exact-ref bootstrap "
-                "through the root terminal, then use fleet updates normally"
-            )
-            results.append(item)
-            if progress:
-                progress(dict(item))
-            continue
-        try:
-            item["status"] = "installing"
-            item["message"] = f"Downloading and installing Luma {install_ref or 'latest'}."
-            if progress:
-                progress(dict(item))
+    concurrency = min(max(int(body.get("concurrency") or FLEET_UPDATE_CONCURRENCY), 1), 8)
+    attempts = min(max(int(body.get("attempts") or FLEET_UPDATE_ATTEMPTS), 1), 10)
+    progress_lock = threading.Lock()
 
-            def install_progress(event: Dict[str, Any]) -> None:
-                message = str(event.get("message") or event.get("line") or "").strip()
-                if message:
-                    item["status"] = "installing"
-                    item["message"] = message
-                    if progress:
-                        progress(dict(item))
-
-            install_payload = {"installRef": install_ref}
-            if install_proxy:
-                install_payload["proxy"] = install_proxy
-            result = _run_node_agent_task(
-                current_state,
-                node_name,
-                "update-luma",
-                install_payload,
-                timeout=per_node_timeout,
-                required_capability="luma-update",
-                progress=install_progress,
-            )
-            item["status"] = "succeeded"
-            item["message"] = str(result.get("message") or "Luma installer finished")
-            item["taskId"] = str(result.get("taskId") or "")
-            if result.get("installRef"):
-                item["installRef"] = str(result.get("installRef"))
-            installed_version = str(result.get("installedVersion") or "").strip()
-            if installed_version:
-                item["installedVersion"] = installed_version
-            if result.get("output"):
-                item["output"] = str(result.get("output"))
-            verify_seconds = wait_ready_seconds
-            if result.get("lifecycleOperationId"):
-                verify_seconds = max(verify_seconds, 120)
-            if verify_seconds:
-                item["status"] = "verifying"
-                item["message"] = "Installer finished; waiting for the updated node agent to reconnect."
-                if progress:
-                    progress(dict(item))
-                completed_at = int(time.time())
-                expected_version = ""
-                if re.fullmatch(r"v[0-9]+(?:\.[0-9]+){2}(?:[-+][A-Za-z0-9.-]+)?", install_ref):
-                    expected_version = install_ref[1:]
-                elif installed_version:
-                    expected_version = installed_version
-                else:
-                    raise LumaError(
-                        "Installer did not report the installed version for this commit/branch update; "
-                        "update this node with a release tag once before retrying an untagged ref."
-                    )
-                verify_deadline = time.monotonic() + verify_seconds
-                verified_agent: Dict[str, Any] | None = None
-                while time.monotonic() < verify_deadline:
-                    time.sleep(min(2.0, max(verify_deadline - time.monotonic(), 0.1)))
-                    verified_state = load_state()
-                    verified_nodes = (
-                        verified_state.get("nodes")
-                        if isinstance(verified_state.get("nodes"), dict)
-                        else {}
-                    )
-                    verified_record = verified_nodes.get(node_name)
-                    if not isinstance(verified_record, dict) or not _node_agent_is_ready(verified_record):
-                        continue
-                    candidate_agent = (
-                        verified_record.get("agent")
-                        if isinstance(verified_record.get("agent"), dict)
-                        else {}
-                    )
-                    version_after = str(candidate_agent.get("version") or "")
-                    if int(candidate_agent.get("lastSeen") or 0) <= completed_at:
-                        continue
-                    if expected_version and version_after != expected_version:
-                        continue
-                    verified_agent = candidate_agent
-                    break
-                if verified_agent is None:
-                    item["status"] = "failed"
-                    item["message"] = (
-                        "Installer finished, but the updated node agent did not reconnect with the expected version "
-                        f"within {verify_seconds} seconds. Retry this node from the update center."
-                    )
-                else:
-                    item["status"] = "succeeded"
-                    item["agentVersionAfter"] = str(verified_agent.get("version") or "")
-                    item["message"] = "Luma updated and the node agent reconnected successfully."
-        except LumaError as exc:
-            item["status"] = "failed"
-            item["message"] = str(exc)
-        results.append(item)
+    def report(event: Dict[str, Any]) -> None:
         if progress:
-            progress(dict(item))
+            with progress_lock:
+                progress(event)
+
+    def update(node_name: str) -> Dict[str, Any] | None:
+        return _fleet_update_node_with_retries(
+            token,
+            node_name,
+            attempts=attempts,
+            progress=report if progress else None,
+            install_ref=install_ref,
+            include_all=include_all,
+            include_manager=include_manager,
+            explicit_targets=raw_targets is not None,
+            per_node_timeout=per_node_timeout,
+            wait_ready_seconds=wait_ready_seconds,
+        )
+
+    # Nodes update independently (each runs its own installer), so a slow or
+    # offline node no longer holds up the rest of the fleet.
+    if concurrency == 1 or len(candidates) <= 1:
+        outcomes = [update(name) for name in candidates]
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="luma-fleet") as pool:
+            outcomes = list(pool.map(update, candidates))
+    results = [item for item in outcomes if item is not None]
     succeeded = sum(1 for item in results if item.get("status") == "succeeded")
     failed = sum(1 for item in results if item.get("status") == "failed")
     skipped = sum(1 for item in results if item.get("status") == "skipped")
@@ -8072,6 +7968,214 @@ def handle_fleet_update(
         "skipped": skipped,
         "results": results,
     }
+
+
+def _fleet_update_node_with_retries(
+    token: str,
+    node_name: str,
+    *,
+    attempts: int,
+    progress: Callable[[Dict[str, Any]], None] | None,
+    **settings: Any,
+) -> Dict[str, Any] | None:
+    item: Dict[str, Any] | None = None
+    for attempt in range(1, attempts + 1):
+        item, retryable = _fleet_update_node(token, node_name, progress=progress, **settings)
+        if item is None:
+            return None
+        item["attempts"] = attempt
+        if item.get("status") == "succeeded" or not retryable or attempt == attempts:
+            return item
+        delay = min(60, FLEET_UPDATE_RETRY_DELAY_SECONDS * attempt)
+        if progress:
+            progress({
+                **item,
+                "status": "retrying",
+                "message": f"Attempt {attempt}/{attempts} failed: {item.get('message') or item.get('status')}; retrying in {delay}s",
+            })
+        time.sleep(delay)
+    return item
+
+
+def _fleet_update_node(
+    token: str,
+    node_name: str,
+    *,
+    install_ref: str,
+    include_all: bool,
+    include_manager: bool,
+    explicit_targets: bool,
+    per_node_timeout: int,
+    wait_ready_seconds: int,
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+) -> tuple[Dict[str, Any] | None, bool]:
+    """Update one node once; returns (result or None when not targeted, retryable)."""
+    current_state = load_state()
+    require_token(current_state, token, token_type="deploy")
+    current_nodes = current_state.get("nodes") if isinstance(current_state.get("nodes"), dict) else {}
+    record = current_nodes.get(node_name)
+    if not isinstance(record, dict):
+        return None, False
+    ready_deadline = time.monotonic() + wait_ready_seconds
+    while wait_ready_seconds and not _node_agent_is_ready(record) and time.monotonic() < ready_deadline:
+        time.sleep(min(2.0, max(ready_deadline - time.monotonic(), 0.1)))
+        current_state = load_state()
+        current_nodes = current_state.get("nodes") if isinstance(current_state.get("nodes"), dict) else {}
+        refreshed = current_nodes.get(node_name)
+        if isinstance(refreshed, dict):
+            record = refreshed
+    agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
+    if not include_all and not explicit_targets and not _node_agent_is_ready(record):
+        return None, False
+    item: Dict[str, Any] = {
+        "nodeName": node_name,
+        "region": str(record.get("region") or ""),
+        "os": str(agent.get("os") or ""),
+        "agentVersionBefore": str(agent.get("version") or ""),
+        "status": "pending",
+    }
+    if progress:
+        progress(dict(item))
+    try:
+        _reject_control_maintenance(current_state)
+    except LumaError as exc:
+        item["status"] = "failed"
+        item["message"] = str(exc)
+        if progress:
+            progress(dict(item))
+        return item, True
+    if _node_record_is_manager(record) and not include_manager:
+        item["status"] = "skipped"
+        item["message"] = (
+            "manager node is skipped by default and updated separately by the control-plane rollout"
+        )
+        if progress:
+            progress(dict(item))
+        return item, False
+    agent_status = _node_agent_status(record)
+    capabilities = {str(value) for value in agent.get("capabilities") or []}
+    if agent_status != "ready":
+        item["status"] = "skipped"
+        item["message"] = f"node agent is not ready; status={agent_status}"
+        if progress:
+            progress(dict(item))
+        return item, bool(wait_ready_seconds)
+    if "luma-update" not in capabilities:
+        item["status"] = "skipped"
+        item["message"] = (
+            "node agent does not support fleet update; managed fleet update capability is missing"
+        )
+        if progress:
+            progress(dict(item))
+        return item, False
+    config = load_config(_control_config_path())
+    install_proxy = _egress_proxy_for_node(config, current_state, node_name)
+    if install_proxy and "luma-update-proxy-v1" not in capabilities:
+        item["status"] = "failed"
+        item["message"] = (
+            "node requires egress for the Luma installer, but its current agent predates "
+            "luma-update-proxy-v1; perform the documented one-time exact-ref bootstrap "
+            "through the root terminal, then use fleet updates normally"
+        )
+        if progress:
+            progress(dict(item))
+        return item, False
+    try:
+        item["status"] = "installing"
+        item["message"] = f"Downloading and installing Luma {install_ref or 'latest'}."
+        if progress:
+            progress(dict(item))
+
+        def install_progress(event: Dict[str, Any]) -> None:
+            message = str(event.get("message") or event.get("line") or "").strip()
+            if message:
+                item["status"] = "installing"
+                item["message"] = message
+                if progress:
+                    progress(dict(item))
+
+        install_payload = {"installRef": install_ref}
+        if install_proxy:
+            install_payload["proxy"] = install_proxy
+        result = _run_node_agent_task(
+            current_state,
+            node_name,
+            "update-luma",
+            install_payload,
+            timeout=per_node_timeout,
+            required_capability="luma-update",
+            progress=install_progress,
+        )
+        item["status"] = "succeeded"
+        item["message"] = str(result.get("message") or "Luma installer finished")
+        item["taskId"] = str(result.get("taskId") or "")
+        if result.get("installRef"):
+            item["installRef"] = str(result.get("installRef"))
+        installed_version = str(result.get("installedVersion") or "").strip()
+        if installed_version:
+            item["installedVersion"] = installed_version
+        if result.get("output"):
+            item["output"] = str(result.get("output"))
+        verify_seconds = wait_ready_seconds
+        if result.get("lifecycleOperationId"):
+            verify_seconds = max(verify_seconds, 120)
+        if verify_seconds:
+            item["status"] = "verifying"
+            item["message"] = "Installer finished; waiting for the updated node agent to reconnect."
+            if progress:
+                progress(dict(item))
+            completed_at = int(time.time())
+            expected_version = ""
+            if re.fullmatch(r"v[0-9]+(?:\.[0-9]+){2}(?:[-+][A-Za-z0-9.-]+)?", install_ref):
+                expected_version = install_ref[1:]
+            elif installed_version:
+                expected_version = installed_version
+            else:
+                raise LumaError(
+                    "Installer did not report the installed version for this commit/branch update; "
+                    "update this node with a release tag once before retrying an untagged ref."
+                )
+            verify_deadline = time.monotonic() + verify_seconds
+            verified_agent: Dict[str, Any] | None = None
+            while time.monotonic() < verify_deadline:
+                time.sleep(min(2.0, max(verify_deadline - time.monotonic(), 0.1)))
+                verified_state = load_state()
+                verified_nodes = (
+                    verified_state.get("nodes")
+                    if isinstance(verified_state.get("nodes"), dict)
+                    else {}
+                )
+                verified_record = verified_nodes.get(node_name)
+                if not isinstance(verified_record, dict) or not _node_agent_is_ready(verified_record):
+                    continue
+                candidate_agent = (
+                    verified_record.get("agent")
+                    if isinstance(verified_record.get("agent"), dict)
+                    else {}
+                )
+                version_after = str(candidate_agent.get("version") or "")
+                if int(candidate_agent.get("lastSeen") or 0) <= completed_at:
+                    continue
+                if expected_version and version_after != expected_version:
+                    continue
+                verified_agent = candidate_agent
+                break
+            if verified_agent is None:
+                item["status"] = "failed"
+                item["message"] = (
+                    "Installer finished, but the updated node agent did not reconnect with the expected version "
+                    f"within {verify_seconds} seconds. Retry this node from the update center."
+                )
+            else:
+                item["status"] = "succeeded"
+                item["agentVersionAfter"] = str(verified_agent.get("version") or "")
+                item["message"] = "Luma updated and the node agent reconnected successfully."
+    except LumaError as exc:
+        item["status"] = "failed"
+        item["message"] = str(exc)
+    if progress:
+        progress(dict(item))
+    return item, item.get("status") != "succeeded"
 
 
 def _fleet_update_operation_dir() -> Path:
@@ -8931,14 +9035,16 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     _require_compose_regions(state, deployment)
     previous_record = dict(_compose_deployment_record(state, deployment.slug) or {})
     _ensure_deployment_slug_available(state, "compose", deployment.slug, deployment.name)
+    storage_warnings: list[str] = []
     deployment, body = _bind_compose_local_storage(
-        config, state, deployment, body, inspect_runtime=not _skip_orchestrator(body),
+        config, state, deployment, body, inspect_runtime=not _skip_orchestrator(body), warnings=storage_warnings,
     )
     _ensure_tcp_relay_ports_available(state, kind="compose", slug=deployment.slug, ports=_compose_tcp_relay_ports(deployment))
     _ensure_compose_exposure_supported_on_nodes(state, deployment)
     parse_step = {"name": "Parse compose deployment", "status": "ok", "message": f"{deployment.name} ({len(deployment.compose.get('services', {}))} services)"}
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
+    _emit_storage_warnings(steps, progress, storage_warnings)
     _emit_tcp_ingress_refresh_advisory(steps, progress, state, _compose_tcp_relay_ports(deployment))
     compose_content = str(body.get("composeContent") or "")
     secrets, secret_result = _render_secrets(state, scope=deployment.slug, body=body, texts=[str(body.get("manifest") or ""), compose_content])
@@ -9043,12 +9149,14 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                 progress=progress,
             )
         _emit_compose_storage_mount_warnings(steps, progress, target, stack_text, deployment)
+        backend_warnings: list[str] = []
         _deploy_step(
             steps,
             "Check storage backend",
-            lambda: _guard_compose_storage_switch(target, deployment, previous_record=previous_record),
+            lambda: _guard_compose_storage_switch(target, deployment, previous_record=previous_record, warnings=backend_warnings),
             progress=progress,
         )
+        _emit_storage_warnings(steps, progress, backend_warnings)
         storage_preparation = _deploy_step(
             steps,
             "Prepare managed storage",
@@ -9205,7 +9313,7 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
     runtime_config = _config_with_state_nodes(config, state)
     deployment = _load_compose_request(body, source_name)
     _require_compose_regions(state, deployment)
-    deployment, body = _bind_compose_local_storage(config, state, deployment, body, inspect_runtime=False)
+    deployment, body = _bind_compose_local_storage(config, state, deployment, body, inspect_runtime=False, warnings=[])
     _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
     _ensure_compose_exposure_supported_on_nodes(state, deployment)
     compose_requirements = {
@@ -10283,6 +10391,7 @@ def _guard_compose_storage_switch(
     deployment: ComposeDeploymentSpec,
     *,
     previous_record: Dict[str, Any] | None = None,
+    warnings: list[str] | None = None,
 ) -> str:
     previous_volumes = _compose_storage_backend_signatures_from_record(previous_record)
     source = "deployment record"
@@ -10306,11 +10415,17 @@ def _guard_compose_storage_switch(
         if before != after:
             changed.append(name)
     if changed:
-        raise LumaError(
+        if warnings is None:
+            raise LumaError(
                 "storage backend changed for "
                 + ", ".join(sorted(changed))
                 + "; run luma storage migrate and set adopted: true after verification, or set initialize: empty for a fresh volume"
             )
+        warnings.append(
+            "storage backend changed for " + ", ".join(sorted(changed))
+            + "; deployment continues with the new backend and existing data is not migrated"
+        )
+        return "Storage backend changed; existing data was not migrated"
     return f"Storage backend unchanged from {source}"
 
 
@@ -12021,7 +12136,15 @@ def _dashboard_issues(nodes: list[Dict[str, Any]], services: list[Dict[str, Any]
         if deployment_status in {"failed", "failed_partial"}:
             last_error = str(service.get("lastError") or "").strip()
             message = last_error or f"deployment status is {deployment_status}"
-            issues.append({"severity": "critical", "kind": "deployment", "target": full_name, "message": f"Service {full_name}: {message}"})
+            if desired > 0 and running >= desired and failed == 0 and pending == 0:
+                # The failed rollout left the previous version serving. Keep it
+                # visible, but it is not an outage; a later success clears it.
+                issues.append({
+                    "severity": "warning", "kind": "deployment", "target": full_name,
+                    "message": f"Service {full_name}: last deployment failed; the previous version is still serving ({message})",
+                })
+            else:
+                issues.append({"severity": "critical", "kind": "deployment", "target": full_name, "message": f"Service {full_name}: {message}"})
         if pending > 0:
             issues.append({"severity": "warning", "kind": "service-pending", "target": full_name, "message": f"Service {full_name} has {pending} pending task(s)"})
         memory_percent = float(actual.get("memoryPercent") or 0)
@@ -12031,21 +12154,22 @@ def _dashboard_issues(nodes: list[Dict[str, Any]], services: list[Dict[str, Any]
     return issues
 
 
-def _dashboard_nodes(
-    registered_nodes: list[Dict[str, Any]],
-    raw_nodes: list[Dict[str, Any]],
-    *,
-    terminal_nodes: set[str] | None = None,
-) -> list[Dict[str, Any]]:
-    merged: dict[str, Dict[str, Any]] = {}
-    connected_terminals = terminal_nodes or set()
+def _match_orchestrator_nodes(
+    registered_nodes: list[Dict[str, Any]], raw_nodes: list[Dict[str, Any]],
+) -> list[tuple[Dict[str, Any], str]]:
+    """Pair Nomad nodes with registered Luma names ("" when unregistered).
+
+    The stable Nomad node ID wins: macOS hosts often share hostnames such as
+    ``Mac.lan``, and hostnames or historical aliases can belong to another node.
+    """
+    names: set[str] = set()
     hostnames: dict[str, str] = {}
     node_ids: dict[str, str] = {}
     for node in registered_nodes:
         name = str(node.get("name") or "")
         if not name:
             continue
-        merged.setdefault(name, {})["registered"] = node
+        names.add(name)
         hostname = str(node.get("hostname") or "").strip()
         if hostname:
             hostnames.setdefault(hostname, name)
@@ -12056,21 +12180,38 @@ def _dashboard_nodes(
         node_id = str(node.get("nodeId") or "").strip()
         if node_id:
             node_ids.setdefault(node_id, name)
-    for raw_node in raw_nodes:
-        node = raw_node
+    pairs = []
+    for node in raw_nodes:
+        if not isinstance(node, dict):
+            continue
         hostname = str(node.get("hostname") or "").strip()
         nomad_id = str(node.get("id") or node.get("rawId") or "").strip()
-        # Hostnames and historical aliases can belong to a different node.
         name = str(
             node_ids.get(nomad_id)
             or node.get("lumaNode")
             or hostnames.get(hostname)
-            or (hostname if hostname in merged else "")
+            or (hostname if hostname in names else "")
             or ""
         )
-        if name not in merged:
-            continue
-        merged[name]["orchestrator"] = node
+        pairs.append((node, name if name in names else ""))
+    return pairs
+
+
+def _dashboard_nodes(
+    registered_nodes: list[Dict[str, Any]],
+    raw_nodes: list[Dict[str, Any]],
+    *,
+    terminal_nodes: set[str] | None = None,
+) -> list[Dict[str, Any]]:
+    merged: dict[str, Dict[str, Any]] = {}
+    connected_terminals = terminal_nodes or set()
+    for node in registered_nodes:
+        name = str(node.get("name") or "")
+        if name:
+            merged.setdefault(name, {})["registered"] = node
+    for raw_node, name in _match_orchestrator_nodes(registered_nodes, raw_nodes):
+        if name in merged:
+            merged[name]["orchestrator"] = raw_node
 
     rows: list[Dict[str, Any]] = []
     for name in sorted(merged):
@@ -13393,7 +13534,7 @@ def _runtime_image_cache_repository(image: str) -> str:
     parts = repository.split("/")
     if parts and ("." in parts[0] or ":" in parts[0] or parts[0] == "localhost"):
         parts = parts[1:]
-    if host in {"docker.io", "registry-1.docker.io"} and len(parts) == 1:
+    if host in DOCKER_HUB_HOSTS and len(parts) == 1:
         parts.insert(0, "library")
     safe_host = re.sub(r"[^a-z0-9._-]+", "-", host.lower()).strip("-.")
     safe_parts = [
@@ -13744,7 +13885,7 @@ def _registry_manifest_path(image: str, host: str) -> tuple[str, str]:
         first = parts[0]
         if "." in first or ":" in first or first == "localhost":
             parts = parts[1:]
-    if host in {"docker.io", "registry-1.docker.io"} and len(parts) == 1:
+    if host in DOCKER_HUB_HOSTS and len(parts) == 1:
         parts = ["library", parts[0]]
     repo_path = "/".join(parts).strip("/")
     if not repo_path:

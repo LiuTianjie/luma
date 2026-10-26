@@ -148,6 +148,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def _status_node_rows(registered_items: list[object], orchestrator_nodes: list[object]) -> list[list[str]]:
     merged: dict[str, dict[str, object]] = {}
+    names_by_id: dict[str, str] = {}
     for item in registered_items:
         if not isinstance(item, dict):
             continue
@@ -155,12 +156,19 @@ def _status_node_rows(registered_items: list[object], orchestrator_nodes: list[o
         if name == "-":
             continue
         merged.setdefault(name, {})["registered"] = item
+        node_id = str(item.get("nodeId") or "").strip()
+        if node_id:
+            names_by_id.setdefault(node_id, name)
     for item in orchestrator_nodes:
         if not isinstance(item, dict):
             continue
-        name = _status_value(item.get("lumaNode") or item.get("hostname") or item.get("id"))
+        node_id = str(item.get("id") or "").strip()
+        # Match on the stable Nomad ID: macOS hosts often share a hostname.
+        name = _status_value(names_by_id.get(node_id) or item.get("lumaNode") or item.get("hostname") or node_id)
         if name == "-":
             continue
+        if "orchestrator" in merged.get(name, {}):
+            name = f"{name} ({node_id[:8]})" if node_id else name
         merged.setdefault(name, {})["orchestrator"] = item
 
     rows: list[list[str]] = []

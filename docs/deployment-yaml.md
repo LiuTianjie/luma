@@ -373,7 +373,7 @@ storage:
     accessMode: ReadWriteOnce
 ```
 
-`luma storage list` / `check` / `apply` / `remove` 继续管理这些遗留 class。切换后端必须验证 `adopted: true` 或声明 `initialize: empty`。
+`luma storage list` / `check` / `apply` / `remove` 继续管理这些遗留 class。切换后端会给出 `Storage placement` 警告但不再阻止部署；数据不会自动迁移，验证后可设置 `adopted: true`，新空卷可声明 `initialize: empty`。
 
 ### 需要代理的 worker {#worker_1}
 

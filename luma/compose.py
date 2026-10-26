@@ -193,23 +193,31 @@ def render_compose_routes(config: LumaConfig, deployment: ComposeDeploymentSpec)
             }
             routes[service_name] = dump_yaml(route)
             continue
-        upstream_url = override.relay.get("url")
-        if not upstream_url:
-            scheme = override.relay.get("scheme", "http")
-            host = override.relay.get("host") or override.node or f"{deployment.slug}_{service_name}"
-            port = override.relay.get("port", override.publish_port or override.port)
-            upstream_url = f"{scheme}://{host}:{port}"
+        upstream_urls = override.relay.get("urls")
+        if isinstance(upstream_urls, list) and upstream_urls:
+            servers = [{"url": str(url)} for url in upstream_urls]
+        else:
+            upstream_url = override.relay.get("url")
+            if not upstream_url:
+                scheme = override.relay.get("scheme", "http")
+                host = override.relay.get("host") or override.node or f"{deployment.slug}_{service_name}"
+                port = override.relay.get("port", override.publish_port or override.port)
+                upstream_url = f"{scheme}://{host}:{port}"
+            servers = [{"url": upstream_url}]
         route = {
             "http": {
                 "routers": {
                     service_id: {
                         "rule": f"Host(`{override.domain}`)",
+                        # Same recovery guarantee as native relay routes: a
+                        # stale Nomad-provider router for this Host must not win.
+                        "priority": int(override.relay.get("priority", 1000)),
                         "entryPoints": [config.entrypoint],
                         "tls": {"certResolver": config.cert_resolver},
                         "service": service_id,
                     }
                 },
-                "services": {service_id: {"loadBalancer": {"servers": [{"url": upstream_url}]}}},
+                "services": {service_id: {"loadBalancer": {"servers": servers}}},
             }
         }
         routes[service_name] = dump_yaml(route)

@@ -547,7 +547,7 @@ CI:
 
 ```bash
 # Verify this version is published before installing.
-python -m pip install "luma-infra==0.2.17"
+python -m pip install "luma-infra==0.2.18"
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 luma validate service.yaml --format json
@@ -597,7 +597,7 @@ luma app remove <name> --delete-storage
 - On small manager nodes, are `resources` limits/reservations reasonable?
 - For persistent services, are the local path/volume identity and original deployment node preserved? Do not require a storage class or silently move an offline owner.
 - For `tailscale-relay` or `tcp-relay`, is `publishPort` free on the target node?
-- For Compose, are storage backend changes guarded with `adopted: true` or `initialize: empty`?
+- For Compose storage backend or owner-node changes, was the data copied and verified before redeploying (Control only warns)?
 - Should the service be public, or is `exposure: none` safer?
 
 ## Required Platform Ports

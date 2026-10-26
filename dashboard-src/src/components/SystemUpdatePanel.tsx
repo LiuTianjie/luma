@@ -53,14 +53,14 @@ function statusIcon(status?: string) {
   if (status === "succeeded") return <CheckCircle2 aria-hidden="true" />;
   if (status === "failed" || status === "interrupted") return <XCircle aria-hidden="true" />;
   if (status === "attention" || status === "skipped") return <AlertTriangle aria-hidden="true" />;
-  if (status === "running") return <Spinner aria-hidden="true" />;
+  if (status === "running" || status === "installing" || status === "verifying" || status === "retrying") return <Spinner aria-hidden="true" />;
   return <Clock3 aria-hidden="true" />;
 }
 
 function statusVariant(status?: string) {
   if (status === "succeeded") return "success" as const;
   if (status === "failed" || status === "interrupted") return "destructive" as const;
-  if (status === "attention") return "warning" as const;
+  if (status === "attention" || status === "retrying") return "warning" as const;
   return "secondary" as const;
 }
 
@@ -71,6 +71,9 @@ function statusLabel(status: string | undefined, zh: boolean) {
     pending: ["等待中", "Pending"],
     queued: ["已排队", "Queued"],
     running: ["进行中", "Running"],
+    installing: ["安装中", "Installing"],
+    verifying: ["验证中", "Verifying"],
+    retrying: ["重试中", "Retrying"],
     succeeded: ["已完成", "Completed"],
     attention: ["需要处理", "Attention needed"],
     failed: ["失败", "Failed"],

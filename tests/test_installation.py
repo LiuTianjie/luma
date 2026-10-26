@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -255,3 +256,53 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(ins.runtime_record(alias / 'venv'), ins.runtime_record(self.runtime))
         env = ins.installer_environment({'LUMA_INSTALL_HOME': str(alias)}, record)
         self.assertEqual(env['LUMA_INSTALL_HOME'], str(self.root))
+
+
+class ReleasePruneTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name).resolve() / 'luma'
+        self.releases = self.home / 'releases'
+        self.bin = Path(self.tmp.name).resolve() / 'bin'
+        self.bin.mkdir()
+        self.old = time.time() - 3600
+
+    def release(self, name, *extra, age=None):
+        path = self.releases / name
+        for child in ('src', 'venv', *extra):
+            (path / child).mkdir(parents=True)
+        stamp = self.old if age is None else age
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def prune(self, running=frozenset()):
+        with patch.object(ins, '_running_release_names', return_value=set(running)):
+            return ins.prune_releases(self.home, bin_dir=self.bin)
+
+    def test_keeps_active_rollback_running_recent_and_foreign_releases(self):
+        active = self.release('candidate.active')
+        rollback = self.release('candidate.rollback')
+        running = self.release('candidate.running')
+        recent = self.release('candidate.recent', age=time.time())
+        with_config = self.release('candidate.config', 'config')
+        stale = [self.release(f'candidate.old{i}') for i in range(3)]
+        failed = self.releases / 'candidate.failed'
+        (failed / 'src').mkdir(parents=True)
+        os.utime(failed, (self.old, self.old))
+        (self.bin / 'luma').write_text(f'export PYTHONPATH={active}/src\nexec {active}/venv/bin/python -m luma.cli "$@"\n')
+        ins.write_json(ins.lifecycle_dir(self.home) / ins.TARGET, {'runtime': str(active / 'venv'), 'previousRuntime': str(rollback / 'venv')})
+        removed = self.prune(running={'candidate.running'})
+        self.assertEqual(sorted(removed), sorted(['candidate.failed', *(path.name for path in stale)]))
+        for path in (active, rollback, running, recent, with_config):
+            self.assertTrue(path.is_dir(), path)
+        self.assertTrue((with_config / 'config').is_dir())
+
+    def test_removes_nothing_without_an_active_runtime_or_process_list(self):
+        self.release('candidate.old')
+        self.assertEqual(self.prune(), [])
+        active = self.release('candidate.active')
+        (self.bin / 'luma').write_text(f'exec {active}/venv/bin/python -m luma.cli "$@"\n')
+        with patch.object(ins, '_running_release_names', return_value=None):
+            self.assertEqual(ins.prune_releases(self.home, bin_dir=self.bin), [])
+        self.assertEqual(self.prune(), ['candidate.old'])

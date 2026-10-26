@@ -48,6 +48,35 @@ class ControlDatabaseTests(unittest.TestCase):
         self.assertEqual(state.load_state(), original)
         self.assertEqual(json.loads((self.directory / "control-sqlite-migration.json").read_text()), manifest)
 
+    def test_full_snapshot_defers_history_until_a_caller_touches_it(self):
+        original = self.sample()
+        state.state_path().write_text(json.dumps(original))
+        state.load_state()
+        reads = []
+        real_read_state = database.read_state
+
+        def counting_read_state(conn, **kwargs):
+            reads.append(kwargs.get("kinds"))
+            return real_read_state(conn, **kwargs)
+
+        with patch.object(database, "read_state", counting_read_state):
+            snapshot = state.load_state()
+            self.assertEqual(snapshot["deployToken"], "private-token")
+            self.assertEqual(set(snapshot.get("nodes")), {"node-a"})
+            self.assertEqual(len(reads), 1)
+            self.assertNotIn("buildRuns", reads[0])
+            self.assertIn("buildRuns", snapshot)
+            self.assertEqual(len(reads), 1)
+            self.assertEqual(snapshot.get("buildRuns")["run"]["events"], [{"message": "done"}])
+            self.assertEqual(reads[-1], {"buildRuns"})
+            self.assertEqual(snapshot["deploymentEvents"][0]["steps"], [{"title": "ready"}])
+            self.assertEqual(dict(snapshot), original)
+            self.assertEqual(json.loads(json.dumps(snapshot)), original)
+        detached = state.load_state()
+        detached["agentTasks"] = {}
+        self.assertEqual(detached["agentTasks"], {})
+        self.assertEqual(state.load_state()["agentTasks"], original["agentTasks"])
+
     def test_fresh_init_writes_sqlite_directly_and_reuses_credentials(self):
         with patch.object(state, "_save_json_state", side_effect=AssertionError("fresh Control must not write JSON state")):
             original = state.init_state(domain="new.example")
