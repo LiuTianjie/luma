@@ -50,8 +50,10 @@ What you get after a new deploy, only if the image already speaks OpenTelemetry:
 
 What you still do not get: nginx / static Go / images with no OTel SDK, traffic
 that never hits Traefik, request bodies, SQL text, or every successful fast
-request (5xx and >1s traces are kept; the rest are sampled at 10%). Export is
-fail-open.
+request (5xx and >1s traces are kept; the rest are sampled at 10%). Node agent
+connections to Control (`/v1/node-agent/`, `/v1/terminal/`) are held open by
+design, so they are left out of trace storage and only counted in Traefik
+metrics. Export is fail-open.
 
 ### Manual spans
 

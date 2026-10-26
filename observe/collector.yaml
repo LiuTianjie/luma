@@ -42,6 +42,15 @@ processors:
     check_interval: 1s
     limit_mib: 512
     spike_limit_mib: 128
+  # Node agents hold Control requests open by design (lease long-polls, the
+  # terminal WebSocket). Every one exceeds the slow threshold, so without this
+  # they were ~95% of stored traces. Traefik still counts them in its metrics.
+  filter/control-agent:
+    error_mode: ignore
+    traces:
+      span:
+        - 'IsMatch(attributes["url.path"], "^/v1/(node-agent|terminal)/")'
+        - 'IsMatch(attributes["url.full"], "/v1/(node-agent|terminal)/")'
   tail_sampling:
     decision_wait: 10s
     # Ten seconds at the expected rate needs ~1000 traces. Bound burst memory.
@@ -110,7 +119,7 @@ service:
   pipelines:
     traces:
       receivers: [otlp, otlp/mesh]
-      processors: [memory_limiter, tail_sampling, batch]
+      processors: [memory_limiter, filter/control-agent, tail_sampling, batch]
       exporters: [spanmetrics, otlphttp/tempo]
     metrics/span:
       receivers: [spanmetrics]

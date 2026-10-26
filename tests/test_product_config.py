@@ -3,6 +3,8 @@ import base64
 import errno
 import io
 import json
+import signal
+import subprocess
 import os
 import re
 import tempfile
@@ -166,6 +168,62 @@ class ProductConfigTests(unittest.TestCase):
                 second = _acquire_terminal_supervisor_lock(config)
                 self.assertIsNotNone(second)
                 second.close()
+
+    def test_terminal_supervisor_lock_lives_beside_the_agent_config(self):
+        from luma.agent import _terminal_supervisor_lock_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "agent.json"
+            config.write_text(json.dumps({"nodeName": "m4"}), encoding="utf-8")
+            # Different launchers have different TMPDIRs; the lock must not.
+            with patch("luma.agent.tempfile.gettempdir", return_value="/var/folders/other/T"):
+                self.assertEqual(_terminal_supervisor_lock_path(config), Path(tmp) / "terminal-supervisor-m4.lock")
+
+    def test_orphaned_terminal_supervisors_for_this_config_are_stopped(self):
+        from luma import agent
+
+        config = Path("/opt/luma/node-agent/agent.json")
+        listing = "\n".join([
+            f"  677     1 /old/venv/bin/python /old/venv/bin/luma node-agent terminal-supervisor --config {config}",
+            f" 3255     1 /usr/bin/python3 -m luma.cli node-agent terminal-supervisor --config {config}",
+            f"87008 87004 /usr/bin/python3 -m luma.cli node-agent terminal-supervisor --config {config}",
+            "  900     1 /usr/bin/python3 -m luma.cli node-agent terminal-supervisor --config /other/agent.json",
+            f"  901     1 /usr/bin/python3 -m luma.cli node-agent run --config {config}",
+        ])
+        alive = {677, 3255}
+        signals = []
+
+        def fake_kill(pid, sig):
+            signals.append((pid, sig))
+            if sig == 0:
+                if pid not in alive:
+                    raise ProcessLookupError(pid)
+                return
+            if sig == signal.SIGTERM and pid == 3255:
+                alive.discard(pid)
+            if sig == signal.SIGKILL:
+                alive.discard(pid)
+
+        ps = subprocess.CompletedProcess(["ps"], 0, stdout=listing, stderr="")
+        with patch("luma.agent.subprocess.run", return_value=ps), patch("luma.agent.os.kill", side_effect=fake_kill), patch(
+            "luma.agent.time.sleep", return_value=None
+        ), patch("luma.agent.time.monotonic", side_effect=[0, 0, 1, 5, 5]):
+            stopped = agent._terminate_orphaned_terminal_supervisors(config)
+
+        self.assertEqual(stopped, [677, 3255])
+        self.assertIn((677, signal.SIGTERM), signals)
+        self.assertIn((677, signal.SIGKILL), signals)
+        self.assertNotIn((3255, signal.SIGKILL), signals)
+        self.assertFalse(any(pid in {87008, 900, 901} for pid, _sig in signals))
+
+    def test_terminal_supervisor_exits_when_its_agent_exits(self):
+        from luma import agent
+
+        with patch("luma.agent.time.sleep", return_value=None), patch(
+            "luma.agent.os.getppid", side_effect=[4242, 1]
+        ), patch("luma.agent.os.kill") as kill, patch("luma.agent.os.getpid", return_value=99):
+            agent._exit_when_parent_exits(4242)
+        kill.assert_called_once_with(99, signal.SIGTERM)
 
     def test_node_agent_continues_after_transient_lease_failure(self):
         from luma.agent import run_node_agent

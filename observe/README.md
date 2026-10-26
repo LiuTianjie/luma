@@ -47,7 +47,9 @@ language equivalent). See [Application integration](../docs/observability.md#app
 ## Deploy
 
 Collector has a 768 MiB container ceiling, a 384 MiB Go memory target, a
-512 MiB memory limiter and bounded batches/export queues. Tail sampling keeps
+512 MiB memory limiter and bounded batches/export queues. Spans of node agent
+requests to Control (`/v1/node-agent/`, `/v1/terminal/`) are dropped first:
+they are long-lived by design and would otherwise all count as slow. Tail sampling keeps
 at most 5,000 pending traces; inactive span-metric series expire after five
 minutes. These bounds preserve room for transient and non-heap allocations.
 

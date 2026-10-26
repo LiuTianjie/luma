@@ -357,7 +357,9 @@ class ObserveTraceStackTests(unittest.TestCase):
         self.assertIn("http://127.0.0.1:4418", text)
         self.assertIn("tail_sampling", text)
         self.assertNotIn("probabilistic_sampler", text)
-        self.assertIn("processors: [memory_limiter, tail_sampling, batch]", text)
+        self.assertIn("processors: [memory_limiter, filter/control-agent, tail_sampling, batch]", text)
+        # Long-lived agent requests would otherwise all match the slow policy.
+        self.assertIn('IsMatch(attributes["url.path"], "^/v1/(node-agent|terminal)/")', text)
         self.assertIn("http.response.status_code", text)
         self.assertIn("sampling_percentage: 10", text)
         self.assertIn("otlp/mesh", text)

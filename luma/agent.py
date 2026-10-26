@@ -46,6 +46,7 @@ DEFAULT_BUILDX_CONFIG = Path.home() / ".local" / "state" / "luma" / "buildx"
 DEFAULT_AGENT_SERVICE = "luma-node-agent"
 DEFAULT_CONTAINER_STATS_INTERVAL_SECONDS = 30
 DEFAULT_BUSY_HEARTBEAT_INTERVAL_SECONDS = 30.0
+ORPHANED_SUPERVISOR_CHECK_SECONDS = 300.0
 
 
 def node_agent_os() -> str:
@@ -1388,11 +1389,19 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
     terminal_supervisor = None if once else _TerminalSupervisorProcess(config_path)
     if stats_sampler:
         stats_sampler.start()
+    orphan_check_at = 0.0
     if terminal_supervisor:
+        _terminate_orphaned_terminal_supervisors(config_path)
+        orphan_check_at = time.monotonic()
         terminal_supervisor.ensure_running()
     try:
         while True:
             if terminal_supervisor:
+                # Supervisors from older runtimes do not follow their agent;
+                # clear any left by an update so only one keeps the connection.
+                if time.monotonic() - orphan_check_at >= ORPHANED_SUPERVISOR_CHECK_SECONDS:
+                    _terminate_orphaned_terminal_supervisors(config_path)
+                    orphan_check_at = time.monotonic()
                 terminal_supervisor.ensure_running()
             if once:
                 container_stats = node_agent_container_stats()
@@ -1739,6 +1748,11 @@ def run_terminal_supervisor(config_path: Path = DEFAULT_AGENT_CONFIG) -> int:
         lock_file = _acquire_terminal_supervisor_lock(config_path)
         if lock_file is None:
             return 0
+        parent = os.getppid()
+        if parent > 1:
+            threading.Thread(
+                target=_exit_when_parent_exits, args=(parent,), daemon=True, name="luma-terminal-parent-watch",
+            ).start()
         asyncio.run(_run_terminal_supervisor(config_path))
     except KeyboardInterrupt:
         return 0
@@ -1766,7 +1780,75 @@ def _terminal_supervisor_lock_path(config_path: Path) -> Path:
     except Exception:
         config = {}
     node_name = slugify(str(config.get("nodeName") or config_path))
+    # Keep the lock beside the agent config. A temp-dir lock depends on the
+    # launcher's TMPDIR, which differs between launchd jobs, lifecycle jobs and
+    # sudo shells on macOS, so supervisors from different launches never saw
+    # each other and evicted one another's terminal connection in a loop.
+    directory = config_path.parent
+    if directory.is_dir() and os.access(directory, os.W_OK):
+        return directory / f"terminal-supervisor-{node_name}.lock"
     return Path(tempfile.gettempdir()) / f"luma-terminal-supervisor-{node_name}.lock"
+
+
+def _exit_when_parent_exits(parent: int, *, interval: float = 5.0) -> None:
+    # The agent starts the supervisor in its own session, so a service manager
+    # stopping the agent does not stop it. Follow the agent instead of becoming
+    # an orphan that keeps reconnecting with an old runtime.
+    while True:
+        time.sleep(interval)
+        if os.getppid() != parent:
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+
+
+def _terminate_orphaned_terminal_supervisors(config_path: Path, *, timeout: float = 3.0) -> list[int]:
+    """Stop terminal supervisors for this config whose agent has exited (parent PID 1)."""
+    try:
+        result = subprocess.run(["ps", "-axww", "-o", "pid=,ppid=,command="], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode:
+        return []
+    config = str(config_path)
+    victims = []
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 3 or not parts[0].isdigit() or parts[1] != "1":
+            continue
+        command = parts[2]
+        words = command.split()
+        if "terminal-supervisor" not in words or "node-agent" not in words:
+            continue
+        if "--config" not in words or words.index("--config") + 1 >= len(words) or words[words.index("--config") + 1] != config:
+            continue
+        if int(parts[0]) != os.getpid():
+            victims.append(int(parts[0]))
+    for pid in victims:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    deadline = time.monotonic() + timeout
+    remaining = list(victims)
+    while remaining and time.monotonic() < deadline:
+        time.sleep(0.1)
+        remaining = [pid for pid in remaining if _process_exists(pid)]
+    for pid in remaining:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    return victims
+
+
+def _process_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _acquire_terminal_supervisor_lock(config_path: Path) -> Any | None:

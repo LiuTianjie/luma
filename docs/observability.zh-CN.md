@@ -29,7 +29,7 @@ Control 控制台提供节点与容器采样，实时 allocation 日志仍通过
 - 导出到 Tempo、带 `luma.stack` / `luma.task` / `luma.region` 的进程 span。
 - 在 **控制台 → 可观测 → 应用监控 → Traces** 或 Grafana `/grafana/d/luma-traces` 查看。
 
-仍不会自动获得 nginx、静态 Go 程序或无 OTel SDK 镜像的进程追踪，也不覆盖未经过 Traefik 的流量、请求正文、SQL 文本或每次成功的快速请求。5xx 和超过 1 秒的 trace 会保留，其余按 10% 采样。导出失败不会阻塞业务。
+仍不会自动获得 nginx、静态 Go 程序或无 OTel SDK 镜像的进程追踪，也不覆盖未经过 Traefik 的流量、请求正文、SQL 文本或每次成功的快速请求。5xx 和超过 1 秒的 trace 会保留，其余按 10% 采样。节点 agent 访问 Control 的长连接（`/v1/node-agent/`、`/v1/terminal/`）本来就会超过 1 秒，不进入 trace 存储，只计入 Traefik 指标。导出失败不会阻塞业务。
 
 ### 手动添加 span {#manual-spans}
 
