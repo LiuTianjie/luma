@@ -1214,7 +1214,7 @@ arguments:
 
 Examples:
   luma update
-  luma update --install-ref v0.2.18
+  luma update --install-ref v0.2.19
   luma update fleet
 ```
 
