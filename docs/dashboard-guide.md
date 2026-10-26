@@ -17,7 +17,7 @@ The console is available at `https://<control-domain>/dashboard/`. Sign in with 
 | Applications | Inspect services, replicas, endpoints, logs, metrics, configuration and version history. |
 | Deployments | Follow builds and deployment results. |
 | Observability | Review alert incidents, application monitoring (requests, logs and traces), resource metrics, alert rules and notification channels. |
-| Infrastructure | Manage nodes (including joining new ones), regions, network routes, storage and registry images. |
+| Infrastructure | Manage nodes (including joining new ones and cleaning up their disks), regions, network routes, storage and registry images. |
 | Settings | Manage secrets, registry credentials, Git credentials and system maintenance (Control and agent upgrades). |
 | First install | Configure cluster dependencies and verify them. |
 

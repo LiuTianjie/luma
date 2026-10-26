@@ -221,13 +221,49 @@ luma update fleet --include-manager          # explicit repair only
 
 Updates install the latest release unless `--install-ref` is given; use a full commit for a coordinated candidate rollout. The dashboard's **Nodes → Update center** is the preferred manager path: it mirrors the Control image into the internal registry first, then rolls out with progress and route checks. A direct `luma update` on the manager pulls the image itself; where GHCR is unreachable, set `LUMA_CONTROL_IMAGE` to a pullable image.
 
-On the manager, `luma update` refreshes the firewall, Traefik, the Tailscale watchdog, Control configuration and the `luma-control` job (with Nomad auto-revert), then refreshes the local node agent. It does not restart Docker or the Nomad agent, run egress setup, or redeploy applications. Manager state under `/opt/luma/control` is root-only; without passwordless sudo run `sudo ~/.local/bin/luma update`.
+On the manager, `luma update` refreshes the firewall, Traefik, the Tailscale watchdog, the journald size limit, Control configuration and the `luma-control` job (with Nomad auto-revert), then refreshes the local node agent. It does not restart Docker or the Nomad agent, run egress setup, or redeploy applications. Manager state under `/opt/luma/control` is root-only; without passwordless sudo run `sudo ~/.local/bin/luma update`.
 
 Fleet updates run up to four nodes at a time. A node whose installer or reconnect check fails is retried up to five times; from the update center, a node that is offline at the start is also waited for and retried. Each install keeps the new and previous (rollback) runtimes and anything a process still uses, and removes older `releases/candidate.*` directories that contain only `src` and `venv`; set `LUMA_KEEP_RELEASES=1` to keep them.
 
 On a joined node, `luma update` refreshes the CLI and the node agent. A node whose agent is too old for fleet updates is reported as skipped; run `luma update` on it once. For an old node without saved agent metadata, pass `--control-url https://luma.example.com --token <node-join-token>`.
 
 Managers and nodes run a small Tailscale watchdog that restarts Tailscale after consecutive peer failures, without touching Docker, Nomad or applications.
+
+## Node Disk Cleanup
+
+Every node agent cleans its own disk once a day, starting about ten minutes after the agent starts. A run:
+
+- removes Docker images that no container uses and that are older than 7 days;
+- prunes build cache that has not been used for 7 days, in the default builder and in a running `luma-builder` / `luma-builder-egress`;
+- on Linux, keeps `/etc/systemd/journald.conf.d/luma.conf` capping the journal at `SystemMaxUse=500M`.
+
+An image is always kept when a container uses it (running or stopped), when a Nomad allocation on the node references it, when it is the `luma-control` image of the agent's or Control's release, or when its age cannot be established. Age is the later of the build time and the time the image was tagged on the host; on Docker's containerd image store, which does not record tag times, an image that appears after the agent was upgraded counts from the time the agent first saw it. If the local Nomad API cannot be read, no image is removed. Removal never forces: an image that a new container started using in the meantime stays.
+
+Open a node in the dashboard and use **Disk cleanup**: **Preview cleanup** shows the images that would be removed without changing anything, and the remove button runs the cleanup after a confirmation. The same request from a script:
+
+```bash
+curl -fsS -X POST https://luma.example.com/v1/nodes/disk-cleanup \
+  -H "Authorization: Bearer $LUMA_DEPLOY_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"node": "manager", "dryRun": true}'
+```
+
+Requests are dry runs unless `"dryRun": false` is sent. The node's last result (time, removed images, reclaimed bytes) is shown on the same card.
+
+Configure a node in `/opt/luma/node-agent/agent.json`, or with environment variables on the agent service, which take precedence:
+
+| `agent.json` `diskHygiene` key | Environment variable | Default |
+| --- | --- | --- |
+| `enabled` | `LUMA_DISK_HYGIENE=off` | `true` |
+| `intervalHours` | `LUMA_DISK_HYGIENE_INTERVAL_HOURS` | `24` |
+| `minAgeDays` | `LUMA_DISK_HYGIENE_MIN_AGE_DAYS` | `7` |
+| `buildCache` | `LUMA_DISK_HYGIENE_BUILD_CACHE` | `true` |
+| `journaldMaxUse` | `LUMA_JOURNALD_MAX_USE` | `500M` (`off` disables) |
+
+```json
+{"diskHygiene": {"enabled": true, "minAgeDays": 14, "journaldMaxUse": "1G"}}
+```
+
+Restart the agent after editing `agent.json`. `luma bootstrap`, `luma update` on the manager and `luma node join` write the journald limit directly, honoring `LUMA_JOURNALD_MAX_USE`.
 
 ## Repair The Control Plane
 

@@ -93,6 +93,60 @@ export type DashboardNode = {
   terminalStatus?: string;
   metrics?: NodeMetrics;
   capacity?: ResourceValues;
+  diskHygiene?: NodeDiskHygiene;
+};
+
+// Last automatic or manual disk cleanup, as the node agent reports it.
+export type NodeDiskHygiene = {
+  enabled?: boolean;
+  intervalHours?: number;
+  minAgeDays?: number;
+  journaldMaxUse?: string;
+  lastRunAt?: number;
+  nextRunAt?: number;
+  lastTrigger?: string;
+  lastStatus?: string;
+  lastMessage?: string;
+  lastReclaimedBytes?: number;
+  lastRemovedImages?: number;
+  lastFailedImages?: number;
+};
+
+export type NodeDiskCleanupImage = {
+  id: string;
+  refs?: string[];
+  sizeBytes?: number;
+  ageDays?: number | null;
+};
+
+export type NodeDiskCleanupResult = {
+  node?: string;
+  dryRun?: boolean;
+  status?: string;
+  message?: string;
+  minAgeDays?: number;
+  reclaimedBytes?: number;
+  images?: {
+    status?: string;
+    reason?: string;
+    error?: string;
+    imagesScanned?: number;
+    kept?: Record<string, number>;
+    candidates?: NodeDiskCleanupImage[];
+    candidateCount?: number;
+    estimatedBytes?: number;
+    uniqueBytes?: number;
+    removedCount?: number;
+    failed?: { id: string; error: string }[];
+    reclaimedBytes?: number;
+  };
+  buildCache?: {
+    status?: string;
+    reason?: string;
+    builders?: { name: string; reclaimableBytes?: number; reclaimedBytes?: number; error?: string }[];
+    reclaimedBytes?: number;
+  };
+  journald?: { status?: string; reason?: string; maxUse?: string; error?: string };
 };
 
 export type DashboardNodeJoin = {

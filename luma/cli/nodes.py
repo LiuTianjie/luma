@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import os
 from typing import Any, Dict
-from ..bootstrap import _is_tailscale_manager_addr, configure_dns, install_docker, install_nomad_node, local_host_name, setup_tailscale
+from ..bootstrap import _is_tailscale_manager_addr, configure_dns, configure_journald_limit, install_docker, install_nomad_node, local_host_name, setup_tailscale
 from ..compose import (
     load_compose_deployment,
     resolve_storage_mounts,
@@ -55,6 +55,8 @@ def cmd_node(args: argparse.Namespace) -> int:
         ensure_interactive_config("worker", required_keys=required_worker_keys)
         log("[start] Configure system DNS")
         log(f"[ok] {configure_dns(LocalExecutor())}")
+        log("[start] Limit journald disk use")
+        log(f"[ok] {configure_journald_limit(LocalExecutor())}")
         log("[start] Install Docker")
         log(f"[ok] {install_docker(LocalExecutor())}")
         client = common.ControlClient(args.endpoint, args.token, insecure=args.insecure, resolve_ip=args.resolve_ip)

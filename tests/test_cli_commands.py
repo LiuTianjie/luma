@@ -1794,6 +1794,8 @@ class CliTests(unittest.TestCase):
                 with patch("sys.stdin.isatty", return_value=True), patch(
                     "luma.userconfig.getpass.getpass", side_effect=lambda _prompt: next(secret_values)
                 ), patch("luma.cli.nodes.configure_dns", return_value="DNS ok"), patch(
+                    "luma.cli.nodes.configure_journald_limit", return_value="journald ok"
+                ), patch(
                     "luma.cli.nodes.install_docker", return_value="Docker available"
                 ), patch(
                     "luma.cli.common.ControlClient", return_value=client
@@ -1883,7 +1885,7 @@ class CliTests(unittest.TestCase):
                     "luma.userconfig.getpass.getpass", side_effect=lambda _prompt: next(secret_values)
                 ), patch("luma.cli.nodes._local_tailscale_connected", side_effect=[False, False]), patch(
                     "luma.cli.nodes.configure_dns", return_value="DNS ok"
-                ), patch("luma.cli.nodes.install_docker", return_value="Docker available"
+                ), patch("luma.cli.nodes.configure_journald_limit", return_value="journald ok"), patch("luma.cli.nodes.install_docker", return_value="Docker available"
                 ), patch("luma.cli.common.ControlClient", return_value=client), patch(
                     "luma.cli.nodes.install_nomad_node", return_value=[]
                 ), patch("luma.cli.nodes.local_nomad_node_info", return_value=("docker-home", "home-id-1")
@@ -1939,6 +1941,8 @@ class CliTests(unittest.TestCase):
                 with patch("sys.stdin.isatty", return_value=True), patch(
                     "luma.userconfig.getpass.getpass", return_value="sudo-pass"
                 ), patch("luma.cli.nodes.configure_dns", return_value="DNS ok"), patch(
+                    "luma.cli.nodes.configure_journald_limit", return_value="journald ok"
+                ), patch(
                     "luma.cli.nodes.install_docker", return_value="Docker available"
                 ), patch("luma.cli.common.ControlClient", return_value=client), patch(
                     "luma.cli.nodes.install_nomad_node", return_value=[]
@@ -1996,6 +2000,8 @@ class CliTests(unittest.TestCase):
                 with patch("sys.stdin.isatty", return_value=True), patch(
                     "luma.userconfig.getpass.getpass", return_value="sudo-pass"
                 ), patch("luma.cli.nodes.configure_dns", return_value="DNS ok"), patch(
+                    "luma.cli.nodes.configure_journald_limit", return_value="journald ok"
+                ), patch(
                     "luma.cli.nodes.install_docker", side_effect=LumaError("Docker is not ready")
                 ), patch("luma.cli.common.ControlClient", return_value=client), patch("builtins.print"):
                     code = main(
@@ -2035,6 +2041,8 @@ class CliTests(unittest.TestCase):
                 with patch("sys.stdin.isatty", return_value=True), patch(
                     "luma.userconfig.getpass.getpass", return_value="sudo-pass"
                 ), patch("luma.cli.nodes.configure_dns", return_value="DNS ok"), patch(
+                    "luma.cli.nodes.configure_journald_limit", return_value="journald ok"
+                ), patch(
                     "luma.cli.nodes.install_docker", return_value="Docker available"
                 ), patch("luma.cli.common.ControlClient", return_value=client), patch(
                     "luma.cli.nodes.install_nomad_node", side_effect=LumaError("nomad join failed")

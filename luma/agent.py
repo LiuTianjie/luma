@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping
 
 from . import __version__
+from . import disk_hygiene
 from .build_capabilities import NATIVE_ARM_BUILD_CAPABILITY, REPOSITORY_BUILD_PLAN_CAPABILITY, native_arm_build_platform
 from .errors import LumaError
 from .installer import luma_installer_command
@@ -143,6 +144,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "nomad-cni-repair",
             "terminal",
             "container-terminal",
+            disk_hygiene.DISK_HYGIENE_CAPABILITY,
         ]
     elif os_value == "darwin":
         capabilities = [
@@ -159,6 +161,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "managed-registry-access-v2",
             "terminal",
             "container-terminal",
+            disk_hygiene.DISK_HYGIENE_CAPABILITY,
         ]
     else:
         return []
@@ -1386,10 +1389,13 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
     diagnostics_at = 0.0
     stats_sampler = None if once else _ContainerStatsSampler(stats_interval)
     terminal_supervisor = None if once else _TerminalSupervisorProcess(config_path)
+    disk_scheduler = None if once else _DiskHygieneScheduler(config_path)
     if stats_sampler:
         stats_sampler.start()
     if terminal_supervisor:
         terminal_supervisor.ensure_running()
+    if disk_scheduler:
+        disk_scheduler.start()
     try:
         while True:
             if terminal_supervisor:
@@ -1408,6 +1414,7 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
                     if once:
                         raise
                     print(f"luma: node agent diagnostics failed: {exc}", file=sys.stderr, flush=True)
+                diagnostics["diskHygiene"] = _disk_hygiene_heartbeat(config_path)
                 diagnostics_at = now
             try:
                 task = client.lease_agent_task(
@@ -1438,6 +1445,8 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
                 return 0
             time.sleep(max(interval, 1))
     finally:
+        if disk_scheduler:
+            disk_scheduler.stop()
         if terminal_supervisor:
             terminal_supervisor.stop()
         if stats_sampler:
@@ -2352,7 +2361,173 @@ def _execute_agent_task_impl(
         )
     if action == "repair-nomad-cni-hostports":
         return repair_nomad_cni_hostports(ports=payload.get("ports"))
+    if action == disk_hygiene.DISK_HYGIENE_ACTION:
+        return prune_node_disk(payload, config_path=config_path, progress=progress)
     raise LumaError(f"unsupported node agent task action: {action}")
+
+
+def _read_agent_config(config_path: Path) -> Dict[str, Any]:
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return config if isinstance(config, dict) else {}
+
+
+def _disk_hygiene_heartbeat(config_path: Path) -> Dict[str, Any]:
+    settings = disk_hygiene.resolve_settings(_read_agent_config(config_path))
+    status = disk_hygiene.load_status(disk_hygiene.status_path_for(config_path))
+    return disk_hygiene.heartbeat_summary(status, settings)
+
+
+def _luma_buildx_state_root() -> Path:
+    return Path(str(os.environ.get("LUMA_BUILDX_CONFIG") or DEFAULT_BUILDX_CONFIG)).expanduser()
+
+
+def _refresh_image_first_seen(status: Dict[str, Any], docker: str | None, *, now: float) -> Dict[str, Any]:
+    if not docker:
+        return status
+    try:
+        ids = disk_hygiene.list_image_ids(docker)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return status
+    return {**status, "imagesFirstSeen": disk_hygiene.update_first_seen(status, ids, now=now)}
+
+
+def _run_node_disk_hygiene(
+    config_path: Path,
+    *,
+    trigger: str,
+    dry_run: bool,
+    min_age_days: int,
+    build_cache: bool,
+    journald_max_use: str,
+    protected_refs: Iterable[str] = (),
+    control_tags: Iterable[str] = (),
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+) -> Dict[str, Any]:
+    if not disk_hygiene.DISK_HYGIENE_LOCK.acquire(timeout=1800):
+        raise LumaError("another disk cleanup is still running on this node")
+    try:
+        status_path = disk_hygiene.status_path_for(config_path)
+        now = time.time()
+        docker = _docker_binary()
+        status = _refresh_image_first_seen(disk_hygiene.load_status(status_path), docker, now=now)
+        if not dry_run:
+            # Record the attempt first so a crash mid-run waits a full interval
+            # instead of retrying on every agent restart.
+            status["lastAttemptAt"] = int(now)
+            disk_hygiene.write_status(status_path, status)
+        result = disk_hygiene.run_disk_hygiene(
+            min_age_days=min_age_days,
+            dry_run=dry_run,
+            build_cache=build_cache,
+            journald_max_use=journald_max_use,
+            protected_refs=protected_refs,
+            # The agent's own release and the release Control reports.
+            control_tags=[f"v{__version__}", *control_tags],
+            docker=docker,
+            os_name=node_agent_os(),
+            buildx_config_root=_luma_buildx_state_root(),
+            first_seen=status.get("imagesFirstSeen") if isinstance(status.get("imagesFirstSeen"), dict) else {},
+            progress=(lambda message: progress({"type": "status", "message": message})) if progress else None,
+        )
+        if not dry_run:
+            status = disk_hygiene.record_run(status, result, trigger=trigger)
+        disk_hygiene.write_status(status_path, status)
+        return result
+    finally:
+        disk_hygiene.DISK_HYGIENE_LOCK.release()
+
+
+def prune_node_disk(
+    payload: Dict[str, Any],
+    *,
+    config_path: Path = DEFAULT_AGENT_CONFIG,
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+) -> Dict[str, Any]:
+    """Manual cleanup from Control. Dry run unless the payload says otherwise."""
+    settings = disk_hygiene.resolve_settings(_read_agent_config(config_path))
+    protected = [
+        str(value).strip()
+        for value in (payload.get("protectImages") if isinstance(payload.get("protectImages"), list) else [])
+        if isinstance(value, str) and str(value).strip()
+    ][:50]
+    return _run_node_disk_hygiene(
+        config_path,
+        trigger="manual",
+        dry_run=payload.get("dryRun") is not False,
+        min_age_days=disk_hygiene.int_setting(payload.get("minAgeDays"), settings.min_age_days, minimum=1, maximum=365),
+        build_cache=bool(payload.get("buildCache", settings.build_cache)),
+        journald_max_use=settings.journald_max_use,
+        protected_refs=protected,
+        control_tags=[str(payload.get("controlTag") or "")],
+        progress=progress,
+    )
+
+
+class _DiskHygieneScheduler:
+    """Run the automatic cleanup once per interval in the background.
+
+    It never blocks the lease loop, so a long image removal cannot make the
+    node look offline. The first check waits a while after start so an agent
+    restart during an update does not compete with the rollout.
+    """
+
+    def __init__(self, config_path: Path) -> None:
+        self.config_path = config_path
+        self.initial_delay = max(float(os.environ.get("LUMA_DISK_HYGIENE_INITIAL_DELAY_SECONDS") or 600), 1.0)
+        self.check_interval = max(float(os.environ.get("LUMA_DISK_HYGIENE_CHECK_SECONDS") or 900), 30.0)
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="luma-node-agent-disk-hygiene", daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+
+    def _run(self) -> None:
+        if self.stop_event.wait(self.initial_delay):
+            return
+        while True:
+            self.tick()
+            if self.stop_event.wait(self.check_interval):
+                return
+
+    def tick(self, now: float | None = None) -> Dict[str, Any] | None:
+        try:
+            settings = disk_hygiene.resolve_settings(_read_agent_config(self.config_path))
+            if not settings.enabled:
+                return None
+            moment = time.time() if now is None else now
+            status_path = disk_hygiene.status_path_for(self.config_path)
+            status = disk_hygiene.load_status(status_path)
+            if not disk_hygiene.is_due(status, settings, now=moment):
+                # Keep first-seen times current between runs; they stand in
+                # for the pull time on Docker's containerd image store.
+                if disk_hygiene.DISK_HYGIENE_LOCK.acquire(blocking=False):
+                    try:
+                        refreshed = _refresh_image_first_seen(status, _docker_binary(), now=moment)
+                        if refreshed is not status:
+                            disk_hygiene.write_status(status_path, refreshed)
+                    finally:
+                        disk_hygiene.DISK_HYGIENE_LOCK.release()
+                return None
+            result = _run_node_disk_hygiene(
+                self.config_path,
+                trigger="schedule",
+                dry_run=False,
+                min_age_days=settings.min_age_days,
+                build_cache=settings.build_cache,
+                journald_max_use=settings.journald_max_use,
+            )
+            print(f"luma: node disk cleanup: {result.get('message')}", file=sys.stderr, flush=True)
+            return result
+        except Exception as exc:
+            # Cleanup is housekeeping; it must never take the agent down.
+            print(f"luma: node disk cleanup failed: {exc}", file=sys.stderr, flush=True)
+            return None
 
 
 def inspect_registry_storage(*, volume_name: str) -> Dict[str, Any]:
