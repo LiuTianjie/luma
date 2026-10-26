@@ -115,6 +115,8 @@ Luma 按目标节点平台验证镜像拉取，并使用该平台拉取得到的
 
 如果 **控制台 → 节点 → 更新中心**报告 Control 镜像准备失败，保留发布 ref，打开同一面板中持久化的镜像任务。错误会区分缺少 Builder 能力、缺少 `registryHost` / `pushHost`、外部仓库传输失败和内部 digest 验证失败。修复显示的配置或网络问题，再次点击更新 Control；无需 SSH 到 Manager 或重启应用。内部镜像通过验证前不会开始 Manager 滚动更新。
 
+批量更新最多同时更新四个节点；安装或重连检查失败的节点最多重试五次，因此偶发下载错误后出现一行 `重试中` 属于正常。仍为 `失败` 的节点会显示最后一次尝试的信息；修复原因后再次更新该节点。从更新中心发起时，开始时离线的节点会被等待并重试；`luma update fleet` 会把它报告为跳过。
+
 如果 `luma update fleet` 报告 `HOME: parameter not set` 或 `HOME: unbound variable`，说明节点在没有 `HOME` 的服务环境中运行旧安装流程。将 Manager/CLI 升级到包含 HOME 回退逻辑的版本，再重新批量更新。
 
 如果节点报告 `unsupported node agent task action: update-luma` 或 `node agent does not support fleet update`，该节点 agent 太旧，无法通过批量任务更新自身。请在该节点执行一次：

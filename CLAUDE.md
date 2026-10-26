@@ -89,8 +89,8 @@ python scripts/bump-version.py --minor    # 或 --major / --set x.y.z
 
 ### Control：`luma/control/`
 
-- `server.py`（~14.7k 行）：Starlette ASGI + uvicorn（`create_app()`/`serve()`），只有这一套 HTTP 栈。认证后的路由在 `_asgi_authenticated_get` / `_asgi_authenticated_post` 分发。处理部署、DNS 同步、节点 agent 任务派发、状态查询，以 NDJSON 流式返回部署事件。所有部署路径被全局 `_DEPLOY_LOCK` 串行化。部署步骤错误契约：`_deploy_step` 里的非 `LumaError` 必须原样重抛。
-- `state.py` / `database.py` / `history.py`：单 Manager 本地 SQLite/WAL 状态与索引历史。`control.json` 只作为旧版首次迁移输入；迁移后 SQLite 是唯一权威状态。备份恢复见 `docs/control-storage.md`。
+- `server.py`（~15k 行）：Starlette ASGI + uvicorn（`create_app()`/`serve()`），只有这一套 HTTP 栈。认证后的路由在 `_asgi_authenticated_get` / `_asgi_authenticated_post` 分发。处理部署、DNS 同步、节点 agent 任务派发、状态查询，以 NDJSON 流式返回部署事件。所有部署路径被全局 `_DEPLOY_LOCK` 串行化。部署步骤错误契约：`_deploy_step` 里的非 `LumaError` 必须原样重抛。
+- `state.py` / `database.py` / `history.py`：单 Manager 本地 SQLite/WAL 状态与索引历史。`control.json` 只作为旧版首次迁移输入；迁移后 SQLite 是唯一权威状态。`load_state()` 返回的快照对 `state.DEFERRED_KINDS`（任务回执、构建/部署历史）延迟到首次访问才读；只鉴权的 handler 用 `load_auth_state()`，分页历史走 `history.py`。备份恢复见 `docs/control-storage.md`。
 - `client.py`（`ControlClient`，强制 https）、`context.py`（登录上下文）、`secrets.py`、`metrics*.py`、`monitoring.py`、`alerting.py`、`build_queue.py`、`workflows.py`、`logs.py`、`operations.py`、`resources.py`（镜像/registry 解析）等按领域拆分。
 
 ### 其余模块

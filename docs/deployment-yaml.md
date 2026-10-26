@@ -341,7 +341,7 @@ Nomad 节点身份是稳定的 UUID。节点离开集群后用同一个 Luma 节
 
 ### 普通服务使用本地卷 {#local-volume}
 
-新的持久化原生服务用 named volume 或 bind mount。Control 在首次部署前记录归属节点，后续更新钉在该节点；可写持久化挂载要求 `replicas: 1`。不要为新应用注册 storage class 或 NFS。
+新的持久化原生服务用 named volume 或 bind mount。Control 在首次部署前记录归属节点，后续更新钉在该节点；显式改成其他 `node` 时部署会继续，但会给出 `Storage placement` 警告，旧节点上的数据不会被复制；可写持久化挂载要求 `replicas: 1`。不要为新应用注册 storage class 或 NFS。
 
 ```yaml
 name: home-db

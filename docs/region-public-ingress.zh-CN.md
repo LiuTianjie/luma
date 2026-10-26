@@ -31,7 +31,7 @@ luma node list
 luma version
 ```
 
-每个节点必须用新心跳报告目标版本，任务排队或安装程序退出都不等于升级完成。离线或失败节点需要修复重试，不能计入「全部成功」。Manager 已在第 3 步处理，`--include-manager` 留给明确的修复场景。
+每个节点必须用新心跳报告目标版本，任务排队或安装程序退出都不等于升级完成。Control 会对失败节点最多重试五次；之后仍离线或失败的节点需要修复，不能计入「全部成功」。Manager 已在第 3 步处理，`--include-manager` 留给明确的修复场景。
 
 新 Control 会在 `luma version` / `/v1/health` 中报告 `region-exposures-v1` 和 `macos-compose-network-v1`。Compose 网络无需新增 Agent 协议，可信生命周期任务随 Control 生成的 jobspec 下发。已有 job 保持旧网络，直到主动重新部署。仅靠 CLI 恢复 Manager 或回退兼容版本，见[发布指南](maintainers/release.zh-CN.md#candidate-manager-upgrade-and-rollback)。
 

@@ -32,10 +32,15 @@ failures do not fall back to source code plus residual dependencies. An
 installation-scoped lock rejects simultaneous prepares. This is a prepare lock,
 not a durable distributed maintenance lease or a service-health guarantee.
 
-Old environments are retained. Do not move venv directories (entrypoints can
-contain absolute paths), delete previous installations, or manually repoint a
-running service as part of a normal update. Automatic candidate retention/cleanup
-is not included in this first implementation.
+After a successful install, superseded candidates are removed. The installer
+keeps the new runtime, the previous (rollback) runtime, every release a running
+process still uses and candidates prepared in the last 10 minutes. It never
+removes a directory that holds anything besides `src` and `venv`, and removes
+nothing when it cannot determine the active runtime or list processes. Set
+`LUMA_KEEP_RELEASES=1` to keep all candidates. Historical layouts outside
+`releases/` (for example `~/.local/share/luma/src` or `venv`) are never touched.
+Do not move venv directories (entrypoints can contain absolute paths) or
+manually repoint a running service as part of a normal update.
 
 ## Dependency policy
 

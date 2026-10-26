@@ -31,7 +31,7 @@ luma node list
 luma version
 ```
 
-Success requires a fresh heartbeat reporting the release on every node; a queued task or installer exit alone is insufficient. Offline or failed nodes need repair/retry before calling the fleet complete. The manager was handled in step 3; `--include-manager` is for explicit repair.
+Success requires a fresh heartbeat reporting the release on every node; a queued task or installer exit alone is insufficient. Control retries a failed node up to five times; nodes still offline or failed afterwards need repair before calling the fleet complete. The manager was handled in step 3; `--include-manager` is for explicit repair.
 
 The new Control advertises `region-exposures-v1` and `macos-compose-network-v1` in `luma version` / `/v1/health`. No new node-agent protocol is required for Compose networking: Control delivers the trusted lifecycle tasks with the jobspec. Existing jobs keep their previous network until intentionally redeployed. For CLI-only manager recovery and version-compatible rollback, use the [release guide](maintainers/release.md#candidate-manager-upgrade-and-rollback).
 
