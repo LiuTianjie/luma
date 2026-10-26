@@ -57,8 +57,8 @@ function hookRunner() {
     useCallback(fn, deps) { const i = cursor++; const old = slots[i]; if (!old || deps.some((v, n) => v !== old.deps[n])) slots[i] = { deps, fn }; return slots[i].fn; },
     useEffect(fn, deps) { const i = cursor++; const old = slots[i]; if (!old || deps.some((v, n) => v !== old.deps[n])) effects.push(() => { old?.cleanup?.(); slots[i] = { deps, cleanup: fn() }; }); },
   };
-  const { useDashboardData } = load('useDashboardData', { react });
-  return { render(scope, query) { cursor = 0; const value = useDashboardData(scope, query); effects.splice(0).forEach(fn => fn()); return value; }, close() { slots.forEach(s => s?.cleanup?.()); } };
+  const { useDashboardData } = load('useDashboardData', { react, './apiClient': load('apiClient') });
+  return { render(scope, query, token = 'token', onUnauthorized) { cursor = 0; const value = useDashboardData(scope, query, token, onUnauthorized); effects.splice(0).forEach(fn => fn()); return value; }, close() { slots.forEach(s => s?.cleanup?.()); } };
 }
 test('dashboard deduplicates refreshes, aborts old scope, ignores stale responses, skips independent pages', async () => {
   const previous = { window: global.window, document: global.document, localStorage: global.localStorage, fetch: global.fetch };
@@ -131,8 +131,8 @@ test('recent pages render immediately on return while refreshing, with expiry an
     const expired = runner.render('applications');
     assert.equal(expired.payload, null, 'old pages must return to a loading state');
     await complete(expired, { services: [{ name: 'fresh-app' }] });
-    runner.render('none').setToken('other-token');
-    assert.equal(runner.render('applications').payload, null, 'credentials cannot reuse the old account snapshot');
+    runner.render('none', undefined, 'other-token');
+    assert.equal(runner.render('applications', undefined, 'other-token').payload, null, 'credentials cannot reuse the old account snapshot');
     assert.equal(calls.at(-1).options.headers.Authorization, 'Bearer other-token');
   } finally {
     runner.close(); Date.now = originalNow; Object.assign(global, previous);
@@ -157,5 +157,29 @@ test('a rejected credential clears all saved pages', async () => {
     calls[1].resolve({ ok: false, status: 401, text: async () => JSON.stringify({ error: 'unauthorized' }) });
     await rejected;
     assert.equal(runner.render('applications').payload, null);
+  } finally { runner.close(); Object.assign(global, previous); }
+});
+
+test('a browser session sends no Authorization header and a rejected session signs the browser out', async () => {
+  const previous = { window: global.window, document: global.document, fetch: global.fetch };
+  const calls = [];
+  let signedOut = 0;
+  global.window = { location: { hostname: 'example.com' }, setTimeout() { return 1; }, clearTimeout() {} };
+  global.document = { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
+  global.fetch = (url, options) => new Promise(resolve => calls.push({ url, options, resolve }));
+  const { sessionCredential, isSessionCredential, authHeaders } = load('apiClient');
+  const runner = hookRunner();
+  try {
+    const session = sessionCredential();
+    assert.ok(isSessionCredential(session));
+    assert.deepEqual(authHeaders(session, true), { 'Content-Type': 'application/json' });
+    assert.deepEqual(authHeaders('luma_token'), { Authorization: 'Bearer luma_token' });
+    const view = runner.render('fleet', undefined, session, () => { signedOut += 1; });
+    const request = view.loadDashboard();
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.headers.Authorization, undefined);
+    calls[0].resolve({ ok: false, status: 401, text: async () => JSON.stringify({ error: 'unauthorized' }) });
+    await request;
+    assert.equal(signedOut, 1);
   } finally { runner.close(); Object.assign(global, previous); }
 });

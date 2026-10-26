@@ -21,7 +21,7 @@ COPY luma ./luma
 # pip's package-data ("assets/dashboard/*") bundles them into the installed package.
 COPY --from=dashboard /app/luma/assets/dashboard ./luma/assets/dashboard
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir '.[control]'
 
 EXPOSE 8080
 

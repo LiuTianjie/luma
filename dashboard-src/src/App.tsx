@@ -2,6 +2,8 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { ErrorBanner } from "./components/ErrorBanner";
 import type { ApplicationUpdateRequest } from "./components/ApplicationManagementPanel";
 import { appToComposeDraft, serviceToDraft } from "./components/applicationModel";
+import { EnrollPanel } from "./components/EnrollPanel";
+import { AuthLayout } from "./components/AuthLayout";
 import { LoginPanel } from "./components/LoginPanel";
 import { Topbar } from "./components/Topbar";
 import { AppRoutes, preloadPage } from "./AppRoutes";
@@ -13,6 +15,7 @@ import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empt
 import { PageHeader } from "./pages/PageHeader";
 import { Button } from "@/components/ui/button";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { Spinner } from "@/components/ui/spinner";
 import { Toaster } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { nodePath, servicePath, terminalPath, updatePath, parseObjectRoute } from "./objectRoutes";
@@ -26,6 +29,7 @@ import { createDashboardViewModel, type NavPage } from "./dashboardViewModel";
 import type { TerminalSessionTarget } from "./components/TerminalDrawer";
 import type { DashboardNode, DashboardService, Lang, SyncStatus } from "./types";
 import { dashboardScopeForPage, dashboardQueryForRoute } from "./dashboardScope";
+import { useDashboardAuth } from "./useDashboardAuth";
 import { useDashboardData } from "./useDashboardData";
 import { useTheme } from "./useTheme";
 
@@ -50,7 +54,11 @@ export function App() {
   const resolvedPage = pageForPath(router.path);
   const dashboardScope = dashboardScopeForPage(resolvedPage, router.path);
   const dashboardQuery = dashboardQueryForRoute(dashboardScope, router.path, router.search);
-  const { token, payload, cluster, errors, syncStatus, lastUpdated, setToken, signOut, loadDashboard } = useDashboardData(dashboardScope, dashboardQuery);
+  const auth = useDashboardAuth();
+  // A one-time enrollment link renders before (and instead of) sign-in.
+  const enrolling = router.path === "/enroll";
+  const token = enrolling ? "" : auth.token;
+  const { payload, cluster, errors, syncStatus, lastUpdated, loadDashboard } = useDashboardData(dashboardScope, dashboardQuery, token, auth.expire);
   const { mode: themeMode, theme, setMode: setThemeMode } = useTheme();
   const vm = useMemo(() => createDashboardViewModel(payload), [payload]);
   // Pages that fetch their own data return no cluster identity; keep the last one seen.
@@ -172,6 +180,20 @@ export function App() {
 
   const visibleStatus: SyncStatus = token ? syncStatus : "notConnected";
 
+  if (enrolling || !token) {
+    return (
+      <AuthLayout lang={lang} onLangChange={setLang}>
+        {enrolling ? (
+          <EnrollPanel lang={lang} onEnrolled={() => { auth.adoptSession(); router.navigate("/settings/security", { replace: true }); }} />
+        ) : auth.status === "checking" ? (
+          <div className="flex justify-center py-10 text-muted-foreground" role="status" aria-label={lang === "zh" ? "正在检查登录状态" : "Checking sign-in"}><Spinner /></div>
+        ) : (
+          <LoginPanel lang={lang} config={auth.config} expired={auth.expired} onToken={auth.signInWithToken} onPasskey={auth.signInPasskey} />
+        )}
+      </AuthLayout>
+    );
+  }
+
   return (
     <TooltipProvider>
       <SidebarProvider
@@ -194,7 +216,7 @@ export function App() {
           activeNavPage={activeNavPage}
           onNavigate={navigate}
           onPrefetch={preloadPage}
-          onSignOut={signOut}
+          onSignOut={() => void auth.signOut()}
           themeMode={themeMode}
           onThemeModeChange={setThemeMode}
           onLangChange={setLang}
@@ -214,49 +236,44 @@ export function App() {
             </div>
           )}
           <div ref={contentRef} className={terminalTarget ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "console-content"}>
-            {!token ? (
-              <div className="flex min-h-[60vh] items-center">
-                <LoginPanel lang={lang} onSubmit={setToken} />
-              </div>
-            ) : (
-              <div className={terminalTarget ? "flex h-full min-h-0 flex-col" : "console-page"}>
-                <ErrorBanner lang={lang} errors={errors} />
-                {payload || pageCanRenderWithoutDashboard ? (
-                  terminalTarget ? <Suspense fallback={<PageLoading lang={lang} />}><TerminalDrawer key={router.path} lang={lang} target={terminalTarget} token={token} onClose={closeTerminal} inline /></Suspense>
-                  : objectRoute && objectRoute.kind !== "update" ? (routeNode || routeService ? <ResourceDetailPage lang={lang} node={routeNode} service={routeService} services={vm.services} applicationNames={vm.applications.map(app => app.stack)} onTerminal={() => { if (routeNode) openNodeTerminal(routeNode); else if (routeService) openServiceTerminal(routeService, routeService.stack || ""); }} />
-                    : <Card><CardContent><Empty><EmptyHeader><EmptyMedia variant="icon"><SearchX /></EmptyMedia><EmptyTitle role="heading" aria-level={1}>{lang === "zh" ? "对象不存在或已移除" : "Object not found or removed"}</EmptyTitle></EmptyHeader><Button variant="outline" onClick={() => navigate("overview")}>{lang === "zh" ? "返回总览" : "Back to overview"}</Button></Empty></CardContent></Card>)
-                  : editName && !updateContext ? <>
-                    <PageHeader meta={{ eyebrow: "", title: `${lang === "zh" ? "更新应用" : "Update application"} · ${editName}`, description: "", metrics: [], action: <Button variant="outline" onClick={closeUpdatePage}><ArrowLeft data-icon="inline-start" />{lang === "zh" ? "返回应用" : "Back to application"}</Button> }} />
-                    {updateError ? <Alert variant="destructive"><TriangleAlert aria-hidden="true" /><AlertTitle>{lang === "zh" ? "无法读取配置" : "Could not load configuration"}</AlertTitle><AlertDescription><p>{updateError}</p><Button variant="outline" onClick={() => setUpdateAttempt(value => value + 1)}>{lang === "zh" ? "重试读取配置" : "Retry loading config"}</Button></AlertDescription></Alert>
-                      : !vm.applications.some(app => app.stack === editName) ? <Card><CardContent><Empty><EmptyHeader><EmptyTitle>{lang === "zh" ? "应用不存在或已移除" : "Application not found or removed"}</EmptyTitle></EmptyHeader></Empty></CardContent></Card> : <PageLoading lang={lang} />}
-                  </>
-                  : <AppRoutes
-                    page={resolvedPage}
-                    lang={lang}
-                    token={token}
-                    theme={theme}
-                    payload={payload || EMPTY_DASHBOARD_PAYLOAD}
-                    vm={vm}
-                    updateContext={updateContext}
-                    updateContextNode={updateContextNode}
-                    deployTemplateLanding={deployTemplateLanding}
-                    onNavigate={navigate}
-                    onNavigateToDeployments={() => navigate("deployments")}
-                    onSelectNode={openNodeDetail}
-                    onSelectService={openServiceDetail}
-                    onTerminal={openNodeTerminal}
-                    onServiceTerminal={openServiceTerminal}
-                    onRefresh={refreshPage}
-                    onCreateApplication={() => navigate("deploy")}
-                    onUpdateApplication={openUpdatePage}
-                    onCloseUpdate={closeUpdatePage}
-                    onTemplateLandingChange={setDeployTemplateLanding}
-                  />
-                ) : (
-                  <PageLoading lang={lang} />
-                )}
-              </div>
-            )}
+            <div className={terminalTarget ? "flex h-full min-h-0 flex-col" : "console-page"}>
+              <ErrorBanner lang={lang} errors={errors} />
+              {payload || pageCanRenderWithoutDashboard ? (
+                terminalTarget ? <Suspense fallback={<PageLoading lang={lang} />}><TerminalDrawer key={router.path} lang={lang} target={terminalTarget} token={token} onClose={closeTerminal} inline /></Suspense>
+                : objectRoute && objectRoute.kind !== "update" ? (routeNode || routeService ? <ResourceDetailPage lang={lang} node={routeNode} service={routeService} services={vm.services} applicationNames={vm.applications.map(app => app.stack)} onTerminal={() => { if (routeNode) openNodeTerminal(routeNode); else if (routeService) openServiceTerminal(routeService, routeService.stack || ""); }} />
+                  : <Card><CardContent><Empty><EmptyHeader><EmptyMedia variant="icon"><SearchX /></EmptyMedia><EmptyTitle role="heading" aria-level={1}>{lang === "zh" ? "对象不存在或已移除" : "Object not found or removed"}</EmptyTitle></EmptyHeader><Button variant="outline" onClick={() => navigate("overview")}>{lang === "zh" ? "返回总览" : "Back to overview"}</Button></Empty></CardContent></Card>)
+                : editName && !updateContext ? <>
+                  <PageHeader meta={{ eyebrow: "", title: `${lang === "zh" ? "更新应用" : "Update application"} · ${editName}`, description: "", metrics: [], action: <Button variant="outline" onClick={closeUpdatePage}><ArrowLeft data-icon="inline-start" />{lang === "zh" ? "返回应用" : "Back to application"}</Button> }} />
+                  {updateError ? <Alert variant="destructive"><TriangleAlert aria-hidden="true" /><AlertTitle>{lang === "zh" ? "无法读取配置" : "Could not load configuration"}</AlertTitle><AlertDescription><p>{updateError}</p><Button variant="outline" onClick={() => setUpdateAttempt(value => value + 1)}>{lang === "zh" ? "重试读取配置" : "Retry loading config"}</Button></AlertDescription></Alert>
+                    : !vm.applications.some(app => app.stack === editName) ? <Card><CardContent><Empty><EmptyHeader><EmptyTitle>{lang === "zh" ? "应用不存在或已移除" : "Application not found or removed"}</EmptyTitle></EmptyHeader></Empty></CardContent></Card> : <PageLoading lang={lang} />}
+                </>
+                : <AppRoutes
+                  page={resolvedPage}
+                  lang={lang}
+                  token={token}
+                  theme={theme}
+                  payload={payload || EMPTY_DASHBOARD_PAYLOAD}
+                  vm={vm}
+                  updateContext={updateContext}
+                  updateContextNode={updateContextNode}
+                  deployTemplateLanding={deployTemplateLanding}
+                  onNavigate={navigate}
+                  onNavigateToDeployments={() => navigate("deployments")}
+                  onSelectNode={openNodeDetail}
+                  onSelectService={openServiceDetail}
+                  onTerminal={openNodeTerminal}
+                  onServiceTerminal={openServiceTerminal}
+                  onRefresh={refreshPage}
+                  onCreateApplication={() => navigate("deploy")}
+                  onUpdateApplication={openUpdatePage}
+                  onCloseUpdate={closeUpdatePage}
+                  onTemplateLandingChange={setDeployTemplateLanding}
+                  onUnauthorized={auth.expire}
+                />
+              ) : (
+                <PageLoading lang={lang} />
+              )}
+            </div>
           </div>
         </SidebarInset>
         <Toaster />

@@ -117,7 +117,7 @@ Client login state is written per user:
 
 `~/.luma.config.json` contains local setup secrets such as Cloudflare, Tailscale, egress, and sudo values. The context contains only the control endpoint, cluster id, and management token. Both should be treated as secrets.
 
-The Web status panel at `https://<control-domain>/dashboard/` also uses the management token. The browser stores it in local storage for that control domain, so use the panel only on trusted devices and clear browser storage or rotate the management token if the device is no longer trusted.
+The console at `https://<control-domain>/dashboard/` signs in with a passkey or with the management token, and then keeps an `HttpOnly` session cookie; the browser does not store the token. If a device is no longer trusted, end its session in **Settings → Sign-in** or with `luma passkey sign-out`, and rotate the management token if it may have been copied. See [Sign-in and passkeys](dashboard-guide.md#sign-in-and-passkeys).
 
 ## Rotation
 

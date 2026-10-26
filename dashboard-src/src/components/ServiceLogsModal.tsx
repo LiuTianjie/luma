@@ -17,6 +17,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableRow } from "@/components/ui/table";
 import { Toggle } from "@/components/ui/toggle";
 import { cn } from "@/lib/utils";
+import { authHeaders } from "../apiClient";
 import { t } from "../i18n";
 import { appendLogFrame, formatLogLine, logRetryDelay, readLogFrames, waitForLogRetry, type DisplayLogLine } from "../logStream";
 import type { DashboardService, Lang } from "../types";
@@ -246,7 +247,7 @@ export function ServiceLogsModal({
     try {
       const params = new URLSearchParams({ service: selectedService });
       const response = await fetch(`/v1/dashboard/runtime-events?${params.toString()}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: authHeaders(token),
         signal,
       });
       const payload = await response.json();
@@ -322,7 +323,7 @@ export function ServiceLogsModal({
           const params = logParams(selectedService, "200", allocation);
           if (session.cursor) params.set("cursor", session.cursor);
           const response = await fetch(`/v1/dashboard/logs/stream?${params.toString()}`, {
-            headers: { Authorization: `Bearer ${token}` }, signal: requestController.signal,
+            headers: authHeaders(token), signal: requestController.signal,
           });
           if (!active()) return;
           if (!response.ok || !response.body) {
@@ -410,7 +411,7 @@ export function ServiceLogsModal({
       const params = logParams(selectedService, "500", allocation);
       params.set("download", "1");
       const response = await fetch(`/v1/dashboard/logs?${params.toString()}`, {
-        headers: { Authorization: `Bearer ${token}` }, signal: controller.signal,
+        headers: authHeaders(token), signal: controller.signal,
       });
       if (!response.ok) {
         const message = await response.text();
@@ -448,7 +449,7 @@ export function ServiceLogsModal({
     try {
       const response = await fetch("/v1/dashboard/pull-diagnostics/stream", {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        headers: authHeaders(token, true),
         body: JSON.stringify({ service: selectedService, timeout: 600 }),
         signal: controller.signal,
       });

@@ -18,6 +18,7 @@ const loadObservabilityPage = () => import("./pages/ObservabilityPage").then((mo
 const loadStoragePage = () => import("./pages/StoragePage").then((module) => ({ default: module.StoragePage }));
 const loadRegistryPage = () => import("./pages/RegistryPage").then((module) => ({ default: module.RegistryPage }));
 const loadMaintenancePage = () => import("./pages/MaintenancePage").then((module) => ({ default: module.MaintenancePage }));
+const loadSecurityPage = () => import("./pages/SecurityPage").then((module) => ({ default: module.SecurityPage }));
 const ApplicationsPage = lazy(loadApplicationsPage);
 const BuilderPage = lazy(loadBuilderPage);
 const DeploymentsPage = lazy(loadDeploymentsPage);
@@ -30,6 +31,7 @@ const ObservabilityPage = lazy(loadObservabilityPage);
 const StoragePage = lazy(loadStoragePage);
 const RegistryPage = lazy(loadRegistryPage);
 const MaintenancePage = lazy(loadMaintenancePage);
+const SecurityPage = lazy(loadSecurityPage);
 
 export type AppRoutesProps = {
   page: ResolvedPage;
@@ -53,6 +55,8 @@ export type AppRoutesProps = {
   onUpdateApplication: (request: ApplicationUpdateRequest) => void;
   onCloseUpdate: () => void;
   onTemplateLandingChange: (isLanding: boolean) => void;
+  // The session ended (expired, revoked or its passkey removed).
+  onUnauthorized: () => void;
 };
 
 // Start route chunk downloads while the user is pointing at a destination. The
@@ -70,6 +74,7 @@ export function preloadPage(page: NavPage): void {
     : page === "storage" ? loadStoragePage
     : page === "registry" ? loadRegistryPage
     : page === "maintenance" ? loadMaintenancePage
+    : page === "security" ? loadSecurityPage
     : null;
   if (loader) void loader().catch(() => {});
 }
@@ -153,6 +158,9 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
       break;
     case "maintenance":
       content = <MaintenancePage lang={lang} token={token} vm={vm} controlVersion={payload.cluster?.version || ""} onRefresh={props.onRefresh} />;
+      break;
+    case "security":
+      content = <SecurityPage lang={lang} token={token} onUnauthorized={props.onUnauthorized} />;
       break;
     case "setup":
       content = <SetupPage lang={lang} token={token} readiness={payload.readiness} onRefresh={props.onRefresh} />;

@@ -39,6 +39,12 @@ test('only the most specific secondary page is active', () => {
   assert.equal(childFor('/registry/policy'), '/registry');
   assert.equal(childFor('/settings/secrets/new'), '/settings/secrets');
   assert.equal(childFor('/settings/maintenance'), '/settings/maintenance');
+  assert.equal(childFor('/settings/security'), '/settings/security');
+});
+
+test('sign-in settings live with platform settings', () => {
+  assert.equal(pageForPath(ROUTE_BY_PAGE.security), 'security');
+  assert.equal(navWorkspace('security'), 'credentials');
 });
 
 test('application creation belongs to applications, maintenance to platform settings', () => {
