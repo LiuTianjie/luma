@@ -251,10 +251,13 @@ class ProductConfigTests(unittest.TestCase):
             ), patch("luma.agent._TerminalSupervisorProcess", return_value=terminal_supervisor), patch(
                 "luma.agent.node_agent_metrics", return_value={}
             ), patch("luma.agent._agent_node_diagnostics", return_value={}
-            ), patch("luma.agent.time.sleep", side_effect=[None, KeyboardInterrupt]), patch("sys.stderr"):
+            ), patch("luma.agent._terminate_orphaned_terminal_supervisors", return_value=[]) as cleanup, patch(
+                "luma.agent.time.sleep", side_effect=[None, KeyboardInterrupt]
+            ), patch("sys.stderr"):
                 with self.assertRaises(KeyboardInterrupt):
                     run_node_agent(config, poll_interval=1)
 
+            cleanup.assert_called_with(config)
             self.assertEqual(client.lease_agent_task.call_count, 2)
             terminal_supervisor.stop.assert_called_once()
             stats_sampler.stop.assert_called_once()
