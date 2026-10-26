@@ -3,7 +3,7 @@ import { localizeState } from "../i18n";
 import type { DashboardNode, DashboardService, Lang } from "../types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -98,10 +98,11 @@ function regionsFor(nodes: DashboardNode[]) {
 }
 
 function Meter({ label, value }: { label: string; value?: number }) {
+  const formatted = typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(1)}%` : "—";
   return (
-    <Progress value={clampPercent(value)} aria-valuetext={formatPercent(value)}>
+    <Progress value={clampPercent(value)} aria-valuetext={formatted}>
       <ProgressLabel>{label}</ProgressLabel>
-      <ProgressValue>{() => formatPercent(value)}</ProgressValue>
+      <ProgressValue>{() => formatted}</ProgressValue>
     </Progress>
   );
 }
@@ -129,7 +130,7 @@ export function NodeFleetMap({
   const maxPressure = nodes.reduce((max, node) => Math.max(max, pressureOf(node)), 0);
 
   return (
-    <section className="flex flex-col gap-6" aria-label={zh ? "节点态势" : "Node fleet"}>
+    <section className="@container flex flex-col gap-6" aria-label={zh ? "节点态势" : "Node fleet"}>
       <div className="flex flex-wrap items-center gap-2">
         {[
           { icon: Server, value: `${readyNodes}/${nodes.length}`, label: zh ? "在线" : "Ready" },
@@ -163,7 +164,8 @@ export function NodeFleetMap({
               <span className="text-sm text-muted-foreground">{groupReady}/{group.nodes.length} {zh ? "在线" : "online"}</span>
               <Badge variant={pressureTone} className="ml-auto">{pressureLabel(groupPressure, lang, hasPressure)}</Badge>
             </div>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            <Card className="gap-0 py-0">
+              <CardContent className="divide-y px-0">
               {group.nodes.map((node, index) => {
                 const metrics = node.metrics || {};
                 const capacity = node.capacity || {};
@@ -174,34 +176,36 @@ export function NodeFleetMap({
                 const cpu = metrics.cpuPercent ?? metrics.loadPercent;
                 const memory = metrics.memoryUsedPercent;
                 return (
-                  <Card
-                    size="sm"
+                  <div
                     key={`${node.name || "node"}-${index}`}
+                    className="grid min-w-0 gap-4 p-4 @3xl:grid-cols-[minmax(0,1.1fr)_minmax(0,1.5fr)_auto] @3xl:items-center"
                   >
-                    <CardHeader>
-                      <CardTitle className="min-w-0">
+                    <div className="flex min-w-0 flex-col gap-1.5">
+                      <div className="flex min-w-0 items-center gap-2">
                         <Tooltip>
-                          <TooltipTrigger render={<Button variant="link" size="sm" className="max-w-full" aria-label={zh ? `查看节点 ${nodeName}` : `View node ${nodeName}`} onClick={() => onSelect(node)} />}>
+                          <TooltipTrigger render={<Button variant="link" size="sm" className="h-auto min-w-0 justify-start px-0" aria-label={zh ? `查看节点 ${nodeName}` : `View node ${nodeName}`} onClick={() => onSelect(node)} />}>
                             <Server data-icon="inline-start" />
                             <span className="truncate">{nodeName}</span>
                           </TooltipTrigger>
                           <TooltipContent className="max-w-xs break-all">{zh ? `查看节点 ${nodeName}` : `View node ${nodeName}`}</TooltipContent>
                         </Tooltip>
-                      </CardTitle>
-                      <CardAction className="row-span-1 max-w-32">
-                        <Badge className="max-w-full" variant={health === "good" ? "success" : health === "danger" ? "destructive" : "warning"}>
-                          <span className="truncate" title={nodeStateLabel(node, lang)}>{nodeStateLabel(node, lang)}</span>
+                        <Badge variant={health === "good" ? "success" : health === "danger" ? "destructive" : "warning"}>
+                          {nodeStateLabel(node, lang)}
                         </Badge>
-                      </CardAction>
-                      <CardDescription className="col-span-full min-w-0 break-words">{[node.role, node.agentOs, node.availability].filter(Boolean).join(" · ") || "—"}</CardDescription>
-                    </CardHeader>
-                    <CardContent className="flex flex-col gap-4">
-                      <Meter label="CPU" value={cpu} />
-                      <Meter label={zh ? "内存" : "Memory"} value={memory} />
-                      <p className="text-sm text-muted-foreground">{zh ? "内存容量" : "Memory capacity"} <span className="tabular-nums">{formatBytes(metrics.memoryTotalBytes || capacity.memoryBytes)}</span></p>
-                    </CardContent>
-                    <CardFooter className="flex-wrap justify-between gap-2">
-                      <span className="text-sm text-muted-foreground">{zh ? `${workload.services} 个服务 · ${workload.tasks} 个任务` : `${workload.services} services · ${workload.tasks} tasks`}</span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">{[node.role, node.agentOs, node.availability].filter(Boolean).join(" · ") || "—"}</p>
+                    </div>
+                    <div className="grid min-w-0 grid-cols-2 gap-6">
+                      <div className="flex flex-col gap-2">
+                        <Meter label="CPU" value={cpu} />
+                        <p className="text-xs text-muted-foreground tabular-nums">{zh ? `${workload.services} 个服务 · ${workload.tasks} 个任务` : `${workload.services} services · ${workload.tasks} tasks`}</p>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <Meter label={zh ? "内存" : "Memory"} value={memory} />
+                        <p className="text-xs text-muted-foreground">{zh ? "容量" : "Capacity"} <span className="tabular-nums">{formatBytes(metrics.memoryTotalBytes ?? capacity.memoryBytes)}</span></p>
+                      </div>
+                    </div>
+                    <div className="flex justify-end">
                       <Tooltip>
                         <TooltipTrigger render={<span tabIndex={hasTerminal && onTerminal ? undefined : 0} />}>
                           <Button
@@ -217,11 +221,12 @@ export function NodeFleetMap({
                         </TooltipTrigger>
                         <TooltipContent className="max-w-xs break-all">{hasTerminal ? `Terminal ${nodeName}` : terminalUnavailableLabel(node, lang)}</TooltipContent>
                       </Tooltip>
-                    </CardFooter>
-                  </Card>
+                    </div>
+                  </div>
                 );
               })}
-            </div>
+              </CardContent>
+            </Card>
           </section>
         );
       })}

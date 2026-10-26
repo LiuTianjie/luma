@@ -387,7 +387,7 @@ export function CredentialsPage({
         ),
       }} />
 
-      {state.error ? (
+      {state.error && editing ? (
         <Alert variant="destructive">
           <AlertCircle />
           <AlertTitle>{zh ? "读取失败" : "Load failed"}</AlertTitle>
@@ -526,7 +526,16 @@ export function CredentialsPage({
               </CardAction>
             ) : null}
           </CardHeader>
-          <CardContent aria-busy={state.loading}>
+          <CardContent aria-busy={state.loading} className="flex flex-col gap-4">
+            {state.error ? <Alert>
+              <AlertCircle className="text-destructive" />
+              <AlertTitle>{zh ? "暂时无法加载配置" : "Configuration unavailable"}</AlertTitle>
+              <AlertDescription>
+                <p>{itemCount ? (zh ? "已保留上次读取的配置。" : "Previously loaded configuration is retained.") : (zh ? "请重试以获取配置。" : "Retry to load configuration.")}</p>
+                <p className="wrap-anywhere">{state.error}</p>
+                <Button variant="outline" size="sm" className="w-fit" disabled={state.loading} onClick={() => void refresh()}><RefreshCw data-icon="inline-start" />{zh ? "重试" : "Retry"}</Button>
+              </AlertDescription>
+            </Alert> : null}
             {initialLoading ? (
               <div className="flex flex-col gap-4" role="status" aria-label={zh ? "加载配置…" : "Loading configuration…"}>
                 <Skeleton className="h-5 w-40" />
@@ -535,19 +544,17 @@ export function CredentialsPage({
                 <Skeleton className="h-10 w-3/4" />
                 <span className="sr-only">{zh ? "加载配置…" : "Loading configuration…"}</span>
               </div>
-            ) : !itemCount ? (
+            ) : state.error && !itemCount ? null : !itemCount ? (
               <Empty>
                 <EmptyHeader>
                   <EmptyMedia variant="icon"><SectionIcon /></EmptyMedia>
-                  <EmptyTitle>{state.error ? (zh ? "暂时无法加载配置" : "Configuration unavailable") : (zh ? "暂无配置" : "No configuration yet")}</EmptyTitle>
-                  <EmptyDescription>{state.error
-                    ? (zh ? "请重试以获取最新配置。" : "Try again to retrieve the latest configuration.")
-                    : (zh ? "添加凭据后，可在这里查看或管理。" : "Add a credential to view and manage it here.")}</EmptyDescription>
+                  <EmptyTitle>{zh ? "暂无配置" : "No configuration yet"}</EmptyTitle>
+                  <EmptyDescription>{zh ? "添加凭据后，可在这里查看或管理。" : "Add a credential to view and manage it here."}</EmptyDescription>
                 </EmptyHeader>
                 <EmptyContent>
-                  <Button variant={state.error ? "outline" : "default"} type="button" onClick={() => state.error ? void refresh() : navigate(`/settings/${activeTab}/new`)}>
-                    {state.error ? <RefreshCw data-icon="inline-start" /> : <Plus data-icon="inline-start" />}
-                    {state.error ? (zh ? "重试" : "Retry") : (zh ? "添加凭据" : "Add credential")}
+                  <Button type="button" onClick={() => navigate(`/settings/${activeTab}/new`)}>
+                    <Plus data-icon="inline-start" />
+                    {zh ? "添加凭据" : "Add credential"}
                   </Button>
                 </EmptyContent>
               </Empty>

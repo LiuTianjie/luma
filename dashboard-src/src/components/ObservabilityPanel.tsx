@@ -251,13 +251,12 @@ export function ObservabilityPanel({
                 {zh ? "对象类型" : "Object type"}
               </FieldLabel>
               <ToggleGroup
-                variant="outline"
+                variant="segmented"
                 value={[kind]}
                 onValueChange={(values) => {
                   if (values[0]) update({ kind: values[0], target: "" });
                 }}
                 aria-labelledby="metrics-kind-label"
-                className="flex-wrap"
               >
                 {nodes.length > 0 && (
                   <ToggleGroupItem value="node">
@@ -300,13 +299,12 @@ export function ObservabilityPanel({
                 {zh ? "时间范围" : "Time range"}
               </FieldLabel>
               <ToggleGroup
-                variant="outline"
+                variant="segmented"
                 value={[String(historyWindow)]}
                 onValueChange={(values) => {
                   if (values[0]) update({ window: values[0] });
                 }}
                 aria-labelledby="metrics-window-label"
-                className="flex-wrap"
               >
                 {HISTORY_WINDOWS.map((value) => (
                   <ToggleGroupItem
@@ -385,12 +383,12 @@ export function ObservabilityPanel({
             <CardContent className="flex flex-col gap-4">
               {kind === "node" && node ? (
                 <dl
-                  className="grid gap-6 sm:grid-cols-3"
+                  className="grid grid-cols-3 gap-3 sm:gap-6"
                   aria-label={zh ? "当前快照" : "Current snapshot"}
                 >
                   <div className="flex min-w-0 flex-col gap-1">
                     <dt className="text-sm text-muted-foreground">CPU</dt>
-                    <dd className="text-2xl font-semibold tabular-nums">
+                    <dd className="text-xl font-semibold tabular-nums sm:text-2xl">
                       {formatPercent(
                         node.metrics?.cpuPercent ?? node.metrics?.loadPercent,
                       )}
@@ -403,7 +401,7 @@ export function ObservabilityPanel({
                     <dt className="text-sm text-muted-foreground">
                       {zh ? "内存" : "Memory"}
                     </dt>
-                    <dd className="text-2xl font-semibold tabular-nums">
+                    <dd className="text-xl font-semibold tabular-nums sm:text-2xl">
                       {formatPercent(node.metrics?.memoryUsedPercent)}
                     </dd>
                     <span className="text-sm text-muted-foreground">
@@ -418,7 +416,7 @@ export function ObservabilityPanel({
                     <dt className="text-sm text-muted-foreground">
                       {zh ? "磁盘可用" : "Disk available"}
                     </dt>
-                    <dd className="text-2xl font-semibold tabular-nums">
+                    <dd className="text-xl font-semibold tabular-nums sm:text-2xl">
                       {formatBytes(node.metrics?.diskAvailableBytes)}
                     </dd>
                     {node.metrics?.metricsPath ? (

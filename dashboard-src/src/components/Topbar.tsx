@@ -50,8 +50,8 @@ export function Topbar({
     : t(lang, syncStatus);
 
   return (
-    <header className="flex h-(--console-header-height) shrink-0 items-center gap-3 border-b px-4 md:px-6">
-      <SidebarTrigger className="md:hidden" aria-label={lang === "zh" ? "打开导航" : "Open navigation"} />
+    <header className="flex h-(--console-header-height) shrink-0 items-center gap-3 px-4 md:px-6">
+      <SidebarTrigger className="lg:hidden" aria-label={lang === "zh" ? "打开导航" : "Open navigation"} />
       {path.startsWith("/create/") && <Button variant="ghost" size="sm" onClick={() => navigate("/create")} aria-label={lang === "zh" ? "返回创建" : "Back to create"}><ArrowLeft data-icon="inline-start" />{lang === "zh" ? "返回" : "Back"}</Button>}
       <Breadcrumb className="min-w-0" aria-label={lang === "zh" ? "当前位置" : "Current location"}>
         <BreadcrumbList className="flex-nowrap">
@@ -71,7 +71,7 @@ export function Topbar({
         </BreadcrumbList>
       </Breadcrumb>
       <div className="ml-auto flex items-center gap-1.5">
-        <span className="hidden text-xs text-muted-foreground xl:inline" title={statusText} role="status">
+        <span className="hidden text-xs tabular-nums text-muted-foreground sm:inline" title={statusText} role="status">
           {statusText}
         </span>
 

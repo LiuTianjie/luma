@@ -37,7 +37,7 @@ export function mergeAlertPages<T extends { id: string | number }>(previous: T[]
   return [...merged.values()];
 }
 export function alertStatusLabel(status: string, zh: boolean) {
-  const labels: Record<string, [string, string]> = { pending: ["等待中", "Pending"], sending: ["发送中", "Sending"], retry: ["等待重试", "Retrying"], firing: ["触发中", "Firing"], resolved: ["已恢复", "Resolved"], closed: ["管理关闭", "Closed by configuration"], sent: ["已发送", "Sent"], failed: ["发送失败", "Failed"], retrying: ["等待重试", "Retrying"], suppressed: ["已抑制", "Suppressed"], cancelled: ["已取消", "Cancelled"] };
+  const labels: Record<string, [string, string]> = { pending: ["等待中", "Pending"], sending: ["发送中", "Sending"], retry: ["等待重试", "Retrying"], firing: ["触发中", "Firing"], resolved: ["已恢复", "Resolved"], closed: ["已关闭", "Closed"], sent: ["已发送", "Sent"], failed: ["发送失败", "Failed"], retrying: ["等待重试", "Retrying"], suppressed: ["已抑制", "Suppressed"], cancelled: ["已取消", "Cancelled"] };
   return labels[status]?.[zh ? 0 : 1] || status;
 }
 
@@ -49,7 +49,7 @@ export function localizeAlertPreset(preset: AlertPreset, zh: boolean): AlertPres
     "node.disk": ["Disk space pressure", "Usage of the filesystem sampled by the Agent"],
     "node.inode": ["Inode pressure", "Inode usage of the filesystem sampled by the Agent"],
     "task.queue_age": ["Task queue delay", "Age of the oldest queued task, grouped by agent / builder / build"],
-    "build.failed": ["Latest build failed", "The latest build per application failed; recovers after a successful build"],
+    "build.failed": ["Latest build failed", "A new failed build starts a separate incident; a later success resolves it, or it can be closed manually"],
     "app.http_p95": ["App p95 latency", "Traefik ingress p95 from luma-observe"],
     "app.http_5xx_ratio": ["App 5xx ratio", "Public HTTP 5xx / requests from luma-observe"],
     "app.nomad_failed": ["App failed allocations", "Failed allocations Nomad still wants to run"],
@@ -60,7 +60,7 @@ export function localizeAlertPreset(preset: AlertPreset, zh: boolean): AlertPres
 }
 
 export function alertEventLabel(kind: string, zh: boolean): string {
-  const labels: Record<string, [string, string]> = { test: ["渠道测试", "Channel test"], firing: ["告警触发", "Alert fired"], resolved: ["恢复", "Recovered"], repeat: ["重复提醒", "Repeat reminder"], pending: ["等待持续条件", "Pending duration"], acknowledged: ["人工确认", "Acknowledged"], rule_deleted: ["规则删除", "Rule deleted"], rule_changed: ["规则变更", "Rule changed"], rule_disabled: ["规则停用", "Rule disabled"] };
+  const labels: Record<string, [string, string]> = { test: ["渠道测试", "Channel test"], firing: ["告警触发", "Alert fired"], resolved: ["恢复", "Recovered"], repeat: ["重复提醒", "Repeat reminder"], pending: ["等待持续条件", "Pending duration"], acknowledged: ["停止提醒", "Reminders stopped"], manual_closed: ["手动关闭", "Closed by operator"], build_superseded: ["新失败已接替", "Superseded by a new failure"], notification_silenced: ["通知已静默", "Notification silenced"], rule_deleted: ["规则删除", "Rule deleted"], rule_changed: ["规则变更", "Rule changed"], rule_disabled: ["规则停用", "Rule disabled"] };
   return labels[kind]?.[zh ? 0 : 1] || kind;
 }
 

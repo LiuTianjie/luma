@@ -68,7 +68,7 @@ import {
   APPLICATION_TABS,
 } from "./applicationRoutes";
 import { useConfirm } from "./ConfirmDialog";
-import { Badge, BadgeGroup, CodeCell, StatePill } from "./primitives";
+import { Badge, CodeCell, StatePill } from "./primitives";
 import { Button } from "@/components/ui/button";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import {
@@ -1423,7 +1423,7 @@ export function ApplicationManagementPanel({
                         <TableRow>
                           <TableHead>{t(lang, "services")}</TableHead>
                           <TableHead>{t(lang, "status")}</TableHead>
-                          <TableHead>{t(lang, "replicas")}</TableHead>
+                          <TableHead className="text-right">{t(lang, "replicas")}</TableHead>
                           <TableHead>{t(lang, "nodes")}</TableHead>
                           <TableHead>{t(lang, "actions")}</TableHead>
                         </TableRow>
@@ -1687,10 +1687,10 @@ export function ApplicationManagementPanel({
       {!selectedStack ? (
         <>
           <FieldGroup
-            className="grid min-w-0 items-end gap-4 md:grid-cols-[minmax(0,1fr)_minmax(10rem,auto)_minmax(10rem,auto)]"
+            className="grid min-w-0 grid-cols-2 items-end gap-4 md:grid-cols-[minmax(0,1fr)_minmax(10rem,auto)_minmax(10rem,auto)]"
             aria-label={lang === "zh" ? "应用筛选" : "Application filters"}
           >
-            <Field className="min-w-0">
+            <Field className="col-span-2 min-w-0 md:col-span-1">
               <FieldLabel htmlFor="application-search">
                 {lang === "zh" ? "搜索应用" : "Search applications"}
               </FieldLabel>
@@ -1793,7 +1793,7 @@ export function ApplicationManagementPanel({
                         <TableHead>{t(lang, "accessAddress")}</TableHead>
                         <TableHead>{t(lang, "region")}</TableHead>
                         <TableHead>{t(lang, "nodes")}</TableHead>
-                        <TableHead>{t(lang, "replicas")}</TableHead>
+                        <TableHead className="text-right">{t(lang, "replicas")}</TableHead>
                         <TableHead>{t(lang, "actions")}</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -1822,29 +1822,13 @@ export function ApplicationManagementPanel({
                                 ))}
                               </div>
                             ) : (
-                              <Badge value={t(lang, "internalOnly")} />
+                              <span className="text-xs text-muted-foreground">{t(lang, "internalOnly")}</span>
                             )}
                           </TableCell>
-                          <TableCell>
-                            <BadgeGroup>
-                              {app.regions.map((region) => (
-                                <Badge key={region} value={region} />
-                              ))}
-                            </BadgeGroup>
-                          </TableCell>
-                          <TableCell>
-                            <BadgeGroup>
-                              {app.nodes.length ? (
-                                app.nodes.map((node) => (
-                                  <Badge key={node} value={node} />
-                                ))
-                              ) : (
-                                <Badge value="-" />
-                              )}
-                            </BadgeGroup>
-                          </TableCell>
-                          <TableCell>
-                            <Badge value={`${app.running}/${app.desired}`} />
+                          <TableCell className="text-xs text-muted-foreground">{app.regions.join(" · ") || "—"}</TableCell>
+                          <TableCell className="text-xs text-muted-foreground">{app.nodes.join(" · ") || "—"}</TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {app.running}<span className="text-muted-foreground"> / {app.desired}</span>
                           </TableCell>
                           <TableCell>{renderActions(app)}</TableCell>
                         </TableRow>

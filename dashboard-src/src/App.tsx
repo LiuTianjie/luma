@@ -199,7 +199,7 @@ export function App() {
           onThemeModeChange={setThemeMode}
           onLangChange={setLang}
         />
-        <SidebarInset id="main" tabIndex={-1} className="h-full min-h-0 min-w-0 overflow-hidden">
+        <SidebarInset id="main" tabIndex={-1} className="h-full min-h-0 min-w-0 overflow-hidden bg-sidebar">
           {token && !terminalTarget ? (
             <Topbar
               vm={vm}
@@ -209,7 +209,7 @@ export function App() {
               syncStatus={visibleStatus}
             />
           ) : (
-            <div className="flex h-10 shrink-0 items-center px-2 md:hidden">
+            <div className="flex h-10 shrink-0 items-center px-2 lg:hidden">
               <SidebarTrigger aria-label={lang === "zh" ? "打开导航" : "Open navigation"} />
             </div>
           )}

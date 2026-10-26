@@ -31,7 +31,7 @@ export function PageHeader({ meta }: { meta: PageHeaderMeta }) {
   const Icon = path === "/fleet/network" ? Network : pageIcons[pageForPath(path)];
   return (
     <section className="flex min-w-0 flex-wrap items-start justify-between gap-4" aria-labelledby="page-title">
-      <div className="flex min-w-0 flex-1 basis-64 flex-col gap-2">
+      <div className="flex min-w-0 flex-1 basis-48 flex-col gap-2">
         <div className="flex min-w-0 items-start gap-2">
           {Icon ? <Icon className="mt-1 size-5 shrink-0" aria-hidden="true" /> : null}
           <h1 id="page-title" className={cn("min-w-0 font-semibold tracking-tight wrap-anywhere", meta.variant === "ops" ? "text-xl" : "text-2xl")}>{meta.title}</h1>

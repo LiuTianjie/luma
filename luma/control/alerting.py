@@ -25,7 +25,7 @@ PRESETS = [
     dict(metric='node.disk', name='磁盘空间紧张', description='Agent 所采样文件系统使用率', threshold=90, forSeconds=300, unit='percent'),
     dict(metric='node.inode', name='inode 空间紧张', description='Agent 所采样文件系统 inode 使用率', threshold=90, forSeconds=300, unit='percent'),
     dict(metric='task.queue_age', name='任务排队过久', description='按 agent/builder/build 分组的最老排队任务等待秒数', threshold=600, forSeconds=60, unit='seconds'),
-    dict(metric='build.failed', name='最新构建失败', description='每个应用的最新构建失败，下一次构建成功才恢复', threshold=0, forSeconds=0, unit='count'),
+    dict(metric='build.failed', name='最新构建失败', description='新构建失败触发独立告警；后续成功恢复，也可手动关闭', threshold=0, forSeconds=0, unit='count'),
     dict(metric='app.http_p95', name='应用 p95 延迟', description='Traefik 入口 p95，来自 luma-observe', threshold=1, forSeconds=300, unit='seconds'),
     dict(metric='app.http_5xx_ratio', name='应用 5xx 占比', description='公开 HTTP 5xx / 总请求，来自 luma-observe', threshold=0.05, forSeconds=300, unit='ratio'),
     dict(metric='app.nomad_failed', name='应用失败 alloc', description='Nomad 仍想跑但失败的 alloc 数，来自 luma-observe', threshold=0, forSeconds=120, unit='count'),
@@ -46,6 +46,7 @@ def _schema(conn):
         '''CREATE TABLE IF NOT EXISTS alert_incidents(id INTEGER PRIMARY KEY AUTOINCREMENT,rule_id TEXT NOT NULL,rule_name TEXT NOT NULL,target TEXT NOT NULL,metric TEXT NOT NULL,severity TEXT NOT NULL,status TEXT NOT NULL,value REAL,no_data INTEGER NOT NULL DEFAULT 0,started_at REAL NOT NULL,fired_at REAL,resolved_at REAL,updated_at REAL NOT NULL,acknowledged_at REAL,last_notified_at REAL)''',
         "CREATE UNIQUE INDEX IF NOT EXISTS alert_active_target ON alert_incidents(rule_id,target) WHERE status IN ('pending','firing')",
         'CREATE INDEX IF NOT EXISTS alert_incidents_status ON alert_incidents(status,id DESC)',
+        '''CREATE TABLE IF NOT EXISTS alert_dismissals(rule_id TEXT NOT NULL,target TEXT NOT NULL,build_id TEXT NOT NULL,PRIMARY KEY(rule_id,target,build_id))''',
         '''CREATE TABLE IF NOT EXISTS alert_events(id INTEGER PRIMARY KEY AUTOINCREMENT,incident_id INTEGER NOT NULL REFERENCES alert_incidents(id) ON DELETE CASCADE,kind TEXT NOT NULL,at REAL NOT NULL,detail TEXT NOT NULL)''',
         '''CREATE TABLE IF NOT EXISTS alert_outbox(id INTEGER PRIMARY KEY AUTOINCREMENT,channel_id TEXT NOT NULL,incident_id INTEGER,kind TEXT NOT NULL,text TEXT NOT NULL,status TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_attempt_at REAL NOT NULL,lease_until REAL,lease_token TEXT,last_error TEXT,created_at REAL NOT NULL,sent_at REAL)''',
         'CREATE INDEX IF NOT EXISTS alert_outbox_due ON alert_outbox(status,next_attempt_at,lease_until)',
@@ -187,11 +188,25 @@ def save_channel(body, *, now=None):
         return _channel(conn.execute('SELECT * FROM alert_channels WHERE id=?',(identifier,)).fetchone())
 
 
+def _cancel_fault_notifications(conn, identifier, reason):
+    conn.execute("UPDATE alert_outbox SET status='cancelled',last_error=? WHERE incident_id=? AND kind IN ('firing','reminder') AND status IN ('pending','retry')",(reason,identifier))
+
+
+def _close_incident(conn, row, now, reason, detail=''):
+    conn.execute("UPDATE alert_incidents SET status='closed',resolved_at=?,updated_at=? WHERE id=?",(now,now,row['id']))
+    _cancel_fault_notifications(conn,row['id'],'Incident closed')
+    _event(conn,row['id'],reason,now,detail)
+
+
 def _close_rule(conn,identifier,now,reason):
+    # New metric conditions can be evaluated afresh. A manually dismissed build
+    # stays dismissed when a rule is edited or temporarily disabled.
+    if reason == 'rule_deleted':
+        conn.execute('DELETE FROM alert_dismissals WHERE rule_id=?',(identifier,))
+    else:
+        conn.execute("DELETE FROM alert_dismissals WHERE rule_id=? AND build_id=''",(identifier,))
     for row in conn.execute("SELECT id FROM alert_incidents WHERE rule_id=? AND status IN ('pending','firing')",(identifier,)).fetchall():
-        conn.execute("UPDATE alert_incidents SET status='closed',resolved_at=?,updated_at=? WHERE id=?",(now,now,row['id']))
-        _event(conn,row['id'],reason,now,'Rule changed or removed; closure is not evidence of metric recovery')
-        conn.execute("UPDATE alert_outbox SET status='cancelled',last_error='Rule changed or removed' WHERE incident_id=? AND status IN ('pending','retry')",(row['id'],))
+        _close_incident(conn,row,now,reason,'Rule changed or removed; closure is not evidence of metric recovery')
 
 
 def _enqueue(conn,channel,incident,kind,text,now):
@@ -199,6 +214,8 @@ def _enqueue(conn,channel,incident,kind,text,now):
 
 
 def _notify(conn,rule,incident,kind,now,cluster):
+    if kind in ('firing','reminder') and incident['acknowledged_at'] is not None:
+        return False
     silence = max(float(_setting(conn,'silenced_until')),rule['silenced_until'])
     if now < silence and kind != 'resolved':
         _event(conn,incident['id'],'notification_silenced',now,kind)
@@ -314,11 +331,31 @@ def tick(state: dict[str,Any], *, now=None, services=None):
             observations = _observations(state,rule['metric'],now)
             if rule['target'] != '*': observations = {rule['target']:observations.get(rule['target'])}
             active = {r['target']:r for r in conn.execute("SELECT * FROM alert_incidents WHERE rule_id=? AND status IN ('pending','firing')",(rule['id'],))}
+            dismissals = {(r['target'],r['build_id']) for r in conn.execute('SELECT target,build_id FROM alert_dismissals WHERE rule_id=?',(rule['id'],))}
+            dismissed_builds = {build_id for _,build_id in dismissals if build_id}
             # Missing targets cannot be silently reported recovered.
             observations.update({target:None for target in active if target not in observations})
             for target,value in observations.items():
                 row = active.get(target)
                 no_data = value is None
+                build = builds.get(target)
+                build_id = build['id'] if build else ''
+                # Display metadata may change after a failed build; its ID is stable.
+                if build_id and build_id in dismissed_builds:
+                    continue
+                if (target,build_id) in dismissals:
+                    # Build dismissals belong to an attempt, even after rule edits
+                    # or history cleanup. Metric dismissals end on observed recovery.
+                    if rule['metric']=='build.failed' or no_data or value > rule['threshold']:
+                        continue
+                    conn.execute("DELETE FROM alert_dismissals WHERE rule_id=? AND target=? AND build_id=''",(rule['id'],target))
+                if build and no_data:
+                    # A retry in progress waits for its outcome. Canceling it
+                    # leaves the previous failure active, with its reminder policy.
+                    if build.get('status')=='canceled' and row and json.loads(row['build_details']).get('buildId'):
+                        build, value, no_data = None, 1, False
+                    else:
+                        continue
                 if no_data and rule['no_data']=='keep':
                     if row:
                         # Missing samples break the continuous pending duration, but retain firing state.
@@ -326,6 +363,14 @@ def tick(state: dict[str,Any], *, now=None, services=None):
                     continue
                 breached = no_data or value > rule['threshold']
                 if breached:
+                    if row and build and build.get('status') in ('failed','error'):
+                        previous_build = json.loads(row['build_details']).get('buildId')
+                        # Backfill old snapshots in place, but do not carry a
+                        # no-data or older attempt's acknowledgement into a new failure.
+                        new_attempt = previous_build or row['no_data'] or (_num(build.get('createdAt')) or 0) > row['started_at']
+                        if previous_build != build_id and new_attempt:
+                            _close_incident(conn,row,now,'build_superseded',build_id)
+                            row = None
                     if row is None:
                         identifier = conn.execute("INSERT INTO alert_incidents(rule_id,rule_name,target,metric,severity,status,value,no_data,started_at,updated_at) VALUES(?,?,?,?,?,'pending',?,?,?,?)",(rule['id'],rule['name'],target,rule['metric'],rule['severity'],value,int(no_data),now,now)).lastrowid
                         _event(conn,identifier,'pending',now)
@@ -351,7 +396,7 @@ def tick(state: dict[str,Any], *, now=None, services=None):
                     conn.execute("UPDATE alert_incidents SET status='resolved',value=?,no_data=0,resolved_at=?,updated_at=? WHERE id=?",(value,now,now,row['id']))
                     _event(conn,row['id'],'resolved',now)
                     # Do not emit an obsolete firing after recovery, e.g. an outage during maintenance.
-                    conn.execute("UPDATE alert_outbox SET status='cancelled',last_error='Incident recovered before delivery' WHERE incident_id=? AND kind IN ('firing','reminder') AND status IN ('pending','retry')",(row['id'],))
+                    _cancel_fault_notifications(conn,row['id'],'Incident recovered before delivery')
                     if row['status']=='firing' and row['last_notified_at'] is not None:
                         current = conn.execute('SELECT * FROM alert_incidents WHERE id=?',(row['id'],)).fetchone()
                         _notify(conn,rule,current,'resolved',now,str(state.get('clusterId') or ''))
@@ -374,7 +419,7 @@ def deliver_pending(*, now=None, transport: Callable = send_feishu, limit=10):
                 continue
             if row['kind'] in ('firing','reminder'):
                 current = conn.execute('SELECT i.status,i.acknowledged_at,r.enabled FROM alert_incidents i LEFT JOIN alert_rules r ON r.id=i.rule_id WHERE i.id=?',(row['incident_id'],)).fetchone()
-                if not current or current['status']!='firing' or not current['enabled'] or (row['kind']=='reminder' and current['acknowledged_at'] is not None):
+                if not current or current['status']!='firing' or not current['enabled'] or current['acknowledged_at'] is not None:
                     conn.execute("UPDATE alert_outbox SET status='cancelled',last_error='Incident no longer firing or rule disabled',lease_until=NULL,lease_token=NULL WHERE id=?",(row['id'],))
                     continue
             channel = conn.execute('SELECT * FROM alert_channels WHERE id=?',(row['channel_id'],)).fetchone()
@@ -417,7 +462,7 @@ def deliver_pending(*, now=None, transport: Callable = send_feishu, limit=10):
             status = ('failed' if claimed['attempts']>=8 or not retryable else 'retry') if error else 'sent'
             if error and claimed['kind'] in ('firing','reminder'):
                 current = conn.execute('SELECT status,acknowledged_at FROM alert_incidents WHERE id=?',(claimed['incident_id'],)).fetchone()
-                if not current or current['status'] in ('resolved','closed') or (claimed['kind']=='reminder' and current['acknowledged_at'] is not None):
+                if not current or current['status'] in ('resolved','closed') or current['acknowledged_at'] is not None:
                     status,error = 'cancelled','Incident closed while notification was in flight'
             conn.execute('UPDATE alert_outbox SET status=?,last_error=?,next_attempt_at=?,sent_at=?,lease_until=NULL,lease_token=NULL WHERE id=? AND lease_token=?',
                          (status,error,now+min(3600,15*2**min(claimed['attempts']-1,8)),None if error else now,row['id'],lease))
@@ -549,10 +594,22 @@ def dispatch(method: str, resource: str, body=None, query=None):
         if name=='incidents' and identifier:
             row = conn.execute('SELECT * FROM alert_incidents WHERE id=?',(identifier,)).fetchone()
             if not row: raise LumaError('alert incident not found')
-            if method=='POST' and parts[-1]=='ack':
-                conn.execute('UPDATE alert_incidents SET acknowledged_at=? WHERE id=?',(now,identifier))
-                conn.execute("UPDATE alert_outbox SET status='cancelled',last_error='Incident acknowledged' WHERE incident_id=? AND kind='reminder' AND status IN ('pending','retry')",(identifier,))
-                _event(conn,row['id'],'acknowledged',now)
+            if method=='POST' and parts[-1] in ('ack','close'):
+                action = parts[-1]
+                if action=='close' and row['status']=='closed':
+                    return {'incident':_incident(row)}
+                if row['status'] not in ('pending','firing'):
+                    raise LumaError('Only active incidents can be acknowledged or closed')
+                build_id = str(json.loads(row['build_details']).get('buildId') or '')
+                if 'expectedBuildId' in body and body['expectedBuildId'] != build_id:
+                    raise LumaError('The failed build changed; refresh the incident before acting on it')
+                if action=='close':
+                    conn.execute('INSERT OR IGNORE INTO alert_dismissals VALUES(?,?,?)',(row['rule_id'],row['target'],build_id))
+                    _close_incident(conn,row,now,'manual_closed')
+                elif row['acknowledged_at'] is None:
+                    conn.execute('UPDATE alert_incidents SET acknowledged_at=? WHERE id=?',(now,identifier))
+                    _cancel_fault_notifications(conn,row['id'],'Incident acknowledged')
+                    _event(conn,row['id'],'acknowledged',now)
                 return {'incident':_incident(conn.execute('SELECT * FROM alert_incidents WHERE id=?',(identifier,)).fetchone())}
             if method=='GET':
                 return {'incident':_incident(row),'events':[dict(r) for r in conn.execute('SELECT id,kind,at,detail FROM alert_events WHERE incident_id=? ORDER BY id',(identifier,))]}

@@ -47,7 +47,7 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: var(--border);
   --sidebar-ring: var(--ring);
-  --console-header-height: 4rem;
+  --console-header-height: 3rem;
 }
 
 .dark {
@@ -162,7 +162,11 @@
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
-  padding: 1.5rem clamp(1.5rem, 4vw, 4rem) 2rem;
+  margin: 0 0.5rem 0.5rem 0;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--card);
+  padding: 1.5rem clamp(1.5rem, 3vw, 3rem) 2rem;
 }
 
 .console-page {
@@ -209,10 +213,27 @@
   }
 
   .console-content {
-    padding: 1.5rem 1rem 2rem;
+    margin: 0;
+    border-inline: 0;
+    border-bottom: 0;
+    border-radius: 0;
+    padding: 1.25rem 1rem 2rem;
   }
 
   .standalone-topology {
     height: 28rem;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  .console-content { margin-left: 0.5rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

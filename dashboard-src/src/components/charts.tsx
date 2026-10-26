@@ -140,9 +140,9 @@ export function TrendChart({
     });
   if (samples.length < 2)
     return (
-      <Empty style={{ height }}>
+      <Empty className="p-4" style={{ height: Math.min(height, 96) }}>
         <EmptyHeader>
-          <EmptyTitle>{emptyLabel}</EmptyTitle>
+          <EmptyTitle className="text-sm font-normal text-muted-foreground">{emptyLabel}</EmptyTitle>
         </EmptyHeader>
       </Empty>
     );

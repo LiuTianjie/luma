@@ -208,15 +208,13 @@ export function ObserveAppsPanel({
                 {zh ? "视图" : "View"}
               </FieldLabel>
               <ToggleGroup
-                variant="outline"
+                variant="segmented"
                 value={[view]}
                 onValueChange={(values) => {
                   if (values[0])
                     setView(values[0] as (typeof VIEWS)[number]["id"]);
                 }}
                 aria-labelledby={`${fieldId}-views`}
-                className="flex-wrap"
-                spacing={1}
               >
                 {VIEWS.map((item) => (
                   <ToggleGroupItem key={item.id} value={item.id}>

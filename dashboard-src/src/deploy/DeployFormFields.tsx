@@ -114,7 +114,7 @@ export function DeployEnvironmentFields({ lang, rows, onChange, label }: {
         <DeployTextField label={row.kind === "secret" ? (zh ? "密钥引用" : "Secret reference") : (zh ? "变量值" : "Value")} value={row.value} onChange={(event) => updateRow(row.id, { value: event.target.value })} placeholder={row.kind === "secret" ? "${SECRET_NAME}" : "value"} error={row.kind === "secret" && row.key.trim() && !/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(row.value.trim()) ? (zh ? "使用 ${NAME} 格式引用密钥" : "Reference a secret with ${NAME}") : undefined} />
         <Field>
           <FieldLabel id={`${prefix}-${row.id}-kind`}>{zh ? "变量类型" : "Variable type"}</FieldLabel>
-          <ToggleGroup aria-labelledby={`${prefix}-${row.id}-kind`} variant="outline" value={[row.kind || "plain"]} onValueChange={(values) => { if (values[0]) updateRow(row.id, { kind: values[0] as KeyValueRow["kind"] }); }}>
+          <ToggleGroup aria-labelledby={`${prefix}-${row.id}-kind`} variant="segmented" value={[row.kind || "plain"]} onValueChange={(values) => { if (values[0]) updateRow(row.id, { kind: values[0] as KeyValueRow["kind"] }); }}>
             <ToggleGroupItem value="plain">{zh ? "普通变量" : "Plain"}</ToggleGroupItem>
             <ToggleGroupItem value="secret">{zh ? "密钥引用" : "Secret"}</ToggleGroupItem>
           </ToggleGroup>

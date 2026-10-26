@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { ArrowDown, ArrowLeft, GitBranch, Plus, RefreshCw, RotateCcw, ScrollText, Search, Square } from "lucide-react";
+import { ArrowDown, ArrowLeft, ChevronDown, GitBranch, SlidersHorizontal, Plus, RefreshCw, RotateCcw, ScrollText, Search, Square } from "lucide-react";
 import { cancelBuildRun, retryBuildRunStream } from "../deploy/deployApi";
 import type { DeployStep } from "../deploy/types";
 import { StepLog } from "../deploy/StepLog";
@@ -13,6 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
@@ -47,6 +48,8 @@ function HistoryFilters({ lang, filters, onApply }: { lang: Lang; filters: strin
   const [since, setSince] = useState(localDateInput(params.get("since") || ""));
   const [until, setUntil] = useState(localDateInput(params.get("until") || ""));
   const [validation, setValidation] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(Boolean(params.get("source") || params.get("since") || params.get("until")));
+  const advancedCount = [source, since, until].filter(Boolean).length;
   const statuses = Array.from(new Set([...STATUS_OPTIONS, status].filter(Boolean)));
   const statusItems = [{ value: "all", label: zh ? "全部状态" : "All statuses" }, ...statuses.map((item) => ({ value: item, label: historyStatus(item, lang) }))];
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -59,6 +62,7 @@ function HistoryFilters({ lang, filters, onApply }: { lang: Lang; filters: strin
       if (value) next.set(name, value);
     }
     if (next.has("since") && next.has("until") && new Date(next.get("since")!).getTime() > new Date(next.get("until")!).getTime()) {
+      setAdvancedOpen(true);
       setValidation(zh ? "结束时间不能早于开始时间。" : "End time must be after start time.");
       return;
     }
@@ -77,29 +81,20 @@ function HistoryFilters({ lang, filters, onApply }: { lang: Lang; filters: strin
   };
   return (
     <form onSubmit={submit}>
-      <FieldGroup>
-      <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        <Field>
+      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+      <FieldGroup className="gap-4">
+      <FieldGroup className="grid grid-cols-2 gap-4 md:grid-cols-3">
+        <Field className="col-span-2 md:col-span-1">
           <FieldLabel htmlFor={`${fieldId}-app`}>{zh ? "应用" : "Application"}</FieldLabel>
           <Input id={`${fieldId}-app`} value={app} onChange={(event) => setApp(event.target.value)} placeholder={zh ? "应用名称" : "Application name"} />
         </Field>
         <Field>
           <FieldTitle id={`${fieldId}-kind`}>{zh ? "记录类型" : "Record type"}</FieldTitle>
-          <ToggleGroup aria-labelledby={`${fieldId}-kind`} variant="outline" value={[kind || "all"]} onValueChange={(values) => setKind(values[0] === "all" ? "" : values[0] || "")} className="flex-wrap">
+          <ToggleGroup aria-labelledby={`${fieldId}-kind`} variant="segmented" value={[kind || "all"]} onValueChange={(values) => setKind(values[0] === "all" ? "" : values[0] || "")}>
             <ToggleGroupItem value="all">{zh ? "全部" : "All"}</ToggleGroupItem>
             <ToggleGroupItem value="build">{zh ? "构建" : "Build"}</ToggleGroupItem>
             <ToggleGroupItem value="deployment">{zh ? "部署" : "Deployment"}</ToggleGroupItem>
             {kind && !["build", "deployment"].includes(kind) ? <ToggleGroupItem value={kind}>{kind}</ToggleGroupItem> : null}
-          </ToggleGroup>
-        </Field>
-        <Field>
-          <FieldTitle id={`${fieldId}-source`}>{zh ? "来源" : "Source"}</FieldTitle>
-          <ToggleGroup aria-labelledby={`${fieldId}-source`} variant="outline" value={[source || "all"]} onValueChange={(values) => setSource(values[0] === "all" ? "" : values[0] || "")} className="flex-wrap">
-            <ToggleGroupItem value="all">{zh ? "全部" : "All"}</ToggleGroupItem>
-            <ToggleGroupItem value="build">{sourceLabel("build", lang)}</ToggleGroupItem>
-            <ToggleGroupItem value="cli">CLI</ToggleGroupItem>
-            <ToggleGroupItem value="dashboard">{sourceLabel("dashboard", lang)}</ToggleGroupItem>
-            {source && !["build", "cli", "dashboard"].includes(source) ? <ToggleGroupItem value={source}>{source}</ToggleGroupItem> : null}
           </ToggleGroup>
         </Field>
         <Field>
@@ -108,6 +103,19 @@ function HistoryFilters({ lang, filters, onApply }: { lang: Lang; filters: strin
             <SelectTrigger id={`${fieldId}-status`} className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent><SelectGroup>{statusItems.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectGroup></SelectContent>
           </Select>
+        </Field>
+      </FieldGroup>
+      <CollapsibleContent>
+        <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <Field>
+          <FieldTitle id={`${fieldId}-source`}>{zh ? "来源" : "Source"}</FieldTitle>
+          <ToggleGroup aria-labelledby={`${fieldId}-source`} variant="segmented" value={[source || "all"]} onValueChange={(values) => setSource(values[0] === "all" ? "" : values[0] || "")}>
+            <ToggleGroupItem value="all">{zh ? "全部" : "All"}</ToggleGroupItem>
+            <ToggleGroupItem value="build">{sourceLabel("build", lang)}</ToggleGroupItem>
+            <ToggleGroupItem value="cli">CLI</ToggleGroupItem>
+            <ToggleGroupItem value="dashboard">{sourceLabel("dashboard", lang)}</ToggleGroupItem>
+            {source && !["build", "cli", "dashboard"].includes(source) ? <ToggleGroupItem value={source}>{source}</ToggleGroupItem> : null}
+          </ToggleGroup>
         </Field>
         <Field>
           <FieldLabel htmlFor={`${fieldId}-since`}>{zh ? "开始时间" : "From"}</FieldLabel>
@@ -119,10 +127,16 @@ function HistoryFilters({ lang, filters, onApply }: { lang: Lang; filters: strin
           {validation ? <FieldError id={`${fieldId}-error`}>{validation}</FieldError> : null}
         </Field>
       </FieldGroup>
-      <FieldDescription>
+        <FieldDescription className="mt-3 text-xs">
           {zh ? "时间按本地时区显示；筛选条件保存在链接中。" : "Times use your local timezone. Filters are saved in the URL."}
-      </FieldDescription>
+        </FieldDescription>
+      </CollapsibleContent>
       <Field orientation="horizontal" className="flex-wrap justify-end">
+        <CollapsibleTrigger render={<Button type="button" variant="ghost" className="mr-auto" />}>
+          <SlidersHorizontal data-icon="inline-start" />
+          {zh ? "更多筛选" : "More filters"}{advancedCount ? ` · ${advancedCount}` : ""}
+          <ChevronDown className={advancedOpen ? "rotate-180" : undefined} data-icon="inline-end" />
+        </CollapsibleTrigger>
         <Button type="button" variant="outline" onClick={clear} disabled={!app && !kind && !source && !status && !since && !until}>
           {zh ? "清空筛选" : "Clear filters"}
         </Button>
@@ -132,6 +146,7 @@ function HistoryFilters({ lang, filters, onApply }: { lang: Lang; filters: strin
         </Button>
       </Field>
       </FieldGroup>
+      </Collapsible>
     </form>
   );
 }
@@ -447,29 +462,30 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
           {staleFilters ? <Alert role="status"><AlertDescription>{zh ? "新筛选结果尚未加载，下方仍为上次筛选的记录。" : "The new filter results have not loaded. The previous results remain below."}</AlertDescription></Alert> : null}
           {!list.items.length && loading ? <div className="flex flex-col gap-3" role="status"><span className="sr-only">{zh ? "正在加载记录…" : "Loading records…"}</span>{Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-12 w-full" />)}</div> : null}
           {list.items.length ? (
-            <Table aria-busy={Boolean(loading)}>
+            <Table className="table-fixed sm:table-auto" aria-busy={Boolean(loading)}>
               <TableHeader>
                 <TableRow>
-                  <TableHead>{zh ? "来源" : "Source"}</TableHead>
+                  <TableHead className="hidden sm:table-cell">{zh ? "来源" : "Source"}</TableHead>
                   <TableHead>{zh ? "记录" : "Record"}</TableHead>
-                  <TableHead>{zh ? "状态" : "Status"}</TableHead>
-                  <TableHead className="text-right">{zh ? "时间" : "Time"}</TableHead>
+                  <TableHead className="w-24 sm:w-auto">{zh ? "状态" : "Status"}</TableHead>
+                  <TableHead className="hidden text-right sm:table-cell">{zh ? "时间" : "Time"}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {list.items.map((item) => (
                   <TableRow key={historyItemKey(item)}>
-                    <TableCell><Badge variant="secondary">{sourceLabel(item.source, lang)}</Badge></TableCell>
+                    <TableCell className="hidden sm:table-cell"><span className="text-xs text-muted-foreground">{sourceLabel(item.source, lang)}</span></TableCell>
                     <TableCell>
                       <div className="flex min-w-0 max-w-96 flex-col items-start gap-1">
                         <Button variant="link" size="sm" className="h-auto max-w-full justify-start px-0" nativeButton={false} render={<a href={toHref(`/deployments/${item.kind}/${encodeURIComponent(item.id)}${filters ? `?${filters}` : ""}`)} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); select(item); } }} />}>
                           <span className="truncate" title={item.title || item.application || item.id}>{item.title || item.application || item.id}</span>
                         </Button>
                         <p className="max-w-full truncate text-xs text-muted-foreground" title={[item.application, item.ref, item.buildNode].filter(Boolean).join(" · ")}>{[item.kind === "build" ? (zh ? "构建" : "Build") : (zh ? "部署" : "Deployment"), item.application, item.ref, item.buildNode].filter(Boolean).join(" · ")}</p>
+                        <p className="text-xs whitespace-normal text-muted-foreground sm:hidden">{sourceLabel(item.source, lang)} · <time>{formatTimestamp(item.createdAt, lang)}</time></p>
                       </div>
                     </TableCell>
                     <TableCell><StatePill label={historyStatus(item.status, lang)} value={historyStatusValue(item.status)} /></TableCell>
-                    <TableCell className="text-right">
+                    <TableCell className="hidden text-right sm:table-cell">
                       <time title={zh ? "创建时间" : "Created time"}>{formatTimestamp(item.createdAt, lang)}</time>
                     </TableCell>
                   </TableRow>

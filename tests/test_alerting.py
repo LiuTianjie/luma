@@ -124,6 +124,7 @@ class AlertingTest(unittest.TestCase):
         self.assertEqual(self.items('deliveries'),[])
         alerting.tick(self.state(1060),now=1060)
         self.assertEqual(len(self.items('deliveries')),1)
+        alerting.deliver_pending(now=1060,transport=lambda *args:None)
         incident=self.items('incidents')[0]
         alerting.dispatch('POST',f"incidents/{incident['id']}/ack")
         alerting.tick(self.state(1200),now=1200)
@@ -254,6 +255,217 @@ class AlertingTest(unittest.TestCase):
         state['buildRuns']['b']['status']='succeeded'
         alerting.tick(state,now=1030)
         self.assertEqual(self.items('incidents')[0]['status'],'resolved')
+
+    def test_close_build_survives_history_cleanup_and_allows_new_failed_build(self):
+        ch=self.channel()
+        self.rule(metric='build.failed',threshold=0,forSeconds=0,repeatSeconds=60,channelIds=[ch['id']])
+        state={'buildRuns':{'old':{'id':'old','projectKey':'luma/.','createdAt':900,'status':'failed'}}}
+        alerting.tick(state,now=1000)
+        incident=self.items('incidents')[0]
+        sent=[]
+        alerting.deliver_pending(now=1000,transport=lambda *args:sent.append(args))
+        alerting.tick(state,now=1060)
+        with patch('luma.control.alerting.time.time',return_value=1061):
+            for _ in range(2):
+                closed=alerting.dispatch('POST',f"incidents/{incident['id']}/close",{'expectedBuildId':'old'})['incident']
+        self.assertEqual(closed['status'],'closed')
+        self.assertEqual(closed['buildDetails'],incident['buildDetails'])
+        detail=alerting.dispatch('GET',f"incidents/{incident['id']}")
+        self.assertEqual([e['kind'] for e in detail['events']].count('manual_closed'),1)
+        self.assertEqual(self.items('deliveries')[0]['status'],'cancelled')
+        alerting.tick({},now=2000)
+        alerting.tick(state,now=2015)
+        alerting.deliver_pending(now=2015,transport=lambda *args:sent.append(args))
+        self.assertEqual(len(sent),1)
+        with database.transaction() as conn:
+            result=alerting.prune(conn,alerting.retention_plan(conn,cutoff=3000))
+        self.assertEqual(result['incidentsDeleted'],1)
+        alerting.tick(state,now=3100)
+        self.assertEqual(self.items('incidents'),[])
+        state['buildRuns']['new']={'id':'new','projectKey':'luma/.','createdAt':3200,'status':'running'}
+        alerting.tick(state,now=3200)
+        self.assertEqual(self.items('incidents'),[])
+        state['buildRuns']['new']['status']='failed'
+        alerting.tick(state,now=3215)
+        new=self.items('incidents')[0]
+        self.assertNotEqual(new['id'],incident['id'])
+        self.assertEqual(new['buildDetails']['buildId'],'new')
+        self.assertEqual(new['status'],'firing')
+
+    def test_close_metric_waits_for_recovery_and_rule_changes_reset_dismissal(self):
+        rule=self.rule(forSeconds=0,noData='alert')
+        alerting.tick(self.state(1000),now=1000)
+        incident=self.items('incidents')[0]
+        alerting.dispatch('POST',f"incidents/{incident['id']}/ack")
+        alerting.dispatch('POST',f"incidents/{incident['id']}/close")
+        alerting.tick(self.state(1100),now=1100)
+        alerting.tick(self.state(1115,None),now=1115)
+        self.assertEqual([r['status'] for r in self.items('incidents')],['closed'])
+        alerting.tick(self.state(1130,20),now=1130)
+        alerting.tick(self.state(1145),now=1145)
+        new=self.items('incidents')[0]
+        self.assertNotEqual(new['id'],incident['id'])
+        self.assertEqual(new['status'],'firing')
+        alerting.dispatch('POST',f"incidents/{new['id']}/close")
+        alerting.save_rule({'id':rule['id'],'threshold':92},now=1160)
+        alerting.tick(self.state(1160),now=1160)
+        self.assertEqual(self.items('incidents')[0]['status'],'firing')
+
+    def test_close_cancels_pending_and_expired_delivery_leases(self):
+        ch=self.channel();self.rule(forSeconds=0,channelIds=[ch['id']])
+        alerting.tick(self.state(1000),now=1000)
+        incident=self.items('incidents')[0]
+        with database.transaction() as conn:
+            conn.execute("UPDATE alert_outbox SET status='sending',lease_until=1060,lease_token='dead'")
+        alerting.dispatch('POST',f"incidents/{incident['id']}/close")
+        sent=[]
+        alerting.deliver_pending(now=1070,transport=lambda *args:sent.append(args))
+        self.assertEqual(sent,[])
+        self.assertEqual(self.items('deliveries')[0]['status'],'cancelled')
+        self.assertEqual(alerting.dispatch('GET','overview')['counts']['firing'],0)
+
+    def test_close_rejects_stale_build_and_resolved_incident(self):
+        self.rule(metric='build.failed',threshold=0,forSeconds=0)
+        state={'buildRuns':{'a':{'id':'a','projectKey':'app','createdAt':900,'status':'failed'}}}
+        alerting.tick(state,now=1000)
+        incident=self.items('incidents')[0]
+        state['buildRuns']['b']={'id':'b','projectKey':'app','createdAt':1010,'status':'failed'}
+        alerting.tick(state,now=1015)
+        # A stale page refers to the old, now closed incident, never the new one.
+        alerting.dispatch('POST',f"incidents/{incident['id']}/close",{'expectedBuildId':'a'})
+        new=self.items('incidents')[0]
+        for action in ('ack','close'):
+            with self.assertRaisesRegex(LumaError,'failed build changed'):
+                alerting.dispatch('POST',f"incidents/{new['id']}/{action}",{'expectedBuildId':'a'})
+        self.assertEqual(self.items('incidents')[0]['status'],'firing')
+        state['buildRuns']['b']['status']='succeeded'
+        alerting.tick(state,now=1030)
+        for action in ('ack','close'):
+            with self.assertRaisesRegex(LumaError,'Only active incidents'):
+                alerting.dispatch('POST',f"incidents/{new['id']}/{action}")
+
+    def test_new_failed_build_has_its_own_snapshot_acknowledgement_and_notification(self):
+        ch=self.channel()
+        self.rule(metric='build.failed',threshold=0,forSeconds=0,channelIds=[ch['id']])
+        state={'buildRuns':{'a':{'id':'a','projectKey':'app','createdAt':900,'status':'failed'}}}
+        alerting.tick(state,now=1000)
+        old=self.items('incidents')[0]
+        sent=[]
+        alerting.deliver_pending(now=1000,transport=lambda *args:sent.append(json.loads(args[3])))
+        for _ in range(2):
+            alerting.dispatch('POST',f"incidents/{old['id']}/ack",{'expectedBuildId':'a'})
+        state['buildRuns']['b']={'id':'b','projectKey':'app','createdAt':1010,'status':'running'}
+        alerting.tick(state,now=1015)
+        waiting=self.items('incidents')[0]
+        self.assertEqual((waiting['id'],waiting['status'],waiting['noData']),(old['id'],'firing',False))
+        state['buildRuns']['b']['status']='failed'
+        alerting.tick(state,now=1030)
+        new,archived=self.items('incidents')
+        self.assertEqual(archived['status'],'closed')
+        self.assertEqual(archived['buildDetails'],old['buildDetails'])
+        self.assertEqual(new['buildDetails']['buildId'],'b')
+        self.assertIsNone(new['acknowledgedAt'])
+        events=alerting.dispatch('GET',f"incidents/{old['id']}")['events']
+        self.assertEqual([e['kind'] for e in events].count('acknowledged'),1)
+        self.assertEqual(events[-1]['kind'],'build_superseded')
+        alerting.deliver_pending(now=1030,transport=lambda *args:sent.append(json.loads(args[3])))
+        self.assertEqual([message['kind'] for message in sent],['firing','firing'])
+        state['buildRuns']['b']['status']='succeeded'
+        alerting.tick(state,now=1045)
+        alerting.deliver_pending(now=1045,transport=lambda *args:sent.append(json.loads(args[3])))
+        self.assertEqual(sent[-1]['kind'],'resolved')
+
+    def test_new_failure_does_not_inherit_ack_from_incidents_without_snapshots(self):
+        ch=self.channel()
+        for target in ('missing','legacy'):
+            self.rule(metric='build.failed',target=target,noData='alert',threshold=0,forSeconds=0,channelIds=[ch['id']])
+        state={'buildRuns':{'old':{'id':'old','projectKey':'legacy','createdAt':900,'status':'failed'}}}
+        alerting.tick(state,now=1000)
+        old_ids={item['id'] for item in self.items('incidents')}
+        with database.transaction() as conn:
+            conn.execute("UPDATE alert_incidents SET build_details='{}'")
+        for identifier in old_ids:
+            alerting.dispatch('POST',f'incidents/{identifier}/ack')
+        for target in ('missing','legacy'):
+            state['buildRuns'][target]={'id':target,'projectKey':target,'createdAt':1010,'status':'failed'}
+        alerting.tick(state,now=1015)
+        incidents=self.items('incidents')
+        self.assertEqual(len(incidents),4)
+        for incident in incidents:
+            if incident['id'] in old_ids:
+                self.assertEqual(incident['status'],'closed')
+            else:
+                self.assertEqual(incident['status'],'firing')
+                self.assertIsNone(incident['acknowledgedAt'])
+                self.assertEqual(incident['buildDetails']['buildId'],incident['target'])
+        sent=[]
+        alerting.deliver_pending(now=1015,transport=lambda *args:sent.append(json.loads(args[3])))
+        self.assertEqual([message['kind'] for message in sent],['firing','firing'])
+
+    def test_ack_before_firing_suppresses_first_delivery_and_silence_expiry(self):
+        ch=self.channel();self.rule(forSeconds=30,channelIds=[ch['id']])
+        alerting.tick(self.state(1000),now=1000)
+        incident=self.items('incidents')[0]
+        alerting.dispatch('POST',f"incidents/{incident['id']}/ack")
+        with patch('luma.control.alerting.time.time',return_value=1001):
+            alerting.dispatch('POST','silence',{'seconds':60})
+        for now in (1015,1030,1045,1061):
+            alerting.tick(self.state(now),now=now)
+        self.assertEqual(self.items('incidents')[0]['status'],'firing')
+        self.assertEqual(self.items('deliveries'),[])
+        alerting.tick(self.state(1075,20),now=1075)
+        self.assertEqual(self.items('incidents')[0]['status'],'resolved')
+        self.assertEqual(self.items('deliveries'),[])
+
+    def test_new_failure_cancels_older_undelivered_notification(self):
+        ch=self.channel();self.rule(metric='build.failed',threshold=0,forSeconds=0,channelIds=[ch['id']])
+        state={'buildRuns':{'a':{'id':'a','projectKey':'app','createdAt':900,'status':'failed'}}}
+        alerting.tick(state,now=1000)
+        state['buildRuns']['b']={'id':'b','projectKey':'app','createdAt':1010,'status':'failed'}
+        alerting.tick(state,now=1015)
+        sent=[]
+        alerting.deliver_pending(now=1030,transport=lambda *args:sent.append(json.loads(args[3])))
+        self.assertEqual(len(sent),1)
+        self.assertEqual(self.items('deliveries')[-1]['status'],'cancelled')
+        self.assertEqual(self.items('incidents')[0]['buildDetails']['buildId'],'b')
+
+    def test_canceled_retry_keeps_previous_failure_and_reminders(self):
+        ch=self.channel()
+        self.rule(metric='build.failed',threshold=0,forSeconds=0,repeatSeconds=60,channelIds=[ch['id']])
+        state={'buildRuns':{'a':{'id':'a','projectKey':'app','createdAt':900,'status':'failed'}}}
+        alerting.tick(state,now=1000)
+        old=self.items('incidents')[0]
+        sent=[]
+        alerting.deliver_pending(now=1000,transport=lambda *args:sent.append(json.loads(args[3])))
+        state['buildRuns']['b']={'id':'b','projectKey':'app','createdAt':1010,'status':'canceled'}
+        alerting.tick(state,now=1060)
+        alerting.deliver_pending(now=1060,transport=lambda *args:sent.append(json.loads(args[3])))
+        current=self.items('incidents')[0]
+        self.assertEqual((current['id'],current['status'],current['noData']),(old['id'],'firing',False))
+        self.assertEqual(current['buildDetails'],old['buildDetails'])
+        self.assertEqual([message['kind'] for message in sent],['firing','reminder'])
+
+    def test_closed_builds_stay_closed_after_rule_toggle_and_history_changes(self):
+        rule=self.rule(metric='build.failed',threshold=0,forSeconds=0)
+        state={'buildRuns':{'a':{'id':'a','projectKey':'app','createdAt':900,'status':'failed'}}}
+        alerting.tick(state,now=1000)
+        old=self.items('incidents')[0]
+        alerting.dispatch('POST',f"incidents/{old['id']}/close")
+        alerting.save_rule({'id':rule['id'],'enabled':False},now=1010)
+        alerting.save_rule({'id':rule['id'],'enabled':True},now=1020)
+        alerting.tick(state,now=1030)
+        self.assertEqual([r['status'] for r in self.items('incidents')],['closed'])
+        state['buildRuns']['b']={'id':'b','projectKey':'app','createdAt':1040,'status':'failed'}
+        alerting.tick(state,now=1045)
+        new=self.items('incidents')[0]
+        self.assertEqual(new['status'],'firing')
+        alerting.dispatch('POST',f"incidents/{new['id']}/close")
+        del state['buildRuns']['b']
+        alerting.tick(state,now=1060)
+        self.assertEqual([r['status'] for r in self.items('incidents')],['closed','closed'])
+        state['buildRuns']['a']['applicationRef']='resolved-app-name'
+        alerting.tick(state,now=1075)
+        self.assertEqual([r['status'] for r in self.items('incidents')],['closed','closed'])
 
     def test_observe_p95_preset_uses_hydrated_samples(self):
         alerting.save_rule({'name':'p95','metric':'app.http_p95','target':'*','threshold':1,'forSeconds':0},now=1000)

@@ -152,7 +152,7 @@ export function RegionPanel({
                 <ToggleGroup
                   aria-labelledby="region-egress-label"
                   aria-describedby="region-egress-description"
-                  variant="outline"
+                  variant="segmented"
                   value={[egress]}
                   disabled={Boolean(busy)}
                   onValueChange={(values) => { if (values[0]) setEgress(values[0] as "proxy" | "direct"); }}

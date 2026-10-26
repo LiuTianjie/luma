@@ -356,7 +356,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
         ) : null}
 
         {section === "inventory" ? <>
-          <section className="grid min-w-0 gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label={zh ? "镜像仓库容量" : "Registry storage usage"}>
+          <section className="grid min-w-0 grid-cols-2 gap-4 xl:grid-cols-4" aria-label={zh ? "镜像仓库容量" : "Registry storage usage"}>
             <Card size="sm">
               <CardHeader><CardDescription>{zh ? "宿主磁盘" : "Host filesystem"}</CardDescription><CardTitle>{hasDiskPercent ? `${diskPercent}%` : unavailable}</CardTitle></CardHeader>
               <CardContent className="flex flex-col gap-3">
@@ -411,7 +411,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
                 </Field>
                 <Field>
                   <FieldLabel id="registry-filter-label" className="sr-only">{zh ? "镜像保护状态" : "Image protection status"}</FieldLabel>
-                  <ToggleGroup className="flex-wrap" variant="outline" size="sm" value={[filter]} onValueChange={(values) => { if (values[0]) setFilter(String(values[0])); }} aria-labelledby="registry-filter-label">
+                  <ToggleGroup variant="segmented" size="sm" value={[filter]} onValueChange={(values) => { if (values[0]) setFilter(String(values[0])); }} aria-labelledby="registry-filter-label">
                     {["all", "protected", "retained", "candidate", "unknown"].map((value) => <ToggleGroupItem key={value} value={value}>{value === "all" ? (zh ? "全部" : "All") : statusLabel(value, zh)}</ToggleGroupItem>)}
                   </ToggleGroup>
                 </Field>
@@ -447,7 +447,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
           <CardContent className="flex flex-col gap-4">
             <form id="registry-policy-form" onSubmit={(event) => { event.preventDefault(); if (!policyInvalid) void savePolicy(); }}>
               <FieldGroup className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                <Field data-disabled={!!busy}><FieldLabel id="registry-policy-mode-label">{zh ? "模式" : "Mode"}</FieldLabel><ToggleGroup className="flex-wrap" variant="outline" value={[policy.mode]} disabled={!!busy} aria-labelledby="registry-policy-mode-label" onValueChange={(values) => { if (values[0]) setPolicy({ ...policy, mode: values[0] as RegistryPolicy["mode"] }); }}>{[{ value: "off", label: zh ? "关闭" : "Off" }, { value: "recommend", label: zh ? "仅建议" : "Recommend" }, { value: "enforce", label: zh ? "自动执行" : "Enforce" }].map((item) => <ToggleGroupItem key={item.value} value={item.value}>{item.label}</ToggleGroupItem>)}</ToggleGroup></Field>
+                <Field data-disabled={!!busy}><FieldLabel id="registry-policy-mode-label">{zh ? "模式" : "Mode"}</FieldLabel><ToggleGroup variant="segmented" value={[policy.mode]} disabled={!!busy} aria-labelledby="registry-policy-mode-label" onValueChange={(values) => { if (values[0]) setPolicy({ ...policy, mode: values[0] as RegistryPolicy["mode"] }); }}>{[{ value: "off", label: zh ? "关闭" : "Off" }, { value: "recommend", label: zh ? "仅建议" : "Recommend" }, { value: "enforce", label: zh ? "自动执行" : "Enforce" }].map((item) => <ToggleGroupItem key={item.value} value={item.value}>{item.label}</ToggleGroupItem>)}</ToggleGroup></Field>
                 {policyFields.map((field) => <Field key={field.key} data-disabled={!!busy} data-invalid={invalidPolicyField(field)}><FieldLabel htmlFor={`registry-policy-${field.key}`}>{field.label}</FieldLabel><Input id={`registry-policy-${field.key}`} type="number" required disabled={!!busy} min={field.min} max={"max" in field ? field.max : undefined} step={1} value={policy[field.key]} aria-invalid={invalidPolicyField(field)} aria-describedby={invalidPolicyField(field) ? `registry-policy-${field.key}-error` : undefined} onChange={(event) => setPolicy({ ...policy, [field.key]: Number(event.target.value) })} />{invalidPolicyField(field) ? <FieldError id={`registry-policy-${field.key}-error`}>{zh ? `请输入不小于 ${field.min}${"max" in field ? ` 且不大于 ${field.max}` : ""} 的整数。` : `Enter an integer of at least ${field.min}${"max" in field ? ` and at most ${field.max}` : ""}.`}</FieldError> : field.key === "queueGraceHours" ? <FieldDescription>{zh ? "0 表示自动删除立即执行。" : "Use 0 to run automatic deletion immediately."}</FieldDescription> : null}</Field>)}
               </FieldGroup>
             </form>

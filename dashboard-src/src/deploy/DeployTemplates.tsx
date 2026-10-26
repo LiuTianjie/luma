@@ -109,7 +109,7 @@ export function DeployTemplates({
         <FieldGroup className="grid grid-cols-1 gap-4 @md:grid-cols-2">
           <Field>
             <FieldLabel id={`${searchId}-type`}>{zh ? "模板类型" : "Template type"}</FieldLabel>
-            <ToggleGroup aria-labelledby={`${searchId}-type`} variant="outline" value={[mode]} onValueChange={(values) => { if (values[0] === "service" || values[0] === "compose") onModeChange(values[0]); }}>
+            <ToggleGroup aria-labelledby={`${searchId}-type`} variant="segmented" value={[mode]} onValueChange={(values) => { if (values[0] === "service" || values[0] === "compose") onModeChange(values[0]); }}>
               <ToggleGroupItem value="service">{zh ? "单服务" : "Service"}<Badge variant="secondary">{templates.filter((template) => template.mode === "service").length}</Badge></ToggleGroupItem>
               <ToggleGroupItem value="compose">Compose<Badge variant="secondary">{templates.filter((template) => template.mode === "compose").length}</Badge></ToggleGroupItem>
             </ToggleGroup>

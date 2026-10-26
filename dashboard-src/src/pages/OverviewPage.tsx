@@ -14,6 +14,7 @@ import type { DashboardViewModel, NavPage } from "../dashboardViewModel";
 import { issueKey, useDismissedIssues } from "../useDismissedIssues";
 import { groupOverviewIssues, nodePressure } from "./overviewModel";
 import { PageHeader } from "./PageHeader";
+import { spaLink, useRouter } from "../router";
 
 function percent(value?: number) {
   return typeof value === "number" && Number.isFinite(value) ? `${Math.round(value)}%` : "—";
@@ -37,6 +38,7 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
   onSelectNode: (node: DashboardNode) => void;
 }) {
   const zh = lang === "zh";
+  const { navigate } = useRouter();
   const readiness = payload.readiness || {};
   const affectedApps = vm.applications.filter((app) => !["healthy", "running"].includes(app.status));
   const nodes = vm.nodes.slice().sort((a, b) => nodePressure(b) - nodePressure(a)).slice(0, 5);
@@ -64,7 +66,7 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
       <PageHeader meta={{
         eyebrow: "",
         title: zh ? "集群总览" : "Cluster overview",
-        description: zh ? "先看集群是否健康，再进入应用或节点继续处理。" : "Check cluster health first, then continue in the application or node workspace.",
+        description: zh ? "应用健康、待处理诊断与节点容量。" : "Application health, open diagnostics, and node capacity.",
         metrics: [],
         action: vm.applications.length ? (
           <Button onClick={() => onNavigate("deploy")}>
@@ -88,21 +90,22 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
         </Alert>
       ) : null}
 
-      <section className="grid gap-4 @md:grid-cols-3" aria-label={zh ? "集群运行摘要" : "Cluster summary"}>
+      <Card className="gap-0 py-0" role="region" aria-label={zh ? "集群运行摘要" : "Cluster summary"}>
+        <div className="grid divide-y @xl:grid-cols-3 @xl:divide-x @xl:divide-y-0">
         {[
           {
             label: zh ? "异常应用" : "Affected applications",
             value: `${affectedApps.length}`,
             meta: `/ ${vm.applications.length}`,
             hint: zh ? "依据副本与任务运行状态" : "Based on replica and task state",
-            onClick: () => onNavigate("applications"),
+            href: "/apps",
           },
           {
             label: zh ? "就绪节点" : "Ready nodes",
             value: `${vm.activeNodes}`,
             meta: `/ ${vm.nodes.length}`,
             hint: zh ? "已排除排空中的节点" : "Excludes draining nodes",
-            onClick: () => onNavigate("nodes"),
+            href: "/fleet",
           },
           {
             label: zh ? "当前诊断" : "Current diagnostics",
@@ -111,39 +114,25 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
             hint: hiddenCount && !visibleIssues.length
               ? (zh ? "本机临时隐藏，并未解决" : "Temporarily hidden in this browser, not resolved")
               : (zh ? `${visibleCounts.critical} 严重 · ${visibleCounts.warning} 警告` : `${visibleCounts.critical} critical · ${visibleCounts.warning} warning`),
-            onClick: () => onNavigate("observability"),
+            href: "/observe",
           },
         ].map((item) => (
-          <Card
+          <a
             key={item.label}
-            size="sm"
-            className="cursor-pointer"
-            role="link"
-            tabIndex={0}
-            onClick={item.onClick}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                item.onClick();
-              }
-            }}
+            {...spaLink(item.href, navigate)}
+            className="group grid min-w-0 grid-cols-[1fr_auto] items-center gap-x-4 gap-y-1 px-4 py-4 text-sm outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring @xl:grid-cols-[1fr_auto]"
           >
-            <CardHeader>
-              <CardTitle>{item.label}</CardTitle>
-              <CardDescription>{item.hint}</CardDescription>
-              <CardAction>
-                <ArrowRight className="size-4 text-muted-foreground" aria-hidden="true" />
-              </CardAction>
-            </CardHeader>
-            <CardContent>
-              <p className="flex items-baseline gap-2 tabular-nums">
-                <strong className="text-2xl font-semibold">{item.value}</strong>
-                {item.meta ? <span className="text-muted-foreground">{item.meta}</span> : null}
-              </p>
-            </CardContent>
-          </Card>
+            <span className="font-medium">{item.label}</span>
+            <ArrowRight className="hidden size-4 text-muted-foreground @xl:block" aria-hidden="true" />
+            <span className="col-start-1 row-start-2 text-xs text-muted-foreground">{item.hint}</span>
+            <span className="col-start-2 row-span-2 row-start-1 flex items-baseline justify-end gap-2 tabular-nums @xl:col-span-2 @xl:col-start-1 @xl:row-span-1 @xl:row-start-3 @xl:mt-2 @xl:justify-start">
+              <strong className="text-2xl font-semibold">{item.value}</strong>
+              {item.meta ? <span className="text-muted-foreground">{item.meta}</span> : null}
+            </span>
+          </a>
         ))}
-      </section>
+        </div>
+      </Card>
 
       {groups.length ? (
         <Card className="min-w-0">
@@ -177,7 +166,7 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
                   </div>
                   <ul className="flex flex-col gap-1.5">
                     {group.issues.map((issue, index) => (
-                      <li key={`${issueKey(issue)}:${index}`} className="flex items-start gap-2 rounded-md bg-muted/60 py-2 pr-1.5 pl-3">
+                      <li key={`${issueKey(issue)}:${index}`} className="flex items-start gap-2 py-1 pr-1.5">
                         <SeverityIcon severity={issue.severity || "info"} />
                         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                           <span className="text-sm wrap-anywhere">{issue.message || (zh ? "未提供诊断信息" : "No diagnostic message provided")}</span>
@@ -222,7 +211,7 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
         </Alert>
       )}
 
-      <section className="grid gap-6 @lg:grid-cols-2" aria-label={zh ? "控制面与容量" : "Control plane and capacity"}>
+      <section className="grid items-start gap-6 @3xl:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]" aria-label={zh ? "控制面与容量" : "Control plane and capacity"}>
         <Card className="min-w-0">
           <CardHeader>
             <CardTitle>{zh ? "控制面" : "Control plane"}</CardTitle>

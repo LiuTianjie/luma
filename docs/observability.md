@@ -157,14 +157,34 @@ without treating missing samples as recovery, while `alert` treats missing data
 as a condition to evaluate. CPU rules use fresh Linux host CPU observations;
 macOS load averages are not interpreted as CPU percentages.
 
-Acknowledging an incident records an acknowledgement and stops its repeated
-notifications; it does not mark the underlying condition healthy. Global and
-per-rule timed silences suppress notifications while keeping evaluation and
-incident history available. Pending/retry deliveries wait until silence expiry;
-a silence cannot retract an HTTPS request already in flight. Changing a rule's
-condition gives its old incidents the `closed` status with a rule-change event,
-not a healthy `resolved` transition.
-Dashboard overview cards that are temporarily hidden in one browser are a different UI preference and do not silence alerts.
+Incident state and notification control are separate. `pending` waits for the
+duration, `firing` means the condition triggered, `resolved` requires observed
+recovery, and `closed` records an administrative end. These actions never start
+or retry a build.
+
+| Action | Incident | Notifications and later failures |
+| --- | --- | --- |
+| Stop reminders (acknowledge) | Remains active with an acknowledgement time | Cancels unsent initial alerts and reminders; recovery still notifies if the incident previously notified |
+| Close incident | Moves to Closed with its details and timeline | Stops this incident; a new failed build can create a new incident |
+| Maintenance silence | Evaluation and history continue | Pauses global or per-rule notifications until expiry; channel tests bypass silence |
+| Automatic recovery | Moves to Resolved | Requires an observed healthy result, not a running/canceled build or missing data |
+
+Each observed new failed build gets its own incident. While a later build is
+queued or running, the old failure remains intact and waits for the outcome.
+A new failure closes the old incident as superseded, preserving its snapshot;
+the new incident does not inherit its acknowledgement. A later successful build
+resolves the current incident. A canceled retry leaves the old failure and its
+reminder policy active. Manual build dismissals survive Control restarts,
+rule re-enabling, and history cleanup. Metric dismissals end on observed recovery
+or changed rule conditions, allowing subsequent breaches to alert.
+
+The list and detail page share the same actions. Management endpoints are
+`POST /v1/alerting/incidents/{id}/ack` and `POST /v1/alerting/incidents/{id}/close`.
+Both accept `expectedBuildId` to guard stale actions. Closing does not send a
+recovery notification. No action can retract an HTTPS request already in flight.
+Changing rule conditions closes old active incidents with a rule-change event;
+deleting a rule also removes its dismissals. Hiding a Dashboard overview card in
+one browser is only a display preference and does not silence alerts.
 
 The built-in Feishu channel uses an application bot. Fill in **App ID**,
 **App Secret** and the destination **group chat ID** in the channel form.

@@ -34,9 +34,8 @@ export function ApplicationLogs({
         onValueChange={(values) => {
           if (values[0]) setMode(values[0]);
         }}
-        variant="outline"
+        variant="segmented"
         size="sm"
-        className="flex-wrap"
         aria-label={zh ? "日志查看方式" : "Log viewer"}
       >
         {views.map(({ id, label }) => (

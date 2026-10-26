@@ -49,7 +49,7 @@ test("queued and retry states never present delivery as sent", () => {
   assert.equal(alertStatusLabel("retry", false), "Retrying");
   assert.equal(alertStatusLabel("sending", true), "发送中");
   assert.equal(alertStatusLabel("sent", true), "已发送");
-  assert.equal(alertStatusLabel("closed", true), "管理关闭");
+  assert.equal(alertStatusLabel("closed", true), "已关闭");
   assert.notEqual(alertStatusLabel("closed", true), alertStatusLabel("resolved", true));
 });
 

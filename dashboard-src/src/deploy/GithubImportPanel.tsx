@@ -319,7 +319,7 @@ export function GithubImportPanel({
       <FieldGroup>
         <Field>
           <FieldLabel id="git-source-mode">{zh ? "仓库来源" : "Repository source"}</FieldLabel>
-          <ToggleGroup value={[mode]} variant="outline" aria-labelledby="git-source-mode" onValueChange={(values) => { if (values[0] === "provider" || values[0] === "manual") setMode(values[0]); }} className="max-w-full flex-wrap">
+          <ToggleGroup value={[mode]} variant="segmented" aria-labelledby="git-source-mode" onValueChange={(values) => { if (values[0] === "provider" || values[0] === "manual") setMode(values[0]); }}>
             <ToggleGroupItem value="provider" disabled={!providers.length && !providerLoading}><GitBranch data-icon="inline-start" />{zh ? "已托管凭据" : "Saved providers"}</ToggleGroupItem>
             <ToggleGroupItem value="manual">{zh ? "手填 URL" : "Repo URL"}</ToggleGroupItem>
           </ToggleGroup>

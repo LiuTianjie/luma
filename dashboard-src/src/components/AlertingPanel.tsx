@@ -107,6 +107,29 @@ function AlertStatus({ status, zh }: { status: string; zh: boolean }) {
   );
 }
 
+function IncidentActions({ item, zh, busy, compact = false, onStop, onClose }: {
+  item: AlertIncident;
+  zh: boolean;
+  busy: boolean;
+  compact?: boolean;
+  onStop: (item: AlertIncident) => void;
+  onClose: (item: AlertIncident) => void;
+}) {
+  if (!["pending", "firing"].includes(item.status)) return null;
+  return <>
+    {!item.acknowledgedAt && (
+      <Button type="button" variant="outline" size={compact ? "sm" : "default"}
+        disabled={busy} onClick={() => onStop(item)}>
+        {zh ? "停止提醒" : "Stop reminders"}
+      </Button>
+    )}
+    <Button type="button" variant="outline" size={compact ? "sm" : "default"}
+      disabled={busy} onClick={() => onClose(item)}>
+      {zh ? "关闭告警" : "Close incident"}
+    </Button>
+  </>;
+}
+
 function AlertEmpty({
   title,
   description,
@@ -463,6 +486,35 @@ export function AlertingPanel({
     : rule?.metric === "task.queue_age"
       ? ["agent", "builder", "build"]
       : applicationNames;
+  const actOnIncident = (item: AlertIncident, action: "ack" | "close") => {
+    void act(
+      (signal) => postAlerting(
+        `incidents/${encodeURIComponent(item.id)}/${action}`,
+        token,
+        { expectedBuildId: item.buildDetails?.buildId || "" },
+        signal,
+      ),
+      action === "close"
+        ? zh ? "告警已关闭，可在“已关闭”中查看历史" : "Incident closed; history is available under Closed"
+        : zh ? "已停止本次故障提醒；告警仍在当前列表，恢复时会通知" : "Fault reminders stopped; this incident remains active and can notify on recovery",
+    );
+  };
+  const closeIncident = async (item: AlertIncident) => {
+    const currentScope = scope.current;
+    if (!(await confirm({
+      title: zh ? `关闭告警 #${item.id}？` : `Close incident #${item.id}?`,
+      body: item.metric === "build.failed"
+        ? zh
+          ? `关闭「${item.target}」的本次告警，停止后续提醒并保留历史。以后新的构建失败仍会正常告警。`
+          : `Close this incident for “${item.target}”, stop further reminders and keep its history. New failed builds will still alert.`
+        : zh
+          ? `关闭「${item.target}」的本次告警，停止后续提醒并保留历史。当前异常恢复后，再次异常仍会正常告警。`
+          : `Close this incident for “${item.target}”, stop further reminders and keep its history. After the condition recovers, a new breach will alert again.`,
+      confirmLabel: zh ? "关闭告警" : "Close incident",
+      tone: "neutral",
+    })) || currentScope !== scope.current) return;
+    actOnIncident(item, "close");
+  };
   const deleteRule = async () => {
     if (
       !rule ||
@@ -594,29 +646,27 @@ export function AlertingPanel({
       {loaded && overview && (
         <>
           {!editor && tab === "alerts" && (
-            <Card>
-              <CardHeader>
-                <CardTitle>{zh ? "告警引擎" : "Alert engine"}</CardTitle>
-                <CardDescription>
-                  {zh ? "最近检查" : "Last evaluation"} ·{" "}
-                  {stamp(overview.lastEvaluatedAt, zh)}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-4">
-                <div className="flex flex-wrap gap-2">
-                  <Badge
-                    variant={overview.counts.firing ? "destructive" : "outline"}
-                  >
+            <Card size="sm">
+              <CardHeader className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-col gap-1">
+                  <CardTitle>{zh ? "告警引擎" : "Alert engine"}</CardTitle>
+                  <CardDescription className="text-xs tabular-nums">
+                    {zh ? "最近检查" : "Last evaluation"} · {stamp(overview.lastEvaluatedAt, zh)}
+                  </CardDescription>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 tabular-nums">
+                  <Badge variant={overview.counts.firing ? "destructive" : "outline"}>
                     {zh ? "触发中" : "Firing"} {overview.counts.firing}
                   </Badge>
                   <Badge variant="secondary">
-                    {zh ? "等待持续条件" : "Pending duration"}{" "}
-                    {overview.counts.pending}
+                    {zh ? "等待持续条件" : "Pending duration"} {overview.counts.pending}
                   </Badge>
-                  <Badge variant="outline">
+                  <span className="text-xs text-muted-foreground">
                     {zh ? "启用规则" : "Enabled rules"} {overview.enabledRules}
-                  </Badge>
+                  </span>
                 </div>
+              </CardHeader>
+              {(!overview.lastEvaluatedAt || Date.now() / 1000 - overview.lastEvaluatedAt > 120) && <CardContent className="flex flex-col gap-3">
                 {!overview.lastEvaluatedAt && (
                   <Alert>
                     <AlertTitle>
@@ -643,7 +693,7 @@ export function AlertingPanel({
                       </AlertDescription>
                     </Alert>
                   )}
-              </CardContent>
+              </CardContent>}
               <CardFooter className="flex flex-wrap gap-3">
                 <div className="flex min-w-0 flex-1 flex-col gap-1">
                   <span>
@@ -653,10 +703,10 @@ export function AlertingPanel({
                         ? "通知未静默"
                         : "Notifications are not silenced"}
                   </span>
-                  <p className="text-sm text-muted-foreground">
+                  <p className="text-xs text-muted-foreground">
                     {zh
-                      ? "静默期间继续记录异常，暂停告警通知；手动测试仍会发送。"
-                      : "Evaluation continues while notifications are silenced. Manual tests still send."}
+                      ? "维护静默暂停通知，保留异常记录；到期自动恢复，手动测试仍会发送。"
+                      : "Keep recording incidents while notifications pause until silence expires. Manual tests still send."}
                   </p>
                 </div>
                 <Button
@@ -707,6 +757,11 @@ export function AlertingPanel({
                 <CardTitle>
                   {zh ? "告警与历史" : "Incidents and history"}
                 </CardTitle>
+                <CardDescription>
+                  {zh
+                    ? "停止提醒：保留当前告警，恢复时通知。关闭告警：结束本次告警并保留历史。"
+                    : "Stop reminders to keep an incident active with recovery notifications. Close it to end this incident and retain its history."}
+                </CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
                 <FieldGroup>
@@ -715,17 +770,15 @@ export function AlertingPanel({
                       {zh ? "状态" : "Status"}
                     </FieldLabel>
                     <ToggleGroup
-                      variant="outline"
-                      value={[filter]}
+                      variant="segmented"
+                      value={[filter || "all"]}
                       onValueChange={(values) => {
                         if (!values.length) return;
                         setExpanded(false);
-                        setFilter(values[0]);
+                        setFilter(values[0] === "all" ? "" : values[0]);
                         setError("");
                       }}
                       aria-labelledby="incident-status-label"
-                      className="flex-wrap"
-                      spacing={1}
                     >
                       {[
                         { value: "firing", label: zh ? "触发中" : "Firing" },
@@ -739,9 +792,9 @@ export function AlertingPanel({
                         },
                         {
                           value: "closed",
-                          label: zh ? "管理关闭" : "Closed by configuration",
+                          label: zh ? "已关闭" : "Closed",
                         },
-                        { value: "", label: zh ? "全部历史" : "All history" },
+                        { value: "all", label: zh ? "全部历史" : "All history" },
                       ].map((item) => (
                         <ToggleGroupItem key={item.value} value={item.value}>
                           {item.label}
@@ -765,21 +818,21 @@ export function AlertingPanel({
                     </div>
                   )
                 ) : incidents.items.length ? (
-                  <Table
+                  <Table className="max-sm:block"
                     containerProps={{
                       tabIndex: 0,
                       role: "region",
                       "aria-label": zh ? "告警事件列表" : "Alert incidents",
                     }}
                   >
-                    <TableHeader>
+                    <TableHeader className="hidden sm:table-header-group">
                       <TableRow>
                         <TableHead>
                           {zh ? "规则 / 对象" : "Rule / target"}
                         </TableHead>
                         <TableHead>{zh ? "状态" : "State"}</TableHead>
-                        <TableHead>{zh ? "观测值" : "Observed"}</TableHead>
-                        <TableHead>
+                        <TableHead className="text-right">{zh ? "观测值" : "Observed"}</TableHead>
+                        <TableHead className="text-right">
                           {zh ? "开始 / 结束" : "Started / ended"}
                         </TableHead>
                         <TableHead className="text-right">
@@ -787,10 +840,10 @@ export function AlertingPanel({
                         </TableHead>
                       </TableRow>
                     </TableHeader>
-                    <TableBody>
+                    <TableBody className="max-sm:block">
                       {incidents.items.map((item) => (
-                        <TableRow key={item.id}>
-                          <TableCell>
+                        <TableRow key={item.id} className="max-sm:flex max-sm:flex-col max-sm:gap-3 max-sm:py-4">
+                          <TableCell className="max-sm:block max-sm:whitespace-normal max-sm:p-0">
                             <div className="flex flex-col items-start gap-1">
                               <span className="font-medium">
                                 {item.ruleName}
@@ -818,20 +871,25 @@ export function AlertingPanel({
                                     ? "警告"
                                     : "Warning"}
                               </Badge>
+                              <div className="mt-1 flex flex-wrap items-center gap-2 sm:hidden">
+                                <AlertStatus status={item.status} zh={zh} />
+                                <span className="text-xs text-muted-foreground">{zh ? "观测值" : "Observed"} · {formatAlertObservedValue(item.metric, item.value, item.noData, zh)}</span>
+                                {item.acknowledgedAt ? <span className="basis-full text-xs text-muted-foreground">{zh ? "提醒已停止" : "Reminders stopped"} · {stamp(item.acknowledgedAt, zh)}</span> : null}
+                              </div>
                             </div>
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="hidden sm:table-cell">
                             <div className="flex flex-col items-start gap-1">
                               <AlertStatus status={item.status} zh={zh} />
                               {item.acknowledgedAt ? (
                                 <span className="text-muted-foreground">
-                                  {zh ? "已确认" : "Acknowledged"} ·{" "}
+                                  {zh ? "提醒已停止" : "Reminders stopped"} ·{" "}
                                   {stamp(item.acknowledgedAt, zh)}
                                 </span>
                               ) : null}
                             </div>
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="hidden text-right sm:table-cell">
                             {formatAlertObservedValue(
                               item.metric,
                               item.value,
@@ -839,16 +897,16 @@ export function AlertingPanel({
                               zh,
                             )}
                           </TableCell>
-                          <TableCell>
-                            <div>{stamp(item.startedAt, zh)}</div>
+                          <TableCell className="max-sm:block max-sm:p-0 max-sm:text-xs max-sm:text-muted-foreground sm:text-right">
+                            <div><span className="sm:hidden">{zh ? "开始" : "Started"} · </span>{stamp(item.startedAt, zh)}</div>
                             {item.resolvedAt ? (
                               <div className="text-muted-foreground">
-                                {stamp(item.resolvedAt, zh)}
+                                <span className="sm:hidden">{zh ? "结束" : "Ended"} · </span>{stamp(item.resolvedAt, zh)}
                               </div>
                             ) : null}
                           </TableCell>
-                          <TableCell>
-                            <div className="flex justify-end gap-2">
+                          <TableCell className="max-sm:block max-sm:whitespace-normal max-sm:p-0">
+                            <div className="flex flex-wrap gap-2 sm:justify-end">
                               <Button
                                 type="button"
                                 variant="outline"
@@ -862,33 +920,9 @@ export function AlertingPanel({
                               >
                                 {zh ? "时间线" : "Timeline"}
                               </Button>
-                              {!item.acknowledgedAt &&
-                                !["resolved", "closed"].includes(
-                                  item.status,
-                                ) && (
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    disabled={busy}
-                                    onClick={() =>
-                                      void act(
-                                        (signal) =>
-                                          postAlerting(
-                                            `incidents/${encodeURIComponent(item.id)}/ack`,
-                                            token,
-                                            {},
-                                            signal,
-                                          ),
-                                        zh
-                                          ? "已确认；异常恢复前仍保留记录"
-                                          : "Acknowledged; incident remains until recovery",
-                                      )
-                                    }
-                                  >
-                                    {zh ? "确认" : "Acknowledge"}
-                                  </Button>
-                                )}
+                              <IncidentActions item={item} zh={zh} busy={busy} compact
+                                onStop={(item) => actOnIncident(item, "ack")}
+                                onClose={(item) => void closeIncident(item)} />
                             </div>
                           </TableCell>
                         </TableRow>
@@ -996,7 +1030,22 @@ export function AlertingPanel({
                     </dt>
                     <dd>{stamp(detail.incident.startedAt, zh)}</dd>
                   </div>
+                  {detail.incident.resolvedAt && (
+                    <div className="flex flex-col gap-1">
+                      <dt className="text-muted-foreground">
+                        {detail.incident.status === "closed"
+                          ? zh ? "关闭时间" : "Closed at"
+                          : zh ? "恢复时间" : "Resolved at"}
+                      </dt>
+                      <dd>{stamp(detail.incident.resolvedAt, zh)}</dd>
+                    </div>
+                  )}
                 </dl>
+                {detail.incident.acknowledgedAt && (
+                  <p className="text-sm text-muted-foreground">
+                    {zh ? "停止提醒时间" : "Reminders stopped at"} · {stamp(detail.incident.acknowledgedAt, zh)}
+                  </p>
+                )}
                 {detail.incident.metric === "build.failed" && (
                   <div className="flex flex-col gap-4">
                     <p className="text-sm text-muted-foreground">
@@ -1067,32 +1116,13 @@ export function AlertingPanel({
                   />
                 )}
               </CardContent>
-              {!detail.incident.acknowledgedAt &&
-                !["resolved", "closed"].includes(detail.incident.status) && (
-                  <CardFooter>
-                    <Button
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() =>
-                        void act(
-                          (signal) =>
-                            postAlerting(
-                              `incidents/${encodeURIComponent(detail.incident.id)}/ack`,
-                              token,
-                              {},
-                              signal,
-                            ),
-                          zh ? "事件已确认" : "Incident acknowledged",
-                        )
-                      }
-                    >
-                      {busy && (
-                        <Spinner data-icon="inline-start" aria-hidden="true" />
-                      )}
-                      {zh ? "确认事件" : "Acknowledge"}
-                    </Button>
-                  </CardFooter>
-                )}
+              {["pending", "firing"].includes(detail.incident.status) && (
+                <CardFooter className="flex flex-wrap gap-2">
+                  <IncidentActions item={detail.incident} zh={zh} busy={busy}
+                    onStop={(item) => actOnIncident(item, "ack")}
+                    onClose={(item) => void closeIncident(item)} />
+                </CardFooter>
+              )}
             </Card>
           )}
           {tab === "rules" && !editor && (
@@ -1529,7 +1559,7 @@ export function AlertingPanel({
                           {zh ? "严重程度" : "Severity"}
                         </FieldLabel>
                         <ToggleGroup
-                          variant="outline"
+                          variant="segmented"
                           value={[rule.severity]}
                           disabled={busy}
                           onValueChange={(values) => {
@@ -1540,7 +1570,6 @@ export function AlertingPanel({
                               });
                           }}
                           aria-labelledby="alert-rule-severity"
-                          className="flex-wrap"
                         >
                           <ToggleGroupItem value="warning">
                             {zh ? "警告" : "Warning"}
@@ -1555,7 +1584,7 @@ export function AlertingPanel({
                           {zh ? "采样缺失时" : "When samples are missing"}
                         </FieldLabel>
                         <ToggleGroup
-                          variant="outline"
+                          variant="segmented"
                           value={[rule.noData]}
                           disabled={busy}
                           onValueChange={(values) => {
@@ -1566,7 +1595,6 @@ export function AlertingPanel({
                               });
                           }}
                           aria-labelledby="alert-rule-no-data"
-                          className="flex-wrap"
                         >
                           <ToggleGroupItem value="keep">
                             {zh ? "保留当前状态" : "Keep current state"}
