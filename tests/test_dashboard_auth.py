@@ -273,6 +273,87 @@ class TokenSessionTests(DashboardAuthBase):
         self.assertFalse(config["requirePasskey"])
 
 
+class ForwardAuthTests(DashboardAuthBase):
+    """Traefik forwardAuth for /grafana: a session or the token, nothing else."""
+
+    PATH = "/v1/auth/forward"
+
+    def forward(self, headers: dict | None = None):
+        return self.client.get(self.PATH, headers=headers or {})
+
+    def test_route_points_at_this_endpoint(self):
+        from luma.observe_grafana import GRAFANA_AUTH_ADDRESS
+        self.assertTrue(GRAFANA_AUTH_ADDRESS.endswith(self.PATH))
+
+    def test_without_cookie_or_token_is_unauthorized(self):
+        self.client.cookies.clear()
+        response = self.forward()
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.content, b"")
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_session_cookie_is_allowed_for_reads_without_origin(self):
+        session_id = self.token_session()
+        self.with_session(session_id, None)
+        response = self.forward({"X-Forwarded-Method": "GET", "X-Forwarded-Uri": "/grafana/d/luma-nodes"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_forwarded_writes_need_the_control_origin(self):
+        session_id = self.token_session()
+        # Grafana panels query with POST /api/ds/query from the same-origin iframe.
+        self.with_session(session_id)
+        self.assertEqual(self.forward({"X-Forwarded-Method": "POST", "Origin": ORIGIN}).status_code, 200)
+        for origin in (None, "https://evil.example"):
+            self.with_session(session_id, None)
+            headers = {"X-Forwarded-Method": "POST", **({"Origin": origin} if origin else {})}
+            self.assertEqual(self.forward(headers).status_code, 403, origin)
+
+    def test_forged_revoked_or_expired_session_is_unauthorized(self):
+        self.with_session("forged")
+        self.assertEqual(self.forward().status_code, 401)
+
+        session_id = self.token_session()
+        headers = self.with_session(session_id)
+        self.assertEqual(self.client.post("/v1/auth/logout", headers=headers, json={}).status_code, 200)
+        self.with_session(session_id)
+        self.assertEqual(self.forward().status_code, 401)
+
+        start = 1_800_000_000.0
+        with patch.object(dashboard_auth, "_clock", return_value=start):
+            session_id = self.token_session()
+        self.with_session(session_id)
+        with patch.object(dashboard_auth, "_clock", return_value=start + dashboard_auth.SESSION_IDLE_SECONDS + 1):
+            self.assertEqual(self.forward().status_code, 401)
+
+    def test_bearer_token_is_checked_and_wins_over_cookie(self):
+        self.client.cookies.clear()
+        self.assertEqual(self.forward({"Authorization": f"Bearer {self.token}"}).status_code, 200)
+        self.assertEqual(self.forward({"Authorization": "Bearer wrong"}).status_code, 401)
+        self.with_session(self.token_session())
+        self.assertEqual(self.forward({"Authorization": "Bearer wrong"}).status_code, 401)
+
+    def test_only_the_throttled_last_seen_touch_writes(self):
+        from luma.control import database
+
+        def last_seen() -> float:
+            with database.transaction(immediate=False) as conn:
+                return conn.execute("SELECT last_seen_at FROM dashboard_sessions").fetchone()[0]
+
+        start = 1_800_000_000.0
+        with patch.object(dashboard_auth, "_clock", return_value=start):
+            session_id = self.token_session()
+        self.with_session(session_id)
+        with patch.object(dashboard_auth, "_clock", return_value=start + 5):
+            for _ in range(5):
+                self.assertEqual(self.forward().status_code, 200)
+        self.assertEqual(last_seen(), start)
+        later = start + dashboard_auth.SESSION_TOUCH_SECONDS
+        with patch.object(dashboard_auth, "_clock", return_value=later):
+            self.assertEqual(self.forward().status_code, 200)
+        self.assertEqual(last_seen(), later)
+
+
 @unittest.skipUnless(HAVE_WEBAUTHN, "webauthn extra is not installed (Python 3.10+)")
 class PasskeyTests(DashboardAuthBase):
     def test_register_list_and_sign_in_with_passkey(self):

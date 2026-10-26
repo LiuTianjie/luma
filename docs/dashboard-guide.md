@@ -34,7 +34,7 @@ luma passkey sign-out
 
 `luma passkey sign-out` ends every browser session, or one with `--session <id>`. The management token stays the root credential: whoever holds it can run these commands, so a leaked token still means rotating it.
 
-Passkey verification runs in the Control image, which installs the `control` extra (the pinned `webauthn` package, Python 3.10+). A Control without it still offers token sign-in and reports passkeys as unavailable. The embedded Grafana at `/grafana` is published by Traefik with Grafana's own anonymous Viewer access; console sessions do not gate it.
+Passkey verification runs in the Control image, which installs the `control` extra (the pinned `webauthn` package, Python 3.10+). A Control without it still offers token sign-in and reports passkeys as unavailable. The embedded Grafana at `/grafana` sits behind the same sign-in: Traefik asks Control (`/v1/auth/forward`) on every request and lets it through only with a valid console session or the management token, otherwise it answers 401. Inside Grafana the access is still anonymous Viewer, so the console needs no second login. Because Control makes the decision, `/grafana` is unavailable while Control is down; on the manager, Grafana stays reachable at `127.0.0.1:3100` for debugging.
 
 ## Choose a workspace
 

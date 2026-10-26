@@ -14688,12 +14688,41 @@ async def _auth_authorized(request: Request) -> bool:
     return True
 
 
+async def _asgi_forward_auth(request: Request) -> Response:
+    """Traefik ``forwardAuth`` check for Control-domain routes such as ``/grafana``.
+
+    Traefik always asks with GET and copies the browser's headers, so the
+    original method comes from ``X-Forwarded-Method``: writes still need the
+    Control ``Origin``. The answer is a bare status; only the existing
+    throttled last-seen touch writes anything.
+    """
+    method = request.headers.get("X-Forwarded-Method") or request.method
+    session_id = request.cookies.get(dashboard_auth.SESSION_COOKIE) or ""
+    status = 200
+    try:
+        if request.headers.get("Authorization") or not session_id:
+            token = bearer_token(request.headers)
+            await run_in_threadpool(lambda: require_token(load_auth_state(), token, token_type="deploy"))
+        else:
+            # A live session already resolves to the management token.
+            await run_in_threadpool(dashboard_auth.session_credential, method, request.headers, session_id)
+    except dashboard_auth.AuthError as exc:
+        status = exc.status
+    except LumaError:
+        status = 401
+    except Exception as exc:
+        return _asgi_error(500, exc, code="internal_error")
+    return Response(status_code=status, headers={"Cache-Control": "no-store"})
+
+
 async def _asgi_auth(request: Request) -> Response:
     """Dashboard sign-in routes: sessions, passkeys and browser policy."""
     path = request.url.path
     method = request.method
     if path == "/v1/auth/login/verify":
         return await (_asgi_authenticated_post(request) if method == "POST" else _asgi_authenticated_get(request))
+    if path == "/v1/auth/forward" and method == "GET":
+        return await _asgi_forward_auth(request)
     session_id = request.cookies.get(dashboard_auth.SESSION_COOKIE) or ""
     try:
         body: Dict[str, Any] = {}

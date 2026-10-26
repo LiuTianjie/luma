@@ -34,7 +34,7 @@ luma passkey sign-out
 
 `luma passkey sign-out` 结束所有浏览器会话，或用 `--session <id>` 只结束一个。管理令牌仍是最高权限凭据：持有它的人都能执行这些命令，所以令牌泄露时仍需轮换令牌。
 
-Passkey 校验在 Control 镜像中运行，镜像安装了 `control` 依赖组（固定版本的 `webauthn` 包，需要 Python 3.10+）。缺少该依赖的 Control 仍提供令牌登录，并显示 Passkey 不可用。嵌入的 Grafana（`/grafana`）由 Traefik 直接发布，使用 Grafana 自带的匿名 Viewer 访问，控制台会话不对它做限制。
+Passkey 校验在 Control 镜像中运行，镜像安装了 `control` 依赖组（固定版本的 `webauthn` 包，需要 Python 3.10+）。缺少该依赖的 Control 仍提供令牌登录，并显示 Passkey 不可用。嵌入的 Grafana（`/grafana`）受同一套登录保护：Traefik 对每个请求询问 Control（`/v1/auth/forward`），只有带有效控制台会话或管理令牌的请求才会放行，否则返回 401。Grafana 内部仍是匿名 Viewer，控制台无需再次登录。由于放行由 Control 决定，Control 不可用时 `/grafana` 也无法访问；在 Manager 上仍可通过 `127.0.0.1:3100` 调试 Grafana。
 
 ## 选择工作空间 {#choose-a-workspace}
 

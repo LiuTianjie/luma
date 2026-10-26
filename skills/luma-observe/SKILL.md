@@ -39,9 +39,10 @@ Do not use this skill for Dashboard node CPU/disk presets or Nomad job YAML for 
   manager collector; consider one collector/eBPF agent per Linux node only after
   there is a measured network, buffering, or host-observation need.
 - Fail open: Collector/Feishu down must not block user requests.
-- Grafana is currently embedded as an anonymous Viewer route. Treat all data
-  visible under `/grafana` as public to anyone who can reach the Control domain;
-  do not put secrets or sensitive payloads into logs or trace attributes.
+- `/grafana` requires a console session or the management token (Traefik
+  forwardAuth to Control); inside, Grafana is anonymous Viewer. Anyone signed
+  in to the console can read every app's logs and traces, so still keep secrets
+  and sensitive payloads out of logs and trace attributes.
 
 Operators look at Dashboard → Observability → App monitoring. Traefik routers and Nomad
 jobs are mapped to Luma app/stack names by observe itself. Do not ask apps to
