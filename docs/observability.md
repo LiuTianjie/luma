@@ -21,7 +21,7 @@ allocations Nomad still wants to run, not lifetime failure counters.
 The stack uses host networking and loopback listeners (`127.0.0.1:8082` Prometheus,
 `127.0.0.1:4318` OTLP, `127.0.0.1:3200` Tempo). Application tasks send traces to the manager Tailscale mesh listener on port 4319 with a Control-issued bearer token. Control uses host networking and queries `http://127.0.0.1:8428` when observe is present. Grafana on `127.0.0.1:3100`
 is local debug only. Alerts evaluate in vmalert/Alertmanager. Control SQLite
-is not on this path. Trace storage retains 14 days; logs and metrics retain 15 days.
+is not on this path. Traces retain 3 days; logs and metrics retain 15 days, with logs capped at 4 GiB. Logs and metrics stop ingesting when less than 2 GiB of the manager disk is free.
 
 Deploy from `observe/` with `luma build local . --platform linux/amd64`. First deploy does not require secrets; add Feishu later with scoped secrets if needed.
 Refresh Traefik after the current CLI includes the loopback metrics/OTLP flags

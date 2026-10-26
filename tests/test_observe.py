@@ -364,9 +364,13 @@ class ObserveTraceStackTests(unittest.TestCase):
         self.assertIn("bearertokenauth", text)
         self.assertIn("${env:LUMA_OTLP_MESH_BIND}:4319", text)
 
-    def test_tempo_preserves_fourteen_day_live_retention(self):
+    def test_tempo_keeps_short_bounded_trace_retention(self):
         text = (ROOT / "observe" / "tempo.yaml").read_text(encoding="utf-8")
-        self.assertIn("block_retention: 336h", text)
+        # Tempo has no free-space guard on the shared Manager disk.
+        self.assertIn("block_retention: 72h", text)
+        self.assertIn("max_duration: 72h", text)
+        self.assertIn("rate_limit_bytes: 2097152", text)
+        self.assertIn("max_bytes_per_trace: 2097152", text)
         self.assertIn("http_listen_port: 3200", text)
         self.assertIn("127.0.0.1:4418", text)
         self.assertIn("stream_over_http_enabled: true", text)
@@ -425,7 +429,10 @@ class ObserveTraceStackTests(unittest.TestCase):
         compose = (ROOT / "observe" / "docker-compose.yml").read_text(encoding="utf-8")
         self.assertIn("127.0.0.1:9428", compose)
         self.assertIn("retentionPeriod=15d", compose)
+        self.assertIn("-retention.maxDiskSpaceUsageBytes=4GiB", compose)
         self.assertNotIn("0.0.0.0:9428", compose)
+        # Both stores stop ingesting before the shared Manager disk fills.
+        self.assertEqual(compose.count("minFreeDiskSpaceBytes=2GiB"), 2)
         sources = (ROOT / "observe" / "grafana" / "provisioning" / "datasources" / "datasource.yml").read_text(encoding="utf-8")
         self.assertIn("uid: victorialogs", sources)
         self.assertIn("http://127.0.0.1:9428", sources)

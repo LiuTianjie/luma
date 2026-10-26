@@ -28,7 +28,10 @@ ingester:
 
 compactor:
   compaction:
-    block_retention: 336h
+    # Tempo has no size-based retention or free-space guard, and it shares the
+    # Manager's disk with Control and VictoriaLogs. Keep traces short-lived;
+    # sampled error/slow traces for recent incidents are what this store is for.
+    block_retention: 72h
     max_block_bytes: 268435456 # 256 MiB
     retention_concurrency: 1
 
@@ -48,7 +51,17 @@ querier:
 
 query_frontend:
   search:
-    max_duration: 336h
+    max_duration: 72h
+
+# Bound what one noisy client can write between compactions.
+overrides:
+  defaults:
+    ingestion:
+      rate_limit_bytes: 2097152 # 2 MiB/s
+      burst_size_bytes: 4194304 # 4 MiB
+      max_traces_per_user: 5000
+    global:
+      max_bytes_per_trace: 2097152 # 2 MiB
 
 stream_over_http_enabled: true
 

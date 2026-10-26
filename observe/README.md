@@ -11,8 +11,8 @@ except for tiny Feishu posts.
 ## What it watches
 
 - Traefik Prometheus on `127.0.0.1:8082` (public HTTP rate, 5xx, p90/p95/p99)
-- Traefik OTLP on `127.0.0.1:4318` (traces stored in Tempo, 14 days)
-- Nomad allocation stdout/stderr in VictoriaLogs (`127.0.0.1:9428`, 15 days)
+- Traefik OTLP on `127.0.0.1:4318` (sampled traces stored in Tempo, 3 days)
+- Nomad allocation stdout/stderr in VictoriaLogs (`127.0.0.1:9428`, 15 days, at most 4 GiB)
 - Application OTLP on the manager Tailscale IP port `4319` (bearer token from Control)
 - Nomad job running / current failed / live restarts via a local exporter
 
@@ -53,8 +53,17 @@ minutes. These bounds preserve room for transient and non-heap allocations.
 
 VictoriaMetrics retains 15 days under a 1 GiB container ceiling. Its cache
 allowance is 384 MiB, with at most four concurrent queries and 64 MiB per query;
-cache limits alone do not cap total process memory. Existing VictoriaLogs
-(15 days) and Tempo (14 days) retention and local storage paths are preserved.
+cache limits alone do not cap total process memory.
+
+Disk is shared with Control on the manager, so every store is bounded.
+VictoriaLogs keeps 15 days but drops its oldest days beyond 4 GiB (about
+230 MB/day at current traffic). VictoriaLogs and VictoriaMetrics stop
+accepting new data when less than 2 GiB is free, so a full disk cannot take
+down Control. Tempo has no size limit or free-space guard; it keeps 3 days of
+tail-sampled traces (errors, slow requests and a 10% baseline) with ingest
+limited to 2 MiB/s and 2 MiB per trace. Older Tempo blocks, including those
+from the previous 14-day setting, are removed by the compactor after the
+next deploy. Local storage paths are unchanged.
 
 Traefik exports ingress metrics through Prometheus only, and retains bounded,
 asynchronous OTLP trace export. Its 512 MiB container has a 384 MiB Go memory
@@ -89,7 +98,7 @@ as soon as this stack is running.
 | 3200 / 3201 | Tempo query (loopback) |
 | 4418 / 4417 | Tempo OTLP ingest (loopback) |
 | 8428 | VictoriaMetrics on 127.0.0.1; host-gateway also binds Nomad/docker0 so Control can scrape |
-| 9428 | VictoriaLogs (allocation stdout/stderr, 15 days) |
+| 9428 | VictoriaLogs (allocation stdout/stderr, 15 days, at most 4 GiB) |
 | 8880 | vmalert |
 | 9093 | Alertmanager |
 | 9107 | nomad-exporter |

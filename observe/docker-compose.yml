@@ -50,6 +50,9 @@ services:
       - --httpListenAddr=127.0.0.1:8428
       - --retentionPeriod=15d
       - --storageDataPath=/data
+      # Stop ingesting before the shared Manager disk fills; Control and the
+      # node agent must keep working when telemetry cannot be stored.
+      - --storage.minFreeDiskSpaceBytes=2GiB
       # The cache allowance is not a process memory limit. Reserve headroom
       # for ingestion, merges and concurrent dashboard queries.
       - --memory.allowedBytes=384MiB
@@ -117,6 +120,10 @@ services:
       - "-httpListenAddr=127.0.0.1:9428"
       - "-retentionPeriod=15d"
       - "-storageDataPath=/data"
+      # Logs grow with traffic (about 230 MB/day today). Drop the oldest days
+      # past 4 GiB, and stop ingesting when the shared Manager disk runs low.
+      - "-retention.maxDiskSpaceUsageBytes=4GiB"
+      - "-storage.minFreeDiskSpaceBytes=2GiB"
     volumes:
       - victorialogs-data:/data
     deploy:
