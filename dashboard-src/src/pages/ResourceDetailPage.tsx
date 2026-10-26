@@ -12,6 +12,7 @@ import { servicePath } from "../objectRoutes";
 import { PageHeader } from "./PageHeader";
 import type { DashboardNode, DashboardService, Lang } from "../types";
 import { formatBytes, formatPercent } from "../format";
+import { NodeDiskCleanup } from "../components/NodeDiskCleanup";
 
 function Fact({ label, value }: { label: string; value: string }) {
   return (
@@ -22,8 +23,8 @@ function Fact({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function ResourceDetailPage({ lang, node, service, services, applicationNames, onTerminal }: {
-  lang: Lang; node?: DashboardNode; service?: DashboardService; services: DashboardService[]; applicationNames: string[]; onTerminal: () => void;
+export function ResourceDetailPage({ lang, token, node, service, services, applicationNames, onTerminal }: {
+  lang: Lang; token: string; node?: DashboardNode; service?: DashboardService; services: DashboardService[]; applicationNames: string[]; onTerminal: () => void;
 }) {
   const { navigate } = useRouter();
   const zh = lang === "zh";
@@ -130,6 +131,8 @@ export function ResourceDetailPage({ lang, node, service, services, applicationN
           </dl>
         </CardContent>
       </Card>
+
+      {node ? <NodeDiskCleanup lang={lang} token={token} node={node} /> : null}
 
       {node ? (
         <Card>

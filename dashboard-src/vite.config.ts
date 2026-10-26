@@ -18,7 +18,7 @@ const devDashboardPayload = {
     nomad: { ready: true, available: true, leader: "100.64.0.125:4647" },
   },
   nodes: [
-    { name: "cn-edge", displayName: "cn-edge", region: "cn", role: "manager", state: "ready", availability: "active", leader: true, agentStatus: "ready", agentOs: "linux", storageCapabilities: ["terminal"], terminalConnected: true, terminalStatus: "connected", metrics: { cpuPercent: 21.4, load1: 0.82, memoryUsedPercent: 58.2, memoryTotalBytes: 17179869184 }, capacity: { cpus: 4, memoryBytes: 17179869184 } },
+    { name: "cn-edge", displayName: "cn-edge", region: "cn", role: "manager", state: "ready", availability: "active", leader: true, agentStatus: "ready", agentOs: "linux", storageCapabilities: ["terminal", "node-disk-hygiene-v1"], diskHygiene: { enabled: true, intervalHours: 24, minAgeDays: 7, lastRunAt: 1793000000, nextRunAt: 1793086400, lastTrigger: "schedule", lastStatus: "ok", lastMessage: "Removed 2 unused image(s); reclaimed 1.3GB", lastReclaimedBytes: 1300000000, lastRemovedImages: 2 }, terminalConnected: true, terminalStatus: "connected", metrics: { cpuPercent: 21.4, load1: 0.82, memoryUsedPercent: 58.2, memoryTotalBytes: 17179869184 }, capacity: { cpus: 4, memoryBytes: 17179869184 } },
     { name: "home-mac-mini", displayName: "home-mac-mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false, agentStatus: "ready", agentOs: "darwin", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 13.8, load1: 1.1, memoryUsedPercent: 61.5, memoryTotalBytes: 34359738368 }, capacity: { cpus: 10, memoryBytes: 34359738368 } },
     { name: "tailscale-relay", displayName: "tailscale-relay", region: "home", role: "worker", state: "ready", availability: "active", leader: false, agentStatus: "ready", agentOs: "linux", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 8.1, load1: 0.2, memoryUsedPercent: 44.0, memoryTotalBytes: 8589934592 }, capacity: { cpus: 4, memoryBytes: 8589934592 } },
     { name: "home-mini", displayName: "home-mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false, agentStatus: "ready", agentOs: "darwin", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 29.7, load1: 2.4, memoryUsedPercent: 67.9, memoryTotalBytes: 17179869184 }, capacity: { cpus: 8, memoryBytes: 17179869184 } },
@@ -868,6 +868,25 @@ export default defineConfig({
           response.statusCode = 200;
           response.setHeader("Content-Type", "application/json; charset=utf-8");
           response.end(JSON.stringify({ stack: body.stack, restarted: [{ name: `${body.stack}_app`, forceUpdate: 1 }] }));
+        });
+        server.middlewares.use("/v1/nodes/disk-cleanup", async (request, response) => {
+          if (request.method !== "POST") {
+            response.statusCode = 405;
+            response.end(JSON.stringify({ error: "method not allowed" }));
+            return;
+          }
+          const body = await readBody(request);
+          const dryRun = body.dryRun !== false;
+          const candidates = [
+            { id: "sha256:" + "a".repeat(64), refs: ["registry.internal:5000/vibecheck/api:20260901"], sizeBytes: 4_100_000_000, ageDays: 55.2 },
+            { id: "sha256:" + "b".repeat(64), refs: ["vibecheck-worker:backup-0815"], sizeBytes: 3_900_000_000, ageDays: 71.0 },
+            { id: "sha256:" + "c".repeat(64), refs: ["ghcr.io/liutianjie/luma-control:v0.2.15"], sizeBytes: 420_000_000, ageDays: 30.4 },
+          ];
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.end(JSON.stringify(dryRun
+            ? { node: body.node, dryRun: true, status: "ok", minAgeDays: 7, message: "Would remove 3 unused image(s), freeing at least 6.9GB (image sizes total 8.4GB)", images: { status: "ok", kept: { container: 24, recent: 4 }, candidates, candidateCount: 3, estimatedBytes: 8_420_000_000, uniqueBytes: 6_900_000_000 } }
+            : { node: body.node, dryRun: false, status: "ok", minAgeDays: 7, reclaimedBytes: 7_200_000_000, message: "Removed 3 unused image(s); reclaimed 7.2GB", images: { status: "ok", removedCount: 3, failed: [] } }));
         });
         // SPA fallback: rewrite deep client routes under the /dashboard/ base to the
         // index so a hard refresh at /dashboard/apps/foo serves the app (mirrors the

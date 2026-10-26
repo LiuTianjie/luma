@@ -125,6 +125,7 @@ class ControlCutoverTests(unittest.TestCase):
             patch.object(bootstrap, "_remember_local_manager_node", return_value="manager"),
             patch.object(bootstrap, "_prefetch_control_image_for_manager_refresh", side_effect=lambda *a, **k: order.append("prefetch") or "ready"),
             patch.object(bootstrap, "configure_tailscale_watchdog", return_value="watchdog"),
+            patch.object(bootstrap, "configure_journald_limit", return_value="journald"),
             patch.object(bootstrap, "sync_nomad_tailscale_service_metadata", return_value="metadata"),
             patch.object(bootstrap, "_traefik_ports", return_value=(80, 443)),
             patch.object(bootstrap, "configure_firewall", return_value="firewall"),

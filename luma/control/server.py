@@ -119,6 +119,7 @@ from ..regions import (
     require_registered_region,
 )
 from ..service import TCP_RELAY_RESERVED_PORTS, ServiceSpec, load_service, slugify
+from ..disk_hygiene import DISK_HYGIENE_ACTION, DISK_HYGIENE_CAPABILITY
 from .. import __version__
 from .dashboard_queries import SCOPES as DASHBOARD_SCOPES, service_summary as _dashboard_service_summary, application_page as _dashboard_application_page
 from .metrics_api import handle_metrics_history_batch
@@ -7847,6 +7848,71 @@ def _refresh_nomad_cni_hostports_for_nodes(state: Dict[str, Any], node_names: se
     return {"nodes": [str(item.get("node") or "") for item in results if item.get("node")], "results": results, "skipped": skipped, "hostPorts": host_ports}
 
 
+NODE_DISK_CLEANUP_TIMEOUT_SECONDS = 1800
+
+
+def handle_node_disk_cleanup(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Run the node agent's disk cleanup now; a dry run unless dryRun is false."""
+    node_name = str(body.get("node") or "").strip()
+    if not node_name:
+        raise LumaError("node is required")
+    dry_run = body.get("dryRun", True) is not False
+    payload: Dict[str, Any] = {"dryRun": dry_run, "controlTag": f"v{__version__}"}
+    if body.get("minAgeDays") not in (None, ""):
+        try:
+            min_age = int(body.get("minAgeDays"))
+        except (TypeError, ValueError) as exc:
+            raise LumaError("minAgeDays must be a whole number of days") from exc
+        if not 1 <= min_age <= 365:
+            raise LumaError("minAgeDays must be between 1 and 365")
+        payload["minAgeDays"] = min_age
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    if _node_record_for_name(_state_nodes(state), node_name) is None:
+        raise LumaError(f"Luma node is not registered: {node_name}")
+    if not _node_agent_has_capability(state, node_name, DISK_HYGIENE_CAPABILITY):
+        raise LumaError(
+            f"the node agent on {node_name} is offline or too old for disk cleanup; "
+            "update the node (luma update, or the fleet update in the dashboard) and retry"
+        )
+    task_id = _queue_node_agent_task(
+        state,
+        node_name,
+        DISK_HYGIENE_ACTION,
+        payload,
+        required_capability=DISK_HYGIENE_CAPABILITY,
+    )
+    result = _wait_node_agent_task(task_id, node_name, DISK_HYGIENE_ACTION, timeout=NODE_DISK_CLEANUP_TIMEOUT_SECONDS)
+    return {"node": node_name, **result}
+
+
+def _dashboard_disk_hygiene(diagnostics: Any) -> Dict[str, Any]:
+    """The agent's last-cleanup summary, limited to known scalar fields."""
+    raw = diagnostics.get("diskHygiene") if isinstance(diagnostics, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    summary: Dict[str, Any] = {}
+    for key in ("enabled",):
+        if isinstance(raw.get(key), bool):
+            summary[key] = raw[key]
+    for key in (
+        "intervalHours",
+        "minAgeDays",
+        "lastRunAt",
+        "nextRunAt",
+        "lastReclaimedBytes",
+        "lastRemovedImages",
+        "lastFailedImages",
+    ):
+        value = raw.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
+            summary[key] = int(value)
+    for key in ("lastTrigger", "lastStatus", "lastMessage", "journaldMaxUse"):
+        if isinstance(raw.get(key), str):
+            summary[key] = raw[key][:500]
+    return summary
+
+
 def handle_certificate_retry(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -12245,6 +12311,7 @@ def _dashboard_nodes(
                 "terminalStatus": terminal_status,
                 "metrics": registered.get("metrics") if isinstance(registered.get("metrics"), dict) else {},
                 "capacity": orchestrator.get("capacity") if isinstance(orchestrator.get("capacity"), dict) else {},
+                "diskHygiene": _dashboard_disk_hygiene(registered.get("diagnostics")),
             }
         )
     return rows
@@ -15013,6 +15080,7 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/nodes/label": handle_node_label,
             "/v1/nodes/nomad-join": handle_node_nomad_join,
             "/v1/nodes/agent-token": handle_node_agent_token,
+            "/v1/nodes/disk-cleanup": handle_node_disk_cleanup,
             "/v1/node-agent/lease": handle_node_agent_lease,
             "/v1/node-agent/readiness": handle_node_agent_readiness,
             "/v1/node-agent/heartbeat": handle_node_agent_heartbeat,

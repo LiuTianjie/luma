@@ -221,13 +221,49 @@ luma update fleet --include-manager          # explicit repair only
 
 未指定 `--install-ref` 时安装最新发布版；协调发布候选版本时请使用完整提交。控制台的 **节点 → 升级中心** 是升级 Manager 的首选方式：它先把 Control 镜像同步到内部镜像仓库，再带进度和路由检查滚动升级。在 Manager 上直接执行 `luma update` 会自行拉取镜像；无法访问 GHCR 时，把 `LUMA_CONTROL_IMAGE` 设为可拉取的镜像。
 
-在 Manager 上，`luma update` 会刷新防火墙、Traefik、Tailscale 看门狗、Control 配置和 `luma-control` job（启用 Nomad auto-revert），然后刷新本机节点 agent。它不会重启 Docker 或 Nomad agent，不会重新配置出站代理，也不会重新部署应用。`/opt/luma/control` 下的 Manager 状态仅 root 可读；没有免密 sudo 时执行 `sudo ~/.local/bin/luma update`。
+在 Manager 上，`luma update` 会刷新防火墙、Traefik、Tailscale 看门狗、journald 大小上限、Control 配置和 `luma-control` job（启用 Nomad auto-revert），然后刷新本机节点 agent。它不会重启 Docker 或 Nomad agent，不会重新配置出站代理，也不会重新部署应用。`/opt/luma/control` 下的 Manager 状态仅 root 可读；没有免密 sudo 时执行 `sudo ~/.local/bin/luma update`。
 
 批量升级最多同时升级四个节点。安装或重连检查失败的节点最多重试五次；从升级中心发起时，开始时离线的节点也会等待并重试。每次安装会保留新版本、上一版本（用于回滚）以及仍被进程使用的版本，并删除只包含 `src` 和 `venv` 的旧 `releases/candidate.*` 目录；设置 `LUMA_KEEP_RELEASES=1` 可保留。
 
 在已加入的节点上，`luma update` 刷新 CLI 和节点 agent。agent 版本过旧、不支持批量升级的节点会被报告为跳过；在该节点上执行一次 `luma update` 即可。没有保存 agent 元数据的旧节点，加上 `--control-url https://luma.example.com --token <node-join-token>`。
 
 Manager 和节点都运行一个小的 Tailscale 看门狗，连续探测对端失败后重启 Tailscale，不影响 Docker、Nomad 或应用。
+
+## 节点磁盘清理 {#node-disk-cleanup}
+
+每个节点 agent 每天清理一次自己的磁盘，agent 启动约十分钟后开始第一次检查。每次清理：
+
+- 删除没有任何容器使用、且超过 7 天的 Docker 镜像；
+- 清理 7 天未使用的构建缓存，包括默认 builder 和正在运行的 `luma-builder` / `luma-builder-egress`；
+- 在 Linux 上维护 `/etc/systemd/journald.conf.d/luma.conf`，把 journal 上限设为 `SystemMaxUse=500M`。
+
+以下镜像一定保留：被容器使用（运行中或已停止）、被本节点的 Nomad 分配引用、属于 agent 或 Control 当前版本的 `luma-control` 镜像、Nomad 或 Luma 按需启动的辅助镜像（桥接网络用的 `registry.k8s.io/pause`、主机修复用的 `ubuntu:22.04` 或 `LUMA_HOST_PREP_IMAGE`、`registry:2` 以及 macOS Compose 网络镜像），以及无法确定时间的镜像。镜像的时间取构建时间和在本机打标签时间中较晚的一个；Docker 的 containerd 镜像存储不记录打标签时间，这时 agent 升级之后才出现的镜像从 agent 第一次看到它的时间算起。读不到本机 Nomad API 时不删除任何镜像。删除从不强制：期间被新容器使用的镜像会保留。
+
+在 Dashboard 打开节点详情，使用 **磁盘清理**：**预览清理** 列出将被删除的镜像，不做任何修改；确认后再点删除按钮执行清理。脚本里可以发同样的请求：
+
+```bash
+curl -fsS -X POST https://luma.example.com/v1/nodes/disk-cleanup \
+  -H "Authorization: Bearer $LUMA_DEPLOY_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"node": "manager", "dryRun": true}'
+```
+
+只有发送 `"dryRun": false` 才会真正删除，否则都是预览。同一张卡片显示节点上次清理的时间、删除的镜像数和释放的空间。
+
+在 `/opt/luma/node-agent/agent.json` 中配置节点，或在 agent 服务上设置环境变量（环境变量优先）：
+
+| `agent.json` 的 `diskHygiene` 键 | 环境变量 | 默认值 |
+| --- | --- | --- |
+| `enabled` | `LUMA_DISK_HYGIENE=off` | `true` |
+| `intervalHours` | `LUMA_DISK_HYGIENE_INTERVAL_HOURS` | `24` |
+| `minAgeDays` | `LUMA_DISK_HYGIENE_MIN_AGE_DAYS` | `7` |
+| `buildCache` | `LUMA_DISK_HYGIENE_BUILD_CACHE` | `true` |
+| `journaldMaxUse` | `LUMA_JOURNALD_MAX_USE` | `500M`（`off` 关闭） |
+
+```json
+{"diskHygiene": {"enabled": true, "minAgeDays": 14, "journaldMaxUse": "1G"}}
+```
+
+修改 `agent.json` 后重启 agent。`luma bootstrap`、Manager 上的 `luma update` 和 `luma node join` 也会直接写入 journald 上限，同样读取 `LUMA_JOURNALD_MAX_USE`。
 
 ## 修复控制面 {#repair-the-control-plane}
 

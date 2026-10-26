@@ -372,13 +372,17 @@ class NomadBootstrapTests(unittest.TestCase):
             "luma.bootstrap._refresh_core_services"
         ) as refresh_core, patch(
             "luma.bootstrap.sync_nomad_tailscale_service_metadata", return_value="metadata"
-        ) as sync_metadata, patch("luma.bootstrap.configure_tailscale_watchdog", return_value="watchdog") as watchdog:
+        ) as sync_metadata, patch(
+            "luma.bootstrap.configure_tailscale_watchdog", return_value="watchdog"
+        ) as watchdog, patch("luma.bootstrap.configure_journald_limit", return_value="journald limited") as journald:
             result = refresh_manager_control_local(config, node, "luma.example.com", state)
 
         self.assertIn("firewall", result)
         self.assertIn("traefik ready", result)
         self.assertIn("metadata", result)
         self.assertIn("watchdog", result)
+        self.assertIn("journald limited", result)
+        journald.assert_called_once()
         self.assertIn("control image prefetched", result)
         self.assertIn("config", result)
         self.assertIn("state", result)
@@ -442,6 +446,7 @@ class NomadBootstrapTests(unittest.TestCase):
             "luma.bootstrap.sync_nomad_tailscale_service_metadata", return_value="metadata"
         ), patch(
             "luma.bootstrap.configure_tailscale_watchdog", return_value="watchdog"
+        ), patch("luma.bootstrap.configure_journald_limit", return_value="journald"
         ):
             refresh_manager_control_local(config, node, "luma.example.com", state)
 
@@ -497,6 +502,7 @@ class NomadBootstrapTests(unittest.TestCase):
             "luma.bootstrap.sync_nomad_tailscale_service_metadata", return_value="metadata"
         ), patch(
             "luma.bootstrap.configure_tailscale_watchdog", return_value="watchdog"
+        ), patch("luma.bootstrap.configure_journald_limit", return_value="journald"
         ):
             refresh_manager_control_local(config, node, "luma.example.com", state)
 

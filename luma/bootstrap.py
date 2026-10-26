@@ -16,6 +16,13 @@ from typing import Any, Callable, Mapping, Union
 
 from .config import LumaConfig, NodeConfig
 from .cloudflare import sync_control_dns
+from .disk_hygiene import (
+    DEFAULT_JOURNALD_MAX_USE,
+    JOURNALD_DROPIN_PATH,
+    journald_limit_script,
+    journald_max_use_value,
+    parse_journald_limit_state,
+)
 from .egress import ensure_mihomo_direct_domains, minimal_mihomo_config_from_url
 from .errors import LumaError
 from .io import dump_yaml, load_yaml
@@ -803,6 +810,35 @@ def configure_dns(remote: Executor) -> str:
     return "DNS resolvers configured"
 
 
+def configure_journald_limit(remote: Executor) -> str:
+    """Cap the persistent systemd journal with an idempotent drop-in.
+
+    journald's default allows 10% of the filesystem, which on a 40 GB manager
+    is ~4 GB of logs nobody reads. The node agent re-checks the same drop-in
+    during its periodic disk cleanup, so worker nodes converge too.
+    """
+    if _is_darwin(remote):
+        return "journald limit skipped on macOS"
+    raw = os.environ.get("LUMA_JOURNALD_MAX_USE", DEFAULT_JOURNALD_MAX_USE)
+    try:
+        max_use = journald_max_use_value(raw)
+    except ValueError as exc:
+        raise LumaError(str(exc)) from exc
+    if not max_use:
+        return "journald limit disabled by LUMA_JOURNALD_MAX_USE"
+    result = remote.sudo_result(journald_limit_script(max_use))
+    if result.code != 0:
+        # Log housekeeping must never block a bootstrap or Control update.
+        detail = (result.output or "").strip().splitlines()
+        return f"journald limit not applied (will retry on the next update): {detail[-1] if detail else 'command failed'}"
+    state = parse_journald_limit_state(result.output)
+    if state == "skipped":
+        return "journald limit skipped: systemd journald is not running"
+    if state == "changed":
+        return f"journald limited to {max_use} ({JOURNALD_DROPIN_PATH})"
+    return f"journald limit already {max_use}"
+
+
 def install_docker(remote: Executor) -> str:
     if _is_darwin(remote):
         result = remote.run_result("command -v docker >/dev/null 2>&1")
@@ -1286,6 +1322,7 @@ def _bootstrap_node_nomad(
         extra_meta["egress"] = "true"
 
     _step(results, emit, "Configure system DNS", lambda: configure_dns(remote))
+    _step(results, emit, "Limit journald disk use", lambda: configure_journald_limit(remote))
 
     # install_nomad_node handles Docker + Tailscale + Nomad agent install/config.
     install_results = install_nomad_node(
@@ -1586,6 +1623,7 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
         lambda: _prefetch_control_image_for_manager_refresh(remote, config, state=state),
     )
     _step(results, emit, "Install Tailscale watchdog", lambda: configure_tailscale_watchdog(remote))
+    _step(results, emit, "Limit journald disk use", lambda: configure_journald_limit(remote))
     _step(
         results,
         emit,
