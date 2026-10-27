@@ -1,6 +1,6 @@
 # Local Storage and Migration
 
-Use this reference for persistent deployments, NFS retirement, and recovery of older storage configurations. These rules describe Control 0.1.305 and later; check the running Control and relevant node Agent versions before relying on them. A checked-out source version is not deployment proof.
+Use this reference for persistent deployments, NFS retirement, and recovery of older storage configurations. Check the running Control and relevant node Agent versions: current Control reports storage backend, mount and explicit owner changes as warnings, while older versions may reject them. Neither behavior copies data. A checked-out source version is not deployment proof.
 
 ## Placement and Identity
 

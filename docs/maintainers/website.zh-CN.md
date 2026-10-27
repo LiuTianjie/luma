@@ -18,7 +18,7 @@ Geist 字体与许可证自托管于 `site/assets/fonts/`，中文使用平台 C
 python -m venv /tmp/luma-site-venv
 /tmp/luma-site-venv/bin/python -m pip install Markdown==3.8.2
 /tmp/luma-site-venv/bin/python scripts/build-site.py
-python scripts/check-site.py
+/tmp/luma-site-venv/bin/python scripts/check-site.py
 python -m http.server 5182 --directory _site
 ```
 
@@ -35,7 +35,7 @@ python -m http.server 5182 --directory _site
 本地构建不等于公开发布。合并发布前检查中英文、窄屏导航、预览标签、命令复制与文档链接。
 ## 中文文档 {#chinese-documentation}
 
-每篇公开英文指南都有对应的 `*.zh-CN.md` 中文源文件。原本就是中文的文档保留原路径。更新正文时同步维护译文；命令、配置键和围栏代码示例须保持一致。CLI 帮助在两个语言版本中均保留终端实际输出。先运行 CLI 参考生成器，再将更新后的帮助代码块同步到中文参考。
+每篇公开英文指南都有对应的 `*.zh-CN.md` 中文源文件。原本就是中文的文档保留原路径。更新正文时同步维护译文；命令、配置键和围栏代码示例须保持一致。CLI 帮助在两个语言版本中均保留终端实际输出。运行 `python scripts/generate-cli-reference.py` 会同时生成中英文参考；使用 `--check` 将两份内容与当前解析器核对。
 
 中文页面使用中文导航，并将文内文档链接指向中文版本。显式标题 ID（`{#original-heading-id}`）保留已有英文章节链接及语言切换位置。翻译新增章节时，请添加对应 ID。中英文首页应链接到各自语言的文档。发布前，`scripts/check-site.py` 检查中文覆盖、译文代码块、章节 ID 和本地链接。
 

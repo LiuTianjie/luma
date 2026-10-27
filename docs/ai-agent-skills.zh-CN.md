@@ -16,6 +16,8 @@ Luma 提供两个面向 AI 编码助手的 Skill，包含项目专用的部署�
 
 [`luma-observe`](../skills/luma-observe/) 帮助部署和维护可选的独立可观测栈，涵盖 Traefik 请求指标、Nomad 实例失败、OTLP 采集和通知发送。
 
+该 Skill 区分 observe 的 vmalert/Alertmanager 规则与 Control 的控制台应用告警预设，并说明 Grafana 登录认证、遥测保留策略和通知配置。
+
 安装 Skill 不会自动安装可观测栈。可观测栈需要单独部署；应用链路追踪还需要对应的 OpenTelemetry 运行时插桩。
 
 示例指令：
@@ -53,7 +55,7 @@ done
 rm -rf "$tmp"
 ```
 
-其他助手请通过其支持的 Skill 安装方式，使用上方链接的源码目录。安装后新开对话。更新 Luma 时，应从匹配版本的仓库同步 Skill，保持技能说明与安装版本一致。
+其他助手请通过其支持的 Skill 安装方式，使用上方链接的源码目录。安装后新开对话。更新 Luma 时，应从匹配版本的仓库同步完整 Skill 目录，包括 `references/`；仅更新 `SKILL.md` 会留下过时的操作指令。`main` 可能领先于已安装的发布版，使用新行为前应核对 CLI、Control 与 Builder 的能力。更新已有安装时保留本地定制。
 
 ## 参考文档 {#references}
 

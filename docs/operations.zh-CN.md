@@ -219,11 +219,11 @@ luma update fleet                            # every non-manager node with a rea
 luma update fleet --include-manager          # explicit repair only
 ```
 
-未指定 `--install-ref` 时安装最新发布版；协调发布候选版本时请使用完整提交。控制台的 **节点 → 升级中心** 是升级 Manager 的首选方式：它先把 Control 镜像同步到内部镜像仓库，再带进度和路由检查滚动升级。在 Manager 上直接执行 `luma update` 会自行拉取镜像；无法访问 GHCR 时，把 `LUMA_CONTROL_IMAGE` 设为可拉取的镜像。
+未指定 `--install-ref` 时安装最新发布版；协调发布候选版本时请使用完整提交。控制台的 **设置 → 系统维护** 是升级 Manager 的首选方式：它先把 Control 镜像同步到内部镜像仓库，再带进度和路由检查滚动升级。在 Manager 上直接执行 `luma update` 会自行拉取镜像；无法访问 GHCR 时，把 `LUMA_CONTROL_IMAGE` 设为可拉取的镜像。
 
 在 Manager 上，`luma update` 会刷新防火墙、Traefik、Tailscale 看门狗、journald 大小上限、Control 配置和 `luma-control` job（启用 Nomad auto-revert），然后刷新本机节点 agent。它不会重启 Docker 或 Nomad agent，不会重新配置出站代理，也不会重新部署应用。`/opt/luma/control` 下的 Manager 状态仅 root 可读；没有免密 sudo 时执行 `sudo ~/.local/bin/luma update`。
 
-批量升级最多同时升级四个节点。安装或重连检查失败的节点最多重试五次；从升级中心发起时，开始时离线的节点也会等待并重试。每次安装会保留新版本、上一版本（用于回滚）以及仍被进程使用的版本，并删除只包含 `src` 和 `venv` 的旧 `releases/candidate.*` 目录；设置 `LUMA_KEEP_RELEASES=1` 可保留。
+批量升级最多同时升级四个节点。安装或重连检查失败的节点最多重试五次；从设置 → 系统维护发起时，开始时离线的节点也会等待并重试。每次安装会保留新版本、上一版本（用于回滚）以及仍被进程使用的版本，并删除只包含 `src` 和 `venv` 的旧 `releases/candidate.*` 目录；设置 `LUMA_KEEP_RELEASES=1` 可保留。
 
 在已加入的节点上，`luma update` 刷新 CLI 和节点 agent。agent 版本过旧、不支持批量升级的节点会被报告为跳过；在该节点上执行一次 `luma update` 即可。没有保存 agent 元数据的旧节点，加上 `--control-url https://luma.example.com --token <node-join-token>`。
 

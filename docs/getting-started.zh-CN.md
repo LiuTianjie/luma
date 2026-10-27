@@ -77,7 +77,9 @@ Dashboard: https://luma.example.com/dashboard/
 
 ## 3. 部署第一个工作负载 {#3-deploy-a-first-workload}
 
-最快的验证方式是控制台：打开 Dashboard 地址，粘贴管理令牌，选择 **应用 → 创建应用 → hello-world 首装验证**。它会部署一个不需要 DNS 和镜像仓库的内部服务，用来证明调度正常。
+最快的验证方式是控制台：打开 Dashboard 地址，首次使用管理令牌登录，选择 **应用 → 创建应用 → hello-world 首装验证**。它会部署一个不需要 DNS 和镜像仓库的内部服务，用来证明调度正常。
+
+随后在 **设置 → 登录与 Passkey** 添加 Passkey，供之后登录使用。浏览器通过会话 Cookie 维持登录，不保存管理令牌；详见[登录与恢复](dashboard-guide.zh-CN.md#sign-in-and-passkeys)。
 
 在你的电脑上登录并部署一个公网服务：
 
@@ -90,7 +92,7 @@ luma deploy status.yaml
 luma app list
 ```
 
-`luma init` 会生成一份带注释的 manifest，包含内存上限和健康检查，按需修改即可。`--dry-run` 会打印 Control 将要提交的 Nomad job。请把 `status.example.com` 换成你 Cloudflare 域名下的主机名。本地构建、仓库导入和 Compose 应用见[部署应用](deploying.zh-CN.md)。
+`luma init` 会生成一份带注释的 manifest，包含内存上限和健康检查，按需修改即可。`--dry-run` 只生成本地 Nomad 预览；正式部署时 Control 还会解析实时放置、存储和镜像，最终 job 可能不同。请把 `status.example.com` 换成你 Cloudflare 域名下的主机名。本地构建、仓库导入和 Compose 应用见[部署应用](deploying.zh-CN.md)。
 
 ## 4. 加入更多节点 {#4-add-nodes}
 
@@ -128,7 +130,7 @@ luma update            # on the manager: CLI and Control; on a node: CLI and age
 luma update fleet      # from any client: every node with a ready agent (the manager is skipped)
 ```
 
-未指定 `--install-ref` 时都会安装最新发布版。控制台的 **节点 → 升级中心** 提供带进度和路由检查的同等操作，是升级 Manager 的首选方式。`luma update` 不会重启 Docker 或 Nomad，也不会重新部署应用。
+未指定 `--install-ref` 时都会安装最新发布版。控制台的 **设置 → 系统维护** 提供带进度和路由检查的同等操作，是升级 Manager 的首选方式。`luma update` 不会重启 Docker 或 Nomad，也不会重新部署应用。
 
 ## 6. 检查健康状态 {#6-check-health}
 

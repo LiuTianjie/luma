@@ -10,9 +10,11 @@ Luma 提供节点与容器采样、当前任务队列、资源历史、运行事
 
 ## 应用告警（`luma-observe`） {#application-alerts-luma-observe}
 
-Control 控制台提供节点与容器采样，实时 allocation 日志仍通过 Control 按需代理。应用 HTTP 5xx、延迟（p90/p95/p99）、Nomad 失败 allocation、重启风暴、链路追踪，以及可搜索的 stdout/stderr，由可选的 [`observe/`](../observe/) Compose 应用提供。可用 Luma 部署它；不部署也不影响 Control 运行。运维人员通过 **控制台 → 可观测 → 应用监控**查看，它在 Control 域名的 `/grafana` 嵌入 Grafana。部署 observe 后，HTTP、Nomad 和 trace 序列立即按 Luma 应用/stack 名标记，无需应用单独加入。失败指标只统计 Nomad 仍希望运行的 allocation，不是累计失败次数。该组件使用主机网络和回环监听器：Prometheus 为 `127.0.0.1:8082`，OTLP 为 `127.0.0.1:4318`，Tempo 为 `127.0.0.1:3200`。应用任务携带 Control 签发的 bearer token，向 Manager Tailscale mesh 的 4319 端口发送 trace。Control 使用主机网络，observe 存在时查询 `http://127.0.0.1:8428`。`127.0.0.1:3100` 上的 Grafana 仅用于本地调试。告警在 vmalert/Alertmanager 中评估，不经过 Control SQLite。Trace 保留 3 天；日志和指标保留 15 天，日志最多占用 4 GiB。Manager 磁盘剩余不足 2 GiB 时，日志和指标停止写入。
+Control 控制台提供节点与容器采样，实时 allocation 日志仍通过 Control 按需代理。应用 HTTP 5xx、延迟（p90/p95/p99）、Nomad 失败 allocation、重启风暴、链路追踪，以及可搜索的 stdout/stderr，由可选的 [`observe/`](../observe/) Compose 应用提供。可用 Luma 部署它；不部署也不影响 Control 运行。运维人员通过 **控制台 → 可观测 → 应用监控**查看，它在 Control 域名的 `/grafana` 嵌入 Grafana。部署 observe 后，HTTP、Nomad 和 trace 序列立即按 Luma 应用/stack 名标记，无需应用单独加入。失败指标只统计 Nomad 仍希望运行的 allocation，不是累计失败次数。该组件使用主机网络和回环监听器：Prometheus 为 `127.0.0.1:8082`，OTLP 为 `127.0.0.1:4318`，Tempo 为 `127.0.0.1:3200`。应用任务携带 Control 签发的 bearer token，向 Manager Tailscale mesh 的 4319 端口发送 trace。Control 使用主机网络，observe 存在时查询 `http://127.0.0.1:8428`。`127.0.0.1:3100` 上的 Grafana 仅用于本地调试。可观测栈自带的规则在 vmalert/Alertmanager 中评估，不经过 Control SQLite；另外，Control 的控制台应用告警预设读取 VictoriaMetrics，并将事件和通知记录保存在 Control SQLite。Trace 保留 3 天；日志和指标保留 15 天，日志最多占用 4 GiB。Manager 磁盘剩余不足 2 GiB 时，日志和指标停止写入。
 
-在 `observe/` 中执行 `luma build local . --platform linux/amd64` 部署。首次部署不需要 secret；飞书通知可以之后再用 scoped secret 补上。当前 CLI 支持回环 metrics/OTLP 标志后，刷新 Traefik，让 RED 规则有可抓取目标。通过 **控制台 → 可观测 → 应用监控**查看。图表按 Luma 应用展示 Traefik HTTP 请求率、5xx、p90/p95/p99 延迟和 Nomad 健康状态，不是读取每个容器的 `/metrics`。Traefik 直方图桶为 `0.05,0.1,0.25,0.5,1,2.5,5,10` 秒，以区分这些分位数。启用 observe 后，后续 Luma 部署会自动注入官方 OpenTelemetry 环境变量：`OTEL_SERVICE_NAME`、`luma.stack` / `luma.task` / `luma.region`，以及指向 mesh 监听器的 OTLP HTTP 配置。已包含 OpenTelemetry 发行版的应用无需 Luma SDK 即可发送 span。首次启用 observe 后应重新部署已有应用。Trace 导出失败不会阻塞业务；采集器保留 HTTP 5xx、OTel 错误、超过 1 秒的 trace，并对其他请求进行 10% 基线采样。采集器通过 Go 内存目标、memory limiter 和有界队列控制内存，持续过载时会拒收或丢弃遥测数据。不要通过 Manager 公网接口向外发送原始访问日志或 trace。
+打开 `/grafana` 前先在 `/dashboard/` 登录。Traefik 每次访问 Grafana 都会请求 Control 校验控制台会话或管理令牌；未认证请求返回 401。Grafana 无需二次登录，公网入口依赖 Control 可用。详见[登录与 Passkey](dashboard-guide.zh-CN.md#sign-in-and-passkeys)。
+
+在 `observe/` 中沿用已记录的部署方式。AMD64 Manager 首次本地构建可执行 `luma build local . --platform linux/amd64`；其他主机应按实际 Manager 架构选择平台。首次部署不需要通知密钥。可观测栈的 Alertmanager 通知需要添加 scoped secret 和对应的 Compose 环境变量引用，再重新部署；控制台规则则使用内置飞书渠道，详见[通知配置](#built-in-alert-rules-and-notifications)。当前 CLI 支持回环 metrics/OTLP 标志后，刷新 Traefik，让 RED 规则有可抓取目标。通过 **控制台 → 可观测 → 应用监控**查看。图表按 Luma 应用展示 Traefik HTTP 请求率、5xx、p90/p95/p99 延迟和 Nomad 健康状态，不是读取每个容器的 `/metrics`。Traefik 直方图桶为 `0.05,0.1,0.25,0.5,1,2.5,5,10` 秒，以区分这些分位数。启用 observe 后，后续 Luma 部署会自动注入官方 OpenTelemetry 环境变量：`OTEL_SERVICE_NAME`、`luma.stack` / `luma.task` / `luma.region`，以及指向 mesh 监听器的 OTLP HTTP 配置。已包含 OpenTelemetry 发行版的应用无需 Luma SDK 即可发送 span。首次启用 observe 后应重新部署已有应用。Trace 导出失败不会阻塞业务；采集器保留 HTTP 5xx、OTel 错误、超过 1 秒的 trace，并对其他请求进行 10% 基线采样。采集器通过 Go 内存目标、memory limiter 和有界队列控制内存，持续过载时会拒收或丢弃遥测数据。不要通过 Manager 公网接口向外发送原始访问日志或 trace。
 
 ## 应用接入 {#application-integration}
 
@@ -81,7 +83,7 @@ async function charge(orderId) {
 
 指标页显示实际采样时间范围和保留期，区分缺失、过期和查询失败，并在采样缺口处断开曲线。可选择服务查看资源历史，或打开按 stack 筛选的可观测日志。
 
-可观测日志来自 Nomad allocation 的 stdout/stderr，由 luma-observe 发送到 VictoriaLogs。按 `app`（Nomad job / Luma stack）筛选。Traefik JSON 访问日志是 `traefik` job 的 stdout，可用 LogsQL 的 `unpack_json` 解析。Nomad 帧没有事件时间戳，因此日志行时间是观测时间。`luma service logs` 和应用详情的实时日志仍通过 Control 跟随 Nomad 文件，只提供有限片段，并非 VictoriaLogs 的持久化日志存储。
+可观测日志来自 Nomad allocation 的 stdout/stderr，由 luma-observe 发送到 VictoriaLogs。按 `app`（Nomad job / Luma stack）筛选。Traefik JSON 访问日志是 `traefik` job 的 stdout，可用 LogsQL 的 `unpack_json` 解析。Nomad 帧没有事件时间戳，因此日志行时间是观测时间。`luma app logs` 和应用详情的实时日志仍通过 Control 跟随 Nomad 文件，只提供有限片段，并非 VictoriaLogs 的持久化日志存储。
 
 资源数据按 30 秒桶保留，与上报某个服务的节点数量无关。`LUMA_METRICS_HISTORY_POINTS` 默认 720（约 6 小时），范围为 60 到 10000。资源历史独立保存在 Control 状态目录下有界的 `metrics-history.json` 中；长期排查和独立故障检测仍适合外部采集。备份范围见[控制面存储与恢复](control-storage.md)。服务汇总只覆盖已上报节点，缺失贡献在 180 秒后过期，不能证明所有副本均已上报。
 

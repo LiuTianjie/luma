@@ -219,11 +219,11 @@ luma update fleet                            # every non-manager node with a rea
 luma update fleet --include-manager          # explicit repair only
 ```
 
-Updates install the latest release unless `--install-ref` is given; use a full commit for a coordinated candidate rollout. The dashboard's **Nodes → Update center** is the preferred manager path: it mirrors the Control image into the internal registry first, then rolls out with progress and route checks. A direct `luma update` on the manager pulls the image itself; where GHCR is unreachable, set `LUMA_CONTROL_IMAGE` to a pullable image.
+Updates install the latest release unless `--install-ref` is given; use a full commit for a coordinated candidate rollout. The dashboard's **Settings → Maintenance** is the preferred manager path: it mirrors the Control image into the internal registry first, then rolls out with progress and route checks. A direct `luma update` on the manager pulls the image itself; where GHCR is unreachable, set `LUMA_CONTROL_IMAGE` to a pullable image.
 
 On the manager, `luma update` refreshes the firewall, Traefik, the Tailscale watchdog, the journald size limit, Control configuration and the `luma-control` job (with Nomad auto-revert), then refreshes the local node agent. It does not restart Docker or the Nomad agent, run egress setup, or redeploy applications. Manager state under `/opt/luma/control` is root-only; without passwordless sudo run `sudo ~/.local/bin/luma update`.
 
-Fleet updates run up to four nodes at a time. A node whose installer or reconnect check fails is retried up to five times; from the update center, a node that is offline at the start is also waited for and retried. Each install keeps the new and previous (rollback) runtimes and anything a process still uses, and removes older `releases/candidate.*` directories that contain only `src` and `venv`; set `LUMA_KEEP_RELEASES=1` to keep them.
+Fleet updates run up to four nodes at a time. A node whose installer or reconnect check fails is retried up to five times; from Settings → Maintenance, a node that is offline at the start is also waited for and retried. Each install keeps the new and previous (rollback) runtimes and anything a process still uses, and removes older `releases/candidate.*` directories that contain only `src` and `venv`; set `LUMA_KEEP_RELEASES=1` to keep them.
 
 On a joined node, `luma update` refreshes the CLI and the node agent. A node whose agent is too old for fleet updates is reported as skipped; run `luma update` on it once. For an old node without saved agent metadata, pass `--control-url https://luma.example.com --token <node-join-token>`.
 

@@ -77,7 +77,9 @@ To use your own Control image, publish it and set `LUMA_CONTROL_IMAGE` before bo
 
 ## 3. Deploy a first workload
 
-The fastest check is the dashboard: open the dashboard URL, paste the management token and choose **Applications → Create application → hello-world first install**. It deploys an internal service with no DNS or registry requirements and proves that scheduling works.
+The fastest check is the dashboard: open the dashboard URL, use the management token for the first sign-in and choose **Applications → Create application → hello-world first install**. It deploys an internal service with no DNS or registry requirements and proves that scheduling works.
+
+Add a passkey in **Settings → Sign-in** for future browser access. The browser keeps a session cookie rather than the management token; see [sign-in and recovery](dashboard-guide.md#sign-in-and-passkeys).
 
 From your laptop, sign in and deploy a public service:
 
@@ -90,7 +92,7 @@ luma deploy status.yaml
 luma app list
 ```
 
-`luma init` writes a commented manifest with a memory limit and a health check; edit it as needed. `--dry-run` shows the Nomad job that Control will submit. Replace `status.example.com` with a hostname in your Cloudflare zone. See [Deploying applications](deploying.md) for local builds, repository imports and Compose applications.
+`luma init` writes a commented manifest with a memory limit and a health check; edit it as needed. `--dry-run` renders a local Nomad preview; Control resolves live placement, storage and image references during the real deployment, so the final job can differ. Replace `status.example.com` with a hostname in your Cloudflare zone. See [Deploying applications](deploying.md) for local builds, repository imports and Compose applications.
 
 ## 4. Add nodes
 
@@ -128,7 +130,7 @@ luma update            # on the manager: CLI and Control; on a node: CLI and age
 luma update fleet      # from any client: every node with a ready agent (the manager is skipped)
 ```
 
-Both install the latest release unless you pass `--install-ref`. The dashboard's **Nodes → Update center** does the same with progress and route checks, and is the preferred way to update the manager. `luma update` never restarts Docker or Nomad and never redeploys applications.
+Both install the latest release unless you pass `--install-ref`. The dashboard's **Settings → Maintenance** does the same with progress and route checks, and is the preferred way to update the manager. `luma update` never restarts Docker or Nomad and never redeploys applications.
 
 ## 6. Check health
 

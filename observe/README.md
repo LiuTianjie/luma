@@ -4,9 +4,7 @@ Optional application observability for a Luma cluster. Deploy it with Luma
 like any other Compose app. Control and other clusters keep working if it
 is absent.
 
-It colocates with Traefik on the manager host network and only binds loopback
-listeners. Public 80/443 traffic and Aliyun outbound billing are unchanged
-except for tiny Feishu posts.
+It colocates with Traefik on the manager host network. Traefik metrics and traces use loopback; application OTLP uses the authenticated Tailscale mesh listener. Application requests do not pass through the collector. Dashboard queries and notification delivery generate their own traffic.
 
 ## What it watches
 
@@ -20,16 +18,14 @@ App names are the Luma stack/job names already in Nomad. Deploying observe
 maps Traefik routers onto those names. Existing apps do not need a redeploy,
 extra YAML, or an SDK.
 
-After it is deployed, look in Luma Dashboard → 可观测 → 应用.
+After it is deployed, open Luma Dashboard → Observability → App monitoring.
 That tab embeds Grafana at `/grafana` on the Control domain. Luma writes
 the Traefik route; you do not add a second domain. Do not open Grafana on
 Tailscale or port 3000. The route asks Control to check every request, so
 `/grafana` needs a console session (or the management token) and returns 401
 otherwise.
 
-It does not evaluate alerts inside Control. Allocation stdout/stderr is
-shipped to VictoriaLogs by observe, not by Control. Dashboard → 可观测 → 日志
-opens Grafana Explore. `luma service logs` and the application-detail live tail
+The bundled rules run in vmalert/Alertmanager. Separately, Control's dashboard-managed application p95, 5xx ratio and failed-allocation presets read VictoriaMetrics and use Control's own incident and notification storage. Allocation stdout/stderr is shipped to VictoriaLogs by observe. Dashboard → Observability → App monitoring → Logs opens Grafana Explore. `luma app logs` and the application-detail live tail
 still go to Nomad through Control and are not a 15-day archive.
 Deploying this stack is the observability component: later Luma app deploys
 receive official OTel env vars automatically. Redeploy existing apps to pick

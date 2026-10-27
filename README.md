@@ -111,7 +111,7 @@ If the manager needs a proxy to pull the default GHCR image, configure `EGRESS_S
 
 ### 3. Run the first workload
 
-Open `https://luma.example.com/dashboard/`, sign in with the management token, and choose **Applications → Create application → hello-world first install**.
+Open `https://luma.example.com/dashboard/`, use the management token for the first sign-in, then add a passkey in **Settings → Sign-in** for future access ([sign-in and recovery](docs/dashboard-guide.md#sign-in-and-passkeys)). Choose **Applications → Create application → hello-world first install**.
 
 This deploys the repository's [hello-world template](templates/hello-world.yml) with `exposure: none`. It verifies scheduling without adding an application domain. For a public service, use `status.yaml` above with a domain you own.
 
@@ -218,8 +218,8 @@ Home/private nodes require Tailscale. macOS home nodes also need a running Docke
 | Check cluster health | `luma status` and `luma doctor` |
 | Inspect deployment versions | `luma app versions <app>` |
 | Roll back a Nomad job version | `luma app rollback <app> --to-version <N>` |
-| Upgrade Control and nodes | Dashboard → Nodes → Update center |
-| Inspect registry storage | Dashboard → Registry |
+| Upgrade Control and nodes | Dashboard → Settings → Maintenance |
+| Inspect registry storage | Dashboard → Infrastructure → Registry |
 | Configure application telemetry and alerts | [Observability](docs/observability.md) and the independent [Observe stack](observe/) |
 | Back up or recover Manager state | [Control storage and recovery](docs/control-storage.md) |
 

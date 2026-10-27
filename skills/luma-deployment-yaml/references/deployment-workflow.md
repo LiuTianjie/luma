@@ -72,6 +72,14 @@ parameters; replay requires that build record to remain available.
 
 ## Recording And Availability
 
+Imports and retries use a persistent queue. Once Control has accepted a run,
+a CLI timeout or disconnect does not cancel it. Inspect `luma build list` and
+`luma build logs <build-id>` before retrying; cancel an unwanted run explicitly
+with `luma build cancel <build-id>`. A newer submission can supersede older
+queued work for the same repository, ref and deployment target. Queued work
+survives a Control restart; interrupted active runs fail rather than replaying
+potentially completed deployment actions.
+
 - Only a successful CLI deployment refreshes the success record. Failed builds,
   interrupted streams, dry runs and `--skip-orchestrator` preserve the previous one.
 - Deployment may succeed while recording fails. Report `workflow.saved: false` and

@@ -18,7 +18,7 @@ Use Python 3.12, matching CI:
 python -m venv /tmp/luma-site-venv
 /tmp/luma-site-venv/bin/python -m pip install Markdown==3.8.2
 /tmp/luma-site-venv/bin/python scripts/build-site.py
-python scripts/check-site.py
+/tmp/luma-site-venv/bin/python scripts/check-site.py
 python -m http.server 5182 --directory _site
 ```
 
@@ -36,6 +36,6 @@ A local build is not a public release. Review the English and Chinese pages, nar
 
 ## Chinese documentation
 
-Every public English guide has a sibling `*.zh-CN.md` translation. Documents originally written in Chinese keep their existing paths. Keep translations synchronized when updating prose; preserve commands, configuration keys and fenced examples exactly. The generated CLI help remains the literal terminal output in both languages. Run the CLI reference generator first, then copy its updated help blocks into the Chinese reference.
+Every public English guide has a sibling `*.zh-CN.md` translation. Documents originally written in Chinese keep their existing paths. Keep translations synchronized when updating prose; preserve commands, configuration keys and fenced examples exactly. The generated CLI help remains the literal terminal output in both languages. Run `python scripts/generate-cli-reference.py` to regenerate both language references together; `--check` verifies both against the current parser.
 
 Chinese pages localize navigation and resolve document links to Chinese counterparts. Explicit heading IDs (`{#original-heading-id}`) preserve existing English section links and language-switch anchors. Add matching IDs when translating new sections. English and Chinese homepage links should point to the corresponding language. `scripts/check-site.py` checks Chinese coverage, translated code blocks, heading IDs and local links before publication.

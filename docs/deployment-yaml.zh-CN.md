@@ -50,7 +50,7 @@ luma deploy status.yaml
 | `networks` | 否 | string[] | 追加网络声明。公开服务的入口由 Traefik Nomad provider 自动发现。 |
 | `proxy` | 否 | boolean | 服务运行时是否需要走 egress proxy。为 `true` 时会自动挂上 egress 代理和代理环境变量。调度仍按 `region`。不是镜像拉取代理。 |
 | `resources` | 否 | map | 渲染到 Nomad task 的 `resources` 块，CPU 使用 `reservations.cpus` 弹性共享，不执行 `limits.cpus`。内存 reservation 映射到 `memory`、limit 映射到 `memory_max`；首次部署这类任务时会自动启用 Nomad 内存超卖，确保 limit 真正成为容器硬上限。 |
-| `healthcheck` | 否 | map | 渲染成 Nomad `check`（脚本/http）。公共 HTTP 服务建议探测本地端口，例如 `http://127.0.0.1:<port>/healthz`。 |
+| `healthcheck` | 否 | map | 单服务 `cn-edge` / `external-edge` 渲染成 Nomad HTTP 或 TCP 检查；可提取的 HTTP URL 提供路径，否则回退到 TCP，不会在容器中执行任意 shell 命令。其他暴露模式应检查实际生成的 `Checks`。 |
 | `requirements` | 否 | map | 组件依赖契约。支持 `capabilities`（`cloudflare` / `tailscale` / `egress` / `registry`）、`secrets`、`init` 和 `notes`。`init` 支持 `cloudflare-dns`、`cloudflare-tunnel`、`tailscale-node`、`egress`、`registry`、`secrets`。部署预览会合并显式声明与运行时推导，并在必需项缺失时阻止提交；正式部署会先执行并记录初始化计划。 |
 | `publishPort` | 公开服务可用 | integer | 显式启用 Nomad bridge 端口映射，把宿主机 `publishPort` 转到容器 `port`。原生 Mac/OrbStack 单服务仍需省略此项；Mac Compose 支持 Docker 管理的端口映射，见[自定义 Region 公网入口](region-public-ingress.zh-CN.md#mac-compose-networking)。 |
 | `relay` | tailscale-relay 可选 | map | 覆盖 Tailscale relay 上游。默认由 `node` 指定的节点及其 Tailscale 地址推导；Compose 可继承同组服务或本地卷的节点约束。 |
@@ -353,7 +353,7 @@ Compose sidecar 把宿主机路径写在 `volumes.<name>.local.path`，见 [comp
 
 ### 旧 storageClass（仅迁移） {#storageclass}
 
-已有 NFS 部署仍可用顶层 `storage` 指向控制面登记的 class。`volumes` 仍是容器挂载声明；`storage` 只描述这些 named volume 落到哪个旧存储服务的哪个子目录。新文件不要再写这块。
+旧部署可能保留顶层 `storage` 元数据，但原生 Nomad 服务的实际挂载来自 `volumes`：命名源渲染为 Docker volume，路径源渲染为 bind mount。`storageClass` 元数据不会自动把它们改成 NFS 挂载；迁移前应检查运行中的 Nomad mount、Docker volume driver options 和宿主机挂载。新文件不要再写这块。
 
 ```yaml
 name: home-db
@@ -510,4 +510,4 @@ luma validate service.yaml
 luma deploy service.yaml --dry-run
 ```
 
-`validate` 会校验 manifest 并输出渲染后的 Nomad jobspec。`deploy --dry-run` 不会提交控制面，只展示会生成什么。若本地校验无法读取控制面的节点或 storageClass 信息，JSON 输出会带 `validationMode: "degraded"` 和 `warnings`，文本输出会打印 `[warn]`，表示这次校验没有覆盖真实集群放置/存储可达性。
+单服务 `luma validate` 在本地校验并渲染，默认文本输出为摘要；`--format json` 包含渲染产物。`luma deploy --dry-run` 打印本地生成的 Nomad job 和适用的路由，不向 Control 提交部署，也不读取实时集群放置、存储或镜像状态。正式部署时 Control 仍会解析实际节点、存储归属、密钥和镜像，因此本地预览不保证与最终提交的 job 完全一致，也不证明运行时就绪。

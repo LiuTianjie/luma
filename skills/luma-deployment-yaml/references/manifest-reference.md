@@ -21,15 +21,15 @@
 | `labels` | no | string[] | Extra service tags. Luma adds Traefik routing tags for `cn-edge` and `external-edge`. |
 | `networks` | no | string[] | Extra network names for advanced renderers; Nomad services normally use bridge or host mode. |
 | `volumes` | no | string[] | Compose-style service mounts. Named sources such as `data:/data` are mounted as named volumes (Nomad mount blocks). |
-| `storage` | no | map | Maps named volumes from `volumes` to manager storage classes. Keys must reference named volume sources. |
+| `storage` | no | map | Legacy storage metadata; keys must reference named volume sources. For native Nomad services, inspect actual mounts rather than assuming this metadata changes their backend. |
 | `storage.<name>.storageClass` | storage only | string | Legacy storage metadata; inspect actual mounts and omit for new local deployments. |
 | `storage.<name>.path` | no | string | Subdirectory under the storage class export. |
 | `storage.<name>.accessMode` | no | `ReadWriteOnce` / `ReadWriteMany` | Informational and used for dashboard diagnosis. |
 | `storage.<name>.initialize` | no | `empty` | Explicit fresh-path acknowledgement. |
 | `storage.<name>.adopted` | no | boolean | Set after manual migration/adoption verification. |
-| `proxy` | no | boolean | Runtime outbound proxy. When true, Luma adds egress network and default proxy env unless already set. Not used for image pulls. |
+| `proxy` | no | boolean | Runtime outbound proxy. Control supplies the configured egress endpoint through default proxy environment variables unless already set. Not used for image pulls. |
 | `resources` | no | map | Elastic CPU scheduling shares via `reservations.cpus` (`"0.50"` maps to 500 MHz; default 100 MHz). Do not use `limits.cpus`; it is ignored with a warning. Memory reservations and hard limits are separate; limit-only memory reserves min(256 MiB, limit). |
-| `healthcheck` | no | map | Container health check. Public HTTP services should probe `http://127.0.0.1:<port>/healthz` when possible. |
+| `healthcheck` | no | map | For native edge services, renders a Nomad HTTP check from an extractable URL, otherwise TCP. It does not execute an arbitrary container shell command; inspect rendered checks for other exposure modes. |
 | `relay.host` | relay override | string | Optional advanced upstream host override. Usually omit. |
 | `relay.url` | relay override | string | Optional full upstream URL override. Usually omit. |
 | `tunnel.tokenEnv` | tunnel | string | Env var name for Cloudflare Tunnel token. Defaults to `CLOUDFLARE_TUNNEL_TOKEN`. |
@@ -65,13 +65,13 @@ Rules:
 - Every service gets a `${meta.region} == <region>` placement constraint.
 - If `node` is set, Luma renders a `${meta.luma_node_name} == <node>` constraint. Node identities are stable across restarts, so a rejoining node keeps its pin with no constraint rewrite.
 - `cn-edge` and `external-edge` register Traefik routing via the Nomad service provider (service tags), using a bridge network with `port` as the load-balancer target.
-- `tailscale-relay` runs the container in docker host network mode and routes through the published port on the pinned node via a Traefik file-provider route, unless `relay.host`/`relay.url` overrides are set.
+- Native `tailscale-relay` defaults to Docker host networking and the container's real port. On Linux, `publishPort` selects bridge networking with explicit host-to-container mapping. Native macOS services must omit `publishPort`; Mac Compose has its own allocation-owned network. A Traefik file-provider route uses the resolved deployment node unless `relay.host`/`relay.url` overrides are set.
 - `tcp-relay` adds the derived TCP entrypoint to Traefik, writes a TCP route, and forwards to the host port; the published port is exclusive to that TCP service.
 - `cloudflare-tunnel` adds a `cloudflared` sidecar task in the same group using `${<tokenEnv>}`.
 - `proxy: true` injects default `HTTP_PROXY`/`HTTPS_PROXY` pointing at the egress proxy unless those env vars are already present.
-- Named `volumes` are rendered as Nomad docker `mount` blocks (`type=volume` for named volumes, `type=bind` for host paths) — never the docker `volumes` shorthand, which would bind an empty alloc directory. If a named volume is also declared in `storage`, the resolved storage-class endpoint is used.
+- Native `volumes` render as Nomad Docker `mount` blocks (`type=volume` for named volumes, `type=bind` for host paths). Legacy native `storage` metadata does not rewrite those sources into storage-class mounts. Inspect actual mount sources and Docker volume driver options before a migration.
 - `resources` maps to Nomad `resources` (CPU MHz from fractional cores, MemoryMB); quote `cpus` as a YAML string such as `"0.50"`.
-- `healthcheck` is rendered as a Nomad/Traefik check. Use it when task `running` is not enough to prove the app is listening.
+- Native edge `healthcheck` renders a Nomad HTTP or TCP service check. An HTTP URL provides its path and the allocated service port supplies the target. Use rendered checks and the public-route probe to assess readiness; a running task alone is insufficient.
 
 ## Deployment Secrets
 
@@ -136,11 +136,11 @@ builder capability: docker-build
 builder capability: runtime-image-cache-v1
 registry service: luma-registry pinned on builder
 registryHost: <builder-tailscale-ip>:5000
-pushHost: 100.64.0.70:5000
+pushHost: <builder-tailscale-ip>:5000
 target Docker nodes (Linux or OrbStack): managed-registry-access-v2 readiness verified
 ```
 
-For the user's current cluster, `builder` has been used as the intended build+registry node and has been observed at `100.64.0.70:5000`; always re-check live status before relying on that exact IP.
+`builder` is an example node name. Read the actual declared builders, native container platforms and registry endpoints from the target cluster; public examples do not identify an operator's live infrastructure.
 
 ### Setup Or Refresh
 
@@ -150,7 +150,7 @@ For the user's current cluster, `builder` has been used as the intended build+re
 luma status
 ```
 
-Look for `Build (luma import)` and a ready Linux node named `builder` with `docker-build`.
+Look for a declared builder with a ready agent, `docker-build` and a native container platform compatible with the requested image. Linux and macOS with OrbStack / Docker Desktop are supported. ARM output requires a native ARM builder; an incompatible explicit pin cannot bypass this rule.
 
 2. If the node exists but does not advertise `docker-build`, check Docker buildx on the node:
 
@@ -215,7 +215,7 @@ For a stateful Compose stack before completion:
 - verify top-level production volumes use the existing external Docker volume names when appropriate;
 - verify stateful services remain pinned to the node that owns those volumes;
 - compare the previous and next generated Nomad mount `type`, `source`, and `target`;
-- require explicit adoption or initialization for intentional storage changes;
+- copy and verify existing data before intentional path/backend/owner changes, then use `adopted: true`; current Control reports storage-placement warnings and does not migrate data for you, while `initialize: empty` is only for an intentionally fresh volume;
 - never use an unrelated local database as an implicit recovery source.
 
 ### Common Failures
@@ -230,7 +230,7 @@ luma app restart luma-registry --mode recreate
 
 - Target-node pull from the internal registry fails with `502 Bad Gateway`: check reachability and the actual proxy owner before concluding that a proxy captured traffic. Linux Docker JSON uses `HttpProxy`, `HttpsProxy` and `NoProxy`; an active proxy needs a matching host, port, domain or CIDR bypass. Direct access does not require inventing exclusions, and missing facts are an error. On OrbStack, inspect native `network_proxy` and `network.proxy.exclude`, plus the effective macOS proxy in `auto` mode. Its internal Docker broker may be present with no external proxy. Preserve existing settings, append only required managed hosts through the runtime owner, and refuse unknown modes or inspection failures.
 
-- Build fails before push with `invalid value "127.0.0.1", expecting k=v`: suspect buildx driver option parsing of comma-separated `NO_PROXY`. Update Luma or ensure commas are escaped in `--driver-opt env.NO_PROXY=...`; do not treat this as a registry health failure.
+- Build fails before push with `invalid value "127.0.0.1", expecting k=v`: suspect Buildx CSV parsing of comma-separated `NO_PROXY`. Update Luma so the entire `env.NO_PROXY=...` driver option is CSV-quoted. Backslash-comma escaping is not reliable; this is not a registry health failure.
 - Local Build reaches the push step but fails with `server gave HTTP response to HTTPS client`: the current Docker-context builder handled the exporter and upgraded Builder Registry to HTTPS. Use Luma 0.1.271 or newer so the default path creates the managed docker-container builder. Do not switch to Docker Hub, request a Docker Hub token, or bypass the one-command workflow with an ad hoc push.
 - A resource increase renders correctly but the rollout is blocked with `DimensionExhausted: memory`: inspect all existing allocations on the pinned node and account for old/new overlap during rolling placement. `limits.memory` maps to `MemoryMaxMB`, which is ineffective without Nomad memory oversubscription; verify the live cgroup/container limit before diagnosing the application.
 

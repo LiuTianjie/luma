@@ -16,6 +16,8 @@ Example request:
 
 [`luma-observe`](../skills/luma-observe/) helps deploy and operate the optional, independent observability stack: Traefik request metrics, Nomad allocation failures, OTLP collection and notification delivery.
 
+The skill distinguishes observe's vmalert/Alertmanager rules from Control's dashboard-managed application alert presets, and covers authenticated Grafana access, telemetry retention and notification setup.
+
 Installing the skill does not install the stack. The stack requires its own deployment; application tracing also requires the appropriate OpenTelemetry runtime instrumentation.
 
 Example request:
@@ -53,7 +55,7 @@ done
 rm -rf "$tmp"
 ```
 
-For other assistants, use their supported skill installation mechanism with the linked source directories. Start a new conversation after installation. When updating Luma, refresh the skills from the matching checkout so their instructions stay aligned with the installed version.
+For other assistants, use their supported skill installation mechanism with the linked source directories. Start a new conversation after installation. When updating Luma, refresh the complete skill directories from the matching checkout, including `references/`; updating only `SKILL.md` leaves stale operational instructions. The `main` branch can be ahead of an installed release, so check CLI, Control and builder capabilities before using new behavior. Preserve local customizations when refreshing an existing installation.
 
 ## References
 

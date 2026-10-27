@@ -111,7 +111,7 @@ CLI 会交互式补齐配置、准备运行环境、初始化 SQLite，并输出
 
 ### 3. 部署第一个服务
 
-打开 `https://luma.example.com/dashboard/`，使用管理令牌登录，进入 **Applications → Create application → hello-world first install**。
+打开 `https://luma.example.com/dashboard/`，首次使用管理令牌登录，随后在 **设置 → 登录与 Passkey** 添加 Passkey，供之后登录使用（见[登录与恢复](docs/dashboard-guide.zh-CN.md#sign-in-and-passkeys)）。进入 **应用 → 创建应用 → hello-world 首装验证**。
 
 这个入口部署仓库中的 [hello-world 模板](templates/hello-world.yml)，使用 `exposure: none`，无需新增应用域名即可验证调度。需要公网访问时，将上面的 `status.yaml` 换成自己的域名后部署。
 
@@ -218,8 +218,8 @@ luma node join https://luma.example.com \
 | 检查集群健康 | `luma status` 和 `luma doctor` |
 | 查看部署版本 | `luma app versions <app>` |
 | 回滚 Nomad Job 版本 | `luma app rollback <app> --to-version <N>` |
-| 升级 Control 与节点 | Dashboard → Nodes → Update center |
-| 查看镜像仓库空间 | Dashboard → Registry |
+| 升级 Control 与节点 | 控制台 → 设置 → 系统维护 |
+| 查看镜像仓库空间 | 控制台 → 基础设施 → 镜像 |
 | 配置应用指标与告警 | [可观测性](docs/observability.zh-CN.md)与独立的 [Observe 栈](observe/) |
 | 备份或恢复 Manager 状态 | [Control 存储与恢复](docs/control-storage.zh-CN.md) |
 

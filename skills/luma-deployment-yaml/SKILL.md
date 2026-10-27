@@ -5,9 +5,10 @@ description: Generate, review, validate, or fix Luma deployment manifests and Co
 
 # Luma Deployment YAML
 
-Application-level alerts, Traefik RED/OTLP, and `observe/` belong to
-`luma-observe`. Do not add log scanners or OTLP receivers to Control, and do
-not publish metrics/OTLP on the public NIC.
+Application telemetry, Traefik RED/OTLP, and `observe/` belong to
+`luma-observe`. Control's existing application alert presets query observe;
+log shipping, OTLP receivers and telemetry storage stay in the optional stack.
+Do not publish metrics/OTLP on the public NIC.
 
 Use this skill for Luma deployment artifacts:
 
@@ -26,7 +27,7 @@ For actual deployments, recorded commands, or workflow-change prompts, read [Dep
 
 ## Token Vocabulary
 
-- Say "management token" for the trusted control-plane token used by CLI clients and the dashboard. The historical env var is still `LUMA_DEPLOY_TOKEN`.
+- Say "management token" for the trusted control-plane credential used by CLI and CI. The historical env var is still `LUMA_DEPLOY_TOKEN`. The dashboard signs in with a passkey or management token, then uses an HttpOnly session cookie; browsers do not persist the management token.
 - Say "node join token" for `luma node join` and old node-agent update examples.
 - Do not ask users for internal node-agent credentials. Luma installs and refreshes them through the manager.
 
@@ -87,7 +88,7 @@ luma build local . --platform linux/amd64
   inject them into the runtime job; only internal-registry credentials, when
   configured, belong in the Nomad docker auth block.
 - For repository import builds, prefer omitting `image` and adding `build:`. Luma builds and pushes to the configured builder registry, removes the `build` block from the runtime deploy payload, and injects the built image reference.
-- Valid regions: built-in `cn`, `global`, `home`, or a custom region created with `luma region create` / the Nodes page. Custom regions default to `none`; query `luma region list` for their live capabilities and enable relay with `luma region update NAME --exposure tailscale-relay`.
+- Valid regions: built-in `cn`, `global`, `home`, or a custom region created with `luma region create` / Dashboard → Infrastructure → Regions. Custom regions default to `none`; query `luma region list` for their live capabilities and enable relay with `luma region update NAME --exposure tailscale-relay`.
 - Valid exposures: `none`, `cn-edge`, `external-edge`, `tailscale-relay`, `cloudflare-tunnel`, `tcp-relay`.
 - Public exposures require `domain` and integer `port`.
 - `cn-edge` requires `region: cn`; `external-edge` requires `region: global`; `tailscale-relay` requires `home` or a custom region that has enabled it.
@@ -100,14 +101,14 @@ luma build local . --platform linux/amd64
 - Use `proxy: true` for container runtime HTTP/HTTPS egress through Luma. Do not hand-write the default `egress` network or default `HTTP_PROXY`/`HTTPS_PROXY`.
 - `proxy: true` is not for image pulls. External image access belongs to Builder's per-process cache task; runtime nodes pull only from Builder Registry.
 - Use `resources.reservations.cpus` for elastic CPU scheduling shares, for example `"0.50"` (Luma maps this to 500 MHz; it is not a dedicated core count). Do not emit `resources.limits.cpus`: it is ignored with a warning, not enforced as a CPU hard limit. CPU reservation defaults to 100 MHz. Memory limit-only declarations reserve min(256 MiB, limit); specify realistic memory reservations and hard limits separately.
-- `healthcheck` is passed to the running container's health check. Public HTTP services should probe the local app port, for example `http://127.0.0.1:<port>/healthz`.
+- For native `cn-edge` / `external-edge` services, `healthcheck` becomes a Nomad service check: an extractable HTTP URL supplies its path; otherwise it falls back to TCP. It does not execute an arbitrary shell health command inside the container. Inspect rendered checks for other exposure modes before claiming rollout readiness.
 - `engine` is optional. Omit it to inherit the cluster default. Set `engine: nomad` only when you need an explicit override.
 - New native services use named volumes or bind mounts in `volumes`; persistent writable mounts require `replicas: 1`. Preserve existing sources. Legacy `storage` metadata does not prove that the actual Nomad mount uses NFS; inspect the rendered/running mount before changing it.
 - `build` is for source-to-image builds via `luma import` / Dashboard Repository Import, not plain `luma deploy`. Subfields: `context` (default `.`), `dockerfile` (default `Dockerfile`), `platform` (default `linux/amd64`), and optional `repo` to override the internal image repository path.
 
 ## Builder Registry Workflow
 
-- ARM builds are native-only. Declare an ARM builder such as `air3` alongside the AMD64 builder. Any import containing ARM64, including mixed AMD64/ARM64 builds, must run on the ARM builder. Busy/offline native builders wait; a missing native builder or an incompatible explicit pin fails instead of using emulation.
+- ARM builds are native-only. Declare an ARM builder alongside the AMD64 builder. Any import containing ARM64, including mixed AMD64/ARM64 builds, must run on the ARM builder. Busy/offline native builders wait; a missing native builder or an incompatible explicit pin fails instead of using emulation.
 - Upgrade Control and all declared builders before using this policy. Repository agents must advertise `native-arm-build-v1`; automatic planning also requires `repository-build-plan-v1`. Local ARM builds require an updated CLI and an actual native ARM Docker engine for every selected Buildx worker. Never bypass these checks with an older client, another API or a QEMU-advertised platform list.
 - Mixed AMD64/ARM64 requests run on the ARM builder and may emulate the AMD64 portion. Different ARM architectures require separate requests. This does not split builds across machines.
 
@@ -117,9 +118,9 @@ luma build local . --platform linux/amd64
   Registry digest -> target node. Do not dynamically edit a target node's
   Docker daemon proxy after a pull failure.
 - Repository Import must support both single-service manifests and Compose deployments. If the repository has `luma.compose.yml`, build services declared with Compose `build:` blocks, rewrite those services to internal-registry `image:` references, then deploy through the normal Compose deployment path.
-- Prefer a dedicated Luma node named `builder` when available. Confirm it is `ready`, Linux, and advertises `docker-build` in `luma status` before using it.
-- Dashboard Repository Import should expose the dedicated `builder` node as the build/registry target. Other historical `docker-build` nodes such as `home-2` should not appear in the main build-node dropdown unless the product explicitly adds an advanced override path.
-- Prefer a builder-hosted registry for internal image distribution. Both `registryHost` and `pushHost` must use the Builder Tailscale endpoint that is reachable from target nodes and from the BuildKit container, for example `100.64.0.70:5000`. Do not use `localhost:5000`: inside BuildKit that is the BuildKit container itself, and the old host-loopback endpoint is not part of the supported architecture. Re-check the live Builder IP before hardcoding it.
+- Choose a declared builder with a ready agent, `docker-build` and the required native container architecture. Linux and macOS with OrbStack / Docker Desktop are supported. `builder` is the simple default name, not a required node identity.
+- Dashboard and CLI repository imports use the declared builder set. Do not hide a declared ARM or macOS builder because its name differs from `builder`, or select undeclared nodes merely because they advertise Docker capabilities.
+- Prefer a builder-hosted registry for internal image distribution. Both `registryHost` and `pushHost` must use the live Builder Tailscale endpoint reachable from target nodes and from the BuildKit container, such as `<builder-tailscale-ip>:5000`. Do not use `localhost:5000`: inside BuildKit that is the BuildKit container itself. Resolve the actual endpoint from the cluster configuration.
 - Start or refresh the registry on its deployment node with local storage; no storage class registration is required:
 
 ```bash
@@ -246,7 +247,7 @@ services:
 
 ## Validation Commands
 
-Single service:
+Single-service validation and dry run are local previews. They do not contact Control or prove live placement, storage ownership, image availability or public-route readiness; Control can change the final job during deployment.
 
 ```bash
 luma validate service.yaml

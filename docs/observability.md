@@ -20,10 +20,11 @@ observe is deployed; applications do not opt in. Failed gauges are the
 allocations Nomad still wants to run, not lifetime failure counters.
 The stack uses host networking and loopback listeners (`127.0.0.1:8082` Prometheus,
 `127.0.0.1:4318` OTLP, `127.0.0.1:3200` Tempo). Application tasks send traces to the manager Tailscale mesh listener on port 4319 with a Control-issued bearer token. Control uses host networking and queries `http://127.0.0.1:8428` when observe is present. Grafana on `127.0.0.1:3100`
-is local debug only. Alerts evaluate in vmalert/Alertmanager. Control SQLite
-is not on this path. Traces retain 3 days; logs and metrics retain 15 days, with logs capped at 4 GiB. Logs and metrics stop ingesting when less than 2 GiB of the manager disk is free.
+is local debug only. The stack's bundled rules evaluate in vmalert/Alertmanager without Control SQLite. Separately, Control's dashboard-managed application alert presets read VictoriaMetrics and persist incidents and deliveries in Control SQLite. Traces retain 3 days; logs and metrics retain 15 days, with logs capped at 4 GiB. Logs and metrics stop ingesting when less than 2 GiB of the manager disk is free.
 
-Deploy from `observe/` with `luma build local . --platform linux/amd64`. First deploy does not require secrets; add Feishu later with scoped secrets if needed.
+Sign in to `/dashboard/` before opening `/grafana`. Traefik checks the console session or management token with Control on every Grafana request; unauthenticated requests return 401. Grafana needs no second login, and the public route depends on Control being available. See [sign-in and passkeys](dashboard-guide.md#sign-in-and-passkeys).
+
+Deploy from `observe/` through its recorded workflow. For a first Local Build on an AMD64 manager, use `luma build local . --platform linux/amd64`; resolve the actual manager architecture for other hosts. First deploy does not require notification secrets. For the stack's Alertmanager path, add scoped secrets and matching Compose environment references, then redeploy. For Dashboard rules, configure the built-in Feishu channel instead; see [notification setup](#built-in-alert-rules-and-notifications).
 Refresh Traefik after the current CLI includes the loopback metrics/OTLP flags
 so RED rules have a scrape target. Operators look at Dashboard → Observability → App monitoring.
 The charts are per Luma app (Traefik HTTP rate, 5xx and p90/p95/p99 latency + Nomad health), not each container's `/metrics`. Traefik histogram buckets are `0.05,0.1,0.25,0.5,1,2.5,5,10` seconds so those quantiles are distinguishable.
@@ -116,7 +117,7 @@ Observability logs are Nomad allocation stdout/stderr shipped by luma-observe
 into VictoriaLogs. Filter by `app` (the Nomad job / Luma stack). Traefik JSON
 access logs are the `traefik` job's stdout; unpack with LogsQL `unpack_json`.
 Line time is observation time because Nomad frames have no event timestamps.
-`luma service logs` and the application-detail live tail still follow Nomad
+`luma app logs` and the application-detail live tail still follow Nomad
 files through Control and are bounded excerpts, not this 15-day store.
 
 Resources are retained in 30-second buckets, independently of the number of nodes reporting a service. `LUMA_METRICS_HISTORY_POINTS` defaults to 720 (approximately six hours), bounded between 60 and 10000. Resource history remains a separate bounded `metrics-history.json` file in the Control state directory; collection outside Control is still useful for longer investigations and independent outage detection. See [Control storage and recovery](control-storage.md) for backup scope. A service aggregate covers reporting nodes; missing contributions expire after 180 seconds. It is not proof that all replicas have reported.

@@ -40,7 +40,7 @@ Then:
 
 ```bash
 luma validate api.yaml            # schema, region/exposure rules; no network
-luma deploy api.yaml --dry-run    # print the Nomad job Control will submit
+luma deploy api.yaml --dry-run    # render a local Nomad preview; no deployment
 luma deploy api.yaml
 ```
 
