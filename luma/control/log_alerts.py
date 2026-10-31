@@ -5,7 +5,7 @@ import json
 import time
 import urllib.request
 
-from ..log_alert_rules import MAX_AGE, MAX_RULES, fingerprint, normalize
+from ..log_alert_rules import MAX_AGE, MAX_RULES, bounded_samples, fingerprint, normalize
 from ..errors import LumaError
 
 
@@ -37,7 +37,7 @@ def samples(rules, now):
         key = fingerprint(rule['target'], rule['logQuery'])
         row = rows.get(key)
         if isinstance(row, dict) and isinstance(row.get('sampledAt'), (int, float)) and 0 <= now-row['sampledAt'] <= MAX_AGE:
-            values[rule['id']] = row.get('value') if row.get('status') == 'ok' else None
+            values[rule['id']] = {**row, 'samples': bounded_samples(row.get('samples', []))} if row.get('status') == 'ok' else None
     return values
 
 

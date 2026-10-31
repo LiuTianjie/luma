@@ -17,6 +17,7 @@ import urllib.request
 
 from ..errors import LumaError
 from .build_alert_details import detail_rows
+from .log_alert_details import detail_rows as log_detail_rows
 
 AUTH_URL = 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal'
 MESSAGE_URL = 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id'
@@ -162,6 +163,7 @@ def feishu_alert_card(
     threshold: str = '',
     incident_id: object = '',
     build_details: dict | None = None,
+    log_details: dict | None = None,
 ) -> dict[str, object]:
     """Interactive card so firing and recovery are visually distinct in Feishu."""
     label, template = _KIND_HEADER.get(kind, ('告警通知', 'grey'))
@@ -191,6 +193,12 @@ def feishu_alert_card(
                 elements.append({'tag':'action','actions':[{'tag':'button','text':{'tag':'plain_text','content':'查看构建详情与日志'},'type':'primary','url':build_details['url']}]})
             else:
                 elements.append({'tag':'div','text':{'tag':'plain_text','content':f"查看日志：luma build logs {build_details['buildId']}"}})
+        if log_details:
+            note = '统计窗口内错误已降至阈值以内；以下保留最近异常窗口，业务任务是否补偿需另行确认。' if kind == 'resolved' else '同一事件的持续提醒；样例来自下方统计窗口。' if kind == 'reminder' else '按匹配日志行计数；样例可能截断，不等于独立业务失败次数。'
+            elements.append({'tag':'div','text':{'tag':'plain_text','content':note}})
+            elements.extend({'tag':'div','text':{'tag':'plain_text','content':f'{name}\n{item}'}} for name,item in log_detail_rows(log_details))
+            if log_details.get('incidentUrl'):
+                elements.append({'tag':'action','actions':[{'tag':'button','text':{'tag':'plain_text','content':'查看异常详情与日志'},'type':'primary','url':log_details['incidentUrl']}]})
         subtitle_parts = [p for p in (f"集群 `{_plain(cluster, 80)}`" if cluster else '', f"事件 #{incident_id}" if incident_id not in ('', None) else '') if p]
         if subtitle_parts:
             elements.append({'tag': 'div', 'text': {'tag': 'lark_md', 'content': ' · '.join(subtitle_parts)}})

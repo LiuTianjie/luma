@@ -78,7 +78,7 @@ export function ObservabilityPage({
         />
       ) : (
         <AlertingPanel
-          key={`${token}:${section}`}
+          key={`${token}:${section}:${query.get("app") || ""}`}
           lang={lang}
           token={token}
           tab={

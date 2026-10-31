@@ -1,3 +1,4 @@
+import { AlertingPanel } from "./AlertingPanel";
 import { ApplicationSecrets } from "./ApplicationSecrets";
 import {
   Card,
@@ -940,6 +941,7 @@ export function ApplicationManagementPanel({
           </TabsList>
         </div>
         <TabsContent value={tab} className="flex min-w-0 flex-col gap-6">
+          {tab === "alerts" ? <AlertingPanel key={selected.stack} lang={lang} token={token} tab="alerts" application={selected.stack} /> : null}
           {tab === "secrets" ? (
             <ApplicationSecrets
               key={selected.stack}

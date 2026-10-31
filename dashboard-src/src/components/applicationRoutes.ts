@@ -1,6 +1,7 @@
 export const APPLICATION_TABS = [
   { id: "overview", zh: "概览", en: "Overview" },
   { id: "services", zh: "服务与实例", en: "Services" },
+  { id: "alerts", zh: "告警", en: "Alerts" },
   { id: "logs", zh: "日志", en: "Logs" },
   { id: "metrics", zh: "指标", en: "Metrics" },
   { id: "config", zh: "配置", en: "Configuration" },

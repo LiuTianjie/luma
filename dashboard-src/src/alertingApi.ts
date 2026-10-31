@@ -6,7 +6,14 @@ export type LogQuery = { windowSeconds: number; task?: string; contains?: string
 export type AlertRule = { logQuery?: LogQuery; id: string; name: string; metric: string; target: string; threshold: number; forSeconds: number; severity: "warning" | "critical"; channelIds: string[]; enabled: boolean; repeatSeconds: number; noData: "keep" | "alert"; silencedUntil?: number };
 export type AlertChannel = { id: string; name: string; type: "feishu"; enabled: boolean; appId: string; chatId: string; appSecretConfigured: boolean };
 export type BuildAlertDetails = { buildId?: string; service?: string; image?: string; images?: Record<string, string>; imageRepository?: string; buildNode?: string; repository?: string; ref?: string; stage?: string; reason?: string; createdAt?: number; failedAt?: number; completedAt?: number };
-export type AlertIncident = { id: number; ruleId: string; ruleName: string; target: string; metric: string; severity: string; status: string; value?: number | null; startedAt: number; firedAt?: number; resolvedAt?: number; updatedAt?: number; acknowledgedAt?: number; noData?: boolean; buildDetails?: BuildAlertDetails };
+export type LogAlertSample = { _msg: string; _time?: string; task?: string; alloc?: string; stream?: string };
+export type LogAlertDetails = { app: string; task?: string; windowSeconds: number; windowStart: number; windowEnd: number; sampledAt: number; matchCount: number; total?: number; samples?: LogAlertSample[]; summary?: string; query?: Record<string, string>; historicalBackfill?: boolean };
+export function alertLogExploreUrl(details: LogAlertDetails): string {
+  const fields = [`app=${JSON.stringify(details.app)}`, ...(details.task ? [`task=${JSON.stringify(details.task)}`] : [])];
+  const pane = { logs: { datasource: "victorialogs", queries: [{ refId: "A", datasource: { type: "victoriametrics-logs-datasource", uid: "victorialogs" }, queryType: "instant", expr: `{${fields.join(",")}}`, maxLines: 100 }], range: { from: new Date(details.windowStart * 1000).toISOString(), to: new Date(details.windowEnd * 1000).toISOString() } } };
+  return `/grafana/explore?orgId=1&schemaVersion=1&panes=${encodeURIComponent(JSON.stringify(pane))}`;
+}
+export type AlertIncident = { id: number; ruleId: string; ruleName: string; target: string; metric: string; severity: string; status: string; value?: number | null; startedAt: number; firedAt?: number; resolvedAt?: number; updatedAt?: number; acknowledgedAt?: number; noData?: boolean; buildDetails?: BuildAlertDetails; application?: string; logDetails?: LogAlertDetails };
 export type AlertDelivery = { id: number; channelId: string; incidentId?: number; kind: string; status: string; attempts: number; nextAttemptAt?: number; lastError?: string; createdAt: number; sentAt?: number };
 export type AlertOverview = { counts: { pending: number; firing: number; resolved: number }; lastEvaluatedAt: number | null; silencedUntil: number; enabledRules: number; channels: number };
 export type AlertEvent = { id: number; kind: string; at: number; detail: unknown };
@@ -75,13 +82,14 @@ export function alertEventLabel(kind: string, zh: boolean): string {
 }
 
 // Each tab has independent data needs; hidden tables must not delay its load.
-export async function fetchAlertTab(tab: AlertTab, token: string, filter: string, signal?: AbortSignal) {
+export async function fetchAlertTab(tab: AlertTab, token: string, filter: string, signal?: AbortSignal, application = "") {
+  const appQuery = application ? `app=${encodeURIComponent(application)}` : "";
   const [overview, presets, rules, channels, incidents, deliveries] = await Promise.all([
-    getAlerting<AlertOverview>("overview", token, signal),
+    getAlerting<AlertOverview>(`overview${appQuery ? `?${appQuery}` : ""}`, token, signal),
     tab === "rules" ? getAlerting<AlertPage<AlertPreset>>("presets", token, signal) : undefined,
-    tab === "rules" ? getAlerting<AlertPage<AlertRule>>("rules", token, signal) : undefined,
+    tab === "rules" ? getAlerting<AlertPage<AlertRule>>(`rules${appQuery ? `?${appQuery}` : ""}`, token, signal) : undefined,
     tab !== "alerts" ? getAlerting<AlertPage<AlertChannel>>("channels", token, signal) : undefined,
-    tab === "alerts" ? getAlerting<AlertPage<AlertIncident>>(`incidents?limit=50${filter ? `&status=${encodeURIComponent(filter)}` : ""}`, token, signal) : undefined,
+    tab === "alerts" ? getAlerting<AlertPage<AlertIncident>>(`incidents?limit=50${appQuery ? `&${appQuery}` : ""}${filter ? `&status=${encodeURIComponent(filter)}` : ""}`, token, signal) : undefined,
     tab === "notifications" ? getAlerting<AlertPage<AlertDelivery>>("deliveries?limit=50", token, signal) : undefined,
   ]);
   return { overview, presets, rules, channels, incidents, deliveries };

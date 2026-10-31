@@ -56,8 +56,60 @@ class LogRulesTest(unittest.TestCase):
         rule = self.rule()
         key = contract.fingerprint(rule['target'], rule['logQuery'])
         with patch.object(log_alerts, 'request', return_value={'results': {key: {'status':'ok','value':8,'sampledAt':1000}}}):
-            self.assertEqual(log_alerts.samples([rule], 1050), {rule['id']:8})
+            self.assertEqual(log_alerts.samples([rule], 1050)[rule['id']]['value'], 8)
             self.assertEqual(log_alerts.samples([rule], 1200), {})
+
+    def test_evidence_survives_recovery_and_notifies_from_the_same_snapshot(self):
+        channel = alerting.save_channel({'name':'group','appId':'cli_test1234','appSecret':'private','chatId':'oc_group1234'})
+        rule = self.rule(channelIds=[channel['id']], repeatSeconds=60)
+        sample = {'status':'ok','value':5,'total':30,'sampledAt':1000,
+                  'samples':[{'_time':'2026-10-31T04:00:00Z','task':'worker','_msg':'Task charge failed: api unauthorized token=private'}]}
+        state = {'domain':'luma.test','_logAlerts':{rule['id']:sample}}
+        alerting.tick(state, now=1000)
+        item = alerting.dispatch('GET','incidents')['items'][0]
+        self.assertNotIn('samples', item['logDetails'])
+        identifier = item['id']
+        details = alerting.dispatch('GET',f'incidents/{identifier}')['incident']['logDetails']
+        self.assertEqual(details['matchCount'],5)
+        self.assertIn('api unauthorized',details['samples'][0]['_msg'])
+        self.assertNotIn('private',json.dumps(details))
+        self.assertEqual(details['incidentUrl'],f'https://luma.test/dashboard/apps/ledger/alerts/{identifier}')
+        sent=[]
+        alerting.deliver_pending(now=1000,transport=lambda *args:sent.append(json.loads(args[3])))
+        self.assertIn('api unauthorized',sent[0]['fallback'])
+        self.assertIn('api unauthorized',json.dumps(sent[0]['card']))
+        alerting.tick({'_logAlerts':{}},now=1015)
+        self.assertTrue(alerting.dispatch('GET',f'incidents/{identifier}')['incident']['noData'])
+        alerting.tick({'_logAlerts':{rule['id']:{**sample,'value':0,'samples':[],'sampledAt':1060}}},now=1060)
+        recovered = alerting.dispatch('GET',f'incidents/{identifier}')['incident']
+        self.assertEqual(recovered['status'],'resolved')
+        self.assertEqual(recovered['logDetails'],details)
+        alerting.deliver_pending(now=1060,transport=lambda *args:sent.append(json.loads(args[3])))
+        self.assertIn('api unauthorized',sent[-1]['fallback'])
+        self.assertIn('统计窗口内错误',json.dumps(sent[-1]['card'],ensure_ascii=False))
+
+    def test_application_filter_scopes_counts_and_pages_before_limit(self):
+        first = self.rule()
+        second = alerting.save_rule({'name':'Other','metric':'app.nomad_failed','target':'other','threshold':0,'forSeconds':0})
+        node = alerting.save_rule({'name':'Node','metric':'node.disk','target':'ledger','threshold':0,'forSeconds':0})
+        alerting.tick({'_logAlerts':{first['id']:5}},now=1000)
+        alerting.tick({'_logAlerts':{first['id']:0}},now=1015)
+        alerting.tick({'_logAlerts':{first['id']:5},'_observeAlerts':{'app.nomad_failed':{'other':1}},
+                       'nodes':{'ledger':{'agent':{'lastSeen':1030,'metricsCollectedAt':1030,'metrics':{'diskUsedPercent':95}}}}},now=1030)
+        query={'app':'ledger','limit':1}
+        page = alerting.dispatch('GET','incidents',query=query)
+        self.assertEqual(page['items'][0]['ruleId'],first['id'])
+        older = alerting.dispatch('GET','incidents',query={**query,'cursor':page['nextCursor']})
+        self.assertEqual(older['items'][0]['status'],'resolved')
+        self.assertIsNone(older['nextCursor'])
+        overview = alerting.dispatch('GET','overview',query={'app':'ledger'})
+        self.assertEqual(overview['counts']['firing'],1)
+        self.assertEqual(overview['counts']['resolved'],1)
+        self.assertEqual(overview['enabledRules'],1)
+        self.assertEqual([r['id'] for r in alerting.dispatch('GET','rules',query={'app':'ledger'})['items']],[first['id']])
+        with self.assertRaises(LumaError):
+            alerting.dispatch('GET',f"incidents/{page['items'][0]['id']}",query={'app':'other'})
+        self.assertNotEqual(second['id'],node['id'])
 
     def test_configuration_overflow_cannot_break_other_alerts(self):
         with self.assertRaises(ValueError):
@@ -96,6 +148,29 @@ class LogEngineTest(unittest.TestCase):
         engine.step()
         self.assertEqual(engine.results, {})
         self.assertEqual(engine.rules, {})
+
+    def test_victorialogs_json_string_rows_are_decoded_before_redaction(self):
+        import io
+        packed = [json.dumps({'_msg':f'failed {i} token=private','task':'worker','_time':'2026-10-31T04:00:00Z'}) for i in range(3)]
+        responses = [io.BytesIO(json.dumps([{'app':'app','task':'worker','at':1000}]).encode()),
+                     io.BytesIO(json.dumps({'total':'10','matches':'5','samples':json.dumps(packed)}).encode())]
+        with patch.object(self.mod.urllib.request,'urlopen',side_effect=responses):
+            result = self.mod.query_logs({'target':'app','logQuery':contract.normalize('app',{'contains':'failed'})},1000)
+        self.assertEqual(result['value'],5)
+        self.assertEqual(len(result['samples']),3)
+        self.assertTrue(all('private' not in row['_msg'] for row in result['samples']))
+
+    def test_twenty_large_sample_sets_fit_exchange_budget(self):
+        row = {'_msg': '\x00' * 300 + 'failed ' + '\\' * 9000 + '尾巴' * 1000,
+               'task':'\\' * 200, 'alloc':'x'*200, 'stream':'stderr', '_time':'2026-10-31T04:00:00Z'}
+        samples = contract.bounded_samples([row] * 10)
+        self.assertEqual(len(samples),3)
+        self.assertTrue(all(len(json.dumps(r,ensure_ascii=False).encode())<=900 for r in samples))
+        engine = self.mod.Engine(lambda rule, now: {'status':'ok','value':3,'total':4,'sampledAt':now,'samples':samples,'sample':samples[0]['_msg']},lambda:1000)
+        rules = [{'target':str(n),'logQuery':{'contains':'failed'}} for n in range(20)]
+        engine.exchange(rules)
+        for _ in rules: engine.step()
+        self.assertLess(len(json.dumps(engine.exchange(rules),ensure_ascii=False).encode()),65536)
 
     def test_preview_is_asynchronous_coalesced_and_read_only(self):
         engine = self.mod.Engine(lambda rule, now: {'status':'ok','value':3,'sampledAt':now}, lambda:1000)

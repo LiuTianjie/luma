@@ -110,3 +110,21 @@ test("log rules preserve conditions across form serialization and reject unscope
   assert.throws(() => ruleRequest({ ...rule, target: "*" }));
   assert.throws(() => ruleRequest({ ...rule, logQuery: { windowSeconds: 300, field: "level" } }));
 });
+
+
+test("application filters reach the server and log links retain the evidence window", async () => {
+  const { fetchAlertTab, alertLogExploreUrl } = load("alertingApi.ts");
+  const original = global.fetch;
+  const urls = [];
+  global.fetch = async url => { urls.push(url); return new Response(JSON.stringify({ items: [] })); };
+  try {
+    await fetchAlertTab("alerts", "token", "resolved", undefined, "app & staging");
+    for (const url of urls) assert.equal(new URL(url, "https://luma.test").searchParams.get("app"), "app & staging");
+    assert.ok(urls.some(url => url.includes("status=resolved")));
+    const url = new URL(alertLogExploreUrl({ app: "ledger", task: 'worker"}', windowStart: 1000, windowEnd: 1300 }), "https://luma.test");
+    const pane = JSON.parse(url.searchParams.get("panes")).logs;
+    assert.deepEqual(pane.range, { from: new Date(1000000).toISOString(), to: new Date(1300000).toISOString() });
+    assert.equal(pane.queries[0].expr, '{app="ledger",task="worker\\\"}"}');
+    assert.equal(pane.queries[0].maxLines, 100);
+  } finally { global.fetch = original; }
+});

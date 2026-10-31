@@ -18,6 +18,7 @@ from ..log_alert_rules import MAX_RULES, normalize as normalize_log_rule
 from . import database
 from .alert_notifications import FeishuError, alert_outbox_text, feishu_alert_card, send_feishu, validate_credentials
 from .build_alert_details import build_details, detail_rows
+from . import log_alert_details
 
 PRESETS = [
     dict(metric='app.log_matches', name='服务日志匹配', description='指定应用/服务的匹配日志条数；由 observe 统计', threshold=4, forSeconds=0, unit='count'),
@@ -64,6 +65,16 @@ def _schema(conn):
             conn.execute(f"ALTER TABLE alert_channels ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
     if 'log_query' not in {r[1] for r in conn.execute('PRAGMA table_info(alert_rules)')}:
         conn.execute("ALTER TABLE alert_rules ADD COLUMN log_query TEXT NOT NULL DEFAULT '{}'")
+    incident_columns = {r[1] for r in conn.execute('PRAGMA table_info(alert_incidents)')}
+    if 'log_details' not in incident_columns:
+        conn.execute("ALTER TABLE alert_incidents ADD COLUMN log_details TEXT NOT NULL DEFAULT '{}'")
+    if 'application' not in incident_columns:
+        conn.execute("ALTER TABLE alert_incidents ADD COLUMN application TEXT NOT NULL DEFAULT ''")
+        conn.execute("UPDATE alert_incidents SET application=target WHERE metric LIKE 'app.%'")
+        if 'build_details' in incident_columns:
+            conn.execute("UPDATE alert_incidents SET application=COALESCE(json_extract(build_details,'$.service'),'') WHERE metric='build.failed'")
+    conn.execute('CREATE INDEX IF NOT EXISTS alert_incidents_app_status ON alert_incidents(application,status,id DESC)')
+    conn.execute('CREATE INDEX IF NOT EXISTS alert_incidents_app ON alert_incidents(application,id DESC)')
     if 'build_details' not in {r[1] for r in conn.execute('PRAGMA table_info(alert_incidents)')}:
         conn.execute("ALTER TABLE alert_incidents ADD COLUMN build_details TEXT NOT NULL DEFAULT '{}'")
 
@@ -111,10 +122,15 @@ def _channel(row):
                 appId=row['app_id'],chatId=row['chat_id'],appSecretConfigured=bool(row['app_secret']))
 
 
-def _incident(row):
+def _incident(row, *, summary=False):
     mapping = {'rule_id':'ruleId','rule_name':'ruleName','no_data':'noData','started_at':'startedAt','fired_at':'firedAt','resolved_at':'resolvedAt','updated_at':'updatedAt','acknowledged_at':'acknowledgedAt','last_notified_at':'lastNotifiedAt'}
-    result = {mapping.get(k,k): (bool(v) if k == 'no_data' else v) for k,v in dict(row).items() if k != 'build_details'}
+    result = {mapping.get(k,k): (bool(v) if k == 'no_data' else v) for k,v in dict(row).items() if k not in ('build_details', 'log_details')}
     result['buildDetails'] = json.loads(row['build_details'])
+    details = json.loads(row['log_details'])
+    if summary and details:
+        details = {**details, 'summary': next(iter(details.get('samples', [])), {}).get('_msg', '')}
+        details.pop('samples', None)
+    result['logDetails'] = details
     return result
 
 
@@ -248,6 +264,10 @@ def _notify(conn,rule,incident,kind,now,cluster):
         value = '无新鲜数据' if incident['no_data'] else ('已恢复' if kind == 'resolved' else '失败')
         fallback += '\n' + '\n'.join(f'{name}：{value}' for name,value in detail_rows(details))
         fallback += '\n' + (details.get('url') or f"luma build logs {details['buildId']}")
+    log_details = json.loads(incident['log_details'])
+    if log_details:
+        fallback += '\n' + '\n'.join(f'{name}：{value}' for name,value in log_alert_details.detail_rows(log_details))
+        fallback += '\n' + log_details.get('incidentUrl', '')
     text = alert_outbox_text(
         kind=kind,
         fallback=fallback,
@@ -261,6 +281,7 @@ def _notify(conn,rule,incident,kind,now,cluster):
             threshold=threshold,
             incident_id=incident['id'],
             build_details=details,
+            log_details=log_details,
         ),
     )
     for channel in channels:
@@ -301,7 +322,7 @@ def _capture_build_details(conn, row, run, domain):
     if previous.get('buildId') == run['id']:
         details = {**previous, **details}
     details['sourceRevision'] = revision
-    conn.execute('UPDATE alert_incidents SET build_details=? WHERE id=?',(json.dumps(details,ensure_ascii=False),row['id']))
+    conn.execute('UPDATE alert_incidents SET build_details=?,application=? WHERE id=?',(json.dumps(details,ensure_ascii=False),details.get('service', ''),row['id']))
 
 
 def _observations(state,metric,now):
@@ -344,7 +365,8 @@ def tick(state: dict[str,Any], *, now=None, services=None):
         rules = conn.execute('SELECT * FROM alert_rules WHERE enabled=1').fetchall()
         for rule in rules:
             builds = _latest_builds(state) if rule['metric']=='build.failed' else {}
-            observations = ({rule['target']: _num((state.get('_logAlerts') or {}).get(rule['id']))}
+            log_sample = (state.get('_logAlerts') or {}).get(rule['id'])
+            observations = ({rule['target']: _num(log_sample.get('value') if isinstance(log_sample, dict) else log_sample)}
                             if rule['metric'] == 'app.log_matches' else _observations(state,rule['metric'],now))
             if rule['target'] != '*': observations = {rule['target']:observations.get(rule['target'])}
             active = {r['target']:r for r in conn.execute("SELECT * FROM alert_incidents WHERE rule_id=? AND status IN ('pending','firing')",(rule['id'],))}
@@ -400,6 +422,16 @@ def tick(state: dict[str,Any], *, now=None, services=None):
                     current = conn.execute('SELECT * FROM alert_incidents WHERE id=?',(identifier,)).fetchone()
                     if target in builds and builds[target].get('status') in ('failed','error'):
                         _capture_build_details(conn,current,builds[target],state.get('domain',''))
+                        current = conn.execute('SELECT * FROM alert_incidents WHERE id=?',(identifier,)).fetchone()
+                    if rule['metric'].startswith('app.'):
+                        if current['application'] != target:
+                            conn.execute('UPDATE alert_incidents SET application=? WHERE id=?', (target, identifier))
+                        if rule['metric']=='app.log_matches' and isinstance(log_sample, dict) and not no_data:
+                            stored = json.loads(current['log_details'])
+                            if log_sample.get('sampledAt') and stored.get('sampledAt') != log_sample['sampledAt']:
+                                details = log_alert_details.snapshot({'target':target,'logQuery':json.loads(rule['log_query'])}, log_sample)
+                                details.update(log_alert_details.links(details, identifier, state.get('domain', '')))
+                                conn.execute('UPDATE alert_incidents SET log_details=? WHERE id=?', (json.dumps(details,ensure_ascii=False), identifier))
                         current = conn.execute('SELECT * FROM alert_incidents WHERE id=?',(identifier,)).fetchone()
                     if current['status']=='pending' and now-current['started_at']>=rule['for_seconds']:
                         conn.execute("UPDATE alert_incidents SET status='firing',fired_at=? WHERE id=?",(now,identifier))
@@ -567,6 +599,9 @@ def prune(conn, plan):
 def dispatch(method: str, resource: str, body=None, query=None):
     """Authenticated server adapter: resource excludes /v1/alerting/."""
     body,query = body or {},query or {}
+    application = query.get('app', '')
+    if application:
+        application = _text(application, 'app', 300)
     parts = resource.strip('/').split('/')
     name = parts[0]
     identifier = parts[1] if len(parts)>1 else None
@@ -581,18 +616,22 @@ def dispatch(method: str, resource: str, body=None, query=None):
     # Keep write operations immediate and let readers use the WAL snapshot.
     with database.transaction(immediate=method != 'GET') as conn:
         _schema(conn)
+        if method=='GET' and name=='applications':
+            rows = conn.execute("SELECT application AS app FROM alert_incidents WHERE application!='' UNION SELECT target AS app FROM alert_rules WHERE metric LIKE 'app.%' AND target!='*' ORDER BY app LIMIT 1000")
+            return {'items':[r['app'] for r in rows]}
         if method=='GET' and name=='presets': return {'items':PRESETS}
         if method=='GET' and name=='overview':
             counts = {s:0 for s in ('pending','firing','resolved','closed')}
-            counts.update({r['status']:r['n'] for r in conn.execute('SELECT status,COUNT(*) n FROM alert_incidents GROUP BY status')})
-            return dict(counts=counts,lastEvaluatedAt=float(_setting(conn,'last_evaluated_at')) or None,silencedUntil=float(_setting(conn,'silenced_until')),enabledRules=conn.execute('SELECT COUNT(*) FROM alert_rules WHERE enabled=1').fetchone()[0],channels=conn.execute('SELECT COUNT(*) FROM alert_channels WHERE enabled=1').fetchone()[0])
+            counts.update({r['status']:r['n'] for r in conn.execute('SELECT status,COUNT(*) n FROM alert_incidents' + (' WHERE application=?' if application else '') + ' GROUP BY status', (application,) if application else ())})
+            return dict(counts=counts,lastEvaluatedAt=float(_setting(conn,'last_evaluated_at')) or None,silencedUntil=float(_setting(conn,'silenced_until')),enabledRules=conn.execute("SELECT COUNT(*) FROM alert_rules WHERE enabled=1" + (" AND (metric LIKE 'app.%' OR metric='build.failed') AND target IN (?, '*')" if application else ''), (application,) if application else ()).fetchone()[0],channels=conn.execute('SELECT COUNT(*) FROM alert_channels WHERE enabled=1').fetchone()[0])
         if method=='POST' and name=='silence':
             seconds = _bounded(body.get('seconds'),'seconds',0,604800)
             until = now+seconds if seconds else 0
             conn.execute("INSERT INTO alert_settings VALUES('silenced_until',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(str(until),))
             return {'silencedUntil':until}
         if name in ('rules','channels') and method=='GET':
-            return {'items':[(_rule(conn,r) if name=='rules' else _channel(r)) for r in conn.execute('SELECT * FROM alert_'+name+' ORDER BY created_at DESC')]}
+            scope = " WHERE (metric LIKE 'app.%' OR metric='build.failed') AND target IN (?, '*')" if name=='rules' and application else ''
+            return {'items':[(_rule(conn,r) if name=='rules' else _channel(r)) for r in conn.execute('SELECT * FROM alert_'+name+scope+' ORDER BY created_at DESC', (application,) if scope else ())]}
         if method=='DELETE' and name in ('rules','channels') and identifier:
             if name=='rules': _close_rule(conn,identifier,now,'rule_deleted')
             changed = conn.execute('DELETE FROM alert_'+name+' WHERE id=?',(identifier,)).rowcount
@@ -618,7 +657,7 @@ def dispatch(method: str, resource: str, body=None, query=None):
             return {'delivery':_delivery(conn.execute('SELECT * FROM alert_outbox WHERE id=?',(delivery,)).fetchone())}
         if name=='incidents' and identifier:
             row = conn.execute('SELECT * FROM alert_incidents WHERE id=?',(identifier,)).fetchone()
-            if not row: raise LumaError('alert incident not found')
+            if not row or (application and row['application'] != application): raise LumaError('alert incident not found')
             if method=='POST' and parts[-1] in ('ack','close'):
                 action = parts[-1]
                 if action=='close' and row['status']=='closed':
@@ -647,8 +686,10 @@ def dispatch(method: str, resource: str, body=None, query=None):
             if not 1<=cursor<=9223372036854775807: raise LumaError('invalid cursor')
             table = 'alert_incidents' if name=='incidents' else 'alert_outbox'
             where,args = 'id<?',[cursor]
+            if application and name=='incidents':
+                where+=' AND application=?';args.append(application)
             if query.get('status'):
                 where+=' AND status=?';args.append(str(query['status']))
             rows = conn.execute(f'SELECT * FROM {table} WHERE {where} ORDER BY id DESC LIMIT ?',(*args,limit+1)).fetchall()
-            return {'items':[(_incident(r) if name=='incidents' else _delivery(r)) for r in rows[:limit]],'nextCursor':str(rows[limit-1]['id']) if len(rows)>limit else None}
+            return {'items':[(_incident(r, summary=True) if name=='incidents' else _delivery(r)) for r in rows[:limit]],'nextCursor':str(rows[limit-1]['id']) if len(rows)>limit else None}
     raise LumaError('unknown alerting endpoint')

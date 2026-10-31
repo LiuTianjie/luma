@@ -10,7 +10,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from log_alert_rules import INTERVAL, MAX_AGE, MAX_RULES, compile_query, fingerprint, normalize
+from log_alert_rules import INTERVAL, MAX_AGE, MAX_RULES, bounded_samples, compile_query, fingerprint, normalize
 
 MAX_BODY = 65536
 QUERY_TIMEOUT = 2
@@ -26,15 +26,15 @@ def query_logs(rule, now):
                            for r in selected):
         raise ValueError('Log collection is not caught up')
     base, condition = compile_query(rule['target'], rule['logQuery'])
-    query = base + f' | stats count() as total, count() if ({condition}) as matches, row_any(_msg) if ({condition}) as sample'
+    query = base + f' | stats count() as total, count() if ({condition}) as matches, json_values(_time, _msg, task, alloc, stream) limit 3 if ({condition}) as samples'
     if rule['logQuery']['field']:
         query += f", count(parsed.{rule['logQuery']['field']}) as parsed"
     params = urllib.parse.urlencode({'query': query, 'start': now-rule['logQuery']['windowSeconds'],
                                     'end': now, 'timeout': '1s'})
     req = urllib.request.Request('http://127.0.0.1:9428/select/logsql/query', data=params.encode())
     with urllib.request.urlopen(req, timeout=QUERY_TIMEOUT) as response:
-        raw = response.read(49153)
-    if len(raw) > 49152:
+        raw = response.read(262145)
+    if len(raw) > 262144:
         raise ValueError('Oversized aggregate')
     rows = [json.loads(line) for line in raw.splitlines() if line]
     if len(rows) != 1:
@@ -45,9 +45,11 @@ def query_logs(rule, now):
     # No source logs is unknown, never automatic recovery. Idle services may stay unknown.
     if rule['logQuery']['field'] and total and not float(rows[0].get('parsed', 0)):
         return {'status': 'invalid_format', 'value': None, 'total': total, 'sampledAt': now}
-    sample = json.loads(rows[0].get('sample') or '{}').get('_msg', '')
+    packed = json.loads(rows[0].get('samples') or '[]')
+    # v1.25 returns an array of JSON strings; newer versions may return objects.
+    samples = bounded_samples([json.loads(row) if isinstance(row, str) else row for row in packed[:3]])
     return {'value': matches if total else None, 'total': total, 'sampledAt': now,
-            'sample': str(sample)[:512],
+            'sample': samples[0]['_msg'] if samples else '', 'samples': samples,
             'status': 'ok' if total else 'no_source_logs'}
 
 
@@ -74,7 +76,7 @@ class Engine:
             self.last_sync = self.clock()
             self.rules = rules
             self.results = {k: v for k, v in self.results.items() if k in rules}
-            return {'results': {k: v for k, v in self.results.items()
+            return {'results': {k: {field: value for field, value in v.items() if field != 'sample'} for k, v in self.results.items()
                                 if self.clock()-v['sampledAt'] <= MAX_AGE}}
 
     def request_preview(self, item):
@@ -135,7 +137,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_error(404)
                 return
-            payload = json.dumps(result).encode()
+            payload = json.dumps(result, ensure_ascii=False).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(payload)))

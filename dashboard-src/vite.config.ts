@@ -604,6 +604,10 @@ export default defineConfig({
           }));
         });
         server.middlewares.use("/v1/alerting", (request, response, next) => {
+          if (process.env.LUMA_DEV_CONTROL_URL) {
+            next();
+            return;
+          }
           if (request.method !== "GET") {
             next();
             return;

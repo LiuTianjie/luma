@@ -1,3 +1,4 @@
+import { LogIncidentDetails } from "./LogIncidentDetails";
 import { LogRuleFields } from "./LogRuleFields";
 import { fetchAlertTab } from "../alertingApi";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -28,7 +29,7 @@ import type {
   AlertRule,
   AlertTab,
 } from "../alertingApi";
-import { useRouter } from "../router";
+import { useRouter, useSearchParams } from "../router";
 import { SelectControl } from "./primitives";
 import { AlertCircle } from "lucide-react";
 import {
@@ -182,29 +183,41 @@ export function AlertingPanel({
   tab,
   nodeNames = [],
   applicationNames = [],
+  application,
 }: {
   lang: Lang;
   token: string;
   tab: AlertTab;
   nodeNames?: string[];
   applicationNames?: string[];
+  application?: string;
 }) {
   const zh = lang === "zh";
   const { confirm, element: confirmElement } = useConfirm(lang);
   const { path, navigate } = useRouter();
+  const query = useSearchParams();
+  const appFilter = application || query.get("app") || "";
+  const appQuery = appFilter ? `app=${encodeURIComponent(appFilter)}` : "";
+  const [knownApps, setKnownApps] = useState<string[]>([]);
+  useEffect(() => {
+    if (application || tab === "notifications") return;
+    const controller = new AbortController();
+    void getAlerting<AlertPage<string>>("applications", token, controller.signal).then(result => setKnownApps(result.items)).catch(() => {});
+    return () => controller.abort();
+  }, [token, application, tab]);
   const routeId = (() => {
     try {
-      return decodeURIComponent(path.split("/")[3] || "");
+      return decodeURIComponent(path.split("/")[application ? 4 : 3] || "");
     } catch {
-      return path.split("/")[3] || "";
+      return path.split("/")[application ? 4 : 3] || "";
     }
   })();
-  const basePath =
+  const basePath = application ? `/apps/${encodeURIComponent(application)}/alerts` : (
     tab === "rules"
       ? "/observe/rules"
       : tab === "notifications"
         ? "/observe/channels"
-        : "/observe";
+        : "/observe") + (appQuery ? `?${appQuery}` : "");
   const editor = Boolean(routeId);
   const initializedRoute = useRef("");
   const [overview, setOverview] = useState<AlertOverview>();
@@ -218,7 +231,7 @@ export function AlertingPanel({
     items: [],
   });
   const [filter, setFilter] = useState("firing");
-  const [incidentsFilter, setIncidentsFilter] = useState("firing");
+  const [incidentsFilter, setIncidentsFilter] = useState("");
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
   const [notice, setNotice] = useState("");
@@ -261,7 +274,7 @@ export function AlertingPanel({
       controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 15000);
       try {
-        const next = await fetchAlertTab(tab, token, filter, controller.signal);
+        const next = await fetchAlertTab(tab, token, filter, controller.signal, appFilter);
         if (cancelled) return;
         setOverview(next.overview);
         if (next.presets)
@@ -273,7 +286,7 @@ export function AlertingPanel({
         // Expanded history remains a browsing snapshot until explicit refresh.
         if (!expanded && next.incidents) {
           setIncidents(next.incidents);
-          setIncidentsFilter(filter);
+          setIncidentsFilter(`${filter}:${appFilter}`);
         }
         if (!expanded && next.deliveries) setDeliveries(next.deliveries);
         setLoaded(true);
@@ -292,7 +305,7 @@ export function AlertingPanel({
       controller?.abort();
       window.clearTimeout(timer);
     };
-  }, [token, tab, filter, refresh, expanded, zh]);
+  }, [token, tab, filter, appFilter, refresh, expanded, zh]);
 
   useEffect(() => {
     scope.current += 1;
@@ -303,7 +316,7 @@ export function AlertingPanel({
     setRule(null);
     setChannel(null);
     setSecret("");
-  }, [tab, token, filter, path]);
+  }, [tab, token, filter, appFilter, path]);
   useEffect(() => {
     if (!loaded || initializedRoute.current === path) return;
     initializedRoute.current = path;
@@ -316,7 +329,7 @@ export function AlertingPanel({
       const item =
         routeId === "new"
           ? presets[0]
-            ? newAlertRule(presets[0])
+            ? { ...newAlertRule(presets[0]), ...(appFilter ? { target: appFilter } : {}) }
             : null
           : rules.find((item) => item.id === routeId);
       if (item) setRule({ ...item, channelIds: [...item.channelIds] });
@@ -345,7 +358,7 @@ export function AlertingPanel({
     let cancelled = false;
     setDetail(undefined);
     void getAlerting<{ incident: AlertIncident; events: AlertEvent[] }>(
-      `incidents/${encodeURIComponent(routeId)}`,
+      `incidents/${encodeURIComponent(routeId)}${appQuery ? `?${appQuery}` : ""}`,
       token,
       controller.signal,
     )
@@ -359,7 +372,7 @@ export function AlertingPanel({
       cancelled = true;
       controller.abort();
     };
-  }, [tab, routeId, token, refresh]);
+  }, [tab, routeId, token, refresh, appQuery]);
   const act = useCallback(
     async (
       action: (signal: AbortSignal) => Promise<unknown>,
@@ -573,6 +586,24 @@ export function AlertingPanel({
   return (
     <div className={cn("flex min-w-0 flex-col gap-6", editor && "max-w-4xl")}>
       {confirmElement}
+      {!editor && tab !== "notifications" && <div className="flex flex-wrap items-end justify-between gap-3">
+        {!application && <Field className="max-w-md">
+          <FieldLabel htmlFor="alert-app-filter">{zh ? "筛选应用" : "Application"}</FieldLabel>
+          <Combobox items={["", ...new Set([...applicationNames, ...knownApps, appFilter].filter(Boolean))]}
+            value={appFilter} onValueChange={(value) => {
+              setExpanded(false);
+              navigate(`${tab === "rules" ? "/observe/rules" : "/observe"}${value ? `?app=${encodeURIComponent(value)}` : ""}`);
+            }}>
+            <ComboboxInput id="alert-app-filter" placeholder={zh ? "全部应用（可搜索）" : "All applications (search)"} />
+            <ComboboxContent><ComboboxEmpty>{zh ? "没有匹配的应用" : "No matching applications"}</ComboboxEmpty>
+              <ComboboxList>{(name: string) => <ComboboxItem key={name || "all"} value={name}>{name || (zh ? "全部应用" : "All applications")}</ComboboxItem>}</ComboboxList>
+            </ComboboxContent>
+          </Combobox>
+        </Field>}
+        {appFilter && <Button variant="outline" onClick={() => navigate(`${tab === "rules" ? "/observe" : "/observe/rules"}?${appQuery}`)}>
+          {tab === "rules" ? (zh ? "查看应用告警" : "View app incidents") : (zh ? "管理此应用规则" : "Manage app rules")}
+        </Button>}
+      </div>}
       {editor && (
         <Button
           type="button"
@@ -650,7 +681,7 @@ export function AlertingPanel({
             <Card size="sm">
               <CardHeader className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex flex-col gap-1">
-                  <CardTitle>{zh ? "告警引擎" : "Alert engine"}</CardTitle>
+                  <CardTitle>{appFilter ? `${appFilter} · ${zh ? "告警" : "Alerts"}` : (zh ? "告警引擎" : "Alert engine")}</CardTitle>
                   <CardDescription className="text-xs tabular-nums">
                     {zh ? "最近检查" : "Last evaluation"} · {stamp(overview.lastEvaluatedAt, zh)}
                   </CardDescription>
@@ -695,7 +726,7 @@ export function AlertingPanel({
                     </Alert>
                   )}
               </CardContent>}
-              <CardFooter className="flex flex-wrap gap-3">
+              {!appFilter && <CardFooter className="flex flex-wrap gap-3">
                 <div className="flex min-w-0 flex-1 flex-col gap-1">
                   <span>
                     {silenceActive
@@ -736,7 +767,7 @@ export function AlertingPanel({
                       ? "维护静默 1 小时"
                       : "Silence for 1 hour"}
                 </Button>
-              </CardFooter>
+              </CardFooter>}
             </Card>
           )}
           {silenceActive && tab !== "alerts" && (
@@ -804,7 +835,7 @@ export function AlertingPanel({
                     </ToggleGroup>
                   </Field>
                 </FieldGroup>
-                {incidentsFilter !== filter ? (
+                {incidentsFilter !== `${filter}:${appFilter}` ? (
                   error ? null : (
                     <div aria-busy="true" className="flex flex-col gap-3">
                       <p
@@ -852,6 +883,7 @@ export function AlertingPanel({
                               <span className="text-muted-foreground">
                                 {item.buildDetails?.service || item.target}
                               </span>
+                              {item.logDetails?.summary && <span className="max-w-lg line-clamp-2 wrap-anywhere text-sm text-muted-foreground">{item.logDetails.summary}</span>}
                               {item.buildDetails?.reason && (
                                 <span className="max-w-lg line-clamp-2 wrap-anywhere text-sm text-muted-foreground">
                                   {item.buildDetails.stage ? `${item.buildDetails.stage}: ` : ""}{item.buildDetails.reason}
@@ -915,11 +947,11 @@ export function AlertingPanel({
                                 disabled={busy}
                                 onClick={() =>
                                   navigate(
-                                    `/observe/incidents/${encodeURIComponent(item.id)}`,
+                                    `/${application ? `apps/${encodeURIComponent(application)}/alerts` : "observe/incidents"}/${encodeURIComponent(item.id)}${appQuery ? `?${appQuery}` : ""}`,
                                   )
                                 }
                               >
-                                {zh ? "时间线" : "Timeline"}
+                                {zh ? "查看详情" : "View details"}
                               </Button>
                               <IncidentActions item={item} zh={zh} busy={busy} compact
                                 onStop={(item) => actOnIncident(item, "ack")}
@@ -941,7 +973,7 @@ export function AlertingPanel({
                   />
                 )}
               </CardContent>
-              {incidentsFilter === filter &&
+              {incidentsFilter === `${filter}:${appFilter}` &&
                 (incidents.nextCursor || expanded) && (
                   <CardFooter className="flex flex-wrap gap-3">
                     {incidents.nextCursor && (
@@ -954,7 +986,7 @@ export function AlertingPanel({
                               const page = await getAlerting<
                                 AlertPage<AlertIncident>
                               >(
-                                `incidents?limit=50&cursor=${encodeURIComponent(incidents.nextCursor!)}${filter ? `&status=${filter}` : ""}`,
+                                `incidents?limit=50&cursor=${encodeURIComponent(incidents.nextCursor!)}${appQuery ? `&${appQuery}` : ""}${filter ? `&status=${filter}` : ""}`,
                                 token,
                                 signal,
                               );
@@ -1047,6 +1079,7 @@ export function AlertingPanel({
                     {zh ? "停止提醒时间" : "Reminders stopped at"} · {stamp(detail.incident.acknowledgedAt, zh)}
                   </p>
                 )}
+                {detail.incident.metric === "app.log_matches" && <LogIncidentDetails details={detail.incident.logDetails} zh={zh} />}
                 {detail.incident.metric === "build.failed" && (
                   <div className="flex flex-col gap-4">
                     <p className="text-sm text-muted-foreground">
@@ -1138,7 +1171,7 @@ export function AlertingPanel({
                 <CardAction>
                   <Button
                     disabled={busy || !presets.length}
-                    onClick={() => navigate("/observe/rules/new")}
+                    onClick={() => navigate(`/observe/rules/new${appQuery ? `?${appQuery}` : ""}`)}
                   >
                     {zh ? "新建规则" : "Create rule"}
                   </Button>
@@ -1229,7 +1262,7 @@ export function AlertingPanel({
                                 disabled={busy}
                                 onClick={() =>
                                   navigate(
-                                    `/observe/rules/${encodeURIComponent(item.id)}`,
+                                    `/observe/rules/${encodeURIComponent(item.id)}${appQuery ? `?${appQuery}` : ""}`,
                                   )
                                 }
                               >

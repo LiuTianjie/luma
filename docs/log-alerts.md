@@ -3,8 +3,7 @@
 Dashboard → Observability → Rules → Service log matches. Select one application
 (the Nomad job ID), optionally one task, and enter a case-sensitive text match,
 an exclusion, or a JSON field/value pair. Conditions are ANDed. JSON fields use
-dotted paths. Preview returns aggregate counts and one sample truncated to 512
-characters. It does not save or send a notification. A threshold of 4 means more
+dotted paths. Preview returns aggregate counts and one bounded log sample. It does not save or send a notification. A threshold of 4 means more
 than 4 matching lines; threshold 0 means at least one. Count summary events, not
 stack frames. Retried attempts are separate lines, not unique business failures.
 
@@ -22,7 +21,7 @@ Neither an observe outage nor an absent preview blocks deployments or heartbeats
 - A single coalesced preview slot, at most one new preview per 10 seconds; previews
   share the oldest-first query budget, never run in Control request handlers. UI polling stops after
   50 seconds. Users may request again if pending.
-- Aggregate responses capped at 48 KiB; rule exchange at 64 KiB. Control has a
+- Aggregate responses capped at 256 KiB; rule exchange at 64 KiB. Control has a
   500 ms loopback timeout, independent of query execution. No log files, temp
   directories, disk caches, recording-rule files, volumes or background retries.
 - Runtime root filesystem is read-only, bytecode disabled, memory limit 96 MiB,
@@ -59,3 +58,30 @@ First-version configuration is intentionally declarative. Arbitrary LogsQL,
 unbounded regular expressions, cross-service queries and historical backfills
 are not accepted by this API. Metrics-based SLO alerts remain the recommended
 next step for high-value business completion and backlog monitoring.
+
+## Incident evidence and application navigation
+
+Application details include an Alerts tab. The central incident and rule views
+also accept an application filter. Incident counts and pagination are scoped in
+SQL using application indexes; global app rules remain visible in scoped rule
+lists. Infrastructure alerts are not attributed to an app by a coincidental name.
+
+The existing native aggregate also selects at most three representative log rows
+with `json_values(...) limit 3`; it does not sort or issue a second log query.
+Samples are redacted for common credential patterns and bounded to 512 UTF-8 bytes
+of message text (head and tail), 900 encoded bytes per row. The 64 KiB rule/result
+exchange cap, serial query schedule and 96 MiB worker limit are unchanged.
+
+An incident replaces one bounded evidence snapshot only on a new breached sample;
+no append-only sample history is created. Recovery keeps the last breached window.
+Lists receive a single summary, while detail views read the saved snapshot from
+SQLite without querying VictoriaLogs. Notifications include the same window,
+counts, source and error samples, plus a link to the app's incident page. Opening
+log search explicitly uses the recorded app/task and original time range, capped
+at 100 initial lines. Deleted rules do not erase incident ownership or evidence.
+
+These are log-line samples, not complete traces or unique business failures.
+The arbitrary sample order and deduplication may yield fewer than three examples.
+Logs in snapshots follow existing alert-history retention. Older incidents without
+evidence show an explicit missing-evidence state; current logs are not substituted
+for historical failures.
