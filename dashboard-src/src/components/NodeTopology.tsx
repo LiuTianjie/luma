@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Maximize, Minus, Network, Plus } from "lucide-react";
+import { Maximize, Minus, Network, Plus } from "@/components/icons";
 import { useTopologyTheme, type TopologyTheme } from "./topologyTheme";
 import { TopologyFullscreenButton } from "./TopologyFullscreenButton";
 
@@ -17,11 +17,11 @@ import { layoutNodeTopology, nodeTopologySnapshot, NODE_HEIGHT, NODE_WIDTH } fro
 function getStylesheet(tokens: TopologyTheme): cytoscape.StylesheetJsonBlock[] {
   const textColor = tokens.foreground;
   const nodeBg = tokens.card;
-  const nodeBorder = tokens.border;
-  const edgeColor = tokens.mutedForeground;
+  const nodeBorder = tokens.hairline;
+  const edgeColor = tokens.subtle;
   const leaderBorder = tokens.foreground;
   const hostBg = tokens.muted;
-  const hostBorder = tokens.border;
+  const hostBorder = tokens.hairline;
   const serviceBorder = nodeBorder;
   const exposedBorder = nodeBorder;
 
@@ -31,36 +31,41 @@ function getStylesheet(tokens: TopologyTheme): cytoscape.StylesheetJsonBlock[] {
       style: {
         "background-color": nodeBg,
         "border-color": nodeBorder,
-        "border-width": 1.5,
-        "font-family": tokens.fontMono,
-        "font-size": 12,
+        "border-width": 1,
+        "border-opacity": 1,
+        "font-family": tokens.fontSans,
+        "font-size": 11.5,
         "font-weight": 500,
+        "line-height": 1.45,
         "height": `${NODE_HEIGHT}px`,
         "label": "data(label)",
         "padding": "10px",
         "shape": "round-rectangle",
         "text-halign": "center",
-        "text-max-width": "160px",
+        "text-max-width": "170px",
         "text-valign": "center",
         "text-wrap": "wrap",
         "width": `${NODE_WIDTH}px`,
         "color": textColor,
+        "underlay-color": tokens.foreground,
+        "underlay-opacity": 0.04,
+        "underlay-padding": 2,
+        "underlay-shape": "round-rectangle",
       },
     },
     {
       selector: "node.cluster",
       style: {
-        "border-width": 2,
+        "border-width": 1.5,
         "border-color": leaderBorder,
         "background-color": nodeBg,
-        "font-weight": 700,
+        "font-weight": 600,
       },
     },
     {
       selector: "node.region",
       style: {
-        "border-width": 1.5,
-        "border-color": tokens.border,
+        "border-color": nodeBorder,
         "background-color": nodeBg,
         "shape": "round-rectangle",
       },
@@ -78,20 +83,17 @@ function getStylesheet(tokens: TopologyTheme): cytoscape.StylesheetJsonBlock[] {
       style: {
         "background-color": hostBg,
         "border-color": hostBorder,
-        "border-width": 1.5,
       },
     },
     {
       selector: "node.service",
       style: {
         "border-color": serviceBorder,
-        "border-width": 1.5,
       },
     },
     {
       selector: "node.exposedService",
       style: {
-        "border-width": 1.5,
         "border-color": exposedBorder,
         "background-color": nodeBg,
       },
@@ -103,7 +105,8 @@ function getStylesheet(tokens: TopologyTheme): cytoscape.StylesheetJsonBlock[] {
         "line-color": edgeColor,
         "target-arrow-color": edgeColor,
         "target-arrow-shape": "triangle",
-        "width": "1.8px",
+        "arrow-scale": 0.8,
+        "width": "1.25px",
       },
     },
     {
@@ -116,8 +119,8 @@ function getStylesheet(tokens: TopologyTheme): cytoscape.StylesheetJsonBlock[] {
       selector: "node.highlighted",
       style: {
         "border-color": tokens.primary,
-        "border-width": 3,
-        "background-color": tokens.accent,
+        "border-width": 2,
+        "background-color": nodeBg,
       },
     },
     {
@@ -125,7 +128,7 @@ function getStylesheet(tokens: TopologyTheme): cytoscape.StylesheetJsonBlock[] {
       style: {
         "line-color": tokens.primary,
         "target-arrow-color": tokens.primary,
-        "width": "3px",
+        "width": "2px",
       },
     },
   ];
@@ -220,7 +223,7 @@ export function NodeTopology({
         <CardAction className="row-span-1"><Badge variant="outline">{zh ? `${topology.nodes.length} 个节点 · ${topology.edges.length} 条连接` : `${topology.nodes.length} nodes · ${topology.edges.length} links`}</Badge></CardAction>
       </CardHeader>
       <CardContent>
-        {nodes.length ? <div className="topology-canvas standalone-topology" aria-label={t(lang, "nodeTopology")}>
+        {nodes.length ? <div className="topology-canvas topology-grid standalone-topology rounded-lg ring-1 ring-border" aria-label={t(lang, "nodeTopology")}>
           <CytoscapeComponent
             className="cy-topology"
             elements={topology.elements}

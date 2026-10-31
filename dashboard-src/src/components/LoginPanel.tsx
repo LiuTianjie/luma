@@ -1,5 +1,5 @@
 import { type FormEvent, useId, useRef, useState } from "react";
-import { FingerprintPattern, Info, TriangleAlert } from "lucide-react";
+import { FingerprintPattern, Info, TriangleAlert } from "@/components/icons";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -61,9 +61,9 @@ export function LoginPanel({
   };
 
   return (
-    <Card aria-labelledby={`${fieldId}-title`}>
+    <Card aria-labelledby={`${fieldId}-title`} className="shadow-sm [--card-spacing:--spacing(6)]">
       <CardHeader>
-        <CardTitle id={`${fieldId}-title`} role="heading" aria-level={1} className="text-lg">{zh ? "登录" : "Sign in"}</CardTitle>
+        <CardTitle id={`${fieldId}-title`} role="heading" aria-level={1} className="text-lg tracking-[-0.01em]">{zh ? "登录控制台" : "Sign in to the console"}</CardTitle>
         <CardDescription>
           {passkeyReady
             ? (zh ? "使用这台设备或手机上的 Passkey 登录。" : "Use a passkey on this device or your phone.")

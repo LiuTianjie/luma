@@ -1,4 +1,4 @@
-import { AlertTriangle, Database, HardDrive } from "lucide-react";
+import { AlertTriangle, Database, HardDrive } from "@/components/icons";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { KeyRound, Plus, RefreshCw } from "lucide-react";
+import { KeyRound, Plus, RefreshCw } from "@/components/icons";
 import type { Lang } from "../types";
 import { fetchSecrets, setSecret } from "../controlResourcesApi";
 import { fetchDeploymentConfig } from "../deploymentConfigApi";

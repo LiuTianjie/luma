@@ -1,5 +1,5 @@
 import { type FormEvent, useId, useState } from "react";
-import { FingerprintPattern, TriangleAlert } from "lucide-react";
+import { FingerprintPattern, TriangleAlert } from "@/components/icons";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";

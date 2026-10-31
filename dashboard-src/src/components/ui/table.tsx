@@ -3,6 +3,9 @@
 import * as React from "react"
 import { cn } from "cn"
 
+// Shaded header band, hairline row dividers. When a table is the only content of a
+// card it runs edge to edge; its first and last cells then take the card gutter so
+// text still lines up with the card title.
 function Table({ className, containerProps, ...props }: React.ComponentProps<"table"> & {
   containerProps?: React.ComponentProps<"div">
 }) {
@@ -10,11 +13,16 @@ function Table({ className, containerProps, ...props }: React.ComponentProps<"ta
     <div
       data-slot="table-container"
       {...containerProps}
-      className={cn("relative w-full overflow-x-auto", containerProps?.className)}
+      className={cn(
+        "relative w-full overflow-x-auto",
+        "in-data-[slot=card-content]:only:border-t in-data-[slot=card-content]:only:border-hairline",
+        "in-data-[slot=card-content]:only:[&_tr>*:first-child]:pl-(--card-spacing) in-data-[slot=card-content]:only:[&_tr>*:last-child]:pr-(--card-spacing)",
+        containerProps?.className
+      )}
     >
       <table
         data-slot="table"
-        className={cn("w-full caption-bottom text-sm tabular-nums", className)}
+        className={cn("w-full caption-bottom text-[0.8125rem] tabular-nums", className)}
         {...props}
       />
     </div>
@@ -25,7 +33,10 @@ function TableHeader({ className, ...props }: React.ComponentProps<"thead">) {
   return (
     <thead
       data-slot="table-header"
-      className={cn("[&_tr]:border-b [&_tr]:hover:bg-transparent [&_th]:h-9 [&_th]:py-0 [&_th]:text-xs", className)}
+      className={cn(
+        "bg-muted/70 [&_tr]:border-b [&_tr]:border-hairline [&_tr]:hover:bg-transparent [&_th]:h-9 [&_th]:py-0 [&_th]:text-xs",
+        className
+      )}
       {...props}
     />
   )
@@ -46,7 +57,7 @@ function TableFooter({ className, ...props }: React.ComponentProps<"tfoot">) {
     <tfoot
       data-slot="table-footer"
       className={cn(
-        "border-t bg-muted/50 font-medium [&>tr]:last:border-b-0",
+        "border-t border-hairline bg-muted/50 font-medium [&>tr]:last:border-b-0",
         className
       )}
       {...props}
@@ -59,7 +70,7 @@ function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
     <tr
       data-slot="table-row"
       className={cn(
-        "border-b border-border/60 transition-colors hover:bg-muted/50 has-aria-expanded:bg-muted/50 data-[state=selected]:bg-muted",
+        "border-b border-hairline transition-colors hover:bg-muted/45 has-aria-expanded:bg-muted/50 data-[state=selected]:bg-muted",
         className
       )}
       {...props}
@@ -67,12 +78,17 @@ function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
   )
 }
 
-function TableHead({ className, ...props }: React.ComponentProps<"th">) {
+// Column headers are small muted labels. Row headers (scope="row") in key/value
+// tables read as labels beside their value: a fixed label column, body size,
+// top-aligned so multi-line values line up. Caller classes still win via cn().
+function TableHead({ className, scope, ...props }: React.ComponentProps<"th">) {
   return (
     <th
       data-slot="table-head"
+      scope={scope}
       className={cn(
-        "px-2 py-2 text-left align-middle font-medium whitespace-nowrap text-muted-foreground [&:has([role=checkbox])]:pr-0",
+        "px-3 text-left align-middle whitespace-nowrap text-muted-foreground [&:has([role=checkbox])]:pr-0",
+        scope === "row" ? "w-40 py-2.5 align-top text-[0.8125rem] font-normal" : "py-2 font-medium",
         className
       )}
       {...props}
@@ -85,7 +101,7 @@ function TableCell({ className, ...props }: React.ComponentProps<"td">) {
     <td
       data-slot="table-cell"
       className={cn(
-        "p-2 align-middle whitespace-nowrap [&:has([role=checkbox])]:pr-0",
+        "px-3 py-2.5 align-middle whitespace-nowrap [&:has([role=checkbox])]:pr-0",
         className
       )}
       {...props}

@@ -1,11 +1,6 @@
 import type { ReactNode } from "react";
-import { Activity, Boxes, Database, FingerprintPattern, HardDrive, LayoutDashboard, Network, Package, ScrollText, ServerCog, Settings, WandSparkles, Wrench } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
-import { pageForPath } from "../routes";
-import { useRouter } from "../router";
-const pageIcons = { overview: LayoutDashboard, applications: Boxes, deployments: ScrollText, deploy: Package, builder: Package, nodes: ServerCog, storage: HardDrive, registry: Database, observability: Activity, credentials: Settings, maintenance: Wrench, security: FingerprintPattern, setup: WandSparkles, notfound: undefined };
 
 export type PageMetric = {
   label: string;
@@ -26,19 +21,31 @@ export type PageHeaderMeta = {
   };
 };
 
+/**
+ * One heading per page, actions on the right (Kumo ResourceListPage). The sidebar
+ * and breadcrumb already name the workspace, so the title carries no icon or
+ * eyebrow. Metrics are plain facts in a single quiet line, not chips that look
+ * clickable.
+ */
 export function PageHeader({ meta }: { meta: PageHeaderMeta }) {
-  const { path } = useRouter();
-  const Icon = path === "/fleet/network" ? Network : pageIcons[pageForPath(path)];
   return (
-    <section className="flex min-w-0 flex-wrap items-start justify-between gap-4" aria-labelledby="page-title">
-      <div className="flex min-w-0 flex-1 basis-48 flex-col gap-2">
-        <div className="flex min-w-0 items-start gap-2">
-          {Icon ? <Icon className="mt-1 size-5 shrink-0" aria-hidden="true" /> : null}
-          <h1 id="page-title" className={cn("min-w-0 font-semibold tracking-tight wrap-anywhere", meta.variant === "ops" ? "text-xl" : "text-2xl")}>{meta.title}</h1>
-        </div>
-        {meta.description ? <p className="text-sm/relaxed text-muted-foreground wrap-anywhere">{meta.description}</p> : null}
+    <section className="flex min-w-0 flex-wrap items-start justify-between gap-x-6 gap-y-4" aria-labelledby="page-title">
+      <div className="flex min-w-0 flex-1 basis-72 flex-col gap-1.5">
+        <h1 id="page-title" className={cn("min-w-0 font-heading font-semibold tracking-[-0.02em] wrap-anywhere", meta.variant === "ops" ? "text-xl" : "text-[1.625rem]/8")}>{meta.title}</h1>
+        {meta.description ? <p className="max-w-3xl text-sm/6 text-pretty text-muted-foreground">{meta.description}</p> : null}
+        {meta.metrics.length ? (
+          <dl className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.8125rem]" aria-label={meta.title}>
+            {meta.metrics.map((metric, index) => (
+              <div key={metric.label} className="flex items-center gap-1.5">
+                {index ? <span aria-hidden="true" className="-ml-2 mr-0.5 h-3 w-px bg-border" /> : null}
+                <dt className="text-muted-foreground">{metric.label}</dt>
+                <dd className="font-medium tabular-nums">{metric.value}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
       </div>
-      {meta.action || meta.score ? <div className="flex max-w-full flex-wrap items-center gap-3">
+      {meta.action || meta.score ? <div className="flex max-w-full flex-wrap items-center gap-2 pt-0.5">
         {meta.score ? <div className="flex w-48 flex-col gap-1">
           <Progress value={meta.score.value}>
             <ProgressLabel>{meta.score.label}</ProgressLabel>
@@ -47,9 +54,6 @@ export function PageHeader({ meta }: { meta: PageHeaderMeta }) {
           <p className="text-sm text-muted-foreground">{meta.score.status}</p>
         </div> : null}
         {meta.action}
-      </div> : null}
-      {meta.metrics.length ? <div className="flex basis-full flex-wrap gap-2" aria-label={meta.title}>
-        {meta.metrics.map(metric => <Badge key={metric.label} variant="outline"><span>{metric.label}</span><span className="tabular-nums">{metric.value}</span></Badge>)}
       </div> : null}
     </section>
   );

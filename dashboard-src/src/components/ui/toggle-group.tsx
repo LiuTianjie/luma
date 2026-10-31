@@ -11,12 +11,12 @@ import { toggleVariants } from "@/components/ui/toggle"
 type ToggleGroupVariant = NonNullable<VariantProps<typeof toggleVariants>["variant"]> | "segmented"
 
 const segmentedItemVariants = cva(
-  "relative inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-transparent text-sm font-medium whitespace-nowrap [@media(pointer:coarse)]:min-h-11 text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 aria-pressed:bg-background aria-pressed:text-foreground aria-pressed:shadow-sm dark:aria-pressed:border-input dark:aria-pressed:bg-input/30 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "relative inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-transparent text-[0.8125rem] font-medium whitespace-nowrap [@media(pointer:coarse)]:min-h-11 text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 aria-pressed:bg-background aria-pressed:text-foreground aria-pressed:shadow-xs aria-pressed:ring-1 aria-pressed:ring-border dark:aria-pressed:bg-accent [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       size: {
-        default: "h-7 px-2.5",
-        sm: "h-6 px-2 text-[0.8rem] [&_svg:not([class*='size-'])]:size-3.5",
+        default: "h-full px-2.5",
+        sm: "h-6 px-2 text-xs [&_svg:not([class*='size-'])]:size-3.5",
         lg: "h-8 px-3",
       },
     },
@@ -74,7 +74,7 @@ function ToggleGroup({
       className={cn(
         "group/toggle-group flex w-fit flex-row items-center rounded-lg data-[size=sm]:rounded-[min(var(--radius-md),10px)] data-vertical:flex-col data-vertical:items-stretch",
         variant === "segmented"
-          ? "min-w-0 max-w-full overflow-x-auto bg-muted p-[3px] data-[variant=segmented]:w-fit"
+          ? "h-8 min-w-0 max-w-full overflow-x-auto bg-secondary p-[3px] ring-1 ring-inset ring-border/70 data-[variant=segmented]:w-fit"
           : "gap-[--spacing(var(--gap))]",
         className
       )}

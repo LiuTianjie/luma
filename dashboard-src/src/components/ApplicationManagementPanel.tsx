@@ -24,6 +24,7 @@ import {
 import {
   Box,
   Copy,
+  ExternalLink,
   FileText,
   History,
   MoreHorizontal,
@@ -32,7 +33,7 @@ import {
   Search,
   Settings2,
   SquareTerminal,
-} from "lucide-react";
+} from "@/components/icons";
 import {
   fetchDeploymentConfig,
   type DeploymentConfig,
@@ -71,14 +72,13 @@ import {
 import { useConfirm } from "./ConfirmDialog";
 import { Badge, CodeCell, StatePill } from "./primitives";
 import { Button } from "@/components/ui/button";
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import {
   InputGroup,
   InputGroupAddon,
   InputGroupInput,
 } from "@/components/ui/input-group";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle } from "@/components/icons";
 
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
@@ -112,7 +112,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -712,9 +711,9 @@ export function ApplicationManagementPanel({
   };
   const moreLabel = lang === "zh" ? "更多操作" : "More actions";
   const renderActions = (app: Application) => (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center justify-end gap-1">
       <Button
-        variant="outline"
+        variant="ghost"
         size="sm"
         disabled={!firstLogService(app)}
         onClick={() => openApplicationLogs(app)}
@@ -723,7 +722,7 @@ export function ApplicationManagementPanel({
         {logLabel}
       </Button>
       <Button
-        variant="outline"
+        variant="ghost"
         size="sm"
         disabled={Boolean(configBusy || updatingApp)}
         onClick={() => void openUpdate(app)}
@@ -745,8 +744,8 @@ export function ApplicationManagementPanel({
         <DropdownMenuTrigger
           render={
             <Button
-              variant="outline"
-              size="icon"
+              variant="ghost"
+              size="icon-sm"
               aria-label={`${app.stack} · ${moreLabel}`}
             />
           }
@@ -783,9 +782,9 @@ export function ApplicationManagementPanel({
     </div>
   );
   const renderServiceActions = (service: DashboardService) => (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-1">
       <Button
-        variant="outline"
+        variant="ghost"
         size="sm"
         disabled={!service.fullName}
         onClick={() => openServiceLogs(service, selected?.services || [])}
@@ -794,7 +793,7 @@ export function ApplicationManagementPanel({
         {logLabel}
       </Button>
       <Button
-        variant="outline"
+        variant="ghost"
         size="sm"
         disabled={
           !service.fullName || !serviceIsRunning(service) || !onServiceTerminal
@@ -821,7 +820,7 @@ export function ApplicationManagementPanel({
       role="link"
       nativeButton={false}
       render={<a href={toHref(applicationPath(app.stack))} />}
-      className="h-auto max-w-full justify-start px-0 whitespace-normal wrap-anywhere"
+      className="h-auto max-w-full justify-start px-0 font-medium whitespace-normal wrap-anywhere"
       onClick={(event) => followLink(event, applicationPath(app.stack))}
     >
       {app.stack}
@@ -953,100 +952,67 @@ export function ApplicationManagementPanel({
           ) : null}
           {tab === "overview" ? (
             <>
-              <Card>
-                <CardHeader>
-                  <CardTitle>
-                    {lang === "zh" ? "运行状态" : "Runtime"}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <ApplicationProperties
-                    items={[
-                      {
-                        label: t(lang, "status"),
-                        value: (
-                          <StatePill
-                            value={selected.status}
-                            label={localizeState(lang, selected.status)}
-                          />
-                        ),
-                      },
-                      {
-                        label: t(lang, "replicas"),
-                        value: `${selected.running}/${selected.desired}`,
-                      },
-                      {
-                        label: t(lang, "region"),
-                        value: selected.regions.join(", ") || "-",
-                      },
-                      {
-                        label: t(lang, "nodes"),
-                        value: selected.nodes.join(", ") || "-",
-                      },
-                      { label: t(lang, "exposure"), value: selected.exposure },
-                    ]}
-                  />
-                </CardContent>
+              <Card className="gap-0 py-0">
+                <dl className="grid grid-cols-2 divide-hairline md:grid-cols-5 md:divide-x [&>div]:border-hairline max-md:[&>div:nth-child(n+3)]:border-t max-md:[&>div:nth-child(even)]:border-l">
+                  {[
+                    {
+                      label: t(lang, "status"),
+                      value: <StatePill value={selected.status} label={localizeState(lang, selected.status)} />,
+                    },
+                    {
+                      label: t(lang, "replicas"),
+                      value: <span className="tabular-nums">{selected.running}<span className="text-muted-foreground"> / {selected.desired}</span></span>,
+                    },
+                    { label: t(lang, "region"), value: selected.regions.join(", ") || "—" },
+                    { label: t(lang, "nodes"), value: selected.nodes.join(", ") || "—" },
+                    { label: t(lang, "exposure"), value: selected.exposure || "—" },
+                  ].map((item) => (
+                    <div key={item.label} className="flex min-w-0 flex-col gap-1.5 px-5 py-4">
+                      <dt className="text-xs text-muted-foreground">{item.label}</dt>
+                      <dd className="min-w-0 text-[0.8125rem] font-medium wrap-anywhere">{item.value}</dd>
+                    </div>
+                  ))}
+                </dl>
               </Card>
               <Card>
                 <CardHeader>
                   <CardTitle>{t(lang, "accessAddress")}</CardTitle>
+                  <CardDescription>
+                    {applicationEndpoints(selected.services).length
+                      ? (lang === "zh" ? "入口为这些地址配置了路由；不代表已验证公网可达。" : "Ingress routes are configured for these addresses; reachability is not verified.")
+                      : (lang === "zh" ? "当前应用没有对外访问地址，只能在集群内部访问。" : "This application has no public endpoint and is reachable inside the cluster only.")}
+                  </CardDescription>
                 </CardHeader>
-                <CardContent>
-                  {applicationEndpoints(selected.services).length ? (
-                    <div className="flex flex-wrap items-start gap-3">
-                      {applicationEndpoints(selected.services).map(
-                        (endpoint) =>
-                          endpoint.href ? (
-                            <Button
-                              key={endpoint.address}
-                              variant="link"
-                              role="link"
-                              nativeButton={false}
-                              className="h-auto max-w-full justify-start px-0 whitespace-normal wrap-anywhere"
-                              render={
-                                <a
-                                  href={endpoint.href}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                />
-                              }
-                            >
-                              {endpoint.address}
-                            </Button>
+                {applicationEndpoints(selected.services).length ? (
+                  <CardContent>
+                    <ul className="divide-y divide-hairline border-t border-hairline">
+                      {applicationEndpoints(selected.services).map((endpoint) => (
+                        <li key={endpoint.address} className="flex min-w-0 items-center gap-3 px-(--card-spacing) py-3">
+                          <Badge value={endpoint.href ? "HTTPS" : "TCP"} />
+                          {endpoint.href ? (
+                            <a href={endpoint.href} target="_blank" rel="noreferrer" className="group/link inline-flex min-w-0 items-center gap-1.5 font-mono text-[0.8125rem] text-link outline-none hover:underline focus-visible:underline">
+                              <span className="wrap-anywhere">{endpoint.address}</span>
+                              <ExternalLink className="size-3.5 shrink-0 opacity-60 group-hover/link:opacity-100" aria-hidden="true" />
+                              <span className="sr-only">{lang === "zh" ? "（新窗口）" : "(new window)"}</span>
+                            </a>
                           ) : (
-                            <div
-                              className="flex min-w-0 flex-wrap items-center gap-2"
-                              key={endpoint.address}
-                            >
-                              <Badge value="TCP" />
-                              <CodeCell value={endpoint.address} />
-                            </div>
-                          ),
-                      )}
-                    </div>
-                  ) : (
-                    <Empty>
-                      <EmptyHeader>
-                        <EmptyTitle>{t(lang, "internalOnly")}</EmptyTitle>
-                        <EmptyDescription>
-                          {lang === "zh"
-                            ? "当前应用没有对外访问地址。"
-                            : "This application has no public endpoint."}
-                        </EmptyDescription>
-                      </EmptyHeader>
-                    </Empty>
-                  )}
-                </CardContent>
+                            <code className="min-w-0 font-mono text-[0.8125rem] wrap-anywhere">{endpoint.address}</code>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </CardContent>
+                ) : null}
               </Card>
               <Card>
                 <CardHeader>
-                  <CardTitle>
-                    {lang === "zh" ? "存储与诊断" : "Storage and diagnostics"}
-                  </CardTitle>
+                  <CardTitle>{lang === "zh" ? "存储卷" : "Volumes"}</CardTitle>
+                  {!selectedVolumes.length ? (
+                    <CardDescription>{lang === "zh" ? "未发现应用卷；容器重建后数据不会保留。" : "No application volumes found; data does not survive container replacement."}</CardDescription>
+                  ) : null}
                 </CardHeader>
-                <CardContent className="flex min-w-0 flex-col gap-4">
-                  {selectedVolumes.length ? (
+                {selectedVolumes.length ? (
+                  <CardContent>
                     <Table
                       containerProps={{
                         tabIndex: 0,
@@ -1059,66 +1025,35 @@ export function ApplicationManagementPanel({
                     >
                       <TableHeader>
                         <TableRow>
-                          <TableHead>
-                            {lang === "zh" ? "卷 / 路径" : "Volume / path"}
-                          </TableHead>
-                          <TableHead>
-                            {lang === "zh" ? "类型" : "Type"}
-                          </TableHead>
-                          <TableHead>
-                            {lang === "zh"
-                              ? "存储类 / 节点"
-                              : "Storage class / node"}
-                          </TableHead>
+                          <TableHead>{lang === "zh" ? "卷 / 路径" : "Volume / path"}</TableHead>
+                          <TableHead>{lang === "zh" ? "类型" : "Type"}</TableHead>
+                          <TableHead>{lang === "zh" ? "存储类 / 节点" : "Storage class / node"}</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {selectedVolumes.map((volume, index) => (
-                          <TableRow
-                            key={`${volume.name}-${volume.storageClass}-${volume.node}-${index}`}
-                          >
-                            <TableCell className="whitespace-normal wrap-anywhere">
-                              <code>{volume.name}</code>
-                            </TableCell>
+                          <TableRow key={`${volume.name}-${volume.storageClass}-${volume.node}-${index}`}>
+                            <TableCell className="whitespace-normal wrap-anywhere"><code className="font-mono text-xs">{volume.name}</code></TableCell>
                             <TableCell>{volume.kind || "unmanaged"}</TableCell>
-                            <TableCell>
-                              {volume.storageClass || volume.node || "-"}
-                            </TableCell>
+                            <TableCell>{volume.storageClass || volume.node || "—"}</TableCell>
                           </TableRow>
                         ))}
                       </TableBody>
                     </Table>
-                  ) : (
-                    <Empty>
-                      <EmptyHeader>
-                        <EmptyTitle>
-                          {lang === "zh"
-                            ? "未发现应用卷"
-                            : "No application volumes found"}
-                        </EmptyTitle>
-                      </EmptyHeader>
-                    </Empty>
-                  )}
-                  <Separator />
-                  {selectedDiagnostics.length ? (
-                    selectedDiagnostics.map((item, index) => (
-                      <Alert key={`${item}-${index}`}>
-                        <AlertCircle />
-                        <AlertTitle>
-                          {lang === "zh" ? "诊断" : "Diagnostics"}
-                        </AlertTitle>
-                        <AlertDescription>{item}</AlertDescription>
-                      </Alert>
-                    ))
-                  ) : (
-                    <p className="text-sm text-muted-foreground">
-                      {lang === "zh"
-                        ? "暂无诊断告警"
-                        : "No diagnostic warnings"}
-                    </p>
-                  )}
-                </CardContent>
+                  </CardContent>
+                ) : null}
               </Card>
+              {selectedDiagnostics.length ? (
+                <div className="flex flex-col gap-2">
+                  {selectedDiagnostics.map((item, index) => (
+                    <Alert key={`${item}-${index}`} variant="warning">
+                      <AlertCircle />
+                      <AlertTitle>{lang === "zh" ? "诊断" : "Diagnostics"}</AlertTitle>
+                      <AlertDescription>{item}</AlertDescription>
+                    </Alert>
+                  ))}
+                </div>
+              ) : null}
             </>
           ) : null}
           {tab === "versions" ? (
@@ -1688,94 +1623,78 @@ export function ApplicationManagementPanel({
       ) : null}
       {!selectedStack ? (
         <>
-          <FieldGroup
-            className="grid min-w-0 grid-cols-2 items-end gap-4 md:grid-cols-[minmax(0,1fr)_minmax(10rem,auto)_minmax(10rem,auto)]"
+          <div
+            role="search"
+            className="flex min-w-0 flex-wrap items-center gap-2"
             aria-label={lang === "zh" ? "应用筛选" : "Application filters"}
           >
-            <Field className="col-span-2 min-w-0 md:col-span-1">
-              <FieldLabel htmlFor="application-search">
-                {lang === "zh" ? "搜索应用" : "Search applications"}
-              </FieldLabel>
-              <InputGroup>
-                <InputGroupAddon>
-                  <Search />
-                </InputGroupAddon>
-                <InputGroupInput
-                  id="application-search"
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder={
-                    lang === "zh"
-                      ? "搜索应用、域名、镜像"
-                      : "Search app, domain, image"
-                  }
-                />
-              </InputGroup>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="application-status">
-                {t(lang, "status")}
-              </FieldLabel>
-              <Select
-                items={statusItems}
-                value={filters.status}
-                onValueChange={(value) => {
-                  if (value)
-                    setFilters((current) => ({ ...current, status: value }));
-                }}
-              >
-                <SelectTrigger id="application-status" className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    {statusItems.map((item) => (
-                      <SelectItem key={item.value} value={item.value}>
-                        {item.label}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="application-region">
-                {t(lang, "region")}
-              </FieldLabel>
-              <Select
-                items={regionItems}
-                value={filters.region}
-                onValueChange={(value) => {
-                  if (value)
-                    setFilters((current) => ({ ...current, region: value }));
-                }}
-              >
-                <SelectTrigger id="application-region" className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    {regionItems.map((item) => (
-                      <SelectItem key={item.value} value={item.value}>
-                        {item.label}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            </Field>
-          </FieldGroup>
+            <InputGroup className="w-full min-w-0 sm:w-auto sm:flex-1 sm:basis-72 md:max-w-md">
+              <InputGroupAddon>
+                <Search />
+              </InputGroupAddon>
+              <InputGroupInput
+                id="application-search"
+                aria-label={lang === "zh" ? "搜索应用" : "Search applications"}
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder={
+                  lang === "zh"
+                    ? "搜索应用、域名、镜像"
+                    : "Search app, domain, image"
+                }
+              />
+            </InputGroup>
+            <Select
+              items={statusItems}
+              value={filters.status}
+              onValueChange={(value) => {
+                if (value)
+                  setFilters((current) => ({ ...current, status: value }));
+              }}
+            >
+              <SelectTrigger id="application-status" aria-label={t(lang, "status")} className="min-w-36">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {statusItems.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <Select
+              items={regionItems}
+              value={filters.region}
+              onValueChange={(value) => {
+                if (value)
+                  setFilters((current) => ({ ...current, region: value }));
+              }}
+            >
+              <SelectTrigger id="application-region" aria-label={t(lang, "region")} className="min-w-36">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {regionItems.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <span className="ml-auto text-xs text-muted-foreground tabular-nums" aria-live="polite">
+              {lang === "zh"
+                ? `${applicationPage?.total ?? filteredApplications.length} / ${applicationPage?.counts.total ?? applications.length} 个应用`
+                : `${applicationPage?.total ?? filteredApplications.length} of ${applicationPage?.counts.total ?? applications.length} apps`}
+            </span>
+          </div>
           {filteredApplications.length ? (
             <>
-              <Card className="hidden min-w-0 md:flex">
-                <CardHeader>
-                  <CardTitle>{t(lang, "applications")}</CardTitle>
-                  <CardDescription>
-                    {lang === "zh"
-                      ? `${applicationPage?.total ?? filteredApplications.length} / ${applicationPage?.counts.total ?? applications.length} 个应用`
-                      : `${applicationPage?.total ?? filteredApplications.length} / ${applicationPage?.counts.total ?? applications.length} apps`}
-                  </CardDescription>
-                </CardHeader>
+              <Card className="hidden min-w-0 gap-0 py-0 md:flex">
                 <CardContent>
                   <Table
                     className="min-w-3xl"
@@ -1796,7 +1715,7 @@ export function ApplicationManagementPanel({
                         <TableHead>{t(lang, "region")}</TableHead>
                         <TableHead>{t(lang, "nodes")}</TableHead>
                         <TableHead className="text-right">{t(lang, "replicas")}</TableHead>
-                        <TableHead>{t(lang, "actions")}</TableHead>
+                        <TableHead className="text-right"><span className="sr-only">{t(lang, "actions")}</span></TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -1824,11 +1743,11 @@ export function ApplicationManagementPanel({
                                 ))}
                               </div>
                             ) : (
-                              <span className="text-xs text-muted-foreground">{t(lang, "internalOnly")}</span>
+                              <span className="text-muted-foreground">{t(lang, "internalOnly")}</span>
                             )}
                           </TableCell>
-                          <TableCell className="text-xs text-muted-foreground">{app.regions.join(" · ") || "—"}</TableCell>
-                          <TableCell className="text-xs text-muted-foreground">{app.nodes.join(" · ") || "—"}</TableCell>
+                          <TableCell className="text-muted-foreground">{app.regions.join(" · ") || "—"}</TableCell>
+                          <TableCell className="text-muted-foreground">{app.nodes.join(" · ") || "—"}</TableCell>
                           <TableCell className="text-right tabular-nums">
                             {app.running}<span className="text-muted-foreground"> / {app.desired}</span>
                           </TableCell>

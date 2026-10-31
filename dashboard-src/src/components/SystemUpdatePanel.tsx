@@ -12,7 +12,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { AlertTriangle, CheckCircle2, Clock3, RefreshCw, Route, ServerCog, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock3, RefreshCw, Route, ServerCog, XCircle } from "@/components/icons";
 import type { DashboardNode, Lang } from "../types";
 import {
   getControlImagePreparation,
@@ -309,7 +309,7 @@ export function SystemUpdatePanel({
       <AlertDialog open={confirm !== ""} onOpenChange={(open) => { if (!open) setConfirm(""); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogMedia><AlertTriangle /></AlertDialogMedia>
+            <AlertDialogMedia data-tone="warning"><AlertTriangle /></AlertDialogMedia>
             <AlertDialogTitle>{confirm === "manager" ? (zh ? "确认升级 Control？" : "Update Control?") : (zh ? `确认更新 ${staleNodes.length} 台节点？` : `Update ${staleNodes.length} nodes?`)}</AlertDialogTitle>
             <AlertDialogDescription>
               {confirm === "manager"

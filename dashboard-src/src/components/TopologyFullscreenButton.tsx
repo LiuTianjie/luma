@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Expand, Shrink } from "lucide-react";
+import { Expand, Shrink } from "@/components/icons";
 import { toast } from "@/components/ui/toast";
 import type cytoscape from "cytoscape";
 import { Button } from "@/components/ui/button";

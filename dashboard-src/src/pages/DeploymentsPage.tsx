@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { ArrowDown, ArrowLeft, ChevronDown, GitBranch, SlidersHorizontal, Plus, RefreshCw, RotateCcw, ScrollText, Search, Square } from "lucide-react";
+import { ArrowDown, ArrowLeft, ChevronDown, GitBranch, SlidersHorizontal, Plus, RefreshCw, RotateCcw, ScrollText, Search, Square } from "@/components/icons";
 import { cancelBuildRun, retryBuildRunStream } from "../deploy/deployApi";
 import type { DeployStep } from "../deploy/types";
 import { StepLog } from "../deploy/StepLog";
@@ -12,7 +12,7 @@ import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader,
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -80,72 +80,67 @@ function HistoryFilters({ lang, filters, onApply }: { lang: Lang; filters: strin
     onApply(new URLSearchParams());
   };
   return (
-    <form onSubmit={submit}>
+    <form onSubmit={submit} role="search" aria-label={zh ? "筛选记录" : "Filter records"}>
       <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-      <FieldGroup className="gap-4">
-      <FieldGroup className="grid grid-cols-2 gap-4 md:grid-cols-3">
-        <Field className="col-span-2 md:col-span-1">
-          <FieldLabel htmlFor={`${fieldId}-app`}>{zh ? "应用" : "Application"}</FieldLabel>
-          <Input id={`${fieldId}-app`} value={app} onChange={(event) => setApp(event.target.value)} placeholder={zh ? "应用名称" : "Application name"} />
-        </Field>
-        <Field>
-          <FieldTitle id={`${fieldId}-kind`}>{zh ? "记录类型" : "Record type"}</FieldTitle>
-          <ToggleGroup aria-labelledby={`${fieldId}-kind`} variant="segmented" value={[kind || "all"]} onValueChange={(values) => setKind(values[0] === "all" ? "" : values[0] || "")}>
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <InputGroup className="w-full sm:w-auto sm:flex-1 sm:basis-56 md:max-w-xs">
+            <InputGroupAddon><Search /></InputGroupAddon>
+            <InputGroupInput id={`${fieldId}-app`} aria-label={zh ? "应用" : "Application"} value={app} onChange={(event) => setApp(event.target.value)} placeholder={zh ? "应用名称" : "Application name"} />
+          </InputGroup>
+          <ToggleGroup aria-label={zh ? "记录类型" : "Record type"} variant="segmented" value={[kind || "all"]} onValueChange={(values) => setKind(values[0] === "all" ? "" : values[0] || "")}>
             <ToggleGroupItem value="all">{zh ? "全部" : "All"}</ToggleGroupItem>
             <ToggleGroupItem value="build">{zh ? "构建" : "Build"}</ToggleGroupItem>
             <ToggleGroupItem value="deployment">{zh ? "部署" : "Deployment"}</ToggleGroupItem>
             {kind && !["build", "deployment"].includes(kind) ? <ToggleGroupItem value={kind}>{kind}</ToggleGroupItem> : null}
           </ToggleGroup>
-        </Field>
-        <Field>
-          <FieldLabel htmlFor={`${fieldId}-status`}>{t(lang, "status")}</FieldLabel>
           <Select items={statusItems} value={status || "all"} onValueChange={(value) => setStatus(value === "all" ? "" : value || "")}>
-            <SelectTrigger id={`${fieldId}-status`} className="w-full"><SelectValue /></SelectTrigger>
+            <SelectTrigger id={`${fieldId}-status`} aria-label={t(lang, "status")} className="min-w-32"><SelectValue /></SelectTrigger>
             <SelectContent><SelectGroup>{statusItems.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectGroup></SelectContent>
           </Select>
-        </Field>
-      </FieldGroup>
-      <CollapsibleContent>
-        <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        <Field>
-          <FieldTitle id={`${fieldId}-source`}>{zh ? "来源" : "Source"}</FieldTitle>
-          <ToggleGroup aria-labelledby={`${fieldId}-source`} variant="segmented" value={[source || "all"]} onValueChange={(values) => setSource(values[0] === "all" ? "" : values[0] || "")}>
-            <ToggleGroupItem value="all">{zh ? "全部" : "All"}</ToggleGroupItem>
-            <ToggleGroupItem value="build">{sourceLabel("build", lang)}</ToggleGroupItem>
-            <ToggleGroupItem value="cli">CLI</ToggleGroupItem>
-            <ToggleGroupItem value="dashboard">{sourceLabel("dashboard", lang)}</ToggleGroupItem>
-            {source && !["build", "cli", "dashboard"].includes(source) ? <ToggleGroupItem value={source}>{source}</ToggleGroupItem> : null}
-          </ToggleGroup>
-        </Field>
-        <Field>
-          <FieldLabel htmlFor={`${fieldId}-since`}>{zh ? "开始时间" : "From"}</FieldLabel>
-          <DateTimePicker id={`${fieldId}-since`} lang={lang} value={since} onChange={setSince} defaultTime="00:00" placeholder={zh ? "选择开始时间" : "Pick start time"} />
-        </Field>
-        <Field data-invalid={Boolean(validation)}>
-          <FieldLabel htmlFor={`${fieldId}-until`}>{zh ? "结束时间" : "Until"}</FieldLabel>
-          <DateTimePicker id={`${fieldId}-until`} aria-invalid={Boolean(validation)} aria-describedby={validation ? `${fieldId}-error` : undefined} lang={lang} value={until} onChange={setUntil} defaultTime="23:59" placeholder={zh ? "选择结束时间" : "Pick end time"} />
-          {validation ? <FieldError id={`${fieldId}-error`}>{validation}</FieldError> : null}
-        </Field>
-      </FieldGroup>
-        <FieldDescription className="mt-3 text-xs">
-          {zh ? "时间按本地时区显示；筛选条件保存在链接中。" : "Times use your local timezone. Filters are saved in the URL."}
-        </FieldDescription>
-      </CollapsibleContent>
-      <Field orientation="horizontal" className="flex-wrap justify-end">
-        <CollapsibleTrigger render={<Button type="button" variant="ghost" className="mr-auto" />}>
-          <SlidersHorizontal data-icon="inline-start" />
-          {zh ? "更多筛选" : "More filters"}{advancedCount ? ` · ${advancedCount}` : ""}
-          <ChevronDown className={advancedOpen ? "rotate-180" : undefined} data-icon="inline-end" />
-        </CollapsibleTrigger>
-        <Button type="button" variant="outline" onClick={clear} disabled={!app && !kind && !source && !status && !since && !until}>
-          {zh ? "清空筛选" : "Clear filters"}
-        </Button>
-        <Button type="submit">
-          <Search data-icon="inline-start" />
-          {zh ? "筛选记录" : "Apply filters"}
-        </Button>
-      </Field>
-      </FieldGroup>
+          <CollapsibleTrigger render={<Button type="button" variant="ghost" />}>
+            <SlidersHorizontal data-icon="inline-start" />
+            {zh ? "更多筛选" : "More filters"}{advancedCount ? ` · ${advancedCount}` : ""}
+            <ChevronDown className={advancedOpen ? "rotate-180 transition-transform" : "transition-transform"} data-icon="inline-end" />
+          </CollapsibleTrigger>
+          <div className="ml-auto flex items-center gap-2">
+            {app || kind || source || status || since || until ? (
+              <Button type="button" variant="ghost" onClick={clear}>
+                {zh ? "清空" : "Clear"}
+              </Button>
+            ) : null}
+            <Button type="submit" variant="outline">
+              {zh ? "应用筛选" : "Apply"}
+            </Button>
+          </div>
+        </div>
+        <CollapsibleContent>
+          <div className="mt-3 rounded-lg bg-card p-4 shadow-xs ring-1 ring-border">
+            <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              <Field>
+                <FieldTitle id={`${fieldId}-source`}>{zh ? "来源" : "Source"}</FieldTitle>
+                <ToggleGroup aria-labelledby={`${fieldId}-source`} variant="segmented" value={[source || "all"]} onValueChange={(values) => setSource(values[0] === "all" ? "" : values[0] || "")}>
+                  <ToggleGroupItem value="all">{zh ? "全部" : "All"}</ToggleGroupItem>
+                  <ToggleGroupItem value="build">{sourceLabel("build", lang)}</ToggleGroupItem>
+                  <ToggleGroupItem value="cli">CLI</ToggleGroupItem>
+                  <ToggleGroupItem value="dashboard">{sourceLabel("dashboard", lang)}</ToggleGroupItem>
+                  {source && !["build", "cli", "dashboard"].includes(source) ? <ToggleGroupItem value={source}>{source}</ToggleGroupItem> : null}
+                </ToggleGroup>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor={`${fieldId}-since`}>{zh ? "开始时间" : "From"}</FieldLabel>
+                <DateTimePicker id={`${fieldId}-since`} lang={lang} value={since} onChange={setSince} defaultTime="00:00" placeholder={zh ? "选择开始时间" : "Pick start time"} />
+              </Field>
+              <Field data-invalid={Boolean(validation)}>
+                <FieldLabel htmlFor={`${fieldId}-until`}>{zh ? "结束时间" : "Until"}</FieldLabel>
+                <DateTimePicker id={`${fieldId}-until`} aria-invalid={Boolean(validation)} aria-describedby={validation ? `${fieldId}-error` : undefined} lang={lang} value={until} onChange={setUntil} defaultTime="23:59" placeholder={zh ? "选择结束时间" : "Pick end time"} />
+                {validation ? <FieldError id={`${fieldId}-error`}>{validation}</FieldError> : null}
+              </Field>
+            </FieldGroup>
+            <FieldDescription className="mt-3 text-xs">
+              {zh ? "时间按本地时区显示；筛选条件保存在链接中。" : "Times use your local timezone. Filters are saved in the URL."}
+            </FieldDescription>
+          </div>
+        </CollapsibleContent>
       </Collapsible>
     </form>
   );
@@ -442,42 +437,35 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
           </div>
         ),
       }} />
-      <Card aria-label={zh ? "筛选记录" : "Filter records"}>
-        <CardContent><HistoryFilters key={filters} lang={lang} filters={filters} onApply={apply} /></CardContent>
-      </Card>
-      <Card aria-busy={Boolean(loading)}>
-        <CardHeader>
-          <CardTitle>{zh ? "记录列表" : "Records"}</CardTitle>
-          <CardDescription>{zh ? "按创建时间从新到旧排列。" : "Ordered by creation time, newest first."}</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          {error ? (
-            <Alert variant="destructive">
-              <AlertDescription className="flex flex-wrap items-center gap-2">
-                <span>{list.loadedAt ? (zh ? "加载失败，已保留上次读取的记录。" : "Loading failed. Previously loaded records are retained.") : (zh ? "历史记录加载失败。" : "History could not be loaded.")} {error}</span>
-                <Button type="button" variant="outline" size="sm" disabled={Boolean(loading)} onClick={() => void load(failedMode)}>{zh ? "重试加载" : "Retry loading"}</Button>
-              </AlertDescription>
-            </Alert>
-          ) : null}
-          {staleFilters ? <Alert role="status"><AlertDescription>{zh ? "新筛选结果尚未加载，下方仍为上次筛选的记录。" : "The new filter results have not loaded. The previous results remain below."}</AlertDescription></Alert> : null}
-          {!list.items.length && loading ? <div className="flex flex-col gap-3" role="status"><span className="sr-only">{zh ? "正在加载记录…" : "Loading records…"}</span>{Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-12 w-full" />)}</div> : null}
+      <HistoryFilters key={filters} lang={lang} filters={filters} onApply={apply} />
+      {error ? (
+        <Alert variant="destructive">
+          <AlertDescription className="flex flex-wrap items-center gap-2">
+            <span>{list.loadedAt ? (zh ? "加载失败，已保留上次读取的记录。" : "Loading failed. Previously loaded records are retained.") : (zh ? "历史记录加载失败。" : "History could not be loaded.")} {error}</span>
+            <Button type="button" variant="outline" size="sm" disabled={Boolean(loading)} onClick={() => void load(failedMode)}>{zh ? "重试加载" : "Retry loading"}</Button>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+      {staleFilters ? <Alert role="status"><AlertDescription>{zh ? "新筛选结果尚未加载，下方仍为上次筛选的记录。" : "The new filter results have not loaded. The previous results remain below."}</AlertDescription></Alert> : null}
+      <Card aria-busy={Boolean(loading)} aria-label={zh ? "记录列表，按创建时间从新到旧" : "Records, newest first"} className="gap-0 py-0">
+        <CardContent>
+          {!list.items.length && loading ? <div className="flex flex-col gap-3 p-(--card-spacing)" role="status"><span className="sr-only">{zh ? "正在加载记录…" : "Loading records…"}</span>{Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-12 w-full" />)}</div> : null}
           {list.items.length ? (
             <Table className="table-fixed sm:table-auto" aria-busy={Boolean(loading)}>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="hidden sm:table-cell">{zh ? "来源" : "Source"}</TableHead>
                   <TableHead>{zh ? "记录" : "Record"}</TableHead>
                   <TableHead className="w-24 sm:w-auto">{zh ? "状态" : "Status"}</TableHead>
-                  <TableHead className="hidden text-right sm:table-cell">{zh ? "时间" : "Time"}</TableHead>
+                  <TableHead className="hidden sm:table-cell">{zh ? "来源" : "Source"}</TableHead>
+                  <TableHead className="hidden text-right sm:table-cell">{zh ? "创建时间" : "Created"}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {list.items.map((item) => (
                   <TableRow key={historyItemKey(item)}>
-                    <TableCell className="hidden sm:table-cell"><span className="text-xs text-muted-foreground">{sourceLabel(item.source, lang)}</span></TableCell>
                     <TableCell>
                       <div className="flex min-w-0 max-w-96 flex-col items-start gap-1">
-                        <Button variant="link" size="sm" className="h-auto max-w-full justify-start px-0" nativeButton={false} render={<a href={toHref(`/deployments/${item.kind}/${encodeURIComponent(item.id)}${filters ? `?${filters}` : ""}`)} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); select(item); } }} />}>
+                        <Button variant="link" size="sm" className="h-auto max-w-full justify-start px-0 font-medium" nativeButton={false} render={<a href={toHref(`/deployments/${item.kind}/${encodeURIComponent(item.id)}${filters ? `?${filters}` : ""}`)} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); select(item); } }} />}>
                           <span className="truncate" title={item.title || item.application || item.id}>{item.title || item.application || item.id}</span>
                         </Button>
                         <p className="max-w-full truncate text-xs text-muted-foreground" title={[item.application, item.ref, item.buildNode].filter(Boolean).join(" · ")}>{[item.kind === "build" ? (zh ? "构建" : "Build") : (zh ? "部署" : "Deployment"), item.application, item.ref, item.buildNode].filter(Boolean).join(" · ")}</p>
@@ -485,7 +473,8 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
                       </div>
                     </TableCell>
                     <TableCell><StatePill label={historyStatus(item.status, lang)} value={historyStatusValue(item.status)} /></TableCell>
-                    <TableCell className="hidden text-right sm:table-cell">
+                    <TableCell className="hidden text-muted-foreground sm:table-cell">{sourceLabel(item.source, lang)}</TableCell>
+                    <TableCell className="hidden text-right text-muted-foreground sm:table-cell">
                       <time title={zh ? "创建时间" : "Created time"}>{formatTimestamp(item.createdAt, lang)}</time>
                     </TableCell>
                   </TableRow>

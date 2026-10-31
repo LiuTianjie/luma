@@ -39,7 +39,7 @@ import {
 } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle } from "@/components/icons";
 import { TrendChart } from "./charts";
 import { useRouter, useSearchParams } from "../router";
 import { formatBytes, formatPercent } from "../format";

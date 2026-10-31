@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import { Search, ArrowRight } from "lucide-react";
+import { Search, ArrowRight } from "@/components/icons";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";

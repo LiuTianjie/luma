@@ -11,6 +11,8 @@ bash scripts/validate-stacks.sh
 npm run typecheck:dashboard
 npm run build:dashboard
 python -m unittest discover -s tests -p 'test_*.py'
+# Vendored Phosphor icons must match the generator's mapping.
+node scripts/generate-dashboard-icons.mjs --check
 node --experimental-strip-types --test tests/dashboard/*.test.mjs
 node --test dashboard-src/tests/*.cjs
 git diff --check

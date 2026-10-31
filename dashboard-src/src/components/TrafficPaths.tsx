@@ -5,14 +5,13 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Spinner } from "@/components/ui/spinner";
 import { useTopologyTheme, type TopologyTheme } from "./topologyTheme";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
-import { Search, Network, X, Maximize, Plus, Minus, CircleAlert, Check } from "lucide-react";
+import { Search, Network, X, Maximize, Plus, Minus, CircleAlert, Check } from "@/components/icons";
 import { buildTopology, normalizePathSegments, routeElementIds } from "./trafficTopology";
 const NODE_WIDTH = 190;
 const NODE_HEIGHT = 44;
@@ -27,8 +26,8 @@ import { TopologyFullscreenButton } from "./TopologyFullscreenButton";
 function getStylesheet(tokens: TopologyTheme): cytoscape.StylesheetJsonBlock[] {
   const textColor = tokens.foreground;
   const nodeBg = tokens.card;
-  const nodeBorder = tokens.border;
-  const edgeColor = tokens.mutedForeground;
+  const nodeBorder = tokens.hairline;
+  const edgeColor = tokens.subtle;
   const domainBorder = nodeBorder;
   const proxyBorder = nodeBorder;
   const issueBorder = tokens.destructive;
@@ -41,29 +40,35 @@ function getStylesheet(tokens: TopologyTheme): cytoscape.StylesheetJsonBlock[] {
       style: {
         "background-color": nodeBg,
         "border-color": nodeBorder,
-        "border-width": 1.5,
-        "font-family": tokens.fontMono,
-        "font-size": 12,
+        "border-width": 1,
+        "border-opacity": 1,
+        "font-family": tokens.fontSans,
+        "font-size": 11.5,
         "font-weight": 500,
+        "line-height": 1.45,
         "height": `${NODE_HEIGHT}px`,
         "label": "data(label)",
         "padding": "10px",
         "shape": "round-rectangle",
         "text-halign": "center",
-        "text-max-width": "160px",
+        "text-max-width": "170px",
         "text-valign": "center",
         "text-wrap": "wrap",
         "width": `${NODE_WIDTH}px`,
         "color": textColor,
+        "underlay-color": tokens.foreground,
+        "underlay-opacity": 0.04,
+        "underlay-padding": 2,
+        "underlay-shape": "round-rectangle",
       },
     },
     { selector: "node.edge", style: { "border-color": nodeBorder } },
-    { selector: "node.domain", style: { "border-width": 1, "border-color": domainBorder, "background-color": nodeBg } },
+    { selector: "node.domain", style: { "border-color": domainBorder, "background-color": nodeBg, "font-family": tokens.fontMono, "font-size": 11 } },
     { selector: "node.proxy", style: { "border-width": 1, "border-color": proxyBorder, "background-color": nodeBg } },
     { selector: "node.tunnel", style: { "border-color": nodeBorder } },
     { selector: "node.target", style: { "border-color": targetBorder, "color": tokens.mutedForeground } },
     { selector: "node.destination", style: { "border-width": 1, "border-color": destinationBorder, "background-color": nodeBg, "width": `${DESTINATION_WIDTH}px` } },
-    { selector: "node.issue", style: { "border-width": 1, "border-color": issueBorder, "background-color": tokens.muted } },
+    { selector: "node.issue", style: { "border-color": issueBorder, "border-width": 1.5, "background-color": tokens.muted } },
     {
       selector: "edge",
       style: {
@@ -71,7 +76,8 @@ function getStylesheet(tokens: TopologyTheme): cytoscape.StylesheetJsonBlock[] {
         "line-color": edgeColor,
         "target-arrow-color": edgeColor,
         "target-arrow-shape": "triangle",
-        "width": "1px",
+        "arrow-scale": 0.8,
+        "width": "1.25px",
       },
     },
     {
@@ -84,8 +90,8 @@ function getStylesheet(tokens: TopologyTheme): cytoscape.StylesheetJsonBlock[] {
       selector: "node.highlighted",
       style: {
         "border-color": tokens.primary,
-        "border-width": 3,
-        "background-color": tokens.accent,
+        "border-width": 2,
+        "background-color": nodeBg,
       },
     },
     {
@@ -93,7 +99,7 @@ function getStylesheet(tokens: TopologyTheme): cytoscape.StylesheetJsonBlock[] {
       style: {
         "line-color": tokens.primary,
         "target-arrow-color": tokens.primary,
-        "width": "3px",
+        "width": "2px",
       },
     },
   ];
@@ -221,29 +227,22 @@ export function TrafficPaths({
 
   return (
     <section className="route-workspace" aria-label={t(lang, "trafficPaths")}>
-      <div className="flex flex-wrap items-center gap-3">
-        <Badge variant="outline"><Network data-icon="inline-start" />{filteredPaths.length} {zh ? "条路由" : "routes"}</Badge>
-        <span className="text-sm text-muted-foreground">{nodes.length} {zh ? "个节点" : "nodes"} · {edges.length} {zh ? "条连接" : "connections"}</span>
+      <div className="flex min-w-0 flex-wrap items-center gap-2" role="search" aria-label={zh ? "路由筛选" : "Route filters"}>
+        <InputGroup className="w-full sm:w-auto sm:flex-1 sm:basis-64 md:max-w-md">
+          <InputGroupAddon><Search /></InputGroupAddon>
+          <InputGroupInput id="route-search" aria-label={zh ? "搜索路由" : "Search routes"} value={query} onChange={event => { setQuery(event.target.value); setSelectedPath(null); }} placeholder={zh ? "搜索域名、应用、节点或地址…" : "Search domains, applications, nodes or addresses…"} />
+        </InputGroup>
+        <Select items={ingressItems} value={kind} onValueChange={value => { setKind(value || ""); setSelectedPath(null); }}>
+          <SelectTrigger id="route-ingress-type" aria-label={zh ? "入口类型" : "Ingress type"} className="min-w-40"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectGroup>{ingressItems.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectGroup>
+          </SelectContent>
+        </Select>
+        <span className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
+          <Network className="size-3.5" aria-hidden="true" />
+          {zh ? `${filteredPaths.length} 条路由 · ${nodes.length} 个节点 · ${edges.length} 条连接` : `${filteredPaths.length} routes · ${nodes.length} nodes · ${edges.length} connections`}
+        </span>
       </div>
-      <p className="text-sm text-muted-foreground">{zh ? "按路由配置与运行实例展示链路，未进行逐跳连通性探测。悬停可高亮完整路径；点击下方域名可单独查看。" : "Paths reflect route configuration and running instances, not hop-by-hop connectivity probes. Hover to trace complete paths; select a domain below to isolate one."}</p>
-      <FieldGroup className="route-filters">
-        <Field>
-          <FieldLabel htmlFor="route-search">{zh ? "搜索路由" : "Search routes"}</FieldLabel>
-          <InputGroup>
-            <InputGroupAddon><Search /></InputGroupAddon>
-            <InputGroupInput id="route-search" value={query} onChange={event => { setQuery(event.target.value); setSelectedPath(null); }} placeholder={zh ? "搜索域名、应用、节点或地址…" : "Search domains, applications, nodes or addresses…"} />
-          </InputGroup>
-        </Field>
-        <Field>
-          <FieldLabel htmlFor="route-ingress-type">{zh ? "入口类型" : "Ingress type"}</FieldLabel>
-          <Select items={ingressItems} value={kind} onValueChange={value => { setKind(value || ""); setSelectedPath(null); }}>
-            <SelectTrigger id="route-ingress-type" className="w-full"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectGroup>{ingressItems.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectGroup>
-            </SelectContent>
-          </Select>
-        </Field>
-      </FieldGroup>
       {certMessage ? <Alert variant={certMessage.kind === "error" ? "destructive" : "default"}>
         {certMessage.kind === "error" ? <CircleAlert /> : <Check />}
         <AlertTitle>{certMessage.kind === "error" ? (zh ? "证书重试失败" : "Certificate retry failed") : (zh ? "已提交证书重试" : "Certificate retry submitted")}</AlertTitle>
@@ -253,10 +252,10 @@ export function TrafficPaths({
         <Card>
           <CardHeader>
             <CardTitle>{zh ? "入口与服务关系" : "Ingress and services"}</CardTitle>
-            <CardDescription className="break-words">{selected ? (selected.domain || selected.id) : (zh ? "选择下方路由可查看单条完整路径。" : "Select a route below to inspect its complete path.")}</CardDescription>
+            <CardDescription className="break-words">{selected ? (selected.domain || selected.id) : (zh ? "按路由配置与运行实例展示链路，未进行逐跳连通性探测。悬停可高亮完整路径；选择下方路由可单独查看。" : "Paths reflect route configuration and running instances, not hop-by-hop probes. Hover to trace a path; select a route below to isolate it.")}</CardDescription>
           </CardHeader>
-          <CardContent>
-            <div className="topology-canvas route-map" aria-label={zh ? "路由关系图" : "Route diagram"}>
+          <CardContent className="-mb-(--card-spacing) px-0">
+            <div className="topology-canvas topology-grid route-map border-t border-hairline" aria-label={zh ? "路由关系图" : "Route diagram"}>
               {/* A fixed zoom floor clamps fit() and clips large route graphs. */}
               <CytoscapeComponent className="cy-topology" elements={elements} layout={{ name: "preset", fit: true, padding: 24 }} maxZoom={1.6} minZoom={0} stylesheet={stylesheet} cy={setCyRef} />
               <div className="cy-controls" role="group" aria-label={zh ? "关系图操作" : "Diagram controls"}>

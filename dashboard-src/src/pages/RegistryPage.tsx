@@ -1,7 +1,7 @@
-import { AlertTriangle, ArrowLeft, Boxes, Info, RefreshCw, Search, Settings2, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Boxes, Info, RefreshCw, Search, Settings2, ShieldCheck, Trash2 } from "@/components/icons";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Bar, BarChart, CartesianGrid, XAxis } from "recharts";
-import { CodeCell } from "../components/primitives";
+import { CodeCell, StatTile } from "../components/primitives";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
@@ -356,27 +356,17 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
         ) : null}
 
         {section === "inventory" ? <>
-          <section className="grid min-w-0 grid-cols-2 gap-4 xl:grid-cols-4" aria-label={zh ? "镜像仓库容量" : "Registry storage usage"}>
-            <Card size="sm">
-              <CardHeader><CardDescription>{zh ? "宿主磁盘" : "Host filesystem"}</CardDescription><CardTitle>{hasDiskPercent ? `${diskPercent}%` : unavailable}</CardTitle></CardHeader>
-              <CardContent className="flex flex-col gap-3">
-                <p className="text-sm text-muted-foreground">{zh ? `可用 ${usageBytes(usage.filesystemAvailableBytes)}` : `${usageBytes(usage.filesystemAvailableBytes)} available`}</p>
-                {diskWarning ? <Badge variant={diskCritical || diskEmergency ? "destructive" : "warning"}>{diskEmergency ? (zh ? "容量紧急" : "Emergency capacity") : diskCritical ? (zh ? "容量严重" : "Critical capacity") : (zh ? "容量预警" : "Capacity warning")}</Badge> : null}
-                {hasDiskPercent ? <Progress value={Math.max(0, Math.min(diskPercent, 100))} aria-label={zh ? "宿主磁盘使用率" : "Host filesystem usage"} /> : null}
-              </CardContent>
-            </Card>
-            <Card size="sm">
-              <CardHeader><CardDescription>{zh ? "镜像数据卷" : "Registry volume"}</CardDescription><CardTitle>{usageBytes(usage.volumeBytes)}</CardTitle></CardHeader>
-              <CardContent><p className="break-all text-sm text-muted-foreground">{inventory?.registry?.volumeName || "—"}</p></CardContent>
-            </Card>
-            <Card size="sm">
-              <CardHeader><CardDescription>{zh ? "受保护镜像清单" : "Protected manifests"}</CardDescription><CardTitle>{inventory ? summary.protectedCount || 0 : "—"}</CardTitle></CardHeader>
-              <CardContent><p className="text-sm text-muted-foreground">{zh ? "运行、回滚、构建与系统引用" : "Runtime, rollback, build, and system references"}</p></CardContent>
-            </Card>
-            <Card size="sm">
-              <CardHeader><CardDescription>{zh ? "最近扫描" : "Last scan"}</CardDescription><CardTitle>{summary.durationMs ? `${(summary.durationMs / 1000).toFixed(1)}s` : "—"}</CardTitle></CardHeader>
-              <CardContent><p className="text-sm text-muted-foreground">{formatTimestamp(summary.scannedAt, lang)}</p></CardContent>
-            </Card>
+          <section className="grid min-w-0 grid-cols-2 gap-3 xl:grid-cols-4" aria-label={zh ? "镜像仓库容量" : "Registry storage usage"}>
+            <StatTile
+              label={zh ? "宿主磁盘" : "Host filesystem"}
+              action={diskWarning ? <Badge variant={diskCritical || diskEmergency ? "destructive" : "warning"}>{diskEmergency ? (zh ? "紧急" : "Emergency") : diskCritical ? (zh ? "严重" : "Critical") : (zh ? "预警" : "Warning")}</Badge> : null}
+              value={hasDiskPercent ? `${diskPercent}%` : unavailable}
+              detail={zh ? `可用 ${usageBytes(usage.filesystemAvailableBytes)}` : `${usageBytes(usage.filesystemAvailableBytes)} free`}
+              footer={hasDiskPercent ? <Progress value={Math.max(0, Math.min(diskPercent, 100))} aria-label={zh ? "宿主磁盘使用率" : "Host filesystem usage"} className="mt-0.5" /> : null}
+            />
+            <StatTile label={zh ? "镜像数据卷" : "Registry volume"} value={usageBytes(usage.volumeBytes)} footer={<span className="block truncate font-mono text-[0.6875rem]" title={inventory?.registry?.volumeName || undefined}>{inventory?.registry?.volumeName || "—"}</span>} />
+            <StatTile label={zh ? "受保护镜像清单" : "Protected manifests"} value={inventory ? summary.protectedCount || 0 : "—"} footer={<span className="block truncate">{zh ? "运行、回滚、构建与系统引用" : "Runtime, rollback, build and system"}</span>} />
+            <StatTile label={zh ? "最近扫描" : "Last scan"} value={summary.durationMs ? `${(summary.durationMs / 1000).toFixed(1)}s` : "—"} footer={<span className="block truncate tabular-nums">{formatTimestamp(summary.scannedAt, lang)}</span>} />
           </section>
 
           <Card>
@@ -388,10 +378,10 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
               {loading && !inventory ? <Skeleton className="h-48 w-full" aria-label={zh ? "正在加载月度分布" : "Loading monthly distribution"} /> : hasUsage && monthly.length ? <>
                 <ChartContainer config={{ bytes: { label: zh ? "存储占用" : "Storage usage", color: "var(--chart-1)" } }} className="h-48 w-full">
                   <BarChart accessibilityLayer data={monthly}>
-                    <CartesianGrid vertical={false} />
+                    <CartesianGrid vertical={false} strokeDasharray="3 3" />
                     <XAxis dataKey="month" tickLine={false} axisLine={false} tickMargin={8} />
-                    <ChartTooltip content={<ChartTooltipContent formatter={(value) => formatBytes(Number(value))} />} />
-                    <Bar dataKey="bytes" fill="var(--color-bytes)" radius={4} maxBarSize={72} isAnimationActive={false} />
+                    <ChartTooltip cursor={{ fill: "var(--muted)" }} content={<ChartTooltipContent formatter={(value) => formatBytes(Number(value))} />} />
+                    <Bar dataKey="bytes" fill="var(--color-bytes)" fillOpacity={0.85} radius={[4, 4, 0, 0]} maxBarSize={48} isAnimationActive={false} />
                   </BarChart>
                 </ChartContainer>
                 <div className="sr-only"><Table><TableHeader><TableRow><TableHead>{zh ? "月份" : "Month"}</TableHead><TableHead>{zh ? "存储占用" : "Storage usage"}</TableHead></TableRow></TableHeader><TableBody>{monthly.map((item) => <TableRow key={item.month}><TableCell>{item.month}</TableCell><TableCell>{formatBytes(item.bytes)}</TableCell></TableRow>)}</TableBody></Table></div>
@@ -401,25 +391,18 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
             </CardContent>
           </Card>
 
-          <Card aria-busy={loading}>
-            <CardHeader><CardTitle>{zh ? "镜像列表" : "Images"}</CardTitle><CardDescription>{zh ? "按仓库、标签或摘要搜索，并选择需要删除的镜像。" : "Search by repository, tag, or digest, then select images to delete."}</CardDescription></CardHeader>
-            <CardContent className="flex min-w-0 flex-col gap-4">
-              <FieldGroup>
-                <Field>
-                  <FieldLabel htmlFor="registry-search" className="sr-only">{zh ? "搜索镜像" : "Search images"}</FieldLabel>
-                  <InputGroup className="max-w-xl"><InputGroupAddon><Search /></InputGroupAddon><InputGroupInput id="registry-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={zh ? "搜索仓库、标签或摘要" : "Search repository, tag, or digest"} /></InputGroup>
-                </Field>
-                <Field>
-                  <FieldLabel id="registry-filter-label" className="sr-only">{zh ? "镜像保护状态" : "Image protection status"}</FieldLabel>
-                  <ToggleGroup variant="segmented" size="sm" value={[filter]} onValueChange={(values) => { if (values[0]) setFilter(String(values[0])); }} aria-labelledby="registry-filter-label">
-                    {["all", "protected", "retained", "candidate", "unknown"].map((value) => <ToggleGroupItem key={value} value={value}>{value === "all" ? (zh ? "全部" : "All") : statusLabel(value, zh)}</ToggleGroupItem>)}
-                  </ToggleGroup>
-                </Field>
-              </FieldGroup>
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <p className="text-sm text-muted-foreground" role="status">{zh ? `已选择 ${selected.size} 个镜像` : `${selected.size} images selected`}</p>
-                <Button variant="destructive" type="button" disabled={!selected.size || !!busy} onClick={() => void openDeletePreview()}>{busy === "preview" ? <Spinner aria-hidden="true" data-icon="inline-start" /> : <Trash2 data-icon="inline-start" />}{busy === "preview" ? (zh ? "正在分析…" : "Reviewing…") : (zh ? `删除镜像${selected.size ? `（${selected.size}）` : ""}` : `Delete images${selected.size ? ` (${selected.size})` : ""}`)}</Button>
-              </div>
+          <div className="flex min-w-0 flex-wrap items-center gap-2" role="search" aria-label={zh ? "镜像筛选" : "Image filters"}>
+            <InputGroup className="w-full sm:w-auto sm:flex-1 sm:basis-64 md:max-w-sm"><InputGroupAddon><Search /></InputGroupAddon><InputGroupInput id="registry-search" aria-label={zh ? "搜索镜像" : "Search images"} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={zh ? "搜索仓库、标签或摘要" : "Search repository, tag, or digest"} /></InputGroup>
+            <ToggleGroup variant="segmented" value={[filter]} onValueChange={(values) => { if (values[0]) setFilter(String(values[0])); }} aria-label={zh ? "镜像保护状态" : "Image protection status"}>
+              {["all", "protected", "retained", "candidate", "unknown"].map((value) => <ToggleGroupItem key={value} value={value}>{value === "all" ? (zh ? "全部" : "All") : statusLabel(value, zh)}</ToggleGroupItem>)}
+            </ToggleGroup>
+            <div className="ml-auto flex items-center gap-3">
+              <span className="text-xs text-muted-foreground tabular-nums" role="status">{zh ? `已选择 ${selected.size} 个` : `${selected.size} selected`}</span>
+              <Button variant="destructive" type="button" disabled={!selected.size || !!busy} onClick={() => void openDeletePreview()}>{busy === "preview" ? <Spinner aria-hidden="true" data-icon="inline-start" /> : <Trash2 data-icon="inline-start" />}{busy === "preview" ? (zh ? "正在分析…" : "Reviewing…") : (zh ? `删除镜像${selected.size ? `（${selected.size}）` : ""}` : `Delete images${selected.size ? ` (${selected.size})` : ""}`)}</Button>
+            </div>
+          </div>
+          <Card aria-busy={loading} aria-label={zh ? "镜像列表" : "Images"} className="gap-0 py-0">
+            <CardContent>
               <Table containerProps={{ tabIndex: 0, role: "region", "aria-label": zh ? "镜像列表，可横向滚动" : "Image inventory, horizontally scrollable" }} className="min-w-[960px]">
                   <TableHeader><TableRow>
                     <TableHead className="w-10"><Checkbox checked={allVisibleSelected} indeterminate={!allVisibleSelected && selectable.some((item) => selected.has(keyFor(item)))} disabled={!selectable.length || !!busy} aria-label={zh ? "选择当前页所有镜像" : "Select all images on this page"} onCheckedChange={(checked) => setSelected((current) => { const next = new Set(current); selectable.forEach((item) => checked ? next.add(keyFor(item)) : next.delete(keyFor(item))); return next; })} /></TableHead>
@@ -428,7 +411,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
                   <TableBody>
                     {entries.map((item) => <TableRow key={keyFor(item)} data-state={selected.has(keyFor(item)) ? "selected" : undefined}>
                       <TableCell><Checkbox checked={selected.has(keyFor(item))} disabled={!!busy} onCheckedChange={() => toggle(item)} aria-label={`${item.repository} ${item.digest}`} /></TableCell>
-                      <TableCell><span className="flex w-80 flex-col items-start gap-1 whitespace-normal"><a className={cn(buttonVariants({ variant: "link", size: "sm" }), "h-auto max-w-full whitespace-normal break-all px-0 text-left")} {...spaLink(`/registry/image?image=${encodeURIComponent(keyFor(item))}`, navigate)}>{item.repository}</a><CodeCell value={item.digest} /></span></TableCell>
+                      <TableCell><span className="flex w-64 max-w-80 min-w-56 flex-col items-start gap-1 whitespace-normal xl:w-72"><a className={cn(buttonVariants({ variant: "link", size: "sm" }), "h-auto max-w-full whitespace-normal break-all px-0 text-left")} {...spaLink(`/registry/image?image=${encodeURIComponent(keyFor(item))}`, navigate)}>{item.repository}</a><CodeCell value={item.digest} /></span></TableCell>
                       <TableCell><span className="flex max-w-52 flex-wrap gap-1">{item.tags?.length ? item.tags.slice(0, 4).map((tag) => <Badge key={tag} variant="secondary" title={tag}><span className="max-w-44 truncate">{tag}</span></Badge>) : <span className="text-muted-foreground">—</span>}{(item.tags || []).length > 4 ? <Badge variant="outline">+{item.tags.length - 4}</Badge> : null}</span></TableCell>
                       <TableCell><span className="flex flex-col items-start gap-1">{item.platforms?.length ? item.platforms.map((platform) => <Badge key={platform} variant="outline">{platform}</Badge>) : <span className="text-muted-foreground">—</span>}</span></TableCell>
                       <TableCell>{formatBytes(item.logicalBytes)}</TableCell><TableCell>{formatTimestamp(item.createdAt || item.lastModified, lang)}</TableCell>

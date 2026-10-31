@@ -5,88 +5,125 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Shared semantic theme. Component appearance belongs to components/ui. */
+/* Shared semantic theme, modelled on Cloudflare's Kumo tokens. Component
+   appearance belongs to components/ui.
+
+   Surfaces, back to front:
+     --canvas      page background behind cards (Kumo "recessed")
+     --background  chrome: sidebar, top bar, controls (Kumo "base")
+     --card        content layers; a ring + faint shadow lifts them off the canvas
+     --muted       table header bands, code blocks, neutral fills (Kumo "tint")
+   Lines: --border separates layers, --hairline divides rows inside a layer.
+
+   Status: --{success,warning,info,destructive} are indicator colours (dots,
+   meter fills, icons; 3:1 is enough). *-foreground is text on the matching
+   *-soft tint and must stay at 4.5:1 or better. --primary and
+   --destructive-fill carry white text and must also stay at 4.5:1. */
 :root {
   color-scheme: light;
-  --background: #fafafa;
-  --foreground: #242424;
+  --canvas: oklch(0.973 0 0);
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.21 0.006 285.9);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --card-foreground: var(--foreground);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: #0055dc;
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
+  --popover-foreground: var(--foreground);
+  --primary: oklch(0.5772 0.2324 260);
+  --primary-hover: oklch(0.488 0.243 264.4);
+  --primary-foreground: oklch(1 0 0);
+  --link: oklch(0.488 0.243 264.4);
+  --secondary: oklch(0.96 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
-  --muted-foreground: #686868;
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.985 0 0);
-  --success: oklch(0.92 0.06 145);
-  --success-foreground: oklch(0.4 0.12 145);
-  --warning: oklch(0.92 0.08 75);
-  --warning-foreground: oklch(0.47 0.13 55);
-  --info: oklch(0.94 0.035 255);
-  --info-foreground: oklch(0.42 0.17 260);
-  --border: #e3e3e3;
-  --input: #d8d8d8;
+  --muted-foreground: oklch(0.48 0 0);
+  --subtle-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.955 0 0);
+  --accent-foreground: oklch(0.145 0 0);
+  --destructive: oklch(0.637 0.237 25.3);
+  --destructive-fill: oklch(0.54 0.22 26);
+  --destructive-foreground: oklch(0.505 0.213 27.5);
+  --destructive-soft: oklch(0.965 0.018 17.7);
+  --success: oklch(0.596 0.145 163.2);
+  --success-foreground: oklch(0.432 0.095 166.9);
+  --success-soft: oklch(0.968 0.026 156.7);
+  --warning: oklch(0.739 0.177 58.2);
+  --warning-foreground: oklch(0.5 0.13 50);
+  --warning-soft: oklch(0.975 0.03 85);
+  --info: oklch(0.623 0.214 259.8);
+  --info-foreground: oklch(0.424 0.199 265.6);
+  --info-soft: oklch(0.966 0.018 255.6);
+  --border: oklch(0.145 0 0 / 0.1);
+  --hairline: oklch(0.935 0 0);
+  --input: oklch(0.145 0 0 / 0.14);
   --ring: var(--primary);
+  --focus: oklch(0.15 0 0);
+  --shadow-color: oklch(0 0 0 / 0.06);
   --chart-1: var(--primary);
-  --chart-2: oklch(0.623 0.214 259.815);
-  --chart-3: oklch(0.707 0.165 254.624);
-  --chart-4: oklch(0.556 0 0);
-  --chart-5: oklch(0.708 0 0);
+  --chart-2: oklch(0.696 0.17 162.5);
+  --chart-3: oklch(0.769 0.188 70.1);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.4);
   --radius: 0.5rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar: var(--background);
+  --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-accent: oklch(0.96 0 0);
+  --sidebar-accent-foreground: oklch(0.145 0 0);
   --sidebar-border: var(--border);
   --sidebar-ring: var(--ring);
-  --console-header-height: 3rem;
+  --console-header-height: 3.5rem;
 }
 
 .dark {
   color-scheme: dark;
-  --background: #161616;
-  --foreground: oklch(0.985 0 0);
-  --card: #202020;
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.707 0.165 254.624);
-  --primary-foreground: oklch(0.145 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
+  --canvas: oklch(0.145 0 0);
+  --background: oklch(0.18 0 0);
+  --foreground: oklch(0.97 0 0);
+  --card: oklch(0.195 0 0);
+  --card-foreground: var(--foreground);
+  --popover: oklch(0.225 0 0);
+  --popover-foreground: var(--foreground);
+  --primary: oklch(0.55 0.2 260);
+  --primary-hover: oklch(0.6 0.19 258);
+  --primary-foreground: oklch(1 0 0);
+  --link: oklch(0.74 0.15 254.6);
+  --secondary: oklch(0.25 0 0);
+  --secondary-foreground: oklch(0.97 0 0);
+  --muted: oklch(0.22 0 0);
+  --muted-foreground: oklch(0.72 0 0);
+  --subtle-foreground: oklch(0.66 0 0);
+  --accent: oklch(0.255 0 0);
   --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.145 0 0);
-  --success: oklch(0.3 0.055 145);
-  --success-foreground: oklch(0.82 0.14 145);
-  --warning: oklch(0.32 0.065 70);
-  --warning-foreground: oklch(0.86 0.12 75);
-  --info: oklch(0.3 0.065 255);
-  --info-foreground: oklch(0.82 0.11 255);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
+  --destructive: oklch(0.65 0.21 24);
+  --destructive-fill: oklch(0.54 0.2 25);
+  --destructive-foreground: oklch(0.76 0.15 22.2);
+  --destructive-soft: oklch(0.27 0.06 25);
+  --success: oklch(0.7 0.16 163);
+  --success-foreground: oklch(0.82 0.13 164);
+  --success-soft: oklch(0.255 0.04 160);
+  --warning: oklch(0.72 0.16 58);
+  --warning-foreground: oklch(0.83 0.14 70);
+  --warning-soft: oklch(0.275 0.05 65);
+  --info: oklch(0.66 0.17 255);
+  --info-foreground: oklch(0.8 0.11 254.6);
+  --info-soft: oklch(0.26 0.06 262);
+  --border: oklch(1 0 0 / 0.1);
+  --hairline: oklch(1 0 0 / 0.07);
+  --input: oklch(1 0 0 / 0.14);
   --ring: var(--primary);
-  --chart-1: var(--primary);
-  --chart-2: oklch(0.623 0.214 259.815);
-  --chart-3: oklch(0.809 0.105 251.813);
-  --chart-4: oklch(0.708 0 0);
-  --chart-5: oklch(0.87 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
+  --focus: oklch(0.935 0 0);
+  --shadow-color: oklch(0 0 0 / 0.35);
+  --chart-1: oklch(0.66 0.19 257);
+  --chart-2: oklch(0.72 0.15 163);
+  --chart-3: oklch(0.79 0.16 72);
+  --chart-4: oklch(0.69 0.21 304);
+  --chart-5: oklch(0.7 0.19 18);
+  --sidebar: var(--background);
+  --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);
-  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent: oklch(0.245 0 0);
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: var(--border);
   --sidebar-ring: var(--ring);
@@ -96,8 +133,14 @@
   --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
   --font-heading: var(--font-sans);
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --color-canvas: var(--canvas);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-link: var(--link);
+  --color-subtle-foreground: var(--subtle-foreground);
+  --color-hairline: var(--hairline);
+  --color-focus: var(--focus);
+  --color-primary-hover: var(--primary-hover);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
@@ -112,12 +155,17 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-destructive-fill: var(--destructive-fill);
   --color-success: var(--success);
   --color-success-foreground: var(--success-foreground);
+  --color-success-soft: var(--success-soft);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
+  --color-warning-soft: var(--warning-soft);
   --color-info: var(--info);
   --color-info-foreground: var(--info-foreground);
+  --color-info-soft: var(--info-soft);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -141,6 +189,9 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+  /* Layer shadows: an edge plus a short drop, as Kumo's LayerCard and overlays. */
+  --shadow-xs: 0 1px 2px 0 var(--shadow-color);
+  --shadow-sm: 0 1px 3px 0 var(--shadow-color), 0 1px 2px -1px var(--shadow-color);
 }
 
 @layer base {
@@ -151,22 +202,29 @@
     @apply font-sans;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-canvas text-foreground antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  /* Numbers in a console are compared across rows; keep them aligned. */
+  table, [data-numeric] {
+    font-variant-numeric: tabular-nums;
+  }
+  ::selection {
+    background: color-mix(in oklch, var(--primary) 22%, transparent);
   }
 }
 
-/* Application containment only; shadcn owns all UI element spacing and states. */
+/* Application containment only; shadcn owns all UI element spacing and states.
+   The canvas scrolls; chrome (sidebar, top bar) stays fixed around it. */
 .console-content {
   flex: 1;
   min-width: 0;
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
-  margin: 0 0.5rem 0.5rem 0;
-  border: 1px solid var(--border);
-  border-radius: 1rem;
-  background: var(--card);
-  padding: 1.5rem clamp(1.5rem, 3vw, 3rem) 2rem;
+  scrollbar-gutter: stable;
+  background: var(--canvas);
+  padding: 1.75rem clamp(1.25rem, 3vw, 2.5rem) 3rem;
 }
 
 .console-page {
@@ -185,6 +243,13 @@
   min-width: 0;
   overflow: hidden;
   background-color: var(--background);
+}
+
+/* Diagrams sit on a recessed dot grid, as Kumo Flow does, so nodes read as cards. */
+.topology-grid {
+  background-color: var(--canvas);
+  background-image: radial-gradient(color-mix(in oklch, var(--foreground) 14%, transparent) 1px, transparent 1px);
+  background-size: 16px 16px;
 }
 
 .standalone-topology {
@@ -208,25 +273,20 @@
 }
 
 @media (max-width: 767px) {
-  :root {
-    --console-header-height: 3.5rem;
-  }
-
   .console-content {
-    margin: 0;
-    border-inline: 0;
-    border-bottom: 0;
-    border-radius: 0;
-    padding: 1.25rem 1rem 2rem;
+    padding: 1.25rem 1rem 2.5rem;
   }
 
-  .standalone-topology {
-    height: 28rem;
-  }
+  /* Diagrams sit on a recessed dot grid, as Kumo Flow does, so nodes read as cards. */
+.topology-grid {
+  background-color: var(--canvas);
+  background-image: radial-gradient(color-mix(in oklch, var(--foreground) 14%, transparent) 1px, transparent 1px);
+  background-size: 16px 16px;
 }
 
-@media (min-width: 768px) and (max-width: 1023px) {
-  .console-content { margin-left: 0.5rem; }
+.standalone-topology {
+    height: 28rem;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

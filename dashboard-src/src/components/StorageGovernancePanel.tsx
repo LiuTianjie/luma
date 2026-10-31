@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
 
-import { AlertCircle, ChevronDown, Database, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertCircle, ChevronDown, Database, RefreshCw, ShieldCheck } from "@/components/icons";
 import type { Lang } from "../types";
 import { executeHistoryCleanup, getHistoryCleanupPlan, getStorageInventory, getStoragePolicy, previewHistoryCleanup, saveStoragePolicy, type HistoryCleanupPreview, type StorageInventory, type StoragePolicy } from "../storageGovernanceApi";
 import { cleanupPlanGate, storageBytes, storageCategory, storageTime } from "./storageGovernanceModel";

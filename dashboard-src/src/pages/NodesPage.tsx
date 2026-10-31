@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowLeft, Check, Copy, CircleAlert, Plus, Server } from "lucide-react";
+import { ArrowLeft, Check, Copy, CircleAlert, Plus, Server } from "@/components/icons";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";

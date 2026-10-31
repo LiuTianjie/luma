@@ -8,7 +8,7 @@ import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
-import { AlertCircle, ArrowLeft, Check, X } from "lucide-react";
+import { AlertCircle, ArrowLeft, Check, X } from "@/components/icons";
 import "@xterm/xterm/css/xterm.css";
 import type { DashboardNode, DashboardService, Lang } from "../types";
 import { t } from "../i18n";

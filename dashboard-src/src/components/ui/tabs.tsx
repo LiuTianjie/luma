@@ -28,8 +28,8 @@ const tabsListVariants = cva(
   {
     variants: {
       variant: {
-        default: "h-8 w-fit justify-center rounded-lg bg-muted p-[3px]",
-        line: "w-full min-w-max justify-start gap-5 border-b",
+        default: "h-8 w-fit justify-center rounded-lg bg-secondary p-[3px] ring-1 ring-inset ring-border/60",
+        line: "w-full min-w-max justify-start gap-6 border-b border-border",
       },
     },
     defaultVariants: {
@@ -65,9 +65,9 @@ const tabsTriggerVariants = cva(
     variants: {
       variant: {
         default:
-          "h-[calc(100%-1px)] flex-1 rounded-md border border-transparent px-1.5 py-0.5 text-foreground/60 hover:text-foreground focus-visible:border-ring data-active:bg-background data-active:text-foreground data-active:shadow-sm dark:text-muted-foreground dark:hover:text-foreground dark:data-active:border-input dark:data-active:bg-input/30 dark:data-active:text-foreground",
+          "h-full flex-1 rounded-md border border-transparent px-2.5 text-[0.8125rem] text-muted-foreground hover:text-foreground focus-visible:border-ring data-active:bg-background data-active:text-foreground data-active:shadow-xs data-active:ring-1 data-active:ring-border dark:data-active:bg-accent",
         line:
-          "h-9 flex-none rounded-sm px-0.5 text-muted-foreground hover:text-foreground data-active:text-foreground after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:rounded-full after:bg-primary after:opacity-0 after:transition-opacity data-active:after:opacity-100",
+          "h-10 flex-none rounded-sm px-0.5 text-[0.8125rem] text-muted-foreground hover:text-foreground data-active:text-foreground after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:rounded-full after:bg-foreground after:opacity-0 after:transition-opacity data-active:after:opacity-100",
       },
     },
     defaultVariants: {

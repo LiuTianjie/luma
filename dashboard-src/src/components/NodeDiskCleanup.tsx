@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CircleAlert, HardDrive, ScanSearch, Trash2 } from "lucide-react";
+import { CircleAlert, HardDrive, ScanSearch, Trash2 } from "@/components/icons";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";

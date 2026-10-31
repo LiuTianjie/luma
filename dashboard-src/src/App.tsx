@@ -8,7 +8,9 @@ import { LoginPanel } from "./components/LoginPanel";
 import { Topbar } from "./components/Topbar";
 import { AppRoutes, preloadPage } from "./AppRoutes";
 import { AppSidebar } from "./Sidebar";
-import { ArrowLeft, Info, SearchX, TriangleAlert } from "lucide-react";
+import { buildPaletteEntries, CommandPalette } from "./components/CommandPalette";
+import { buildNavGroups } from "./navItems";
+import { ArrowLeft, Info, SearchX, TriangleAlert } from "@/components/icons";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -48,6 +50,7 @@ export function App() {
   const [lang, setLangState] = useState<Lang>(() => (localStorage.getItem(LANG_KEY) === "en" ? "en" : "zh"));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem(SIDEBAR_KEY) === "collapsed");
   const [deployTemplateLanding, setDeployTemplateLanding] = useState(true);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [updateRequest, setUpdateRequest] = useState<ApplicationUpdateRequest | null>(null);
   const [updateError, setUpdateError] = useState("");
   const [updateAttempt, setUpdateAttempt] = useState(0);
@@ -118,6 +121,23 @@ export function App() {
   useEffect(() => {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
   }, [lang]);
+
+  // ⌘K / Ctrl+K opens the command palette from anywhere in the console.
+  useEffect(() => {
+    if (!token) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() === "k" && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [token]);
+  const paletteEntries = useMemo(
+    () => paletteOpen ? buildPaletteEntries(lang, buildNavGroups(lang, vm), vm.applications.map(app => app.stack), vm.nodes.map(node => node.name || "").filter(Boolean)) : [],
+    [paletteOpen, lang, vm],
+  );
 
   const setLang = (nextLang: Lang) => {
     setLangState(nextLang);
@@ -205,7 +225,7 @@ export function App() {
           else localStorage.removeItem(SIDEBAR_KEY);
         }}
       >
-        <Button nativeButton={false} role="link" render={<a href="#main" />} className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50">
+        <Button nativeButton={false} role="link" render={<a href="#main" />} className="sr-only absolute! min-h-0! min-w-0! focus:not-sr-only focus:fixed! focus:top-2 focus:left-2 focus:z-50">
           {lang === "zh" ? "跳到主内容" : "Skip to main content"}
         </Button>
         <AppSidebar
@@ -216,22 +236,24 @@ export function App() {
           activeNavPage={activeNavPage}
           onNavigate={navigate}
           onPrefetch={preloadPage}
-          onSignOut={() => void auth.signOut()}
-          themeMode={themeMode}
-          onThemeModeChange={setThemeMode}
-          onLangChange={setLang}
+          onOpenPalette={() => setPaletteOpen(true)}
         />
-        <SidebarInset id="main" tabIndex={-1} className="h-full min-h-0 min-w-0 overflow-hidden bg-sidebar">
+        <SidebarInset id="main" tabIndex={-1} className="h-full min-h-0 min-w-0 overflow-hidden bg-canvas outline-none">
           {token && !terminalTarget ? (
             <Topbar
               vm={vm}
+              clusterId={clusterId}
               activeNavPage={activeNavPage}
               lang={lang}
               lastUpdated={lastUpdated}
               syncStatus={visibleStatus}
+              themeMode={themeMode}
+              onThemeModeChange={setThemeMode}
+              onLangChange={setLang}
+              onSignOut={() => void auth.signOut()}
             />
           ) : (
-            <div className="flex h-10 shrink-0 items-center px-2 lg:hidden">
+            <div className="flex h-10 shrink-0 items-center border-b border-border bg-background px-2 lg:hidden">
               <SidebarTrigger aria-label={lang === "zh" ? "打开导航" : "Open navigation"} />
             </div>
           )}
@@ -276,6 +298,7 @@ export function App() {
             </div>
           </div>
         </SidebarInset>
+        <CommandPalette lang={lang} open={paletteOpen} onOpenChange={setPaletteOpen} entries={paletteEntries} onSelect={(href) => router.navigate(href)} />
         <Toaster />
       </SidebarProvider>
     </TooltipProvider>

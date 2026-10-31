@@ -10,7 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Input } from "@/components/ui/input";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, GitBranch, KeyRound, PackageCheck, Plus, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertCircle, GitBranch, KeyRound, PackageCheck, Plus, RefreshCw, ShieldCheck } from "@/components/icons";
 import {
   fetchControlResources,
   removeGitProvider,

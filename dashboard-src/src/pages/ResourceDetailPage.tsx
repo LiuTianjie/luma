@@ -1,5 +1,5 @@
-import { ArrowLeft, Server, SquareTerminal } from "lucide-react";
-import { StatePill } from "../components/primitives";
+import { ArrowLeft, Server, SquareTerminal } from "@/components/icons";
+import { StatePill, StatTile, usageTone } from "../components/primitives";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -64,35 +64,25 @@ export function ResourceDetailPage({ lang, token, node, service, services, appli
       }} />
 
       {node ? (
-        <div className="grid gap-4 md:grid-cols-3">
-          <Card size="sm">
-            <CardHeader>
-              <CardTitle>CPU</CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              <p className="text-2xl font-semibold tabular-nums">{formatPercent(cpu)}</p>
-              {typeof cpu === "number" && Number.isFinite(cpu) ? <Progress aria-label={zh ? "CPU 使用率" : "CPU usage"} value={Math.max(0, Math.min(100, cpu))} /> : <p className="text-sm text-muted-foreground">{zh ? "暂无使用率数据" : "Usage data unavailable"}</p>}
-            </CardContent>
-          </Card>
-          <Card size="sm">
-            <CardHeader>
-              <CardTitle>{zh ? "内存" : "Memory"}</CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              <p className="text-2xl font-semibold tabular-nums">{formatPercent(memory)}</p>
-              {typeof memory === "number" && Number.isFinite(memory) ? <Progress aria-label={zh ? "内存使用率" : "Memory usage"} value={Math.max(0, Math.min(100, memory))} /> : <p className="text-sm text-muted-foreground">{zh ? "暂无使用率数据" : "Usage data unavailable"}</p>}
-              <p className="text-sm text-muted-foreground">{zh ? "总量" : "Total"} {formatBytes(node.metrics?.memoryTotalBytes ?? node.capacity?.memoryBytes)}</p>
-            </CardContent>
-          </Card>
-          <Card size="sm">
-            <CardHeader>
-              <CardTitle>{zh ? "负载 / 容量" : "Load / capacity"}</CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              <p className="text-2xl font-semibold tabular-nums">{typeof node.metrics?.load1 === "number" && Number.isFinite(node.metrics.load1) ? node.metrics.load1.toFixed(2) : "-"}</p>
-              <p className="text-sm text-muted-foreground">{zh ? "CPU 容量" : "CPU capacity"} {node.capacity?.cpus ?? "-"} · {zh ? "内存容量" : "Memory"} {formatBytes(node.capacity?.memoryBytes)}</p>
-            </CardContent>
-          </Card>
+        <div className="grid gap-3 md:grid-cols-3">
+          <StatTile
+            label="CPU"
+            value={formatPercent(cpu)}
+            tone={usageTone(cpu)}
+            footer={typeof cpu === "number" && Number.isFinite(cpu) ? <Progress aria-label={zh ? "CPU 使用率" : "CPU usage"} value={Math.max(0, Math.min(100, cpu))} className="mt-0.5" /> : (zh ? "暂无使用率数据" : "Usage data unavailable")}
+          />
+          <StatTile
+            label={zh ? "内存" : "Memory"}
+            value={formatPercent(memory)}
+            detail={`${zh ? "总量" : "of"} ${formatBytes(node.metrics?.memoryTotalBytes ?? node.capacity?.memoryBytes)}`}
+            tone={usageTone(memory)}
+            footer={typeof memory === "number" && Number.isFinite(memory) ? <Progress aria-label={zh ? "内存使用率" : "Memory usage"} value={Math.max(0, Math.min(100, memory))} className="mt-0.5" /> : (zh ? "暂无使用率数据" : "Usage data unavailable")}
+          />
+          <StatTile
+            label={zh ? "负载 (1 分钟)" : "Load (1 min)"}
+            value={typeof node.metrics?.load1 === "number" && Number.isFinite(node.metrics.load1) ? node.metrics.load1.toFixed(2) : "—"}
+            footer={`${zh ? "CPU 容量" : "CPU capacity"} ${node.capacity?.cpus ?? "—"} · ${zh ? "内存容量" : "Memory"} ${formatBytes(node.capacity?.memoryBytes)}`}
+          />
         </div>
       ) : null}
 

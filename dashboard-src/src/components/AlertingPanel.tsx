@@ -31,7 +31,7 @@ import type {
 } from "../alertingApi";
 import { useRouter, useSearchParams } from "../router";
 import { SelectControl } from "./primitives";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, CheckCircle2 } from "@/components/icons";
 import {
   Alert,
   AlertAction,
@@ -71,6 +71,7 @@ import {
   Empty,
   EmptyDescription,
   EmptyHeader,
+  EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -140,8 +141,9 @@ function AlertEmpty({
   description: string;
 }) {
   return (
-    <Empty>
+    <Empty className="in-data-[slot=card-content]:border-t in-data-[slot=card-content]:border-hairline">
       <EmptyHeader>
+        <EmptyMedia variant="icon"><CheckCircle2 /></EmptyMedia>
         <EmptyTitle>{title}</EmptyTitle>
         <EmptyDescription>{description}</EmptyDescription>
       </EmptyHeader>
@@ -586,20 +588,19 @@ export function AlertingPanel({
   return (
     <div className={cn("flex min-w-0 flex-col gap-6", editor && "max-w-4xl")}>
       {confirmElement}
-      {!editor && tab !== "notifications" && <div className="flex flex-wrap items-end justify-between gap-3">
-        {!application && <Field className="max-w-md">
-          <FieldLabel htmlFor="alert-app-filter">{zh ? "筛选应用" : "Application"}</FieldLabel>
+      {!editor && tab !== "notifications" && (!application || appFilter) && <div className="flex flex-wrap items-center gap-2">
+        {!application && <div className="w-full max-w-xs">
           <Combobox items={["", ...new Set([...applicationNames, ...knownApps, appFilter].filter(Boolean))]}
             value={appFilter} onValueChange={(value) => {
               setExpanded(false);
               navigate(`${tab === "rules" ? "/observe/rules" : "/observe"}${value ? `?app=${encodeURIComponent(value)}` : ""}`);
             }}>
-            <ComboboxInput id="alert-app-filter" placeholder={zh ? "全部应用（可搜索）" : "All applications (search)"} />
+            <ComboboxInput id="alert-app-filter" aria-label={zh ? "筛选应用" : "Filter by application"} placeholder={zh ? "全部应用" : "All applications"} />
             <ComboboxContent><ComboboxEmpty>{zh ? "没有匹配的应用" : "No matching applications"}</ComboboxEmpty>
               <ComboboxList>{(name: string) => <ComboboxItem key={name || "all"} value={name}>{name || (zh ? "全部应用" : "All applications")}</ComboboxItem>}</ComboboxList>
             </ComboboxContent>
           </Combobox>
-        </Field>}
+        </div>}
         {appFilter && <Button variant="outline" onClick={() => navigate(`${tab === "rules" ? "/observe" : "/observe/rules"}?${appQuery}`)}>
           {tab === "rules" ? (zh ? "查看应用告警" : "View app incidents") : (zh ? "管理此应用规则" : "Manage app rules")}
         </Button>}
@@ -678,27 +679,24 @@ export function AlertingPanel({
       {loaded && overview && (
         <>
           {!editor && tab === "alerts" && (
-            <Card size="sm">
-              <CardHeader className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex flex-col gap-1">
-                  <CardTitle>{appFilter ? `${appFilter} · ${zh ? "告警" : "Alerts"}` : (zh ? "告警引擎" : "Alert engine")}</CardTitle>
-                  <CardDescription className="text-xs tabular-nums">
-                    {zh ? "最近检查" : "Last evaluation"} · {stamp(overview.lastEvaluatedAt, zh)}
-                  </CardDescription>
-                </div>
-                <div className="flex flex-wrap items-center gap-2 tabular-nums">
-                  <Badge variant={overview.counts.firing ? "destructive" : "outline"}>
-                    {zh ? "触发中" : "Firing"} {overview.counts.firing}
-                  </Badge>
-                  <Badge variant="secondary">
-                    {zh ? "等待持续条件" : "Pending duration"} {overview.counts.pending}
-                  </Badge>
-                  <span className="text-xs text-muted-foreground">
-                    {zh ? "启用规则" : "Enabled rules"} {overview.enabledRules}
-                  </span>
-                </div>
-              </CardHeader>
-              {(!overview.lastEvaluatedAt || Date.now() / 1000 - overview.lastEvaluatedAt > 120) && <CardContent className="flex flex-col gap-3">
+            <Card className="gap-0 py-0">
+              <dl className="grid grid-cols-2 @container md:grid-cols-4 md:divide-x md:divide-hairline max-md:[&>div:nth-child(n+3)]:border-t max-md:[&>div:nth-child(even)]:border-l [&>div]:border-hairline">
+                {[
+                  { label: zh ? "触发中" : "Firing", value: overview.counts.firing, tone: overview.counts.firing ? "critical" : "normal" },
+                  { label: zh ? "等待持续条件" : "Pending duration", value: overview.counts.pending, tone: overview.counts.pending ? "warning" : "normal" },
+                  { label: zh ? "启用规则" : "Enabled rules", value: overview.enabledRules, tone: "normal" },
+                  { label: appFilter ? `${appFilter} · ${zh ? "最近检查" : "last evaluation"}` : (zh ? "最近检查" : "Last evaluation"), value: stamp(overview.lastEvaluatedAt, zh), tone: "time" },
+                ].map((item) => (
+                  <div key={item.label} className="flex min-w-0 flex-col gap-1.5 px-5 py-4">
+                    <dt className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
+                      {item.tone === "critical" ? <span className="size-1.5 rounded-full bg-destructive" aria-hidden="true" /> : item.tone === "warning" ? <span className="size-1.5 rounded-full bg-warning" aria-hidden="true" /> : null}
+                      {item.label}
+                    </dt>
+                    <dd className={cn("truncate font-semibold tabular-nums", item.tone === "time" ? "text-[0.8125rem] font-medium" : "text-xl/7", item.tone === "critical" && "text-destructive-foreground", item.tone === "warning" && "text-warning-foreground")}>{item.value}</dd>
+                  </div>
+                ))}
+              </dl>
+              {(!overview.lastEvaluatedAt || Date.now() / 1000 - overview.lastEvaluatedAt > 120) && <div className="flex flex-col gap-3 border-t border-hairline p-4">
                 {!overview.lastEvaluatedAt && (
                   <Alert>
                     <AlertTitle>
@@ -725,15 +723,16 @@ export function AlertingPanel({
                       </AlertDescription>
                     </Alert>
                   )}
-              </CardContent>}
+              </div>}
               {!appFilter && <CardFooter className="flex flex-wrap gap-3">
-                <div className="flex min-w-0 flex-1 flex-col gap-1">
-                  <span>
+                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="flex items-center gap-2 text-[0.8125rem] font-medium">
+                    <span className={cn("size-1.5 rounded-full", silenceActive ? "bg-warning" : "bg-success")} aria-hidden="true" />
                     {silenceActive
                       ? `${zh ? "通知静默至" : "Notifications silenced until"} ${stamp(overview.silencedUntil, zh)}`
                       : zh
-                        ? "通知未静默"
-                        : "Notifications are not silenced"}
+                        ? "通知正常发送"
+                        : "Notifications are being sent"}
                   </span>
                   <p className="text-xs text-muted-foreground">
                     {zh
@@ -794,50 +793,45 @@ export function AlertingPanel({
                     ? "停止提醒：保留当前告警，恢复时通知。关闭告警：结束本次告警并保留历史。"
                     : "Stop reminders to keep an incident active with recovery notifications. Close it to end this incident and retain its history."}
                 </CardDescription>
+                <CardAction className="row-span-2 self-center">
+                  <ToggleGroup
+                    variant="segmented"
+                    value={[filter || "all"]}
+                    onValueChange={(values) => {
+                      if (!values.length) return;
+                      setExpanded(false);
+                      setFilter(values[0] === "all" ? "" : values[0]);
+                      setError("");
+                    }}
+                    aria-label={zh ? "告警状态" : "Incident state"}
+                  >
+                    {[
+                      { value: "firing", label: zh ? "触发中" : "Firing" },
+                      {
+                        value: "pending",
+                        label: zh ? "等待持续条件" : "Pending duration",
+                      },
+                      {
+                        value: "resolved",
+                        label: zh ? "已恢复" : "Resolved",
+                      },
+                      {
+                        value: "closed",
+                        label: zh ? "已关闭" : "Closed",
+                      },
+                      { value: "all", label: zh ? "全部历史" : "All history" },
+                    ].map((item) => (
+                      <ToggleGroupItem key={item.value} value={item.value}>
+                        {item.label}
+                      </ToggleGroupItem>
+                    ))}
+                  </ToggleGroup>
+                </CardAction>
               </CardHeader>
-              <CardContent className="flex flex-col gap-4">
-                <FieldGroup>
-                  <Field>
-                    <FieldLabel id="incident-status-label">
-                      {zh ? "状态" : "Status"}
-                    </FieldLabel>
-                    <ToggleGroup
-                      variant="segmented"
-                      value={[filter || "all"]}
-                      onValueChange={(values) => {
-                        if (!values.length) return;
-                        setExpanded(false);
-                        setFilter(values[0] === "all" ? "" : values[0]);
-                        setError("");
-                      }}
-                      aria-labelledby="incident-status-label"
-                    >
-                      {[
-                        { value: "firing", label: zh ? "触发中" : "Firing" },
-                        {
-                          value: "pending",
-                          label: zh ? "等待持续条件" : "Pending duration",
-                        },
-                        {
-                          value: "resolved",
-                          label: zh ? "已恢复" : "Resolved",
-                        },
-                        {
-                          value: "closed",
-                          label: zh ? "已关闭" : "Closed",
-                        },
-                        { value: "all", label: zh ? "全部历史" : "All history" },
-                      ].map((item) => (
-                        <ToggleGroupItem key={item.value} value={item.value}>
-                          {item.label}
-                        </ToggleGroupItem>
-                      ))}
-                    </ToggleGroup>
-                  </Field>
-                </FieldGroup>
+              <CardContent>
                 {incidentsFilter !== `${filter}:${appFilter}` ? (
                   error ? null : (
-                    <div aria-busy="true" className="flex flex-col gap-3">
+                    <div aria-busy="true" className="flex flex-col gap-3 border-t border-hairline px-(--card-spacing) pt-4">
                       <p
                         role="status"
                         className="text-sm text-muted-foreground"

@@ -25,7 +25,7 @@ export function ApplicationProperties({
       <TableBody>
         {items.map(({ label, value }) => (
           <TableRow key={label}>
-            <TableHead scope="row" className="w-1/3 whitespace-normal">
+            <TableHead scope="row" className="w-40 whitespace-normal sm:w-48">
               {label}
             </TableHead>
             <TableCell className="whitespace-normal wrap-anywhere">

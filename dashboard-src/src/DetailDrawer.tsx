@@ -1,5 +1,5 @@
 import type { DetailState } from "./detailRecords";
-import { ArrowLeft, X } from "lucide-react";
+import { ArrowLeft, X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";

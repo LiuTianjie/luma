@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { Maximize2, Minimize2 } from "lucide-react";
+import { Maximize2, Minimize2 } from "@/components/icons";
 import type { Lang } from "../types";
 import { SelectControl } from "./primitives";
 import { Button } from "@/components/ui/button";

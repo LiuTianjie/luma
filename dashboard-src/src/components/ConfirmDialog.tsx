@@ -1,4 +1,4 @@
-import { AlertTriangle, Trash2 } from "lucide-react";
+import { AlertTriangle, Trash2 } from "@/components/icons";
 import { useCallback, useState, type ReactNode } from "react";
 import {
   AlertDialog,
@@ -47,7 +47,7 @@ export function ConfirmDialog({
     <AlertDialog open onOpenChange={(open) => { if (!open && !busy) onCancel(); }}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogMedia>
+          <AlertDialogMedia data-tone={tone === "danger" ? "danger" : "warning"}>
             <Icon />
           </AlertDialogMedia>
           <AlertDialogTitle>{request.title}</AlertDialogTitle>
@@ -65,7 +65,7 @@ export function ConfirmDialog({
         <AlertDialogFooter>
           <AlertDialogCancel disabled={busy}>{zh ? "取消" : "Cancel"}</AlertDialogCancel>
           <AlertDialogAction
-            variant={tone === "danger" ? "destructive" : "default"}
+            variant={tone === "danger" ? "destructive-solid" : "default"}
             disabled={busy}
             onClick={(event) => {
               event.preventDefault();

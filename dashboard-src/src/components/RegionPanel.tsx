@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertCircle, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, Plus, Trash2 } from "@/components/icons";
 import { createRegion, removeRegion, updateRegion } from "../controlResourcesApi";
 import { BUILTIN_REGIONS, regionChoices } from "../deploy/options";
 import type { DashboardNode, DashboardRegion, Lang } from "../types";

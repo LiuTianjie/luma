@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 
 import { PageHeader } from "../pages/PageHeader";
 import { StepLog } from "./StepLog";
-import { ArrowLeft, ArrowRight, FileCode2, ListChecks, Rocket } from "lucide-react";
+import { ArrowLeft, ArrowRight, FileCode2, ListChecks, Rocket } from "@/components/icons";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { DashboardPayload, DashboardRegion, Lang } from "../types";
 import { ComposeDeployForm } from "./ComposeDeployForm";
@@ -467,8 +467,11 @@ export function DeployWorkspace({
           <DeployTemplates lang={lang} mode={mode} templates={DEPLOY_TEMPLATES} activeId={activeTemplateId} onModeChange={changeMode} onSelect={selectTemplate} />
         </> : null}
         {!templateLanding ? <>
-          {editorMode === "form" ? <nav className="flex flex-wrap gap-2" aria-label={lang === "zh" ? "配置分段" : "Configuration sections"}>
-            {flowSteps.map((step, index) => <Button key={step.id} variant="outline" size="sm" nativeButton={false} render={<a href={`#${step.id}`} />}>{String(index + 1).padStart(2, "0")} {step.label}</Button>)}
+          {editorMode === "form" ? <nav className="flex flex-wrap items-center gap-1 border-b border-border pb-px" aria-label={lang === "zh" ? "配置分段" : "Configuration sections"}>
+            {flowSteps.map((step, index) => <a key={step.id} href={`#${step.id}`} className="group inline-flex h-9 items-center gap-2 rounded-md px-2.5 text-[0.8125rem] font-medium text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
+              <span className="flex size-5 items-center justify-center rounded-full bg-secondary text-[0.6875rem] text-muted-foreground tabular-nums ring-1 ring-border group-hover:text-foreground">{index + 1}</span>
+              {step.label}
+            </a>)}
           </nav> : null}
           <div className="deployment-workbench-grid">
             <div className="flex min-w-0 flex-col gap-6" inert={status !== "idle" ? true : undefined}>

@@ -7,10 +7,14 @@ function readTopologyTheme() {
   canvas.width = 1;
   canvas.height = 1;
   const context = canvas.getContext("2d", { willReadFrequently: true });
-  const color = (token: string) => {
+  // Translucent tokens (borders, hairlines) are composited over the card so the
+  // graph strokes match what the same token looks like elsewhere on the page.
+  const color = (token: string, over = "--card") => {
     const value = styles.getPropertyValue(token).trim();
     if (!context) return value;
     context.clearRect(0, 0, 1, 1);
+    context.fillStyle = styles.getPropertyValue(over).trim() || "transparent";
+    context.fillRect(0, 0, 1, 1);
     context.fillStyle = value;
     context.fillRect(0, 0, 1, 1);
     const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data;
@@ -20,12 +24,17 @@ function readTopologyTheme() {
     foreground: color("--foreground"),
     card: color("--card"),
     border: color("--border"),
+    // Canvas draws alpha colours as-is, so graph strokes use opaque tokens.
+    hairline: color("--input"),
+    canvas: color("--canvas"),
+    subtle: color("--subtle-foreground"),
     muted: color("--muted"),
     mutedForeground: color("--muted-foreground"),
     primary: color("--primary"),
     accent: color("--accent"),
     destructive: color("--destructive"),
     fontMono: styles.getPropertyValue("--font-mono").trim(),
+    fontSans: styles.getPropertyValue("--font-sans").trim() || "system-ui, sans-serif",
   };
 }
 

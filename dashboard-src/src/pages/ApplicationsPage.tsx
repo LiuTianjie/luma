@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { applicationPath, parseApplicationPath } from "../components/applicationRoutes";
-import { Plus } from "lucide-react";
+import { Plus } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ApplicationManagementPanel, type ApplicationUpdateRequest } from "../components/ApplicationManagementPanel";
 import { groupApplications } from "../components/applicationModel";

@@ -1,4 +1,4 @@
-import { AlertCircle, ArrowLeft, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, GitBranch, Rocket, Server, Settings2 } from "lucide-react";
+import { AlertCircle, ArrowLeft, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, GitBranch, Rocket, Server, Settings2 } from "@/components/icons";
 import { useEffect, useMemo, useState } from "react";
 import {
   fetchGitProviderRefs,

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { AlertCircle, CheckCircle2, Cloud, Info, KeyRound, Network, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertCircle, CheckCircle2, Cloud, Info, KeyRound, Network, RefreshCw, ShieldCheck } from "@/components/icons";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

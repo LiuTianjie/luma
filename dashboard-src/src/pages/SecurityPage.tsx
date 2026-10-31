@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { AlertCircle, Copy, FingerprintPattern, Link2, LogOut, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertCircle, Copy, FingerprintPattern, Link2, LogOut, RefreshCw, ShieldCheck } from "@/components/icons";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
