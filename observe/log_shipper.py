@@ -9,13 +9,14 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Callable
 
 MAX_SOURCES = 64
@@ -218,6 +219,9 @@ class Shipper:
         self.dropped = 0
         self.nomad_up = 1
         self.last_sources = 0
+        self.coverage = {}
+        self.gaps = {}
+        self.source_counts = {}
 
     def poll(self) -> None:
         try:
@@ -228,11 +232,23 @@ class Shipper:
             return
         sources = sources_from_allocations(allocations)
         self.last_sources = len(sources)
+        running = {str(a.get('ID')) for a in allocations if isinstance(a, dict) and a.get('ClientStatus') == 'running'}
+        monitored = {source.key for source in sources if source.alloc in running}
+        if len(monitored) > 2048:
+            monitored = set()  # Fail closed for alert coverage instead of growing monitoring state.
+        counts = {}
+        for source in sources:
+            if source.key in monitored:
+                pair = (source.job, source.task)
+                counts[pair] = counts.get(pair, 0) + 1
+        self.source_counts = counts
         batch: list[dict[str, str]] = []
+        caught_up = set()
         visited = round_robin(sources, self.round)
         live = {source.key for source in sources}
         observed = rfc3339()
         for source in visited:
+            self.coverage.pop(source.key, None)
             try:
                 files = log_files(self.list_files(source.alloc), source.task, source.stream)
             except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, ValueError):
@@ -252,6 +268,7 @@ class Shipper:
                 files = [item for item in files if item[0] > prior]
                 if not files:
                     continue
+                self.gaps[source.key] = time.time()
                 cursor = Cursor(file=files[0][1], offset=0)
             else:
                 files = [item for item in files if item[0] >= matching[0][0]]
@@ -267,6 +284,7 @@ class Shipper:
                 try:
                     data = self.readat(source.alloc, path, start, min(size - start, READ_LIMIT))
                 except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+                    self.gaps[source.key] = time.time()
                     break
                 lines, leftover = split_lines(data, leftover)
                 cursor = Cursor(file=path, offset=start + len(data), leftover=leftover)
@@ -274,15 +292,35 @@ class Shipper:
                 if len(data) >= READ_LIMIT:
                     break
             self.cursors[source.key] = cursor
+            if files and cursor.file == files[-1][1] and cursor.offset >= files[-1][2]:
+                caught_up.add(source.key)
         self.round += len(visited)
         self.cursors = {key: value for key, value in self.cursors.items() if key in live}
-        if not batch:
-            return
         try:
-            self.insert(batch)
+            if batch:
+                self.insert(batch)
             self.exported += len(batch)
+            stamp = time.time()
+            fresh = {source.key: (source.job, source.task, stamp) for source in visited if source.key in caught_up and source.key in monitored}
+            self.coverage = {key: value for key, value in self.coverage.items() if key in monitored and stamp-value[2] < 120}
+            self.coverage.update(fresh)
+            self.gaps = {key: value for key, value in self.gaps.items() if key in monitored and stamp-value < 900}
         except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
             self.dropped += len(batch)
+            self.gaps.update({source.key: time.time() for source in visited if source.key in monitored})
+
+    def coverage_snapshot(self):
+        # Both stdout/stderr and every discovered allocation must be caught up.
+        if not self.nomad_up:
+            return []
+        groups, gap_times = {}, {}
+        for key, (app, task, stamp) in list(self.coverage.items()):
+            groups.setdefault((app, task), []).append(stamp)
+            gap_times[(app, task)] = max(gap_times.get((app, task), 0), self.gaps.get(key, 0))
+        return [{'app': app, 'task': task,
+                 'at': min(groups[(app, task)]) if len(groups.get((app, task), [])) == count else 0,
+                 'gapAt': gap_times.get((app, task), 0)}
+                for (app, task), count in list(self.source_counts.items())[:512]]
 
     def metrics(self) -> str:
         return "".join(
@@ -323,10 +361,22 @@ def nomad_readat(addr: str, token: str, alloc: str, path: str, offset: int, limi
 class Handler(BaseHTTPRequestHandler):
     shipper: Shipper
 
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(2)
+
     def log_message(self, format: str, *args: Any) -> None:
         return
 
     def do_GET(self) -> None:  # noqa: N802
+        if self.path == '/coverage':
+            body = json.dumps(self.shipper.coverage_snapshot()).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.split("?", 1)[0] not in {"/", "/metrics", "/healthz"}:
             self.send_error(404)
             return
@@ -351,7 +401,8 @@ def main() -> int:
         insert=lambda rows: post_jsonline(logs_url, rows),
     )
     Handler.shipper = shipper
-    server = ThreadingHTTPServer((bind, port), Handler)
+    server = HTTPServer((bind, port), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
     server.timeout = POLL_INTERVAL
     sys.stderr.write(f"luma-observe log-shipper listening on {bind}:{port}\n")
     last_stats = 0.0
@@ -364,7 +415,7 @@ def main() -> int:
                     f"log-shipper sources={shipper.last_sources} exported={shipper.exported} dropped={shipper.dropped}\n"
                 )
                 last_stats = now
-            server.handle_request()
+            time.sleep(POLL_INTERVAL)
     except KeyboardInterrupt:
         return 0
     return 0

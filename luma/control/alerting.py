@@ -14,11 +14,13 @@ import time
 from typing import Any, Callable
 
 from ..errors import LumaError
+from ..log_alert_rules import MAX_RULES, normalize as normalize_log_rule
 from . import database
 from .alert_notifications import FeishuError, alert_outbox_text, feishu_alert_card, send_feishu, validate_credentials
 from .build_alert_details import build_details, detail_rows
 
 PRESETS = [
+    dict(metric='app.log_matches', name='服务日志匹配', description='指定应用/服务的匹配日志条数；由 observe 统计', threshold=4, forSeconds=0, unit='count'),
     dict(metric='node.offline', name='节点失联', description='Agent 心跳距今超过阈值；不是 Nomad 调度状态', threshold=120, forSeconds=60, unit='seconds'),
     dict(metric='node.cpu', name='CPU 持续高占用', description='新鲜的 Linux 主机 CPU 样本', threshold=90, forSeconds=300, unit='percent'),
     dict(metric='node.memory', name='内存持续高占用', description='主机内存使用率', threshold=85, forSeconds=300, unit='percent'),
@@ -28,12 +30,14 @@ PRESETS = [
     dict(metric='build.failed', name='最新构建失败', description='新构建失败触发独立告警；后续成功恢复，也可手动关闭', threshold=0, forSeconds=0, unit='count'),
     dict(metric='app.http_p95', name='应用 p95 延迟', description='Traefik 入口 p95，来自 luma-observe', threshold=1, forSeconds=300, unit='seconds'),
     dict(metric='app.http_5xx_ratio', name='应用 5xx 占比', description='公开 HTTP 5xx / 总请求，来自 luma-observe', threshold=0.05, forSeconds=300, unit='ratio'),
+    dict(metric='app.nomad_not_running', name='应用无运行实例', description='应运行的应用持续没有运行实例，来自 luma-observe', threshold=0, forSeconds=300, unit='count'),
     dict(metric='app.nomad_failed', name='应用失败 alloc', description='Nomad 仍想跑但失败的 alloc 数，来自 luma-observe', threshold=0, forSeconds=120, unit='count'),
 ]
 METRICS = {p['metric'] for p in PRESETS}
 OBSERVE_ALERTS = {
     'app.http_p95': ('luma_app:http_duration_seconds:p95', 'app'),
     'app.http_5xx_ratio': ('luma_app:http_errors:rate5m / clamp_min(luma_app:http_requests:rate5m, 0.001)', 'app'),
+    'app.nomad_not_running': ('max by (app) ((luma_observe_job_running == bool 0) * luma_observe_job_active)', 'app'),
     'app.nomad_failed': ('sum by (app) (luma_observe_job_failed)', 'app'),
 }
 
@@ -58,6 +62,8 @@ def _schema(conn):
     for name in ('app_id','app_secret','chat_id'):
         if name not in columns:
             conn.execute(f"ALTER TABLE alert_channels ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+    if 'log_query' not in {r[1] for r in conn.execute('PRAGMA table_info(alert_rules)')}:
+        conn.execute("ALTER TABLE alert_rules ADD COLUMN log_query TEXT NOT NULL DEFAULT '{}'")
     if 'build_details' not in {r[1] for r in conn.execute('PRAGMA table_info(alert_incidents)')}:
         conn.execute("ALTER TABLE alert_incidents ADD COLUMN build_details TEXT NOT NULL DEFAULT '{}'")
 
@@ -94,7 +100,7 @@ def _text(value, name, limit=200):
 
 
 def _rule(conn, row):
-    return dict(id=row['id'], name=row['name'], metric=row['metric'], target=row['target'], threshold=row['threshold'],
+    return dict(logQuery=json.loads(row['log_query']), id=row['id'], name=row['name'], metric=row['metric'], target=row['target'], threshold=row['threshold'],
                 forSeconds=row['for_seconds'], severity=row['severity'], enabled=bool(row['enabled']),
                 repeatSeconds=row['repeat_seconds'], noData=row['no_data'], silencedUntil=row['silenced_until'],
                 channelIds=[r[0] for r in conn.execute('SELECT channel_id FROM alert_rule_channels WHERE rule_id=? ORDER BY channel_id', (row['id'],))])
@@ -142,6 +148,16 @@ def save_rule(body, *, now=None):
         if not isinstance(data.get('enabled'), bool):
             raise LumaError('enabled must be a boolean')
         target = _text(data.get('target'),'target',300)
+        log_query = {}
+        if metric == 'app.log_matches':
+            try:
+                log_query = normalize_log_rule(target, data.get('logQuery'))
+            except ValueError as exc:
+                raise LumaError(str(exc)) from exc
+            count = conn.execute("SELECT count(*) FROM alert_rules WHERE metric='app.log_matches' AND id!=?", (identifier,)).fetchone()[0]
+            if count >= MAX_RULES:
+                raise LumaError('At most 20 log alert rules are supported')
+        data['logQuery'] = log_query
         threshold = _bounded(data.get('threshold'),'threshold',0,31536000)
         duration = int(_bounded(data.get('forSeconds'),'forSeconds',0,86400))
         repeat = int(_bounded(data.get('repeatSeconds'),'repeatSeconds',60,604800))
@@ -152,10 +168,10 @@ def save_rule(body, *, now=None):
         for channel in channels:
             if not conn.execute('SELECT 1 FROM alert_channels WHERE id=?',(channel,)).fetchone():
                 raise LumaError('notification channel not found')
-        if existing and any(data.get(k) != _rule(conn,existing).get(k) for k in ('metric','target','threshold','forSeconds','noData','enabled')):
+        if existing and any(data.get(k) != _rule(conn,existing).get(k) for k in ('metric','target','threshold','forSeconds','noData','enabled','logQuery')):
             _close_rule(conn,identifier,now,'rule_changed')
-        conn.execute('INSERT OR REPLACE INTO alert_rules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                     (identifier,name,metric,target,threshold,duration,data['severity'],int(data['enabled']),repeat,data['noData'],silence,existing['created_at'] if existing else now,now))
+        conn.execute('INSERT OR REPLACE INTO alert_rules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                     (identifier,name,metric,target,threshold,duration,data['severity'],int(data['enabled']),repeat,data['noData'],silence,existing['created_at'] if existing else now,now,json.dumps(log_query)))
         conn.execute('DELETE FROM alert_rule_channels WHERE rule_id=?',(identifier,))
         conn.executemany('INSERT INTO alert_rule_channels VALUES(?,?)',[(identifier,c) for c in set(channels)])
         return _rule(conn,conn.execute('SELECT * FROM alert_rules WHERE id=?',(identifier,)).fetchone())
@@ -328,7 +344,8 @@ def tick(state: dict[str,Any], *, now=None, services=None):
         rules = conn.execute('SELECT * FROM alert_rules WHERE enabled=1').fetchall()
         for rule in rules:
             builds = _latest_builds(state) if rule['metric']=='build.failed' else {}
-            observations = _observations(state,rule['metric'],now)
+            observations = ({rule['target']: _num((state.get('_logAlerts') or {}).get(rule['id']))}
+                            if rule['metric'] == 'app.log_matches' else _observations(state,rule['metric'],now))
             if rule['target'] != '*': observations = {rule['target']:observations.get(rule['target'])}
             active = {r['target']:r for r in conn.execute("SELECT * FROM alert_incidents WHERE rule_id=? AND status IN ('pending','firing')",(rule['id'],))}
             dismissals = {(r['target'],r['build_id']) for r in conn.execute('SELECT target,build_id FROM alert_dismissals WHERE rule_id=?',(rule['id'],))}
@@ -490,6 +507,11 @@ def load_evaluation_state(*, now=None):
             result['buildRuns'][row['id']] = json.loads(row['payload'])
         table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='alert_rules'").fetchone()
         result['_observeMetrics'] = {str(item[0]) for item in conn.execute("SELECT DISTINCT metric FROM alert_rules WHERE enabled=1")} if table else set()
+        log_columns = {r[1] for r in conn.execute('PRAGMA table_info(alert_rules)')} if table else set()
+        log_rules = [dict(id=r['id'], target=r['target'], logQuery=json.loads(r['log_query']))
+                     for r in conn.execute("SELECT id,target,log_query FROM alert_rules WHERE enabled=1 AND metric='app.log_matches' LIMIT 20")] if 'log_query' in log_columns else []
+    from .log_alerts import samples
+    result['_logAlerts'] = samples(log_rules, now)
     _hydrate_observe_alerts(result)
     return result
 
@@ -549,6 +571,9 @@ def dispatch(method: str, resource: str, body=None, query=None):
     name = parts[0]
     identifier = parts[1] if len(parts)>1 else None
     now = time.time()
+    if method=='POST' and name=='log-preview':
+        from .log_alerts import preview
+        return preview(body)
     if method=='POST' and name=='rules' and not identifier: return save_rule(body)
     if method=='POST' and name=='channels' and not identifier: return save_channel(body)
     # Once the schema exists, dashboard GETs only read SQLite. Do not make

@@ -2,7 +2,8 @@ import { apiGet, apiPost, authHeaders, readJson } from "./apiClient";
 
 export type AlertTab = "alerts" | "rules" | "notifications";
 export type AlertPreset = { metric: string; name: string; description: string; threshold: number; forSeconds: number; unit: string };
-export type AlertRule = { id: string; name: string; metric: string; target: string; threshold: number; forSeconds: number; severity: "warning" | "critical"; channelIds: string[]; enabled: boolean; repeatSeconds: number; noData: "keep" | "alert"; silencedUntil?: number };
+export type LogQuery = { windowSeconds: number; task?: string; contains?: string; exclude?: string; field?: string; equals?: string };
+export type AlertRule = { logQuery?: LogQuery; id: string; name: string; metric: string; target: string; threshold: number; forSeconds: number; severity: "warning" | "critical"; channelIds: string[]; enabled: boolean; repeatSeconds: number; noData: "keep" | "alert"; silencedUntil?: number };
 export type AlertChannel = { id: string; name: string; type: "feishu"; enabled: boolean; appId: string; chatId: string; appSecretConfigured: boolean };
 export type BuildAlertDetails = { buildId?: string; service?: string; image?: string; images?: Record<string, string>; imageRepository?: string; buildNode?: string; repository?: string; ref?: string; stage?: string; reason?: string; createdAt?: number; failedAt?: number; completedAt?: number };
 export type AlertIncident = { id: number; ruleId: string; ruleName: string; target: string; metric: string; severity: string; status: string; value?: number | null; startedAt: number; firedAt?: number; resolvedAt?: number; updatedAt?: number; acknowledgedAt?: number; noData?: boolean; buildDetails?: BuildAlertDetails };
@@ -18,11 +19,18 @@ export async function deleteAlerting(path: string, token: string, signal?: Abort
 }
 
 export function newAlertRule(preset?: AlertPreset): AlertRule {
-  return { id: "", name: preset?.name || "", metric: preset?.metric || "", target: "*", threshold: preset?.threshold ?? 90, forSeconds: preset?.forSeconds ?? 300, severity: "warning", channelIds: [], enabled: true, repeatSeconds: 3600, noData: "keep" };
+  return { id: "", name: preset?.name || "", metric: preset?.metric || "", target: preset?.metric === "app.log_matches" ? "" : "*", ...(preset?.metric === "app.log_matches" ? { logQuery: { windowSeconds: 300 } } : {}), threshold: preset?.threshold ?? 90, forSeconds: preset?.forSeconds ?? 300, severity: "warning", channelIds: [], enabled: true, repeatSeconds: 3600, noData: "keep" };
 }
 export function ruleRequest(rule: AlertRule) {
   if (!rule.name.trim() || !rule.metric || !rule.target.trim()) throw new Error("Name, metric and target are required / 请填写名称、指标和对象");
   if (![rule.threshold, rule.forSeconds, rule.repeatSeconds].every(Number.isFinite) || rule.threshold < 0 || rule.forSeconds < 0 || rule.repeatSeconds < 60) throw new Error("Invalid threshold or duration / 阈值或持续时间无效");
+  if (rule.metric === "app.log_matches") {
+    const q = rule.logQuery;
+    if (rule.target.trim() === "*" || !q || !Number.isInteger(q.windowSeconds) || q.windowSeconds < 60 || q.windowSeconds > 900)
+      throw new Error("Select one application and a 60–900 second window / 请选择单个应用及 60–900 秒窗口");
+    if ((!q.contains && !(q.field && q.equals)) || Boolean(q.field) !== Boolean(q.equals))
+      throw new Error("Provide matching text or a JSON field and value / 请填写匹配文本或 JSON 字段和值");
+  }
   return { ...rule, id: rule.id || undefined, name: rule.name.trim(), target: rule.target.trim(), channelIds: [...new Set(rule.channelIds)] };
 }
 export function channelRequest(id: string, name: string, enabled: boolean, appId: string, appSecret: string, chatId: string) {
@@ -50,8 +58,10 @@ export function localizeAlertPreset(preset: AlertPreset, zh: boolean): AlertPres
     "node.inode": ["Inode pressure", "Inode usage of the filesystem sampled by the Agent"],
     "task.queue_age": ["Task queue delay", "Age of the oldest queued task, grouped by agent / builder / build"],
     "build.failed": ["Latest build failed", "A new failed build starts a separate incident; a later success resolves it, or it can be closed manually"],
+    "app.log_matches": ["Service log matches", "Matching log lines for one application / task, aggregated by observe"],
     "app.http_p95": ["App p95 latency", "Traefik ingress p95 from luma-observe"],
     "app.http_5xx_ratio": ["App 5xx ratio", "Public HTTP 5xx / requests from luma-observe"],
+    "app.nomad_not_running": ["App has no running instances", "An application that should run has no running allocation"],
     "app.nomad_failed": ["App failed allocations", "Failed allocations Nomad still wants to run"],
   };
   const translation = labels[preset.metric];

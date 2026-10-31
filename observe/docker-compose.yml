@@ -1,4 +1,22 @@
 services:
+  log-alerts:
+    build:
+      context: .
+      dockerfile: Dockerfile.log-alerts
+    image: luma-observe-log-alerts:local
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.05"
+          memory: 32M
+        limits:
+          memory: 96M
+
   collector:
     build:
       context: .

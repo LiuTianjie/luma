@@ -633,6 +633,7 @@ export default defineConfig({
           }
           if (rest.startsWith("/presets")) {
             json({ items: [
+              { metric: "app.log_matches", name: "服务日志匹配", description: "指定应用和服务的匹配日志条数", threshold: 4, forSeconds: 0, unit: "count" },
               { metric: "node.cpu", name: "节点 CPU", description: "主机 CPU 持续占用", threshold: 90, forSeconds: 300, unit: "percent" },
               { metric: "node.memory", name: "节点内存", description: "主机内存占用", threshold: 90, forSeconds: 300, unit: "percent" },
               { metric: "build.failed", name: "构建失败", description: "最近一次构建失败", threshold: 1, forSeconds: 0, unit: "count" },

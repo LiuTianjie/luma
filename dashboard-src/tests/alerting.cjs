@@ -100,3 +100,13 @@ test("observed values use metric units, bounded precision and explicit missing-d
   for (const value of [null, undefined, NaN, Infinity]) assert.equal(format("node.disk", value, false, true), "缺少采样");
   assert.equal(format("node.disk", 90, true, false), "No data");
 });
+
+test("log rules preserve conditions across form serialization and reject unscoped scans", () => {
+  const initial = newAlertRule({ metric: "app.log_matches", name: "Failures", threshold: 4, forSeconds: 0, unit: "count" });
+  assert.equal(initial.target, "");
+  assert.throws(() => ruleRequest(initial));
+  const rule = { ...initial, target: "ledger", logQuery: { ...initial.logQuery, task: "worker", contains: "failed", exclude: "expected" } };
+  assert.deepEqual(ruleRequest(rule).logQuery, rule.logQuery);
+  assert.throws(() => ruleRequest({ ...rule, target: "*" }));
+  assert.throws(() => ruleRequest({ ...rule, logQuery: { windowSeconds: 300, field: "level" } }));
+});

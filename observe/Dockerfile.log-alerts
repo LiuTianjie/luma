@@ -1,0 +1,6 @@
+FROM python:3.12-alpine
+WORKDIR /app
+COPY log_alerts.py log_alert_rules.py /app/
+ENV PYTHONDONTWRITEBYTECODE=1
+USER nobody
+ENTRYPOINT ["python3", "/app/log_alerts.py"]

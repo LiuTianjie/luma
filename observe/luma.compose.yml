@@ -21,6 +21,10 @@ volumes:
     initialize: empty
 
 services:
+  log-alerts:
+    node: manager
+    exposure: none
+    replicas: 1
   collector:
     node: manager
     exposure: none

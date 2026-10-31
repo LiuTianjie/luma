@@ -1,3 +1,4 @@
+import { LogRuleFields } from "./LogRuleFields";
 import { fetchAlertTab } from "../alertingApi";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
@@ -1177,6 +1178,7 @@ export function AlertingPanel({
                                     : "All targets"
                                   : item.target}
                               </span>
+                              {item.metric === "app.log_matches" && item.logQuery?.task && <span className="text-xs text-muted-foreground">{zh ? "服务" : "Task"} · {item.logQuery.task}</span>}
                               <Badge
                                 variant={item.enabled ? "success" : "outline"}
                               >
@@ -1202,6 +1204,12 @@ export function AlertingPanel({
                               {presets.find((p) => p.metric === item.metric)
                                 ?.name || item.metric}
                             </div>
+                            {item.metric === "app.log_matches" && item.logQuery && <div className="max-w-md whitespace-normal wrap-anywhere text-sm text-muted-foreground">
+                              <div>{zh ? "统计窗口" : "Window"} · {item.logQuery.windowSeconds}s</div>
+                              {item.logQuery.contains && <div>{zh ? "包含" : "Contains"}：{item.logQuery.contains}</div>}
+                              {item.logQuery.exclude && <div>{zh ? "排除" : "Excludes"}：{item.logQuery.exclude}</div>}
+                              {item.logQuery.field && <div>{item.logQuery.field} = {item.logQuery.equals}</div>}
+                            </div>}
                             <div className="text-muted-foreground">
                               &gt; {item.threshold}{" "}
                               {presets.find((p) => p.metric === item.metric)
@@ -1362,6 +1370,8 @@ export function AlertingPanel({
                             setRule({
                               ...rule,
                               metric: value,
+                              logQuery: { windowSeconds: 300, ...rule.logQuery },
+                              target: value === "app.log_matches" && rule.target === "*" ? "" : rule.target,
                               threshold: preset?.threshold ?? rule.threshold,
                               forSeconds: preset?.forSeconds ?? rule.forSeconds,
                             });
@@ -1383,13 +1393,13 @@ export function AlertingPanel({
                         data-invalid={Boolean(fieldErrors["alert-rule-target"])}
                       >
                         <FieldLabel htmlFor="alert-rule-target">
-                          {zh
+                          {rule.metric === "app.log_matches" ? (zh ? "应用 ID" : "Application ID") : zh
                             ? "对象 ID（* 表示全部）"
                             : "Target ID (* for all)"}
                         </FieldLabel>
                         <Combobox
                           disabled={busy}
-                          items={["*", ...new Set(targetNames)]}
+                          items={[...(rule.metric === "app.log_matches" ? [] : ["*"]), ...new Set(targetNames)]}
                           value={rule.target}
                           inputValue={rule.target}
                           onInputValueChange={(value) =>
@@ -1423,7 +1433,7 @@ export function AlertingPanel({
                           </ComboboxContent>
                         </Combobox>
                         <FieldDescription>
-                          {rule.metric.startsWith("node.")
+                          {rule.metric === "app.log_matches" ? (zh ? "选择一个应用，下方可进一步限定服务名。" : "Select one application; optionally narrow by task below.") : rule.metric.startsWith("node.")
                             ? zh
                               ? "使用节点 ID，可从节点页面复制。"
                               : "Use a node ID from the Fleet page."
@@ -1437,6 +1447,7 @@ export function AlertingPanel({
                           {fieldErrors["alert-rule-target"]}
                         </FieldError>
                       </Field>
+                      {rule.metric === "app.log_matches" && <LogRuleFields rule={rule} onChange={setRule} token={token} zh={zh} disabled={busy} />}
                       <Field
                         data-disabled={busy}
                         data-invalid={Boolean(

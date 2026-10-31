@@ -423,6 +423,10 @@ def render_compose_job(
         publish = publish_port or port
 
         docker_config: Dict[str, Any] = {"image": image, "extra_hosts": list(extra_hosts)}
+        if "read_only" in body:
+            if not isinstance(body["read_only"], bool):
+                raise LumaError(f"compose service {svc_name} read_only must be a boolean")
+            docker_config["readonly_rootfs"] = body["read_only"]
         if mac_network:
             # Docker owns this namespace inside its Linux VM. Service aliases
             # live on its owner and are inherited by every sibling container.
