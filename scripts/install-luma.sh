@@ -281,71 +281,42 @@ refresh_node_agent_service() {
 
   os_name="$(uname -s 2>/dev/null || echo unknown)"
   case "$os_name" in
+    Darwin) ;;
+    Linux) command -v systemctl >/dev/null 2>&1 || return 0 ;;
+    *) return 0 ;;
+  esac
+
+  tmp_service="$(mktemp)"
+  if ! PYTHONPATH="$SOURCE_DIR${PYTHONPATH:+:$PYTHONPATH}" "$VENV_DIR/bin/python" - "$agent_config" "$BIN_DIR/luma" > "$tmp_service" <<'PYSERVICE'
+import sys
+from pathlib import Path
+from luma.agent import _agent_service_command, _node_tailscale_watchdog_install_command
+
+print("set -eu")
+print(_agent_service_command(Path(sys.argv[1]), executable=sys.argv[2], restart=False))
+print(_node_tailscale_watchdog_install_command())
+PYSERVICE
+  then
+    rm -f "$tmp_service"
+    echo "Luma node agent service generation failed." >&2
+    return 1
+  fi
+  if ! run_sudo sh "$tmp_service"; then
+    rm -f "$tmp_service"
+    echo "Luma node agent service refresh failed." >&2
+    return 1
+  fi
+  rm -f "$tmp_service"
+
+  case "$os_name" in
     Darwin)
       plist="/Library/LaunchDaemons/io.luma.node-agent.plist"
-      tmp_plist="$(mktemp)"
-      cat > "$tmp_plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>io.luma.node-agent</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>$BIN_DIR/luma</string>
-    <string>node-agent</string>
-    <string>run</string>
-    <string>--config</string>
-    <string>$agent_config</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>/var/log/luma-node-agent.log</string>
-  <key>StandardErrorPath</key>
-  <string>/var/log/luma-node-agent.err</string>
-</dict>
-</plist>
-EOF
-      run_sudo install -m 0644 "$tmp_plist" "$plist"
-      rm -f "$tmp_plist"
       run_sudo sh -c "( sleep ${LUMA_AGENT_RELOAD_DELAY_SECONDS:-20}; launchctl bootout system/io.luma.node-agent >/dev/null 2>&1 || true; launchctl bootstrap system $plist; launchctl kickstart -k system/io.luma.node-agent ) >/tmp/luma-node-agent-reload.log 2>&1 &"
       echo "Luma node agent launchd reload scheduled"
       ;;
     Linux)
-      if command -v systemctl >/dev/null 2>&1; then
-        tmp_unit="$(mktemp)"
-        cat > "$tmp_unit" <<EOF
-[Unit]
-Description=Luma node agent
-After=network-online.target docker.service nomad.service
-Wants=network-online.target docker.service nomad.service
-StartLimitIntervalSec=0
-
-[Service]
-Type=simple
-EnvironmentFile=-/etc/default/luma-node-agent
-ExecStart=$BIN_DIR/luma node-agent run --config $agent_config
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-        if run_sudo test -f /etc/systemd/system/luma-node-agent.service; then
-          run_sudo cp -a /etc/systemd/system/luma-node-agent.service "/etc/systemd/system/luma-node-agent.service.luma-backup-$(date +%Y%m%d%H%M%S)"
-        fi
-        run_sudo install -m 0644 "$tmp_unit" /etc/systemd/system/luma-node-agent.service
-        rm -f "$tmp_unit"
-        run_sudo systemctl daemon-reload
-        run_sudo systemctl enable luma-node-agent.service >/dev/null
-        run_sudo systemctl reset-failed luma-node-agent.service >/dev/null 2>&1 || true
-        run_sudo sh -c "( sleep ${LUMA_AGENT_RELOAD_DELAY_SECONDS:-20}; systemctl restart luma-node-agent.service ) >/tmp/luma-node-agent-reload.log 2>&1 &"
-        echo "Luma node agent systemd restart scheduled"
-      fi
+      run_sudo sh -c "( sleep ${LUMA_AGENT_RELOAD_DELAY_SECONDS:-20}; systemctl restart luma-node-agent.service ) >/tmp/luma-node-agent-reload.log 2>&1 &"
+      echo "Luma node agent systemd restart scheduled"
       ;;
   esac
 }

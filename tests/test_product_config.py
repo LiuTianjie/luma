@@ -1362,9 +1362,30 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("refresh_node_agent_service()", installer)
         self.assertIn('LUMA_USER_HOME="${LUMA_USER_HOME:-${HOME:-}}"', installer)
         self.assertIn('agent_config="/opt/luma/node-agent/agent.json"', installer)
-        self.assertIn("EnvironmentFile=-/etc/default/luma-node-agent", installer)
-        self.assertIn("ExecStart=$BIN_DIR/luma node-agent run --config $agent_config", installer)
-        self.assertIn("systemctl daemon-reload", installer)
+        renderer = installer.split("<<'PYSERVICE'\n", 1)[1].split("\nPYSERVICE\n", 1)[0]
+        for os_value in ("linux", "darwin"):
+            with self.subTest(os=os_value):
+                output = io.StringIO()
+                with patch("luma.agent.node_agent_os", return_value=os_value), patch(
+                    "sys.argv", ["-", "/opt/luma/node-agent/agent.json", "/home/operator/.local/bin/luma"]
+                ), patch("sys.stdout", output):
+                    exec(compile(renderer, "installer-service-renderer", "exec"), {})
+                command = output.getvalue()
+                syntax = subprocess.run(["sh", "-n"], input=command, text=True, capture_output=True)
+                self.assertEqual(syntax.returncode, 0, syntax.stderr)
+                self.assertIn("/home/operator/.local/bin/luma", command)
+                self.assertNotIn("systemctl restart docker", command)
+                self.assertNotIn("systemctl restart nomad", command)
+                if os_value == "linux":
+                    self.assertIn("EnvironmentFile=-/etc/default/luma-node-agent", command)
+                    self.assertIn("ExecStart=/home/operator/.local/bin/luma node-agent run", command)
+                    self.assertIn("systemctl enable luma-node-agent.service", command)
+                    self.assertIn("systemctl enable --now luma-node-tailscale-watchdog.timer", command)
+                    self.assertNotIn("systemctl restart luma-node-agent.service", command)
+                else:
+                    self.assertIn("<key>KeepAlive</key>", command)
+                    self.assertIn("io.luma.tailscale-watchdog.plist", command)
+                    self.assertNotIn("launchctl kickstart -k system/io.luma.node-agent;", command)
         self.assertIn("Luma node agent systemd restart scheduled", installer)
         self.assertIn("Luma node agent launchd reload scheduled", installer)
         self.assertIn('LUMA_SKIP_NODE_AGENT_SERVICE_REFRESH:-0', installer)

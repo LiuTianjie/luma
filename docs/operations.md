@@ -229,6 +229,27 @@ On a joined node, `luma update` refreshes the CLI and the node agent. A node who
 
 Managers and nodes run a small Tailscale watchdog that restarts Tailscale after consecutive peer failures, without touching Docker, Nomad or applications.
 
+## Builder Lifecycle
+
+A builder is an ordinary joined Luma node selected with `luma build config --node <name> --default-node <name>`. Its node agent leases build tasks; Docker Buildx creates the `luma-builder` and `luma-builder-egress` engines on demand. No additional background startup script is required.
+
+`luma node join` installs the node service. Linux uses `luma-node-agent.service`, enabled at boot with `Restart=always`. macOS uses the `io.luma.node-agent` LaunchDaemon with `RunAtLoad` and `KeepAlive`. Nomad has its own system service, and Docker manages BuildKit containers. On macOS, Docker Desktop or OrbStack must still be configured to start at user login; a running agent does not mean Docker is available.
+
+Node join, agent updates and the standalone installer share the service definitions and node Tailscale watchdog installation in `luma/agent.py`. The standalone installer only refreshes a node with an existing `agent.json`; it does not turn an ordinary CLI client into a builder. Machine-specific startup patches outside the source tree are not part of the installation procedure.
+
+On Linux, `luma-node-tailscale-watchdog.timer` starts checking about two minutes after boot and then about once a minute. It reads Manager addresses from Nomad configuration, checks Tailscale connectivity and actual TCP ports, and restarts local Tailscale after three consecutive failures by default. Check this layer when services have started but Control still reports the node offline. An SSH connection and the agent's connection to its Manager are separate paths.
+
+The Linux node watchdog reads `/etc/default/luma-node-tailscale-watchdog`, which installation and updates preserve. Set `LUMA_NODE_TAILSCALE_WATCHDOG_THRESHOLD` (default `3`), `LUMA_NODE_TAILSCALE_WATCHDOG_PORTS` (space-separated, default `4647`), or `LUMA_NODE_TAILSCALE_WATCHDOG_MANAGERS` (comma-separated tailnet addresses; unset means read Nomad). Changes take effect on the next timer run.
+
+```bash
+systemctl is-enabled luma-node-agent.service luma-node-tailscale-watchdog.timer
+systemctl status luma-node-agent.service luma-node-tailscale-watchdog.timer --no-pager
+journalctl -b -u luma-node-agent.service -u luma-node-tailscale-watchdog.service
+luma node list
+```
+
+Verify recovery using service state, a fresh Control heartbeat and builder `ready` status together. Large clock jumps at boot also warrant checking host/VM RTC settings and the system time service. A clock jump alone does not establish the cause of a network outage, and Luma does not require every installation to adopt a particular NTP provider.
+
 ## Node Disk Cleanup
 
 Every node agent cleans its own disk once a day, starting about ten minutes after the agent starts. A run:

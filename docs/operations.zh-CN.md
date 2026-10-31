@@ -229,6 +229,27 @@ luma update fleet --include-manager          # explicit repair only
 
 Manager 和节点都运行一个小的 Tailscale 看门狗，连续探测对端失败后重启 Tailscale，不影响 Docker、Nomad 或应用。
 
+## Builder 的安装与重启恢复 {#builder-lifecycle}
+
+Builder 是加入集群的普通 Luma 节点，通过 `luma build config --node <name> --default-node <name>` 指定其构建职责。节点上的 agent 负责领取构建任务，Docker Buildx 按需创建 `luma-builder` 和 `luma-builder-egress` 构建引擎。它们不需要额外的后台启动脚本。
+
+`luma node join` 安装节点服务。Linux 使用 `luma-node-agent.service`（开机启用、`Restart=always`），macOS 使用 `io.luma.node-agent` LaunchDaemon（`RunAtLoad`、`KeepAlive`）。Nomad 由自己的系统服务管理，BuildKit 容器由 Docker 管理。macOS 上的 Docker Desktop 或 OrbStack 仍须配置为随用户登录启动；agent 自启不等于 Docker 已经可用。
+
+加入节点、agent 更新和独立安装脚本复用 `luma/agent.py` 中的服务定义及节点 Tailscale 看门狗安装逻辑。独立安装脚本只会刷新已有 `agent.json` 的节点，不会把普通 CLI 客户端变成 builder。不要在单台机器上另加无源码的启动补丁作为正常安装步骤。
+
+Linux 的 `luma-node-tailscale-watchdog.timer` 在开机约两分钟后开始检查，随后约每分钟检查一次。它从 Nomad 配置读取 Manager 地址，检查 Tailscale 连通性和实际 TCP 端口，默认连续三次失败才重启本机 Tailscale。进程已经启动但控制面仍显示离线时，先检查这一层；SSH 可达和 agent 到 Manager 可达是不同的连接。
+
+节点看门狗的 Linux 配置文件是 `/etc/default/luma-node-tailscale-watchdog`，安装和升级保留该文件。可设置 `LUMA_NODE_TAILSCALE_WATCHDOG_THRESHOLD`（默认 `3`）、`LUMA_NODE_TAILSCALE_WATCHDOG_PORTS`（空格分隔，默认 `4647`）和 `LUMA_NODE_TAILSCALE_WATCHDOG_MANAGERS`（逗号分隔的 tailnet 地址；留空时读取 Nomad）。下一次定时执行会读取配置。
+
+```bash
+systemctl is-enabled luma-node-agent.service luma-node-tailscale-watchdog.timer
+systemctl status luma-node-agent.service luma-node-tailscale-watchdog.timer --no-pager
+journalctl -b -u luma-node-agent.service -u luma-node-tailscale-watchdog.service
+luma node list
+```
+
+恢复验收要同时确认系统服务、最新 Control 心跳和 builder 的 `ready` 状态。发现开机时间大幅跳变时，还应检查宿主机/虚拟机 RTC 与系统校时服务；不能仅凭时间跳变认定网络故障根因，也不应默认给所有开发者安装或强制依赖某一种 NTP 服务。
+
 ## 节点磁盘清理 {#node-disk-cleanup}
 
 每个节点 agent 每天清理一次自己的磁盘，agent 启动约十分钟后开始第一次检查。每次清理：
