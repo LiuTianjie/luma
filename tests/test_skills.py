@@ -37,6 +37,17 @@ class SkillUpgradeTests(unittest.TestCase):
         self.assertIn(custom, skills.installed_roots(self.home))
         self.assertFalse((self.home / ".claude").exists())
 
+    def test_invalid_root_metadata_does_not_break_optional_sync_or_install(self):
+        config = self.home / ".config" / "luma" / "skill-roots.json"
+        config.parent.mkdir(parents=True)
+        for value in (None, 42, "not-a-list", [None, {}, "relative"]):
+            with self.subTest(value=value):
+                config.write_text(json.dumps({"roots": value}))
+                result = skills.sync_skills(user_home=self.home)
+                self.assertEqual(result["warnings"], [])
+                self.install()
+                self.assertEqual(json.loads(config.read_text())["roots"], [str(self.root)])
+
     def test_legacy_suite_gets_new_skill_and_preserves_old_customizations(self):
         legacy = self.root / "luma-deployment-yaml"
         legacy.mkdir(parents=True)

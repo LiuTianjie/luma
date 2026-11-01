@@ -84,11 +84,17 @@ def _bundles() -> list[Path]:
                   if path.is_dir() and not path.is_symlink() and (path / "SKILL.md").is_file())
 
 
+def _registered_roots(user_home: Path | None = None) -> list[str]:
+    values = _read_json(_config_root(user_home) / "skill-roots.json").get("roots", [])
+    if not isinstance(values, list):
+        return []
+    return [value for value in values if isinstance(value, str) and Path(value).is_absolute()]
+
+
 def installed_roots(user_home: Path | None = None) -> list[Path]:
     names = [path.name for path in _bundles()]
     roots = list(agent_roots(user_home).values())
-    registered = _read_json(_config_root(user_home) / "skill-roots.json").get("roots", [])
-    roots.extend(Path(value) for value in registered if isinstance(value, str) and Path(value).is_absolute())
+    roots.extend(Path(value) for value in _registered_roots(user_home))
     # Do not recreate a deleted suite, or add skills to an assistant that never used Luma.
     return sorted({root.absolute() for root in roots
                    if any((root / name).exists() or (root / name).is_symlink() for name in names)})
@@ -172,7 +178,7 @@ def sync_skills(roots: list[Path] | None = None, *, user_home: Path | None = Non
             warnings.append(str(exc))
     if register and roots:
         path = _config_root(user_home) / "skill-roots.json"
-        old = _read_json(path).get("roots", [])
+        old = _registered_roots(user_home)
         _write_json(path, {"roots": sorted(set(old) | {str(p.expanduser().absolute()) for p in roots})})
     return {"version": __version__, "items": items, "warnings": warnings}
 

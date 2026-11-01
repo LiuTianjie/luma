@@ -15,7 +15,8 @@ FROM ${PYTHON_IMAGE}
 
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml setup.py MANIFEST.in README.md LICENSE ./
+COPY skills ./skills
 COPY luma ./luma
 # Overlay the freshly built dashboard assets (index.html/app.js/styles.css/png) so
 # pip's package-data ("assets/dashboard/*") bundles them into the installed package.
