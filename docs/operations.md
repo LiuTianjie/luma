@@ -306,6 +306,14 @@ luma manager ip-change --old 203.0.113.10 --new 203.0.113.20 --domain luma.examp
 
 It verifies the new address over HTTPS, then updates only the manager's `publicIp`, `providers.dns.edgeTarget` and the Cloudflare A records that exactly match the old address. It backs up `luma.yaml`, reuses the running Control image and does not redeploy applications. Rerunning finishes any records left by a partial failure.
 
+## Registry cleanup candidates
+
+Control protects images referenced by current Nomad jobs, active allocations (including an old version still running during a rollout), and queued/running/finalizing builds or active agent tasks. Successful build history, inactive Nomad versions, stale deployment records and per-repository/system version counts no longer grant indefinite protection.
+
+An unreferenced image starts an inactivity clock on its first complete inventory scan. After seven consecutive observed unused days it becomes a cleanup candidate. Reuse resets the clock; incomplete scans reset it conservatively and report `unknown`. Image creation time is not used as evidence of inactivity, and direct external Registry pulls are not tracked as workload usage. The clock is keyed by repository and digest in `registry-usage.json` under the Control state directory, separate from the disposable inventory cache, and survives Control restarts.
+
+On upgrade, the legacy policy migrates to seven days and `recommend` mode: candidates are marked, not automatically deleted. Existing image ages are not backdated into the new clock. `--max-age-days` now sets consecutive unused days; the deprecated `--keep-last` and `--system-keep-last` options no longer provide exemptions. An operator can explicitly change the mode later. This change takes effect after upgrading Control; it does not require redeploying Registry or upgrading node agents.
+
 ## Private Registries On New Nodes
 
 `luma node join` and `luma node nomad-join` prepare managed HTTP registry access after Docker and Tailscale are set up and before Nomad starts. The host list comes from the control plane's recorded HTTP transports. A narrow legacy exception remains for the configured Builder Registry at a registered node's Tailscale IP on port `5000`, when neither an explicit transport nor registry credentials are recorded. Other private hosts, public registries and recorded HTTPS endpoints are not inferred to use HTTP.

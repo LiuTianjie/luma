@@ -306,6 +306,14 @@ luma manager ip-change --old 203.0.113.10 --new 203.0.113.20 --domain luma.examp
 
 它先通过 HTTPS 验证新地址，然后只更新 Manager 的 `publicIp`、`providers.dns.edgeTarget` 以及与旧地址完全匹配的 Cloudflare A 记录。它会备份 `luma.yaml`，复用正在运行的 Control 镜像，不会重新部署应用。部分失败后重跑即可补完剩余记录。
 
+## Registry 可清理镜像 {#registry-cleanup-candidates}
+
+Control 保护当前 Nomad Job、活跃 allocation（包括发布过程中仍在运行的旧版本）、排队/运行/收尾中的构建和活跃 Agent 任务所引用的镜像。历史成功构建、非活跃 Nomad 版本、残留部署记录、每仓库及系统版本保留数量，不再提供永久保护。
+
+镜像首次在完整扫描中确认无引用后，开始记录未使用时间。连续观察到未使用满 7 天后，标记为可清理；重新使用会重置计时，扫描不完整时保守重置并标记为 `unknown`。不会以镜像创建时间推断未使用时长，也不追踪外部客户端直接拉取 Registry 的次数。计时按仓库和 digest 保存在 Control 状态目录的 `registry-usage.json` 中，与可失效的镜像列表缓存分开，Control 重启后保留。
+
+升级时旧策略迁移为 7 天和 `recommend` 模式，只标记可清理，不自动删除。已有镜像不会按创建日期倒推未使用时长。`--max-age-days` 现在表示连续未使用天数；已弃用的 `--keep-last` 和 `--system-keep-last` 不再提供豁免。管理员之后仍可显式切换模式。此改动升级 Control 后生效，无需重新部署 Registry 或升级节点 Agent。
+
 ## 新节点上的私有镜像仓库 {#private-registries-on-new-nodes}
 
 `luma node join` 和 `luma node nomad-join` 在配置好 Docker 和 Tailscale 之后、启动 Nomad 之前，准备托管 HTTP 镜像仓库访问。地址来自控制面登记的 HTTP transport。保留一条窄的历史兼容规则：已配置的 Builder Registry 使用已注册节点的 Tailscale IP 和 `5000` 端口，且未登记明确 transport、未保存该仓库凭据时，也按 HTTP 处理。不会将其他私有地址、公共镜像仓库或已登记的 HTTPS 地址推断为 HTTP。

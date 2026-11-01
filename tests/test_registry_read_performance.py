@@ -32,7 +32,7 @@ class RegistryReadPerformanceTests(unittest.TestCase):
         state.save_state(self.original)
         state.save_state({
             "host": "registry.example.test",
-            "result": {"entries": [{"repository": "app", "tags": ["latest"]}], "protectionComplete": True},
+            "result": {"entries": [{"repository": "app", "tags": ["latest"]}], "protectionComplete": True, "policy": {"retentionVersion": 2}},
         }, Path(directory.name) / "registry-inventory.json")
 
     def test_inventory_cache_read_keeps_config_without_hydrating_history_or_scanning(self):

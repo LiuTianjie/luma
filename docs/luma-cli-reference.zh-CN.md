@@ -2102,11 +2102,12 @@ arguments:
   -h, --help                  show this help message and exit
   --mode {off,recommend,enforce}
                               off, recommend deletions, or enforce them
-  --keep-last KEEP_LAST       Tags to keep per repository
+  --keep-last KEEP_LAST       Deprecated; count-based retention is no longer applied
   --max-age-days MAX_AGE_DAYS
-                              Delete older unprotected images
+                              Consecutive unused days before marking images as cleanup candidates
+                              (default: 7)
   --system-keep-last SYSTEM_KEEP_LAST
-                              Tags to keep for Luma system images
+                              Deprecated; system images follow the same inactivity policy
   --queue-grace-hours QUEUE_GRACE_HOURS
                               Hours before queued deletions run
   --gc-grace-days GC_GRACE_DAYS

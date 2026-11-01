@@ -15,6 +15,8 @@ export type RegistryManifest = {
   logicalBytes?: number;
   createdAt?: number;
   lastModified?: number;
+  unusedSince?: number;
+  lastUsedAt?: number;
   platforms?: string[];
   childManifestDigests?: string[];
   role?: "root" | "dependency" | string;

@@ -141,7 +141,8 @@ class RegistryInventoryTests(unittest.TestCase):
             }
         ]
         policy = {"keepLast": 1, "maxAgeDays": 1}
-        protected = apply_protection(inventory, references, complete=True, policy=policy, now=1_800_000_000)
+        protected = apply_protection(inventory, references, complete=True, policy=policy, now=1_800_000_000,
+                                     previous_usage={"acme/api@" + DIGEST_A: {"unusedSince": 1_700_000_000}})
         by_digest = {entry["digest"]: entry for entry in protected["entries"]}
         self.assertEqual(by_digest[DIGEST_B]["protectionStatus"], "protected")
         self.assertEqual(by_digest[DIGEST_A]["protectionStatus"], "candidate")
@@ -182,7 +183,7 @@ class RegistryInventoryTests(unittest.TestCase):
         )
         self.assertEqual(result["entries"][0]["protectionStatus"], "protected")
 
-    def test_state_references_cover_deployments_builds_and_tasks(self) -> None:
+    def test_state_references_only_cover_active_builds_and_tasks(self) -> None:
         state = {
             "deployments": {
                 "services": {
@@ -191,22 +192,25 @@ class RegistryInventoryTests(unittest.TestCase):
                 "compose": {},
             },
             "buildRuns": {
-                "run-1": {"status": "succeeded", "result": {"image": "registry.internal/acme/api:build"}},
+                "run-1": {"status": "running", "result": {"image": "registry.internal/acme/api:build"}},
+                "old-run": {"status": "succeeded", "result": {"image": "registry.internal/acme/api:old"}},
             },
             "agentTasks": {
                 "task-1": {"status": "running", "payload": {"image": "registry.internal/acme/api:task"}},
             },
         }
         references = collect_state_image_references(state, "registry.internal")
-        self.assertEqual({item["kind"] for item in references}, {"deployment", "build", "agent-task"})
+        self.assertEqual({item["kind"] for item in references}, {"build", "agent-task"})
+        self.assertNotIn("old", {item["tag"] for item in references})
 
     def test_policy_bounds_and_threshold_order(self) -> None:
         policy = normalize_policy({})
         self.assertEqual(policy["mode"], "recommend")
         self.assertEqual(policy["queueGraceHours"], 0)
         self.assertEqual(normalize_policy({"queueGraceHours": 0})["queueGraceHours"], 0)
+        self.assertEqual(normalize_policy({"keepLast": 20, "systemKeepLast": 3})["keepLast"], 0)
         with self.assertRaises(LumaError):
-            normalize_policy({"keepLast": 0})
+            normalize_policy({"maxAgeDays": 0})
         with self.assertRaises(LumaError):
             normalize_policy({"queueGraceHours": -1})
 
@@ -218,6 +222,7 @@ class RegistryInventoryTests(unittest.TestCase):
             complete=True,
             policy={"mode": "off", "keepLast": 1, "maxAgeDays": 1},
             now=1_800_000_000,
+            previous_usage={"acme/api@" + digest: {"unusedSince": 1_700_000_000} for digest in (DIGEST_A, DIGEST_B)},
         )
         self.assertEqual(result["summary"]["candidateCount"], 0)
         self.assertTrue(all(not entry["deletable"] for entry in result["entries"]))
@@ -479,7 +484,7 @@ class RegistryControlTests(unittest.TestCase):
     def test_enforce_automation_queues_only_candidates(self, load_state, inventory, create, record) -> None:
         state = {
             "deployToken": "token",
-            "registryManagement": {"policy": {"mode": "enforce"}, "deletions": [], "audit": []},
+            "registryManagement": {"policy": {"mode": "enforce", "retentionVersion": 2}, "deletions": [], "audit": []},
         }
         load_state.return_value = copy.deepcopy(state)
         inventory.return_value = {

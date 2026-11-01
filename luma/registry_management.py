@@ -14,8 +14,6 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Mapping
 
-import yaml
-
 from .errors import LumaError
 from .registry import normalize_registry_host
 
@@ -359,6 +357,7 @@ def apply_protection(
     complete: bool,
     policy: Mapping[str, Any] | None = None,
     now: int | None = None,
+    previous_usage: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     current_time = int(now or time.time())
     rules = normalize_policy(policy)
@@ -396,42 +395,36 @@ def apply_protection(
             if reason not in target["protectionReasons"]:
                 target["protectionReasons"].append(reason)
 
-    keep_last = int(rules["keepLast"])
-    max_age_seconds = int(rules["maxAgeDays"]) * 86400
-    by_repository: dict[str, list[Dict[str, Any]]] = {}
+    # Only observed inactivity counts. Image creation dates and historical
+    # version counts do not prove that an image has been unused.
+    history = previous_usage or {}
+    complete = bool(complete and not inventory.get("errors") and not (inventory.get("summary") or {}).get("scanErrors"))
     for item in entries:
-        by_repository.setdefault(str(item.get("repository") or ""), []).append(item)
-    for repository_entries in by_repository.values():
-        repository_entries.sort(key=lambda item: int(item.get("createdAt") or item.get("lastModified") or 0), reverse=True)
-        for index, item in enumerate(repository_entries):
-            timestamp = int(item.get("createdAt") or item.get("lastModified") or 0)
-            recent = timestamp <= 0 or current_time - timestamp < max_age_seconds
-            system = _system_repository(str(item.get("repository") or ""))
-            if system and index < int(rules["systemKeepLast"]):
-                item["protectionReasons"].append({"kind": "system", "source": "system retention", "reference": ""})
-            protected = bool(item["protectionReasons"])
-            if not complete:
-                status = "unknown"
-                candidate = False
-            elif protected:
-                status = "protected"
-                candidate = False
-            elif rules["mode"] == "off":
-                status = "retained"
-                candidate = False
-            elif index < keep_last or recent:
-                status = "retained"
-                candidate = False
-            else:
-                status = "candidate"
-                candidate = True
-            item["protectionStatus"] = status
-            item["deletable"] = candidate
-            item["retention"] = {
-                "repositoryPosition": index + 1,
-                "keptByCount": index < keep_last,
-                "keptByAge": recent,
-            }
+        key = str(item.get("repository") or "") + "@" + str(item.get("digest") or "")
+        previous = history.get(key) or {}
+        unused_since = int(previous.get("unusedSince") or current_time)
+        unused_since = min(unused_since, current_time)
+        last_used = int(previous.get("lastUsedAt") or 0)
+        protected = bool(item["protectionReasons"])
+        if protected:
+            last_used = current_time
+        if protected or not complete:
+            unused_since = 0
+        elapsed = current_time - unused_since if unused_since else 0
+        eligible = complete and not protected and elapsed >= int(rules["maxAgeDays"]) * 86400
+        if not complete:
+            status = "unknown"
+        elif protected:
+            status = "protected"
+        elif eligible and rules["mode"] != "off":
+            status = "candidate"
+        else:
+            status = "retained"
+        item["protectionStatus"] = status
+        item["deletable"] = status == "candidate"
+        item["unusedSince"] = unused_since
+        item["lastUsedAt"] = last_used
+        item["retention"] = {"keptByCount": False, "keptByAge": not eligible}
     result = dict(inventory)
     result["entries"] = entries
     result["protectionComplete"] = bool(complete)
@@ -456,9 +449,10 @@ def normalize_policy(value: Mapping[str, Any] | None) -> Dict[str, Any]:
         raise LumaError("registry retention mode must be off, recommend, or enforce")
     return {
         "mode": mode,
-        "keepLast": _bounded_int(raw.get("keepLast"), default=20, minimum=1, maximum=500),
-        "maxAgeDays": _bounded_int(raw.get("maxAgeDays"), default=30, minimum=1, maximum=3650),
-        "systemKeepLast": _bounded_int(raw.get("systemKeepLast"), default=3, minimum=1, maximum=100),
+        "retentionVersion": 2,
+        "keepLast": 0,
+        "maxAgeDays": _bounded_int(raw.get("maxAgeDays"), default=7, minimum=1, maximum=3650),
+        "systemKeepLast": 0,
         "queueGraceHours": _bounded_int(raw.get("queueGraceHours"), default=0, minimum=0, maximum=24 * 30),
         "gcGraceDays": _bounded_int(raw.get("gcGraceDays"), default=7, minimum=1, maximum=365),
         "warningPercent": _bounded_int(raw.get("warningPercent"), default=75, minimum=1, maximum=99),
@@ -481,25 +475,14 @@ def collect_state_image_references(state: Mapping[str, Any], registry_host: str)
         seen.add(key)
         found.append({**parsed, "kind": kind, "source": source})
 
-    deployments = state.get("deployments") if isinstance(state.get("deployments"), Mapping) else {}
-    for bucket_name in ("services", "compose"):
-        bucket = deployments.get(bucket_name) if isinstance(deployments.get(bucket_name), Mapping) else {}
-        for slug, record in bucket.items():
-            if not isinstance(record, Mapping):
-                continue
-            for image in _images_from_yaml(record.get("manifest")):
-                add(image, kind="deployment", source=f"{bucket_name}:{slug}")
-            for image in _images_from_yaml(record.get("composeContent")):
-                add(image, kind="deployment", source=f"{bucket_name}:{slug}")
-
     build_runs = state.get("buildRuns") if isinstance(state.get("buildRuns"), Mapping) else {}
     for run_id, run in build_runs.items():
         if not isinstance(run, Mapping):
             continue
         status = str(run.get("status") or "")
-        if status not in {"queued", "running", "finalizing", "succeeded"}:
+        if status not in {"queued", "running", "finalizing"}:
             continue
-        for image in _image_values(run.get("result")):
+        for image in _image_values(run.get("result")) + _image_values(run.get("request")):
             add(image, kind="build", source=f"build:{run_id}:{status}")
 
     tasks = state.get("agentTasks") if isinstance(state.get("agentTasks"), Mapping) else {}
@@ -592,16 +575,6 @@ def _manifest_detail(
     return detail
 
 
-def _images_from_yaml(value: Any) -> list[str]:
-    if not isinstance(value, str) or not value.strip():
-        return []
-    try:
-        payload = yaml.safe_load(value)
-    except yaml.YAMLError:
-        return []
-    return _image_values(payload)
-
-
 def _image_values(value: Any, *, key: str = "") -> list[str]:
     images: list[str] = []
     if isinstance(value, Mapping):
@@ -691,7 +664,3 @@ def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int
     if parsed < minimum or parsed > maximum:
         raise LumaError(f"registry policy value must be between {minimum} and {maximum}")
     return parsed
-
-
-def _system_repository(repository: str) -> bool:
-    return repository in {"luma-control", "luma/control"} or repository.startswith("luma-system/")

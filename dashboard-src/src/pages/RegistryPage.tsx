@@ -35,9 +35,9 @@ import { PageHeader } from "./PageHeader";
 
 const DEFAULT_POLICY: RegistryPolicy = {
   mode: "recommend",
-  keepLast: 20,
-  maxAgeDays: 30,
-  systemKeepLast: 3,
+  keepLast: 0,
+  maxAgeDays: 7,
+  systemKeepLast: 0,
   queueGraceHours: 0,
   gcGraceDays: 7,
   warningPercent: 75,
@@ -276,9 +276,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
   };
 
   const policyFields = [
-    { key: "keepLast", label: zh ? "每仓库至少保留" : "Keep per repository", min: 1, max: 500 },
-    { key: "maxAgeDays", label: zh ? "保留天数" : "Max age days", min: 1, max: 3650 },
-    { key: "systemKeepLast", label: zh ? "系统版本保留" : "System versions", min: 1, max: 100 },
+    { key: "maxAgeDays", label: zh ? "连续未使用天数" : "Consecutive unused days", min: 1, max: 3650 },
     { key: "queueGraceHours", label: zh ? "自动删除宽限期（小时）" : "Automatic deletion grace (hours)", min: 0, max: 720 },
     { key: "gcGraceDays", label: zh ? "自动回收恢复窗口（天）" : "Automatic reclamation grace (days)", min: 1, max: 365 },
     { key: "warningPercent", label: zh ? "容量预警（%）" : "Warning usage (%)", min: 1, max: 99 },
@@ -298,7 +296,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
           description: section === "delete"
             ? (zh ? "核对清理范围与影响后，确认执行。" : "Review the cleanup scope and impact before confirming.")
             : showPolicy
-              ? (zh ? "设置自动清理的保留数量、宽限期与容量阈值。" : "Set how many images to keep, grace periods, and capacity thresholds for automatic cleanup.")
+              ? (zh ? "当前在用镜像继续保护，连续未使用满 7 天默认标记可清理。可调整未使用天数、宽限期与容量阈值。" : "Images in use remain protected. By default, images unused for 7 consecutive days become cleanup candidates. Configure inactivity, grace periods, and capacity thresholds.")
               : zh ? "查看镜像与引用情况，选择需要清理的镜像即可删除。" : "Review images and their references, then select images to delete.",
           metrics: section === "delete" ? (preview ? [
             { label: zh ? "选中镜像" : "Images", value: preview.selected?.length || 0 },
@@ -448,6 +446,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
                 <div className="flex min-w-0 flex-col gap-2"><dt className="text-sm text-muted-foreground">{zh ? "平台" : "Platforms"}</dt><dd className="flex flex-wrap gap-1">{detail.platforms?.length ? detail.platforms.map((platform) => <Badge key={platform} variant="outline">{platform}</Badge>) : "—"}</dd></div>
                 <div className="flex flex-col gap-2"><dt className="text-sm text-muted-foreground">{zh ? "逻辑大小" : "Logical size"}</dt><dd>{formatBytes(detail.logicalBytes)}</dd></div>
                 <div className="flex flex-col gap-2"><dt className="text-sm text-muted-foreground">{zh ? "创建时间" : "Created"}</dt><dd>{formatTimestamp(detail.createdAt || detail.lastModified, lang)}</dd></div>
+                <div className="flex flex-col gap-2"><dt className="text-sm text-muted-foreground">{zh ? "未使用开始时间" : "Unused since"}</dt><dd>{formatTimestamp(detail.unusedSince, lang)}</dd></div>
                 <div className="flex flex-col gap-2"><dt className="text-sm text-muted-foreground">{zh ? "保护状态" : "Protection"}</dt><dd>{protectionBadge(detail.protectionStatus)}</dd></div>
                 <div className="flex min-w-0 flex-col gap-2"><dt className="text-sm text-muted-foreground">{zh ? "媒体类型" : "Media type"}</dt><dd className="break-all">{detail.mediaType || "—"}</dd></div>
               </dl>

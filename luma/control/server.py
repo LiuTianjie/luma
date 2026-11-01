@@ -4842,9 +4842,12 @@ def _registry_management_state(state: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(management, dict):
         management = {}
         state["registryManagement"] = management
-    management["policy"] = normalize_policy(
-        management.get("policy") if isinstance(management.get("policy"), dict) else {}
-    )
+    raw_policy = management.get("policy") if isinstance(management.get("policy"), dict) else {}
+    if raw_policy.get("retentionVersion") != 2:
+        # Migrate the old age/count policy to observed inactivity. Upgrades
+        # recommend cleanup only; they must not enable destructive automation.
+        raw_policy = {**raw_policy, "maxAgeDays": 7, "mode": "recommend"}
+    management["policy"] = normalize_policy(raw_policy)
     for key in ("deletions", "audit"):
         if not isinstance(management.get(key), list):
             management[key] = []
@@ -4921,7 +4924,7 @@ def _load_registry_scan_snapshot(spec: Dict[str, Any]) -> Dict[str, Any] | None:
     if str(snapshot.get("host") or "") != str(spec.get("host") or ""):
         return None
     result = snapshot.get("result")
-    if not isinstance(result, dict):
+    if not isinstance(result, dict) or (result.get("policy") or {}).get("retentionVersion") != 2:
         return None
     return _compact_registry_inventory_result(copy.deepcopy(result))
 
@@ -5065,30 +5068,34 @@ def _registry_nomad_references(state: Dict[str, Any], spec: Dict[str, Any]) -> t
             raise LumaError("Nomad job list is unavailable")
         for summary in jobs:
             if not isinstance(summary, dict):
-                continue
+                raise LumaError("Nomad job list contains an invalid entry")
             job_id = str(summary.get("ID") or summary.get("Name") or "").strip()
             if not job_id:
-                continue
-            versions_response = client.request(
-                "GET", f"/v1/job/{urllib.parse.quote(job_id, safe='')}/versions"
-            )
-            versions = versions_response.get("Versions") if isinstance(versions_response, dict) else []
-            if not isinstance(versions, list):
-                raise LumaError(f"Nomad job versions are unavailable: {job_id}")
-            for version in versions:
-                if not isinstance(version, dict):
+                raise LumaError("Nomad job ID is unavailable")
+            job_path = f"/v1/job/{urllib.parse.quote(job_id, safe='')}"
+            job = client.request("GET", job_path)
+            if not isinstance(job, dict) or not isinstance(job.get("TaskGroups"), list):
+                raise LumaError(f"Nomad job is unavailable: {job_id}")
+            current_jobs = [(job, f"nomad:{job_id}:current")] if not job.get("Stop") else []
+            allocations = client.request("GET", job_path + "/allocations")
+            if not isinstance(allocations, list):
+                raise LumaError(f"Nomad allocations are unavailable: {job_id}")
+            for allocation in allocations:
+                if not isinstance(allocation, dict):
+                    raise LumaError(f"Nomad allocation is unavailable: {job_id}")
+                if allocation.get("ClientStatus") not in {"running", "pending", "unknown"}:
                     continue
-                version_id = str(version.get("Version") if version.get("Version") is not None else "unknown")
-                for image in _images_from_nomad_job(version):
+                allocation_id = str(allocation.get("ID") or "")
+                detail = client.request("GET", f"/v1/allocation/{urllib.parse.quote(allocation_id, safe='')}")
+                allocated_job = detail.get("Job") if isinstance(detail, dict) else None
+                if not isinstance(allocated_job, dict) or not isinstance(allocated_job.get("TaskGroups"), list):
+                    raise LumaError(f"Nomad allocation job is unavailable: {allocation_id}")
+                current_jobs.append((allocated_job, f"nomad:{job_id}:allocation:{allocation_id}"))
+            for current_job, source in current_jobs:
+                for image in _images_from_nomad_job(current_job):
                     parsed = managed_image_reference(image, str(spec["host"]))
                     if parsed:
-                        references.append(
-                            {
-                                **parsed,
-                                "kind": "nomad-version",
-                                "source": f"nomad:{job_id}:v{version_id}",
-                            }
-                        )
+                        references.append({**parsed, "kind": "nomad-current", "source": source})
         return references, True, ""
     except LumaError as exc:
         return references, False, str(exc)
@@ -5116,6 +5123,29 @@ def _refresh_registry_inventory(state: Dict[str, Any], spec: Dict[str, Any]) -> 
         "jobId": spec["jobId"],
     }
     return inventory
+
+
+def _registry_usage_history(host: str) -> Dict[str, Any]:
+    try:
+        saved = load_state(state_dir() / "registry-usage.json")
+    except LumaError:
+        return {}
+    if saved.get("host") != host or not isinstance(saved.get("entries"), dict):
+        return {}
+    return saved["entries"]
+
+
+def _persist_registry_usage(host: str, entries: list[Dict[str, Any]]) -> None:
+    save_state({
+        "host": host,
+        "entries": {
+            str(item["repository"]) + "@" + str(item["digest"]): {
+                "unusedSince": int(item.get("unusedSince") or 0),
+                "lastUsedAt": int(item.get("lastUsedAt") or 0),
+            }
+            for item in entries
+        },
+    }, state_dir() / "registry-usage.json")
 
 
 def _registry_inventory_for_state(state: Dict[str, Any], *, refresh: bool = False) -> Dict[str, Any]:
@@ -5163,7 +5193,12 @@ def _registry_inventory_for_state(state: Dict[str, Any], *, refresh: bool = Fals
     with _REGISTRY_SCAN_LOCK:
         with _REGISTRY_CACHE_LOCK:
             scan_epoch = _REGISTRY_SCAN_EPOCHS.get(cache_key, 0)
-        inventory = _refresh_registry_inventory(state, spec)
+        history = _registry_usage_history(cache_key)
+        try:
+            inventory = _refresh_registry_inventory(state, spec)
+        except Exception:
+            _persist_registry_usage(cache_key, [])
+            raise
         references = collect_state_image_references(state, str(spec["host"]))
         nomad_references, complete, nomad_error = _registry_nomad_references(state, spec)
         references.extend(nomad_references)
@@ -5172,6 +5207,7 @@ def _registry_inventory_for_state(state: Dict[str, Any], *, refresh: bool = Fals
             references,
             complete=complete,
             policy=management["policy"],
+            previous_usage=history,
         )
         _compact_registry_inventory_result(result)
         result["referenceError"] = nomad_error
@@ -5183,6 +5219,7 @@ def _registry_inventory_for_state(state: Dict[str, Any], *, refresh: bool = Fals
                 "cachedAt": int(time.time()),
                 "result": copy.deepcopy(result),
             }
+            _persist_registry_usage(cache_key, result["entries"])
             _persist_registry_scan(spec, result)
     result["deletions"] = _registry_deletion_public_list(management["deletions"])
     result["audit"] = [dict(item) for item in management["audit"][-100:] if isinstance(item, dict)]
@@ -5322,8 +5359,11 @@ def _registry_deletion_preview_from_inventory(
         if public["protectionReasons"]:
             target = risks if manual_override else blocked
             target.append({**public, "reason": "manifest is referenced by a live or rollback workload"})
+        if not manual_override and public["protectionStatus"] != "candidate":
+            blocked.append({**public, "reason": "image has not completed its unused retention window"})
         if manual_override or (
             inventory.get("protectionComplete") and not public["protectionReasons"]
+            and public["protectionStatus"] == "candidate"
         ):
             selected.append(public)
     selected_keys = {(item["repository"], item["digest"]) for item in selected}
@@ -5804,6 +5844,11 @@ def handle_registry_deletion_execute(token: str, deletion_id: str, body: Dict[st
                 )
             _mutate_control_state(mark_failed)
             raise
+        with _REGISTRY_CACHE_LOCK:
+            _persist_registry_usage(str(spec["host"]), [
+                item for item in inventory.get("entries") or []
+                if (item["repository"], item["digest"]) not in actual
+            ])
         completed = int(time.time())
         policy = normalize_policy(inventory.get("policy") if isinstance(inventory.get("policy"), dict) else {})
 
@@ -5939,6 +5984,7 @@ def _registry_snapshot_after_purge(
         _REGISTRY_SCAN_EPOCHS[cache_key] = _REGISTRY_SCAN_EPOCHS.get(cache_key, 0) + 1
         _REGISTRY_SCAN_CACHE[cache_key] = {"cachedAt": int(time.time()), "result": result}
         try:
+            _persist_registry_usage(cache_key, entries)
             _persist_registry_scan(spec, result)
         except (OSError, LumaError) as exc:
             # The deletion and disk verification already succeeded. A failure
