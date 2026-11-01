@@ -26,20 +26,20 @@ Luma 提供三个面向 AI 编码助手的 Skill，包含项目专用的部署�
 
 ## 日志分析 {#log-investigation}
 
-[`luma-logs`](../skills/luma-logs/) 使用 `luma app alerts`、`luma app log-query`、运行事件与部署历史分析应用错误。通过 Luma 已认证的 API 查询，不需要 Agent 提取凭证、绕过 Grafana 或直连日志存储。接口说明见[历史日志查询](log-investigation.md)。
+[`luma-logs`](../skills/luma-logs/) 使用 `luma app alerts`、`luma app log-query`、运行事件与部署历史分析应用错误。通过 Luma 已认证的 API 查询，不需要 Agent 提取凭证、绕过 Grafana 或直连日志存储。接口说明见[历史日志查询](log-investigation.zh-CN.md)。
 
 示例指令：
 
 > 分析这个应用最近一小时的报错，区分重试与最终失败，并给出原因、业务影响和日志证据。
 
-## 安装与自动升级 {#installation}
+## 安装与自动升级 {#installation-and-automatic-updates}
 
 直接安装当前 CLI 自带的完整 Skill 套件：
 
 ```sh
 luma skills install --agent codex
 luma skills install --agent claude
-# 其他助手：记录自定义安装目录，后续同样自动升级
+# Other assistants, with a remembered custom destination:
 luma skills install --path /absolute/path/to/assistant/skills
 luma skills status --format json
 ```
@@ -52,7 +52,7 @@ luma skills status --format json
 
 ```sh
 luma skills sync
-# 当前版本也有本地修改时，主动恢复配套内容，同样先备份
+# Restore the bundled content even after editing an already-current version:
 luma skills sync --force
 ```
 
