@@ -125,6 +125,7 @@ from .dashboard_queries import SCOPES as DASHBOARD_SCOPES, service_summary as _d
 from .metrics_api import handle_metrics_history_batch
 from .metrics import history_metadata, load_history, load_history_snapshot, record_samples, retention_seconds, sustained_breach
 from .observe import handle_observe_apps
+from .log_query import handle_log_query
 from .monitoring import CONTENT_TYPE as METRICS_CONTENT_TYPE, peer_is_loopback, render_metrics, require_metrics_token
 from . import dashboard_auth
 from . import operations as operations_api
@@ -14703,6 +14704,7 @@ async def _asgi_health(_: Request) -> JSONResponse:
                 "macos-compose-network-v1",
                 "service-proxy",
                 "dashboard",
+                "historical-log-query-v1",
                 "service-remove",
                 "node-agent-storage",
                 "terminal",
@@ -14970,6 +14972,8 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             return Response(await run_in_threadpool(handle_prometheus_metrics, token), headers={"Content-Type": METRICS_CONTENT_TYPE, "Cache-Control": "no-store"})
         if parsed_path == "/v1/dashboard":
             return _json_response(200, await run_in_threadpool(handle_dashboard, token, **_dashboard_query(request.url.query)))
+        if parsed_path == "/v1/logs/query":
+            return _json_response(200, await run_in_threadpool(handle_log_query, token, dict(request.query_params)))
         if parsed_path == "/v1/dashboard/logs":
             service = str(request.query_params.get("service") or "")
             since = str(request.query_params.get("since") or "")

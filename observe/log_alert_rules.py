@@ -16,8 +16,10 @@ def clean_sample_text(value, limit=512):
     text = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
     text = re.sub(r'[\x00-\x08\x0b-\x1f\x7f]', '', text)
     text = re.sub(r'(https?://)[^/\s@]+@', r'\1[redacted]@', text)
-    text = re.sub(r'(?i)(\b(?:password|token|secret|authorization|api[_-]?key|access_token)\b[\s"\x27]*[:=][\s"\x27]*)([^\s,;"\x27]+)', r'\1[redacted]', text)
+    # Redact the complete bearer value before the key/value pass can consume
+    # only the word "Bearer" and leave its credential behind.
     text = re.sub(r'(?i)\bBearer\s+\S+', 'Bearer [redacted]', text)
+    text = re.sub(r'(?i)(\b(?:password|token|secret|authorization|api[_-]?key|access_token)\b[\s"\x27]*[:=][\s"\x27]*)([^\s,;"\x27]+)', r'\1[redacted]', text)
     data = text.encode('utf-8')
     if len(data) > limit:
         return data[:limit//3].decode('utf-8', 'ignore') + '\n…\n' + data[-(limit*2//3-8):].decode('utf-8', 'ignore')

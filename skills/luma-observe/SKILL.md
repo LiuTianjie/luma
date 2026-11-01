@@ -5,6 +5,10 @@ description: Deploy and operate the independent Luma application observability s
 
 # luma-observe
 
+For read-only investigation of an application's errors and historical logs, use
+`luma-logs` and `luma app log-query`. This skill owns the observability stack's
+deployment and operation, not routine application log analysis.
+
 Application telemetry collection and storage live in the optional `observe/` Compose stack. Control also has built-in application alert presets that read its metrics; these are separate from the stack's vmalert/Alertmanager rules.
 Deploy from that directory through the application's recorded workflow. Control's resource monitoring and alerting keep working if observe is absent.
 Keep log shipping, OTLP receivers and telemetry storage in observe; use the existing Control alert presets for dashboard-managed application alerts.

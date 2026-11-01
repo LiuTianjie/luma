@@ -1,6 +1,6 @@
 # AI Agent Skills {#ai-agent-skills}
 
-Luma 提供两个面向 AI 编码助手的 Skill，包含项目专用的部署与可观测工作流、参考资料和校验规则。Skill 安装在助手中，不安装到运行中的集群。
+Luma 提供三个面向 AI 编码助手的 Skill，包含项目专用的部署与可观测工作流、参考资料和校验规则。Skill 安装在助手中，不安装到运行中的集群。
 
 ## 部署工作流 {#deployment-workflows}
 
@@ -24,38 +24,41 @@ Luma 提供两个面向 AI 编码助手的 Skill，包含项目专用的部署�
 
 > 为这个集群部署 luma-observe，验证应用指标和实例失败告警，并检查通知发送结果。
 
-## 安装 {#installation}
+## 日志分析 {#log-investigation}
 
-在本地仓库目录中，将两个 Skill 文件夹复制到助手的用户级技能目录。Codex 使用：
+[`luma-logs`](../skills/luma-logs/) 使用 `luma app alerts`、`luma app log-query`、运行事件与部署历史分析应用错误。通过 Luma 已认证的 API 查询，不需要 Agent 提取凭证、绕过 Grafana 或直连日志存储。接口说明见[历史日志查询](log-investigation.md)。
 
-```bash
-mkdir -p ~/.codex/skills/luma-deployment-yaml ~/.codex/skills/luma-observe
-cp -R skills/luma-deployment-yaml/. ~/.codex/skills/luma-deployment-yaml/
-cp -R skills/luma-observe/. ~/.codex/skills/luma-observe/
+示例指令：
+
+> 分析这个应用最近一小时的报错，区分重试与最终失败，并给出原因、业务影响和日志证据。
+
+## 安装与自动升级 {#installation}
+
+直接安装当前 CLI 自带的完整 Skill 套件：
+
+```sh
+luma skills install --agent codex
+luma skills install --agent claude
+# 其他助手：记录自定义安装目录，后续同样自动升级
+luma skills install --path /absolute/path/to/assistant/skills
+luma skills status --format json
 ```
 
-Claude Code 使用：
+`luma update` 和安装脚本会自动刷新已安装的套件；通过 pip／uv 升级后，下一次运行普通 Luma 命令也会补齐同步。Skill 与 CLI 来自同一个安装包和版本，不再另外下载可能超前的 `main`。
 
-```bash
-mkdir -p ~/.claude/skills/luma-deployment-yaml ~/.claude/skills/luma-observe
-cp -R skills/luma-deployment-yaml/. ~/.claude/skills/luma-deployment-yaml/
-cp -R skills/luma-observe/. ~/.claude/skills/luma-observe/
+默认识别 Codex、Claude 目录中的旧手工安装，接管后补齐套件内的新 Skill；没有安装过 Luma Skill 的助手不会被自动写入。支持 `CODEX_HOME`、`CLAUDE_CONFIG_DIR` 和已登记的自定义目录。提权安装时以目标用户身份同步其默认目录；非默认目录请先通过 `skills install` 登记。
+
+每个 Skill 的 `.luma-managed.json` 记录配套版本与文件哈希。升级发现本地修改时，先把旧目录备份到助手技能目录旁的 `luma-skill-backups`，再安装新版本，并输出备份路径。未修改的托管文件直接替换，不反复产生备份；Skill 内已移除的旧文件也会清除。符号链接目录会保留并明确提示。权限等同步失败不会使 CLI 升级失败，但会显示同步未完成，解决后可运行：
+
+```sh
+luma skills sync
+# 当前版本也有本地修改时，主动恢复配套内容，同样先备份
+luma skills sync --force
 ```
 
-没有本地仓库时，从 GitHub `main` 安装：
+`status` 只读显示配套状态和本地修改。同版本本地修改在下次套件更新或显式 `--force` 前保持原样；建议把长期定制放在独立指令中，或从备份重新应用。开发源码目录不在普通命令运行时自动同步，需要显式运行 `skills sync`。
 
-```bash
-tmp="$(mktemp -d)"
-git clone --depth 1 https://github.com/LiuTianjie/luma.git "$tmp/luma"
-for dest in ~/.claude/skills ~/.codex/skills; do
-  mkdir -p "$dest/luma-deployment-yaml" "$dest/luma-observe"
-  cp -R "$tmp/luma/skills/luma-deployment-yaml/." "$dest/luma-deployment-yaml/"
-  cp -R "$tmp/luma/skills/luma-observe/." "$dest/luma-observe/"
-done
-rm -rf "$tmp"
-```
-
-其他助手请通过其支持的 Skill 安装方式，使用上方链接的源码目录。安装后新开对话。更新 Luma 时，应从匹配版本的仓库同步完整 Skill 目录，包括 `references/`；仅更新 `SKILL.md` 会留下过时的操作指令。`main` 可能领先于已安装的发布版，使用新行为前应核对 CLI、Control 与 Builder 的能力。更新已有安装时保留本地定制。
+wheel 和源码包都包含完整 Skill 及其引用文件。安装 Skill 不会升级 Control，也不会部署可观测栈；升级后请重新加载 Skill 或新开助手对话。
 
 ## 参考文档 {#references}
 

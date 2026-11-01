@@ -14,6 +14,8 @@ def cmd_app(args: argparse.Namespace) -> int:
         "list": cmd_app_read,
         "show": cmd_app_read,
         "logs": cmd_app_read,
+        "log-query": cmd_app_diagnostics,
+        "alerts": cmd_app_diagnostics,
         "events": cmd_app_read,
         "history": cmd_app_history,
         "versions": cmd_app_versions,
@@ -22,6 +24,47 @@ def cmd_app(args: argparse.Namespace) -> int:
         "remove": cmd_app_remove,
     }
     return handlers[args.app_command](args)
+
+
+def cmd_app_diagnostics(args: argparse.Namespace) -> int:
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    client = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    query = {"limit": args.limit}
+    if args.cursor:
+        query["cursor"] = args.cursor
+    if args.app_command == "log-query":
+        for key in ("since", "until", "task", "allocation", "stream", "contains", "exclude", "errors"):
+            value = getattr(args, key)
+            if value:
+                query[key] = "true" if key == "errors" else value
+        result = client.query_logs(args.name, query=query)
+    else:
+        if args.status:
+            query["status"] = args.status
+        result = client.app_alerts(args.name, query=query)
+    if _output_format(args) != "text":
+        _print_success(args, result)
+        return 0
+    if args.app_command == "log-query":
+        print(f"Observed range: {result['range']['since']} .. {result['range']['until']}")
+        for entry in result.get("entries", []):
+            print(f"{entry.get('observedAt', '')} {_service_log_text(entry)}")
+        if not result.get("entries"):
+            print("No matching collected logs in this range.")
+        cursor = result.get("page", {}).get("nextCursor")
+        for warning in result.get("warnings", []):
+            print(f"Warning: {warning}", file=sys.stderr)
+    else:
+        for item in result.get("items", []):
+            print(f"[{item['id']}] {item['status']} {item['ruleName']}")
+            print(item.get("logDetails", {}).get("summary") or item.get("buildDetails", {}).get("message") or "")
+        if not result.get("items"):
+            print("No matching alert incidents.")
+        cursor = result.get("nextCursor")
+        print("Resolved means the alert condition cleared, not that the failed task recovered.", file=sys.stderr)
+    if cursor:
+        print(f"Next cursor: {cursor}")
+    return 0
 
 
 def _service_log_text(event: Dict[str, Any]) -> str:

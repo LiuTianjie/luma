@@ -21,6 +21,8 @@ from .nodes import cmd_node, cmd_region, cmd_storage
 from .parser import build_parser
 from .session import cmd_context, cmd_doctor, cmd_init, cmd_login, cmd_status, cmd_version
 from .settings import cmd_git_provider, cmd_passkey, cmd_registry, cmd_secret
+from .skills import cmd_skills
+from ..skills import auto_sync
 
 ISSUES_URL = "https://github.com/LiuTianjie/luma/issues"
 
@@ -38,6 +40,7 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "workflow": cmd_workflow,
     "status": cmd_status,
     "app": cmd_app,
+    "skills": cmd_skills,
     "secret": cmd_secret,
     "bootstrap": cmd_bootstrap,
     "update": cmd_update,
@@ -93,6 +96,8 @@ def main(argv: list[str] | None = None) -> int:
         _load_environment(args)
         if args.command == "node-agent":
             return _run_node_agent(args)
+        if args.command != "skills":
+            auto_sync()
         return COMMANDS[args.command](args)
     except LumaError as exc:
         if _print_structured_error(args, exc):

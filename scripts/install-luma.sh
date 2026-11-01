@@ -477,6 +477,12 @@ installed_version="$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' "$SOURCE_DIR/lum
   exit 1
 }
 echo "Luma version: $installed_version"
+# Use the installed release's resources. The hook drops root to the installation
+# owner before touching assistant directories, and never installs a new suite
+# on a server that has not opted into Luma skills.
+if ! PYTHONPATH="$SOURCE_DIR${PYTHONPATH:+:$PYTHONPATH}" "$VENV_DIR/bin/python" -m luma.skills --user-home "$LUMA_USER_HOME"; then
+  echo "[warn] Luma CLI installed, but skill sync is incomplete; run 'luma skills sync' as the client user." >&2
+fi
 if [ "$LOCAL_CHECKOUT" -eq 0 ]; then
   echo "Command shim: $BIN_DIR/luma"
   echo "Open a new shell or run: exec \$SHELL -l"

@@ -306,6 +306,14 @@ class ControlClient:
         query = self._service_logs_query(name, tail=tail, allocation=allocation, previous=previous)
         return self.request("GET", f"/v1/dashboard/logs?{query}", timeout=60)
 
+    def query_logs(self, name: str, *, query: Dict[str, Any]) -> Dict[str, Any]:
+        params = urllib.parse.urlencode({**query, "app": name})
+        return self.request("GET", f"/v1/logs/query?{params}", timeout=15)
+
+    def app_alerts(self, name: str, *, query: Dict[str, Any]) -> Dict[str, Any]:
+        params = urllib.parse.urlencode({**query, "app": name})
+        return self.request("GET", f"/v1/alerting/incidents?{params}")
+
     def service_log_events(self, name: str, *, tail: int = 120, allocation: str = "", previous: bool = False) -> Iterator[Dict[str, Any]]:
         """Follow with byte cursors; stop after eight reconnects without progress.
 

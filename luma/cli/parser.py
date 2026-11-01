@@ -26,6 +26,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("context", "List or switch saved Control logins"),
         ("doctor", "Check this machine, Control and nodes"),
         ("version", "Show CLI and Control versions"),
+        ("skills", "Install and refresh version-paired AI agent skills"),
     )),
     ("Deploy", (
         ("validate", "Check a service manifest without contacting Control"),
@@ -367,6 +368,22 @@ def _add_operate_commands(sub: argparse._SubParsersAction) -> None:
     app_logs.add_argument("--tail", type=int, default=120, help="Recent lines to read across all sources, 1-500 (default: 120)")
     app_logs.add_argument("--previous", action="store_true", help="Read stopped allocations instead of running ones")
     app_logs.add_argument("--allocation", default="", help="Only this allocation ID")
+    app_query = _command(app_sub, "log-query", "Search retained historical logs through luma-observe")
+    app_query.add_argument("name", help="Application/stack ID from 'luma app list'")
+    app_query.add_argument("--since", default="", help="RFC3339 with timezone, Unix seconds, or duration (default: 1h)")
+    app_query.add_argument("--until", default="", help="End time, RFC3339 or Unix seconds (default: now); maximum range 24h")
+    app_query.add_argument("--task", default="", help="Exact task/service name within the stack")
+    app_query.add_argument("--allocation", default="", help="Exact allocation ID")
+    app_query.add_argument("--stream", choices=("stdout", "stderr"), default="", help="Only this output stream; stderr is not a severity")
+    app_query.add_argument("--contains", default="", help="Literal substring; not a regular expression")
+    app_query.add_argument("--exclude", default="", help="Exclude a literal substring")
+    app_query.add_argument("--errors", action="store_true", help="Heuristic error text matching; omit for traceback context")
+    app_query.add_argument("--limit", type=int, default=100, help="Log lines per page, 1-500 (default: 100)")
+    app_query.add_argument("--cursor", default="", help="Opaque nextCursor; omit all filters when continuing")
+    app_alerts = _command(app_sub, "alerts", "Read application alert incidents and their evidence summaries")
+    app_alerts.add_argument("name", help="Application/stack ID")
+    app_alerts.add_argument("--status", choices=("pending", "firing", "resolved", "closed"), default="", help="Only incidents with this alert status")
+    _add_pagination_arguments(app_alerts)
     app_events = _command(app_sub, "events", "Show recent runtime events of the latest allocation")
     app_events.add_argument("name", help="Full service name from 'luma app list'")
     app_history = _command(app_sub, "history", "Page through build and deployment attempts")
@@ -376,9 +393,21 @@ def _add_operate_commands(sub: argparse._SubParsersAction) -> None:
     _add_history_arguments(app_history)
     app_versions = _command(app_sub, "versions", "List the Nomad job versions that 'luma app rollback' can restore")
     app_versions.add_argument("name", help="Application name")
-    for operation in (app_list, app_show, app_logs, app_events, app_history, app_versions):
+    for operation in (app_list, app_show, app_logs, app_query, app_alerts, app_events, app_history, app_versions):
         _add_control_arguments(operation)
         _add_output_arguments(operation)
+    skills = _command(sub, "skills", "Install or refresh the agent skills paired with this CLI")
+    skills_sub = _commands(skills, "skills_command")
+    skills_install = _command(skills_sub, "install", "Install the bundled skill suite and enable automatic updates")
+    destination = skills_install.add_mutually_exclusive_group(required=True)
+    destination.add_argument("--agent", choices=("codex", "claude", "all"), help="Assistant whose user-level skills directory should be managed")
+    destination.add_argument("--path", help="Custom assistant skills directory, remembered for updates")
+    skills_sync = _command(skills_sub, "sync", "Refresh existing skill suites; back up local modifications")
+    for operation in (skills_install, skills_sync):
+        operation.add_argument("--force", action="store_true", help="Restore bundled content even when the recorded version is current; back up edits")
+        _add_output_arguments(operation)
+    skills_status = _command(skills_sub, "status", "Show installed skill versions and local modifications without changing files")
+    _add_output_arguments(skills_status)
     app_rollback = _command(
         app_sub, "rollback", "Restore a previous Nomad job version",
         description="Restore a previous Nomad job version. This does not restore application data.",

@@ -20,6 +20,7 @@ Get started:
   context       List or switch saved Control logins
   doctor        Check this machine, Control and nodes
   version       Show CLI and Control versions
+  skills        Install and refresh version-paired AI agent skills
 
 Deploy:
   validate      Check a service manifest without contacting Control
@@ -783,19 +784,21 @@ usage: luma app [-h] <command> ...
 Inspect, restart, roll back or remove deployed applications
 
 arguments:
-  -h, --help  show this help message and exit
+  -h, --help   show this help message and exit
 
 arguments:
   <command>
-    list      List deployed services and their replica health
-    show      Show an application or one of its services
-    logs      Read application logs
-    events    Show recent runtime events of the latest allocation
-    history   Page through build and deployment attempts
-    versions  List the Nomad job versions that 'luma app rollback' can restore
-    rollback  Restore a previous Nomad job version
-    restart   Restart an application
-    remove    Remove an application, its routes and DNS records
+    list       List deployed services and their replica health
+    show       Show an application or one of its services
+    logs       Read application logs
+    log-query  Search retained historical logs through luma-observe
+    alerts     Read application alert incidents and their evidence summaries
+    events     Show recent runtime events of the latest allocation
+    history    Page through build and deployment attempts
+    versions   List the Nomad job versions that 'luma app rollback' can restore
+    rollback   Restore a previous Nomad job version
+    restart    Restart an application
+    remove     Remove an application, its routes and DNS records
 
 Examples:
   luma app list
@@ -868,6 +871,70 @@ arguments:
   --tail TAIL                 Recent lines to read across all sources, 1-500 (default: 120)
   --previous                  Read stopped allocations instead of running ones
   --allocation ALLOCATION     Only this allocation ID
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma app log-query`
+
+```text
+usage: luma app log-query [-h] [--since SINCE] [--until UNTIL] [--task TASK] [--allocation ALLOCATION] [--stream {stdout,stderr}] [--contains CONTAINS] [--exclude EXCLUDE] [--errors] [--limit LIMIT] [--cursor CURSOR] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Search retained historical logs through luma-observe
+
+arguments:
+  name                        Application/stack ID from 'luma app list'
+
+arguments:
+  -h, --help                  show this help message and exit
+  --since SINCE               RFC3339 with timezone, Unix seconds, or duration (default: 1h)
+  --until UNTIL               End time, RFC3339 or Unix seconds (default: now); maximum range 24h
+  --task TASK                 Exact task/service name within the stack
+  --allocation ALLOCATION     Exact allocation ID
+  --stream {stdout,stderr}    Only this output stream; stderr is not a severity
+  --contains CONTAINS         Literal substring; not a regular expression
+  --exclude EXCLUDE           Exclude a literal substring
+  --errors                    Heuristic error text matching; omit for traceback context
+  --limit LIMIT               Log lines per page, 1-500 (default: 100)
+  --cursor CURSOR             Opaque nextCursor; omit all filters when continuing
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma app alerts`
+
+```text
+usage: luma app alerts [-h] [--status {pending,firing,resolved,closed}] [--limit LIMIT] [--cursor CURSOR] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Read application alert incidents and their evidence summaries
+
+arguments:
+  name                        Application/stack ID
+
+arguments:
+  -h, --help                  show this help message and exit
+  --status {pending,firing,resolved,closed}
+                              Only incidents with this alert status
+  --limit LIMIT               Records per page, 1-100 (default: 50)
+  --cursor CURSOR             nextCursor from the previous page with the same filters
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -1047,6 +1114,71 @@ arguments:
   --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
   --insecure                  Skip TLS verification for Control
   --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma skills`
+
+```text
+usage: luma skills [-h] <command> ...
+
+Install or refresh the agent skills paired with this CLI
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  <command>
+    install   Install the bundled skill suite and enable automatic updates
+    sync      Refresh existing skill suites; back up local modifications
+    status    Show installed skill versions and local modifications without changing files
+```
+
+## `luma skills install`
+
+```text
+usage: luma skills install [-h] (--agent {codex,claude,all} | --path PATH) [--force] [--format {text,json,ndjson}] [--quiet]
+
+Install the bundled skill suite and enable automatic updates
+
+arguments:
+  -h, --help                  show this help message and exit
+  --agent {codex,claude,all}  Assistant whose user-level skills directory should be managed
+  --path PATH                 Custom assistant skills directory, remembered for updates
+  --force                     Restore bundled content even when the recorded version is current;
+                              back up edits
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+```
+
+## `luma skills sync`
+
+```text
+usage: luma skills sync [-h] [--force] [--format {text,json,ndjson}] [--quiet]
+
+Refresh existing skill suites; back up local modifications
+
+arguments:
+  -h, --help                  show this help message and exit
+  --force                     Restore bundled content even when the recorded version is current;
+                              back up edits
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+```
+
+## `luma skills status`
+
+```text
+usage: luma skills status [-h] [--format {text,json,ndjson}] [--quiet]
+
+Show installed skill versions and local modifications without changing files
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
 ```
 
 ## `luma secret`
