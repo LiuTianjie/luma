@@ -58,6 +58,7 @@ export function alertStatusLabel(status: string, zh: boolean) {
 
 export function localizeAlertPreset(preset: AlertPreset, zh: boolean): AlertPreset {
   const labels: Record<string, [string, string]> = {
+    "app.memory": ["Service container memory near limit", "Highest Docker memory utilization among service containers; from Agents, without observe"],
     "node.offline": ["Node heartbeat missing", "Time since the last Agent heartbeat; independent of Nomad scheduling state"],
     "node.cpu": ["Sustained CPU usage", "Fresh Linux host CPU samples"],
     "node.memory": ["Sustained memory usage", "Host memory usage"],

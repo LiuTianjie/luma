@@ -15,12 +15,13 @@ from typing import Any, Callable
 
 from ..errors import LumaError
 from ..log_alert_rules import MAX_RULES, normalize as normalize_log_rule
-from . import database
+from . import container_alerts, database
 from .alert_notifications import FeishuError, alert_outbox_text, feishu_alert_card, send_feishu, validate_credentials
 from .build_alert_details import build_details, detail_rows
 from . import log_alert_details
 
 PRESETS = [
+    dict(metric='app.memory', name='服务容器内存接近上限', description='服务内各容器的 Docker 内存使用率最大值；来自 Agent，无需 observe', threshold=80, forSeconds=120, unit='percent'),
     dict(metric='app.log_matches', name='服务日志匹配', description='指定应用/服务的匹配日志条数；由 observe 统计', threshold=4, forSeconds=0, unit='count'),
     dict(metric='node.offline', name='节点失联', description='Agent 心跳距今超过阈值；不是 Nomad 调度状态', threshold=120, forSeconds=60, unit='seconds'),
     dict(metric='node.cpu', name='CPU 持续高占用', description='新鲜的 Linux 主机 CPU 样本', threshold=90, forSeconds=300, unit='percent'),
@@ -258,6 +259,9 @@ def _notify(conn,rule,incident,kind,now,cluster):
     label = {'firing':'告警触发','resolved':'告警恢复','reminder':'告警持续'}[kind]
     value = '无新鲜数据' if incident['no_data'] else f"{incident['value']:g}"
     threshold = f"{rule['threshold']:g}"
+    if rule['metric'] == 'app.memory':
+        value += '' if incident['no_data'] else '%'
+        threshold += '%'
     fallback = f"Luma {label} · {rule['name']}\n集群：{cluster}\n对象：{incident['target']}\n级别：{rule['severity']}\n当前值：{value}；阈值：{threshold}\n事件编号：{incident['id']}\n请在 Dashboard → 可观测 → 告警中心查看。"
     details = json.loads(incident['build_details'])
     if details:
@@ -325,9 +329,11 @@ def _capture_build_details(conn, row, run, domain):
     conn.execute('UPDATE alert_incidents SET build_details=?,application=? WHERE id=?',(json.dumps(details,ensure_ascii=False),details.get('service', ''),row['id']))
 
 
-def _observations(state,metric,now):
+def _observations(state,metric,now, *, threshold=float('inf')):
     result = {}
-    if metric.startswith('node.'):
+    if metric == 'app.memory':
+        return container_alerts.observations(state, now, threshold)
+    elif metric.startswith('node.'):
         keys = {'node.cpu':'cpuPercent','node.memory':'memoryUsedPercent','node.disk':'diskUsedPercent','node.inode':'inodesUsedPercent'}
         for target,node in (state.get('nodes') or {}).items():
             if not isinstance(node,dict): continue
@@ -367,7 +373,7 @@ def tick(state: dict[str,Any], *, now=None, services=None):
             builds = _latest_builds(state) if rule['metric']=='build.failed' else {}
             log_sample = (state.get('_logAlerts') or {}).get(rule['id'])
             observations = ({rule['target']: _num(log_sample.get('value') if isinstance(log_sample, dict) else log_sample)}
-                            if rule['metric'] == 'app.log_matches' else _observations(state,rule['metric'],now))
+                            if rule['metric'] == 'app.log_matches' else _observations(state,rule['metric'],now,threshold=rule['threshold']))
             if rule['target'] != '*': observations = {rule['target']:observations.get(rule['target'])}
             active = {r['target']:r for r in conn.execute("SELECT * FROM alert_incidents WHERE rule_id=? AND status IN ('pending','firing')",(rule['id'],))}
             dismissals = {(r['target'],r['build_id']) for r in conn.execute('SELECT target,build_id FROM alert_dismissals WHERE rule_id=?',(rule['id'],))}
@@ -539,11 +545,16 @@ def load_evaluation_state(*, now=None):
             result['buildRuns'][row['id']] = json.loads(row['payload'])
         table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='alert_rules'").fetchone()
         result['_observeMetrics'] = {str(item[0]) for item in conn.execute("SELECT DISTINCT metric FROM alert_rules WHERE enabled=1")} if table else set()
+        if 'app.memory' in result['_observeMetrics']:
+            for row in conn.execute("SELECT key,payload FROM control_config WHERE key IN ('nomadAddr','nomadToken')"):
+                result[row['key']] = json.loads(row['payload'])
         log_columns = {r[1] for r in conn.execute('PRAGMA table_info(alert_rules)')} if table else set()
         log_rules = [dict(id=r['id'], target=r['target'], logQuery=json.loads(r['log_query']))
                      for r in conn.execute("SELECT id,target,log_query FROM alert_rules WHERE enabled=1 AND metric='app.log_matches' LIMIT 20")] if 'log_query' in log_columns else []
     from .log_alerts import samples
     result['_logAlerts'] = samples(log_rules, now)
+    if 'app.memory' in result['_observeMetrics']:
+        container_alerts.hydrate(result)
     _hydrate_observe_alerts(result)
     return result
 
