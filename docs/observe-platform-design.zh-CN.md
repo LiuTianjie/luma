@@ -1,10 +1,10 @@
-# 通用观测平台设计
+# 通用观测平台设计 {#observe-platform-design}
 
 Luma Observe 接收标准遥测，应用拥有埋点、业务字段、面板和告警定义。部署管理与观测接入是两种独立能力。Python SDK 是官方 OpenTelemetry 的可选薄封装；其他语言或已有 OTel SDK 可以直接接入。
 
 本文区分本分支源码与后续方案，不代表生产部署或容量验收已经完成。接入参数见[标准应用观测接入](observe-applications.zh-CN.md)，Python API 见[SDK 指南](../sdk/python/docs/integration.zh-CN.md)。
 
-## 接入身份与外部应用
+## 接入身份与外部应用 {#application-identity-and-external-services}
 
 - 资源身份沿用 `service.namespace`、`service.name`、`service.instance.id`、`deployment.environment.name`。应用自行选择稳定的服务名；执行 ID 和业务 ID 属于 Span，不作为指标标签。
 - Luma 部署的进程使用 Control 注入的标准 OTLP 配置；外部进程使用已启用的 HTTPS OTLP 入口及原有写入凭据。HTTPS 示例配置需要实际安装、DNS/TLS 和连通性验证，文件存在不代表入口已上线。
@@ -12,7 +12,7 @@ Luma Observe 接收标准遥测，应用拥有埋点、业务字段、面板和�
 - 当前 Prometheus Remote Write 路径要求 cumulative 的单调计数与直方图。外部 SDK 必须配置 cumulative；DELTA 转换是后续平台能力，不能把 OTLP 接收成功解释为任意 temporality 都可存储。
 - 保持现有凭据及 `luma secret` 流程。共享读凭据、Grafana 变量和 dashboard UID 均不是租户隔离机制。
 
-## 任务执行与采样
+## 任务执行与采样 {#task-execution-and-sampling}
 
 每次框架执行建立独立 Trace，用标准 SpanLink 连接投递上下文。重新投递保留旧上下文的 Link；它表达因果关系，不把两次执行合成一次。消息准备 Span 不代表 Broker 已接收。没有 exporter 的生产者仍可写排队时间戳；显式禁用 SDK 时不改投递标签。
 
@@ -22,7 +22,7 @@ Luma Observe 接收标准遥测，应用拥有埋点、业务字段、面板和�
 
 执行状态由 SDK 执行上下文持有；消息中只携带可序列化的传播标签。Taskiq 使用正常完成钩子和 asyncio Task 完成兜底结束尝试，并在 Broker shutdown 限时 flush；flush 不关闭同进程共享 Provider。Celery 使用公开任务及进程信号。业务异常、返回值、重试、结果保存和 ACK 仍由框架负责。
 
-## 高频负载与可靠性
+## 高频负载与可靠性 {#high-frequency-workloads-and-reliability}
 
 | 层级 | 当前机制 | 边界 |
 | --- | --- | --- |
@@ -46,7 +46,7 @@ Luma Observe 接收标准遥测，应用拥有埋点、业务字段、面板和�
 
 持久 exporter 队列仍不覆盖入队前的 batch / tail sampling 内存状态，也不能保护 SDK 进程崩溃前尚未导出的数据。服务返回成功的时点及持久化边界必须随实现记录，不能称为端到端零丢失。
 
-## 应用详情中的面板
+## 应用详情中的面板 {#dashboards-in-application-details}
 
 当前已有 Grafana 标准 JSON 的扩展目录、离线配置工具和应用详情的 Grafana 嵌入。自定义面板可以沿用这些能力。以下注册和 UI 方案尚未实施：
 
@@ -56,7 +56,7 @@ Luma Observe 接收标准遥测，应用拥有埋点、业务字段、面板和�
 
 SDK 面板编译器是可选离线工具。已有标准 Grafana JSON 的应用可以直接交付，不需要转成另一份格式。
 
-## 版本与发布
+## 版本与发布 {#versions-and-releases}
 
 SDK 版本与 `luma-infra` 独立。`observe-sdk-v*` 发布流程完成检查后将同次构建的 wheel、源码包及校验和发布到 GitHub Releases，可作为稳定依赖来源。PyPI OIDC 发布需先建立独立 Trusted Publisher 并启用仓库发布变量；工作流源码不代表包已经在 PyPI 可用。消费方锁定发布 wheel 的校验和或完整 Git SHA，不使用会过期的 CI 工件 URL 作为长期依赖。参见[发布指南](../sdk/python/docs/releasing.md)。
 
