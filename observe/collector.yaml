@@ -61,6 +61,20 @@ processors:
       span:
         - 'IsMatch(attributes["url.path"], "^/v1/(node-agent|terminal)/")'
         - 'IsMatch(attributes["url.full"], "/v1/(node-agent|terminal)/")'
+  # Completed task roots are sampled separately from their children. An early
+  # child must not decide whether a much later failed execution root is kept.
+  # Keep these predicates complementary; nested manual tasks stay in the normal
+  # trace branch, where the trace may already have a sampling decision.
+  filter/exclude-task-roots:
+    error_mode: ignore
+    traces:
+      span:
+        - 'kind == SPAN_KIND_CONSUMER and parent_span_id == SpanID(0x0000000000000000) and attributes["task.framework"] != nil and attributes["task.name"] != nil'
+  filter/only-task-roots:
+    error_mode: ignore
+    traces:
+      span:
+        - 'not (kind == SPAN_KIND_CONSUMER and parent_span_id == SpanID(0x0000000000000000) and attributes["task.framework"] != nil and attributes["task.name"] != nil)'
   tail_sampling:
     decision_wait: 10s
     # Ten seconds at the expected rate needs ~1000 traces. Bound burst memory.
@@ -85,6 +99,26 @@ processors:
         type: probabilistic
         probabilistic:
           sampling_percentage: 10
+  tail_sampling/task-roots:
+    # This branch receives only finished root spans, so duration and outcome
+    # are already known. This protects the execution summary, not every child
+    # in a long-running trace; children retain the normal best-effort sampling.
+    decision_wait: 1s
+    num_traces: 5000
+    expected_new_traces_per_sec: 100
+    policies:
+      - name: task-errors
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+      - name: task-slow
+        type: latency
+        latency:
+          threshold_ms: 1000
+      - name: task-baseline
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 10
   batch:
     timeout: 5s
     send_batch_size: 512
@@ -92,6 +126,7 @@ processors:
 
 connectors:
   forward/sampled:
+  forward/task-roots:
   spanmetrics:
     namespace: traces.span.metrics
     dimensions_cache_size: 1000
@@ -140,10 +175,14 @@ service:
       # Span metrics use every accepted business span. Only the storage branch
       # is sampled, so fast successes remain in rate/error/duration statistics.
       processors: [memory_limiter, filter/control-agent]
-      exporters: [spanmetrics, forward/sampled]
+      exporters: [spanmetrics, forward/sampled, forward/task-roots]
     traces/sampled:
       receivers: [forward/sampled]
-      processors: [memory_limiter, tail_sampling, batch]
+      processors: [memory_limiter, filter/exclude-task-roots, tail_sampling, batch]
+      exporters: [otlphttp/tempo]
+    traces/task-roots:
+      receivers: [forward/task-roots]
+      processors: [memory_limiter, filter/only-task-roots, tail_sampling/task-roots, batch]
       exporters: [otlphttp/tempo]
     metrics/span:
       receivers: [spanmetrics]

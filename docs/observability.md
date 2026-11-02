@@ -57,8 +57,9 @@ producers and application-owned dashboards/rules, see
 
 Deploying [`observe/`](../observe/) is the cluster opt-in. After that, new Luma
 deploys get OTel wiring automatically. A process restart of an old job is not
-enough; the Nomad job must be rendered again. There is no Luma telemetry SDK
-and no language agent injection.
+enough; the Nomad job must be rendered again. Applications can use the optional
+[`luma-observe-sdk` Python package](../sdk/python/README.md) or the official OTel
+SDK directly. Language agents are installed by the application's own image.
 
 What you get without changing the app:
 

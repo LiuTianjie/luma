@@ -36,7 +36,7 @@ Do not use this skill for Dashboard node CPU/disk presets or Nomad job YAML for 
 - Collectors bind `127.0.0.1` only. Control uses host networking to read VictoriaMetrics at `127.0.0.1:8428`. Never publish 4318/8082/8428/9428/3100 on eth0 or the public NIC. Port 4319 is the manager Tailscale mesh OTLP listener with a Control-issued bearer token; do not bind it on the public NIC.
 - After observe is deployed, look at Dashboard → Observability → App monitoring. It embeds Grafana at `/grafana` on the Control domain.
 - The stack evaluates its bundled rules with vmalert + Alertmanager and can notify through its Feishu webhook service. Dashboard-managed rules use Control's persistent alert engine and notification channels; application p95, 5xx ratio and failed-allocation presets read VictoriaMetrics. Check which rule owns an incident before changing either path, and avoid duplicate notifications for the same condition.
-- Auto-instrumentation is automatic after observe is deployed: Control injects official OTel env vars into later app jobs. Do not create a Luma telemetry SDK.
+- After observe is deployed, Control injects official OTel env vars into later app jobs. Applications can use official language instrumentation directly or the independently versioned optional Python `luma-observe-sdk` package in `sdk/python/`. Keep its APIs business-agnostic and reuse official OTel transport, existing tokens and scoped secrets.
 - This injection is configuration wiring, not magic code instrumentation. A business image
   must include the official OpenTelemetry distro/exporter and start it with the
   language's supported auto-instrumentation entrypoint before it emits process spans.
@@ -51,7 +51,7 @@ Do not use this skill for Dashboard node CPU/disk presets or Nomad job YAML for 
 
 Operators look at Dashboard → Observability → App monitoring. Traefik routers and Nomad
 jobs are mapped to Luma app/stack names by observe itself. Do not ask apps to
-add labels, sidecars, or a Luma SDK for this view.
+add labels, sidecars, or an application SDK for this infrastructure view.
 
 ## Deploy
 

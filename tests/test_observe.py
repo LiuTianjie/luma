@@ -368,12 +368,17 @@ class ObserveTraceStackTests(unittest.TestCase):
         self.assertIn("tail_sampling", text)
         self.assertNotIn("probabilistic_sampler", text)
         pipelines = yaml.safe_load(text)["service"]["pipelines"]
-        self.assertEqual(pipelines["traces"]["exporters"], ["spanmetrics", "forward/sampled"])
+        self.assertEqual(pipelines["traces"]["exporters"], ["spanmetrics", "forward/sampled", "forward/task-roots"])
         self.assertNotIn("tail_sampling", pipelines["traces"]["processors"])
         self.assertIn("filter/control-agent", pipelines["traces"]["processors"])
         self.assertEqual(pipelines["traces/sampled"]["receivers"], ["forward/sampled"])
         self.assertIn("tail_sampling", pipelines["traces/sampled"]["processors"])
         self.assertEqual(pipelines["traces/sampled"]["exporters"], ["otlphttp/tempo"])
+        self.assertIn("filter/exclude-task-roots", pipelines["traces/sampled"]["processors"])
+        self.assertEqual(pipelines["traces/task-roots"]["receivers"], ["forward/task-roots"])
+        self.assertIn("filter/only-task-roots", pipelines["traces/task-roots"]["processors"])
+        self.assertIn("tail_sampling/task-roots", pipelines["traces/task-roots"]["processors"])
+        self.assertEqual(pipelines["traces/task-roots"]["exporters"], ["otlphttp/tempo"])
         self.assertIn("otlp/mesh", pipelines["metrics"]["receivers"])
         # Long-lived agent requests would otherwise all match the slow policy.
         self.assertIn('IsMatch(attributes["url.path"], "^/v1/(node-agent|terminal)/")', text)
