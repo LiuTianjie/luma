@@ -93,7 +93,7 @@ test("observed values use metric units, bounded precision and explicit missing-d
   const format = mod.exports.formatAlertObservedValue;
   assert.equal(format("node.offline", 14.673213958740234, false, true), "14.7 秒");
   assert.equal(format("task.queue_age", 601.234567, false, false), "601.2 s");
-  for (const metric of ["node.cpu", "node.memory", "node.disk", "node.inode"]) assert.equal(format(metric, 91.234567, false, true), "91.2%");
+  for (const metric of ["node.cpu", "node.memory", "node.disk", "node.inode", "app.memory"]) assert.equal(format(metric, 91.234567, false, true), "91.2%");
   assert.equal(format("node.cpu", 0, false, false), "0%");
   assert.equal(format("build.failed", 1, false, true), "失败");
   assert.equal(format("build.failed", 0, false, false), "Not failed");

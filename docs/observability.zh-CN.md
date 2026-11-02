@@ -97,7 +97,11 @@ async function charge(orderId) {
 
 控制台告警页管理规则、通知渠道和事件。规则、事件状态变化及通知发件箱持久化在 Control SQLite 中。评估器使用已上报给 Control 的采样和任务状态；创建资源规则不会启动公共 HTTP 探测。
 
-可用预设包括节点心跳时长、持续 CPU/内存/磁盘/inode 使用率、排队任务时长、每个应用最近一次失败构建；部署 luma-observe 后还支持应用 p95 延迟、HTTP 5xx 比例和 Nomad 失败 allocation。Observe 采样通过 VictoriaMetrics 即时 PromQL 查询获得；observe 不可用时，相关规则保持上次状态（`noData: keep`），不会因此触发。阈值和持续时长可配置，条件持续达到要求后，事件才由 pending 变为 firing；健康观测会解除事件。每条规则与目标仅维护一个活动事件，可设置持续故障的重复通知间隔。
+可用预设包括服务容器内存、节点心跳时长、持续 CPU/内存/磁盘/inode 使用率、排队任务时长、每个应用最近一次失败构建；部署 luma-observe 后还支持应用 p95 延迟、HTTP 5xx 比例和 Nomad 失败 allocation。Observe 采样通过 VictoriaMetrics 即时 PromQL 查询获得；observe 不可用时，相关规则保持上次状态（`noData: keep`），不会因此触发。阈值和持续时长可配置，条件持续达到要求后，事件才由 pending 变为 firing；健康观测会解除事件。每条规则与目标仅维护一个活动事件，可设置持续故障的重复通知间隔。
+
+**服务容器内存接近上限**（`app.memory`）取应用各容器、各副本的 Docker 内存使用率最大值，Compose 包含整个栈的所有任务，不会平均掉单个高占用容器。默认条件为 **超过 80% 持续 2 分钟**。在告警规则页选择此预设、目标应用（例如 `luma-observe`）及通知渠道，保存启用即可。新安装自带预设，不会自动创建规则或渠道；已有集群升级 Control 即可获得，不要求重新部署 observe，也不要求更新已经上报容器统计的 Agent。
+
+此预设直接使用 Agent 采样，不依赖 observe。Control 在数据库事务外将 Nomad allocation ID 映射到应用名；心跳和容器采样均须在 120 秒内，且内存上限为正数。已知副本缺少有效采样或应用身份无法解析时，不会将其余低占用容器当成恢复依据；已有新鲜容器超过阈值时，仍可确认超限。`noData: keep` 会保留已触发事件，并中断 pending 的连续计时。Linux 下 Docker 使用量扣除了不活跃文件缓存，因此它是针对 Docker 所报内存上限的提前预警，不等同于磁盘压力或完整 cgroup 缓存用量；主机内存和磁盘告警仍应保留。
 
 缺失数据有明确策略：`keep` 保持已有触发状态，不把缺失当作恢复；`alert` 把缺失视为待评估条件。CPU 规则使用新鲜的 Linux 主机 CPU 采样，不把 macOS 负载均值解释为 CPU 百分比。
 

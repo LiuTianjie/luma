@@ -32,6 +32,85 @@ class AlertingTest(unittest.TestCase):
     def items(self,resource):
         return alerting.dispatch('GET',resource)['items']
 
+    def memory_state(self, now, value=95):
+        return {'clusterId':'test', 'nodes':{
+            'manager':{'agent':{'lastSeen':now, 'containerStatsCollectedAt':now, 'containerStats':[
+                {'service':'nomad:alloc-tempo', 'nomadAllocId':'alloc-tempo', 'containerId':'tempo',
+                 'memoryPercent':value, 'memoryUsageBytes':value * 10, 'memoryLimitBytes':1000},
+                {'service':'luma-observe', 'containerId':'collector', 'memoryPercent':5, 'memoryLimitBytes':5000},
+            ]}},
+            'replica':{'agent':{'lastSeen':now, 'containerStatsCollectedAt':now, 'containerStats':[
+                {'service':'luma-observe', 'containerId':'replica', 'memoryPercent':10, 'memoryLimitBytes':2000},
+            ]}},
+        }, '_memoryAllocationIndex':{'alloc-tempo':{'service':'luma-observe'}}}
+
+    def test_container_memory_maximum_and_missing_replica_lifecycle(self):
+        ch = self.channel()
+        self.rule(name='内存预警', metric='app.memory', target='luma-observe', threshold=80,
+                  channelIds=[ch['id']])
+        for now in (1000, 1015, 1030):
+            alerting.tick(self.memory_state(now), now=now)
+        incident = self.items('incidents')[0]
+        self.assertEqual((incident['status'], incident['value'], incident['application']),
+                         ('firing', 95, 'luma-observe'))
+        sent = []
+        alerting.deliver_pending(now=1030, transport=lambda *args: sent.append(args))
+        self.assertIn('95%', sent[0][3])
+        self.assertIn('80%', sent[0][3])
+        # A fresh heartbeat alone must not make the old hot container sample
+        # fresh. The other healthy replica cannot resolve the incident.
+        state = self.memory_state(1045, 20)
+        state['nodes']['manager']['agent']['containerStatsCollectedAt'] = 900
+        alerting.tick(state, now=1045)
+        self.assertEqual(self.items('incidents')[0]['status'], 'firing')
+        self.assertTrue(self.items('incidents')[0]['noData'])
+        alerting.tick(self.memory_state(1060, 20), now=1060)
+        self.assertEqual(self.items('incidents')[0]['status'], 'resolved')
+        self.assertEqual(len(self.items('incidents')), 1)
+
+    def test_container_memory_invalid_and_partial_samples(self):
+        for patch_item in ({'memoryPercent':None}, {'memoryPercent':True}, {'memoryPercent':float('nan')},
+                           {'memoryPercent':float('inf')}, {'memoryPercent':-1}, {'memoryLimitBytes':0},
+                           {'memoryLimitBytes':False}, {'memoryLimitBytes':10**1000}):
+            with self.subTest(sample=patch_item):
+                state = self.memory_state(1000, 20)
+                state['nodes']['manager']['agent']['containerStats'][0].update(patch_item)
+                self.assertIsNone(alerting._observations(state, 'app.memory', 1000, threshold=80)['luma-observe'])
+        state = self.memory_state(1000)
+        state['nodes']['replica']['agent']['lastSeen'] = 800
+        self.assertEqual(alerting._observations(state, 'app.memory', 1000, threshold=80)['luma-observe'], 95)
+        state = self.memory_state(1000, 20)
+        del state['_memoryAllocationIndex']
+        self.assertIsNone(alerting._observations(state, 'app.memory', 1000, threshold=80)['luma-observe'])
+        # Agents without the percentage can still report bytes and a limit.
+        state = self.memory_state(1000)
+        del state['nodes']['manager']['agent']['containerStats'][0]['memoryPercent']
+        self.assertEqual(alerting._observations(state, 'app.memory', 1000, threshold=80)['luma-observe'], 95)
+
+    def test_container_memory_snapshot_resolves_raw_nomad_identity_without_observe(self):
+        from types import SimpleNamespace
+        from luma.control.state import save_state
+        self.rule(metric='app.memory', target='luma-observe', threshold=80, forSeconds=0)
+        state = self.memory_state(1000)
+        del state['_memoryAllocationIndex']
+        save_state(state)
+        allocations = [{'ID':'alloc-tempo', 'JobID':'luma-observe', 'TaskGroup':'observe',
+                        'TaskStates':{'tempo':{}, 'collector':{}}}]
+        with patch('luma.control.server.load_config', return_value=SimpleNamespace(defaults={})), \
+             patch('luma.control.server.NomadApi.request', return_value=allocations) as nomad, \
+             patch('luma.control.observe.instant_values', side_effect=AssertionError('observe dependency')):
+            snapshot = alerting.load_evaluation_state(now=1000)
+            nomad.assert_called_once_with('GET', '/v1/allocations')
+            nomad.side_effect = AssertionError('network inside evaluator')
+            alerting.tick(snapshot, now=1000)
+        self.assertEqual(self.items('incidents')[0]['value'], 95)
+        # Failed identity resolution is missing data, never an apparent recovery.
+        with patch('luma.control.server.load_config', side_effect=OSError('unavailable')):
+            snapshot = alerting.load_evaluation_state(now=1015)
+        alerting.tick(snapshot, now=1015)
+        self.assertTrue(self.items('incidents')[0]['noData'])
+        self.assertEqual(self.items('incidents')[0]['status'], 'firing')
+
     def test_dashboard_reads_do_not_wait_for_an_active_writer(self):
         self.rule()
         connect = database.connect

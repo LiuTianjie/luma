@@ -147,7 +147,7 @@ Rules, incident transitions and the notification outbox persist in the Control
 SQLite database. The evaluator uses samples and task state already reported to
 Control; creating a resource rule does not start a public HTTP probe.
 
-Available presets cover node heartbeat age, sustained CPU, memory, disk and
+Available presets cover service container memory, node heartbeat age, sustained CPU, memory, disk and
 inode usage, queued-task age, the latest failed build per application, and —
 when luma-observe is deployed — application p95 latency, HTTP 5xx ratio and
 Nomad failed allocations. Observe samples are instant PromQL reads from
@@ -157,6 +157,27 @@ Thresholds and the required continuous duration are configurable. A pending
 incident becomes firing only when its condition lasts for that duration; a
 healthy observation resolves it. One active incident is maintained per rule
 and target, with a configurable repeat interval for continued failures.
+
+The **Service container memory near limit** preset (`app.memory`) takes the
+highest Docker-reported memory percentage across an application's containers
+and replicas, including all tasks in a Compose stack. It does not average away
+a hot container. The default is **above 80% for 2 minutes**; select the application
+(for example, `luma-observe`) and a notification channel in Alert rules, then save
+the enabled rule. New installations include the preset; no rule or channel is
+created automatically. Upgrading Control adds it without redeploying observe or
+upgrading existing Agents that already report container statistics.
+
+This preset uses Agent samples independently of the observe stack. Control
+resolves Nomad allocation IDs to application names before evaluating, outside
+the database transaction. Heartbeats and container samples must both be at most
+120 seconds old, with a positive memory limit. Missing or invalid samples prevent
+recovery when a known replica lacks data; unresolved application identity also
+prevents claiming a healthy maximum. A fresh container already above the threshold
+still proves a breach even if other samples are missing. With `noData: keep`,
+missing data preserves firing incidents and breaks the pending duration.
+Docker's Linux usage excludes inactive file cache; this is an early warning
+against the Docker-reported memory limit, not a measurement of disk pressure or
+all cgroup cache. Keep host memory and disk alerts as well.
 
 Build-failure cards and incident details include available service names, build
 IDs, full image references (per service for Compose), image repositories, builder

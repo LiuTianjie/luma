@@ -172,7 +172,7 @@ export function formatAlertObservedValue(
     metric === "app.http_p95"
   )
     return `${formatted} ${zh ? "秒" : "s"}`;
-  if (["node.cpu", "node.memory", "node.disk", "node.inode"].includes(metric))
+  if (["node.cpu", "node.memory", "node.disk", "node.inode", "app.memory"].includes(metric))
     return `${formatted}%`;
   if (metric === "app.http_5xx_ratio")
     return `${new Intl.NumberFormat(zh ? "zh-CN" : "en-US", { style: "percent", maximumFractionDigits: 1 }).format(value)}`;
