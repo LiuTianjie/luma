@@ -14748,6 +14748,7 @@ async def _asgi_health(_: Request) -> JSONResponse:
                 "node-region",
                 "region-exposures-v1",
                 "macos-compose-network-v1",
+                "container-dns-v1",
                 "service-proxy",
                 "dashboard",
                 "historical-log-query-v1",

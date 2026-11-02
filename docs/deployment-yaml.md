@@ -56,9 +56,33 @@ luma deploy status.yaml
 | `relay` | tailscale-relay 可选 | map | 覆盖 Tailscale relay 上游。默认由 `node` 指定的节点及其 Tailscale 地址推导；Compose 可继承同组服务或本地卷的节点约束。 |
 | `tcp` | tcp-relay 可选 | map | TCP relay 高级上游覆盖。正常情况不需要填写；入口由 `publishPort` / `port` 自动派生。 |
 | `tunnel` | cloudflare-tunnel 可用 | map | Cloudflare Tunnel token env 等设置。 |
-| `dns` | 否 | map | 保留给 DNS 相关扩展。 |
+| `dns.servers` | 否 | IP 或 IP 数组 | 容器使用的 DNS 解析服务器；省略时继承原有默认设置。 |
 | `stackPath` | 否 | string | 覆盖生成 jobspec 路径。通常不用。 |
 | `routePath` | 否 | string | 覆盖 tailscale route 文件路径。通常不用。 |
+
+## 容器 DNS
+
+单服务 manifest 使用 `dns.servers`：
+
+```yaml
+dns:
+  servers: [100.100.2.136, 100.100.2.138]
+```
+
+Compose 使用标准 `docker-compose.yml` 中的服务字段，不能放在 Luma sidecar：
+
+```yaml
+services:
+  worker:
+    image: example/worker:1
+    dns: [100.100.2.136, 100.100.2.138]
+```
+
+支持 IPv4、IPv6 和单个 IP 字符串。仅设置容器的运行时解析器，不修改宿主机、Control、镜像拉取或出口代理的 DNS。阿里云 SLS 私网端点需使用云上内网 DNS；其他云或本地节点应配置其实际可达的解析服务器。
+
+独立 worker 和 host 网络下的服务使用 Docker `dns_servers`；Linux CNI bridge 使用 Nomad 网络层的 `DNS.Servers`；Mac Compose 将配置传给共享网络的容器。共享网络内所有服务必须显式声明相同的 `dns`，否则拒绝部署，避免一个服务的设置改变其他服务的解析行为。
+
+CLI 和 Control 都需升级到支持 `container-dns-v1` 的版本。修改 Git 中的配置后必须先部署一次，升级 Control 或直接重启旧任务不会读取新的 Git 配置。部署成功后，后续容器重建沿用已提交的 DNS 设置。
 
 ## 更新策略
 

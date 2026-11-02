@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from .config import LumaConfig
+from .container_dns import parse_dns_servers
 from .errors import LumaError
 from .dependencies import validate_requirement_block
 from .io import dump_yaml, load_yaml
@@ -297,6 +298,7 @@ def validate_compose_deployment_data(
     for service_name, service in compose_services.items():
         if not isinstance(service, dict):
             raise LumaError(f"compose service {service_name} must be a mapping")
+        parse_dns_servers(service.get("dns"), field_name=f"compose service {service_name} dns")
         if not isinstance(service.get("image"), str) or not service.get("image"):
             if service.get("build") is not None and allow_build_services:
                 warnings.append(

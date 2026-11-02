@@ -25,6 +25,7 @@ import urllib.parse
 from typing import Any, Dict, List, Mapping, Sequence
 
 from .config import LumaConfig
+from .container_dns import parse_dns_servers, shared_dns_servers
 from .compose import compose_replica_count, render_storage_class_volume, resolve_storage_mounts
 from .compose_network import (
     NETWORK_CONTAINER,
@@ -391,6 +392,11 @@ def render_compose_job(
     extra_hosts = [f"{svc}:127.0.0.1" for svc in services.keys()]
     host_network = _compose_host_network(services, deployment)
     mac_network = uses_macos_compose_network(deployment, node_records)
+    dns_by_service = {
+        str(svc_name): parse_dns_servers(body.get("dns"), field_name=f"compose service {svc_name} dns")
+        for svc_name, body in services.items()
+        if isinstance(body, dict)
+    }
     if mac_network and macos_compose_ports(deployment) and replicas != 1:
         raise LumaError("Mac Compose with published ports requires replicas: 1 on its pinned node")
 
@@ -423,6 +429,8 @@ def render_compose_job(
         publish = publish_port or port
 
         docker_config: Dict[str, Any] = {"image": image, "extra_hosts": list(extra_hosts)}
+        if dns_by_service[str(svc_name)] and not mac_network:
+            docker_config["dns_servers"] = dns_by_service[str(svc_name)]
         if "read_only" in body:
             if not isinstance(body["read_only"], bool):
                 raise LumaError(f"compose service {svc_name} read_only must be a boolean")
@@ -629,7 +637,10 @@ def render_compose_job(
             )
 
     if mac_network:
-        tasks.extend(macos_compose_network_tasks(deployment, config, registry_auth_resolver))
+        tasks.extend(macos_compose_network_tasks(
+            deployment, config, registry_auth_resolver,
+            dns_servers=shared_dns_servers(dns_by_service),
+        ))
     group: Dict[str, Any] = {
         "Name": name,
         "Count": replicas,
@@ -648,6 +659,14 @@ def render_compose_job(
         # On Mac this only reserves host ports in Nomad. The trusted prestart
         # task publishes them using Docker's wildcard binding inside OrbStack.
         network: Dict[str, Any] = {"Mode": "host" if mac_network else "bridge"}
+        if not mac_network:
+            dns_servers = shared_dns_servers(dns_by_service)
+            if dns_servers:
+                # CNI owns resolv.conf for a shared bridge namespace. Docker
+                # task-level DNS options are ignored in this network mode.
+                network["DNS"] = {"Servers": dns_servers}
+                for task in tasks:
+                    task["Config"].pop("dns_servers", None)
         if reserved_ports:
             network["ReservedPorts"] = reserved_ports
         if dynamic_ports:
@@ -834,6 +853,9 @@ def _build_job(
     if sidecar is not None:
         tasks.append(sidecar)
     group["Tasks"] = tasks
+    if network is not None and network.get("Mode") == "bridge" and service.dns.get("servers"):
+        network["DNS"] = {"Servers": service.dns["servers"]}
+        tasks[0]["Config"].pop("dns_servers", None)
 
     job: Dict[str, Any] = {
         "ID": name,
@@ -1219,6 +1241,8 @@ def _app_task(
     observe_otlp: Mapping[str, str] | None = None,
 ) -> Dict[str, Any]:
     docker_config: Dict[str, Any] = {"image": service.image}
+    if service.dns.get("servers"):
+        docker_config["dns_servers"] = service.dns["servers"]
     if registry_auth and registry_auth.get("username") and registry_auth.get("password"):
         # Pull private images with Luma's managed credentials.
         docker_config["auth"] = {

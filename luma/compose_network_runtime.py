@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import ipaddress
 import json
 import socket
 import sys
@@ -81,7 +82,7 @@ def inspect_owned(docker, allocation, job):
     return info
 
 
-def network_spec(image, services, ports):
+def network_spec(image, services, ports, dns_servers=None):
     if not image or not isinstance(image, str):
         raise ValueError("network image is required")
     if not isinstance(services, list) or not services or any(
@@ -102,15 +103,21 @@ def network_spec(image, services, ports):
             raise ValueError(f"duplicate published port {host_port}")
         published.add(host_port)
         bindings.setdefault(f"{port}/tcp", []).append({"HostIp": "0.0.0.0", "HostPort": str(host_port)})
-    return {
+    spec = {
         "image": image,
         "services": sorted(set(services)),
         "bindings": bindings,
     }
+    if dns_servers is not None:
+        if not isinstance(dns_servers, list) or any(not isinstance(server, str) for server in dns_servers):
+            raise ValueError("DNS servers must be a list of IP addresses")
+        if dns_servers:
+            spec["dns_servers"] = [str(ipaddress.ip_address(server)) for server in dns_servers]
+    return spec
 
 
-def prepare(docker, allocation, job, image, services, ports):
-    spec = network_spec(image, services, ports)
+def prepare(docker, allocation, job, image, services, ports, dns_servers=None):
+    spec = network_spec(image, services, ports, dns_servers)
     signature = json.dumps(spec, sort_keys=True, separators=(",", ":"))
     existing = inspect_owned(docker, allocation, job)
     if existing is None:
@@ -129,6 +136,8 @@ def prepare(docker, allocation, job, image, services, ports):
                 "CapDrop": ["ALL"],
             },
         }
+        if spec.get("dns_servers"):
+            body["HostConfig"]["Dns"] = spec["dns_servers"]
         path = "/containers/create?name=" + urllib.parse.quote(container_name(allocation), safe="")
         try:
             docker.request("POST", path, body)
@@ -146,6 +155,8 @@ def prepare(docker, allocation, job, image, services, ports):
     actual = current.get("HostConfig") or {}
     if actual.get("NetworkMode") != "bridge" or (actual.get("PortBindings") or {}) != spec["bindings"]:
         raise RuntimeError("allocation network port bindings do not match the requested ports")
+    if (actual.get("Dns") or []) != spec.get("dns_servers", []):
+        raise RuntimeError("allocation network DNS servers do not match the requested resolvers")
     return current
 
 
@@ -185,10 +196,11 @@ def main():
     parser.add_argument("--image")
     parser.add_argument("--services", default="[]")
     parser.add_argument("--ports", default="[]")
+    parser.add_argument("--dns-servers", default="[]")
     args = parser.parse_args()
     docker = Docker()
     if args.action == "prepare":
-        prepare(docker, args.allocation, args.job, args.image, json.loads(args.services), json.loads(args.ports))
+        prepare(docker, args.allocation, args.job, args.image, json.loads(args.services), json.loads(args.ports), json.loads(args.dns_servers))
     elif args.action == "watch":
         watch(docker, args.allocation, args.job)
     else:

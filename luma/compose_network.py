@@ -78,7 +78,10 @@ def macos_compose_ports(deployment: ComposeDeploymentSpec) -> list[dict[str, int
     return ports
 
 
-def macos_compose_network_tasks(deployment: ComposeDeploymentSpec, config: Any, registry_auth_resolver: Any = None) -> list[dict[str, Any]]:
+def macos_compose_network_tasks(
+    deployment: ComposeDeploymentSpec, config: Any, registry_auth_resolver: Any = None,
+    *, dns_servers: list[str] | None = None,
+) -> list[dict[str, Any]]:
     services = deployment.compose.get("services") or {}
     if any(name.startswith("luma-network-") for name in services):
         raise LumaError("Compose service names beginning with luma-network- are reserved")
@@ -94,6 +97,8 @@ def macos_compose_network_tasks(deployment: ComposeDeploymentSpec, config: Any, 
         args = ["/local/luma-compose-network.py", action, "--allocation", "${NOMAD_ALLOC_ID}", "--job", deployment.slug]
         if action == "prepare":
             args += ["--image", image, "--services", json.dumps(list(services)), "--ports", json.dumps(ports)]
+            if dns_servers:
+                args += ["--dns-servers", json.dumps(dns_servers)]
         docker_config: dict[str, Any] = {
             "image": image, "command": "python", "args": args, "network_mode": "none",
             "mount": [{"type": "bind", "source": "/var/run/docker.sock", "target": "/var/run/docker.sock", "readonly": False}],

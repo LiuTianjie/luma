@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
+from .container_dns import parse_dns_servers
 from .errors import LumaError
 from .dependencies import validate_requirement_block
 from .io import load_yaml
@@ -246,6 +247,8 @@ def load_service(path: Path) -> ServiceSpec:
     dns = raw.get("dns") or {}
     if not isinstance(dns, dict):
         raise LumaError("dns must be a mapping")
+    if "servers" in dns:
+        dns = {**dns, "servers": parse_dns_servers(dns["servers"], field_name="dns.servers")}
     return ServiceSpec(
         source=path,
         name=name.strip(),

@@ -36,8 +36,25 @@
 | `dns.target` | no | string | Optional DNS target override. |
 | `dns.type` | no | string | Optional DNS record type override. |
 | `dns.proxied` | no | boolean | Optional Cloudflare proxied flag. |
+| `dns.servers` | no | IP string or list | Runtime container DNS servers; IPv4/IPv6. Omit to inherit the existing resolver defaults. |
 | `stackPath` | no | string | Override generated stack path. Rare. |
 | `routePath` | no | string | Override generated tailscale route path. Rare. |
+
+## Container DNS
+
+For native manifests set `dns.servers: [100.100.2.136, 100.100.2.138]`.
+For Compose set standard `services.<name>.dns` in `docker-compose.yml`, not the Luma sidecar.
+These addresses are an Alibaba Cloud example; choose resolvers reachable from the target container.
+Host DNS, Control, image acquisition and egress-proxy DNS are not changed.
+
+Independent Docker tasks use `config.dns_servers`. Linux shared CNI networks use
+`network.DNS.Servers`; Mac Compose passes the same setting to its Docker namespace owner.
+Every service sharing a network must explicitly declare the same ordered resolver list;
+different lists or partial declarations fail instead of silently changing sibling services.
+
+Upgrade both the CLI and Control to a release advertising `container-dns-v1`.
+Deploy the changed configuration once. A Control upgrade or restart of an old job does not
+read updated Git files. Later container recreation retains the DNS from the deployed jobspec.
 
 ## Exposure Matrix
 
@@ -547,7 +564,7 @@ CI:
 
 ```bash
 # Verify this version is published before installing.
-python -m pip install "luma-infra==0.2.23"
+python -m pip install "luma-infra==0.2.24"
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 luma validate service.yaml --format json

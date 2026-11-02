@@ -65,6 +65,18 @@ class ComposeNetworkRuntimeTests(unittest.TestCase):
         info = prepare(self.docker, self.allocation, self.job, self.image, ["worker", "database"], [])
         self.assertEqual(info["HostConfig"]["PortBindings"], {})
 
+    def test_namespace_dns_is_applied_verified_and_cannot_drift_on_retry(self):
+        servers = ["100.100.2.136", "100.100.2.138"]
+        args = (self.docker, self.allocation, self.job, self.image, ["worker", "database"], [])
+        info = prepare(*args, dns_servers=servers)
+        self.assertEqual(info["HostConfig"]["Dns"], servers)
+        prepare(*args, dns_servers=servers)
+        with self.assertRaisesRegex(RuntimeError, "different specification"):
+            prepare(*args, dns_servers=["1.1.1.1"])
+        self.docker.container["HostConfig"]["Dns"] = ["1.1.1.1"]
+        with self.assertRaisesRegex(RuntimeError, "DNS servers do not match"):
+            prepare(*args, dns_servers=servers)
+
     def test_cleanup_is_idempotent_and_refuses_foreign_container(self):
         self.prepare()
         self.docker.container["Config"]["Labels"][LABEL_OWNER] = "other-owner"
