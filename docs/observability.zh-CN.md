@@ -24,6 +24,8 @@ Control 控制台提供节点与容器采样，实时 allocation 日志仍通过
 
 ## 应用接入 {#application-integration}
 
+原生 Metrics、独立机器凭证、网格外 OTLP 接入及应用自行维护的看板/规则，见[标准应用观测接入](observe-applications.zh-CN.md)。
+
 部署 [`observe/`](../observe/) 即表示在集群级启用。此后新部署的 Luma job 自动获得 OTel 配置。只重启旧 job 的进程不够，必须重新渲染 Nomad job。这里没有 Luma 遥测 SDK，也不会注入语言 agent。
 
 无需修改应用即可获得：

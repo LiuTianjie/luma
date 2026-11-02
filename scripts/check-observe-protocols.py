@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""Exercise standard observation protocols and config loading in disposable containers.
+
+Uses the packaged Collector, vmauth, VictoriaMetrics, VictoriaLogs, Tempo,
+Grafana and vmalert. Synthetic data stays in an isolated network namespace;
+no host ports, deployment credentials or application services are used.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+import time
+import urllib.parse
+import uuid
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from luma.nomad_render import _resource_values
+
+HTTP = """
+import json, sys, urllib.error, urllib.request
+payload = json.load(sys.stdin)
+request = urllib.request.Request(payload['url'], method=payload['method'],
+    data=payload['body'].encode() if payload['body'] is not None else None,
+    headers=payload['headers'])
+try:
+    with urllib.request.urlopen(request, timeout=8) as response:
+        print(json.dumps({'status': response.status, 'body': response.read().decode()}))
+except urllib.error.HTTPError as error:
+    print(json.dumps({'status': error.code, 'body': error.read().decode()}))
+except urllib.error.URLError as error:
+    print(json.dumps({'status': 0, 'body': str(error)}))
+"""
+
+# These credentials are synthetic, scoped to a --network none test namespace.
+READER = "protocol-reader-" + "r" * 40
+WRITER = "protocol-writer-" + "w" * 40
+MESH = "protocol-mesh-" + "m" * 40
+SERVICE = "luma-observe-protocol-check"
+
+
+def docker(*args: str, timeout: float = 60, stdin: str | None = None) -> str:
+    result = subprocess.run(["docker", *args], input=stdin, capture_output=True, text=True, timeout=timeout)
+    if result.returncode:
+        raise RuntimeError(f"docker {args[0]} failed: {(result.stdout + result.stderr)[-4000:]}")
+    return result.stdout.strip()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--platform", help="Docker platform; defaults to the Docker host architecture")
+    args = parser.parse_args()
+    platform = ["--platform", args.platform] if args.platform else []
+    prefix = "luma-protocol-check-" + uuid.uuid4().hex[:12]
+    compose = yaml.safe_load((ROOT / "observe/docker-compose.yml").read_text())
+    services = ["victoria", "victoria-logs", "tempo", "collector", "observe-access", "vmalert", "grafana"]
+    names = {name: prefix + "-" + name for name in ["probe", *services]}
+    images = {name: prefix + "-" + name + ":local" for name in services if "build" in compose["services"][name]}
+    volumes = {name: prefix + "-" + name for name in ("victoria", "victoria-logs", "tempo", "extensions")}
+    helper_image = "python:3.12-alpine"
+    existing_images = set(docker("image", "ls", "--format", "{{.Repository}}:{{.Tag}}").splitlines())
+
+    def request(port: int, path: str, body: str | None = None, *, token: str = "", content_type: str = "application/json") -> dict:
+        headers = {"Content-Type": content_type, "Accept": "application/json"}
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        payload = {"url": f"http://127.0.0.1:{port}{path}", "method": "POST" if body is not None else "GET",
+                   "body": body, "headers": headers}
+        return json.loads(docker("exec", "-i", names["probe"], "python", "-c", HTTP, stdin=json.dumps(payload)))
+
+    def expect(response: dict, codes=(200,)) -> dict:
+        if response["status"] not in codes:
+            raise RuntimeError(f"expected HTTP {codes}, got {response}")
+        return response
+
+    def wait_for(description: str, check, timeout: float = 120) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if check():
+                print(description, flush=True)
+                return
+            time.sleep(2)
+        raise RuntimeError(f"timed out: {description}")
+
+    def start(name: str, *, enabled: bool = False) -> None:
+        service = compose["services"][name]
+        resources = _resource_values(service["deploy"]["resources"])
+        environment = dict(service.get("environment", {}))
+        if name == "collector":
+            environment.update(LUMA_OTLP_MESH_BIND="127.0.0.1", LUMA_OTLP_TOKEN=MESH)
+        if name == "observe-access" and enabled:
+            environment.update(LUMA_OBSERVE_READ_TOKEN=READER, LUMA_OBSERVE_INGEST_TOKEN=WRITER)
+        env = [item for key, value in environment.items() for item in ("-e", f"{key}={value}")]
+        mounts = []
+        if name in ("victoria", "victoria-logs", "tempo"):
+            mounts = ["-v", f"{volumes[name]}:/data"]
+        if name in ("grafana", "vmalert"):
+            mounts = ["-v", f"{volumes['extensions']}:/etc/luma-observe/extensions:ro"]
+        command = list(service.get("command", []))
+        if name == "vmalert":
+            # Rule evaluation and reload use the production config; notification
+            # delivery is explicitly disabled in this isolated protocol check.
+            command = [arg for arg in command if not arg.startswith("--notifier.url=")]
+            command.append("--notifier.blackhole")
+        docker("run", "-d", "--name", names[name], *platform, "--network", "container:" + names["probe"],
+               "--memory", str(resources["MemoryMaxMB"]) + "m",
+               "--memory-reservation", str(resources["MemoryMB"]) + "m",
+               *env, *mounts, images.get(name, service["image"]), *command, timeout=180)
+
+    def metric(expression: str) -> float | None:
+        response = request(8427, "/metrics/api/v1/query?" + urllib.parse.urlencode({"query": expression}), token=READER)
+        if response["status"] != 200:
+            return None
+        rows = json.loads(response["body"]).get("data", {}).get("result", [])
+        return float(rows[0]["value"][1]) if rows else None
+
+    def write_extensions(version: int) -> None:
+        dashboard = {"uid": "luma-protocol-check", "title": f"Protocol extension {version}", "schemaVersion": 39,
+                     "version": version, "panels": [], "timezone": "browser"}
+        rules = {"groups": [{"name": "luma-protocol-extension", "interval": "5s", "rules": [
+            {"record": "luma_protocol_extension_ready", "expr": f"vector({version})"}]}]}
+        files = {"dashboards/protocol.json": json.dumps(dashboard), "rules/protocol.yml": yaml.safe_dump(rules)}
+        code = """
+import json, sys
+from pathlib import Path
+for name, content in json.load(sys.stdin).items():
+    path = Path('/extensions') / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(content)
+    temporary.replace(path)
+"""
+        docker("exec", "-i", names["probe"], "python", "-c", code, stdin=json.dumps(files))
+
+    def dashboard_loaded(version: int) -> bool:
+        response = request(3100, "/api/dashboards/uid/luma-protocol-check")
+        return response["status"] == 200 and json.loads(response["body"])["dashboard"]["title"] == f"Protocol extension {version}"
+
+    try:
+        for name, image in images.items():
+            dockerfile = compose["services"][name]["build"]["dockerfile"]
+            docker("build", *platform, "-t", image, "-f", str(ROOT / "observe" / dockerfile),
+                   str(ROOT / "observe"), timeout=600)
+            print(f"built {name}", flush=True)
+        for volume in volumes.values():
+            docker("volume", "create", volume)
+        mounts = [item for name, volume in volumes.items() for item in ("-v", f"{volume}:/storage/{name}")]
+        docker("run", "-d", "--name", names["probe"], *platform, "--network", "none", "--memory", "96m",
+               *mounts, "-v", f"{volumes['extensions']}:/extensions", helper_image,
+               "python", "-c", "from pathlib import Path; import time; [p.chmod(0o777) for p in Path('/storage').iterdir()]; time.sleep(3600)", timeout=180)
+        for name in services:
+            start(name)
+        for port, path, description in ((8428, "/health", "VictoriaMetrics"), (9428, "/health", "VictoriaLogs"),
+                                         (3200, "/ready", "Tempo"), (8429, "/metrics", "vmauth"),
+                                         (8880, "/api/v1/rules", "vmalert with empty extensions"),
+                                         (3100, "/api/health", "Grafana with empty extensions")):
+            wait_for(description + " ready", lambda p=port, u=path: request(p, u)["status"] == 200)
+        wait_for("Collector OTLP ready", lambda: request(4318, "/v1/traces", '{"resourceSpans":[]}')["status"] == 200)
+        expect(request(8427, "/metrics/api/v1/query?query=1"), (401,))
+        expect(request(8427, "/metrics/api/v1/query?query=1", token=READER), (401,))
+        print("Default gateway has no authorized users", flush=True)
+        docker("rm", "-f", names["observe-access"])
+        start("observe-access", enabled=True)
+        wait_for("Configured query role ready", lambda: request(8427, "/metrics/api/v1/query?query=1", token=READER)["status"] == 200)
+        for token in ("", "invalid-credential"):
+            expect(request(8427, "/metrics/api/v1/query?query=1", token=token), (401,))
+        for path in ("/metrics/api/v1/admin/tsdb/delete_series", "/metrics/api/v1/write", "/logs/insert/jsonline",
+                     "/traces/flush", "/otlp/v1/metrics", "/otlp/v1/traces", "/-/reload", "/metrics", "/debug/pprof/"):
+            expect(request(8427, path, "{}", token=READER), (400, 403, 404))
+        expect(request(8427, "/metrics/api/v1/query?query=1", token=WRITER), (400, 403, 404))
+        expect(request(4319, "/v1/metrics", '{"resourceMetrics":[]}'), (401,))
+        print("Read/write roles, mesh auth and admin path isolation verified", flush=True)
+        write_extensions(1)
+
+        end = time.time_ns()
+        attributes = [{"key": "service.name", "value": {"stringValue": SERVICE}}]
+        def metric_payload(name: str, value: int) -> str:
+            return json.dumps({"resourceMetrics": [{"resource": {"attributes": attributes}, "scopeMetrics": [{
+                "scope": {"name": "luma.protocol.check"}, "metrics": [{"name": name,
+                "sum": {"aggregationTemporality": 2, "isMonotonic": True, "dataPoints": [{
+                    "startTimeUnixNano": str(end - 1_000_000_000), "timeUnixNano": str(end), "asInt": str(value)}]}}]}]}]})
+        expect(request(8427, "/otlp/v1/metrics", metric_payload("luma_protocol_native_events", 100), token=WRITER))
+        expect(request(4319, "/v1/metrics", metric_payload("luma_protocol_mesh_events", 7), token=MESH))
+        spans = []
+        for index in range(102):
+            trace_id = hashlib.sha256(f"luma-protocol-trace-{index}".encode()).hexdigest()[:32]
+            name = "fast-success" if index < 100 else ("slow-success" if index == 100 else "fast-error")
+            spans.append({"traceId": trace_id, "spanId": uuid.uuid4().hex[:16], "name": name, "kind": 1,
+                          "startTimeUnixNano": str(end - (2_000_000_000 if index == 100 else 10_000_000)),
+                          "endTimeUnixNano": str(end), "status": {"code": 2 if index == 101 else 1}})
+        payload = json.dumps({"resourceSpans": [{"resource": {"attributes": attributes}, "scopeSpans": [
+            {"scope": {"name": "luma.protocol.check"}, "spans": spans}]}]})
+        response = expect(request(8427, "/otlp/v1/traces", payload, token=WRITER))
+        if json.loads(response["body"]).get("partialSuccess", {}).get("rejectedSpans", 0) not in (0, "0"):
+            raise RuntimeError("Collector rejected synthetic spans")
+        expect(request(9428, "/insert/jsonline?_stream_fields=service&_msg_field=_msg", json.dumps({
+            "service": SERVICE, "_msg": "protocol-check", "trace_id": spans[101]["traceId"]}) + "\n", content_type="application/stream+json"))
+
+        wait_for("Native Metrics: 100 events available through read gateway", lambda: metric(f'sum(luma_protocol_native_events_total{{service_name="{SERVICE}"}})') == 100)
+        wait_for("Mesh OTLP Metrics: 7 events available", lambda: metric(f'sum(luma_protocol_mesh_events_total{{service_name="{SERVICE}"}})') == 7)
+        wait_for("Span metrics count all 100 fast successes before sampling", lambda: metric(f'sum(traces_span_metrics_calls_total{{service_name="{SERVICE}",span_name="fast-success"}})') == 100)
+        range_params = urllib.parse.urlencode({"query": "luma_protocol_native_events_total", "start": end // 1_000_000_000 - 60,
+                                              "end": int(time.time()), "step": 15})
+        expect(request(8427, "/metrics/api/v1/query_range?" + range_params, token=READER))
+        log_params = urllib.parse.urlencode({"query": f'service:"{SERVICE}"', "limit": 5})
+        wait_for("LogsQL returns ingested event with trace correlation", lambda: spans[101]["traceId"] in request(8427, "/logs/select/logsql/query?" + log_params, token=READER)["body"])
+        for span in spans[100:]:
+            wait_for(span["name"] + " survives sampling and is queryable by trace ID", lambda s=span: s["name"] in request(8427, "/traces/api/traces/" + s["traceId"], token=READER)["body"])
+        trace_params = urllib.parse.urlencode({"q": f'{{ resource.service.name = "{SERVICE}" && name = "fast-success" }}', "limit": 200})
+        response = expect(request(8427, "/traces/api/search?" + trace_params, token=READER))
+        retained = len(json.loads(response["body"]).get("traces", []))
+        if not 0 < retained < 100:
+            raise RuntimeError(f"expected a sampled subset of 100 fast successes, got {retained}")
+        print(f"Tempo retained {retained}/100 fast successes; native and span metrics still count 100", flush=True)
+        metrics = expect(request(8888, "/metrics"))["body"]
+        if "otelcol_receiver_accepted_spans" not in metrics:
+            raise RuntimeError("Collector internal acceptance metrics unavailable")
+        wait_for("External dashboard loaded", lambda: dashboard_loaded(1))
+        wait_for("External recording rule loaded and evaluated", lambda: metric("luma_protocol_extension_ready") == 1)
+        write_extensions(2)
+        wait_for("External dashboard hot-reloaded", lambda: dashboard_loaded(2))
+        wait_for("External rule hot-reloaded and evaluated", lambda: metric("luma_protocol_extension_ready") == 2)
+        print("Observe standard protocols check passed", flush=True)
+    except BaseException:
+        for name in names.values():
+            result = subprocess.run(["docker", "logs", "--tail", "20", name], capture_output=True, text=True, timeout=15)
+            print(name, (result.stdout + result.stderr)[-4000:], file=sys.stderr)
+        raise
+    finally:
+        for name in reversed(list(names.values())):
+            subprocess.run(["docker", "rm", "-fv", name], capture_output=True, timeout=30)
+        for volume in volumes.values():
+            subprocess.run(["docker", "volume", "rm", volume], capture_output=True, timeout=30)
+        cleanup_images = list(images.values()) + ([] if helper_image in existing_images else [helper_image])
+        for image in cleanup_images:
+            subprocess.run(["docker", "image", "rm", image], capture_output=True, timeout=30)
+
+
+if __name__ == "__main__":
+    main()

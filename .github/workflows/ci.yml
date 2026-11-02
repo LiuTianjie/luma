@@ -15,6 +15,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  observe-protocols:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Luma
+        run: python -m pip install -e .
+
+      - name: Check standard ingestion, sampling, query auth and config loading
+        run: python scripts/check-observe-protocols.py --platform linux/amd64
+
   observe-tempo:
     runs-on: ubuntu-latest
     timeout-minutes: 15

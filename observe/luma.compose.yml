@@ -19,6 +19,11 @@ volumes:
       node: manager
       path: /srv/luma/data/luma-observe/victorialogs
     initialize: empty
+  observe-extensions:
+    local:
+      node: manager
+      path: /srv/luma/data/luma-observe/extensions
+    initialize: empty
 
 services:
   log-alerts:
@@ -54,6 +59,10 @@ services:
     exposure: none
     replicas: 1
   host-gateway:
+    node: manager
+    exposure: none
+    replicas: 1
+  observe-access:
     node: manager
     exposure: none
     replicas: 1

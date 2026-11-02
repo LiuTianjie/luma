@@ -9,3 +9,14 @@ providers:
     options:
       path: /var/lib/grafana/dashboards
       foldersFromFilesStructure: false
+  - name: application-observability
+    orgId: 1
+    folder: Applications
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      # Grafana walks JSON files below this always-present mount, including
+      # dashboards/. Empty extension directories are a valid first deployment.
+      path: /etc/luma-observe/extensions
+      foldersFromFilesStructure: false

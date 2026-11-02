@@ -1,0 +1,15 @@
+# Install explicitly into the manager Traefik file-provider directory after
+# replacing the host and confirming that both required credential roles work.
+http:
+  routers:
+    luma-observe-access:
+      rule: Host(`observe-api.example.com`) && (PathPrefix(`/metrics/`) || PathPrefix(`/logs/`) || PathPrefix(`/traces/`) || PathPrefix(`/otlp/`))
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: luma-observe-access
+  services:
+    luma-observe-access:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:8427
