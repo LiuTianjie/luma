@@ -1,0 +1,128 @@
+name: Publish Observe SDK
+
+on:
+  push:
+    tags:
+      - "observe-sdk-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-observe-sdk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Match the release tag to the independent SDK version
+        run: |
+          python - <<'PY'
+          import ast
+          import os
+          from pathlib import Path
+          import tomllib
+
+          project = tomllib.loads(Path("sdk/python/pyproject.toml").read_text())["project"]
+          assert project["name"] == "luma-observe-sdk", "unexpected SDK distribution name"
+          expected = "observe-sdk-v" + project["version"]
+          assert os.environ["GITHUB_REF_TYPE"] == "tag", "SDK publication requires a tag"
+          assert os.environ["GITHUB_REF_NAME"] == expected, f"release tag must equal {expected}"
+          module = ast.parse(Path("sdk/python/src/luma_observe/__init__.py").read_text())
+          versions = [ast.literal_eval(statement.value) for statement in module.body
+                      if isinstance(statement, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == "__version__"
+                              for target in statement.targets)]
+          assert versions == [project["version"]], "SDK runtime and distribution versions differ"
+          print("Validated SDK release:", expected)
+          PY
+
+  checks:
+    needs: version
+    uses: ./.github/workflows/observe-sdk.yml
+
+  release:
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download the checked SDK distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: luma-observe-sdk-python-3.12
+          path: dist
+
+      - name: Prepare checksums and installation notes
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          version = tag.removeprefix("observe-sdk-v")
+          dist = Path("dist")
+          wheel = dist / f"luma_observe_sdk-{version}-py3-none-any.whl"
+          sdist = dist / f"luma_observe_sdk-{version}.tar.gz"
+          assert set(dist.iterdir()) == {wheel, sdist}, "expected only the checked wheel and sdist"
+          hashes = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                    for path in (wheel, sdist)}
+          (dist / "SHA256SUMS").write_text("".join(
+              f"{digest}  {name}\n" for name, digest in hashes.items()
+          ))
+          base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}"
+          url = f"{base}/releases/download/{tag}/{wheel.name}#sha256={hashes[wheel.name]}"
+          notes = (
+              f"Independent Luma Observe SDK {version}.\n\n"
+              "Python instrumentation, task adapters and configurable Grafana dashboards.\n\n"
+              "Install the checked wheel (choose the extras used by your process):\n\n"
+              "```sh\n"
+              f"python -m pip install 'luma-observe-sdk[taskiq] @ {url}'\n"
+              "```\n\n"
+              "The wheel and source distribution come from the Python 3.12 checks in this release run. "
+              "SHA256SUMS records both asset hashes. Published versions must not be replaced; "
+              "fixes use a new SDK version.\n\n"
+              f"Source commit: {os.environ['GITHUB_SHA']}\n"
+          )
+          (Path(os.environ["RUNNER_TEMP"]) / "observe-sdk-release-notes.md").write_text(notes)
+          PY
+
+      - name: Publish permanent GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.whl dist/*.tar.gz dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --latest=false \
+            --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/observe-sdk-release-notes.md"
+
+  publish:
+    needs: release
+    if: vars.OBSERVE_SDK_PYPI_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi-observe-sdk
+      url: https://pypi.org/project/luma-observe-sdk/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the checked SDK distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: luma-observe-sdk-python-3.12
+          path: dist
+
+      - name: Publish SDK to PyPI with Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1

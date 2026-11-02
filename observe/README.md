@@ -29,7 +29,9 @@ The bundled rules run in vmalert/Alertmanager. Separately, Control's dashboard-m
 still go to Nomad through Control and are not a 15-day archive.
 Deploying this stack is the observability component: later Luma app deploys
 receive official OTel env vars automatically. Redeploy existing apps to pick
-them up. There is no Luma SDK. Restarting an old allocation is not enough.
+them up. Applications can use official OpenTelemetry directly or the optional
+[Luma Observe Python SDK](../sdk/python/README.md). Restarting an old allocation
+is not enough.
 
 ## Application integration
 
@@ -38,8 +40,9 @@ See [Standard application observability](../docs/observe-applications.md)
 machine query/ingest credentials and application-owned dashboard/rule loading.
 
 Public HTTP already has Traefik RED and an ingress span. Process spans need
-the official OpenTelemetry distro in the image. Do not set the OTLP endpoint
-or a Luma SDK; Control injects `OTEL_*` on the next deploy. The collector
+official OpenTelemetry instrumentation in the image, directly or through the
+optional [Luma Observe Python SDK](../sdk/python/README.md). Control injects
+the existing `OTEL_*` endpoint, credentials and resource settings on the next deploy. The collector
 keeps 5xx, OTel errors, and traces slower than 1s, plus a 10% baseline;
 it refuses telemetry above its memory budget; sustained overload can drop data.
 Manual spans use

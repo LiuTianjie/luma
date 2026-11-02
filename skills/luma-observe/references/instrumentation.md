@@ -1,7 +1,9 @@
 # Application instrumentation contract
 
 This is the application-facing contract for `luma-observe`. It uses official
-OpenTelemetry APIs and exporters; there is no Luma telemetry SDK.
+OpenTelemetry APIs and exporters. The optional, independently versioned Python
+package `sdk/python/` supplies common initialization and task lifecycle adapters
+on top of these APIs; other languages use their official OTel integrations.
 
 ## What deployment provides
 
@@ -15,8 +17,27 @@ deployments**:
 - `OTEL_EXPORTER_OTLP_HEADERS` with the Control-issued bearer token
 
 Existing allocations need a new deployment to receive them. A restart alone is
-not enough. Application code must not copy the endpoint or token into source,
-logs, images, or its own configuration. The official SDK reads the environment.
+not enough. The optional Python SDK reads the same environment as official OTel.
+Adopting it does not replace existing tokens or `luma secret` values. Credentials
+remain deployment configuration and must not enter telemetry attributes or logs.
+
+## Optional Python integration
+
+Use `luma-observe-sdk` for a bounded process-local runtime, Taskiq middleware or
+Celery signal adapter, and offline Grafana JSON generation. Its version is
+independent of `luma-infra`. Start with `sdk/python/README.md` or the Chinese
+integration guide there; install a reviewed distribution and pin its version.
+
+Applications own task names, custom fields, outcomes, metric dimensions and
+dashboard expressions. The package does not import business models, query their
+databases or add a collector service. Preserve the full SDK switch and standard
+OTel exporter/sampler settings. Missing endpoints and explicit disablement avoid
+starting providers and background threads. Frame-level observation must retain
+the application's return, exception, retry and ACK semantics.
+
+Use the existing `observe-extensions` volume for generated dashboard JSON and
+standard Prometheus rule YAML. Read `docs/observe-applications.md` for the current
+scope and file-delivery contract. The renderer operates offline and needs no Token.
 
 ## Minimum application setup
 

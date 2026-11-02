@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "uid": "application-processing",
+  "title": "Application processing",
+  "description": "An application-owned metric and bounded dimensions; replace metric names and expressions with the application's contract.",
+  "datasource": "victoria",
+  "variables": [
+    {"name": "service", "label": "Service", "type": "constant", "query": "example-worker"},
+    {
+      "name": "format",
+      "label": "Format",
+      "query": "label_values(document_processed_total{service_name=\"$service\"}, document_format)",
+      "multi": true,
+      "includeAll": true
+    }
+  ],
+  "panels": [
+    {
+      "title": "Processed documents",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by(document_format)(rate(document_processed_total{service_name=\"$service\",document_format=~\"${format:regex}\",outcome=\"succeeded\"}[$__rate_interval]))",
+          "legend": "{{document_format}} succeeded"
+        },
+        {
+          "expr": "sum by(document_format)(rate(document_processed_total{service_name=\"$service\",document_format=~\"${format:regex}\",outcome=\"failed\"}[$__rate_interval]))",
+          "legend": "{{document_format}} failed"
+        }
+      ],
+      "unit": "ops"
+    },
+    {
+      "title": "Latest application completion age",
+      "type": "stat",
+      "expr": "time() - max(document_last_completion_seconds{service_name=\"$service\"})",
+      "unit": "s",
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {"color": "green", "value": null},
+          {"color": "orange", "value": 300},
+          {"color": "red", "value": 900}
+        ]
+      },
+      "options": {"colorMode": "value"}
+    }
+  ]
+}

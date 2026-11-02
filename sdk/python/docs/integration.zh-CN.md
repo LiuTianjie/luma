@@ -1,0 +1,257 @@
+# Python 应用接入
+
+`luma-observe-sdk` 是独立版本的 Python 包，使用官方 OpenTelemetry API、Provider
+和 OTLP/HTTP exporter。平台接收标准信号，应用自行定义业务字段、结果、指标和面板。
+SDK 不导入 Luma Control、Django、业务模型或数据库。
+
+## 安装与版本
+
+Python 要求为 3.10 及以上。当前源码版本是 `0.1.0`，独立的 `Observe SDK Checks`
+工作流构建 wheel 和 sdist，用于审核与验证；CI 工件会过期，不作为长期依赖来源。
+稳定分发方式见[独立 SDK 发版指南](releasing.md)：消费方锁定已发布版本，或使用包含
+SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装的远程 SHA；指南中的
+提交占位符需要在审核后的源码推送后替换。
+
+如需检查下载的 wheel，可以选择对应框架 extra：
+
+```sh
+python -m pip install './luma_observe_sdk-0.1.0-py3-none-any.whl[taskiq]'
+```
+
+Celery 进程使用 `[celery]`，同时运行两种框架的镜像使用 `[taskiq,celery]`。
+包 PyPI 发布是独立步骤；发布完成后，消费方可通过自己的包配置安装
+`luma-observe-sdk[taskiq]==0.1.0`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
+
+## 地址、凭证与开关
+
+Luma 管理的应用沿用 Control 注入的 `OTEL_EXPORTER_OTLP_ENDPOINT`、
+`OTEL_EXPORTER_OTLP_HEADERS` 和资源属性，现有 Token 与 `luma secret` 配置保持原值。
+需要任务指标时，在应用部署声明中配置 `OTEL_METRICS_EXPORTER=otlp`；平台默认值仍是
+`none`。网格外进程沿用已配置的 HTTPS OTLP 入口和写入 Token。
+
+```python
+from luma_observe import configure, span, task
+
+configure(
+    service_name="document-worker",
+    resource_attributes={"deployment.environment.name": "production"},
+)
+
+def convert(document):
+    with task("document.convert", framework="manual", queue="documents",
+              attributes={"document.format": "pdf"}) as run:
+        with span("document.render"):
+            result = render_document(document)
+        if result.needs_review:
+            run.outcome = "failed"
+        return result
+```
+
+`task` 记录一次执行的完成结果和耗时，原返回值和异常继续交给业务调用方。
+未捕获的异常记录类型及失败结果；结果枚举为 `succeeded`、`failed`、`retrying`、
+`skipped`、`cancelled`。业务自行判断交付是否完成。自定义 `attributes` 进入 Span，
+不会自动成为指标标签。
+
+在适配器已经观测的任务中，使用 `current_task()` 获取当前执行，无需再包一层任务 Span：
+
+```python
+from luma_observe import current_task
+
+def mark_review_required():
+    run = current_task()
+    if run is not None:
+        run.business_outcome = "requires_review"
+        run.business_status = "pending"
+```
+
+这两个字段允许业务自定义字符串，长度上限 256 字符，进入 Span 和可选生命周期日志的
+`task.business.outcome`、`task.business.status`，不进入内置指标标签。
+`set_outcome()` 仅接受前述五种标准结果；框架失败或未捕获异常优先于成功的业务分类。
+`current_task()` 按执行上下文隔离，嵌套任务结束后恢复外层；不在活跃任务内时返回
+`None`，fork 子进程也不会继承父任务。
+
+以下任一条件完整关闭 SDK，包括可选生命周期日志：
+
+- 初始化时传入 `configure(enabled=False)`。
+- 环境变量 `LUMA_OBSERVE_ENABLED=false`。
+- 环境变量 `OTEL_SDK_DISABLED=true`。
+
+没有 OTLP 地址时也不会启动 Provider 或后台线程。SDK 使用官方环境变量解析地址、
+请求头和采样配置，导出协议为 `http/protobuf`。分别关闭某种 exporter 只控制该信号；
+需要整体关闭时使用上述总开关。
+生产者没有本地 endpoint 时仍写入投递时间，供 Worker 统计排队耗时，并保留已携带的
+上下文；显式禁用时不修改 carrier。`telemetry_disabled()` 只查询显式开关，不初始化
+运行时或 exporter。
+
+`get_runtime().enabled` 表示运行时是否成功启用。初始化失败时，
+`get_runtime().initialization_error` 只保留异常类名，运行时保持关闭；业务调用路径不会
+同步输出配置或异常全文。
+
+## 框架接入
+
+Taskiq 将观测中间件放在已有链的第一项，让完成清理位于原有错误、重试处理之后：
+
+```python
+from luma_observe.instrumentation.taskiq import TaskiqMiddleware
+
+broker.with_middlewares(TaskiqMiddleware(), existing_retry_middleware)
+```
+
+使用真实 broker 的队列与任务名，无需维护应用任务目录。重试、结果保存、ACK 和原有
+中间件仍由 Taskiq 管理。执行状态保存在当前回调上下文中，后续中间件可以复制或重建
+消息。carrier 只携带传播字段和可序列化的私有 invocation ID，不序列化运行中的对象。
+Taskiq 默认线程池支持执行上下文传播；自定义进程池中的业务
+函数需要自己的进程初始化与传播，接收端的尝试观测仍可保留。
+
+Celery 在应用初始化时连接公开的任务、进程信号：
+
+```python
+from luma_observe.instrumentation.celery import instrument_celery
+
+observation = instrument_celery()
+```
+
+适配器作用于当前进程，重复注册保持幂等；Worker 子进程初始化 Provider，生产者在首次
+使用时初始化。任务排空后可调用 `observation.uninstrument()` 移除信号连接。
+同一任务选择一套适配器，避免同时安装 contrib `CeleryInstrumentor` 产生重复记录。
+
+两种框架均传递标准 W3C 上下文和 baggage。每次框架执行单独开启一条 Trace，通过
+Span Link 关联生产者，让执行完成后的采样判断独立于较早结束的生产者。手动 `task()`、
+`span()` 仍默认沿用父 Trace，也支持显式传入 `context` 和 `links`。
+配套 Collector 源码把已经完成的执行根 Span 与较早结束的子 Span 分开采样，保留的是
+完成后的执行概要，不保证长 Trace 的所有子 Span。现有 Collector 需要基于该源码重新
+构建部署后才具备这一行为；仅安装 SDK 不会更新线上 Collector。
+生产者 Span 表示本地消息准备，在实际传输前结束；
+它不充当投递成功凭证。准确的消息发送、可靠交付状态仍由应用原有链路维护。
+
+适配器观测进入执行钩子的尝试；执行前撤销或进程被强制终止，可能没有完成 Span。
+Taskiq 标准 SmartRetry 的 `NoResultError` 转换可识别退避重试；使用
+`no_result_on_retry=False` 保留原错误时，公开钩子只提供失败尝试，无法确认最终重试
+结果。队列状态、业务交付和执行尝试分别解释。
+
+Taskiq in-memory 嵌套内联执行中，若子任务中间件抛错后被父任务捕获，父观测上下文
+要到下一个 SDK hook 才恢复；这段间隙不能用当前上下文证明父任务进展。
+进程被强制终止时也无法执行完成钩子。
+
+## 字段与指标
+
+使用 `get_tracer()`、`get_meter()` 获取 SDK Provider 上的官方 OTel 接口，补充应用自己的
+阶段和指标。直接调用官方接口时沿用其语义。`counter()`、`histogram()` 提供隔离采集
+异常的便捷接口，名称和字段由应用定义：
+
+```python
+from luma_observe import counter, histogram
+
+completed = counter("document.completed")
+size = histogram("document.pages", unit="1")
+completed.add(1, {"document.format": "pdf", "outcome": "succeeded"})
+size.record(12, {"document.format": "pdf"})
+```
+
+顶层 `counter()`、`histogram()` 返回的句柄可以在 `configure()` 前声明，并在 fork
+后的 Worker 中复用；每次写入使用当前进程的运行时。从显式 `Runtime`、`get_meter()`
+或 `get_tracer()` 取得的 Instrument 属于该运行时和进程，需要在 Worker 初始化时创建。
+
+任务框架指标经共享 Collector 转换后为：
+
+| 指标 | 含义 |
+| --- | --- |
+| `task_executions_total` | 已结束的执行尝试，按 `outcome` 区分 |
+| `task_duration_seconds_bucket` | 执行耗时直方图 |
+| `task_queue_wait_seconds_bucket` | 有已知投递时间时的等待耗时直方图 |
+| `task_active` | 当前进程的活跃尝试 |
+| `worker_heartbeat_seconds` | 采集进程本次采集时刻，Unix 秒 |
+| `task_oldest_active_age_seconds` | 按任务名、队列和框架分组的最老活跃尝试时长 |
+| `task_active_tracking_overflow` | 超出有界时长登记表的活跃尝试数 |
+
+固定任务维度为 `task_name`、`task_queue`、`task_framework`；标准资源属性提供
+`service_name`、`deployment_environment_name` 及平台已有的 Luma 维度。
+应用自定义指标可以选择有限的字段，如文件格式或结果枚举；单次执行编号进入 Span
+或结构化日志。进程退出后的历史活跃样本需要结合存活和数据新鲜度解释。
+
+心跳和 overflow 是进程级指标。最老活跃时长沿用 `task_active` 的有限任务维度：
+`task_name`、`task_queue`、`task_framework`，按单调时钟计算每组当前活跃尝试中最老的
+时长。它能定位持续执行的任务类型，但不代表“距离业务上一次取得进展的时长”；阈值
+需要按任务类型定义。
+
+每进程最多登记 8192 个活跃尝试，不保留历史任务键缓存。空闲分组没有新时长样本，
+溢出期间也不输出时长样本。示例面板按同一进程标识和全部三个任务维度，与
+`task_active > 0` 关联，再过滤过期心跳和非零 overflow，排除查询窗口内残留的已结束
+任务旧时长。只有新鲜心跳加明确为 0 的活跃数量才能表示本地空闲；缺失、过期、溢出
+不能解释为空闲。
+
+心跳只说明进程导出链路仍在运行，不证明事件循环或业务在推进。本地空闲也不代表
+Broker 队列健康或为空；积压数量和最老未消费消息时长仍由业务或 Broker 提供指标。
+
+不同进程保留独立实例标识，避免多个累积计数写入者互相覆盖。Worker 回收会产生历史
+序列，生产验收需测量实际进程轮换频率、任务维度及存储预算。协议检查提供合成多进程
+样本的序列数量，不代表生产容量；新鲜度设置和查询语义见[面板指南](dashboards.md)。
+
+默认 Trace 缓冲 512 条、每批 64 条、每 5 秒导出，Metrics 每 30 秒导出；HTTP 导出预算
+1.5 秒，退出预算 2 秒。`lifecycle_logs=True` 可启用有界后台 JSON 日志，使用
+`luma_observe.events` 的 INFO 日志及应用已有的 handler。应用将该 logger 路由到 stdout
+后，可由已有 Nomad 采集通道接收。独立进程可在启动时配置：
+
+```python
+import logging
+import sys
+from luma_observe import configure
+
+logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(message)s")
+configure(lifecycle_logs=True)
+```
+
+已有应用将该 logger 加入自己的日志配置即可。应用最终退出时调用 `shutdown()`，SDK
+也注册了 atexit；Celery 使用进程退出信号。关闭单个 Taskiq broker 会执行有界
+`force_flush()`，不会停止其他 broker 共享的遥测。应用也可在已知 Worker 退出前调用
+`force_flush(timeout=2)`：它返回队列 flush 是否在预算内完成，不初始化缺失的运行时，
+不关闭 Provider，也不代表下游已经持久化数据。
+
+遥测丢失不会成为可靠业务账本；计数代表实际采集到的信号。SDK 自身采集故障保持业务
+返回、异常和确认语义；实际吞吐、延迟、进程轮换和故障恢复仍需要消费方验收。
+
+## 业务自己的 Grafana 面板
+
+从 [`examples/dashboards`](../examples/dashboards/) 复制配置，按应用指标修改查询、
+字段、单位和阈值，离线生成标准 Grafana JSON：
+
+```sh
+luma-observe-dashboard application.json --output application-dashboard.json
+```
+
+每个应用使用唯一 UID。将审核后的文件按现有运维交付流程安装到
+`/srv/luma/data/luma-observe/extensions/dashboards/`；Grafana 在下一次 30 秒扫描后
+加载到 Applications 文件夹。该工具不连接平台、不携带 Token，也不部署服务。
+
+告警仍使用标准 Prometheus/vmalert YAML，安装到 `extensions/rules/` 前用现有版本的
+vmalert 校验，再关联已配置的 Alertmanager 路由。字段或图表变化通过应用配置交付，
+无需增加 SDK 接口或修改 Control。
+
+完整平台凭证、标准查询 API 和扩展目录说明见[标准应用观测接入](../../../docs/observe-applications.zh-CN.md)。
+
+## 本地与 CI 验证
+
+在 Luma 仓库根目录的隔离 Python 环境中执行：
+
+```sh
+python -m pip install -e './sdk/python[taskiq,celery,test]'
+bash scripts/check-observe-sdk.sh --output-dir /tmp/luma-observe-sdk-dist
+```
+
+脚本检查 SDK、在临时源码副本中构建 wheel/sdist、校验元数据并导入已安装 wheel。
+CI 分别覆盖 Python 3.10 + OTel 1.38.0 最低支持版本，以及 Python 3.12 + 当前依赖版本。
+结束时清理本次构建和安装临时目录，只保留显式要求输出的分发包。脚本不访问生产，
+不部署观测栈，也不发布 Registry 包。
+
+准备 Docker 后还可执行单独的 SDK 协议检查：
+
+```sh
+python -m pip install -e .
+python scripts/check-observe-sdk-protocols.py --platform linux/amd64
+```
+
+对应 CI job 在隔离容器中安装 SDK，以合成凭证将真实任务指标和自定义指标经 Collector
+投递到 VictoriaMetrics，再加载生成的 Grafana 示例并对这些数据执行面板的 PromQL。
+检查不暴露宿主端口，结束后清理自己的容器、卷和临时镜像标签。平台已有协议检查
+继续覆盖其他共享投递与查询链路；消费方仍需验证真实部署的连通性、业务故障隔离、
+数据新鲜度和性能预算。

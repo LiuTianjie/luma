@@ -1,0 +1,90 @@
+name: Observe SDK Checks
+
+on:
+  pull_request:
+    paths:
+      - "sdk/python/**"
+      - "scripts/check-observe-sdk.sh"
+      - "scripts/check-observe-sdk-protocols.py"
+      - "scripts/check-observe-protocols.py"
+      - "observe/**"
+      - "luma/nomad_render.py"
+      - "pyproject.toml"
+      - ".github/workflows/observe-sdk.yml"
+      - ".github/workflows/observe-sdk-pypi.yml"
+  push:
+    branches: [main]
+    paths:
+      - "sdk/python/**"
+      - "scripts/check-observe-sdk.sh"
+      - "scripts/check-observe-sdk-protocols.py"
+      - "scripts/check-observe-protocols.py"
+      - "observe/**"
+      - "luma/nomad_render.py"
+      - "pyproject.toml"
+      - ".github/workflows/observe-sdk.yml"
+      - ".github/workflows/observe-sdk-pypi.yml"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: observe-sdk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  protocols:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install protocol check dependencies
+        run: python -m pip install -e .
+
+      - name: Check real SDK ingestion and generated Grafana dashboards
+        run: python scripts/check-observe-sdk-protocols.py --platform linux/amd64
+
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.10"
+            otel: "==1.38.0"
+          - python: "3.12"
+            otel: ""
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install SDK and validation dependencies
+        run: >-
+          python -m pip install -e "./sdk/python[taskiq,celery,test]"
+          "opentelemetry-sdk${{ matrix.otel }}"
+          "opentelemetry-exporter-otlp-proto-http${{ matrix.otel }}"
+
+      - name: Check SDK and installed distributions
+        run: bash scripts/check-observe-sdk.sh --output-dir "$RUNNER_TEMP/observe-sdk-dist"
+
+      - name: Upload independently versioned distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: luma-observe-sdk-python-${{ matrix.python }}
+          path: ${{ runner.temp }}/observe-sdk-dist/*
+          if-no-files-found: error

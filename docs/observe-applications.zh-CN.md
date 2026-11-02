@@ -15,7 +15,7 @@ External producer ── ingest credential ── vmauth ───────�
 Application config ── read-only extension volume ──────── Grafana / vmalert
 ```
 
-原生 Metrics 直接进入指标存储；spanmetrics 在 Trace 采样前生成。Trace 存储保留错误、HTTP 5xx、超过一秒的慢链路和 10% 基础采样。统计代表 Collector 接收到的信号，SDK 采样、缓冲满、内存拒收和导出失败仍可能造成证据缺口。Collector 诊断指标从 `127.0.0.1:8888/metrics` 抓取，vmauth 诊断使用 `127.0.0.1:8429/metrics`。
+原生 Metrics 直接进入指标存储；spanmetrics 在 Trace 采样前生成。Trace 存储保留错误、HTTP 5xx、超过一秒的慢链路和 10% 基础采样。无父级、带 `task.name` / `task.framework` 的 CONSUMER 根 Span 在独立分支按完成结果采样，避免长任务较早结束的子 Span 决定丢弃最终失败摘要；子 Span 仍可能不完整。统计代表 Collector 接收到的信号，SDK 采样、缓冲满、内存拒收和导出失败仍可能造成证据缺口。Collector 诊断指标从 `127.0.0.1:8888/metrics` 抓取，vmauth 诊断使用 `127.0.0.1:8429/metrics`。
 
 应用使用官方自定义 Metrics/Span 描述业务阶段和结果。指标标签使用有限的服务、任务类型、结果枚举；执行编号放在 Span 或结构化日志中。导出通过后台有界缓冲完成；观测不可用时，业务的返回、异常、重试和确认语义仍由业务自身决定。
 
@@ -23,7 +23,7 @@ Application config ── read-only extension volume ──────── Gr
 
 部署共享观测栈后，重新部署带有官方 OTel SDK 的应用，Control 会注入原有 `OTEL_*` 地址、认证与资源属性。Manager Tailscale `:4319` 同时接收 Trace 和原生 Metrics。
 
-现有自动埋点的默认值仍是 `OTEL_METRICS_EXPORTER=none`。需要指标的应用自行设置 `OTEL_METRICS_EXPORTER=otlp`，或初始化官方 MeterProvider/有界 Reader。应用执行链路独立于 Collector；接入使用官方协议与 SDK，共享存储沿用现有组件。
+现有自动埋点的默认值仍是 `OTEL_METRICS_EXPORTER=none`。需要指标的应用自行设置 `OTEL_METRICS_EXPORTER=otlp`，或初始化官方 MeterProvider/有界 Reader。应用可选择独立版本的 [`luma-observe-sdk` Python 包](../sdk/python/docs/integration.zh-CN.md)，复用有界 SDK 初始化、Taskiq/Celery 生命周期适配、自定义 Span 和 Metrics。它沿用官方 OTLP 协议及现有凭证，业务字段与结果仍由应用定义。直接使用官方 OTel 接入同样受支持，无需新增事件数据库或每应用 Collector。
 
 ## 可选的机器访问 {#optional-machine-access}
 
@@ -63,9 +63,15 @@ OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20<ingest-token>
 
 凭证按对应官方 SDK 的规则进行 URL 编码。Luma 部署的进程继续使用自动注入的网格地址与 Token。查询后端使用 `/metrics`、`/logs`、`/traces` 为 base URL，并携带独立读取 Token。日志仍通过原有 Nomad stdout/stderr 采集。
 
+外部应用不要求由 Luma 部署。按标准 `service.namespace`、`service.name`、`service.instance.id` 和 `deployment.environment.name` 标识服务后，可使用同样的 Metrics、Trace 和 Grafana；它不会自动获得 Nomad 部署状态或实时 stdout。当前没有外部 OTLP Logs 写入路由，外部日志需要另外接入。
+
+当前 PRW exporter 要求单调计数、直方图等使用 cumulative temporality。SDK 默认满足该条件；外部 SDK 或显式设置 DELTA 的进程需要改回 cumulative，本栈尚无 delta-to-cumulative 转换。接入身份、长任务采样和持久队列的现状与后续方案见[通用观测平台设计](observe-platform-design.zh-CN.md)。
+
 轮换时替换对应 scope Secret、重新部署，再更新消费者；每个角色同时接受一个 Token，切换期间允许短暂查询中断或遥测丢弃，业务执行继续。停用角色时把其环境值恢复为字面量空字符串后重新部署；停用 HTTPS 访问时移除显式安装的 Traefik 配置文件。
 
 ## 应用自行维护看板与规则 {#application-owned-dashboards-and-rules}
+
+可选 Python 包提供离线工具 `luma-observe-dashboard`，将应用 JSON 配置转换为标准 Grafana 看板。指标、变量、面板类型、单位与阈值由应用配置，见 [SDK 示例](../sdk/python/examples/dashboards/)。生成文件使用以下现有扩展交付流程，无需增加服务或凭证。
 
 Grafana 和 vmalert 以只读方式挂载 `observe-extensions`，Manager 路径为 `/srv/luma/data/luma-observe/extensions`，首次部署可为空。应用使用现有运维文件交付流程安装已审核的标准定义：
 
@@ -86,8 +92,11 @@ Grafana 将看板放在 Applications 文件夹并递归发现 JSON；vmalert 同
 ```bash
 python scripts/check-observe-protocols.py --platform linux/amd64
 python scripts/check-observe-tempo.py --platform linux/amd64
+python scripts/check-observe-sdk-protocols.py --platform linux/amd64
 ```
 
 CI 执行上述检查。通用协议检查以官方真实组件和合成输入验证：零用户启动、读写隔离、网格 Metrics 认证、原生计数、采样前 spanmetrics、错误/慢 Trace 留存、LogsQL/TraceQL、诊断采集，以及扩展空目录启动和配置热加载。隔离网络无宿主端口，通知发送关闭，脚本结束清理自己的容器、卷和镜像标签。Tempo 的独立检查继续验证全新存储及重启后读取持久化块。
+
+SDK 独立检查安装分发包，将任务原生指标和自定义指标经 Collector 投递到 VictoriaMetrics，再加载两份生成的 Grafana 示例，并使用采集数据执行各面板的 PromQL。
 
 部署后核对实际入口与凭证，再观察代表性应用的链路、导出失败/拒收、新鲜度、CPU/RSS、磁盘增速和保留期回收。这些是协议与生命周期检查；生产吞吐和资源预算需要各应用按自身验收手册测量。Tempo 仍与 Manager 共享磁盘，保留时间与写入速率上限并非磁盘配额，既有存储和内存保护需要持续保留。

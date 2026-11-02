@@ -45,8 +45,13 @@ The injected auto-instrumentation default remains `OTEL_METRICS_EXPORTER=none`
 to avoid enabling automatic process metrics for every existing image. An
 application that opts into official metric readers can configure
 `OTEL_METRICS_EXPORTER=otlp`, or initialize its own official MeterProvider and
-bounded reader. There is no Luma SDK, business payload format, extra event
-database or per-application collector.
+bounded reader. Applications can use the optional
+[`luma-observe-sdk` Python package](../sdk/python/README.md) for bounded SDK setup,
+Taskiq/Celery lifecycle adapters and custom spans/metrics. It is independently
+versioned, uses the same official OTLP protocol and existing credentials, and
+keeps business fields and outcomes in the application. Direct official OTel
+integration remains supported. No extra event database or per-application
+collector is needed.
 
 ## Optional machine access
 
@@ -112,6 +117,17 @@ OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20<ingest-token>
 ```
 
+External applications do not have to be deployed by Luma. Identify them with
+standard `service.namespace`, `service.name`, `service.instance.id` and
+`deployment.environment.name` resources to use the same Metrics, Trace and
+Grafana facilities. This does not create a Nomad deployment entry or provide its
+live stdout view. There is currently no external OTLP Logs ingestion route.
+
+The pinned Prometheus Remote Write exporter requires cumulative temporality for
+monotonic counters and histograms. The Python SDK defaults to cumulative;
+external SDKs or an explicit DELTA preference must use cumulative instead.
+The current pipeline has no delta-to-cumulative conversion.
+
 The header follows the official OTel SDK environment-variable format; URL-encode
 the token when required by that SDK. Existing Luma-managed applications keep the
 automatically injected mesh endpoint and token. A backend query client uses the
@@ -127,6 +143,12 @@ literal empty environment value and redeploy. Remove the explicit Traefik file
 when HTTPS machine access is no longer needed.
 
 ## Application-owned dashboards and rules
+
+The optional Python package includes `luma-observe-dashboard`, an offline JSON
+configuration compiler for standard Grafana dashboards. Applications choose their
+metrics, variables, panel types, units and thresholds in configuration; see the
+[SDK examples](../sdk/python/examples/dashboards/). Its output uses the existing
+extension delivery below and does not need another service or credential.
 
 The `observe-extensions` volume is a shared read-only config mount in Grafana
 and vmalert. Its manager path is
@@ -164,15 +186,19 @@ From the repository root with Luma dependencies and Docker installed:
 ```bash
 python scripts/check-observe-protocols.py --platform linux/amd64
 python scripts/check-observe-tempo.py --platform linux/amd64
+python scripts/check-observe-sdk-protocols.py --platform linux/amd64
 ```
 
-CI runs both. The protocol check uses official packaged components and generic
-synthetic signals. It verifies zero-user startup, independent roles, protected
+CI runs all three. The platform protocol check uses official packaged components
+and generic synthetic signals. It verifies zero-user startup, independent roles, protected
 mesh metrics, native counters, span metrics before sampling, retained error and
 slow traces, LogsQL/TraceQL reads, internal diagnostics, empty extension startup,
 and live dashboard/rule reload. It disables notification delivery and removes
 its isolated containers, volumes and temporary image tags. The separate Tempo
 check retains the fresh-storage and persisted-block restart verification.
+The SDK check installs the independent package, exports native task/custom metrics
+through Collector to VictoriaMetrics, provisions both generated Grafana examples,
+and evaluates their PromQL expressions against the collected data.
 
 After deployment, verify these paths using the actual configured roles, then
 check a representative instrumented application. Observe exporter failures,

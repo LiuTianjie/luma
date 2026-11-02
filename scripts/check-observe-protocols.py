@@ -120,6 +120,14 @@ def main() -> None:
         rows = json.loads(response["body"]).get("data", {}).get("result", [])
         return float(rows[0]["value"][1]) if rows else None
 
+    def sampling_decisions() -> int:
+        # Read directly instead of waiting for the next diagnostic scrape. This
+        # proves the early children's decisions happened before sending roots.
+        prefix = "otelcol_processor_tail_sampling_global_count_traces_sampled"
+        lines = expect(request(8888, "/metrics"))["body"].splitlines()
+        return int(sum(float(line.rsplit(" ", 1)[1]) for line in lines
+                       if line.split("{", 1)[0].split(" ", 1)[0] in {prefix, prefix + "_total"}))
+
     def write_extensions(version: int) -> None:
         dashboard = {"uid": "luma-protocol-check", "title": f"Protocol extension {version}", "schemaVersion": 39,
                      "version": version, "panels": [], "timezone": "browser"}
@@ -180,6 +188,13 @@ for name, content in json.load(sys.stdin).items():
 
         end = time.time_ns()
         attributes = [{"key": "service.name", "value": {"stringValue": SERVICE}}]
+        def send_spans(rows: list[dict]) -> None:
+            payload = json.dumps({"resourceSpans": [{"resource": {"attributes": attributes}, "scopeSpans": [
+                {"scope": {"name": "luma.protocol.check"}, "spans": rows}]}]})
+            response = expect(request(8427, "/otlp/v1/traces", payload, token=WRITER))
+            if json.loads(response["body"]).get("partialSuccess", {}).get("rejectedSpans", 0) not in (0, "0"):
+                raise RuntimeError("Collector rejected synthetic spans")
+
         def metric_payload(name: str, value: int) -> str:
             return json.dumps({"resourceMetrics": [{"resource": {"attributes": attributes}, "scopeMetrics": [{
                 "scope": {"name": "luma.protocol.check"}, "metrics": [{"name": name,
@@ -194,11 +209,14 @@ for name, content in json.load(sys.stdin).items():
             spans.append({"traceId": trace_id, "spanId": uuid.uuid4().hex[:16], "name": name, "kind": 1,
                           "startTimeUnixNano": str(end - (2_000_000_000 if index == 100 else 10_000_000)),
                           "endTimeUnixNano": str(end), "status": {"code": 2 if index == 101 else 1}})
-        payload = json.dumps({"resourceSpans": [{"resource": {"attributes": attributes}, "scopeSpans": [
-            {"scope": {"name": "luma.protocol.check"}, "spans": spans}]}]})
-        response = expect(request(8427, "/otlp/v1/traces", payload, token=WRITER))
-        if json.loads(response["body"]).get("partialSuccess", {}).get("rejectedSpans", 0) not in (0, "0"):
-            raise RuntimeError("Collector rejected synthetic spans")
+            if index < 100:
+                # Nested manual task spans can finish before their execution
+                # root. A task-shaped CONSUMER with a parent is still a child.
+                spans[-1].update(kind=5, parentSpanId=uuid.uuid4().hex[:16], attributes=[
+                    {"key": "task.framework", "value": {"stringValue": "manual"}},
+                    {"key": "task.name", "value": {"stringValue": "nested-task"}},
+                ])
+        send_spans(spans)
         expect(request(9428, "/insert/jsonline?_stream_fields=service&_msg_field=_msg", json.dumps({
             "service": SERVICE, "_msg": "protocol-check", "trace_id": spans[101]["traceId"]}) + "\n", content_type="application/stream+json"))
 
@@ -212,12 +230,70 @@ for name, content in json.load(sys.stdin).items():
         wait_for("LogsQL returns ingested event with trace correlation", lambda: spans[101]["traceId"] in request(8427, "/logs/select/logsql/query?" + log_params, token=READER)["body"])
         for span in spans[100:]:
             wait_for(span["name"] + " survives sampling and is queryable by trace ID", lambda s=span: s["name"] in request(8427, "/traces/api/traces/" + s["traceId"], token=READER)["body"])
+        wait_for("Early child sampling decisions completed", lambda: sampling_decisions() >= len(spans))
         trace_params = urllib.parse.urlencode({"q": f'{{ resource.service.name = "{SERVICE}" && name = "fast-success" }}', "limit": 200})
         response = expect(request(8427, "/traces/api/search?" + trace_params, token=READER))
-        retained = len(json.loads(response["body"]).get("traces", []))
+        retained_traces = json.loads(response["body"]).get("traces", [])
+        retained = len(retained_traces)
         if not 0 < retained < 100:
             raise RuntimeError(f"expected a sampled subset of 100 fast successes, got {retained}")
         print(f"Tempo retained {retained}/100 fast successes; native and span metrics still count 100", flush=True)
+
+        # Tempo's Search JSON may omit leading zeroes from a trace ID.
+        retained_ids = {row["traceID"].lower().zfill(32) for row in retained_traces}
+        early_child = next(span for span in spans[:100] if span["traceId"] not in retained_ids)
+        expect(request(8427, "/traces/api/traces/" + early_child["traceId"], token=READER), (404,))
+        completed = time.time_ns()
+        task_roots = []
+        for index in range(102):
+            name = "task-root-fast-success" if index < 100 else ("task-root-slow-success" if index == 100 else "task-root-fast-error")
+            task_roots.append({
+                "traceId": hashlib.sha256(f"luma-protocol-task-root-{index}".encode()).hexdigest()[:32],
+                "spanId": uuid.uuid4().hex[:16], "name": name, "kind": 5,
+                "startTimeUnixNano": str(completed - (2_000_000_000 if index == 100 else 10_000_000)),
+                "endTimeUnixNano": str(completed), "status": {"code": 2 if index == 101 else 1},
+                "attributes": [
+                    {"key": "task.framework", "value": {"stringValue": "taskiq"}},
+                    {"key": "task.name", "value": {"stringValue": name}},
+                ],
+            })
+        # Reuse a trace whose early child was already rejected. The long failed
+        # execution root must get an independent decision using its final result.
+        task_roots.append({**task_roots[-1], "name": "task-root-late-error",
+                           "traceId": early_child["traceId"], "spanId": early_child["parentSpanId"],
+                           "startTimeUnixNano": str(end - 1_000_000_000), "attributes": [
+                               {"key": "task.framework", "value": {"stringValue": "celery"}},
+                               {"key": "task.name", "value": {"stringValue": "task-root-late-error"}},
+                           ]})
+        send_spans(task_roots)
+        for span in task_roots[100:]:
+            wait_for(span["name"] + " retained from completed outcome/duration", lambda s=span: s["name"] in request(8427, "/traces/api/traces/" + s["traceId"], token=READER)["body"])
+        wait_for("Task root sampling decisions completed", lambda: sampling_decisions() >= len(spans) + len(task_roots))
+        # Pinned contrib v0.122.0 uses FNV-1a(default-hash-seed + trace ID).
+        # These seven fixed fixture IDs fall below its 10% threshold:
+        # processor/tailsamplingprocessor/internal/sampling/probabilistic.go
+        expected_roots = {task_roots[index]["traceId"] for index in (6, 24, 33, 38, 48, 72, 76)}
+        wait_for("Deterministically sampled fast task root readable by trace ID", lambda:
+                 "task-root-fast-success" in request(8427, "/traces/api/traces/" + task_roots[6]["traceId"], token=READER)["body"])
+        root_query = urllib.parse.urlencode({"q": f'{{ resource.service.name = "{SERVICE}" && name = "task-root-fast-success" }}', "limit": 200})
+        def task_roots_searchable() -> bool:
+            # Tempo's trace-ID read includes live traces; search waits until
+            # trace_idle_period/sweeps move them to a searchable head/WAL block.
+            root_response = expect(request(8427, "/traces/api/search?" + root_query, token=READER))
+            actual = {row["traceID"].lower().zfill(32) for row in json.loads(root_response["body"]).get("traces", [])}
+            if not actual <= expected_roots:
+                raise RuntimeError(f"unexpected fast task roots bypassed baseline sampling: {sorted(actual - expected_roots)}")
+            return actual == expected_roots
+
+        wait_for("All seven deterministically sampled fast task roots searchable", task_roots_searchable, timeout=60)
+        retained_roots = len(expected_roots)
+        wait_for("Span metrics count each accepted task root exactly once", lambda: metric(
+            f'sum(traces_span_metrics_calls_total{{service_name="{SERVICE}",span_name=~"task-root-.*"}})') == len(task_roots))
+        late_trace = expect(request(8427, "/traces/api/traces/" + early_child["traceId"], token=READER))["body"]
+        if '"fast-success"' in late_trace:
+            raise RuntimeError("already rejected child unexpectedly appeared with the late task root")
+        print(f"Completed task roots sample based on outcome/duration ({retained_roots}/100 fast roots retained); children are best effort", flush=True)
+
         metrics = expect(request(8888, "/metrics"))["body"]
         if "otelcol_receiver_accepted_spans" not in metrics:
             raise RuntimeError("Collector internal acceptance metrics unavailable")

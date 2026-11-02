@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "luma-observe-sdk"
+version = "0.1.0"
+description = "Optional OpenTelemetry application integration and Grafana configuration for Luma."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+  "opentelemetry-sdk>=1.38,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.38,<2",
+]
+
+[project.optional-dependencies]
+taskiq = ["taskiq>=0.12.6,<0.13"]
+celery = ["celery>=5.5,<6"]
+test = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2", "build>=1.2", "twine>=6", "ruff>=0.6"]
+
+[project.urls]
+Repository = "https://github.com/LiuTianjie/luma"
+
+[project.scripts]
+luma-observe-dashboard = "luma_observe.dashboards:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+luma_observe = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["F", "E9"]

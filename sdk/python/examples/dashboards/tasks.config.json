@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "uid": "application-tasks",
+  "title": "Application tasks",
+  "description": "Framework execution attempts received by the observation platform. Application delivery remains a separate business metric.",
+  "datasource": "victoria",
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "tags": [
+    "application",
+    "tasks"
+  ],
+  "variables": [
+    {
+      "name": "service",
+      "label": "Service",
+      "query": "label_values(worker_heartbeat_seconds, service_name)",
+      "multi": true,
+      "includeAll": true
+    },
+    {
+      "name": "environment",
+      "label": "Environment",
+      "query": "label_values(worker_heartbeat_seconds{service_name=~\"${service:regex}\"}, deployment_environment_name)",
+      "multi": true,
+      "includeAll": true
+    },
+    {
+      "name": "freshness_seconds",
+      "label": "Heartbeat freshness (seconds)",
+      "type": "constant",
+      "query": "120"
+    },
+    {
+      "name": "task",
+      "label": "Task",
+      "query": "label_values(task_active{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\"}, task_name)",
+      "multi": true,
+      "includeAll": true
+    }
+  ],
+  "panels": [
+    {
+      "title": "Execution attempts in selected window",
+      "type": "stat",
+      "expr": "sum(increase(task_executions_total{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",task_name=~\"${task:regex}\"}[$__range]))",
+      "unit": "short",
+      "decimals": 0
+    },
+    {
+      "title": "Framework success ratio",
+      "description": "Successful attempts divided by succeeded plus failed attempts. Retries and business delivery outcomes are separate.",
+      "type": "stat",
+      "expr": "(sum(increase(task_executions_total{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",task_name=~\"${task:regex}\",outcome=\"succeeded\"}[$__range])) or vector(0)) / sum(increase(task_executions_total{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",task_name=~\"${task:regex}\",outcome=~\"succeeded|failed\"}[$__range]))",
+      "unit": "percentunit",
+      "min": 0,
+      "max": 1
+    },
+    {
+      "title": "Execution attempts per second",
+      "type": "timeseries",
+      "expr": "sum by(task_name,outcome)(rate(task_executions_total{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",task_name=~\"${task:regex}\"}[$__rate_interval]))",
+      "legend": "{{task_name}} · {{outcome}}",
+      "unit": "ops"
+    },
+    {
+      "title": "Execution duration P95",
+      "type": "timeseries",
+      "expr": "histogram_quantile(0.95,sum by(task_name,le)(rate(task_duration_seconds_bucket{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",task_name=~\"${task:regex}\"}[$__rate_interval])))",
+      "legend": "{{task_name}}",
+      "unit": "s"
+    },
+    {
+      "title": "Queue wait P95",
+      "description": "Recorded when work is received. This is not a measurement of messages that have never been consumed.",
+      "type": "timeseries",
+      "expr": "histogram_quantile(0.95,sum by(task_queue,le)(rate(task_queue_wait_seconds_bucket{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",task_name=~\"${task:regex}\"}[$__rate_interval])))",
+      "legend": "{{task_queue}}",
+      "unit": "s"
+    },
+    {
+      "title": "Active tasks from recently reporting processes",
+      "description": "Latest active count, included only when the same process reported a heartbeat within freshness_seconds (120 seconds by default). Heartbeats prove metrics collection is alive, not business progress. Missing samples remain no data.",
+      "type": "table",
+      "expr": "sum by(task_framework,task_queue,task_name)(task_active{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",task_name=~\"${task:regex}\"} and on(service_name,deployment_environment_name,service_instance_id) (time() - worker_heartbeat_seconds{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\"} < ${freshness_seconds}))",
+      "unit": "short",
+      "decimals": 0
+    },
+    {
+      "title": "Process heartbeat age",
+      "description": "Seconds since each process last collected metrics, independent of the selected task. A fresh heartbeat does not prove worker event-loop or business progress. Old samples disappear when the metrics backend lookback expires; absence is not zero.",
+      "type": "table",
+      "expr": "time() - worker_heartbeat_seconds{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\"}",
+      "unit": "s",
+      "decimals": 0,
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          { "color": "green", "value": null },
+          { "color": "red", "value": 120 }
+        ]
+      }
+    },
+    {
+      "title": "Oldest active attempt age by task and queue",
+      "description": "Oldest currently active attempt for each selected task, queue and framework in each recently reporting process. This is attempt age, not time since last progress. Completed tasks are excluded by their active count. No sample alone does not establish idle: the process may be unavailable or tracking may have overflowed.",
+      "type": "table",
+      "expr": "task_oldest_active_age_seconds{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",task_name=~\"${task:regex}\"} and on(service_name,deployment_environment_name,service_instance_id,task_name,task_queue,task_framework) (task_active{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",task_name=~\"${task:regex}\"} > 0) and on(service_name,deployment_environment_name,service_instance_id) (time() - worker_heartbeat_seconds{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\"} < ${freshness_seconds}) and on(service_name,deployment_environment_name,service_instance_id) (task_active_tracking_overflow{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\"} == 0)",
+      "unit": "s",
+      "decimals": 0
+    },
+    {
+      "title": "Active attempt tracking overflow by process",
+      "description": "Number of in-flight attempts beyond the per-process tracking bound. Above zero, oldest active age is unavailable until overflow clears; execution counters and duration recording continue.",
+      "type": "table",
+      "expr": "task_active_tracking_overflow{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\"} and on(service_name,deployment_environment_name,service_instance_id) (time() - worker_heartbeat_seconds{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\"} < ${freshness_seconds})",
+      "unit": "short",
+      "decimals": 0
+    }
+  ]
+}
