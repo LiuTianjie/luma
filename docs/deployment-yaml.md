@@ -60,7 +60,7 @@ luma deploy status.yaml
 | `stackPath` | 否 | string | 覆盖生成 jobspec 路径。通常不用。 |
 | `routePath` | 否 | string | 覆盖 tailscale route 文件路径。通常不用。 |
 
-## 容器 DNS
+## 容器 DNS {#container-dns}
 
 单服务 manifest 使用 `dns.servers`：
 
