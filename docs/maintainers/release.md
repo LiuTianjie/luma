@@ -21,6 +21,15 @@ checks validate source and build artifacts; they do not validate a live cluster.
 Both publishing workflows additionally reject release tags that do not match
 the package version, before any image or package publication.
 
+Source CI also runs `python scripts/check-observe-tempo.py --platform linux/amd64`
+in a separate Docker job on PRs and main pushes. Run it before submitting
+changes to the observe images/configs: it covers fresh storage, the packaged
+collector's trace pipeline and persisted retrieval after restarting Tempo.
+It cleans its own containers, volume and image tags. This is independent of
+the source gate and does not validate production capacity. Observe images are
+built by the cluster's own deployment workflow; a Control/PyPI release does
+not upgrade an existing observe stack. See [observe upgrades](../../observe/README.md#upgrade-or-restore-a-previously-disabled-tempo).
+
 ## Recommended Release
 
 1. Bump the package version before committing code that should be distinguishable by `luma version`:

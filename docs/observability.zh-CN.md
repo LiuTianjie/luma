@@ -16,6 +16,12 @@ Control 控制台提供节点与容器采样，实时 allocation 日志仍通过
 
 在 `observe/` 中沿用已记录的部署方式。AMD64 Manager 首次本地构建可执行 `luma build local . --platform linux/amd64`；其他主机应按实际 Manager 架构选择平台。首次部署不需要通知密钥。可观测栈的 Alertmanager 通知需要添加 scoped secret 和对应的 Compose 环境变量引用，再重新部署；控制台规则则使用内置飞书渠道，详见[通知配置](#built-in-alert-rules-and-notifications)。当前 CLI 支持回环 metrics/OTLP 标志后，刷新 Traefik，让 RED 规则有可抓取目标。通过 **控制台 → 可观测 → 应用监控**查看。图表按 Luma 应用展示 Traefik HTTP 请求率、5xx、p90/p95/p99 延迟和 Nomad 健康状态，不是读取每个容器的 `/metrics`。Traefik 直方图桶为 `0.05,0.1,0.25,0.5,1,2.5,5,10` 秒，以区分这些分位数。启用 observe 后，后续 Luma 部署会自动注入官方 OpenTelemetry 环境变量：`OTEL_SERVICE_NAME`、`luma.stack` / `luma.task` / `luma.region`，以及指向 mesh 监听器的 OTLP HTTP 配置。已包含 OpenTelemetry 发行版的应用无需 Luma SDK 即可发送 span。首次启用 observe 后应重新部署已有应用。Trace 导出失败不会阻塞业务；采集器保留 HTTP 5xx、OTel 错误、超过 1 秒的 trace，并对其他请求进行 10% 基线采样。采集器通过 Go 内存目标、memory limiter 和有界队列控制内存，持续过载时会拒收或丢弃遥测数据。不要通过 Manager 公网接口向外发送原始访问日志或 trace。
 
+### Trace 存储容量与升级 {#trace-storage-sizing-and-upgrades}
+
+内置 Tempo 2.10.10 包含上游 Parquet 行池内存修复。默认调度预留为 1 GiB、容器上限 3 GiB、Go 内存目标 2 GiB，Parquet 行组目标为 25 MB。首次部署前，应在 Control、Traefik 和其他 observe 服务之外，为 Tempo 的上限留出内存。过低的容器上限可能导致文件页反复回收和重读，即使没有 OOM 或磁盘写满也会拖慢磁盘。查询缓冲设置不能限制压实内存。Tempo 的 72 小时保留期和写入限速不等于磁盘配额，它也没有剩余磁盘空间不足时停止写入的保护。
+
+从更新后的源码重新构建、部署完整 `observe/` 栈，才能拿到这些默认值；只更新 CLI/Control 或重启旧 job 不会更新 observe。曾手动关闭 Tempo 的实例还需要恢复 collector 的 Tempo exporter。保留现有卷，过期块由后台异步清理。详见[首次部署、升级与验证步骤](../observe/README.md#first-deployment)。CI 使用打包的配置和内存限制验证空存储启动、collector 投递，以及 Tempo 重启后的持久化 trace 查询。
+
 ## 应用接入 {#application-integration}
 
 部署 [`observe/`](../observe/) 即表示在集群级启用。此后新部署的 Luma job 自动获得 OTel 配置。只重启旧 job 的进程不够，必须重新渲染 Nomad job。这里没有 Luma 遥测 SDK，也不会注入语言 agent。

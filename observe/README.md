@@ -55,11 +55,23 @@ VictoriaMetrics retains 15 days under a 1 GiB container ceiling. Its cache
 allowance is 384 MiB, with at most four concurrent queries and 64 MiB per query;
 cache limits alone do not cap total process memory.
 
-Disk is shared with Control on the manager, so every store is bounded.
+Tempo uses 2.10.10, including the [Parquet compactor row-pool memory fix](https://github.com/grafana/tempo/pull/4985).
+Its container ceiling is 3 GiB with a 2 GiB Go memory target,
+leaving room for file cache and non-Go allocations. Parquet row groups are
+limited to a 25 MB target instead of the upstream 100 MB default, alongside
+one concurrent ingester flush. Search-buffer and retention concurrency settings
+do not bound compactor memory. A small container can spend most of its time
+reclaiming and rereading file pages even without an OOM kill or a full disk.
+The Go memory target is soft and does not reserve file cache. Verify actual container limits and observe
+compaction, WAL recovery and query I/O after deployment; these settings do not
+isolate the manager's disk from Tempo.
+
+Disk is shared with Control on the manager.
 VictoriaLogs keeps 15 days but drops its oldest days beyond 4 GiB (about
 230 MB/day at current traffic). VictoriaLogs and VictoriaMetrics stop
-accepting new data when less than 2 GiB is free, so a full disk cannot take
-down Control. Tempo has no size limit or free-space guard; it keeps 3 days of
+accepting new data when less than 2 GiB is free. Tempo has no size limit or
+free-space guard; its time retention and ingest rate are not a disk quota.
+It keeps 3 days of
 tail-sampled traces (errors, slow requests and a 10% baseline) with ingest
 limited to 2 MiB/s and 2 MiB per trace. Older Tempo blocks, including those
 from the previous 14-day setting, are removed by the compactor after the
@@ -76,17 +88,76 @@ Control pins the stack to the registered manager node (not the name `manager`)
 and injects Grafana's public URL from the Control domain. Do not edit node
 names or hardcode a Grafana host.
 
-Build and deploy from this directory:
+### First deployment
+
+Use `observe/` from the current Luma source checkout or release archive. Have a
+working Control login and internal Registry configured for Local Build; the
+machine running the build needs Docker Buildx. Check the manager's architecture,
+available RAM and free disk before adding the stack. Tempo alone reserves 1 GiB
+for scheduling and can use up to 3 GiB; allow that headroom in addition to
+Control, Traefik, the other observe services and any colocated applications.
+The reservation is not a promise that the complete stack fits in 1 GiB.
+
+Build and deploy from this directory (AMD64 manager example):
 
 ```bash
 luma build local . --platform linux/amd64
 ```
+
+Control prepares the local data directories and pins the whole stack to the
+registered manager. No manual Tempo start, config copy, node-name change or
+public port is needed. The Tempo image build verifies its bundled config with
+the actual pinned binary before it can be deployed. For ARM64, use
+`--platform linux/arm64` with an ARM64 manager.
 
 If Feishu is unset, Alertmanager still records incidents; the webhook returns
 204 and does not retry. Traefik RED rules start after Traefik is refreshed
 with the loopback metrics/OTLP flags from current `luma/nomad_render.py`
 (`luma update manager` refreshes the Traefik job). Nomad failure alerts work
 as soon as this stack is running.
+
+### Upgrade or restore a previously disabled Tempo
+
+Update the source used by the stack's recorded build workflow, then rebuild and
+redeploy `luma-observe`. For Local Build, run the command above from the updated
+`observe/` directory. For a saved repository workflow, point it at the updated
+ref and rebuild. Updating the Luma CLI/Control or restarting old containers does
+not update this independently deployed stack's images, memory limits or config.
+
+If Tempo was removed manually, deploy the complete current Compose definition,
+including the collector's `otlphttp/tempo` exporter and trace pipeline. Reconcile
+any saved Compose override or pinned images first: rebuilding only Tempo can
+leave the collector discarding all traces. Keep existing volume names and local
+paths; `initialize: empty` permits first creation and does not erase an existing
+volume. Do not delete the WAL or old blocks to make the upgrade start. Retention
+marks expired blocks on its next scan and removes them after the compacted-block
+retention delay (one hour by default), so reclaimed space is not immediate.
+
+After deployment, verify the running Tempo version, its actual 3 GiB container
+ceiling and `GOMEMLIMIT=2GiB`, not just the source YAML. On the manager, `/ready`
+on `127.0.0.1:3200` must return 200. Query a recent sampled trace in
+**App monitoring → Traces**; readiness alone does not prove collector delivery
+or storage. Observe memory, OOM/restarts, compaction errors, disk I/O wait and
+free space through recovery and compaction. A blocks-only query
+(`/api/traces/<trace-id>?mode=blocks`) proves persisted retrieval; allow the
+default five-minute block flush and subsequent five-minute blocklist scan.
+
+### Maintainer verification
+
+From the repository root, with the Python package dependencies and Docker
+installed:
+
+```bash
+python scripts/check-observe-tempo.py --platform linux/amd64
+```
+
+The source CI runs this check on PRs and main pushes. It builds the bundled
+collector and Tempo, starts with empty storage using the configured memory
+limits, sends a slow successful trace through tail sampling, flushes it, then
+recreates Tempo and queries the persisted block. It uses an isolated network
+namespace with no published ports and removes its containers, volume and image
+tags afterward. It does not contact a cluster or simulate production load;
+capacity and old-block compaction still need observation on the target manager.
 
 ## Listeners (manager loopback only)
 
