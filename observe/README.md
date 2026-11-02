@@ -39,6 +39,11 @@ See [Standard application observability](../docs/observe-applications.md)
 ([中文](../docs/observe-applications.zh-CN.md)) for native metrics, optional
 machine query/ingest credentials and application-owned dashboard/rule loading.
 
+Applications can opt into [service-level span metrics](../docs/observe-service-span-metrics.md)
+([中文](../docs/observe-service-span-metrics.zh-CN.md)) to aggregate derived metrics
+across worker processes while retaining original trace and native-metric identities.
+Unflagged applications keep the existing spanmetrics behavior.
+
 Public HTTP already has Traefik RED and an ingress span. Process spans need
 official OpenTelemetry instrumentation in the image, directly or through the
 optional [Luma Observe Python SDK](../sdk/python/README.md). Control injects

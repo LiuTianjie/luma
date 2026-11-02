@@ -120,6 +120,13 @@ def main() -> None:
         rows = json.loads(response["body"]).get("data", {}).get("result", [])
         return float(rows[0]["value"][1]) if rows else None
 
+    def metric_rows(expression: str) -> list[dict]:
+        response = expect(request(8427, "/metrics/api/v1/query?" + urllib.parse.urlencode({"query": expression}), token=READER))
+        payload = json.loads(response["body"])
+        if payload.get("status") != "success":
+            raise RuntimeError(f"metrics query failed: {payload}")
+        return payload["data"]["result"]
+
     def sampling_decisions() -> int:
         # Read directly instead of waiting for the next diagnostic scrape. This
         # proves the early children's decisions happened before sending roots.
@@ -188,18 +195,25 @@ for name, content in json.load(sys.stdin).items():
 
         end = time.time_ns()
         attributes = [{"key": "service.name", "value": {"stringValue": SERVICE}}]
-        def send_spans(rows: list[dict]) -> None:
-            payload = json.dumps({"resourceSpans": [{"resource": {"attributes": attributes}, "scopeSpans": [
+        def encode_attributes(values: dict[str, str | int] | None) -> list[dict]:
+            if values is None:
+                return attributes
+            return [{"key": key, "value": {"intValue": str(value)} if isinstance(value, int) else {"stringValue": value}}
+                    for key, value in values.items()]
+
+        def send_spans(rows: list[dict], resource: dict[str, str | int] | None = None) -> None:
+            payload = json.dumps({"resourceSpans": [{"resource": {"attributes": encode_attributes(resource)}, "scopeSpans": [
                 {"scope": {"name": "luma.protocol.check"}, "spans": rows}]}]})
             response = expect(request(8427, "/otlp/v1/traces", payload, token=WRITER))
             if json.loads(response["body"]).get("partialSuccess", {}).get("rejectedSpans", 0) not in (0, "0"):
                 raise RuntimeError("Collector rejected synthetic spans")
 
-        def metric_payload(name: str, value: int) -> str:
-            return json.dumps({"resourceMetrics": [{"resource": {"attributes": attributes}, "scopeMetrics": [{
+        def metric_payload(name: str, value: int, resource: dict[str, str | int] | None = None) -> str:
+            recorded = time.time_ns()
+            return json.dumps({"resourceMetrics": [{"resource": {"attributes": encode_attributes(resource)}, "scopeMetrics": [{
                 "scope": {"name": "luma.protocol.check"}, "metrics": [{"name": name,
                 "sum": {"aggregationTemporality": 2, "isMonotonic": True, "dataPoints": [{
-                    "startTimeUnixNano": str(end - 1_000_000_000), "timeUnixNano": str(end), "asInt": str(value)}]}}]}]}]})
+                    "startTimeUnixNano": str(recorded - 1_000_000_000), "timeUnixNano": str(recorded), "asInt": str(value)}]}}]}]}]})
         expect(request(8427, "/otlp/v1/metrics", metric_payload("luma_protocol_native_events", 100), token=WRITER))
         expect(request(4319, "/v1/metrics", metric_payload("luma_protocol_mesh_events", 7), token=MESH))
         spans = []
@@ -293,6 +307,143 @@ for name, content in json.load(sys.stdin).items():
         if '"fast-success"' in late_trace:
             raise RuntimeError("already rejected child unexpectedly appeared with the late task root")
         print(f"Completed task roots sample based on outcome/duration ({retained_roots}/100 fast roots retained); children are best effort", flush=True)
+
+        # Default and opted-in sources deliberately share all six service keys.
+        # One default source has no instance metadata at all: the service-mode
+        # label must keep its cumulative stream separate during an opt-in rollout.
+        stable_resource = {
+            "service.name": "luma-span-routing-check", "service.namespace": "protocol-apps",
+            "deployment.environment.name": "protocol", "luma.stack": "protocol-stack",
+            "luma.task": "worker", "luma.region": "protocol-region",
+        }
+        task_fields = {"task.name": "example.execute", "task.queue": "primary", "task.framework": "celery", "task.outcome": "succeeded"}
+        resource_keys, task_keys = tuple(stable_resource), tuple(task_fields)
+        resource_labels = tuple(key.replace(".", "_") for key in resource_keys)
+        task_labels = resource_labels + tuple(key.replace(".", "_") for key in task_keys)
+
+        def process_resource(identity: str, *, service: bool) -> dict:
+            resource = {**stable_resource, "service.instance.id": identity, "host.name": identity + "-host",
+                        "process.pid": 4100 + len(identity), "k8s.pod.uid": identity + "-pod",
+                        "telemetry.sdk.version": identity + "-sdk", "application.release": identity + "-release"}
+            if service:
+                resource["luma.observe.span_metrics"] = "service"
+            return resource
+
+        def execution_span(fields: dict, *, name: str = "protocol.task", kind: int = 5) -> dict:
+            recorded = time.time_ns()
+            return {"traceId": uuid.uuid4().hex, "spanId": uuid.uuid4().hex[:16], "name": name, "kind": kind,
+                    "startTimeUnixNano": str(recorded - 250_000_000), "endTimeUnixNano": str(recorded),
+                    "status": {"code": 2 if fields["task.outcome"] in {"failed", "retrying"} else 1},
+                    "attributes": encode_attributes(fields)}
+
+        def task_key(resource: dict, fields: dict) -> tuple:
+            return tuple(resource[key] for key in resource_keys) + tuple(fields[key] for key in task_keys)
+
+        defaults = [process_resource(f"default-instance-{index}", service=False) for index in range(2)]
+        defaults[1]["luma.observe.span_metrics"] = "instance"  # Unknown modes retain the default behavior.
+        defaults.append(dict(stable_resource))
+        trace_resources = []
+        for resource in defaults:
+            root = execution_span({**task_fields, "task.outcome": "failed"})
+            child = execution_span(task_fields, name="protocol.child")
+            child.update(traceId=root["traceId"], parentSpanId=root["spanId"])
+            send_spans([root, child], resource)
+            if "service.instance.id" in resource:
+                trace_resources.append((root, resource))
+
+        opted_in = [process_resource(f"service-instance-{index}", service=True) for index in range(3)]
+        expected_tasks = {task_key(stable_resource, task_fields): 6.0,
+                          task_key(stable_resource, {**task_fields, "task.outcome": "failed"}): 3.0}
+        for resource in opted_in:
+            roots = [execution_span({**task_fields, "task.outcome": outcome}) for outcome in ("succeeded", "succeeded", "failed")]
+            child = execution_span(task_fields, name="protocol.child")
+            child.update(traceId=roots[-1]["traceId"], parentSpanId=roots[-1]["spanId"])
+            # A task-shaped span without a parent still is not an execution root
+            # unless its kind is CONSUMER. Neither this helper nor the child counts.
+            helper = execution_span(task_fields, name="protocol.helper", kind=1)
+            send_spans([*roots, child, helper], resource)
+            trace_resources.append((roots[-1], resource))
+            expect(request(4319, "/v1/metrics", metric_payload("luma_protocol_instance_events", 1, resource), token=MESH))
+
+        # Keep span.name fixed while changing each task dimension, so a missing
+        # dimension cannot be accidentally rescued by a different span name.
+        for key, value in {"task.name": "example.other", "task.queue": "secondary", "task.framework": "taskiq", "task.outcome": "retrying"}.items():
+            fields = {**task_fields, key: value}
+            resource = process_resource("dimension-" + key, service=True)
+            send_spans([execution_span(fields)], resource)
+            expected_tasks[task_key(resource, fields)] = 1.0
+        expected_service_roots = {tuple(stable_resource.values()): 13.0}
+        for key in resource_keys:
+            resource = process_resource("boundary-" + key, service=True)
+            resource[key] = stable_resource[key] + "-other"
+            send_spans([execution_span(task_fields)], resource)
+            expected_tasks[task_key(resource, task_fields)] = 1.0
+            expected_service_roots[tuple(resource[key] for key in resource_keys)] = 1.0
+
+        task_selector = '{luma_observe_span_metrics="service",span_name="protocol.task"}'
+        task_calls = "task_span_calls_total" + task_selector
+        service_calls = "traces_span_metrics_calls_total" + task_selector
+        wait_for("Opt-in task metrics received all 19 execution roots", lambda: metric(f"sum({task_calls})") == 19)
+        wait_for("Opt-in RED metrics count each execution root once", lambda: metric(f"sum({service_calls})") == 19)
+        for expression in (task_calls, "task_span_duration_seconds_count" + task_selector):
+            rows = metric_rows(expression)
+            actual = {tuple(row["metric"].get(key) for key in task_labels): float(row["value"][1]) for row in rows}
+            if len(rows) != len(expected_tasks) or actual != expected_tasks:
+                raise RuntimeError(f"task dimensions, service boundaries or counts differ: {expression}: {rows}")
+        service_rows = metric_rows(service_calls)
+        service_totals = {}
+        for row in service_rows:
+            key = tuple(row["metric"].get(label) for label in resource_labels)
+            service_totals[key] = service_totals.get(key, 0) + float(row["value"][1])
+        if len(service_rows) != 8 or service_totals != expected_service_roots:
+            raise RuntimeError(f"service span metrics did not preserve the six resource boundaries: {service_rows}")
+        for child_name in ("protocol.child", "protocol.helper"):
+            expression = 'traces_span_metrics_calls_total{luma_observe_span_metrics="service",span_name=' + json.dumps(child_name) + '}'
+            rows = metric_rows(expression)
+            if len(rows) != 1 or float(rows[0]["value"][1]) != 3:
+                raise RuntimeError(f"opt-in RED connector must count children/helpers exactly once: {rows}")
+        if metric_rows('task_span_calls_total{span_name=~"protocol.child|protocol.helper"}') or metric_rows('task_span_calls_total{luma_observe_span_metrics!="service"}'):
+            raise RuntimeError("task metrics included a child/helper or an application that did not opt in")
+
+        base_labels = {**dict(zip(resource_labels, stable_resource.values())),
+                       **{key.replace(".", "_"): value for key, value in task_fields.items()}, "luma_observe_span_metrics": "service"}
+        base_selector = ",".join(f"{key}={json.dumps(value)}" for key, value in base_labels.items())
+        buckets = metric_rows("task_span_duration_seconds_bucket{" + base_selector + "}")
+        if not buckets or len({row["metric"]["le"] for row in buckets}) != len(buckets):
+            raise RuntimeError(f"expected one task duration bucket set across the three processes: {buckets}")
+        if {float(row["value"][1]) for row in buckets if row["metric"]["le"] == "+Inf"} != {6.0} or metric("task_span_duration_seconds_sum{" + base_selector + "}") != 1.5:
+            raise RuntimeError("task duration histogram must aggregate six 250ms successes in seconds")
+        generated = metric_rows('{__name__=~"(traces_span_metrics|task_span)_.*",luma_observe_span_metrics="service"}')
+        transient_labels = {"service_instance_id", "instance", "process_pid", "host_name", "k8s_pod_uid", "telemetry_sdk_version", "application_release"}
+        if any(transient_labels.intersection(row["metric"]) for row in generated):
+            raise RuntimeError(f"opt-in derived metrics retained a process-specific resource label: {generated}")
+
+        for span_name in ("protocol.task", "protocol.child"):
+            rows = metric_rows('traces_span_metrics_calls_total{luma_observe_span_metrics!="service",span_name=' + json.dumps(span_name) + '}')
+            actual = {row["metric"].get("service_instance_id", ""): float(row["value"][1]) for row in rows}
+            if len(rows) != 3 or actual != {"default-instance-0": 1.0, "default-instance-1": 1.0, "": 1.0}:
+                raise RuntimeError(f"default sources changed or collided with opt-in service metrics: {rows}")
+            for resource in defaults[:2]:
+                row = next(row for row in rows if row["metric"].get("service_instance_id") == resource["service.instance.id"])
+                if row["metric"].get("host_name") != resource["host.name"]:
+                    raise RuntimeError(f"default span metrics lost original resource attributes: {row}")
+        wait_for("Native OTLP instance counters received", lambda: metric("sum(luma_protocol_instance_events_total)") == 3)
+        native_rows = metric_rows("luma_protocol_instance_events_total")
+        native_by_instance = {row["metric"].get("service_instance_id"): row for row in native_rows}
+        if len(native_rows) != 3 or set(native_by_instance) != {resource["service.instance.id"] for resource in opted_in}:
+            raise RuntimeError(f"native metric process identities were merged or removed: {native_rows}")
+        for resource in opted_in:
+            row = native_by_instance[resource["service.instance.id"]]
+            if float(row["value"][1]) != 1 or row["metric"].get("host_name") != resource["host.name"]:
+                raise RuntimeError(f"native metric resource metadata changed: {row}")
+
+        def trace_resource_preserved(span: dict, resource: dict) -> bool:
+            response = request(8427, "/traces/api/traces/" + span["traceId"], token=READER)
+            return response["status"] == 200 and all(value in response["body"] for value in (resource["service.instance.id"], resource["host.name"]))
+
+        for span, resource in trace_resources:
+            wait_for("Stored trace preserves " + resource["service.instance.id"], lambda s=span, r=resource: trace_resource_preserved(s, r))
+        print("Opt-in span metrics aggregate three processes and 19 task roots across task/service boundaries; default sources, native metrics and traces preserve their resources", flush=True)
 
         metrics = expect(request(8888, "/metrics"))["body"]
         if "otelcol_receiver_accepted_spans" not in metrics:

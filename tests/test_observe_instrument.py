@@ -69,6 +69,51 @@ class ObserveInstrumentTests(unittest.TestCase):
         self.assertEqual(env["OTEL_EXPORTER_OTLP_ENDPOINT"], "http://127.0.0.1:4318")
         self.assertIn("Authorization=Bearer ", env["OTEL_EXPORTER_OTLP_HEADERS"])
 
+    def test_apply_env_merges_resource_keys_preserving_app_parser_semantics(self):
+        defaults = "luma.stack=ledger,luma.task=worker,luma.region=cn"
+        cases = [
+            (None, defaults),
+            ("", defaults),
+            (" \t ", defaults),
+            ("luma.observe.span_metrics=service", "luma.observe.span_metrics=service," + defaults),
+            ("luma.stack=custom,luma.region=", "luma.stack=custom,luma.region=,luma.task=worker"),
+            ("luma.stack=custom,luma.task=jobs,luma.region=home", "luma.stack=custom,luma.task=jobs,luma.region=home"),
+            (" luma.stack = first,luma.stack=last ", " luma.stack = first,luma.stack=last ,luma.task=worker,luma.region=cn"),
+            ("note=a%2Cluma.stack%3Db%25+c", "note=a%2Cluma.stack%3Db%25+c," + defaults),
+            ("luma%2Estack=custom", "luma%2Estack=custom," + defaults),
+        ]
+        for own, expected in cases:
+            with self.subTest(resource_attributes=own):
+                env = {} if own is None else {"OTEL_RESOURCE_ATTRIBUTES": own}
+                options = {"stack": "ledger", "task": "worker", "region": "cn", "observe_otlp": {"token": "observe-token"}}
+                self.assertIs(apply_env(env, **options), env)
+                self.assertEqual(env["OTEL_RESOURCE_ATTRIBUTES"], expected)
+                apply_env(env, **options)
+                self.assertEqual(env["OTEL_RESOURCE_ATTRIBUTES"], expected)
+
+    def test_resource_merge_keeps_other_explicit_otel_env_values(self):
+        own = {
+            "OTEL_EXPORTER_OTLP_ENDPOINT": "https://collector.example/otlp",
+            "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+            "OTEL_EXPORTER_OTLP_HEADERS": "Authorization=Bearer application-token",
+            "OTEL_METRICS_EXPORTER": "otlp",
+            "OTEL_TRACES_EXPORTER": "none",
+            "OTEL_LOGS_EXPORTER": "",
+            "OTEL_SERVICE_NAME": "application-worker",
+        }
+        env = {**own, "OTEL_RESOURCE_ATTRIBUTES": "luma.observe.span_metrics=service"}
+        apply_env(env, stack="ledger", task="worker", region="cn", observe_otlp={"token": "observe-token"})
+        self.assertEqual({key: env[key] for key in own}, own)
+        self.assertEqual(env["OTEL_RESOURCE_ATTRIBUTES"], "luma.observe.span_metrics=service,luma.stack=ledger,luma.task=worker,luma.region=cn")
+
+    def test_disabled_observe_injection_leaves_app_environment_unchanged(self):
+        for configuration in (None, {}, {"endpoint": "http://collector.example"}, {"token": ""}):
+            with self.subTest(observe_otlp=configuration):
+                own = {"OTEL_RESOURCE_ATTRIBUTES": "luma.observe.span_metrics=service", "CUSTOM_SETTING": "value"}
+                env = own.copy()
+                self.assertIs(apply_env(env, stack="ledger", task="worker", region="cn", observe_otlp=configuration), env)
+                self.assertEqual(env, own)
+
     def test_compose_observe_job_gets_collector_env(self):
         from luma.compose import load_compose_deployment
 
@@ -134,12 +179,15 @@ name: demo
 image: nginx:alpine
 region: cn
 exposure: none
+environment:
+  OTEL_RESOURCE_ATTRIBUTES: ${APP_OBSERVE_ATTRIBUTES}
 """
         )
         job = render_nomad_job(
             cfg(),
             service,
             as_json=False,
+            secrets={"APP_OBSERVE_ATTRIBUTES": "luma.observe.span_metrics=service,luma.stack=application-owned"},
             observe_otlp={
                 "token": "observe-token-observe-token-observe",
                 "mesh_bind": "100.64.0.70",
@@ -152,7 +200,7 @@ exposure: none
         self.assertEqual(env["OTEL_TRACES_SAMPLER"], "parentbased_always_on")
         self.assertEqual(env["OTEL_LOGS_EXPORTER"], "none")
         self.assertNotIn("OTEL_TRACES_SAMPLER_ARG", env)
-        self.assertIn("luma.stack=demo", env["OTEL_RESOURCE_ATTRIBUTES"])
+        self.assertEqual(env["OTEL_RESOURCE_ATTRIBUTES"], "luma.observe.span_metrics=service,luma.stack=application-owned,luma.task=demo,luma.region=cn")
 
 
 def load_service_from_text(text: str):

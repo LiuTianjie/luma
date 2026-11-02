@@ -53,6 +53,21 @@ keeps business fields and outcomes in the application. Direct official OTel
 integration remains supported. No extra event database or per-application
 collector is needed.
 
+Control 0.2.26 and later merges `OTEL_RESOURCE_ATTRIBUTES` by key: application
+values win, and missing injected `luma.stack`, `luma.task` and `luma.region` keys
+are appended. Other application environment values remain explicit overrides.
+Applications that previously supplied their own resource-attribute string may
+gain missing Luma labels once on redeployment, changing those series identities;
+applications already using the complete injected attributes are unaffected by
+this merge.
+
+Applications with frequent worker replacement can explicitly choose
+[service-level span metrics](observe-service-span-metrics.md). The exact resource
+flag `luma.observe.span_metrics=service` aggregates only newly derived metrics;
+original trace and native-metric instance identities remain intact. This requires
+deploying the updated Observe stack separately and works with SDK 0.1.0.
+Unflagged applications keep the default spanmetrics path.
+
 ## Optional machine access
 
 The default `observe-access` service uses official vmauth 1.114.0. With empty

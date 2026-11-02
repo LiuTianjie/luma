@@ -52,6 +52,27 @@ processors:
     check_interval: 1s
     limit_mib: 512
     spike_limit_mib: 128
+  # Applications opt in through Resource attributes. Keep the branches
+  # complementary so every accepted span reaches exactly one RED connector.
+  filter/span-default:
+    error_mode: ignore
+    traces:
+      span:
+        - 'resource.attributes["luma.observe.span_metrics"] == "service"'
+  filter/span-service:
+    error_mode: ignore
+    traces:
+      span:
+        - 'not (resource.attributes["luma.observe.span_metrics"] == "service")'
+  # Only newly derived, opted-in metrics use a service Resource. The connector
+  # otherwise copies its first process's metadata even when its cache key is
+  # narrower. Native metrics and stored traces retain their original Resource.
+  transform/span-service-resource:
+    error_mode: ignore
+    metric_statements:
+      # The mode label also prevents a collision with default sources that
+      # legitimately have no instance/host attributes and share these six keys.
+      - keep_keys(resource.attributes, ["service.name", "service.namespace", "deployment.environment.name", "luma.stack", "luma.task", "luma.region", "luma.observe.span_metrics"])
   # Node agents hold Control requests open by design (lease long-polls, the
   # terminal WebSocket). Every one exceeds the slow threshold, so without this
   # they were ~95% of stored traces. Traefik still counts them in its metrics.
@@ -127,11 +148,41 @@ processors:
 connectors:
   forward/sampled:
   forward/task-roots:
+  forward/span-default:
+  forward/span-service:
   spanmetrics:
     namespace: traces.span.metrics
     dimensions_cache_size: 1000
     resource_metrics_cache_size: 1000
     metrics_expiration: 5m
+  spanmetrics/service:
+    namespace: traces.span.metrics
+    dimensions_cache_size: 1000
+    resource_metrics_cache_size: 1000
+    metrics_expiration: 5m
+    # Keep these identities aligned with transform/span-service-resource.
+    resource_metrics_key_attributes: &span_service_keys
+      - service.name
+      - service.namespace
+      - deployment.environment.name
+      - luma.stack
+      - luma.task
+      - luma.region
+  spanmetrics/tasks:
+    namespace: task.span
+    dimensions_cache_size: 1000
+    resource_metrics_cache_size: 1000
+    metrics_expiration: 5m
+    resource_metrics_key_attributes: *span_service_keys
+    dimensions:
+      - name: task.name
+      - name: task.queue
+      - name: task.framework
+      - name: task.outcome
+    histogram:
+      unit: s
+      explicit:
+        buckets: [10ms, 50ms, 100ms, 500ms, 1s, 2s, 5s, 10s, 30s, 1m, 2m, 5m, 10m, 30m, 2h]
 
 extensions:
   bearertokenauth:
@@ -175,7 +226,19 @@ service:
       # Span metrics use every accepted business span. Only the storage branch
       # is sampled, so fast successes remain in rate/error/duration statistics.
       processors: [memory_limiter, filter/control-agent]
-      exporters: [spanmetrics, forward/sampled, forward/task-roots]
+      exporters: [forward/span-default, forward/span-service, forward/sampled, forward/task-roots]
+    traces/span-default:
+      receivers: [forward/span-default]
+      processors: [memory_limiter, filter/span-default]
+      exporters: [spanmetrics]
+    traces/span-service:
+      receivers: [forward/span-service]
+      processors: [memory_limiter, filter/span-service]
+      exporters: [spanmetrics/service]
+    traces/task-metrics:
+      receivers: [forward/span-service]
+      processors: [memory_limiter, filter/span-service, filter/only-task-roots]
+      exporters: [spanmetrics/tasks]
     traces/sampled:
       receivers: [forward/sampled]
       processors: [memory_limiter, filter/exclude-task-roots, tail_sampling, batch]
@@ -187,6 +250,10 @@ service:
     metrics/span:
       receivers: [spanmetrics]
       processors: [memory_limiter, batch]
+      exporters: [prometheusremotewrite]
+    metrics/span-service:
+      receivers: [spanmetrics/service, spanmetrics/tasks]
+      processors: [memory_limiter, transform/span-service-resource, batch]
       exporters: [prometheusremotewrite]
     metrics:
       receivers: [otlp, otlp/mesh, prometheus]

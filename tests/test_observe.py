@@ -368,7 +368,7 @@ class ObserveTraceStackTests(unittest.TestCase):
         self.assertIn("tail_sampling", text)
         self.assertNotIn("probabilistic_sampler", text)
         pipelines = yaml.safe_load(text)["service"]["pipelines"]
-        self.assertEqual(pipelines["traces"]["exporters"], ["spanmetrics", "forward/sampled", "forward/task-roots"])
+        self.assertEqual(pipelines["traces"]["exporters"], ["forward/span-default", "forward/span-service", "forward/sampled", "forward/task-roots"])
         self.assertNotIn("tail_sampling", pipelines["traces"]["processors"])
         self.assertIn("filter/control-agent", pipelines["traces"]["processors"])
         self.assertEqual(pipelines["traces/sampled"]["receivers"], ["forward/sampled"])
@@ -387,6 +387,32 @@ class ObserveTraceStackTests(unittest.TestCase):
         self.assertIn("otlp/mesh", text)
         self.assertIn("bearertokenauth", text)
         self.assertIn("${env:LUMA_OTLP_MESH_BIND}:4319", text)
+
+    def test_service_span_metrics_are_opt_in_without_rewriting_input_resources(self):
+        import yaml
+
+        config = yaml.safe_load((ROOT / "observe" / "collector.yaml").read_text())
+        pipelines = config["service"]["pipelines"]
+        self.assertEqual(pipelines["traces/span-default"], {
+            "receivers": ["forward/span-default"], "processors": ["memory_limiter", "filter/span-default"], "exporters": ["spanmetrics"],
+        })
+        self.assertEqual(pipelines["traces/span-service"], {
+            "receivers": ["forward/span-service"], "processors": ["memory_limiter", "filter/span-service"], "exporters": ["spanmetrics/service"],
+        })
+        self.assertEqual(pipelines["traces/task-metrics"], {
+            "receivers": ["forward/span-service"], "processors": ["memory_limiter", "filter/span-service", "filter/only-task-roots"], "exporters": ["spanmetrics/tasks"],
+        })
+        opted_in = 'resource.attributes["luma.observe.span_metrics"] == "service"'
+        self.assertEqual(config["processors"]["filter/span-default"]["traces"]["span"], [opted_in])
+        self.assertEqual(config["processors"]["filter/span-service"]["traces"]["span"], [f"not ({opted_in})"])
+        self.assertEqual(pipelines["metrics/span-service"]["receivers"], ["spanmetrics/service", "spanmetrics/tasks"])
+        self.assertEqual([name for name, pipeline in pipelines.items()
+                          if "transform/span-service-resource" in pipeline.get("processors", [])], ["metrics/span-service"])
+        self.assertEqual(pipelines["metrics"]["processors"], ["memory_limiter", "batch"])
+        self.assertEqual(pipelines["metrics/span"]["processors"], ["memory_limiter", "batch"])
+        self.assertNotIn("resource_metrics_key_attributes", config["connectors"]["spanmetrics"])
+        self.assertEqual({item["name"] for item in config["connectors"]["spanmetrics/tasks"]["dimensions"]},
+                         {"task.name", "task.queue", "task.framework", "task.outcome"})
 
     def test_tempo_keeps_short_bounded_trace_retention(self):
         text = (ROOT / "observe" / "tempo.yaml").read_text(encoding="utf-8")

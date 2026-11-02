@@ -133,6 +133,20 @@ def app_env(
     }
 
 
+def _merge_resource_attributes(own: str, injected: str) -> str:
+    """Append missing keys without rewriting application values or duplicate keys.
+
+    OTel separates raw comma-delimited pairs before decoding their values. Keys
+    are only stripped, so decoding the whole string would change its meaning.
+    An explicitly empty attribute value still takes precedence over a default.
+    """
+    if not own.strip():
+        return injected
+    present = {item.split("=", 1)[0].strip() for item in own.split(",") if "=" in item}
+    extra = [item for item in injected.split(",") if item.split("=", 1)[0].strip() not in present]
+    return ",".join([own, *extra]) if extra else own
+
+
 def apply_env(
     env: dict[str, str],
     *,
@@ -141,7 +155,7 @@ def apply_env(
     region: str,
     observe_otlp: Mapping[str, str] | None,
 ) -> dict[str, str]:
-    """Merge observe env without overwriting values the app already set."""
+    """Preserve app env values, filling only missing resource attribute keys."""
     if not observe_otlp:
         return env
     token = str(observe_otlp.get("token") or "")
@@ -161,7 +175,10 @@ def apply_env(
             token=token,
         )
     for key, value in injected.items():
-        env.setdefault(key, value)
+        if key == "OTEL_RESOURCE_ATTRIBUTES":
+            env[key] = _merge_resource_attributes(env.get(key, ""), value)
+        else:
+            env.setdefault(key, value)
     if str(stack) == OBSERVE_STACK and str(task) == "grafana":
         env.update(grafana_server_env(observe_otlp.get("grafana_domain")))
     return env

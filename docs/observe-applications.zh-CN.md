@@ -25,6 +25,16 @@ Application config ── read-only extension volume ──────── Gr
 
 现有自动埋点的默认值仍是 `OTEL_METRICS_EXPORTER=none`。需要指标的应用自行设置 `OTEL_METRICS_EXPORTER=otlp`，或初始化官方 MeterProvider/有界 Reader。应用可选择独立版本的 [`luma-observe-sdk` Python 包](../sdk/python/docs/integration.zh-CN.md)，复用有界 SDK 初始化、Taskiq/Celery 生命周期适配、自定义 Span 和 Metrics。它沿用官方 OTLP 协议及现有凭证，业务字段与结果仍由应用定义。直接使用官方 OTel 接入同样受支持，无需新增事件数据库或每应用 Collector。
 
+Control 0.2.26 及以上按键合并 `OTEL_RESOURCE_ATTRIBUTES`：应用设置的值优先，只追加
+缺少的 `luma.stack`、`luma.task`、`luma.region` 等注入键，其他应用环境值仍作为显式
+覆盖保留。此前自行设置资源属性字符串的应用，重新部署时可能一次性补齐缺失的
+Luma 标签、改变相应序列身份；已获得完整注入属性的应用不受这次合并影响。
+
+Worker 频繁轮换的应用可以显式选择[按服务聚合 Span 指标](observe-service-span-metrics.zh-CN.md)。
+资源开关精确为 `luma.observe.span_metrics=service` 时，仅聚合新生成的派生指标；原始
+Trace 和原生 Metrics 的实例标识保持完整。需要单独部署新版 Observe，SDK 0.1.0
+已兼容。未开启的应用继续走默认 spanmetrics 分支。
+
 ## 可选的机器访问 {#optional-machine-access}
 
 `observe-access` 使用官方 vmauth 1.114.0；启动脚本只生成其配置，认证、路由、并发与超时均由 vmauth 实现。默认凭证为空，以零授权用户启动。

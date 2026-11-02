@@ -213,7 +213,7 @@ The package distribution name is `luma-infra`; the installed console command rem
 5. Create a tag to publish a versioned image, GitHub archive, and PyPI package:
 
 ```bash
-git tag v0.2.25
+git tag v0.2.26
 git push origin main --tags
 ```
 
@@ -222,13 +222,13 @@ The `Publish Python Package` workflow builds wheel and sdist, runs `twine check`
 6. CI users install with:
 
 ```bash
-python -m pip install "luma-infra==0.2.25"
+python -m pip install "luma-infra==0.2.26"
 ```
 
 Interactive users can still install with:
 
 ```bash
-export LUMA_INSTALL_REF=v0.2.25
+export LUMA_INSTALL_REF=v0.2.26
 curl -fsSL "https://raw.githubusercontent.com/LiuTianjie/luma/$LUMA_INSTALL_REF/scripts/install-luma.sh" -o /tmp/install-luma.sh && sh /tmp/install-luma.sh
 ```
 
@@ -266,7 +266,7 @@ The default control image is `ghcr.io/liutianjie/luma-control:latest`. If you wa
 ```yaml
 defaults:
   images:
-    lumaControl: ghcr.io/liutianjie/luma-control:v0.2.25
+    lumaControl: ghcr.io/liutianjie/luma-control:v0.2.26
 ```
 
 ## Latest Channel
@@ -282,7 +282,7 @@ This is convenient but less reproducible than a tag. For real users, prefer a ve
 For CI, prefer the pinned PyPI package:
 
 ```bash
-python -m pip install "luma-infra==0.2.25"
+python -m pip install "luma-infra==0.2.26"
 ```
 
 ## Custom Host Or Fork
@@ -292,7 +292,7 @@ Use these environment variables when the code is hosted somewhere else:
 ```bash
 curl -fsSL https://example.com/install-luma.sh | \
   LUMA_REPO_URL=https://github.com/acme/luma \
-  LUMA_INSTALL_REF=v0.2.25 \
+  LUMA_INSTALL_REF=v0.2.26 \
   sh
 ```
 

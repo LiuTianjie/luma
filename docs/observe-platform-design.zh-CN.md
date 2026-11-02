@@ -16,7 +16,7 @@ Luma Observe 接收标准遥测，应用拥有埋点、业务字段、面板和�
 
 每次框架执行建立独立 Trace，用标准 SpanLink 连接投递上下文。重新投递保留旧上下文的 Link；它表达因果关系，不把两次执行合成一次。消息准备 Span 不代表 Broker 已接收。没有 exporter 的生产者仍可写排队时间戳；显式禁用 SDK 时不改投递标签。
 
-独立执行 Trace 避免排队时间提前消耗 Collector 的采样等待窗口。运行中较早结束的子 Span 仍可能触发决定，因此 Collector 对没有父 Span、带 `task.name` / `task.framework` 的 CONSUMER 根 Span 使用单独的完成摘要采样分支：在完成时按错误、耗时和基础比例决定保留。普通子 Span 保持现有采样。spanmetrics 在分流前只生成一次。
+独立执行 Trace 避免排队时间提前消耗 Collector 的采样等待窗口。运行中较早结束的子 Span 仍可能触发决定，因此 Collector 对没有父 Span、带 `task.name` / `task.framework` 的 CONSUMER 根 Span 使用单独的完成摘要采样分支：在完成时按错误、耗时和基础比例决定保留。普通子 Span 保持现有采样。存储采样前，每个接收的 Span 在默认 RED 与主动开启的服务级 RED connector 中只走一个、生成一次。开启模式的应用额外生成执行根 Span 专用的 `task_span_*` 指标族，见[按服务聚合 Span 指标](observe-service-span-metrics.zh-CN.md)。任务量不能把 RED calls、任务根计数和原生任务计数相加，RED 还包含生产者与子 Span。
 
 这个设计保留已接收的失败/慢任务根摘要；它不保证长任务所有子 Span 都完整，也不覆盖强杀、进程崩溃、SDK 头采样或导出丢失。需要完整长 Trace 时，应为指定服务安排有配额的全收集或一致的 Trace ID 采样方案，不能无限增大 `decision_wait`。
 
