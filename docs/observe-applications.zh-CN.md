@@ -1,31 +1,31 @@
-# 标准应用观测接入
+# 标准应用观测接入 {#standard-application-observability}
 
 `luma-observe` 提供共享的标准 OTLP 接入、指标/日志/Trace 存储和查询认证。应用自行定义埋点、业务状态、交付预算、看板和告警规则；Luma 使用官方组件消费这些数据，观测栈独立于 Control 部署。
 
-## 标准数据流
+## 标准数据流 {#data-flow}
 
 ```text
-官方 SDK ── OTLP ── Collector ── 原生 Metrics ─── VictoriaMetrics
-                         ├───── spanmetrics ───── VictoriaMetrics
-                         └───── 尾部采样 ──────── Tempo
-Nomad stdout/stderr ── 原有日志采集器 ──────────── VictoriaLogs
+Official SDK ── OTLP ── Collector ── native Metrics ────── VictoriaMetrics
+                            ├───── spanmetrics ───────── VictoriaMetrics
+                            └───── tail sampling ─────── Tempo
+Nomad stdout/stderr ── existing log shipper ────────────── VictoriaLogs
 
-后端 / 运维 ── 独立读取凭证 ── vmauth ─────────── 标准查询 API
-外部投递进程 ── 独立写入凭证 ── vmauth ────────── Collector OTLP HTTP
-应用配置 ── 共享只读扩展目录 ───────────────────── Grafana / vmalert
+Backend / operator ── read credential ── vmauth ───────── standard query APIs
+External producer ── ingest credential ── vmauth ──────── Collector OTLP HTTP
+Application config ── read-only extension volume ──────── Grafana / vmalert
 ```
 
 原生 Metrics 直接进入指标存储；spanmetrics 在 Trace 采样前生成。Trace 存储保留错误、HTTP 5xx、超过一秒的慢链路和 10% 基础采样。统计代表 Collector 接收到的信号，SDK 采样、缓冲满、内存拒收和导出失败仍可能造成证据缺口。Collector 诊断指标从 `127.0.0.1:8888/metrics` 抓取，vmauth 诊断使用 `127.0.0.1:8429/metrics`。
 
 应用使用官方自定义 Metrics/Span 描述业务阶段和结果。指标标签使用有限的服务、任务类型、结果枚举；执行编号放在 Span 或结构化日志中。导出通过后台有界缓冲完成；观测不可用时，业务的返回、异常、重试和确认语义仍由业务自身决定。
 
-## Luma 内应用
+## Luma 内应用 {#luma-managed-producers}
 
 部署共享观测栈后，重新部署带有官方 OTel SDK 的应用，Control 会注入原有 `OTEL_*` 地址、认证与资源属性。Manager Tailscale `:4319` 同时接收 Trace 和原生 Metrics。
 
 现有自动埋点的默认值仍是 `OTEL_METRICS_EXPORTER=none`。需要指标的应用自行设置 `OTEL_METRICS_EXPORTER=otlp`，或初始化官方 MeterProvider/有界 Reader。应用执行链路独立于 Collector；接入使用官方协议与 SDK，共享存储沿用现有组件。
 
-## 可选的机器访问
+## 可选的机器访问 {#optional-machine-access}
 
 `observe-access` 使用官方 vmauth 1.114.0；启动脚本只生成其配置，认证、路由、并发与超时均由 vmauth 实现。默认凭证为空，以零授权用户启动。
 
@@ -39,12 +39,7 @@ environment:
   LUMA_OBSERVE_INGEST_TOKEN: ${LUMA_OBSERVE_INGEST_TOKEN}
 ```
 
-未启用的角色继续保持字面量 `""`。Luma 使用 `${NAME}` 引用 Secret，Compose 的 Shell 默认值语法不参与 Luma 渲染。按需执行以下命令，CLI 会私密提示输入凭证；两个角色使用各自随机生成的 32–512 字符 Bearer Token：
-
-```sh
-luma secret set LUMA_OBSERVE_READ_TOKEN --scope luma-observe
-luma secret set LUMA_OBSERVE_INGEST_TOKEN --scope luma-observe
-```
+未启用的角色继续保持字面量 `""`。Luma 使用 `${NAME}` 引用 Secret，Compose 的 Shell 默认值语法不参与 Luma 渲染。按需执行 `luma secret set LUMA_OBSERVE_READ_TOKEN --scope luma-observe` 或 `luma secret set LUMA_OBSERVE_INGEST_TOKEN --scope luma-observe`，CLI 会私密提示输入凭证；两个角色使用各自随机生成的 32–512 字符 Bearer Token。
 
 变量清单见 [`observe/.env.example`](../observe/.env.example)。在 `observe/` 通过原有工作流重建/部署独立栈，例如 `luma build local . --platform linux/amd64`。Control/CLI 升级与这个栈的更新各自独立，原有数据目录、Tempo 2.10.10 内存配置及 72 小时保留期继续沿用。
 
@@ -70,25 +65,25 @@ OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20<ingest-token>
 
 轮换时替换对应 scope Secret、重新部署，再更新消费者；每个角色同时接受一个 Token，切换期间允许短暂查询中断或遥测丢弃，业务执行继续。停用角色时把其环境值恢复为字面量空字符串后重新部署；停用 HTTPS 访问时移除显式安装的 Traefik 配置文件。
 
-## 应用自行维护看板与规则
+## 应用自行维护看板与规则 {#application-owned-dashboards-and-rules}
 
 Grafana 和 vmalert 以只读方式挂载 `observe-extensions`，Manager 路径为 `/srv/luma/data/luma-observe/extensions`，首次部署可为空。应用使用现有运维文件交付流程安装已审核的标准定义：
 
 ```text
 extensions/
-  dashboards/<application>.json
-  rules/<application>.yml
+  dashboards/<application>.json    # standard Grafana dashboard JSON
+  rules/<application>.yml          # standard vmalert/Prometheus rule groups
 ```
 
 Grafana 将看板放在 Applications 文件夹并递归发现 JSON；vmalert 同时读取 `rules/*.yml`、`rules/*.yaml` 和内置基础设施规则。二者每 30 秒重扫。各应用使用独立的 dashboard UID、规则组与记录指标名；目录需要可遍历，文件需要可读。使用不同扩展名的临时文件写完后原子 rename，避免读取半份文件。
 
 规则属于可信运维配置，先用官方 `victoriametrics/vmalert:v1.114.0 -rule=<file> -dryRun` 校验，再检查 Grafana 实际看板和 vmalert `/api/v1/rules`。规则解析失败保留上一份有效配置；删除对应文件后下轮扫描移除。通知仍使用既有 Alertmanager 路由、分组、维护静默和已授权接收器；加载规则本身不会创建通知目标。
 
-## 验证
+## 验证 {#verification}
 
 安装 Luma 依赖并准备 Docker，在仓库根目录执行：
 
-```sh
+```bash
 python scripts/check-observe-protocols.py --platform linux/amd64
 python scripts/check-observe-tempo.py --platform linux/amd64
 ```
