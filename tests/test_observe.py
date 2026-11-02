@@ -158,6 +158,14 @@ class RepoManifestTests(unittest.TestCase):
         self.assertEqual(victoria["Config"]["mount"][0]["source"], "/srv/luma/data/luma-observe/victoria")
         logs = next(task for task in job["TaskGroups"][0]["Tasks"] if task["Name"] == "victoria-logs")
         self.assertEqual(logs["Config"]["mount"][0]["source"], "/srv/luma/data/luma-observe/victorialogs")
+        access = next(task for task in job["TaskGroups"][0]["Tasks"] if task["Name"] == "observe-access")
+        self.assertEqual(access["Env"]["LUMA_OBSERVE_READ_TOKEN"], "")
+        self.assertEqual(access["Env"]["LUMA_OBSERVE_INGEST_TOKEN"], "")
+        for name in ("grafana", "vmalert"):
+            task = next(task for task in job["TaskGroups"][0]["Tasks"] if task["Name"] == name)
+            mount = next(item for item in task["Config"]["mount"] if item["target"] == "/etc/luma-observe/extensions")
+            self.assertEqual(mount["source"], "/srv/luma/data/luma-observe/extensions")
+            self.assertTrue(mount["readonly"])
 
 
 class NomadExporterTests(unittest.TestCase):
@@ -352,12 +360,21 @@ class ObserveHttpLatencyTests(unittest.TestCase):
 
 class ObserveTraceStackTests(unittest.TestCase):
     def test_collector_writes_sampled_traces_to_tempo(self):
+        import yaml
+
         text = (ROOT / "observe" / "collector.yaml").read_text(encoding="utf-8")
         self.assertIn("otlphttp/tempo", text)
         self.assertIn("http://127.0.0.1:4418", text)
         self.assertIn("tail_sampling", text)
         self.assertNotIn("probabilistic_sampler", text)
-        self.assertIn("processors: [memory_limiter, filter/control-agent, tail_sampling, batch]", text)
+        pipelines = yaml.safe_load(text)["service"]["pipelines"]
+        self.assertEqual(pipelines["traces"]["exporters"], ["spanmetrics", "forward/sampled"])
+        self.assertNotIn("tail_sampling", pipelines["traces"]["processors"])
+        self.assertIn("filter/control-agent", pipelines["traces"]["processors"])
+        self.assertEqual(pipelines["traces/sampled"]["receivers"], ["forward/sampled"])
+        self.assertIn("tail_sampling", pipelines["traces/sampled"]["processors"])
+        self.assertEqual(pipelines["traces/sampled"]["exporters"], ["otlphttp/tempo"])
+        self.assertIn("otlp/mesh", pipelines["metrics"]["receivers"])
         # Long-lived agent requests would otherwise all match the slow policy.
         self.assertIn('IsMatch(attributes["url.path"], "^/v1/(node-agent|terminal)/")', text)
         self.assertIn("http.response.status_code", text)

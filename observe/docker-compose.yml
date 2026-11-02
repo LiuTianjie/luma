@@ -101,8 +101,13 @@ services:
       - --remoteWrite.url=http://127.0.0.1:8428
       - --notifier.url=http://127.0.0.1:9093
       - --rule=/etc/vmalert/rules.yml
+      - --rule=/etc/luma-observe/extensions/rules/*.yml
+      - --rule=/etc/luma-observe/extensions/rules/*.yaml
+      - --configCheckInterval=30s
       - --httpListenAddr=127.0.0.1:8880
       - --evaluationInterval=30s
+    volumes:
+      - observe-extensions:/etc/luma-observe/extensions:ro
     deploy:
       resources:
         reservations:
@@ -238,6 +243,34 @@ services:
         limits:
           memory: 64M
 
+  observe-access:
+    build:
+      context: .
+      dockerfile: Dockerfile.access
+    image: luma-observe-access:local
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      # Replace the empty value with a scoped secret reference when enabling
+      # a role; see docs/observe-applications.md. Existing installs stay closed.
+      LUMA_OBSERVE_READ_TOKEN: ""
+      LUMA_OBSERVE_INGEST_TOKEN: ""
+      GOMEMLIMIT: 48MiB
+      PYTHONDONTWRITEBYTECODE: "1"
+    command:
+      - -httpListenAddr=127.0.0.1:8427
+      - -httpInternalListenAddr=127.0.0.1:8429
+      - -maxConcurrentRequests=8
+      - -maxConcurrentPerUserRequests=4
+      - -responseTimeout=3s
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.05"
+          memory: 32M
+        limits:
+          memory: 128M
+
   grafana:
     build:
       context: .
@@ -264,6 +297,8 @@ services:
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
       GF_SECURITY_ADMIN_USER: "admin"
       GF_SECURITY_ADMIN_PASSWORD: "luma-observe"
+    volumes:
+      - observe-extensions:/etc/luma-observe/extensions:ro
     deploy:
       resources:
         reservations:
@@ -276,3 +311,4 @@ volumes:
   victoria-data:
   tempo-data:
   victorialogs-data:
+  observe-extensions:

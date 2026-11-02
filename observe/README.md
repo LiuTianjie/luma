@@ -33,6 +33,10 @@ them up. There is no Luma SDK. Restarting an old allocation is not enough.
 
 ## Application integration
 
+See [Standard application observability](../docs/observe-applications.md)
+([中文](../docs/observe-applications.zh-CN.md)) for native metrics, optional
+machine query/ingest credentials and application-owned dashboard/rule loading.
+
 Public HTTP already has Traefik RED and an ingress span. Process spans need
 the official OpenTelemetry distro in the image. Do not set the OTLP endpoint
 or a Luma SDK; Control injects `OTEL_*` on the next deploy. The collector
@@ -149,6 +153,7 @@ installed:
 
 ```bash
 python scripts/check-observe-tempo.py --platform linux/amd64
+python scripts/check-observe-protocols.py --platform linux/amd64
 ```
 
 The source CI runs this check on PRs and main pushes. It builds the bundled
@@ -171,6 +176,9 @@ capacity and old-block compaction still need observation on the target manager.
 | 8428 | VictoriaMetrics on 127.0.0.1; host-gateway also binds Nomad/docker0 so Control can scrape |
 | 9428 | VictoriaLogs (allocation stdout/stderr, 15 days, at most 4 GiB) |
 | 8880 | vmalert |
+| 8888 | Collector internal Prometheus diagnostics |
+| 8427 | vmauth optional machine query/OTLP gateway (zero users by default) |
+| 8429 | vmauth internal metrics/diagnostics |
 | 9093 | Alertmanager |
 | 9107 | nomad-exporter |
 | 9108 | log-shipper |

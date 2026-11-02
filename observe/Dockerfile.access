@@ -1,0 +1,6 @@
+FROM victoriametrics/vmauth:v1.114.0 AS vmauth
+FROM python:3.12-alpine
+COPY --from=vmauth /vmauth-prod /vmauth-prod
+COPY access_config.py /app/access_config.py
+USER nobody
+ENTRYPOINT ["python3", "/app/access_config.py"]

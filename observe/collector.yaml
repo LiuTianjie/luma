@@ -36,6 +36,16 @@ receivers:
           metrics_path: /v1/metrics
           static_configs:
             - targets: ["127.0.0.1:8080"]
+        - job_name: collector
+          scrape_interval: 15s
+          scrape_timeout: 5s
+          static_configs:
+            - targets: ["127.0.0.1:8888"]
+        - job_name: observe-access
+          scrape_interval: 15s
+          scrape_timeout: 5s
+          static_configs:
+            - targets: ["127.0.0.1:8429"]
 
 processors:
   memory_limiter:
@@ -81,6 +91,7 @@ processors:
     send_batch_max_size: 1024
 
 connectors:
+  forward/sampled:
   spanmetrics:
     namespace: traces.span.metrics
     dimensions_cache_size: 1000
@@ -116,16 +127,29 @@ service:
   telemetry:
     logs:
       level: info
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 8888
   pipelines:
     traces:
       receivers: [otlp, otlp/mesh]
-      processors: [memory_limiter, filter/control-agent, tail_sampling, batch]
-      exporters: [spanmetrics, otlphttp/tempo]
+      # Span metrics use every accepted business span. Only the storage branch
+      # is sampled, so fast successes remain in rate/error/duration statistics.
+      processors: [memory_limiter, filter/control-agent]
+      exporters: [spanmetrics, forward/sampled]
+    traces/sampled:
+      receivers: [forward/sampled]
+      processors: [memory_limiter, tail_sampling, batch]
+      exporters: [otlphttp/tempo]
     metrics/span:
       receivers: [spanmetrics]
       processors: [memory_limiter, batch]
       exporters: [prometheusremotewrite]
     metrics:
-      receivers: [otlp, prometheus]
+      receivers: [otlp, otlp/mesh, prometheus]
       processors: [memory_limiter, batch]
       exporters: [prometheusremotewrite]

@@ -51,6 +51,10 @@ retrieval after a Tempo restart using the packaged configs and memory limits.
 
 ## Application integration
 
+For standard native metrics, independent machine credentials, external OTLP
+producers and application-owned dashboards/rules, see
+[Standard application observability](observe-applications.md).
+
 Deploying [`observe/`](../observe/) is the cluster opt-in. After that, new Luma
 deploys get OTel wiring automatically. A process restart of an old job is not
 enough; the Nomad job must be rendered again. There is no Luma telemetry SDK
