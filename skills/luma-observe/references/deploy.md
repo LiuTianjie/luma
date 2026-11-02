@@ -30,6 +30,22 @@ Metrics and logs retain 15 days; logs also have a 4 GiB cap. VictoriaMetrics and
 
 The collector uses a Go memory target, memory limiter and bounded queues. Sustained overload can refuse or drop telemetry. Keep these limits and the Tempo ingestion bounds when tuning capacity; do not disable tracing as a default disk or memory workaround. Inspect the existing data paths and available manager resources before deployment.
 
+The bundled Tempo 2.10.10 includes the Parquet row-pool fix. Its defaults are a
+1 GiB scheduling reservation, 3 GiB container ceiling, 2 GiB Go memory target
+and 25 MB Parquet row groups. Budget the ceiling in addition to other manager
+services; query buffer and retention concurrency settings do not cap compaction
+memory. File-page reclaim/refault thrashing can saturate disk reads without OOM
+or a full disk. Check actual runtime limits and I/O through recovery/compaction.
+
+Upgrade the independent stack by rebuilding and redeploying the current
+`observe/` source through its recorded workflow. CLI/Control upgrades and old-job
+restarts do not refresh observe. When restoring a manually disabled Tempo,
+include the collector's `otlphttp/tempo` exporter/pipeline and preserve existing
+volume paths. Retention deletion is asynchronous; do not clear the WAL/blocks.
+First installs prepare empty local directories automatically. The Tempo image
+build verifies its config; source CI exercises collector delivery and persisted
+retrieval after restart. See `observe/README.md` for deployment verification.
+
 ## App instrumentation
 
 After luma-observe is deployed, Control injects official OTel env into later

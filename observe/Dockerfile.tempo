@@ -1,3 +1,5 @@
-FROM grafana/tempo:2.7.2
+FROM grafana/tempo:2.10.10
 COPY tempo.yaml /etc/tempo.yaml
+# Reject an incompatible image/config pair during every user's build.
+RUN ["/tempo", "-config.file=/etc/tempo.yaml", "-config.verify=true"]
 CMD ["-config.file=/etc/tempo.yaml"]

@@ -39,6 +39,10 @@ storage:
   trace:
     backend: local
     blocklist_poll_concurrency: 2
+    block:
+      # Bound the uncompressed row group buffered while flushing/compacting.
+      # search.read_buffer_count does not govern the compactor's buffers.
+      parquet_row_group_size_bytes: 25000000 # 25 MB (upstream default: 100 MB)
     search:
       read_buffer_count: 4
     wal:

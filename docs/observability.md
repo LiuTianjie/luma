@@ -31,6 +31,24 @@ The charts are per Luma app (Traefik HTTP rate, 5xx and p90/p95/p99 latency + No
 Selecting observe also injects official OpenTelemetry environment variables into later Luma deploys (`OTEL_SERVICE_NAME`, `luma.stack` / `luma.task` / `luma.region`, OTLP HTTP to the mesh listener). Apps that already ship an OpenTelemetry distro emit spans without a Luma SDK. Redeploy existing apps after observe is first enabled. Apps export traces fail-open; the collector keeps HTTP 5xx, OTel errors, and traces slower than 1s, plus a 10% baseline. The collector uses a Go memory target, a memory limiter and bounded queues; sustained overload can refuse or drop telemetry.
 Do not ship raw access logs or traces off the manager public interface.
 
+### Trace storage sizing and upgrades
+
+The bundled Tempo 2.10.10 includes the upstream Parquet row-pool fix. Its default
+memory reservation is 1 GiB, container ceiling 3 GiB and Go memory target 2 GiB;
+Parquet row groups target 25 MB. Budget the ceiling alongside Control, Traefik
+and the other observe services before first deployment. A low memory ceiling
+can cause repeated file-page reclaim and disk reads without an OOM or full disk.
+Query buffer limits do not cap compaction memory. Tempo's 72-hour retention and
+ingest rate are not a disk quota, and Tempo has no free-space ingestion guard.
+
+Rebuild and redeploy the complete `observe/` stack from updated source to receive
+these defaults. Updating CLI/Control or restarting an old job does not update
+observe. A previously disabled Tempo also needs the collector's Tempo exporter
+restored. Preserve existing volumes; expired blocks are deleted asynchronously.
+See the [first-deployment, upgrade and verification steps](../observe/README.md#first-deployment).
+CI exercises empty-storage startup, collector delivery and persisted trace
+retrieval after a Tempo restart using the packaged configs and memory limits.
+
 ## Application integration
 
 Deploying [`observe/`](../observe/) is the cluster opt-in. After that, new Luma

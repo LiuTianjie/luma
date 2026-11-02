@@ -14,6 +14,8 @@ bash scripts/check-luma.sh
 
 检查涵盖版本同步、生成的 CLI 参考、根目录下全部 `unittest` 测试、控制台行为测试、类型检查、构建和空白字符。修改 CLI 参数后，运行 `python scripts/generate-cli-reference.py` 并提交更新后的参考文档。这些检查验证源码和构建产物，不代表已验证线上集群。两个发布工作流还会在发布镜像或包之前，拒绝与包版本不匹配的发布标签。
 
+源码 CI 还会在 PR 和 main 推送时，通过独立 Docker job 运行 `python scripts/check-observe-tempo.py --platform linux/amd64`。提交 observe 镜像或配置改动前应运行此检查：它覆盖空存储启动、打包后的 collector trace 管道，以及 Tempo 重启后的持久化查询，并清理自己的容器、卷和镜像标签。它独立于源码检查，不验证生产容量。Observe 镜像通过集群自己的部署流程构建，发布 Control/PyPI 不会升级已有 observe 栈。参见 [observe 升级](../../observe/README.md#upgrade-or-restore-a-previously-disabled-tempo)。
+
 ## 推荐发布流程 {#recommended-release}
 
 1. 提交需要通过 `luma version` 区分的代码前，先更新包版本：
