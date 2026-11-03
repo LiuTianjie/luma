@@ -67,6 +67,13 @@ VictoriaMetrics retains 15 days under a 1 GiB container ceiling. Its cache
 allowance is 384 MiB, with at most four concurrent queries and 64 MiB per query;
 cache limits alone do not cap total process memory.
 
+The vmauth query gateway admits 16 concurrent requests per read identity and
+32 total; the ingest identity remains limited to four. Its response-header
+timeout is three seconds. Gateway admission and storage execution are separate
+budgets: increasing read admission leaves the VictoriaMetrics query and memory
+limits above in place. Metric queries use the existing VictoriaMetrics result
+cache; the gateway has no additional result cache or request coalescing.
+
 Tempo uses 2.10.10, including the [Parquet compactor row-pool memory fix](https://github.com/grafana/tempo/pull/4985).
 Its container ceiling is 3 GiB with a 2 GiB Go memory target,
 leaving room for file cache and non-Go allocations. Parquet row groups are

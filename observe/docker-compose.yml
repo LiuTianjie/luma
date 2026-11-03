@@ -261,7 +261,8 @@ services:
     command:
       - -httpListenAddr=127.0.0.1:8427
       - -httpInternalListenAddr=127.0.0.1:8429
-      - -maxConcurrentRequests=8
+      - -maxConcurrentRequests=32
+      # Read identities override this fallback to 16; ingestion stays at four.
       - -maxConcurrentPerUserRequests=4
       - -responseTimeout=3s
     deploy:

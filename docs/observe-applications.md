@@ -134,9 +134,15 @@ Tempo 2.10.10 memory settings and 72-hour retention remain in use.
 | Read | `/traces/api/traces/<32-hex-trace-id>` | Tempo trace lookup |
 | Ingest | `/otlp/v1/metrics`, `/otlp/v1/traces` | OTLP/HTTP, JSON or protobuf |
 
-Each role is limited to four concurrent requests, with eight total and a
-three-second upstream response-header timeout. Application clients still need
-their own overall timeout and response/row limits. Incoming Authorization is
+Each read identity, including an application-scoped reader, allows 16 concurrent
+requests. The ingest identity stays at four, with 32 requests total across the
+gateway and a three-second upstream response-header timeout. These admission
+limits accommodate several dashboards sharing a reader; VictoriaMetrics still
+executes at most four queries with a 64 MiB per-query memory budget. Its existing
+query-result cache remains the cache for metric reads. The gateway does not add
+a separate result cache or merge duplicate requests. Clients must handle overload
+as unavailable data and keep their own overall timeout and response/row limits.
+Incoming Authorization is
 removed before the loopback upstream. Store management, reload, debug and write
 APIs are outside the read route set. vmauth diagnostics use a separate listener.
 

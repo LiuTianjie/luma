@@ -12,6 +12,8 @@ from urllib.parse import quote
 TOKEN = re.compile(r"[A-Za-z0-9._~+/-]+={0,2}\Z")
 # Namespaces, reader names and Luma application names used inside enforced filters.
 SCOPE_VALUE = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\Z")
+# One read identity can serve several dashboards; storage keeps its own limits.
+READ_MAX_CONCURRENT_REQUESTS = 16
 
 
 def _valid_token(name: str, value: str) -> None:
@@ -58,7 +60,7 @@ def scoped_reader_user(reader: dict) -> dict:
     """
     apps = ",".join(json.dumps(app) for app in reader["apps"])
     return {
-        "name": "observe-scoped-" + reader["name"], "bearer_token": reader["token"], "max_concurrent_requests": 4,
+        "name": "observe-scoped-" + reader["name"], "bearer_token": reader["token"], "max_concurrent_requests": READ_MAX_CONCURRENT_REQUESTS,
         "headers": ["Authorization:"],
         "url_map": [
             {"src_paths": [r"/metrics/api/v1/query", r"/metrics/api/v1/query_range"],
@@ -89,7 +91,7 @@ def auth_config(environment: dict[str, str]) -> dict:
     users = []
     if read_token:
         users.append({
-            "name": "observe-reader", "bearer_token": read_token, "max_concurrent_requests": 4,
+            "name": "observe-reader", "bearer_token": read_token, "max_concurrent_requests": READ_MAX_CONCURRENT_REQUESTS,
             "headers": ["Authorization:"],
             "url_map": [
                 {"src_paths": [r"/metrics/api/v1/query", r"/metrics/api/v1/query_range"],

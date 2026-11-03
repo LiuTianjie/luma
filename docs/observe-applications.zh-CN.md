@@ -77,7 +77,7 @@ environment:
 | 读取 | `/traces/api/traces/<32位十六进制ID>` | Tempo Trace 查询 |
 | 写入 | `/otlp/v1/metrics`、`/otlp/v1/traces` | OTLP/HTTP，JSON 或 protobuf |
 
-每个角色最多 4 个并发，总并发 8，上游响应头等待预算 3 秒。调用方还需设置整体超时及响应/条数上限。Authorization 在转发到回环上游前移除；数据删除、写入、reload 和 debug 路径由读取身份的固定路由集隔离。vmauth 自身诊断位于独立端口。
+每个读取身份（包括按应用限定的读取身份）最多 16 个并发，写入身份保持 4 个并发，网关总并发 32，上游响应头等待预算 3 秒。入口限额允许多个管理页面共享读取身份；VictoriaMetrics 仍最多同时执行 4 个查询，每查询内存预算 64 MiB，沿用其查询结果缓存。网关没有额外结果缓存或重复请求合并。调用方应把过载作为数据暂不可用处理，并设置整体超时及响应/条数上限。Authorization 在转发到回环上游前移除；数据删除、写入、reload 和 debug 路径由读取身份的固定路由集隔离。vmauth 自身诊断位于独立端口。
 
 网格外的官方 SDK 可通过 HTTPS 接入。替换 [`traefik-access.example.yml`](../observe/traefik-access.example.yml) 的 DNS/TLS 域名后，由运维显式安装到 Manager 现有 Traefik file-provider 目录，并按现有入口配置 DNS。模板只暴露认证网关，既有 `/grafana` 登录认证保持当前机制。
 
