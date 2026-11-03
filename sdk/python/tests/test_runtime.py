@@ -206,3 +206,32 @@ def test_shutdown_bounds_wait_for_stalled_provider(observed, monkeypatch):
         worker.join(timeout=2)
         if runtime._shutdown_thread:
             runtime._shutdown_thread.join(timeout=2)
+
+
+def test_shutdown_drains_queued_lifecycle_events_within_its_budget(observed, monkeypatch):
+    written, release = [], threading.Event()
+
+    def slow_sink(message):
+        module.time.sleep(0.01)
+        written.append(message)
+
+    # The fixture's metric reader belongs to its own provider; these runtimes only need logs.
+    monkeypatch.setenv("OTEL_METRICS_EXPORTER", "none")
+    monkeypatch.setattr(module._EVENT_LOG, "info", slow_sink)
+    runtime = module.Runtime(module.Configuration(service_name="sample-worker", lifecycle_logs=True))
+    for index in range(20):
+        runtime.emit("task.finished", {"index": index})
+    assert runtime.enabled
+    runtime.shutdown(timeout=5)
+    # A worker process exits right after shutdown; queued completions must already be written.
+    assert len(written) == 20
+
+    monkeypatch.setattr(module._EVENT_LOG, "info", lambda message: release.wait(timeout=5))
+    stalled = module.Runtime(module.Configuration(service_name="sample-worker", lifecycle_logs=True))
+    stalled.emit("task.finished")
+    started = module.time.monotonic()
+    try:
+        stalled.shutdown(timeout=0.05)
+        assert module.time.monotonic() - started < 1, "a stalled log sink exceeded the shutdown budget"
+    finally:
+        release.set()

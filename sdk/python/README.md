@@ -10,7 +10,7 @@ Python 3.10 or newer is required. See the [Chinese integration guide](docs/integ
 
 ## Install the distribution
 
-The package name is `luma-observe-sdk`, current source version `0.3.0`.
+The package name is `luma-observe-sdk`, current source version `0.4.0`.
 `Observe SDK Checks` builds wheel/sdist artifacts independently of Control for
 review and validation; expiring CI artifacts are not a permanent dependency source.
 The independent SDK release workflow publishes checked wheel/sdist files and
@@ -24,14 +24,14 @@ with the published asset hash or reviewed, pushed commit.
 To inspect a downloaded wheel, add only the framework extra used by that process:
 
 ```sh
-python -m pip install './luma_observe_sdk-0.3.0-py3-none-any.whl[taskiq]'
+python -m pip install './luma_observe_sdk-0.4.0-py3-none-any.whl[taskiq]'
 # Celery processes use the [celery] extra; processes needing both use [taskiq,celery].
 ```
 
 PyPI publication is optional and disabled unless the repository variable
 `OBSERVE_SDK_PYPI_ENABLED` is `true` and its Trusted Publisher is configured.
 Once that exact version is published there, consumers can use
-`luma-observe-sdk[taskiq]==0.3.0` with their normal package configuration.
+`luma-observe-sdk[taskiq]==0.4.0` with their normal package configuration.
 The existing `v*` Luma release workflow publishes `luma-infra`, not this package.
 
 ## Configure once per process
@@ -80,15 +80,29 @@ def mark_review_required():
 
 The two business fields accept application-defined strings up to 256 characters;
 they appear as `task.business.outcome` and `task.business.status` in spans and
-optional lifecycle logs, never as built-in metric labels. `set_outcome()` accepts
+optional lifecycle logs. The status is never a metric label; the outcome becomes
+one only through the declaration below. `set_outcome()` accepts
 only the five standard outcomes above. A framework failure or an escaping
 exception takes precedence over a successful business classification.
 `current_task()` is local to the execution context, restores an outer task after a
 nested task ends, and returns `None` outside a live task or in an inherited child
 process until that child starts its own attempt.
 
-The final `business_outcome` of an attempt is also counted once in
-`task.business_outcomes`; keep its values to a small application-defined set.
+To count business outcomes, declare the application's finite set once, in
+precedence order:
+
+```python
+configure(business_outcomes=("failed", "requires_review", "retrying", "succeeded"))
+```
+
+Each attempt's final `business_outcome` is then counted once in
+`task.business_outcomes`; a value outside the declaration is counted as `other`
+while spans and logs keep the original text. Without a declaration nothing is
+counted. For batches where one failed item should decide the attempt, use
+`run.escalate_business_outcome(value)`: it keeps the value listed first in the
+declaration. Undeclared values rank last, and among equal ranks the latest wins,
+so without a declaration it behaves like assigning `business_outcome`.
+
 Long attempts can report progress through stages or explicit marks. The
 module-level helpers work anywhere: inside an observed attempt they record, and
 outside one they simply run the code, so business functions need no guards:
@@ -110,11 +124,6 @@ attempt span's bounded event list. Entering and leaving it, like
 instrumentation failure never changes the wrapped function's return or exception.
 `TaskRun.stage()` and `TaskRun.mark_progress()` remain available on `current_task()`.
 
-For batches where one failed item should decide the attempt, use
-`run.escalate_business_outcome(value)`: it keeps the most severe value seen,
-ordered by `BUSINESS_SEVERITY` (`failed`, `needs_review`, `retrying`, `partial`,
-`waiting`, `succeeded`) unless the application passes its own order.
-
 Applications that own the transport call can observe the send result, which the
 adapters' preparation spans do not claim:
 
@@ -127,6 +136,7 @@ with publication("document.render", framework="taskiq", queue="documents", task_
 
 It records a producer span, `task.publications` with `outcome` `sent` or `failed`,
 and an optional `task.published` lifecycle event, and re-raises the original error.
+Celery applications get the same record from the adapter's `publications` option.
 
 `get_tracer()` and `get_meter()` return official OTel instruments from the SDK's
 providers for additional application-defined spans and metrics. Keep custom metric
@@ -170,11 +180,16 @@ remain with Taskiq. Celery uses its public process/task signals:
 ```python
 from luma_observe.instrumentation.celery import instrument_celery
 
-observation = instrument_celery()
+observation = instrument_celery(app=app, publications=True)
 ```
 
 Call this once during Celery app setup; `observation.uninstrument()` disconnects
 the adapter after tasks drain. Providers initialize in the actual process.
+`publications=True` wraps that app's `amqp.send_task_message`, the call that
+actually hands the message to the broker, because Celery's publish signals cannot
+report a failed send. Each send is recorded like `publication()` above, under the
+queue the worker will read: the routed queue's name, or the routing key when an
+explicit exchange is given. The original return and exception are preserved.
 
 Both adapters read business arguments only through an optional application
 callback. It receives `(task_name, args, kwargs)` and returns span fields for the
@@ -211,7 +226,8 @@ rebuilt and deployed before this sampling behavior is available; installing the
 SDK alone does not update a running Collector.
 The adapters create short producer preparation spans. Preparation
 spans describe local message preparation, not broker receipt or send success.
-Transport errors and reliable publication state remain the application's concern.
+Send results come only from `publication()` or Celery's `publications` option;
+broker persistence and reliable publication state remain the application's concern.
 Use only one task adapter per framework; avoid instrumenting the same task twice
 with another OTel adapter.
 
@@ -261,7 +277,9 @@ logging configuration for that logger. The SDK does not create another log store
 or collector.
 
 Call `shutdown()` at the application's final process shutdown; atexit is also
-registered. Celery uses its process shutdown signals. Closing one Taskiq broker
+registered. Celery uses its process shutdown signals. Within the same budget,
+shutdown writes lifecycle events already queued, so a recycled worker's last
+`task.finished` records are not lost. Closing one Taskiq broker
 calls bounded `force_flush()` and does not stop telemetry shared by other brokers.
 Applications may also call `force_flush(timeout=2)` before a known worker exit;
 it returns whether the queued flush completed within its budget and never starts
@@ -286,7 +304,7 @@ The shared Collector's Prometheus conversion exposes:
 | `task_no_progress_age_seconds` | Longest time since an active attempt started, changed stage or marked progress |
 | `task_last_started_seconds` | Unix time the process last started the task |
 | `task_last_finished_seconds` | Unix time the process last finished the task, by `outcome` |
-| `task_business_outcomes_total` | Finished attempts by final `task_business_outcome` |
+| `task_business_outcomes_total` | Finished attempts by final declared `task_business_outcome` (`other` when undeclared) |
 | `task_publications_total` | Application-observed sends by `outcome` (`sent`, `failed`) |
 | `task_registered` | Tasks a worker process registered with its framework |
 | `task_process_started_seconds` | Process start time for each `task_framework`, `task_role` and `task_queue` |

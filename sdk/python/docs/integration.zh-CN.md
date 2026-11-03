@@ -6,7 +6,7 @@ SDK 不导入 Luma Control、Django、业务模型或数据库。
 
 ## 安装与版本
 
-Python 要求为 3.10 及以上。当前源码版本是 `0.3.0`，独立的 `Observe SDK Checks`
+Python 要求为 3.10 及以上。当前源码版本是 `0.4.0`，独立的 `Observe SDK Checks`
 工作流构建 wheel 和 sdist，用于审核与验证；CI 工件会过期，不作为长期依赖来源。
 稳定分发方式见[独立 SDK 发版指南](releasing.md)：消费方锁定已发布版本，或使用包含
 SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装的远程 SHA；指南中的
@@ -15,12 +15,12 @@ SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装�
 如需检查下载的 wheel，可以选择对应框架 extra：
 
 ```sh
-python -m pip install './luma_observe_sdk-0.3.0-py3-none-any.whl[taskiq]'
+python -m pip install './luma_observe_sdk-0.4.0-py3-none-any.whl[taskiq]'
 ```
 
 Celery 进程使用 `[celery]`，同时运行两种框架的镜像使用 `[taskiq,celery]`。
 包 PyPI 发布是独立步骤；发布完成后，消费方可通过自己的包配置安装
-`luma-observe-sdk[taskiq]==0.3.0`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
+`luma-observe-sdk[taskiq]==0.4.0`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
 
 ## 地址、凭证与开关
 
@@ -65,13 +65,25 @@ def mark_review_required():
 ```
 
 这两个字段允许业务自定义字符串，长度上限 256 字符，进入 Span 和可选生命周期日志的
-`task.business.outcome`、`task.business.status`，不进入内置指标标签。
+`task.business.outcome`、`task.business.status`。业务状态从不作为指标标签；业务结果只有
+按下文声明后才会成为指标标签。
 `set_outcome()` 仅接受前述五种标准结果；框架失败或未捕获异常优先于成功的业务分类。
 `current_task()` 按执行上下文隔离，嵌套任务结束后恢复外层；不在活跃任务内时返回
 `None`，fork 子进程也不会继承父任务。
 
-每次执行最终的 `business_outcome` 会计入一次 `task.business_outcomes`，取值应限定在
-应用自己的一小组枚举内。长任务可以用阶段或显式标记报告进展。模块级接口在任何位置都能直接调用：
+需要统计业务结果时，应用在初始化时按优先级声明一次自己的有限取值：
+
+```python
+configure(business_outcomes=("failed", "requires_review", "retrying", "succeeded"))
+```
+
+声明后，每次执行最终的 `business_outcome` 计入一次 `task.business_outcomes`；声明之外的
+取值计为 `other`，Span 和日志仍保留原值。没有声明时不计数。批量处理中某一项失败就应当
+决定整次执行时，使用 `run.escalate_business_outcome(value)`：它保留声明中排在最前的值。
+未声明的值排在最后，排名相同时以最新的值为准，因此没有声明时等同于直接赋值
+`business_outcome`。
+
+长任务可以用阶段或显式标记报告进展。模块级接口在任何位置都能直接调用：
 在被观测的执行内会记录，在执行外只是正常运行业务代码，业务函数不需要自己判断：
 
 ```python
@@ -89,10 +101,6 @@ mark_progress()
 `mark_progress()` 都会重置该执行的 `task.no_progress_age`。埋点出错不会改变被包装函数的返回值或异常。
 `current_task()` 返回的 `TaskRun` 上仍保留 `stage()` 和 `mark_progress()`。
 
-批量处理中某一项失败就应当决定整次执行时，使用 `run.escalate_business_outcome(value)`：它保留本次执行中
-最严重的值，默认顺序为 `BUSINESS_SEVERITY`（`failed`、`needs_review`、`retrying`、`partial`、`waiting`、
-`succeeded`），应用也可以传入自己的顺序。
-
 应用自己掌握实际发送调用时，可以观测发送结果；适配器的准备 Span 不代表发送成功：
 
 ```python
@@ -103,7 +111,8 @@ with publication("document.render", framework="taskiq", queue="documents", task_
 ```
 
 它记录一个生产者 Span、按 `outcome`（`sent`、`failed`）区分的 `task.publications`，
-以及可选的 `task.published` 生命周期事件，并原样抛出原异常。
+以及可选的 `task.published` 生命周期事件，并原样抛出原异常。Celery 应用通过适配器的
+`publications` 选项得到同样的记录。
 
 以下任一条件完整关闭 SDK，包括可选生命周期日志：
 
@@ -143,11 +152,15 @@ Celery 在应用初始化时连接公开的任务、进程信号：
 ```python
 from luma_observe.instrumentation.celery import instrument_celery
 
-observation = instrument_celery()
+observation = instrument_celery(app=app, publications=True)
 ```
 
 适配器作用于当前进程，重复注册保持幂等；Worker 子进程初始化 Provider，生产者在首次
 使用时初始化。任务排空后可调用 `observation.uninstrument()` 移除信号连接。
+`publications=True` 会包装该应用的 `amqp.send_task_message`，即实际把消息交给 broker
+的调用，因为 Celery 的发布信号无法报告发送失败。每次发送按上文 `publication()` 的方式
+记录，队列取 Worker 之后读取的值：路由得到的队列名；显式指定 exchange 时取 routing key。
+原返回值和异常保持不变。
 同一任务选择一套适配器，避免同时安装 contrib `CeleryInstrumentor` 产生重复记录。
 
 两种适配器只通过应用提供的可选回调读取业务参数。回调接收
@@ -174,7 +187,8 @@ Span Link 关联生产者，让执行完成后的采样判断独立于较早结�
 完成后的执行概要，不保证长 Trace 的所有子 Span。现有 Collector 需要基于该源码重新
 构建部署后才具备这一行为；仅安装 SDK 不会更新线上 Collector。
 生产者 Span 表示本地消息准备，在实际传输前结束；
-它不充当投递成功凭证。准确的消息发送、可靠交付状态仍由应用原有链路维护。
+它不充当投递成功凭证。发送结果只来自 `publication()` 或 Celery 的 `publications` 选项；
+broker 持久化和可靠交付状态仍由应用原有链路维护。
 
 适配器观测进入执行钩子的尝试；执行前撤销或进程被强制终止，可能没有完成 Span。
 Taskiq 标准 SmartRetry 的 `NoResultError` 转换可识别退避重试；使用
@@ -218,7 +232,7 @@ size.record(12, {"document.format": "pdf"})
 | `task_no_progress_age_seconds` | 活跃执行距开始、切换阶段或标记进展的最长时间 |
 | `task_last_started_seconds` | 本进程最近一次开始该任务的 Unix 时间 |
 | `task_last_finished_seconds` | 本进程最近一次结束该任务的 Unix 时间，按 `outcome` 区分 |
-| `task_business_outcomes_total` | 按最终 `task_business_outcome` 统计的已结束执行 |
+| `task_business_outcomes_total` | 按最终声明过的 `task_business_outcome` 统计的已结束执行（未声明的计为 `other`） |
 | `task_publications_total` | 应用观测到的实际发送，按 `outcome`（`sent`、`failed`）区分 |
 | `task_registered` | Worker 进程在框架中注册的任务 |
 | `task_process_started_seconds` | 进程启动时间，按 `task_framework`、`task_role`、`task_queue` 区分 |
@@ -264,7 +278,8 @@ configure(lifecycle_logs=True, log_stream="stdout")
 ```
 
 `log_stream=None`（默认）时，日志走应用自己为该 logger 配置的 handler。应用最终退出时调用 `shutdown()`，SDK
-也注册了 atexit；Celery 使用进程退出信号。关闭单个 Taskiq broker 会执行有界
+也注册了 atexit；Celery 使用进程退出信号。关闭时在同一预算内写完已入队的生命周期事件，
+回收的 Worker 不会丢失最后的 `task.finished` 记录。关闭单个 Taskiq broker 会执行有界
 `force_flush()`，不会停止其他 broker 共享的遥测。应用也可在已知 Worker 退出前调用
 `force_flush(timeout=2)`：它返回队列 flush 是否在预算内完成，不初始化缺失的运行时，
 不关闭 Provider，也不代表下游已经持久化数据。

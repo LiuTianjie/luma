@@ -2,6 +2,7 @@
 
 import asyncio
 from copy import deepcopy
+import functools
 import json
 import os
 import subprocess
@@ -756,6 +757,63 @@ def test_celery_attribute_callback_and_pool_registration(observed):
     assert celery_hooks.instrument_celery().attributes is None
 
 
+def test_celery_publications_record_actual_send_results_by_delivered_queue(observed):
+    _runtime, reader, exporter = observed
+
+    class BrokerDown(Exception):
+        pass
+
+    app = Celery("adapter-publish", broker="memory://")
+    app.conf.task_routes = {"document.routed": {"queue": "print"}}
+    sender = app.amqp.send_task_message
+
+    def unreliable(producer, name, message, *args, **kwargs):
+        if name == "document.broken":
+            raise BrokerDown("broker unavailable")
+        return sender(producer, name, message, *args, **kwargs)
+
+    app.amqp.send_task_message = unreliable
+
+    def noop():
+        pass
+
+    for name in ("document.routed", "document.plain", "document.broken"):
+        app.task(name=name)(noop)
+    instrumentation = celery_hooks.instrument_celery(app=app, publications=True)
+    celery_hooks.instrument_celery(app=app, publications=True)
+    try:
+        routed = app.tasks["document.routed"].delay()
+        app.tasks["document.plain"].apply_async(queue="print")
+        app.tasks["document.plain"].delay()
+        with pytest.raises(BrokerDown):
+            app.tasks["document.broken"].delay()
+    finally:
+        instrumentation.uninstrument()
+        app.close()
+    assert app.amqp.send_task_message is unreliable
+    counts = {(p.attributes["task.name"], p.attributes["task.queue"], p.attributes["outcome"]): p.value
+              for p in points(reader, "task.publications")}
+    assert counts == {("document.routed", "print", "sent"): 1, ("document.plain", "print", "sent"): 1,
+                      ("document.plain", "celery", "sent"): 1, ("document.broken", "celery", "failed"): 1}
+    sends = [span for span in exporter.get_finished_spans() if span.name.startswith("task.publish/")]
+    assert len(sends) == 4
+    assert sends[0].attributes["messaging.message.id"] == routed.id
+    assert sends[-1].status.status_code is trace.StatusCode.ERROR
+
+    # Any callable sender is wrapped, including a mock that answers every attribute lookup.
+    mocked = Celery("adapter-publish-mock", broker="memory://")
+    stub = Mock(return_value="receipt")
+    mocked.amqp.send_task_message = stub
+    instrumentation = celery_hooks.instrument_celery(app=mocked, publications=True)
+    try:
+        assert mocked.amqp.send_task_message is not stub
+        assert mocked.amqp.send_task_message(None, "document.plain", SimpleNamespace(headers={"id": "m-1"})) == "receipt"
+    finally:
+        instrumentation.uninstrument()
+        mocked.close()
+    assert mocked.amqp.send_task_message is stub
+
+
 @pytest.mark.asyncio
 async def test_attribute_callback_receives_bound_arguments_when_declared(observed):
     _runtime, _reader, exporter = observed
@@ -796,13 +854,27 @@ async def test_attribute_callback_receives_bound_arguments_when_declared(observe
     def celery_bind(document_id, mode="fast"):
         return document_id
 
+    def logged(function):
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            return function(*args, **kwargs)
+        return wrapper
+
+    # A bound task's run is a method; its self must not take the first business argument.
+    @app.task(bind=True, name="document.celery_bound")
+    @logged
+    def celery_bound(self, document_id):
+        return document_id
+
     try:
         assert celery_bind.apply(args=["doc-9"], kwargs={"mode": "slow"}).get() == "doc-9"
+        assert seen[-1] == {"document_id": "doc-9", "mode": "slow"}
+        assert celery_bound.apply(args=["doc-10"]).get() == "doc-10"
+        assert seen[-1] == {"document_id": "doc-10"}
     finally:
         instrumentation.uninstrument()
         celery_hooks.instrument_celery().uninstrument()
         app.close()
-    assert seen[-1] == {"document_id": "doc-9", "mode": "slow"}
 
 
 def test_attribute_lookup_failure_does_not_block_attempt(observed):
