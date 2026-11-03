@@ -6,7 +6,7 @@ SDK 不导入 Luma Control、Django、业务模型或数据库。
 
 ## 安装与版本
 
-Python 要求为 3.10 及以上。当前源码版本是 `0.4.0`，独立的 `Observe SDK Checks`
+Python 要求为 3.10 及以上。当前源码版本是 `0.4.1`，独立的 `Observe SDK Checks`
 工作流构建 wheel 和 sdist，用于审核与验证；CI 工件会过期，不作为长期依赖来源。
 稳定分发方式见[独立 SDK 发版指南](releasing.md)：消费方锁定已发布版本，或使用包含
 SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装的远程 SHA；指南中的
@@ -15,12 +15,12 @@ SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装�
 如需检查下载的 wheel，可以选择对应框架 extra：
 
 ```sh
-python -m pip install './luma_observe_sdk-0.4.0-py3-none-any.whl[taskiq]'
+python -m pip install './luma_observe_sdk-0.4.1-py3-none-any.whl[taskiq]'
 ```
 
 Celery 进程使用 `[celery]`，同时运行两种框架的镜像使用 `[taskiq,celery]`。
 包 PyPI 发布是独立步骤；发布完成后，消费方可通过自己的包配置安装
-`luma-observe-sdk[taskiq]==0.4.0`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
+`luma-observe-sdk[taskiq]==0.4.1`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
 
 ## 地址、凭证与开关
 
@@ -159,8 +159,10 @@ observation = instrument_celery(app=app, publications=True)
 使用时初始化。任务排空后可调用 `observation.uninstrument()` 移除信号连接。
 `publications=True` 会包装该应用的 `amqp.send_task_message`，即实际把消息交给 broker
 的调用，因为 Celery 的发布信号无法报告发送失败。每次发送按上文 `publication()` 的方式
-记录，队列取 Worker 之后读取的值：路由得到的队列名；显式指定 exchange 时取 routing key。
-原返回值和异常保持不变。
+记录，`task_queue` 取 Celery 实际发布用的 routing key，与执行端记录的值一致：默认 direct
+exchange 下就是队列名，其他情况取显式或队列配置中的 routing key。原返回值和异常保持不变。
+`uninstrument()` 只在 SDK 的包装位于最外层时恢复 Celery 原发送函数；之后其他组件追加的
+包装保持不变，被包在里面的 SDK 这一层停止记录。
 同一任务选择一套适配器，避免同时安装 contrib `CeleryInstrumentor` 产生重复记录。
 
 两种适配器只通过应用提供的可选回调读取业务参数。回调接收
