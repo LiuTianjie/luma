@@ -29,6 +29,8 @@ class Configuration:
     # The application's business outcomes in precedence order, first wins. Only
     # declared values become metric labels; escalation keeps the earliest listed.
     business_outcomes: tuple = ()
+    # Opt in to bounded exception text and stacks in the existing lifecycle log queue.
+    capture_error_details: bool = False
 
     def __post_init__(self):
         if isinstance(self.business_outcomes, list):
