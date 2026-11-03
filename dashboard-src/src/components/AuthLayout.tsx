@@ -5,7 +5,7 @@ import lumaLogoMark from "../assets/luma-logo-mark.png";
 
 // Signed-out screens (sign-in, enrollment links) stand on their own: no workspace
 // navigation is shown before the browser holds a session.
-export function AuthLayout({ lang, onLangChange, children }: { lang: Lang; onLangChange: (lang: Lang) => void; children: ReactNode }) {
+export function AuthLayout({ lang, onLangChange, children, title }: { lang: Lang; onLangChange: (lang: Lang) => void; children: ReactNode; title?: string }) {
   const zh = lang === "zh";
   return (
     <main id="main" className="relative isolate flex min-h-dvh flex-col items-center justify-center gap-8 overflow-hidden bg-canvas px-4 py-12">
@@ -17,7 +17,7 @@ export function AuthLayout({ lang, onLangChange, children }: { lang: Lang; onLan
         </span>
         <div className="flex items-baseline gap-2">
           <span className="text-xl font-semibold tracking-[-0.02em]">Luma</span>
-          <span className="text-sm text-muted-foreground">{t(lang, "title")}</span>
+          <span className="text-sm text-muted-foreground">{title ?? t(lang, "title")}</span>
         </div>
       </div>
       <div className="w-full max-w-sm">{children}</div>

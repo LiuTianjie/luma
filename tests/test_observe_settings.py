@@ -3,13 +3,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 from luma.control import observe_settings
+from luma.control.observe_sharing import PASSWORD_HASH_KEY
+from luma.control.state import load_auth_state, mutate_state
 from luma.observe_grafana import GRAFANA_PUBLIC_ROUTE_NAME
 from tests.test_dashboard_auth import DashboardAuthBase, ORIGIN
 
 SETTINGS = "/v1/dashboard/observe/settings"
+PASSWORD = "example-sharing-password"
 
 
-class ObserveSettingsTests(DashboardAuthBase):
+class ObserveSettingsBase(DashboardAuthBase):
     def setUp(self):
         super().setUp()
         self.routes = Path(self._tmp.name) / "routes"
@@ -22,14 +25,19 @@ class ObserveSettingsTests(DashboardAuthBase):
         self._routes_patch.stop()
         super().tearDown()
 
-    def save(self, enabled):
-        return self.client.post(SETTINGS, headers=self.bearer(), json={"grafanaPublicSharingEnabled": enabled})
+    def save(self, enabled, password=PASSWORD):
+        body = {"grafanaPublicSharingEnabled": enabled}
+        if enabled is True:
+            body["grafanaPublicSharingPassword"] = password
+        return self.client.post(SETTINGS, headers=self.bearer(), json=body)
 
     def setting(self):
         response = self.client.get(SETTINGS, headers=self.bearer())
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()["grafanaPublicSharingEnabled"]
 
+
+class ObserveSettingsTests(ObserveSettingsBase):
     def test_default_is_private_and_both_methods_require_management_authority(self):
         self.assertFalse(self.setting())
         self.assertFalse(self.route.exists())
@@ -68,13 +76,41 @@ class ObserveSettingsTests(DashboardAuthBase):
         self.assertFalse(self.route.exists())
         self.assertFalse(self.setting())
 
+    def test_enabling_requires_a_password_and_never_returns_or_routes_credentials(self):
+        response = self.client.post(SETTINGS, headers=self.bearer(), json={"grafanaPublicSharingEnabled": True})
+        self.assertEqual(response.status_code, 400)
+        for password in (None, "", " " * 12, "short", "x" * 129, 12345678, {}, []):
+            with self.subTest(password=password):
+                self.assertEqual(self.save(True, password).status_code, 400)
+        self.assertFalse(self.setting())
+        self.assertFalse(self.route.exists())
+        response = self.save(True)
+        self.assertEqual(response.json(), {"grafanaPublicSharingEnabled": True})
+        saved = load_auth_state()["observeSettings"]
+        self.assertNotIn(PASSWORD, str(saved))
+        self.assertNotIn("grafanaPublicSharingPassword", saved)
+        self.assertNotIn(saved[PASSWORD_HASH_KEY], self.route.read_text())
+        self.assertEqual(self.client.get(SETTINGS, headers=self.bearer()).json(), response.json())
+        self.assertEqual(self.save(False).status_code, 200)
+        self.assertNotIn(PASSWORD_HASH_KEY, load_auth_state()["observeSettings"])
+
+    def test_upgrade_closes_passwordless_sharing_and_removes_its_stale_route(self):
+        mutate_state(lambda state: state.update(observeSettings={"grafanaPublicSharingEnabled": True}))
+        self.route.write_text("old unauthenticated public route")
+        self.assertFalse(self.setting())
+        observe_settings.reconcile_settings()
+        self.assertFalse(self.route.exists())
+        self.assertFalse(self.setting())
+
     def test_failed_route_write_does_not_save_or_damage_previous_route(self):
         self.assertEqual(self.save(True).status_code, 200)
         original = self.route.read_bytes()
+        previous_password = load_auth_state()["observeSettings"][PASSWORD_HASH_KEY]
         with patch("luma.observe_grafana.os.replace", side_effect=OSError("read-only routes")):
             self.assertEqual(self.save(True).status_code, 500)
         self.assertTrue(self.setting())
         self.assertEqual(self.route.read_bytes(), original)
+        self.assertEqual(load_auth_state()["observeSettings"][PASSWORD_HASH_KEY], previous_password)
         self.assertEqual(list(self.routes.glob("*.tmp")), [])
         with patch.object(observe_settings, "write_grafana_public_route", side_effect=OSError("read-only routes")):
             self.assertEqual(self.save(False).status_code, 500)
@@ -96,10 +132,10 @@ class ObserveSettingsTests(DashboardAuthBase):
     def test_cookie_write_requires_same_origin(self):
         session = self.token_session()
         response = self.client.post(SETTINGS, headers=self.with_session(session, "https://other.example.com"),
-                                    json={"grafanaPublicSharingEnabled": True})
+                                    json={"grafanaPublicSharingEnabled": True, "grafanaPublicSharingPassword": PASSWORD})
         self.assertEqual(response.status_code, 403)
         self.assertFalse(self.setting())
         response = self.client.post(SETTINGS, headers=self.with_session(session, ORIGIN),
-                                    json={"grafanaPublicSharingEnabled": True})
+                                    json={"grafanaPublicSharingEnabled": True, "grafanaPublicSharingPassword": PASSWORD})
         self.assertEqual(response.status_code, 200)
         self.assertTrue(self.setting())

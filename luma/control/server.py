@@ -14841,6 +14841,16 @@ async def _asgi_auth(request: Request) -> Response:
         return await _asgi_forward_auth(request)
     session_id = request.cookies.get(dashboard_auth.SESSION_COOKIE) or ""
     try:
+        if path == "/v1/auth/grafana-public/forward" and method == "GET":
+            from .observe_sharing import forward_auth
+            if request.headers.get("Authorization") or session_id:
+                operator = await _asgi_forward_auth(request)
+                if operator.status_code != 401 or request.headers.get("Authorization"):
+                    return operator
+            return await forward_auth(request)
+        if path == "/v1/auth/grafana-public/session" and method == "POST":
+            from .observe_sharing import sign_in
+            return await sign_in(request)
         body: Dict[str, Any] = {}
         if method == "POST":
             raw = await request.body()
@@ -14903,7 +14913,11 @@ async def _asgi_auth(request: Request) -> Response:
             return _auth_json(await run_in_threadpool(dashboard_auth.create_enrollment, body))
         return _json_response(404, _error_payload("not_found", "not found", request_id=_request_id()))
     except dashboard_auth.AuthError as exc:
-        return _asgi_error(exc.status, exc, code=exc.code)
+        response = _asgi_error(exc.status, exc, code=exc.code)
+        response.headers["Cache-Control"] = "no-store"
+        if exc.status == 429:
+            response.headers["Retry-After"] = "60"
+        return response
     except LumaError as exc:
         code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
         return _asgi_error(code, exc, code="luma_error")

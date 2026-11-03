@@ -26,7 +26,9 @@ Tailscale or port 3000. By default the route asks Control to check every request
 otherwise.
 
 To use Grafana's **Share externally** links without Luma sign-in, turn on
-**Observability → Settings → Allow public dashboard links** in the Control console.
+**Observability → Settings → Allow public dashboard links** in the Control console
+and set the required sharing password. Visitors must enter it to open a shared
+dashboard. Changing the password or disabling sharing revokes guest access.
 See [external dashboard sharing](../docs/observability.md#external-dashboard-sharing)
 ([中文](../docs/observability.zh-CN.md#external-dashboard-sharing)).
 

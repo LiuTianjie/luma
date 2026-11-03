@@ -2,6 +2,7 @@
 # Grafana 11.5.x / Traefik 3. The renderer substitutes the Control domain/TLS.
 # The separate authenticated Grafana route continues to protect all other paths.
 # Only dashboards explicitly shared in Grafana can be read through these APIs.
+# Control verifies a sharing-password session before identity headers are removed.
 http:
   routers:
     luma-observe-grafana-public-view:
@@ -10,7 +11,7 @@ http:
       entryPoints: [websecure]
       tls:
         certResolver: letsencrypt
-      middlewares: [luma-observe-grafana-public-identity, luma-observe-grafana-public-no-cache, luma-observe-grafana-public-rate, luma-observe-grafana-public-inflight]
+      middlewares: [luma-observe-grafana-public-no-cache, luma-observe-grafana-public-rate, luma-observe-grafana-public-inflight, luma-observe-grafana-public-auth, luma-observe-grafana-public-identity]
       service: luma-observe-grafana-public
     luma-observe-grafana-public-api:
       rule: Host(`luma.example.com`) && (((Method(`GET`) || Method(`HEAD`)) && PathRegexp(`^/grafana/api/public/dashboards/[a-fA-F0-9]{32}(/annotations)?/?$`)) || (Method(`POST`) && PathRegexp(`^/grafana/api/public/dashboards/[a-fA-F0-9]{32}/panels/[0-9]+/query/?$`)))
@@ -18,7 +19,7 @@ http:
       entryPoints: [websecure]
       tls:
         certResolver: letsencrypt
-      middlewares: [luma-observe-grafana-public-identity, luma-observe-grafana-public-no-cache, luma-observe-grafana-public-rate, luma-observe-grafana-public-inflight, luma-observe-grafana-public-body]
+      middlewares: [luma-observe-grafana-public-no-cache, luma-observe-grafana-public-rate, luma-observe-grafana-public-inflight, luma-observe-grafana-public-auth, luma-observe-grafana-public-identity, luma-observe-grafana-public-body]
       service: luma-observe-grafana-public
     luma-observe-grafana-public-assets:
       # Asset path segments cannot be dot segments or encoded traversal paths.
@@ -27,9 +28,15 @@ http:
       entryPoints: [websecure]
       tls:
         certResolver: letsencrypt
-      middlewares: [luma-observe-grafana-public-identity]
+      middlewares: [luma-observe-grafana-public-auth, luma-observe-grafana-public-identity]
       service: luma-observe-grafana-public
   middlewares:
+    luma-observe-grafana-public-auth:
+      forwardAuth:
+        address: http://127.0.0.1:8080/v1/auth/grafana-public/forward
+        trustForwardHeader: false
+        preserveLocationHeader: true
+        authRequestHeaders: [Authorization, Cookie, Origin]
     luma-observe-grafana-public-identity:
       headers:
         customRequestHeaders:

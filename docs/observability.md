@@ -28,22 +28,33 @@ Sign in to `/dashboard/` before opening `/grafana`. By default, Traefik checks t
 ### External dashboard sharing
 
 Open **Observability → Settings → Allow public dashboard links** in the Control
-console. The switch is off by default. Control saves it persistently and applies
-the routing change within a few seconds; no Observe or application restart is
-required. The saved setting is restored when Control restarts or upgrades.
+console. The switch is off by default. Enabling it opens a dialog that requires
+a sharing password of 8–128 characters. Canceling leaves sharing disabled.
+Control saves only a salted password hash and applies the routing change within
+a few seconds; no Observe or application restart is required. Password-protected
+settings survive Control restarts. Upgrades disable old passwordless sharing
+settings and remove their unauthenticated route until a password is set.
 
 After enabling the switch, enable **Share externally** on each intended Grafana dashboard and share its
 `/grafana/public-dashboards/<access-token>` link. Turning on the Control switch
-does not share any dashboard. Grafana checks that the link is enabled and executes
+does not share any dashboard. Give visitors the sharing password as well as the
+link. They enter it on a dedicated page before any dashboard data can load; no
+Luma account is needed. Grafana checks that the link is enabled and executes
 only the panel queries saved in that dashboard. Disabling or deleting the share
 blocks subsequent reads. Turning off the Control switch requires Luma sign-in
-for all public links again. The route does not cache dashboard pages or responses.
+for all public links again. **Change password** invalidates existing guest sessions,
+as does disabling sharing; re-enabling always requires a password. Guest sessions
+expire after eight hours and cannot access the console or its management APIs.
+Existing console sessions and management tokens continue to work. The route does
+not cache dashboard pages or responses.
 
 The allowlist covers that page, its read-only public API (including the POST
 panel-query endpoint), and static assets. Dashboard search, normal `/d/` pages,
 Explore, datasource proxies, `/api/ds/query`, and share management still require
-Luma sign-in. Client cookies and authorization headers are removed on public
-requests. Grafana plugins or later versions may require additional static paths;
+Luma sign-in. Control checks the guest or operator session on the page, API and
+static-asset routes before cookies and authorization headers are removed from
+the request sent to Grafana. A Control outage blocks these routes. Grafana
+plugins or later versions may require additional static paths;
 verify them without opening the general `/api/` prefix.
 
 Public page/API traffic shares a per-host rate limit of 5 requests/second with
@@ -52,10 +63,15 @@ a burst of 32, a limit of 16 in-flight requests, 16 KiB query bodies, and a
 Overload returns an error instead of building an unbounded request queue. Metrics
 continue to use VictoriaMetrics' existing result cache and execution/memory
 limits; this adds no query backend, database, or application-side cache.
-Verify a logged-out page and panel query, an invalid/revoked link, and a protected
-API after enabling the switch. Administrators can also read/update the setting
+Password verification accepts at most five attempts per client and 30 total per
+minute; excess attempts return 429. Verify password entry, a panel query, an
+invalid/revoked link, password rotation and a protected API after enabling the
+switch. Administrators can also read/update the setting
 through authenticated `GET` / `POST /v1/dashboard/observe/settings`, with the
-body `{"grafanaPublicSharingEnabled": true}` or `false`. Control manages the
+body `{"grafanaPublicSharingEnabled": true, "grafanaPublicSharingPassword": "your sharing password"}`
+to enable or change the password, or `{"grafanaPublicSharingEnabled": false}` to
+disable. Responses expose only the enabled flag, never the password or its hash.
+Control manages the
 separate `luma-observe-grafana-public.yml` file in its existing Traefik route
 directory; operators do not need to edit files. The bundled allowlist targets
 Grafana 11.5.x.

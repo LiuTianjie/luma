@@ -21,6 +21,7 @@ GRAFANA_PUBLIC_ROUTE_NAME = "luma-observe-grafana-public.yml"
 GRAFANA_UPSTREAM = "http://127.0.0.1:3100"
 # Control and Traefik both use the manager host network; Control listens on :8080.
 GRAFANA_AUTH_ADDRESS = "http://127.0.0.1:8080/v1/auth/forward"
+GRAFANA_PUBLIC_AUTH_ADDRESS = "http://127.0.0.1:8080/v1/auth/grafana-public/forward"
 
 
 def grafana_route_yaml(
@@ -98,8 +99,9 @@ def write_route_file(path: Path, content: str) -> None:
 
 
 def grafana_public_route_yaml(domain: str, *, entrypoint: str = "websecure",
-                              cert_resolver: str = "letsencrypt", upstream: str = GRAFANA_UPSTREAM) -> str:
-    """Allow only Grafana's native public-dashboard endpoints and static assets.
+                              cert_resolver: str = "letsencrypt", upstream: str = GRAFANA_UPSTREAM,
+                              auth_address: str = GRAFANA_PUBLIC_AUTH_ADDRESS) -> str:
+    """Password-protect Grafana's native public endpoints and static assets.
 
     Grafana validates the share token and loads saved panel queries itself. This
     route does not grant access to dashboard search, datasource proxies or edits.
@@ -115,6 +117,7 @@ def grafana_public_route_yaml(domain: str, *, entrypoint: str = "websecure",
         router["entryPoints"] = [entrypoint]
         router["tls"]["certResolver"] = cert_resolver
     http["services"]["luma-observe-grafana-public"]["loadBalancer"]["servers"] = [{"url": upstream}]
+    http["middlewares"]["luma-observe-grafana-public-auth"]["forwardAuth"]["address"] = auth_address
     return yaml.safe_dump(document, sort_keys=False)
 
 

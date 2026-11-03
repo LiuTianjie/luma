@@ -18,27 +18,36 @@ Control 控制台提供节点与容器采样，实时 allocation 日志仍通过
 ### 对外分享看板
 
 在 Control 控制台打开 **可观测 → 观测设置 → 允许公开看板链接**。
-开关默认关闭，设置持久保存在 Control 中，数秒内生效；无需重启 Observe 或业务应用。
-Control 重启或升级后会恢复已保存的设置。
+开关默认关闭。开启时会弹出密码输入框，必须设置 8～128 个字符的分享密码；取消则保持关闭。
+Control 只保存加盐后的密码哈希，数秒内生效，无需重启 Observe 或业务应用。
+有密码的设置在 Control 重启后保留；升级时，旧的无密码分享配置会自动关闭，
+原免鉴权路由会被移除，需要设置密码后重新开启。
 
 打开开关后，在需要分享的 Grafana 看板中开启 **Share externally**，分享
-`/grafana/public-dashboards/<access-token>` 链接。打开 Control 开关本身不会公开任何看板；
-Grafana 会检查分享是否启用，并且只执行该看板保存的面板查询。
+`/grafana/public-dashboards/<access-token>` 链接，并将分享密码提供给访客。
+访客先在独立页面输入密码，通过验证后才加载看板数据，无需 Luma 账号。
+打开 Control 开关本身不会公开任何看板；Grafana 会检查分享是否启用，并且只执行该看板保存的面板查询。
 停用或删除单个分享后，后续读取立即受到限制；关闭 Control 开关后，所有公开链接恢复要求
-Luma 登录。路由不会缓存看板页面和查询结果。
+Luma 登录。选择 **修改密码** 或关闭分享，会使已有访客会话失效；重新开启时必须再次设置密码。
+访客会话有效期为 8 小时，不能访问控制台或管理接口。已有控制台会话和管理令牌仍可正常使用。
+路由不会缓存看板页面和查询结果。
 
 白名单仅包含公开看板页面、它的只读公开 API（面板查询使用 POST）和静态资源。
 看板搜索、普通 `/d/` 页面、Explore、数据源代理、`/api/ds/query` 和分享管理接口
-仍要求 Luma 登录。公开请求会移除 Cookie 和 Authorization。
+仍要求 Luma 登录。公开页面、API 和静态资源路由先由 Control 校验访客或管理会话，
+再移除发往 Grafana 的 Cookie 和 Authorization；Control 不可用时，这些入口也无法访问。
 插件或 Grafana 升级若需要额外静态路径，应单独核实，不要放开整个 `/api/`。
 
 公开页面/API 按域名共同限制为每秒 5 个请求、突发 32 个、最多 16 个在途请求，
 查询请求体最多 16 KiB，上游响应头超时 15 秒；静态资源使用独立路由。
 过载时返回错误，不累积无界请求队列。指标继续使用 VictoriaMetrics 已有的结果缓存、
 查询并发和内存上限，无需增加查询后端、数据库或业务缓存。
-开启后验证未登录页面及面板查询、无效或撤销链接，以及受保护接口。
+密码验证每个客户端每分钟最多尝试 5 次，全局最多 30 次，超过后返回 429。
+开启后验证密码输入、面板查询、无效或撤销链接、修改密码后的旧会话失效，以及受保护接口。
 管理员也可通过已认证的 `GET` / `POST /v1/dashboard/observe/settings` 读取或修改设置，
-请求体为 `{"grafanaPublicSharingEnabled": true}` 或 `false`。
+开启或修改密码时，请求体为
+`{"grafanaPublicSharingEnabled": true, "grafanaPublicSharingPassword": "你的分享密码"}`；
+关闭时为 `{"grafanaPublicSharingEnabled": false}`。响应仅返回开关状态，不返回密码或哈希。
 Control 自动管理已有 Traefik 路由目录里的 `luma-observe-grafana-public.yml`，
 无需用户手动编辑文件。内置白名单适配 Grafana 11.5.x。
 
