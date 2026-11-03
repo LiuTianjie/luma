@@ -30,6 +30,7 @@ from opentelemetry.sdk.trace import SpanLimits, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from .config import Configuration
+from .diagnostics import StageSummaries, error_attributes, exception_details
 from .process import ProcessMetricExporter, ProcessSpanExporter, register_provider_cleanup
 
 
@@ -111,6 +112,7 @@ class TaskRun:
         self._fields = dict(_fields or {})
         self._outcome = outcome if isinstance(outcome, str) and outcome in _OUTCOMES else "succeeded"
         self._explicit_outcome = False
+        self._stages = StageSummaries()
 
     @property
     def outcome(self) -> str:
@@ -165,13 +167,36 @@ class TaskRun:
         self.business_status = value
 
     def record_error(self, exception: BaseException) -> None:
-        """Keep failure types available while payloads stay with the application."""
+        """Record failure types and associate opt-in details with this attempt."""
         if self._finished or self.pid != os.getpid():
             return
         self._fields["error.type"] = type(exception).__name__
         _safe(self.span.set_attribute, "error.type", type(exception).__name__)
         _safe(self.span.set_status, trace.StatusCode.ERROR)
         _safe(self.span.add_event, "exception", {"exception.type": type(exception).__name__})
+        _safe(self._record_failure, exception, {"task.stage": "task.execution"})
+
+    def _record_failure(self, exception: BaseException, attributes: dict):
+        """Associate the first original error with this attempt, including framework retries."""
+        if self._runtime is None or not self._runtime.enabled:
+            return
+        capture = self._runtime.configuration.capture_error_details
+        if not capture and not self._stages.rows and not self._stages.omitted:
+            return
+        fields = {**attributes, **error_attributes(exception, capture)}
+        if not self._stages.claim_failure(fields):
+            return
+        _safe(self.add_event, "task.failure", fields)
+        if capture:
+            _safe(self._runtime.emit, "task.failure.detail", {**self._fields, **fields}, self.span,
+                  exception=exception)
+
+    def _finish_stages(self):
+        rows, omitted = self._stages.completed()
+        for fields in rows:
+            _safe(self.add_event, "task.phase.finished", fields)
+        if omitted:
+            _safe(self.add_event, "task.phases.omitted", {"phase.omitted": omitted})
 
     def set_outcome(self, outcome: str) -> None:
         self.outcome = outcome
@@ -198,10 +223,14 @@ class TaskRun:
         _safe(self._runtime._track_progress, self._marker)
 
     @contextmanager
-    def stage(self, name: str, attributes: Mapping | None = None):
-        """Run one application stage as a child span and mark progress at entry and exit."""
-        if self._finished or self.pid != os.getpid() or self._runtime is None:
+    def stage(self, name: str, attributes: Mapping | None = None, *, aggregate: bool = False):
+        """Record a child span, or aggregate same-name intervals on the task's root span."""
+        if self._finished or self.pid != os.getpid() or self._runtime is None or not self._runtime.enabled:
             yield trace.INVALID_SPAN
+            return
+        if aggregate:
+            with self._aggregate_stage(name, attributes) as span:
+                yield span
             return
         fields = _safe(lambda: {**_attributes(attributes, limit=24), "task.name": self._fields.get("task.name", "")}) or {}
         self.mark_progress()
@@ -213,6 +242,27 @@ class TaskRun:
                 yield span
         finally:
             self.mark_progress()
+
+    @contextmanager
+    def _aggregate_stage(self, name: str, attributes: Mapping | None):
+        name = str(name)[:128]
+        fields = _attributes(attributes, limit=16)
+        _safe(self.mark_progress)
+        state = _safe(self._stages.start, name, fields)
+        if state is not None and state[1] is not None:
+            _safe(self._runtime.emit, "task.phase.started", {**self._fields, **state[1]}, self.span)
+        error = {}
+        try:
+            yield self.span
+        except BaseException as exception:
+            error = _safe(error_attributes, exception, self._runtime.configuration.capture_error_details) or {
+                "error.type": type(exception).__name__,
+            }
+            _safe(self._record_failure, exception, {**fields, "task.stage": name})
+            raise
+        finally:
+            _safe(self._stages.finish, name, state[0] if state is not None else None, fields, error)
+            _safe(self.mark_progress)
 
 
 def _attach_stream_handler(stream_name: str) -> None:
@@ -235,14 +285,14 @@ def current_task() -> TaskRun | None:
 
 
 @contextmanager
-def stage(name: str, attributes: Mapping | None = None):
+def stage(name: str, attributes: Mapping | None = None, *, aggregate: bool = False):
     """Run ``TaskRun.stage`` for the current attempt; outside a task the body runs unobserved.
 
     Instrumentation failures on entry or exit are swallowed; the body's own
     return value and exceptions are unchanged.
     """
-    run = current_task()
-    manager = _safe(run.stage, name, attributes) if run is not None else None
+    run = _safe(current_task)
+    manager = _safe(run.stage, name, attributes, aggregate=aggregate) if run is not None else None
     span = _safe(manager.__enter__) if manager is not None else None
     if span is None:
         yield trace.INVALID_SPAN
@@ -256,19 +306,19 @@ def stage(name: str, attributes: Mapping | None = None):
         _safe(manager.__exit__, None, None, None)
 
 
-def observed_stage(name: str, attributes: Mapping | None = None):
+def observed_stage(name: str, attributes: Mapping | None = None, *, aggregate: bool = False):
     """Decorate a sync or async function so each call runs inside ``stage(name)``."""
     def decorate(function):
         if inspect.iscoroutinefunction(function):
             @functools.wraps(function)
             async def async_wrapper(*args, **kwargs):
-                with stage(name, attributes):
+                with stage(name, attributes, aggregate=aggregate):
                     return await function(*args, **kwargs)
             return async_wrapper
 
         @functools.wraps(function)
         def sync_wrapper(*args, **kwargs):
-            with stage(name, attributes):
+            with stage(name, attributes, aggregate=aggregate):
                 return function(*args, **kwargs)
         return sync_wrapper
     return decorate
@@ -599,8 +649,10 @@ class Runtime:
                 outcome = "cancelled" if isinstance(exception, (KeyboardInterrupt, SystemExit)) or type(exception).__name__ == "CancelledError" else "failed"
                 run.set_framework_outcome(outcome)
                 run._fields["error.type"] = type(exception).__name__
+                _safe(run._record_failure, exception, {"task.stage": "task.execution"})
                 raise
             finally:
+                _safe(run._finish_stages)
                 run._finished = True
                 _safe(_deactivate_task, activation)
                 _safe(self._track_end, marker)
@@ -639,7 +691,8 @@ class Runtime:
                     _safe(self._publications.add, 1, {**labels, "outcome": outcome})
                     _safe(self.emit, "task.published", {**fields, "outcome": outcome}, span)
 
-    def emit(self, event: str, attributes: Mapping | None = None, span: trace.Span | None = None):
+    def emit(self, event: str, attributes: Mapping | None = None, span: trace.Span | None = None,
+             *, exception: BaseException | None = None):
         """Queue opt-in structured events; callers never wait for a log sink."""
         if self._events is None or self._closed.is_set() or self.pid != os.getpid():
             return
@@ -649,6 +702,8 @@ class Runtime:
                   "service.instance.id": self.instance_id,
                   "trace_id": trace.format_trace_id(context.trace_id) if context.is_valid else "",
                   "span_id": trace.format_span_id(context.span_id) if context.is_valid else ""}
+        if exception is not None and self.configuration.capture_error_details:
+            record["exception"] = exception_details(exception)
         try:
             self._events.put_nowait(record)
         except queue.Full:
