@@ -1,5 +1,6 @@
 """Query contracts use the existing observability stores with bounded reads."""
 
+import asyncio
 import json
 import importlib
 from types import SimpleNamespace
@@ -109,13 +110,109 @@ def test_flattened_sdk_json_preserves_only_declared_task_fields():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status,state", [(401, "unauthorized"), (500, "upstream_error"), (302, "upstream_error")])
+@pytest.mark.parametrize("status,state", [(401, "unauthorized"), (403, "unauthorized"), (429, "rate_limited"),
+                                          (500, "upstream_error"), (302, "upstream_error")])
 async def test_query_errors_and_redirects_remain_explicit(status, state):
+    requests = []
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(status)
     async with query_client(ReadEndpoints(metrics="https://observe.example.com/metrics")) as client:
         await client.http.aclose()
-        client.http = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(status)))
+        client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
         with pytest.raises(QueryUnavailable, match=state):
             await client.request("metrics", "/api/v1/query", {})
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [httpx.ReadTimeout, httpx.ConnectError])
+async def test_metrics_recovers_one_transient_transport_failure(error):
+    requests = []
+    def respond(request):
+        requests.append(request)
+        if len(requests) == 1:
+            raise error("temporary failure", request=request)
+        return httpx.Response(200, json={"status": "success", "data": {"resultType": "vector", "result": []}})
+    async with query_client(ReadEndpoints(metrics="https://observe.example.com/metrics")) as client:
+        await client.http.aclose()
+        client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        result = await client.metrics({"current": "task_active"})
+    assert result["current"]["state"] == "ok" and len(requests) == 2
+    assert requests[0].url == requests[1].url
+
+
+@pytest.mark.asyncio
+async def test_repeated_metrics_timeouts_stop_after_one_retry():
+    requests = []
+    def respond(request):
+        requests.append(request)
+        raise httpx.ReadTimeout("store unavailable", request=request)
+    async with query_client(ReadEndpoints(metrics="https://observe.example.com/metrics")) as client:
+        await client.http.aclose()
+        client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        result = await client.metrics({"current": "task_active"})
+    assert result["current"] == {"state": "timeout", "rows": []}
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_stalled_first_read_retries_within_total_budget(monkeypatch):
+    monkeypatch.setattr("luma_observe.query.METRIC_ATTEMPT_TIMEOUT_SECONDS", 0.02)
+    requests = []
+    closed = asyncio.Event()
+    async def respond(request):
+        requests.append(request)
+        if len(requests) == 1:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                closed.set()
+        return httpx.Response(200, json={"status": "success", "data": {"resultType": "vector", "result": []}})
+    async with query_client(ReadEndpoints(metrics="https://observe.example.com/metrics"), query_timeout=1) as client:
+        await client.http.aclose()
+        client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        result = await client.metrics({"current": "task_active"})
+    assert result["current"]["state"] == "ok" and len(requests) == 2
+    assert closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_query_deadline_covers_queued_reads_and_releases_connections():
+    active = peak = 0
+    async def respond(request):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            active -= 1
+    async with query_client(ReadEndpoints(metrics="https://observe.example.com/metrics"), query_timeout=0.05) as client:
+        await client.http.aclose()
+        client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        result = await asyncio.wait_for(client.metrics({str(index): "task_active" for index in range(11)}), 1)
+    assert {value["state"] for value in result.values()} == {"timeout"}
+    assert peak == 3 and active == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelling_query_propagates_without_retry():
+    entered = asyncio.Event()
+    requests = []
+    async def respond(request):
+        requests.append(request)
+        entered.set()
+        await asyncio.Event().wait()
+    async with query_client(ReadEndpoints(metrics="https://observe.example.com/metrics")) as client:
+        await client.http.aclose()
+        client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        pending = asyncio.create_task(client.metrics({"current": "task_active"}))
+        await asyncio.wait_for(entered.wait(), 1)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+    assert len(requests) == 1
 
 
 @pytest.mark.asyncio

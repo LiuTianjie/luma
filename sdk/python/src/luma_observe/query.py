@@ -19,7 +19,8 @@ from ._query_data import EVENT_FIELDS, EVENT_NAMES, TRACE_ID, finite, normalize_
 from .diagnostics import ERROR_MESSAGE_BYTES, ERROR_STACK_BYTES, clip_utf8
 
 
-QUERY_TIMEOUT_SECONDS = 3
+QUERY_TIMEOUT_SECONDS = 8
+METRIC_ATTEMPT_TIMEOUT_SECONDS = 3
 EVIDENCE_TIMEOUT_SECONDS = 8
 QUERY_MAX_BYTES = 2 * 1024 * 1024
 MAX_LOG_ROWS = 100
@@ -84,7 +85,7 @@ class ObserveClient:
         await self.http.aclose()
 
     async def request(self, kind: str, path: str, params: dict) -> bytes:
-        """限制并发、总耗时和响应大小，认证仅发往部署登记的地址。"""
+        """以总预算覆盖排队和读取，指标瞬时连接故障最多重试一次。"""
         base = self.endpoints.valid_url(kind)
         if not base:
             raise QueryUnavailable("not_configured")
@@ -92,12 +93,26 @@ class ObserveClient:
         budget = self.query_timeout if kind == "metrics" else self.evidence_timeout
         if kind == "traces":
             headers["Accept"] = "application/json"
+
+        async def read():
+            """释放失败请求的并发名额，让其余查询继续读取。"""
+            attempts = 2 if kind == "metrics" else 1
+            for attempt in range(attempts):
+                try:
+                    async with self.slots:
+                        attempt_timeout = min(budget, METRIC_ATTEMPT_TIMEOUT_SECONDS) if kind == "metrics" and attempt == 0 else budget
+                        return await asyncio.wait_for(self._read(base + path, params, headers), attempt_timeout)
+                except (httpx.TransportError, asyncio.TimeoutError):
+                    if attempt + 1 == attempts:
+                        raise
+
         try:
-            async with self.slots:
-                return await asyncio.wait_for(self._read(base + path, params, headers), budget)
+            return await asyncio.wait_for(read(), budget)
         except QueryUnavailable:
             raise
-        except (httpx.HTTPError, asyncio.TimeoutError):
+        except (httpx.TimeoutException, asyncio.TimeoutError):
+            raise QueryUnavailable("timeout") from None
+        except httpx.HTTPError:
             raise QueryUnavailable("unreachable") from None
 
     async def _read(self, url: str, params: dict, headers: dict) -> bytes:
@@ -107,6 +122,8 @@ class ObserveClient:
                 raise QueryUnavailable("unauthorized")
             if response.status_code == 404:
                 raise QueryUnavailable("not_found")
+            if response.status_code == 429:
+                raise QueryUnavailable("rate_limited")
             if response.status_code != 200:
                 raise QueryUnavailable("upstream_error")
             result = bytearray()

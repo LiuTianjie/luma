@@ -6,7 +6,7 @@ SDK 不导入 Luma Control、Django、业务模型或数据库。
 
 ## 安装与版本
 
-Python 要求为 3.10 及以上。当前源码版本是 `0.6.0`，独立的 `Observe SDK Checks`
+Python 要求为 3.10 及以上。当前源码版本是 `0.6.1`，独立的 `Observe SDK Checks`
 工作流构建 wheel 和 sdist，用于审核与验证；CI 工件会过期，不作为长期依赖来源。
 稳定分发方式见[独立 SDK 发版指南](releasing.md)：消费方锁定已发布版本，或使用包含
 SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装的远程 SHA；指南中的
@@ -15,12 +15,12 @@ SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装�
 如需检查下载的 wheel，可以选择对应框架 extra：
 
 ```sh
-python -m pip install './luma_observe_sdk-0.6.0-py3-none-any.whl[taskiq]'
+python -m pip install './luma_observe_sdk-0.6.1-py3-none-any.whl[taskiq]'
 ```
 
 Celery 进程使用 `[celery]`，同时运行两种框架的镜像使用 `[taskiq,celery]`。
 包 PyPI 发布是独立步骤；发布完成后，消费方可通过自己的包配置安装
-`luma-observe-sdk[taskiq]==0.6.0`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
+`luma-observe-sdk[taskiq]==0.6.1`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
 
 ## 地址、凭证与开关
 

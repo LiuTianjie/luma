@@ -1,6 +1,6 @@
 # Read existing observability data
 
-Install `luma-observe-sdk[query]==0.6.0` in the server that serves an application's
+Install `luma-observe-sdk[query]==0.6.1` in the server that serves an application's
 administration UI. The optional extra supplies `httpx`; collection-only SDK users
 keep the existing dependencies. Import the client from `luma_observe.query`.
 
@@ -65,13 +65,26 @@ disabled. Applications continue to enforce their own management permissions.
 | Resource | Budget |
 | --- | --- |
 | Concurrent requests | 3 per client |
-| Request deadline | Metrics 3 seconds; Logs/Trace 8 seconds |
+| Request deadline | 8 seconds including the concurrency queue, reads and any retry |
+| Metrics retry | First read up to 3 seconds; at most one transport retry within the remaining total budget |
 | Response body | 2 MiB per request |
 | Lifecycle page | 100 matches, plus at most 100 related events across 20 attempts |
 | Query window / offset | 1–72 hours / 0–2000 |
 | Raw logs | 60 matching records; legacy context up to 200 records in 20 seconds |
 | Exception detail | Message 4 KiB; stack/cause chain 16 KiB UTF-8 |
 | Trace detail | 1500 spans, 32 events and 16 links per span |
+
+Metrics retry only transport failures or read deadlines. Authentication failures,
+HTTP errors (including rate limits and server errors), invalid payloads and body
+limits are returned immediately. Logs and Trace reads make one attempt. Caller
+cancellation propagates and releases the concurrency slot. These budgets apply to
+each request; operations that need a second page or legacy log context make a
+second bounded request.
+
+`timeout` identifies an exhausted read budget; `unreachable` identifies other
+transport failures. HTTP 429 returns `rate_limited`, and 401/403 return
+`unauthorized`. Applications should show shared query failures as unavailable
+sources and keep independently confirmed task failures visible.
 
 `state`, `possibly_truncated`, `related_truncated` and Trace truncation flags
 describe partial results. Request errors remain unavailable data rather than

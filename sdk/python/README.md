@@ -10,7 +10,7 @@ Python 3.10 or newer is required. See the [Chinese integration guide](docs/integ
 
 ## Install the distribution
 
-The package name is `luma-observe-sdk`, current source version `0.6.0`.
+The package name is `luma-observe-sdk`, current source version `0.6.1`.
 `Observe SDK Checks` builds wheel/sdist artifacts independently of Control for
 review and validation; expiring CI artifacts are not a permanent dependency source.
 The independent SDK release workflow publishes checked wheel/sdist files and
@@ -24,14 +24,14 @@ with the published asset hash or reviewed, pushed commit.
 To inspect a downloaded wheel, add only the framework extra used by that process:
 
 ```sh
-python -m pip install './luma_observe_sdk-0.6.0-py3-none-any.whl[taskiq]'
+python -m pip install './luma_observe_sdk-0.6.1-py3-none-any.whl[taskiq]'
 # Celery processes use the [celery] extra; processes needing both use [taskiq,celery].
 ```
 
 PyPI publication is optional and disabled unless the repository variable
 `OBSERVE_SDK_PYPI_ENABLED` is `true` and its Trusted Publisher is configured.
 Once that exact version is published there, consumers can use
-`luma-observe-sdk[taskiq]==0.6.0` with their normal package configuration.
+`luma-observe-sdk[taskiq]==0.6.1` with their normal package configuration.
 The existing `v*` Luma release workflow publishes `luma-infra`, not this package.
 
 ## Configure once per process
