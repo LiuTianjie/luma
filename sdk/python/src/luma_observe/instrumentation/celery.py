@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import functools
 import sys
+import weakref
 from typing import Callable
 
 from celery import current_app, signals
@@ -24,21 +25,35 @@ from luma_observe.instrumentation import (
 
 
 _instrumentation = None
-# Marks the SDK's sender wrapper and keeps Celery's original sender for restoring.
-_ORIGINAL_SENDER = "_luma_observe_original_sender"
+# Each app's SDK sender state. Identity, not attributes that functools.wraps copies,
+# decides whether restoring is safe.
+_senders = weakref.WeakKeyDictionary()
 
 
-def _destination(app, options) -> str:
-    """Name the queue the message is sent to, as the worker later reads its routing key.
+def _routing_key(app, options) -> str:
+    """Resolve the routing key Celery's sender publishes with, which the worker reads back.
 
-    Routers pass the target as ``queue``; with Celery's default direct exchange the
-    delivered routing key is that queue's name. An explicit exchange keeps its key.
+    Mirrors Celery's ``send_task_message``: a direct exchange (the default) routes by
+    queue name; another exchange type uses the explicit key, then the queue's own key.
     """
-    if options.get("exchange") and options.get("routing_key"):
-        return str(options["routing_key"])
-    queue = options.get("queue")
-    name = queue if isinstance(queue, str) else getattr(queue, "name", None)
-    return str(name or app.conf.task_default_queue or "")
+    amqp = app.amqp
+    exchange, routing_key, queue = options.get("exchange"), options.get("routing_key"), options.get("queue")
+    exchange_type = options.get("exchange_type")
+    name = queue
+    if queue is None and exchange is None:
+        queue = amqp.default_queue
+    if queue is not None:
+        if isinstance(queue, str):
+            name, queue = queue, amqp.queues[queue]
+        else:
+            name = queue.name
+    if exchange_type is None:
+        exchange_type = getattr(getattr(queue, "exchange", None), "type", None) or "direct"
+    if (not exchange or not routing_key) and exchange_type == "direct":
+        return str(name or "")
+    if exchange is None:
+        return str(routing_key or getattr(queue, "routing_key", None) or app.conf.task_default_routing_key or "")
+    return str(routing_key or "")
 
 
 def _publication(app, name, message, options):
@@ -50,24 +65,34 @@ def _publication(app, name, message, options):
     headers = getattr(message, "headers", None) or {}
     body = getattr(message, "body", None)
     task_id = headers.get("id") or (body.get("id") if isinstance(body, dict) else "")
-    return runtime.publication(str(name), framework="celery", queue=_destination(app, options), task_id=str(task_id or ""))
+    queue = _safe(_routing_key, app, options) or ""
+    return runtime.publication(str(name), framework="celery", queue=queue, task_id=str(task_id or ""))
 
 
-def _wrapped_sender(sender):
-    """Return Celery's sender behind the SDK wrapper; read exactly, as mocks answer any attribute."""
-    return getattr(sender, "__dict__", {}).get(_ORIGINAL_SENDER)
+def _calls(sender, wrapper) -> bool:
+    """Whether ``sender`` is ``wrapper`` or a later wrapper chained to it through ``__wrapped__``."""
+    for _ in range(32):
+        if sender is wrapper:
+            return True
+        sender = getattr(sender, "__wrapped__", None)
+        if sender is None:
+            return False
+    return False
 
 
 def _observe_sender(app) -> None:
     """Wrap the app's actual sender: Celery signals cannot report a failed send."""
     amqp = app.amqp
-    original = amqp.send_task_message
-    if _wrapped_sender(original) is not None:
+    state = _senders.get(app)
+    if state is not None and _calls(amqp.send_task_message, state["wrapper"]):
+        state["active"] = True
         return
+    original = amqp.send_task_message
+    state = {"original": original, "active": True}
 
     @functools.wraps(original)
     def send_task_message(producer, name, message, *args, **kwargs):
-        manager = _safe(_publication, app, name, message, kwargs)
+        manager = _safe(_publication, app, name, message, kwargs) if state["active"] else None
         entered = manager is not None and _safe(manager.__enter__) is not None
         if not entered:
             return original(producer, name, message, *args, **kwargs)
@@ -79,15 +104,24 @@ def _observe_sender(app) -> None:
         _safe(manager.__exit__, None, None, None)
         return result
 
-    setattr(send_task_message, _ORIGINAL_SENDER, original)
+    state["wrapper"] = send_task_message
+    _senders[app] = state
     amqp.send_task_message = send_task_message
 
 
 def _restore_sender(app) -> None:
-    amqp = app.amqp
-    original = _wrapped_sender(amqp.send_task_message)
-    if original is not None:
-        amqp.send_task_message = original
+    """Put Celery's sender back only while the SDK wrapper is outermost.
+
+    A component that wrapped the sender later keeps its wrapper; the SDK layer under
+    it only stops recording.
+    """
+    state = _senders.get(app)
+    if state is None:
+        return
+    state["active"] = False
+    if app.amqp.send_task_message is state["wrapper"]:
+        app.amqp.send_task_message = state["original"]
+        del _senders[app]
 
 
 class CeleryInstrumentation:

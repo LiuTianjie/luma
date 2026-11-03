@@ -4,7 +4,7 @@ from .runtime import Configuration, Runtime, TaskRun, configure, current_task, f
 from .runtime import mark_progress, observed_stage, stage
 from .runtime import SafeInstrument
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 __all__ = ["Configuration", "Runtime", "TaskRun", "configure", "get_runtime", "shutdown",
            "current_task", "force_flush", "telemetry_disabled", "stage", "observed_stage", "mark_progress",
            "get_tracer", "get_meter", "span", "task", "publication", "counter", "histogram"]

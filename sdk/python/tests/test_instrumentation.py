@@ -11,8 +11,9 @@ from types import MappingProxyType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from celery import Celery
+from celery import Celery, signals
 from celery.exceptions import Ignore, Reject
+from kombu import Exchange, Queue
 from opentelemetry import trace
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -812,6 +813,68 @@ def test_celery_publications_record_actual_send_results_by_delivered_queue(obser
         instrumentation.uninstrument()
         mocked.close()
     assert mocked.amqp.send_task_message is stub
+
+
+def test_celery_publication_queue_is_the_routing_key_the_worker_reads(observed):
+    """Producer and worker labels must agree for direct, explicit-exchange and topic routing."""
+    _runtime, reader, _exporter = observed
+    app = Celery("adapter-routing", broker="memory://")
+    app.conf.task_queues = [Queue("celery"), Queue("print"),
+                            Queue("render", Exchange("documents", type="topic"), routing_key="doc.render")]
+    app.conf.task_routes = {"route.direct": {"queue": "print"}, "route.topic": {"queue": "render"},
+                            "route.topic_key": {"queue": "render", "routing_key": "doc.special"}}
+    published = {}
+
+    def delivered(sender=None, routing_key=None, **_kwargs):
+        published[sender] = routing_key
+
+    signals.before_task_publish.connect(delivered, weak=False)
+    instrumentation = celery_hooks.instrument_celery(app=app, publications=True)
+    cases = {"route.default": {}, "route.direct": {}, "route.queue": {"queue": "print"},
+             "route.key_only": {"routing_key": "print"}, "route.exchange": {"exchange": "celery", "routing_key": "custom.key"},
+             "route.topic": {}, "route.topic_key": {}}
+    try:
+        for name, options in cases.items():
+            app.send_task(name, **options)
+    finally:
+        signals.before_task_publish.disconnect(delivered)
+        instrumentation.uninstrument()
+        app.close()
+    labels = {p.attributes["task.name"]: p.attributes["task.queue"] for p in points(reader, "task.publications")}
+    assert labels == published
+    assert published["route.topic"] == "doc.render" and published["route.direct"] == "print"
+
+
+def test_celery_uninstrument_keeps_a_sender_wrapper_added_later(observed):
+    _runtime, reader, _exporter = observed
+    app = Celery("adapter-later-wrapper", broker="memory://")
+    celery = app.amqp.send_task_message
+    instrumentation = celery_hooks.instrument_celery(app=app, publications=True)
+    observed_sender = app.amqp.send_task_message
+    calls = []
+
+    # functools.wraps copies the SDK wrapper's attributes onto the business wrapper.
+    @functools.wraps(observed_sender)
+    def business(*args, **kwargs):
+        calls.append(args[1])
+        return observed_sender(*args, **kwargs)
+
+    app.amqp.send_task_message = business
+    try:
+        app.send_task("document.first")
+        instrumentation.uninstrument()
+        assert app.amqp.send_task_message is business
+        app.send_task("document.unobserved")
+        celery_hooks.instrument_celery(app=app, publications=True)
+        assert app.amqp.send_task_message is business
+        app.send_task("document.again")
+    finally:
+        instrumentation.uninstrument()
+        app.close()
+    assert calls == ["document.first", "document.unobserved", "document.again"]
+    sent = {p.attributes["task.name"]: p.value for p in points(reader, "task.publications")}
+    assert sent == {"document.first": 1, "document.again": 1}
+    assert app.amqp.send_task_message is business and celery is not business
 
 
 @pytest.mark.asyncio

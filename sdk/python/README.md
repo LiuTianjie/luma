@@ -10,7 +10,7 @@ Python 3.10 or newer is required. See the [Chinese integration guide](docs/integ
 
 ## Install the distribution
 
-The package name is `luma-observe-sdk`, current source version `0.4.0`.
+The package name is `luma-observe-sdk`, current source version `0.4.1`.
 `Observe SDK Checks` builds wheel/sdist artifacts independently of Control for
 review and validation; expiring CI artifacts are not a permanent dependency source.
 The independent SDK release workflow publishes checked wheel/sdist files and
@@ -24,14 +24,14 @@ with the published asset hash or reviewed, pushed commit.
 To inspect a downloaded wheel, add only the framework extra used by that process:
 
 ```sh
-python -m pip install './luma_observe_sdk-0.4.0-py3-none-any.whl[taskiq]'
+python -m pip install './luma_observe_sdk-0.4.1-py3-none-any.whl[taskiq]'
 # Celery processes use the [celery] extra; processes needing both use [taskiq,celery].
 ```
 
 PyPI publication is optional and disabled unless the repository variable
 `OBSERVE_SDK_PYPI_ENABLED` is `true` and its Trusted Publisher is configured.
 Once that exact version is published there, consumers can use
-`luma-observe-sdk[taskiq]==0.4.0` with their normal package configuration.
+`luma-observe-sdk[taskiq]==0.4.1` with their normal package configuration.
 The existing `v*` Luma release workflow publishes `luma-infra`, not this package.
 
 ## Configure once per process
@@ -187,9 +187,12 @@ Call this once during Celery app setup; `observation.uninstrument()` disconnects
 the adapter after tasks drain. Providers initialize in the actual process.
 `publications=True` wraps that app's `amqp.send_task_message`, the call that
 actually hands the message to the broker, because Celery's publish signals cannot
-report a failed send. Each send is recorded like `publication()` above, under the
-queue the worker will read: the routed queue's name, or the routing key when an
-explicit exchange is given. The original return and exception are preserved.
+report a failed send. Each send is recorded like `publication()` above. Its
+`task_queue` is the routing key Celery publishes with, the same value the worker
+side records: the queue name under the default direct exchange, otherwise the
+explicit or queue-configured key. The original return and exception are preserved.
+`uninstrument()` restores Celery's sender only while the SDK wrapper is outermost;
+a wrapper added later stays in place and the SDK layer under it stops recording.
 
 Both adapters read business arguments only through an optional application
 callback. It receives `(task_name, args, kwargs)` and returns span fields for the
