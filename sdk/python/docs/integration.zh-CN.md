@@ -6,7 +6,7 @@ SDK 不导入 Luma Control、Django、业务模型或数据库。
 
 ## 安装与版本
 
-Python 要求为 3.10 及以上。当前源码版本是 `0.5.1`，独立的 `Observe SDK Checks`
+Python 要求为 3.10 及以上。当前源码版本是 `0.6.0`，独立的 `Observe SDK Checks`
 工作流构建 wheel 和 sdist，用于审核与验证；CI 工件会过期，不作为长期依赖来源。
 稳定分发方式见[独立 SDK 发版指南](releasing.md)：消费方锁定已发布版本，或使用包含
 SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装的远程 SHA；指南中的
@@ -15,12 +15,12 @@ SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装�
 如需检查下载的 wheel，可以选择对应框架 extra：
 
 ```sh
-python -m pip install './luma_observe_sdk-0.5.1-py3-none-any.whl[taskiq]'
+python -m pip install './luma_observe_sdk-0.6.0-py3-none-any.whl[taskiq]'
 ```
 
 Celery 进程使用 `[celery]`，同时运行两种框架的镜像使用 `[taskiq,celery]`。
 包 PyPI 发布是独立步骤；发布完成后，消费方可通过自己的包配置安装
-`luma-observe-sdk[taskiq]==0.5.1`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
+`luma-observe-sdk[taskiq]==0.6.0`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
 
 ## 地址、凭证与开关
 
@@ -83,6 +83,12 @@ configure(business_outcomes=("failed", "requires_review", "retrying", "succeeded
 未声明的值排在最后，排名相同时以最新的值为准，因此没有声明时等同于直接赋值
 `business_outcome`。
 
+需要同时保留事件和错误采样时，调用
+`record_business_outcome("failed", status="rejected", failed=True, error_type="provider_error")`。
+SDK 处理结果优先级、状态字段、生命周期事件和 Span 错误标记；状态到结果的含义由业务映射，
+`failed=True` 由调用方明确声明。`outcome=None` 时只记录给定状态；任务外调用直接返回，
+埋点错误保留业务原返回值和异常。
+
 长任务可以用阶段或显式标记报告进展。模块级接口在任何位置都能直接调用：
 在被观测的执行内会记录，在执行外只是正常运行业务代码，业务函数不需要自己判断：
 
@@ -121,6 +127,11 @@ with stage("document.read", attributes={"document.id": document_id}, aggregate=T
 正文、堆栈及原因链的 UTF-8 上限分别为 4 KiB、16 KiB，超过时标记 `truncated`；根 Span
 保留类型、最多 256 字的摘要和代码位置。默认仅记录异常类型。业务的 `logger.exception(...)`
 沿用原行为，应用接入只需配置和阶段声明。
+
+管理后端可安装 `[query]` extra，使用 `luma_observe.query.ObserveClient` 读取现有
+Metrics、生命周期、异常日志与 Trace。SDK 负责分页、超时、响应上限和格式解析；业务仅
+配置应用范围、指标表达式、字段映射与管理权限。查询客户端独立于采集开关，初始化时
+不启动 exporter，也不增加服务、缓存或存储。接口和预算见[查询接入](querying.md)。
 
 应用自己掌握实际发送调用时，可以观测发送结果；适配器的准备 Span 不代表发送成功：
 
@@ -334,7 +345,7 @@ vmalert 校验，再关联已配置的 Alertmanager 路由。字段或图表变�
 在 Luma 仓库根目录的隔离 Python 环境中执行：
 
 ```sh
-python -m pip install -e './sdk/python[taskiq,celery,test]'
+python -m pip install -e './sdk/python[taskiq,celery,query,test]'
 bash scripts/check-observe-sdk.sh --output-dir /tmp/luma-observe-sdk-dist
 ```
 

@@ -66,11 +66,14 @@ import sys
 
 import luma_observe
 from luma_observe.dashboards import build_dashboard, write_dashboard
+from luma_observe.query import ObserveClient, ReadEndpoints
 
 assert Path(luma_observe.__file__).resolve().is_relative_to(Path(sys.argv[1]).resolve())
 assert not luma_observe.get_runtime().enabled
 print("Installed wheel:", importlib.metadata.version("luma-observe-sdk"))
 assert callable(build_dashboard) and callable(write_dashboard)
+assert callable(ObserveClient) and callable(ReadEndpoints.from_origin)
+assert callable(luma_observe.record_business_outcome)
 PY
   PYTHONPATH="$sdk_temp/installed" python -m luma_observe.dashboards --help > /dev/null
 )
