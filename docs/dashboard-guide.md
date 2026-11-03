@@ -41,7 +41,7 @@ Passkey verification runs in the Control image, which installs the `control` ext
 | Workspace | What you can do |
 | --- | --- |
 | Overview | Review applications or nodes that need attention. |
-| Applications | Inspect services, replicas, endpoints, logs, metrics, configuration and version history. |
+| Applications | Inspect services, replicas, endpoints, logs, metrics, custom dashboards, configuration and version history. |
 | Deployments | Follow builds and deployment results. |
 | Observability | Review alert incidents, application monitoring (requests, logs and traces), resource metrics, alert rules and notification channels. |
 | Infrastructure | Manage nodes (including joining new ones and cleaning up their disks), regions, network routes, storage and registry images. |
@@ -65,10 +65,11 @@ See [Deployment YAML](deployment-yaml.md) for the schema and [Compose & storage]
 
 ## Inspect an application
 
-An application's tabs keep the same object context while switching between overview, services and instances, logs, metrics, configuration, and version history.
+An application's tabs keep the same object context while switching between overview, services and instances, logs, metrics, custom dashboards, configuration, and version history.
 
 - **Overview** presents runtime status, placement, access addresses, storage and diagnostics.
 - **Logs** offers application-filtered VictoriaLogs search and Tempo traces in Grafana, with an expand/restore button. These views require observability services. **Live logs** retains Control-backed service/instance output, filtering, pause, wrapping, copy and download; opening logs from a specific service selects this view directly. Runtime events and pull diagnostics are separate from application output.
+- **Dashboards** lists Grafana dashboards tagged `luma-app:<application-name>`. Select a dashboard, refresh the list after installing definitions, or open it in a new tab. This view requires Observe; see [dashboard configuration and delivery](observe-applications.md#link-dashboards-to-an-application).
 - **Configuration** shows the registered deployment source and update time, with a copy action. A file switch appears when more than one configuration is available.
 - **Versions** separates loading failures from an empty history and from rollback failures. A rollback requires confirmation and changes the running deployment.
 

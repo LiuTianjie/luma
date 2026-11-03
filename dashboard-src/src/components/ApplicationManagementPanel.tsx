@@ -61,6 +61,7 @@ import {
 } from "./applicationModel";
 import { applicationEndpoints } from "./applicationEndpoints";
 import { ApplicationLogs } from "./ApplicationLogs";
+import { ApplicationDashboards } from "./ApplicationDashboards";
 import { useRouter, toHref } from "../router";
 import { StepLog } from "../deploy/StepLog";
 import { ObservabilityPanel } from "./ObservabilityPanel";
@@ -1536,6 +1537,14 @@ export function ApplicationManagementPanel({
               token={token}
               services={selected.services}
               nodes={[]}
+            />
+          ) : null}
+          {tab === "dashboards" ? (
+            <ApplicationDashboards
+              key={selected.stack}
+              app={selected.stack}
+              lang={lang}
+              token={token}
             />
           ) : null}
         </TabsContent>

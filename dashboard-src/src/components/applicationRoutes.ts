@@ -4,6 +4,7 @@ export const APPLICATION_TABS = [
   { id: "alerts", zh: "告警", en: "Alerts" },
   { id: "logs", zh: "日志", en: "Logs" },
   { id: "metrics", zh: "指标", en: "Metrics" },
+  { id: "dashboards", zh: "看板", en: "Dashboards" },
   { id: "config", zh: "配置", en: "Configuration" },
   { id: "secrets", zh: "密钥", en: "Secrets" },
   { id: "versions", zh: "版本与回滚", en: "Versions" },

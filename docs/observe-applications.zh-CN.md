@@ -99,6 +99,24 @@ OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20<ingest-token>
 
 可选 Python 包提供离线工具 `luma-observe-dashboard`，将应用 JSON 配置转换为标准 Grafana 看板。指标、变量、面板类型、单位与阈值由应用配置，见 [SDK 示例](../sdk/python/examples/dashboards/)。生成文件使用以下现有扩展交付流程，无需增加服务或凭证。
 
+看板配置可以独立于业务源码维护。开源仓库中的私有看板可放在通过 `.git/info/exclude` 忽略的本地目录，配置和生成文件由内部文件交付流程备份。业务查询与标识不应发布到 Luma 仓库。
+
+### 关联到应用详情 {#link-dashboards-to-an-application}
+
+在生成工具的输入配置或标准 Grafana JSON 的 `tags` 数组中，添加精确标签 `luma-app:<application-name>`。例如：
+
+```json
+"tags": ["luma-app:orders-workers", "tasks"]
+```
+
+安装后进入 **应用 → orders-workers → 看板**。页面打开时通过既有 Grafana Search API 查找最多 100 个关联看板；后续新增可点击“刷新列表”。支持选择看板或在新窗口打开，分享链接中的 `dashboard=<uid>` 保留所选看板。定义了 `app` 变量的看板会收到当前应用名；固定查询的看板需要自行包含范围筛选。
+
+标签用于导航关联，不承担数据隔离。访问沿用 Control 登录与 Grafana 权限。页面不保存遥测、不增加查询后端，也不在后台轮询列表。Grafana 不可用只影响此标签页加载。图表按看板自身的刷新间隔查询既有 Observe 数据源。
+
+更新看板文件无需重新部署 Control 或业务应用；“看板”标签页本身需要升级到包含此功能的 Control 版本。
+
+### 安装与更新定义 {#install-and-update-definitions}
+
 Grafana 和 vmalert 以只读方式挂载 `observe-extensions`，Manager 路径为 `/srv/luma/data/luma-observe/extensions`，首次部署可为空。应用使用现有运维文件交付流程安装已审核的标准定义：
 
 ```text

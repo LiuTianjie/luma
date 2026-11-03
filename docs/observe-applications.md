@@ -194,6 +194,39 @@ metrics, variables, panel types, units and thresholds in configuration; see the
 [SDK examples](../sdk/python/examples/dashboards/). Its output uses the existing
 extension delivery below and does not need another service or credential.
 
+Dashboard configuration can live independently of application source. For private
+dashboards in an open-source checkout, keep the configuration and generated files
+in a local directory excluded through `.git/info/exclude`, and back them up
+through your internal file-delivery process. Do not publish business-specific
+queries or identifiers in the Luma repository.
+
+### Link dashboards to an application
+
+Add the exact tag `luma-app:<application-name>` to each dashboard's `tags` array,
+in the compiler input or standard Grafana JSON. For example:
+
+```json
+"tags": ["luma-app:orders-workers", "tasks"]
+```
+
+After installation, open **Applications → orders-workers → Dashboards**. The
+page discovers up to 100 tagged dashboards through the existing Grafana Search
+API when opened; **Refresh list** discovers later additions. Choose a dashboard
+or open it in a new tab. The `dashboard=<uid>` URL parameter preserves a selected
+dashboard in shared links. Dashboards with an `app` variable receive the current
+application name; fixed-query dashboards must include their own scope filters.
+
+Tags associate dashboards with navigation; they do not enforce data isolation.
+Access uses the existing Control login and Grafana permissions. The page stores
+no telemetry, adds no query backend, and performs no background list polling.
+An unavailable Grafana only prevents this tab from loading. Dashboard panels use
+their configured refresh intervals and existing Observe data sources.
+
+Updating dashboard files requires no Control or application redeployment. The
+Dashboards tab itself requires a Control version that includes this feature.
+
+### Install and update definitions
+
 The `observe-extensions` volume is a shared read-only config mount in Grafana
 and vmalert. Its manager path is
 `/srv/luma/data/luma-observe/extensions`; initial creation accepts an empty
