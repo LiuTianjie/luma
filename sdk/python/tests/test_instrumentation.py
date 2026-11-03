@@ -801,3 +801,17 @@ async def test_attribute_callback_receives_bound_arguments_when_declared(observe
         celery_hooks.instrument_celery().uninstrument()
         app.close()
     assert seen[-1] == {"document_id": "doc-9", "mode": "slow"}
+
+
+def test_attribute_lookup_failure_does_not_block_attempt(observed):
+    """A broker without find_task (or one that raises) still yields an observed attempt."""
+    _runtime, reader, exporter = observed
+    middleware = taskiq_hooks.TaskiqMiddleware(attributes=lambda name, args, kwargs, arguments: {"seen": len(arguments)})
+    middleware.set_broker(SimpleNamespace(queue_name="documents"))
+    message = TaskiqMessage(task_id="t-1", task_name="document.plain", labels={}, args=["a"], kwargs={})
+    middleware.pre_execute(message)
+    assert core.current_task() is not None
+    middleware.post_execute(message, SimpleNamespace(is_err=False, error=None))
+    span = next(span for span in exporter.get_finished_spans() if span.name == "document.plain")
+    assert span.attributes["seen"] == 0
+    assert outcomes(reader) == {"succeeded": 1}
