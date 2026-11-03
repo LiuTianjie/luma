@@ -41,6 +41,22 @@ Trace 和原生 Metrics 的实例标识保持完整。需要单独部署新版 O
 
 网关仅监听 `127.0.0.1:8427`，数据存储与诊断入口保持回环监听。读取凭证有整个集群观测数据的读取权限，适合可信后端或运维工具；应用的用户权限仍由应用后端负责。凭证只进入服务端配置，Luma 管理凭证保持独立。
 
+只需要读取自身数据的应用后端，应改用按应用限定范围的读取身份。`LUMA_OBSERVE_SCOPED_READERS` 是一个 JSON 列表，每一项给出读取身份的 `name`、独立的 `token`、`namespace`，以及允许读取日志的 Luma 应用 `apps`：
+
+```json
+[{"name": "orders", "token": "<32-512 chars>", "namespace": "orders", "apps": ["orders-workers"]}]
+```
+
+过滤条件由 vmauth 在服务端添加，客户端无法覆盖：
+
+| 信号 | 限定读取身份的权限 |
+| --- | --- |
+| 指标 `/metrics/api/v1/query`、`query_range` | 只能读取 `service_namespace=<namespace>` 的序列 |
+| 日志 `/logs/select/logsql/query` | 只能读取 `app` 属于 `apps` 的日志流 |
+| Trace `/traces/api/traces/<32位十六进制ID>` | 只能按完整 Trace ID 读取，不能搜索 |
+
+Tempo 没有网关层的过滤能力，所以限定读取身份不能搜索 Trace，只能读取已知 ID 的 Trace，通常来自自身的生命周期日志。Trace ID 是随机的 128 位值，这个身份也无法列出其他应用的 ID；但 ID 一旦泄漏就可以被读取，应用仍应校验返回 Span 的 `service.namespace` 属于自己。所有凭证（包括限定和不限定的）必须互不相同。
+
 需要启用的角色，在实际部署的 `observe/docker-compose.yml` 中把空值替换为作用域 Secret 引用，保留同服务的其他环境配置：
 
 ```yaml

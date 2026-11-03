@@ -1,6 +1,8 @@
 """验证观测读取与 OTLP 写入的配置边界及安全关闭状态。"""
+import json
 from pathlib import Path
 import re
+import urllib.parse
 import runpy
 import unittest
 
@@ -47,6 +49,37 @@ class ObserveAccessTests(unittest.TestCase):
                 with self.assertRaises(ValueError) as result:
                     auth_config({"LUMA_OBSERVE_READ_TOKEN": reader, "LUMA_OBSERVE_INGEST_TOKEN": writer})
                 self.assertNotIn(reader, str(result.exception))
+
+    def test_scoped_reader_enforces_namespace_apps_and_trace_lookup_by_id(self):
+        """按应用限定的读取身份：指标和日志强制过滤，Trace 只能按 ID 读取，不能搜索。"""
+        readers = json.dumps([{"name": "orders", "token": "s" * 40, "namespace": "orders",
+                               "apps": ["orders-workers", "orders-scheduler"]}])
+        users = auth_config({"LUMA_OBSERVE_SCOPED_READERS": readers})["users"]
+        self.assertEqual([user["name"] for user in users], ["observe-scoped-orders"])
+        routes = {route["src_paths"][0]: route for route in users[0]["url_map"]}
+        self.assertTrue(routes[r"/metrics/api/v1/query"]["url_prefix"].endswith("?extra_label=service_namespace=orders"))
+        logs = urllib.parse.unquote(routes[r"/logs/select/logsql/query"]["url_prefix"].split("extra_filters=", 1)[1])
+        self.assertEqual(logs, 'app:in("orders-workers","orders-scheduler")')
+        patterns = [path for route in users[0]["url_map"] for path in route["src_paths"]]
+        self.assertTrue(any(re.fullmatch(pattern, "/traces/api/traces/" + "a" * 32) for pattern in patterns))
+        for path in ("/traces/api/search", "/traces/api/search/tags", "/otlp/v1/traces", "/metrics/api/v1/series"):
+            self.assertFalse(any(re.fullmatch(pattern, path) for pattern in patterns), path)
+
+    def test_scoped_readers_reject_invalid_scopes_and_reused_tokens_without_leaking(self):
+        base = {"name": "orders", "token": "s" * 40, "namespace": "orders", "apps": ["orders-workers"]}
+        cases = [
+            "not-json", json.dumps({"name": "x"}), json.dumps([{**base, "extra": 1}]),
+            json.dumps([{**base, "namespace": 'orders",x="1'}]), json.dumps([{**base, "apps": ['a") OR *']}]),
+            json.dumps([{**base, "apps": []}]), json.dumps([base, {**base, "token": "t" * 40}]),
+            json.dumps([{**base, "token": "short"}]),
+        ]
+        for raw in cases:
+            with self.subTest(raw=raw[:40]):
+                with self.assertRaises(ValueError) as result:
+                    auth_config({"LUMA_OBSERVE_SCOPED_READERS": raw})
+                self.assertNotIn("s" * 40, str(result.exception))
+        with self.assertRaises(ValueError):
+            auth_config({"LUMA_OBSERVE_READ_TOKEN": "s" * 40, "LUMA_OBSERVE_SCOPED_READERS": json.dumps([base])})
 
 if __name__ == "__main__":
     unittest.main()
