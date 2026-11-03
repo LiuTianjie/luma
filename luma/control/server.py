@@ -15057,6 +15057,9 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             except ValueError as exc:
                 raise LumaError("window must be a number") from exc
             return _json_response(200, await run_in_threadpool(handle_observe_apps, token, window=window))
+        if parsed_path == "/v1/dashboard/observe/settings":
+            from .observe_settings import get_settings
+            return _json_response(200, await run_in_threadpool(get_settings, token))
         if parsed_path == "/v1/dashboard/logs/stream":
             service = str(request.query_params.get("service") or "")
             since = str(request.query_params.get("since") or "")
@@ -15216,6 +15219,9 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             return _json_response(200, await run_in_threadpool(handle_dashboard_setup_check, token, body))
         if path == "/v1/dashboard/setup/configure":
             return _json_response(200, await run_in_threadpool(handle_dashboard_setup_configure, token, body))
+        if path == "/v1/dashboard/observe/settings":
+            from .observe_settings import update_settings
+            return _json_response(200, await run_in_threadpool(update_settings, token, body))
         handler = routes.get(path)
         if handler:
             return _json_response(200, await run_in_threadpool(handler, token, body))
@@ -15518,6 +15524,8 @@ def _ensure_observe_grafana_route() -> None:
             return
         from ..observe_grafana import write_grafana_route
         write_grafana_route(Path("/opt/luma/routes"), domain)
+        from .observe_settings import reconcile_settings
+        reconcile_settings()
     except Exception:
         return
 

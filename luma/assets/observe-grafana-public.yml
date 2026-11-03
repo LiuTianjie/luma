@@ -1,0 +1,69 @@
+# Managed by Control's observability settings; disabled by default.
+# Grafana 11.5.x / Traefik 3. The renderer substitutes the Control domain/TLS.
+# The separate authenticated Grafana route continues to protect all other paths.
+# Only dashboards explicitly shared in Grafana can be read through these APIs.
+http:
+  routers:
+    luma-observe-grafana-public-view:
+      rule: Host(`luma.example.com`) && (Method(`GET`) || Method(`HEAD`)) && PathRegexp(`^/grafana/public-dashboards/[a-fA-F0-9]{32}/?$`)
+      priority: 1100
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      middlewares: [luma-observe-grafana-public-identity, luma-observe-grafana-public-no-cache, luma-observe-grafana-public-rate, luma-observe-grafana-public-inflight]
+      service: luma-observe-grafana-public
+    luma-observe-grafana-public-api:
+      rule: Host(`luma.example.com`) && (((Method(`GET`) || Method(`HEAD`)) && PathRegexp(`^/grafana/api/public/dashboards/[a-fA-F0-9]{32}(/annotations)?/?$`)) || (Method(`POST`) && PathRegexp(`^/grafana/api/public/dashboards/[a-fA-F0-9]{32}/panels/[0-9]+/query/?$`)))
+      priority: 1100
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      middlewares: [luma-observe-grafana-public-identity, luma-observe-grafana-public-no-cache, luma-observe-grafana-public-rate, luma-observe-grafana-public-inflight, luma-observe-grafana-public-body]
+      service: luma-observe-grafana-public
+    luma-observe-grafana-public-assets:
+      # Asset path segments cannot be dot segments or encoded traversal paths.
+      rule: Host(`luma.example.com`) && (Method(`GET`) || Method(`HEAD`)) && PathRegexp(`^/grafana/public/(build|img|fonts|locales|plugins)/[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$`)
+      priority: 1100
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      middlewares: [luma-observe-grafana-public-identity]
+      service: luma-observe-grafana-public
+  middlewares:
+    luma-observe-grafana-public-identity:
+      headers:
+        customRequestHeaders:
+          Authorization: ""
+          Cookie: ""
+          X-WEBAUTH-USER: ""
+    luma-observe-grafana-public-no-cache:
+      headers:
+        customResponseHeaders:
+          Cache-Control: "no-store"
+          Referrer-Policy: "same-origin"
+    luma-observe-grafana-public-rate:
+      rateLimit:
+        average: 5
+        period: 1s
+        burst: 32
+        sourceCriterion:
+          requestHost: true
+    luma-observe-grafana-public-inflight:
+      inFlightReq:
+        amount: 16
+        sourceCriterion:
+          requestHost: true
+    luma-observe-grafana-public-body:
+      buffering:
+        maxRequestBodyBytes: 16384
+        memRequestBodyBytes: 16384
+  services:
+    luma-observe-grafana-public:
+      loadBalancer:
+        serversTransport: luma-observe-grafana-public
+        servers:
+          - url: http://127.0.0.1:3100
+  serversTransports:
+    luma-observe-grafana-public:
+      forwardingTimeouts:
+        responseHeaderTimeout: 15s

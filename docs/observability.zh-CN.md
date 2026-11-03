@@ -12,7 +12,35 @@ Luma 提供节点与容器采样、当前任务队列、资源历史、运行事
 
 Control 控制台提供节点与容器采样，实时 allocation 日志仍通过 Control 按需代理。应用 HTTP 5xx、延迟（p90/p95/p99）、Nomad 失败 allocation、重启风暴、链路追踪，以及可搜索的 stdout/stderr，由可选的 [`observe/`](../observe/) Compose 应用提供。可用 Luma 部署它；不部署也不影响 Control 运行。运维人员通过 **控制台 → 可观测 → 应用监控**查看，它在 Control 域名的 `/grafana` 嵌入 Grafana。部署 observe 后，HTTP、Nomad 和 trace 序列立即按 Luma 应用/stack 名标记，无需应用单独加入。失败指标只统计 Nomad 仍希望运行的 allocation，不是累计失败次数。该组件使用主机网络和回环监听器：Prometheus 为 `127.0.0.1:8082`，OTLP 为 `127.0.0.1:4318`，Tempo 为 `127.0.0.1:3200`。应用任务携带 Control 签发的 bearer token，向 Manager Tailscale mesh 的 4319 端口发送 trace。Control 使用主机网络，observe 存在时查询 `http://127.0.0.1:8428`。`127.0.0.1:3100` 上的 Grafana 仅用于本地调试。可观测栈自带的规则在 vmalert/Alertmanager 中评估，不经过 Control SQLite；另外，Control 的控制台应用告警预设读取 VictoriaMetrics，并将事件和通知记录保存在 Control SQLite。Trace 保留 3 天；日志和指标保留 15 天，日志最多占用 4 GiB。Manager 磁盘剩余不足 2 GiB 时，日志和指标停止写入。
 
-打开 `/grafana` 前先在 `/dashboard/` 登录。Traefik 每次访问 Grafana 都会请求 Control 校验控制台会话或管理令牌；未认证请求返回 401。Grafana 无需二次登录，公网入口依赖 Control 可用。详见[登录与 Passkey](dashboard-guide.zh-CN.md#sign-in-and-passkeys)。
+打开 `/grafana` 前先在 `/dashboard/` 登录。默认情况下，Traefik 每次访问 Grafana 都会请求 Control 校验控制台会话或管理令牌；未认证请求返回 401。Grafana 无需二次登录，登录保护的入口依赖 Control 可用。详见[登录与 Passkey](dashboard-guide.zh-CN.md#sign-in-and-passkeys)。
+
+<a id="external-dashboard-sharing"></a>
+### 对外分享看板
+
+在 Control 控制台打开 **可观测 → 观测设置 → 允许公开看板链接**。
+开关默认关闭，设置持久保存在 Control 中，数秒内生效；无需重启 Observe 或业务应用。
+Control 重启或升级后会恢复已保存的设置。
+
+打开开关后，在需要分享的 Grafana 看板中开启 **Share externally**，分享
+`/grafana/public-dashboards/<access-token>` 链接。打开 Control 开关本身不会公开任何看板；
+Grafana 会检查分享是否启用，并且只执行该看板保存的面板查询。
+停用或删除单个分享后，后续读取立即受到限制；关闭 Control 开关后，所有公开链接恢复要求
+Luma 登录。路由不会缓存看板页面和查询结果。
+
+白名单仅包含公开看板页面、它的只读公开 API（面板查询使用 POST）和静态资源。
+看板搜索、普通 `/d/` 页面、Explore、数据源代理、`/api/ds/query` 和分享管理接口
+仍要求 Luma 登录。公开请求会移除 Cookie 和 Authorization。
+插件或 Grafana 升级若需要额外静态路径，应单独核实，不要放开整个 `/api/`。
+
+公开页面/API 按域名共同限制为每秒 5 个请求、突发 32 个、最多 16 个在途请求，
+查询请求体最多 16 KiB，上游响应头超时 15 秒；静态资源使用独立路由。
+过载时返回错误，不累积无界请求队列。指标继续使用 VictoriaMetrics 已有的结果缓存、
+查询并发和内存上限，无需增加查询后端、数据库或业务缓存。
+开启后验证未登录页面及面板查询、无效或撤销链接，以及受保护接口。
+管理员也可通过已认证的 `GET` / `POST /v1/dashboard/observe/settings` 读取或修改设置，
+请求体为 `{"grafanaPublicSharingEnabled": true}` 或 `false`。
+Control 自动管理已有 Traefik 路由目录里的 `luma-observe-grafana-public.yml`，
+无需用户手动编辑文件。内置白名单适配 Grafana 11.5.x。
 
 在 `observe/` 中沿用已记录的部署方式。AMD64 Manager 首次本地构建可执行 `luma build local . --platform linux/amd64`；其他主机应按实际 Manager 架构选择平台。首次部署不需要通知密钥。可观测栈的 Alertmanager 通知需要添加 scoped secret 和对应的 Compose 环境变量引用，再重新部署；控制台规则则使用内置飞书渠道，详见[通知配置](#built-in-alert-rules-and-notifications)。当前 CLI 支持回环 metrics/OTLP 标志后，刷新 Traefik，让 RED 规则有可抓取目标。通过 **控制台 → 可观测 → 应用监控**查看。图表按 Luma 应用展示 Traefik HTTP 请求率、5xx、p90/p95/p99 延迟和 Nomad 健康状态，不是读取每个容器的 `/metrics`。Traefik 直方图桶为 `0.05,0.1,0.25,0.5,1,2.5,5,10` 秒，以区分这些分位数。启用 observe 后，后续 Luma 部署会自动注入官方 OpenTelemetry 环境变量：`OTEL_SERVICE_NAME`、`luma.stack` / `luma.task` / `luma.region`，以及指向 mesh 监听器的 OTLP HTTP 配置。已包含 OpenTelemetry 发行版的应用无需 Luma SDK 即可发送 span。首次启用 observe 后应重新部署已有应用。Trace 导出失败不会阻塞业务；采集器保留 HTTP 5xx、OTel 错误、超过 1 秒的 trace，并对其他请求进行 10% 基线采样。采集器通过 Go 内存目标、memory limiter 和有界队列控制内存，持续过载时会拒收或丢弃遥测数据。不要通过 Manager 公网接口向外发送原始访问日志或 trace。
 

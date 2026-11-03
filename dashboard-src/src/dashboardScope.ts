@@ -18,7 +18,7 @@ export function dashboardScopeForPage(page: ResolvedPage, path = ""): DashboardS
     case "setup": return "setup";
     case "deploy": return !path || path === "/create" ? "none" : "deploy";
     case "storage": return path.startsWith("/storage/governance") ? "none" : "storage";
-    case "observability": return path.startsWith("/observe/metrics") ? "metrics" : "directory";
+    case "observability": return path.startsWith("/observe/settings") ? "none" : path.startsWith("/observe/metrics") ? "metrics" : "directory";
     default: return "full";
   }
 }

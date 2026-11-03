@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "luma-infra"
-version = "0.2.27"
+version = "0.2.28"
 description = "Declarative deployment CLI for region-aware Nomad infrastructure."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -62,6 +62,7 @@ include = ["luma*"]
 [tool.setuptools.package-data]
 luma = [
   "assets/dashboard/*",
+  "assets/observe-grafana-public.yml",
 ]
 
 [tool.ruff]

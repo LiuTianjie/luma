@@ -22,7 +22,43 @@ The stack uses host networking and loopback listeners (`127.0.0.1:8082` Promethe
 `127.0.0.1:4318` OTLP, `127.0.0.1:3200` Tempo). Application tasks send traces to the manager Tailscale mesh listener on port 4319 with a Control-issued bearer token. Control uses host networking and queries `http://127.0.0.1:8428` when observe is present. Grafana on `127.0.0.1:3100`
 is local debug only. The stack's bundled rules evaluate in vmalert/Alertmanager without Control SQLite. Separately, Control's dashboard-managed application alert presets read VictoriaMetrics and persist incidents and deliveries in Control SQLite. Traces retain 3 days; logs and metrics retain 15 days, with logs capped at 4 GiB. Logs and metrics stop ingesting when less than 2 GiB of the manager disk is free.
 
-Sign in to `/dashboard/` before opening `/grafana`. Traefik checks the console session or management token with Control on every Grafana request; unauthenticated requests return 401. Grafana needs no second login, and the public route depends on Control being available. See [sign-in and passkeys](dashboard-guide.md#sign-in-and-passkeys).
+Sign in to `/dashboard/` before opening `/grafana`. By default, Traefik checks the console session or management token with Control on every Grafana request; unauthenticated requests return 401. Grafana needs no second login, and the authenticated route depends on Control being available. See [sign-in and passkeys](dashboard-guide.md#sign-in-and-passkeys).
+
+<a id="external-dashboard-sharing"></a>
+### External dashboard sharing
+
+Open **Observability → Settings → Allow public dashboard links** in the Control
+console. The switch is off by default. Control saves it persistently and applies
+the routing change within a few seconds; no Observe or application restart is
+required. The saved setting is restored when Control restarts or upgrades.
+
+After enabling the switch, enable **Share externally** on each intended Grafana dashboard and share its
+`/grafana/public-dashboards/<access-token>` link. Turning on the Control switch
+does not share any dashboard. Grafana checks that the link is enabled and executes
+only the panel queries saved in that dashboard. Disabling or deleting the share
+blocks subsequent reads. Turning off the Control switch requires Luma sign-in
+for all public links again. The route does not cache dashboard pages or responses.
+
+The allowlist covers that page, its read-only public API (including the POST
+panel-query endpoint), and static assets. Dashboard search, normal `/d/` pages,
+Explore, datasource proxies, `/api/ds/query`, and share management still require
+Luma sign-in. Client cookies and authorization headers are removed on public
+requests. Grafana plugins or later versions may require additional static paths;
+verify them without opening the general `/api/` prefix.
+
+Public page/API traffic shares a per-host rate limit of 5 requests/second with
+a burst of 32, a limit of 16 in-flight requests, 16 KiB query bodies, and a
+15-second upstream response-header timeout. Static assets have a separate route.
+Overload returns an error instead of building an unbounded request queue. Metrics
+continue to use VictoriaMetrics' existing result cache and execution/memory
+limits; this adds no query backend, database, or application-side cache.
+Verify a logged-out page and panel query, an invalid/revoked link, and a protected
+API after enabling the switch. Administrators can also read/update the setting
+through authenticated `GET` / `POST /v1/dashboard/observe/settings`, with the
+body `{"grafanaPublicSharingEnabled": true}` or `false`. Control manages the
+separate `luma-observe-grafana-public.yml` file in its existing Traefik route
+directory; operators do not need to edit files. The bundled allowlist targets
+Grafana 11.5.x.
 
 Deploy from `observe/` through its recorded workflow. For a first Local Build on an AMD64 manager, use `luma build local . --platform linux/amd64`; resolve the actual manager architecture for other hosts. First deploy does not require notification secrets. For the stack's Alertmanager path, add scoped secrets and matching Compose environment references, then redeploy. For Dashboard rules, configure the built-in Feishu channel instead; see [notification setup](#built-in-alert-rules-and-notifications).
 Refresh Traefik after the current CLI includes the loopback metrics/OTLP flags

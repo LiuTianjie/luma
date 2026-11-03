@@ -5,7 +5,7 @@ import type { Lang } from "../types";
 import { AlertCircle, ExternalLink, LayoutDashboard, RefreshCw } from "@/components/icons";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import { SelectControl } from "./primitives";
@@ -61,17 +61,33 @@ export function ApplicationDashboards({ app, lang, token }: { app: string; lang:
 
   return (
     <Card className={selected ? "grafana-embed min-w-0" : "min-w-0"}>
-      <CardHeader>
-        <CardTitle>{zh ? "自定义看板" : "Custom dashboards"}</CardTitle>
-        <CardDescription>{zh ? "查看此应用关联的 Grafana 看板。" : "Grafana dashboards associated with this application."}</CardDescription>
-        <CardAction>
-          <Button variant="outline" size="sm" disabled={list.status === "loading"} onClick={() => setRevision((value) => value + 1)}>
-            <RefreshCw data-icon="inline-start" />
-            {zh ? "刷新列表" : "Refresh list"}
-          </Button>
-        </CardAction>
-      </CardHeader>
       <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
+        <div className="flex flex-wrap items-center gap-3">
+          {selected && (list.dashboards.length > 1 ? (
+            <SelectControl
+              value={selected.uid}
+              options={list.dashboards.map((item) => ({ value: item.uid, label: item.title }))}
+              onChange={selectDashboard}
+              ariaLabel={zh ? "选择看板" : "Select dashboard"}
+              className="w-full sm:max-w-sm"
+            />
+          ) : (
+            <p className="min-w-0 truncate text-sm font-medium" title={selected.title}>{selected.title}</p>
+          ))}
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" disabled={list.status === "loading"} onClick={() => setRevision((value) => value + 1)}>
+              <RefreshCw data-icon="inline-start" />
+              {zh ? "刷新列表" : "Refresh list"}
+            </Button>
+            {selected && (
+              <a className={buttonVariants({ variant: "outline", size: "sm" })}
+                href={applicationDashboardUrl(selected.uid, app, false)} target="_blank" rel="noopener noreferrer">
+                <ExternalLink data-icon="inline-start" />
+                {zh ? "新窗口打开" : "Open in new tab"}
+              </a>
+            )}
+          </div>
+        </div>
         {list.status === "loading" && (
           <div role="status" className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
             <Spinner aria-hidden="true" />
@@ -111,28 +127,6 @@ export function ApplicationDashboards({ app, lang, token }: { app: string; lang:
         )}
         {selected && (
           <>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-              {list.dashboards.length > 1 ? (
-                <SelectControl
-                  value={selected.uid}
-                  options={list.dashboards.map((item) => ({ value: item.uid, label: item.title }))}
-                  onChange={selectDashboard}
-                  ariaLabel={zh ? "选择看板" : "Select dashboard"}
-                  className="sm:max-w-sm"
-                />
-              ) : (
-                <p className="min-w-0 truncate text-sm font-medium" title={selected.title}>{selected.title}</p>
-              )}
-              <a
-                className={buttonVariants({ variant: "outline", size: "sm", className: "sm:ml-auto" })}
-                href={applicationDashboardUrl(selected.uid, app, false)}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <ExternalLink data-icon="inline-start" />
-                {zh ? "新窗口打开" : "Open in new tab"}
-              </a>
-            </div>
             {loadedSrc !== src && (
               <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Spinner aria-hidden="true" />

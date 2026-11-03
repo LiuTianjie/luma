@@ -67,6 +67,7 @@ export function buildNavGroups(lang: Lang, vm: DashboardViewModel): NavGroup[] {
         { href: "/observe/metrics", label: zh ? "资源指标" : "Metrics", detail: zh ? "节点与服务资源曲线" : "Node and service metrics" },
         { href: "/observe/rules", label: zh ? "告警规则" : "Rules", detail: zh ? "配置触发条件" : "Configure alert conditions" },
         { href: "/observe/channels", label: zh ? "通知渠道" : "Channels", detail: zh ? "管理通知出口" : "Manage notification destinations" },
+        { href: "/observe/settings", label: zh ? "观测设置" : "Settings", detail: zh ? "看板对外分享" : "External dashboard sharing" },
       ] },
       { id: "nodes", icon: "infrastructure", label: zh ? "基础设施" : "Infrastructure", detail: zh ? "节点、网络、存储与镜像" : "Nodes, networking, storage and images", children: [
         { href: "/fleet", label: zh ? "节点" : "Nodes", detail: zh ? "节点资源、调度状态与加入新节点" : "Node resources, scheduling and joining", exact: true, also: ["/fleet/join", "/fleet/nodes", "/terminal/node"] },

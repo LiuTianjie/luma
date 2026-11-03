@@ -21,9 +21,14 @@ extra YAML, or an SDK.
 After it is deployed, open Luma Dashboard → Observability → App monitoring.
 That tab embeds Grafana at `/grafana` on the Control domain. Luma writes
 the Traefik route; you do not add a second domain. Do not open Grafana on
-Tailscale or port 3000. The route asks Control to check every request, so
+Tailscale or port 3000. By default the route asks Control to check every request, so
 `/grafana` needs a console session (or the management token) and returns 401
 otherwise.
+
+To use Grafana's **Share externally** links without Luma sign-in, turn on
+**Observability → Settings → Allow public dashboard links** in the Control console.
+See [external dashboard sharing](../docs/observability.md#external-dashboard-sharing)
+([中文](../docs/observability.zh-CN.md#external-dashboard-sharing)).
 
 The bundled rules run in vmalert/Alertmanager. Separately, Control's dashboard-managed application p95, 5xx ratio and failed-allocation presets read VictoriaMetrics and use Control's own incident and notification storage. Allocation stdout/stderr is shipped to VictoriaLogs by observe. Dashboard → Observability → App monitoring → Logs opens Grafana Explore. `luma app logs` and the application-detail live tail
 still go to Nomad through Control and are not a 15-day archive.

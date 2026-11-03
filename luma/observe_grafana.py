@@ -8,10 +8,16 @@ to Control limits it to signed-in dashboard sessions and the management token.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import re
+import tempfile
+
+import yaml
 
 GRAFANA_PATH = "/grafana"
 GRAFANA_ROUTE_NAME = "luma-observe-grafana.yml"
+GRAFANA_PUBLIC_ROUTE_NAME = "luma-observe-grafana-public.yml"
 GRAFANA_UPSTREAM = "http://127.0.0.1:3100"
 # Control and Traefik both use the manager host network; Control listens on :8080.
 GRAFANA_AUTH_ADDRESS = "http://127.0.0.1:8080/v1/auth/forward"
@@ -69,6 +75,52 @@ def grafana_route_yaml(
 
 def write_grafana_route(routes_dir: Path, domain: str, **kwargs: str) -> Path:
     path = Path(routes_dir) / GRAFANA_ROUTE_NAME
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(grafana_route_yaml(domain, **kwargs), encoding="utf-8")
+    write_route_file(path, grafana_route_yaml(domain, **kwargs))
     return path
+
+
+def write_route_file(path: Path, content: str) -> None:
+    """Publish one complete file-provider document, never a partially written route."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=f".{path.stem}-", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(0o644)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def grafana_public_route_yaml(domain: str, *, entrypoint: str = "websecure",
+                              cert_resolver: str = "letsencrypt", upstream: str = GRAFANA_UPSTREAM) -> str:
+    """Allow only Grafana's native public-dashboard endpoints and static assets.
+
+    Grafana validates the share token and loads saved panel queries itself. This
+    route does not grant access to dashboard search, datasource proxies or edits.
+    """
+    host = domain.strip().rstrip(".")
+    if not host or not re.fullmatch(r"[A-Za-z0-9.-]+", host):
+        raise ValueError("a valid Control domain is required")
+    source = Path(__file__).parent / "assets" / "observe-grafana-public.yml"
+    document = yaml.safe_load(source.read_text(encoding="utf-8"))
+    http = document["http"]
+    for router in http["routers"].values():
+        router["rule"] = router["rule"].replace("luma.example.com", host)
+        router["entryPoints"] = [entrypoint]
+        router["tls"]["certResolver"] = cert_resolver
+    http["services"]["luma-observe-grafana-public"]["loadBalancer"]["servers"] = [{"url": upstream}]
+    return yaml.safe_dump(document, sort_keys=False)
+
+
+def write_grafana_public_route(routes_dir: Path, domain: str, *, enabled: bool, **kwargs: str) -> None:
+    path = Path(routes_dir) / GRAFANA_PUBLIC_ROUTE_NAME
+    if enabled:
+        write_route_file(path, grafana_public_route_yaml(domain, **kwargs))
+    else:
+        path.unlink(missing_ok=True)

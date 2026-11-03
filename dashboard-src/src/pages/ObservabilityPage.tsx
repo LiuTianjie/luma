@@ -3,6 +3,7 @@ import { AlertingPanel } from "../components/AlertingPanel";
 import { useRouter, useSearchParams } from "../router";
 import { ObservabilityPanel } from "../components/ObservabilityPanel";
 import { ObserveAppsPanel } from "../components/ObserveAppsPanel";
+import { ObserveSettingsPanel } from "../components/ObserveSettingsPanel";
 import type { Lang } from "../types";
 import type { DashboardViewModel } from "../dashboardViewModel";
 import { PageHeader } from "./PageHeader";
@@ -48,6 +49,7 @@ export function ObservabilityPage({
     metrics: ["资源指标", "Resource metrics"],
     rules: ["告警规则", "Alert rules"],
     channels: ["通知渠道", "Notification channels"],
+    settings: ["观测设置", "Observability settings"],
   };
   const title = titles[section] || titles.incidents;
   return (
@@ -60,7 +62,9 @@ export function ObservabilityPage({
           description: "",
         }}
       />
-      {section === "apps" || section === "logs" ? (
+      {section === "settings" ? (
+        <ObserveSettingsPanel key={token} lang={lang} token={token} />
+      ) : section === "apps" || section === "logs" ? (
         <ObserveAppsPanel
           lang={lang}
           token={token}
