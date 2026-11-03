@@ -6,7 +6,7 @@ SDK 不导入 Luma Control、Django、业务模型或数据库。
 
 ## 安装与版本
 
-Python 要求为 3.10 及以上。当前源码版本是 `0.2.0`，独立的 `Observe SDK Checks`
+Python 要求为 3.10 及以上。当前源码版本是 `0.2.1`，独立的 `Observe SDK Checks`
 工作流构建 wheel 和 sdist，用于审核与验证；CI 工件会过期，不作为长期依赖来源。
 稳定分发方式见[独立 SDK 发版指南](releasing.md)：消费方锁定已发布版本，或使用包含
 SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装的远程 SHA；指南中的
@@ -15,12 +15,12 @@ SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装�
 如需检查下载的 wheel，可以选择对应框架 extra：
 
 ```sh
-python -m pip install './luma_observe_sdk-0.2.0-py3-none-any.whl[taskiq]'
+python -m pip install './luma_observe_sdk-0.2.1-py3-none-any.whl[taskiq]'
 ```
 
 Celery 进程使用 `[celery]`，同时运行两种框架的镜像使用 `[taskiq,celery]`。
 包 PyPI 发布是独立步骤；发布完成后，消费方可通过自己的包配置安装
-`luma-observe-sdk[taskiq]==0.2.0`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
+`luma-observe-sdk[taskiq]==0.2.1`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
 
 ## 地址、凭证与开关
 
@@ -80,7 +80,7 @@ with run.stage("document.render", attributes={"pages": 12}):
 run.mark_progress()
 ```
 
-阶段是一个子 Span，同时在执行 Span 上记录 `task.stage` 事件。进入和离开阶段、调用
+阶段是一个子 Span，同时写一条 `task.stage` 生命周期事件，不占用执行 Span 有限的事件数。进入和离开阶段、调用
 `mark_progress()` 都会重置该执行的 `task.no_progress_age`。
 
 应用自己掌握实际发送调用时，可以观测发送结果；适配器的准备 Span 不代表发送成功：
@@ -153,7 +153,7 @@ instrument_celery(attributes=business_fields)
 
 只返回可以存入 Trace 和日志的编号。框架字段不能被覆盖；回调出错时计入
 `observe.sdk.dropped`，不影响本次执行。Taskiq 的 Worker 和调度进程在 broker 启动时
-声明自己的角色，Worker 同时导出已注册的任务名；Celery 进程池在 `worker_process_init`、
+声明自己的角色，Worker 同时导出已注册的任务名，并为这些任务导出值为 0 的 `task.active`，从未在该 Worker 上执行过的任务因此显示为空闲而不是缺数据；Celery 进程池在 `worker_process_init`、
 Beat 在 `beat_init` 时完成同样的声明。
 
 两种框架均传递标准 W3C 上下文和 baggage。每次框架执行单独开启一条 Trace，通过

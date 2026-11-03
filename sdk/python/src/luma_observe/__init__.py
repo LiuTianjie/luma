@@ -3,7 +3,7 @@
 from .runtime import Configuration, Runtime, TaskRun, configure, current_task, force_flush, get_runtime, shutdown, telemetry_disabled
 from .runtime import SafeInstrument
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __all__ = ["Configuration", "Runtime", "TaskRun", "configure", "get_runtime", "shutdown",
            "current_task", "force_flush", "telemetry_disabled",
            "get_tracer", "get_meter", "span", "task", "publication", "counter", "histogram"]

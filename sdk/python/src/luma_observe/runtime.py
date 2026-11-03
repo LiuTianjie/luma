@@ -186,7 +186,9 @@ class TaskRun:
             return
         fields = _safe(lambda: {**_attributes(attributes, limit=24), "task.name": self._fields.get("task.name", "")}) or {}
         self.mark_progress()
-        self.add_event("task.stage", {"task.stage": str(name)[:128]})
+        # The child span already records the stage on the trace; only the lifecycle
+        # log gets an event, so many stages cannot exhaust the attempt span's event limit.
+        _safe(self._runtime.emit, "task.stage", {**self._fields, "task.stage": str(name)[:128]}, self.span)
         try:
             with self._runtime.span(name, attributes=fields) as span:
                 yield span
@@ -383,12 +385,19 @@ class Runtime:
         """Declare the tasks a worker process serves, exported as task.registered."""
         if not self._live():
             return
+        added = []
         with self._activity_lock:
             for name in names:
                 if len(self._registered) >= _MAX_TASK_KEYS:
                     break
-                self._registered.add((("task.name", str(name)[:256]), ("task.framework", str(framework)[:64]),
-                                      ("task.queue", str(queue)[:256])))
+                key = (("task.name", str(name)[:256]), ("task.framework", str(framework)[:64]), ("task.queue", str(queue)[:256]))
+                if key not in self._registered:
+                    self._registered.add(key)
+                    added.append(dict(key))
+        # A zero point lets "registered but never started here" read as idle,
+        # instead of a missing task.active series that looks like missing data.
+        for labels in added:
+            _safe(self._active.add, 0, labels)
 
     def _observe_heartbeat(self, _options):
         return [metrics.Observation(time.time())] if self._live() else []
