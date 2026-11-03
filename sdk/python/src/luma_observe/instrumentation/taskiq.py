@@ -1,8 +1,9 @@
 """Taskiq hooks with attempt cleanup independent of message and result storage.
 
 Install before retry middleware. The serialized carrier contains only standard
-propagation fields and a private invocation ID; business arguments are not read.
-Broker shutdown flushes shared providers without closing them.
+propagation fields and a private invocation ID. Business arguments are read only
+by an application-supplied ``attributes`` callback. Broker shutdown flushes
+shared providers without closing them.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from luma_observe import force_flush, get_runtime, telemetry_disabled
 from luma_observe.runtime import _activate_task, _deactivate_task
 from luma_observe.instrumentation import (
     _attempt,
+    _enrich,
     _finish_attempt,
     _prepare_carrier,
     _safe,
@@ -59,8 +61,10 @@ class _Invocation:
 class TaskiqMiddleware(BaseMiddleware):
     """Observe tasks without taking ownership of their results, retries or ACKs."""
 
-    def __init__(self):
+    def __init__(self, *, attributes: Callable | None = None):
+        """``attributes(task_name, args, kwargs)`` may return bounded span fields for each attempt."""
         super().__init__()
+        self._attributes = attributes
         self._invocation: ContextVar[_Invocation | None] = ContextVar("luma.observe.taskiq.invocation", default=None)
 
     def _current(self):
@@ -118,7 +122,18 @@ class TaskiqMiddleware(BaseMiddleware):
         _safe(self._finish, invocation, outcome, restore=False)
 
     def startup(self):
-        _safe(get_runtime)
+        """Declare worker or scheduler roles and the worker's registered tasks."""
+        def register():
+            runtime = get_runtime()
+            broker = self.broker
+            queue = str(getattr(broker, "queue_name", "") or "")
+            if getattr(broker, "is_worker_process", False):
+                runtime.register_process("taskiq", "worker", queue)
+                runtime.register_tasks(broker.get_all_tasks().keys(), "taskiq", queue)
+            elif getattr(broker, "is_scheduler_process", False):
+                runtime.register_process("taskiq", "scheduler", queue)
+
+        _safe(register)
 
     def shutdown(self):
         # Linux worker processes can exit through os._exit without atexit.
@@ -148,6 +163,8 @@ class TaskiqMiddleware(BaseMiddleware):
             if owner is not None:
                 invocation.callback = lambda task: self._callback_done(task, invocation)
                 owner.add_done_callback(invocation.callback, context=Context())
+            extra = (_enrich(self._attributes, message.task_name, message.args, message.kwargs)
+                     if self._attributes is not None and get_runtime().enabled else None)
             invocation.execution_context.run(
                 _start_attempt,
                 invocation,
@@ -157,6 +174,7 @@ class TaskiqMiddleware(BaseMiddleware):
                 task_id=str(message.task_id),
                 retries=int(message.labels.get("_retries", 0)),
                 carrier=message.labels,
+                extra=extra,
             )
             attempt = _attempt(invocation)
             if attempt is not None:

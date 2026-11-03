@@ -689,3 +689,68 @@ def test_celery_shutdown_signal_uses_bounded_runtime_shutdown(monkeypatch):
         stopped.assert_called_once_with()
     finally:
         instrumentation.uninstrument()
+
+
+@pytest.mark.asyncio
+async def test_taskiq_attribute_callback_and_worker_registration(observed):
+    """Application fields reach the attempt; a failing callback never blocks execution."""
+    _runtime, reader, exporter = observed
+    calls = []
+
+    def attributes(name, args, kwargs):
+        calls.append((name, args, kwargs))
+        if kwargs.get("explode"):
+            raise RuntimeError("application callback bug")
+        return {"document.id": args[0], "messaging.message.id": "spoofed", "ignored": object()}
+
+    middleware = taskiq_hooks.TaskiqMiddleware(attributes=attributes)
+    broker = InMemoryBroker(await_inplace=True).with_middlewares(middleware)
+    broker.is_worker_process = True
+
+    @broker.task(task_name="document.render")
+    async def render(document_id, explode=False):
+        return document_id
+
+    await broker.startup()
+    # InMemoryBroker skips middleware startup; network brokers call it in every process.
+    middleware.startup()
+    try:
+        assert (await (await render.kiq("doc-1")).wait_result()).return_value == "doc-1"
+        assert (await (await render.kiq("doc-2", explode=True)).wait_result()).return_value == "doc-2"
+    finally:
+        await broker.shutdown()
+    assert calls[0] == ("document.render", ("doc-1",), {})
+    attempts = [span for span in exporter.get_finished_spans() if span.name == "document.render"]
+    assert attempts[0].attributes["document.id"] == "doc-1"
+    assert attempts[0].attributes["messaging.message.id"] != "spoofed"
+    assert "ignored" not in attempts[0].attributes
+    assert "document.id" not in attempts[1].attributes
+    assert outcomes(reader) == {"succeeded": 2}
+    registered = {(p.attributes["task.name"], p.attributes["task.framework"]) for p in points(reader, "task.registered")}
+    assert ("document.render", "taskiq") in registered
+    assert [p.attributes["task.role"] for p in points(reader, "task.process.started")] == ["worker"]
+
+
+def test_celery_attribute_callback_and_pool_registration(observed):
+    _runtime, reader, exporter = observed
+    app = Celery("adapter-attributes", broker="memory://", backend="cache+memory://")
+    instrumentation = celery_hooks.instrument_celery(attributes=lambda name, args, kwargs: {"document.id": args[0]}, app=app)
+
+    @app.task(name="document.export")
+    def export(document_id):
+        return document_id
+
+    try:
+        assert export.apply(args=["doc-9"]).get() == "doc-9"
+        instrumentation._worker_started()
+        instrumentation._beat_started()
+    finally:
+        instrumentation.uninstrument()
+        celery_hooks.instrument_celery().uninstrument()
+        app.close()
+    span = next(span for span in exporter.get_finished_spans() if span.name == "document.export")
+    assert span.attributes["document.id"] == "doc-9"
+    names = {p.attributes["task.name"] for p in points(reader, "task.registered")}
+    assert "document.export" in names and not any(name.startswith("celery.") for name in names)
+    assert sorted(p.attributes["task.role"] for p in points(reader, "task.process.started")) == ["scheduler", "worker"]
+    assert celery_hooks.instrument_celery().attributes is None

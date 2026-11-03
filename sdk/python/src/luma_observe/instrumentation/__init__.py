@@ -7,13 +7,14 @@ import os
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 from opentelemetry import context, propagate, trace
 from opentelemetry.context import Context
 from opentelemetry.trace import Link, SpanKind
 
 from luma_observe import get_runtime, telemetry_disabled
+from luma_observe.runtime import _note_error
 
 
 ENQUEUED_AT = "luma.observe.enqueued_at"
@@ -25,7 +26,20 @@ def _safe(callback, *args, **kwargs):
     try:
         return callback(*args, **kwargs)
     except Exception:
+        _note_error()
         return None
+
+
+def _enrich(callback, name: str, args, kwargs) -> Mapping | None:
+    """Ask the application for attempt attributes; its failure never blocks the attempt."""
+    if callback is None:
+        return None
+
+    def call():
+        value = callback(name, tuple(args or ()), dict(kwargs or {}))
+        return dict(value) if isinstance(value, Mapping) else None
+
+    return _safe(call)
 
 
 def _queue_wait(carrier: dict) -> float | None:
@@ -101,6 +115,7 @@ def _start_attempt(
     task_id: str,
     retries: int,
     carrier: dict,
+    extra: Mapping | None = None,
 ) -> None:
     """Open a task context in the actual execution process and keep its owner."""
     if _attempt(owner) is not None:
@@ -123,9 +138,12 @@ def _start_attempt(
         context=execution_context,
         links=[Link(source)] if source.is_valid else (),
         queue_wait_seconds=_queue_wait(carrier),
+        # Framework fields come first: application fields cannot replace them
+        # and are the ones dropped when an attempt exceeds the attribute bound.
         attributes={
             "messaging.message.id": task_id,
             "task.retry.attempt": retries,
+            **{key: value for key, value in (extra or {}).items() if key not in ("messaging.message.id", "task.retry.attempt")},
         },
     )
     manager = _execution_context(manager, execution_context)

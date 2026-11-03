@@ -10,7 +10,7 @@ Python 3.10 or newer is required. See the [Chinese integration guide](docs/integ
 
 ## Install the distribution
 
-The package name is `luma-observe-sdk`, initial source version `0.1.0`.
+The package name is `luma-observe-sdk`, current source version `0.2.0`.
 `Observe SDK Checks` builds wheel/sdist artifacts independently of Control for
 review and validation; expiring CI artifacts are not a permanent dependency source.
 The independent SDK release workflow publishes checked wheel/sdist files and
@@ -24,14 +24,14 @@ with the published asset hash or reviewed, pushed commit.
 To inspect a downloaded wheel, add only the framework extra used by that process:
 
 ```sh
-python -m pip install './luma_observe_sdk-0.1.0-py3-none-any.whl[taskiq]'
+python -m pip install './luma_observe_sdk-0.2.0-py3-none-any.whl[taskiq]'
 # Celery processes use the [celery] extra; processes needing both use [taskiq,celery].
 ```
 
 PyPI publication is optional and disabled unless the repository variable
 `OBSERVE_SDK_PYPI_ENABLED` is `true` and its Trusted Publisher is configured.
 Once that exact version is published there, consumers can use
-`luma-observe-sdk[taskiq]==0.1.0` with their normal package configuration.
+`luma-observe-sdk[taskiq]==0.2.0` with their normal package configuration.
 The existing `v*` Luma release workflow publishes `luma-infra`, not this package.
 
 ## Configure once per process
@@ -87,6 +87,33 @@ exception takes precedence over a successful business classification.
 nested task ends, and returns `None` outside a live task or in an inherited child
 process until that child starts its own attempt.
 
+The final `business_outcome` of an attempt is also counted once in
+`task.business_outcomes`; keep its values to a small application-defined set.
+Long attempts can report progress through stages or explicit marks:
+
+```python
+run = current_task()
+with run.stage("document.render", attributes={"pages": 12}):
+    render_pages()
+run.mark_progress()
+```
+
+A stage is a child span plus a `task.stage` event on the attempt. Entering and
+leaving it, like `mark_progress()`, resets `task.no_progress_age` for that attempt.
+
+Applications that own the transport call can observe the send result, which the
+adapters' preparation spans do not claim:
+
+```python
+from luma_observe import publication
+
+with publication("document.render", framework="taskiq", queue="documents", task_id=message_id):
+    redis.xadd(stream, payload)
+```
+
+It records a producer span, `task.publications` with `outcome` `sent` or `failed`,
+and an optional `task.published` lifecycle event, and re-raises the original error.
+
 `get_tracer()` and `get_meter()` return official OTel instruments from the SDK's
 providers for additional application-defined spans and metrics. Keep custom metric
 dimensions bounded; put execution IDs on spans or structured logs. Direct use of
@@ -134,6 +161,24 @@ observation = instrument_celery()
 
 Call this once during Celery app setup; `observation.uninstrument()` disconnects
 the adapter after tasks drain. Providers initialize in the actual process.
+
+Both adapters read business arguments only through an optional application
+callback. It receives `(task_name, args, kwargs)` and returns span fields for the
+attempt, which also appear in its lifecycle events:
+
+```python
+def business_fields(name, args, kwargs):
+    return {"document.id": kwargs.get("document_id", "")}
+
+TaskiqMiddleware(attributes=business_fields)
+instrument_celery(attributes=business_fields)
+```
+
+Return identifiers that are safe to store in traces and logs. Framework fields
+cannot be replaced, and a failing callback is counted in `observe.sdk.dropped`
+without blocking the attempt. Taskiq worker and scheduler processes declare their
+role at broker startup, and workers export their registered task names. Celery
+pool processes do the same from `worker_process_init`, Beat from `beat_init`.
 Taskiq's default thread pool carries execution context; application functions
 inside a custom process pool need their own initialization/propagation, while the
 receiver's attempt can still be observed. Both adapters propagate standard W3C
@@ -223,6 +268,23 @@ The shared Collector's Prometheus conversion exposes:
 | `worker_heartbeat_seconds` | Exporter process collection time as Unix seconds |
 | `task_oldest_active_age_seconds` | Oldest active attempt age by task name, queue and framework |
 | `task_active_tracking_overflow` | Active attempts beyond the bounded age tracker |
+| `task_no_progress_age_seconds` | Longest time since an active attempt started, changed stage or marked progress |
+| `task_last_started_seconds` | Unix time the process last started the task |
+| `task_last_finished_seconds` | Unix time the process last finished the task, by `outcome` |
+| `task_business_outcomes_total` | Finished attempts by final `task_business_outcome` |
+| `task_publications_total` | Application-observed sends by `outcome` (`sent`, `failed`) |
+| `task_registered` | Tasks a worker process registered with its framework |
+| `task_process_started_seconds` | Process start time for each `task_framework`, `task_role` and `task_queue` |
+| `observe_sdk_dropped_total` | Telemetry discarded inside the SDK, by `reason` |
+
+Last-start and last-finish times stay in the process's memory and are bounded
+like task names (2048 keys). Use the maximum across instances, for example with
+a recording rule, to keep them across worker recycling. `task_registered` and
+`task_process_started_seconds` let a dashboard tell a task without any live
+worker, or a missing scheduler, from an idle one. `observe_sdk_dropped_total`
+counts lifecycle events dropped by the bounded writer queue (`lifecycle_logs`)
+and exceptions the SDK swallowed to protect the application
+(`instrumentation_error`).
 
 Task metric labels are `task_name`, `task_queue` and `task_framework`, plus outcome
 for executions. Standard resource attributes supply `service_name`,

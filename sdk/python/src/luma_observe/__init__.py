@@ -3,10 +3,10 @@
 from .runtime import Configuration, Runtime, TaskRun, configure, current_task, force_flush, get_runtime, shutdown, telemetry_disabled
 from .runtime import SafeInstrument
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["Configuration", "Runtime", "TaskRun", "configure", "get_runtime", "shutdown",
            "current_task", "force_flush", "telemetry_disabled",
-           "get_tracer", "get_meter", "span", "task", "counter", "histogram"]
+           "get_tracer", "get_meter", "span", "task", "publication", "counter", "histogram"]
 
 
 def get_tracer(name="luma.observe"):
@@ -23,6 +23,11 @@ def span(name, **options):
 
 def task(name, **options):
     return get_runtime().task(name, **options)
+
+
+def publication(name, **options):
+    """Observe an application's own transport send for one task message."""
+    return get_runtime().publication(name, **options)
 
 
 def counter(name, *, unit="1", description=""):
