@@ -81,6 +81,29 @@ read access to its fixed routes; it is not a tenant-level authorization layer.
 Use it only from trusted backend services or operator tools, never a browser
 bundle. Luma management credentials are separate.
 
+An application backend that only needs its own data should use a scoped reader
+instead. `LUMA_OBSERVE_SCOPED_READERS` is a JSON list; each entry gives a reader
+`name`, its own `token`, a `namespace` and the Luma `apps` whose logs it may read:
+
+```json
+[{"name": "orders", "token": "<32-512 chars>", "namespace": "orders", "apps": ["orders-workers"]}]
+```
+
+vmauth adds the filters on the server side, and a client cannot override them:
+
+| Signal | Scoped reader access |
+| --- | --- |
+| Metrics `/metrics/api/v1/query`, `query_range` | Only series with `service_namespace=<namespace>` |
+| Logs `/logs/select/logsql/query` | Only streams whose `app` is listed in `apps` |
+| Traces `/traces/api/traces/<32-hex ID>` | Fetch by exact trace ID; search is not available |
+
+Tempo has no gateway-level filter, so a scoped reader cannot search traces. It can
+fetch a trace whose ID it already holds, normally taken from its own lifecycle logs.
+Trace IDs are random 128-bit values and the reader has no way to list other
+applications' IDs, but a leaked ID is readable; the application should still check
+that returned spans carry its own `service.namespace`. Every credential, scoped or
+not, must be distinct.
+
 Enable each needed role explicitly in the deployment's
 `observe/docker-compose.yml`, replacing that role's empty environment value:
 
