@@ -1,6 +1,6 @@
 ---
 name: luma-observe
-description: Deploy and operate the independent Luma application observability stack (Traefik RED, Nomad alloc failures, OTLP, Feishu). Use for luma-observe, application-level alerts, Traefik metrics/OTLP, log-to-metric questions, or when the user wants app alerts without changing Luma Control.
+description: Deploy, operate and diagnose the independent Luma observability stack, including missing telemetry, intermittent Metrics/Logs/Trace queries, Grafana authentication or unavailable dashboards, OTLP ingestion and application alerts. For one application's task or Trace ID investigation, use luma-logs.
 ---
 
 # luma-observe
@@ -8,6 +8,11 @@ description: Deploy and operate the independent Luma application observability s
 For read-only investigation of an application's errors and historical logs, use
 `luma-logs` and `luma app log-query`. This skill owns the observability stack's
 deployment and operation, not routine application log analysis.
+
+For intermittent missing metrics, unavailable dashboards, query limits or a
+suspected overloaded collector/store, start with the read-only workflow in
+[platform diagnosis](references/diagnosis.md). It separates query, authentication,
+ingestion and resource evidence before selecting a fix.
 
 Application telemetry collection and storage live in the optional `observe/` Compose stack. Control also has built-in application alert presets that read its metrics; these are separate from the stack's vmalert/Alertmanager rules.
 Deploy from that directory through the application's recorded workflow. Control's resource monitoring and alerting keep working if observe is absent.
