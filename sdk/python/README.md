@@ -10,7 +10,7 @@ Python 3.10 or newer is required. See the [Chinese integration guide](docs/integ
 
 ## Install the distribution
 
-The package name is `luma-observe-sdk`, current source version `0.5.1`.
+The package name is `luma-observe-sdk`, current source version `0.6.0`.
 `Observe SDK Checks` builds wheel/sdist artifacts independently of Control for
 review and validation; expiring CI artifacts are not a permanent dependency source.
 The independent SDK release workflow publishes checked wheel/sdist files and
@@ -24,14 +24,14 @@ with the published asset hash or reviewed, pushed commit.
 To inspect a downloaded wheel, add only the framework extra used by that process:
 
 ```sh
-python -m pip install './luma_observe_sdk-0.5.1-py3-none-any.whl[taskiq]'
+python -m pip install './luma_observe_sdk-0.6.0-py3-none-any.whl[taskiq]'
 # Celery processes use the [celery] extra; processes needing both use [taskiq,celery].
 ```
 
 PyPI publication is optional and disabled unless the repository variable
 `OBSERVE_SDK_PYPI_ENABLED` is `true` and its Trusted Publisher is configured.
 Once that exact version is published there, consumers can use
-`luma-observe-sdk[taskiq]==0.5.1` with their normal package configuration.
+`luma-observe-sdk[taskiq]==0.6.0` with their normal package configuration.
 The existing `v*` Luma release workflow publishes `luma-infra`, not this package.
 
 ## Configure once per process
@@ -103,6 +103,15 @@ counted. For batches where one failed item should decide the attempt, use
 declaration. Undeclared values rank last, and among equal ranks the latest wins,
 so without a declaration it behaves like assigning `business_outcome`.
 
+Applications that also need an event and error sampling can call
+`record_business_outcome("failed", status="rejected", failed=True,
+error_type="provider_error")`. The SDK applies the configured priority, records
+the status and lifecycle event, and marks the current task span as an error when
+the caller sets `failed=True`. Passing `None` as the outcome records only the
+optional status. Calls outside a task are no-ops; instrumentation errors preserve
+application return values and exceptions. Business status-to-outcome mapping
+remains in the application.
+
 Long attempts can report progress through stages or explicit marks. The
 module-level helpers work anywhere: inside an observed attempt they record, and
 outside one they simply run the code, so business functions need no guards:
@@ -152,6 +161,15 @@ details are opt-in; default error recording keeps only the type. Exception logs
 use the same bounded asynchronous queue and existing log sink. Application
 `logger.exception(...)` calls keep their normal behavior. No logging filter,
 business exception wrapper or application-owned stage recorder is required.
+
+## Query existing telemetry
+
+The optional `[query]` extra provides `luma_observe.query.ObserveClient` for
+bounded asynchronous Metrics, lifecycle, error log and Trace reads. The SDK owns
+protocol decoding, pagination and Trace correlation; applications supply their
+scope, metric expressions, business field aliases and authorization. Querying
+starts no collection runtime and creates no service or storage. See the
+[query client guide](docs/querying.md).
 
 Applications that own the transport call can observe the send result, which the
 adapters' preparation spans do not claim:
@@ -405,7 +423,7 @@ read APIs, authentication and extension delivery.
 From the Luma repository root, in an isolated Python environment:
 
 ```sh
-python -m pip install -e './sdk/python[taskiq,celery,test]'
+python -m pip install -e './sdk/python[taskiq,celery,query,test]'
 bash scripts/check-observe-sdk.sh --output-dir /tmp/luma-observe-sdk-dist
 ```
 

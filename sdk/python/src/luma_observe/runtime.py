@@ -166,6 +166,21 @@ class TaskRun:
     def set_business_status(self, value: str) -> None:
         self.business_status = value
 
+    def record_business_outcome(self, outcome: str | None, *, status: str | None = None,
+                                failed: bool = False, error_type: str = "") -> None:
+        """Record the caller's classification using configured priority and SDK events."""
+        if self._finished or self.pid != os.getpid():
+            return
+        if status is not None:
+            self.business_status = status
+        if outcome is None:
+            return
+        self.escalate_business_outcome(outcome)
+        if failed:
+            _safe(self.span.set_status, trace.StatusCode.ERROR)
+            _safe(self.span.set_attribute, "error.type", error_type[:256])
+        _safe(self.add_event, "business_outcome", {"outcome": outcome, "error_type": error_type})
+
     def record_error(self, exception: BaseException) -> None:
         """Record failure types and associate opt-in details with this attempt."""
         if self._finished or self.pid != os.getpid():
@@ -282,6 +297,14 @@ def current_task() -> TaskRun | None:
     """Return this execution context's live attempt, without initializing the SDK."""
     run = _current_task.get()
     return run if run is not None and run.pid == os.getpid() and not run._finished else None
+
+
+def record_business_outcome(outcome: str | None, *, status: str | None = None,
+                            failed: bool = False, error_type: str = "") -> None:
+    """Record application-owned outcome/status without changing task control flow."""
+    run = _safe(current_task)
+    if run is not None:
+        _safe(run.record_business_outcome, outcome, status=status, failed=failed, error_type=error_type)
 
 
 @contextmanager

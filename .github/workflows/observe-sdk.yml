@@ -75,7 +75,7 @@ jobs:
 
       - name: Install SDK and validation dependencies
         run: >-
-          python -m pip install -e "./sdk/python[taskiq,celery,test]"
+          python -m pip install -e "./sdk/python[taskiq,celery,query,test]"
           "opentelemetry-sdk${{ matrix.otel }}"
           "opentelemetry-exporter-otlp-proto-http${{ matrix.otel }}"
 

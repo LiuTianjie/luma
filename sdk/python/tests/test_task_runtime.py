@@ -5,6 +5,7 @@ from contextvars import copy_context
 from dataclasses import replace
 import importlib
 import os
+import queue
 import select
 import signal
 import threading
@@ -89,6 +90,47 @@ def test_business_success_cannot_mask_framework_failure_and_original_exception(o
     assert len(span.attributes["task.business.status"]) == 256
     assert span.status.status_code is trace.StatusCode.ERROR
     assert observe.current_task() is None
+
+
+def test_record_business_outcome_owns_priority_status_error_and_events(observed):
+    runtime, exporter, reader = observed
+    runtime.configuration = replace(runtime.configuration, business_outcomes=("failed", "review", "done"))
+    runtime._events = queue.Queue(maxsize=256)
+    with runtime.task("convert"):
+        observe.record_business_outcome("failed", status="rejected", failed=True, error_type="provider_error")
+        observe.record_business_outcome("done")
+        observe.record_business_outcome(None, status="checked")
+    span = exporter.get_finished_spans()[0]
+    assert span.attributes["task.business.outcome"] == "failed"
+    assert span.attributes["task.business.status"] == "checked"
+    assert span.status.status_code is trace.StatusCode.ERROR
+    assert span.attributes["error.type"] == "provider_error" and span.attributes["task.outcome"] == "succeeded"
+    records = [item for item in runtime._events.queue if item["event"] == "business_outcome"]
+    assert [item["attributes"]["outcome"] for item in records] == ["failed", "done"]
+    assert all(item["trace_id"] == format(span.context.trace_id, "032x") for item in records)
+    assert [(point.attributes["task.business.outcome"], point.value)
+            for point in points(reader, "task.business_outcomes")] == [("failed", 1)]
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_business_recording_fault_preserves_return_or_original_error(observed, monkeypatch, fails):
+    runtime, _exporter, _reader = observed
+    monkeypatch.setattr(module.TaskRun, "record_business_outcome", Mock(side_effect=RuntimeError("hook unavailable")))
+    original, returned = ValueError("business error"), object()
+
+    def execute():
+        with runtime.task("convert"):
+            observe.record_business_outcome("failed", failed=True)
+            if fails:
+                raise original
+            return returned
+
+    if fails:
+        with pytest.raises(ValueError) as caught:
+            execute()
+        assert caught.value is original
+    else:
+        assert execute() is returned
 
 
 @pytest.mark.asyncio
