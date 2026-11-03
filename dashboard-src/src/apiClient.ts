@@ -45,6 +45,33 @@ export async function apiGet<T = Record<string, unknown>>(path: string, token: s
   return readJson<T>(response);
 }
 
+export class GrafanaReadError extends Error {
+  readonly status: number;
+
+  constructor(status: number) {
+    super(`Grafana HTTP ${status}`);
+    this.status = status;
+  }
+}
+
+// Use Grafana's session rotation protocol before repeating a read once.
+// One AbortSignal bounds the original read, rotation and retry together.
+export async function grafanaGet<T>(path: string, token: string, signal: AbortSignal): Promise<T> {
+  if (!path.startsWith("/grafana/")) throw new Error("Expected a local Grafana path");
+  const options = { headers: authHeaders(token), signal };
+  let response = await fetch(path, options);
+  if (response.status === 401) {
+    const failure = await response.clone().json().catch(() => null);
+    if (failure?.messageId === "session.token.rotate") {
+      const rotated = await fetch("/grafana/api/user/auth-tokens/rotate", { ...options, method: "POST" });
+      if (!rotated.ok) throw new GrafanaReadError(rotated.status);
+      response = await fetch(path, options);
+    }
+  }
+  if (!response.ok) throw new GrafanaReadError(response.status);
+  return readJson<T>(response);
+}
+
 export async function apiPost<T = Record<string, unknown>>(path: string, token: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, {
     method: "POST",

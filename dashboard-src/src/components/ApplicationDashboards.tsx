@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { apiGet } from "../apiClient";
+import { grafanaGet, GrafanaReadError } from "../apiClient";
 import { useRouter } from "../router";
 import type { Lang } from "../types";
 import { AlertCircle, ExternalLink, LayoutDashboard, RefreshCw } from "@/components/icons";
@@ -20,6 +20,7 @@ import "./ObservabilityPanel.css";
 type DashboardList = {
   status: "loading" | "ready" | "error";
   dashboards: ApplicationDashboard[];
+  failure?: "unauthorized" | "timeout" | "unavailable";
 };
 
 export function ApplicationDashboards({ app, lang, token }: { app: string; lang: Lang; token: string }) {
@@ -34,13 +35,16 @@ export function ApplicationDashboards({ app, lang, token }: { app: string; lang:
     let disposed = false;
     const deadline = window.setTimeout(() => controller.abort(), 8000);
     setList({ status: "loading", dashboards: [] });
-    void apiGet<unknown>(applicationDashboardSearchPath(app), token, controller.signal)
+    void grafanaGet<unknown>(applicationDashboardSearchPath(app), token, controller.signal)
       .then((payload) => {
         const dashboards = readApplicationDashboards(payload, app);
         if (!disposed) setList({ status: "ready", dashboards });
       })
-      .catch(() => {
-        if (!disposed) setList({ status: "error", dashboards: [] });
+      .catch((error) => {
+        if (disposed) return;
+        const unauthorized = error instanceof GrafanaReadError && [401, 403].includes(error.status);
+        setList({ status: "error", dashboards: [], failure: controller.signal.aborted ? "timeout"
+          : unauthorized ? "unauthorized" : "unavailable" });
       })
       .finally(() => window.clearTimeout(deadline));
     return () => {
@@ -99,7 +103,11 @@ export function ApplicationDashboards({ app, lang, token }: { app: string; lang:
             <AlertCircle />
             <AlertTitle>{zh ? "暂时无法加载看板" : "Dashboards are unavailable"}</AlertTitle>
             <AlertDescription>
-              {zh ? "请确认 Observe 已启用且 Grafana 可以访问，然后刷新列表重试。" : "Check that Observe is enabled and Grafana is reachable, then refresh the list to retry."}
+              {list.failure === "unauthorized"
+                ? (zh ? "登录会话或查询权限已失效，请重新登录后刷新列表。" : "The session or query permission has expired. Sign in again, then refresh the list.")
+                : list.failure === "timeout"
+                  ? (zh ? "看板查询超时，请稍后刷新列表。" : "The dashboard query timed out. Refresh the list shortly.")
+                  : (zh ? "Grafana 查询暂时失败，请稍后刷新列表；若持续失败，请检查 Observe 服务。" : "The Grafana query failed temporarily. Refresh shortly; if it persists, check the Observe service.")}
             </AlertDescription>
           </Alert>
         )}
