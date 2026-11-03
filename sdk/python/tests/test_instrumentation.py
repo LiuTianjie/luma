@@ -3,12 +3,14 @@
 import asyncio
 from copy import deepcopy
 import functools
+import gc
 import json
 import os
 import subprocess
 import sys
 from types import MappingProxyType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
+import weakref
 
 import pytest
 from celery import Celery, signals
@@ -879,6 +881,39 @@ def test_celery_uninstrument_keeps_a_sender_wrapper_added_later(observed):
     sent = {p.attributes["task.name"]: p.value for p in points(reader, "task.publications")}
     assert sent == {"document.first": 1, "document.again": 1}
     assert app.amqp.send_task_message is business and celery is not business
+
+
+def test_celery_reinstrument_under_opaque_wrapper_counts_each_send_once(observed):
+    _runtime, reader, _exporter = observed
+    app = Celery("adapter-opaque-wrapper", broker="memory://")
+    celery_hooks.instrument_celery(app=app, publications=True)
+    inner = app.amqp.send_task_message
+    # No functools.wraps: the SDK cannot see that this wrapper still calls its layer.
+    app.amqp.send_task_message = lambda *args, **kwargs: inner(*args, **kwargs)
+    instrumentation = celery_hooks.instrument_celery(app=app, publications=True)
+    try:
+        app.send_task("document.opaque")
+    finally:
+        instrumentation.uninstrument()
+        celery_hooks.instrument_celery().uninstrument()
+        app.close()
+    assert [p.value for p in points(reader, "task.publications")] == [1]
+
+    # Celery holds its current app itself; only the SDK's references are under test.
+    released = Celery("adapter-released", broker="memory://", set_as_current=False)
+    celery_hooks.instrument_celery(app=released, publications=True)
+
+    def wrap_later(sender):
+        return functools.wraps(sender)(lambda *args, **kwargs: sender(*args, **kwargs))
+
+    released.amqp.send_task_message = wrap_later(released.amqp.send_task_message)
+    # Under a later wrapper the SDK keeps its pass-through state; it must not pin the app.
+    celery_hooks.instrument_celery().uninstrument()
+    reference = weakref.ref(released)
+    released.close()
+    del released
+    gc.collect()
+    assert reference() is None
 
 
 @pytest.mark.asyncio

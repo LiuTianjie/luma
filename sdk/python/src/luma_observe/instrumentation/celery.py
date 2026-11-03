@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import functools
 import sys
-import weakref
 from typing import Callable
 
 from celery import current_app, signals
@@ -25,9 +24,9 @@ from luma_observe.instrumentation import (
 
 
 _instrumentation = None
-# Each app's SDK sender state. Identity, not attributes that functools.wraps copies,
-# decides whether restoring is safe.
-_senders = weakref.WeakKeyDictionary()
+# The app's SDK sender state, kept in the app's own __dict__ so it lives and dies with
+# the app. Wrapper identity, not attributes functools.wraps copies, decides restoring.
+_SENDER_STATE = "_luma_observe_sender"
 
 
 def _routing_key(app, options) -> str:
@@ -86,10 +85,14 @@ def _calls(sender, wrapper) -> bool:
 def _observe_sender(app) -> None:
     """Wrap the app's actual sender: Celery signals cannot report a failed send."""
     amqp = app.amqp
-    state = _senders.get(app)
-    if state is not None and _calls(amqp.send_task_message, state["wrapper"]):
-        state["active"] = True
-        return
+    state = vars(app).get(_SENDER_STATE)
+    if state is not None:
+        if _calls(amqp.send_task_message, state["wrapper"]):
+            state["active"] = True
+            return
+        # A later wrapper without __wrapped__ may still call the old layer; keep it
+        # passing through so the new outer wrapper records each send once.
+        state["active"] = False
     original = amqp.send_task_message
     state = {"original": original, "active": True}
 
@@ -110,7 +113,7 @@ def _observe_sender(app) -> None:
         return result
 
     state["wrapper"] = send_task_message
-    _senders[app] = state
+    vars(app)[_SENDER_STATE] = state
     amqp.send_task_message = send_task_message
 
 
@@ -120,13 +123,13 @@ def _restore_sender(app) -> None:
     A component that wrapped the sender later keeps its wrapper; the SDK layer under
     it only stops recording.
     """
-    state = _senders.get(app)
+    state = vars(app).get(_SENDER_STATE)
     if state is None:
         return
     state["active"] = False
     if app.amqp.send_task_message is state["wrapper"]:
         app.amqp.send_task_message = state["original"]
-        del _senders[app]
+        del vars(app)[_SENDER_STATE]
 
 
 class CeleryInstrumentation:
