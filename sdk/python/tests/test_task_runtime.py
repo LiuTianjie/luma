@@ -394,7 +394,8 @@ def test_progress_stage_last_times_and_business_outcome(observed, monkeypatch):
     root = next(span for span in exporter.get_finished_spans() if span.name == "render")
     assert stage.parent.span_id == root.context.span_id
     assert stage.attributes["pages"] == 3 and stage.attributes["task.name"] == "render"
-    assert [event.name for event in root.events] == ["task.stage"]
+    # Stages live on child spans and lifecycle logs, not as attempt span events.
+    assert not root.events
 
 
 def test_publication_counts_outcomes_and_preserves_exception(observed):
@@ -430,6 +431,8 @@ def test_registration_dropped_counters_and_lifecycle_identity(monkeypatch, caplo
         runtime.register_process("taskiq", "worker", "documents")
         runtime.register_tasks(["render", "index", "beyond-bound"], "taskiq", "documents")
         assert {p.attributes["task.name"] for p in points(reader, "task.registered")} == {"render", "index"}
+        idle = {p.attributes["task.name"]: p.value for p in points(reader, "task.active")}
+        assert idle == {"render": 0, "index": 0}
         roles = points(reader, "task.process.started")
         assert [dict(p.attributes) for p in roles] == [{"task.framework": "taskiq", "task.role": "worker", "task.queue": "documents"}]
         assert roles[0].value == runtime.started_at

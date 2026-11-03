@@ -10,7 +10,7 @@ Python 3.10 or newer is required. See the [Chinese integration guide](docs/integ
 
 ## Install the distribution
 
-The package name is `luma-observe-sdk`, current source version `0.2.0`.
+The package name is `luma-observe-sdk`, current source version `0.2.1`.
 `Observe SDK Checks` builds wheel/sdist artifacts independently of Control for
 review and validation; expiring CI artifacts are not a permanent dependency source.
 The independent SDK release workflow publishes checked wheel/sdist files and
@@ -24,14 +24,14 @@ with the published asset hash or reviewed, pushed commit.
 To inspect a downloaded wheel, add only the framework extra used by that process:
 
 ```sh
-python -m pip install './luma_observe_sdk-0.2.0-py3-none-any.whl[taskiq]'
+python -m pip install './luma_observe_sdk-0.2.1-py3-none-any.whl[taskiq]'
 # Celery processes use the [celery] extra; processes needing both use [taskiq,celery].
 ```
 
 PyPI publication is optional and disabled unless the repository variable
 `OBSERVE_SDK_PYPI_ENABLED` is `true` and its Trusted Publisher is configured.
 Once that exact version is published there, consumers can use
-`luma-observe-sdk[taskiq]==0.2.0` with their normal package configuration.
+`luma-observe-sdk[taskiq]==0.2.1` with their normal package configuration.
 The existing `v*` Luma release workflow publishes `luma-infra`, not this package.
 
 ## Configure once per process
@@ -98,7 +98,8 @@ with run.stage("document.render", attributes={"pages": 12}):
 run.mark_progress()
 ```
 
-A stage is a child span plus a `task.stage` event on the attempt. Entering and
+A stage is a child span plus a `task.stage` lifecycle event; it does not use the
+attempt span's bounded event list. Entering and
 leaving it, like `mark_progress()`, resets `task.no_progress_age` for that attempt.
 
 Applications that own the transport call can observe the send result, which the
@@ -177,7 +178,9 @@ instrument_celery(attributes=business_fields)
 Return identifiers that are safe to store in traces and logs. Framework fields
 cannot be replaced, and a failing callback is counted in `observe.sdk.dropped`
 without blocking the attempt. Taskiq worker and scheduler processes declare their
-role at broker startup, and workers export their registered task names. Celery
+role at broker startup, and workers export their registered task names with a
+`task.active` value of 0, so a task that never started in that worker reads as
+idle rather than missing. Celery
 pool processes do the same from `worker_process_init`, Beat from `beat_init`.
 Taskiq's default thread pool carries execution context; application functions
 inside a custom process pool need their own initialization/propagation, while the
