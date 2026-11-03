@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import atexit
+import functools
+import inspect
 import json
 import logging
 import math
 import os
 import queue
+import sys
 import threading
 import time
 import uuid
@@ -33,6 +36,8 @@ from .process import ProcessMetricExporter, ProcessSpanExporter, register_provid
 _EVENT_LOG = logging.getLogger("luma_observe.events")
 _BUCKETS = (0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 7200)
 _OUTCOMES = frozenset(("succeeded", "failed", "retrying", "skipped", "cancelled"))
+# Default severity for escalate_business_outcome, most severe first.
+BUSINESS_SEVERITY = ("failed", "needs_review", "retrying", "partial", "waiting", "succeeded")
 _MAX_ACTIVE_RUNS = 8192
 _MAX_TASK_KEYS = 2048
 _OVERFLOW = object()
@@ -142,6 +147,18 @@ class TaskRun:
     def set_business_outcome(self, value: str) -> None:
         self.business_outcome = value
 
+    def escalate_business_outcome(self, value: str, order: Sequence[str] = BUSINESS_SEVERITY) -> None:
+        """Keep the most severe value seen in this attempt, e.g. one failed item in a batch.
+
+        ``order`` lists outcomes from most to least severe; unknown values rank lowest.
+        """
+        if not isinstance(value, str):
+            return
+        rank = {item: index for index, item in enumerate(order)}
+        current = self.business_outcome
+        if current is None or rank.get(value, len(rank)) <= rank.get(current, len(rank)):
+            self.business_outcome = value
+
     def set_business_status(self, value: str) -> None:
         self.business_status = value
 
@@ -196,10 +213,70 @@ class TaskRun:
             self.mark_progress()
 
 
+def _attach_stream_handler(stream_name: str) -> None:
+    """Route lifecycle JSON to stdout or stderr once, without touching the root logger."""
+    stream = sys.stdout if stream_name == "stdout" else sys.stderr
+    if any(getattr(handler, "_luma_observe_stream", None) == stream_name for handler in _EVENT_LOG.handlers):
+        return
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    handler._luma_observe_stream = stream_name
+    _EVENT_LOG.addHandler(handler)
+    _EVENT_LOG.setLevel(logging.INFO)
+    _EVENT_LOG.propagate = False
+
+
 def current_task() -> TaskRun | None:
     """Return this execution context's live attempt, without initializing the SDK."""
     run = _current_task.get()
     return run if run is not None and run.pid == os.getpid() and not run._finished else None
+
+
+@contextmanager
+def stage(name: str, attributes: Mapping | None = None):
+    """Run ``TaskRun.stage`` for the current attempt; outside a task the body runs unobserved.
+
+    Instrumentation failures on entry or exit are swallowed; the body's own
+    return value and exceptions are unchanged.
+    """
+    run = current_task()
+    manager = _safe(run.stage, name, attributes) if run is not None else None
+    span = _safe(manager.__enter__) if manager is not None else None
+    if span is None:
+        yield trace.INVALID_SPAN
+        return
+    try:
+        yield span
+    except BaseException:
+        _safe(manager.__exit__, *sys.exc_info())
+        raise
+    else:
+        _safe(manager.__exit__, None, None, None)
+
+
+def observed_stage(name: str, attributes: Mapping | None = None):
+    """Decorate a sync or async function so each call runs inside ``stage(name)``."""
+    def decorate(function):
+        if inspect.iscoroutinefunction(function):
+            @functools.wraps(function)
+            async def async_wrapper(*args, **kwargs):
+                with stage(name, attributes):
+                    return await function(*args, **kwargs)
+            return async_wrapper
+
+        @functools.wraps(function)
+        def sync_wrapper(*args, **kwargs):
+            with stage(name, attributes):
+                return function(*args, **kwargs)
+        return sync_wrapper
+    return decorate
+
+
+def mark_progress() -> None:
+    """Reset the current attempt's ``task.no_progress_age``; no-op outside a task."""
+    run = current_task()
+    if run is not None:
+        run.mark_progress()
 
 
 def _activate_task(run: TaskRun):
@@ -301,6 +378,8 @@ class Runtime:
             self._publications = meter.create_counter("task.publications", unit="1")
             self._business_outcomes = meter.create_counter("task.business_outcomes", unit="1")
             if configuration.lifecycle_logs:
+                if configuration.log_stream:
+                    _attach_stream_handler(configuration.log_stream)
                 self._events = queue.Queue(maxsize=256)
                 self._writer = threading.Thread(target=self._write_events, name="luma-observe-events", daemon=True)
                 self._writer.start()

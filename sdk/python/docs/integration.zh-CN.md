@@ -6,7 +6,7 @@ SDK 不导入 Luma Control、Django、业务模型或数据库。
 
 ## 安装与版本
 
-Python 要求为 3.10 及以上。当前源码版本是 `0.2.1`，独立的 `Observe SDK Checks`
+Python 要求为 3.10 及以上。当前源码版本是 `0.3.0`，独立的 `Observe SDK Checks`
 工作流构建 wheel 和 sdist，用于审核与验证；CI 工件会过期，不作为长期依赖来源。
 稳定分发方式见[独立 SDK 发版指南](releasing.md)：消费方锁定已发布版本，或使用包含
 SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装的远程 SHA；指南中的
@@ -15,12 +15,12 @@ SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装�
 如需检查下载的 wheel，可以选择对应框架 extra：
 
 ```sh
-python -m pip install './luma_observe_sdk-0.2.1-py3-none-any.whl[taskiq]'
+python -m pip install './luma_observe_sdk-0.3.0-py3-none-any.whl[taskiq]'
 ```
 
 Celery 进程使用 `[celery]`，同时运行两种框架的镜像使用 `[taskiq,celery]`。
 包 PyPI 发布是独立步骤；发布完成后，消费方可通过自己的包配置安装
-`luma-observe-sdk[taskiq]==0.2.1`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
+`luma-observe-sdk[taskiq]==0.3.0`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
 
 ## 地址、凭证与开关
 
@@ -71,17 +71,27 @@ def mark_review_required():
 `None`，fork 子进程也不会继承父任务。
 
 每次执行最终的 `business_outcome` 会计入一次 `task.business_outcomes`，取值应限定在
-应用自己的一小组枚举内。长任务可以用阶段或显式标记报告进展：
+应用自己的一小组枚举内。长任务可以用阶段或显式标记报告进展。模块级接口在任何位置都能直接调用：
+在被观测的执行内会记录，在执行外只是正常运行业务代码，业务函数不需要自己判断：
 
 ```python
-run = current_task()
-with run.stage("document.render", attributes={"pages": 12}):
+from luma_observe import mark_progress, observed_stage, stage
+
+@observed_stage("document.prepare")
+def prepare(document): ...
+
+with stage("document.render", attributes={"pages": 12}):
     render_pages()
-run.mark_progress()
+mark_progress()
 ```
 
 阶段是一个子 Span，同时写一条 `task.stage` 生命周期事件，不占用执行 Span 有限的事件数。进入和离开阶段、调用
-`mark_progress()` 都会重置该执行的 `task.no_progress_age`。
+`mark_progress()` 都会重置该执行的 `task.no_progress_age`。埋点出错不会改变被包装函数的返回值或异常。
+`current_task()` 返回的 `TaskRun` 上仍保留 `stage()` 和 `mark_progress()`。
+
+批量处理中某一项失败就应当决定整次执行时，使用 `run.escalate_business_outcome(value)`：它保留本次执行中
+最严重的值，默认顺序为 `BUSINESS_SEVERITY`（`failed`、`needs_review`、`retrying`、`partial`、`waiting`、
+`succeeded`），应用也可以传入自己的顺序。
 
 应用自己掌握实际发送调用时，可以观测发送结果；适配器的准备 Span 不代表发送成功：
 
@@ -141,11 +151,12 @@ observation = instrument_celery()
 同一任务选择一套适配器，避免同时安装 contrib `CeleryInstrumentor` 产生重复记录。
 
 两种适配器只通过应用提供的可选回调读取业务参数。回调接收
-`(task_name, args, kwargs)`，返回的字段写入本次执行的 Span 和生命周期事件：
+`(task_name, args, kwargs)`，返回的字段写入本次执行的 Span 和生命周期事件。回调声明了 `arguments`
+参数时，还会收到按任务函数参数名绑定好的调用参数，位置参数和关键字参数的调用结果一致：
 
 ```python
-def business_fields(name, args, kwargs):
-    return {"document.id": kwargs.get("document_id", "")}
+def business_fields(name, args, kwargs, arguments):
+    return {"document.id": str(arguments.get("document_id", ""))}
 
 TaskiqMiddleware(attributes=business_fields)
 instrument_celery(attributes=business_fields)
@@ -244,19 +255,15 @@ Broker 队列健康或为空；积压数量和最老未消费消息时长仍由�
 
 默认 Trace 缓冲 512 条、每批 64 条、每 5 秒导出，Metrics 每 30 秒导出；HTTP 导出预算
 1.5 秒，退出预算 2 秒。`lifecycle_logs=True` 可启用有界后台 JSON 日志，使用
-`luma_observe.events` 的 INFO 日志及应用已有的 handler。应用将该 logger 路由到 stdout
-后，可由已有 Nomad 采集通道接收。独立进程可在启动时配置：
+`luma_observe.events` 的 INFO 日志。需要由已有 Nomad 采集通道接收时，让 SDK 直接写到 stdout：
 
 ```python
-import logging
-import sys
 from luma_observe import configure
 
-logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(message)s")
-configure(lifecycle_logs=True)
+configure(lifecycle_logs=True, log_stream="stdout")
 ```
 
-已有应用将该 logger 加入自己的日志配置即可。应用最终退出时调用 `shutdown()`，SDK
+`log_stream=None`（默认）时，日志走应用自己为该 logger 配置的 handler。应用最终退出时调用 `shutdown()`，SDK
 也注册了 atexit；Celery 使用进程退出信号。关闭单个 Taskiq broker 会执行有界
 `force_flush()`，不会停止其他 broker 共享的遥测。应用也可在已知 Worker 退出前调用
 `force_flush(timeout=2)`：它返回队列 flush 是否在预算内完成，不初始化缺失的运行时，

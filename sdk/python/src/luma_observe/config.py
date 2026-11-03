@@ -17,6 +17,9 @@ class Configuration:
     enabled: bool | None = None
     resource_attributes: Mapping | None = None
     lifecycle_logs: bool = False
+    # "stdout"/"stderr" makes the SDK write lifecycle JSON there itself; None uses the
+    # application's own logging configuration for the luma_observe.events logger.
+    log_stream: str | None = None
     queue_size: int = 512
     batch_size: int = 64
     export_interval_ms: int = 5000
@@ -58,3 +61,5 @@ class Configuration:
             raise ValueError("export intervals exceed SDK bounds")
         if not 0 < self.export_timeout_seconds <= 10 or not 0 < self.shutdown_timeout_seconds <= 10:
             raise ValueError("export and shutdown timeouts must be between 0 and 10 seconds")
+        if self.log_stream not in (None, "stdout", "stderr"):
+            raise ValueError("log_stream must be stdout, stderr or None")

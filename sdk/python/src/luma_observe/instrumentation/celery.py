@@ -88,7 +88,7 @@ class CeleryInstrumentation:
                 return
             request = target.request
             delivery = request.delivery_info or {}
-            extra = (_enrich(self.attributes, target.name, args, kwargs)
+            extra = (_enrich(self.attributes, target.name, args, kwargs, function=getattr(target, "run", None))
                      if self.attributes is not None and get_runtime().enabled else None)
             _start_attempt(
                 request,

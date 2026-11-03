@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import math
 import os
 import time
@@ -30,13 +31,34 @@ def _safe(callback, *args, **kwargs):
         return None
 
 
-def _enrich(callback, name: str, args, kwargs) -> Mapping | None:
+def _wants_arguments(callback) -> bool:
+    """Pass bound arguments only to callbacks that declare an ``arguments`` parameter."""
+    try:
+        return "arguments" in inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _bind(function, args, kwargs) -> dict:
+    """Map positional and keyword values to the task function's parameter names."""
+    target = inspect.unwrap(function) if function is not None else None
+    if target is None:
+        return dict(kwargs or {})
+    try:
+        bound = inspect.signature(target).bind_partial(*(args or ()), **(kwargs or {}))
+    except (TypeError, ValueError):
+        return dict(kwargs or {})
+    return dict(bound.arguments)
+
+
+def _enrich(callback, name: str, args, kwargs, function=None) -> Mapping | None:
     """Ask the application for attempt attributes; its failure never blocks the attempt."""
     if callback is None:
         return None
 
     def call():
-        value = callback(name, tuple(args or ()), dict(kwargs or {}))
+        options = {"arguments": _bind(function, args, kwargs)} if _wants_arguments(callback) else {}
+        value = callback(name, tuple(args or ()), dict(kwargs or {}), **options)
         return dict(value) if isinstance(value, Mapping) else None
 
     return _safe(call)

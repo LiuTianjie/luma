@@ -1,11 +1,13 @@
 """Optional, business-agnostic OpenTelemetry application integration."""
 
 from .runtime import Configuration, Runtime, TaskRun, configure, current_task, force_flush, get_runtime, shutdown, telemetry_disabled
+from .runtime import BUSINESS_SEVERITY, mark_progress, observed_stage, stage
 from .runtime import SafeInstrument
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 __all__ = ["Configuration", "Runtime", "TaskRun", "configure", "get_runtime", "shutdown",
-           "current_task", "force_flush", "telemetry_disabled",
+           "current_task", "force_flush", "telemetry_disabled", "stage", "observed_stage", "mark_progress",
+           "BUSINESS_SEVERITY",
            "get_tracer", "get_meter", "span", "task", "publication", "counter", "histogram"]
 
 
