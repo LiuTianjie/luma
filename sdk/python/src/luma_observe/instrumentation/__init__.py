@@ -40,15 +40,27 @@ def _wants_arguments(callback) -> bool:
 
 
 def _bind(function, args, kwargs) -> dict:
-    """Map positional and keyword values to the task function's parameter names."""
+    """Map positional and keyword values to the task function's parameter names.
+
+    Positional values are named by position, keyword values keep their names, and
+    keywords the signature does not declare are still passed through. A message that
+    no longer matches the current signature therefore still yields what can be named.
+    """
+    kwargs = dict(kwargs or {})
     target = inspect.unwrap(function) if function is not None else None
     if target is None:
-        return dict(kwargs or {})
+        return kwargs
     try:
-        bound = inspect.signature(target).bind_partial(*(args or ()), **(kwargs or {}))
+        parameters = list(inspect.signature(target).parameters.values())
     except (TypeError, ValueError):
-        return dict(kwargs or {})
-    return dict(bound.arguments)
+        return kwargs
+    named = {}
+    positional = [parameter for parameter in parameters
+                  if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+    for parameter, value in zip(positional, args or ()):
+        named[parameter.name] = value
+    named.update(kwargs)
+    return named
 
 
 def _enrich(callback, name: str, args, kwargs, function=None) -> Mapping | None:

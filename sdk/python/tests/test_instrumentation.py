@@ -783,6 +783,8 @@ async def test_attribute_callback_receives_bound_arguments_when_declared(observe
     await bind.kiq(document_id="doc-2", mode="slow")
     await legacy_task.kiq("doc-3")
     assert seen == [{"document_id": "doc-1"}, {"document_id": "doc-2", "mode": "slow"}]
+    # A keyword the signature does not declare must not hide the positional binding.
+    assert hooks._bind(bind.original_func, ["doc-4"], {"legacy_flag": True}) == {"document_id": "doc-4", "legacy_flag": True}
     attempts = {span.name: span for span in exporter.get_finished_spans() if span.name.startswith("document.")}
     assert attempts["document.bind"].attributes["document.id"] == "doc-2"
     assert attempts["document.legacy"].attributes["legacy"] == 1
