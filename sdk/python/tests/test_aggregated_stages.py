@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import replace
 import importlib
+import json
 import queue
 from types import SimpleNamespace
 
@@ -75,6 +76,32 @@ def test_overflow_keeps_original_failure_and_one_bounded_exception(aggregated):
     assert len(detail["stacktrace"].encode("utf-8")) <= ERROR_STACK_BYTES
     assert detail["truncated"] is True
     assert next(event for event in span.events if event.name == "task.phases.omitted").attributes["phase.omitted"] == 1
+
+
+def test_changing_attribute_names_stay_bounded_and_preserve_first_failed_item(aggregated):
+    runtime, exporter, _reader = aggregated
+    with runtime.task("batch") as run:
+        for index in range(2000):
+            with observe.stage("read", {f"item.field.{index}": index, "phase.count": -1,
+                                        "task.stage": "caller-value"}, aggregate=True):
+                pass
+        assert len(json.dumps(run._stages.rows)) < 1024
+        row = run._stages.completed()[0][0]
+        assert row["item.field.1999"] == 1999 and "item.field.0" not in row
+        assert row["phase.count"] == 2000 and row["task.stage"] == "read"
+        with pytest.raises(ValueError):
+            with observe.stage("read", {"item.id": "failed"}, aggregate=True):
+                raise ValueError("item failed")
+        with observe.stage("read", {"item.id": "later"}, aggregate=True):
+            pass
+    summary = next(event for event in exporter.get_finished_spans()[0].events
+                   if event.name == "task.phase.finished")
+    assert summary.attributes["phase.count"] == 2002
+    assert summary.attributes["phase.outcome"] == "failed"
+    assert summary.attributes["item.id"] == "failed"
+    first = next(record for record in runtime._events.queue if record["event"] == "task.phase.started")
+    assert first["attributes"]["phase.count"] == 0
+    assert first["attributes"]["task.stage"] == "read"
 
 
 @pytest.mark.parametrize("hook", ["start", "finish", "completed", "claim_failure", "emit", "add_event", "mark_progress", "current_task", "exception_details"])

@@ -57,7 +57,7 @@ class StageSummaries:
                 self.rows[name] = {"task.stage": name, "phase.started_at": time.time(),
                                    "phase.duration_ms": 0.0, "phase.count": 0,
                                    "phase.outcome": "succeeded"}
-                first = {**self.rows[name], **attributes}
+                first = {**attributes, **self.rows[name]}
             return time.monotonic(), first
 
     def finish(self, name: str, started: float | None, attributes: dict, error: dict):
@@ -69,7 +69,7 @@ class StageSummaries:
             row["phase.count"] += 1
             row["phase.finished_at"] = time.time()
             if row["phase.outcome"] != "failed":
-                row.update(attributes)
+                row["attributes"] = attributes
                 if error:
                     row.update({"phase.outcome": "failed", **error})
 
@@ -82,4 +82,6 @@ class StageSummaries:
 
     def completed(self):
         with self.lock:
-            return [dict(row) for row in self.rows.values()], self.omitted
+            return [{**row.get("attributes", {}),
+                     **{key: value for key, value in row.items() if key != "attributes"}}
+                    for row in self.rows.values()], self.omitted

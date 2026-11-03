@@ -6,7 +6,7 @@ SDK 不导入 Luma Control、Django、业务模型或数据库。
 
 ## 安装与版本
 
-Python 要求为 3.10 及以上。当前源码版本是 `0.5.0`，独立的 `Observe SDK Checks`
+Python 要求为 3.10 及以上。当前源码版本是 `0.5.1`，独立的 `Observe SDK Checks`
 工作流构建 wheel 和 sdist，用于审核与验证；CI 工件会过期，不作为长期依赖来源。
 稳定分发方式见[独立 SDK 发版指南](releasing.md)：消费方锁定已发布版本，或使用包含
 SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装的远程 SHA；指南中的
@@ -15,12 +15,12 @@ SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装�
 如需检查下载的 wheel，可以选择对应框架 extra：
 
 ```sh
-python -m pip install './luma_observe_sdk-0.5.0-py3-none-any.whl[taskiq]'
+python -m pip install './luma_observe_sdk-0.5.1-py3-none-any.whl[taskiq]'
 ```
 
 Celery 进程使用 `[celery]`，同时运行两种框架的镜像使用 `[taskiq,celery]`。
 包 PyPI 发布是独立步骤；发布完成后，消费方可通过自己的包配置安装
-`luma-observe-sdk[taskiq]==0.5.0`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
+`luma-observe-sdk[taskiq]==0.5.1`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
 
 ## 地址、凭证与开关
 
@@ -113,6 +113,7 @@ with stage("document.read", attributes={"document.id": document_id}, aggregate=T
 追加一次累计摘要。此模式新增子 Span 为零，首次失败与省略数量各最多追加一条摘要。
 `observed_stage(..., aggregate=True)` 支持同步和异步函数；并行阶段的累计工作耗时可能
 大于任务的实际经过时间。原有 `stage()` 默认行为保持为子 Span。
+每类阶段保留最近一次的有界属性集合，出现失败时保留首次失败的属性；汇总计数由 SDK 维护。
 
 需要异常正文与堆栈时，在原有 `configure(...)` 中设置 `capture_error_details=True`，
 并启用 `lifecycle_logs=True`。SDK 将首次原始异常写入 `task.failure.detail` JSON 事件的
