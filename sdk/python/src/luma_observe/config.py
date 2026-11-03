@@ -26,6 +26,13 @@ class Configuration:
     metric_interval_ms: int = 30000
     export_timeout_seconds: float = 1.5
     shutdown_timeout_seconds: float = 2.0
+    # The application's business outcomes in precedence order, first wins. Only
+    # declared values become metric labels; escalation keeps the earliest listed.
+    business_outcomes: tuple = ()
+
+    def __post_init__(self):
+        if isinstance(self.business_outcomes, list):
+            object.__setattr__(self, "business_outcomes", tuple(self.business_outcomes))
 
     def disabled(self) -> bool:
         """Read explicit switches without requiring an endpoint or starting workers."""
@@ -63,3 +70,7 @@ class Configuration:
             raise ValueError("export and shutdown timeouts must be between 0 and 10 seconds")
         if self.log_stream not in (None, "stdout", "stderr"):
             raise ValueError("log_stream must be stdout, stderr or None")
+        outcomes = self.business_outcomes
+        if (not isinstance(outcomes, tuple) or len(outcomes) > 32 or len(set(outcomes)) != len(outcomes)
+                or not all(isinstance(value, str) and 1 <= len(value) <= 64 for value in outcomes)):
+            raise ValueError("business_outcomes must list at most 32 distinct values of 1-64 characters")

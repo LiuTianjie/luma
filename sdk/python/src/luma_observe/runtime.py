@@ -36,8 +36,8 @@ from .process import ProcessMetricExporter, ProcessSpanExporter, register_provid
 _EVENT_LOG = logging.getLogger("luma_observe.events")
 _BUCKETS = (0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 7200)
 _OUTCOMES = frozenset(("succeeded", "failed", "retrying", "skipped", "cancelled"))
-# Default severity for escalate_business_outcome, most severe first.
-BUSINESS_SEVERITY = ("failed", "needs_review", "retrying", "partial", "waiting", "succeeded")
+# Metric label for business outcomes the application did not declare.
+_UNDECLARED_OUTCOME = "other"
 _MAX_ACTIVE_RUNS = 8192
 _MAX_TASK_KEYS = 2048
 _OVERFLOW = object()
@@ -147,13 +147,15 @@ class TaskRun:
     def set_business_outcome(self, value: str) -> None:
         self.business_outcome = value
 
-    def escalate_business_outcome(self, value: str, order: Sequence[str] = BUSINESS_SEVERITY) -> None:
-        """Keep the most severe value seen in this attempt, e.g. one failed item in a batch.
+    def escalate_business_outcome(self, value: str) -> None:
+        """Keep the value that ranks first in ``configure(business_outcomes=...)``, e.g. one failed item in a batch.
 
-        ``order`` lists outcomes from most to least severe; unknown values rank lowest.
+        Undeclared values rank last; among equal ranks the latest value wins, so
+        without a declaration this behaves like assigning ``business_outcome``.
         """
         if not isinstance(value, str):
             return
+        order = self._runtime.configuration.business_outcomes if self._runtime is not None else ()
         rank = {item: index for index, item in enumerate(order)}
         current = self.business_outcome
         if current is None or rank.get(value, len(rank)) <= rank.get(current, len(rank)):
@@ -613,8 +615,11 @@ class Runtime:
                     _safe(self._active.add, -1, labels)
                     _safe(self._record_time, "finished", labels, outcome)
                     business = run._fields.get("task.business.outcome")
-                    if business:
-                        _safe(self._business_outcomes.add, 1, {**labels, "task.business.outcome": business})
+                    declared = self.configuration.business_outcomes
+                    # Spans and logs keep the application's value; the metric label stays a declared enum.
+                    if business and declared:
+                        label = business if business in declared else _UNDECLARED_OUTCOME
+                        _safe(self._business_outcomes.add, 1, {**labels, "task.business.outcome": label})
                     _safe(self.emit, "task.finished", {**run._fields, "outcome": outcome, "duration_seconds": elapsed}, span)
 
     @contextmanager
@@ -726,6 +731,7 @@ class Runtime:
             return
         self._closed.set()
         budget = min(max(timeout if timeout is not None else self.configuration.shutdown_timeout_seconds, 0), 10)
+        deadline = time.monotonic() + budget
 
         def close():
             _safe(self.meter_provider.shutdown, timeout_millis=max(1, budget * 1000)) if hasattr(self.meter_provider, "shutdown") else None
@@ -734,7 +740,11 @@ class Runtime:
         if self.enabled:
             self._shutdown_thread = threading.Thread(target=close, name="luma-observe-shutdown", daemon=True)
             self._shutdown_thread.start()
-            self._shutdown_thread.join(timeout=budget)
+            # The closed writer drains already queued lifecycle events, then exits.
+            # A process exits right after shutdown, so wait for it within the same budget.
+            if self._writer is not None:
+                self._writer.join(timeout=max(0, deadline - time.monotonic()))
+            self._shutdown_thread.join(timeout=max(0, deadline - time.monotonic()))
         self.enabled = False
 
 

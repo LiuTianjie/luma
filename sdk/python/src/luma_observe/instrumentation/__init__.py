@@ -45,13 +45,14 @@ def _bind(function, args, kwargs) -> dict:
     Positional values are named by position, keyword values keep their names, and
     keywords the signature does not declare are still passed through. A message that
     no longer matches the current signature therefore still yields what can be named.
+    ``inspect.signature`` follows decorator ``__wrapped__`` chains and drops the bound
+    ``self`` of a method, such as a Celery ``bind=True`` task's ``run``.
     """
     kwargs = dict(kwargs or {})
-    target = inspect.unwrap(function) if function is not None else None
-    if target is None:
+    if function is None:
         return kwargs
     try:
-        parameters = list(inspect.signature(target).parameters.values())
+        parameters = list(inspect.signature(function).parameters.values())
     except (TypeError, ValueError):
         return kwargs
     named = {}

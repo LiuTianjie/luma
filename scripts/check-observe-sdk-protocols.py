@@ -29,7 +29,7 @@ import subprocess, time
 from opentelemetry.metrics import Observation
 from luma_observe import configure
 
-runtime = configure('example-worker', metric_interval_ms=300000,
+runtime = configure('example-worker', metric_interval_ms=300000, business_outcomes=('failed', 'succeeded'),
                     resource_attributes={'deployment.environment.name': 'protocol'})
 assert runtime.enabled, runtime.initialization_error
 processed = runtime.counter('document.processed')

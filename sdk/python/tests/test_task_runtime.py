@@ -2,6 +2,7 @@
 
 import asyncio
 from contextvars import copy_context
+from dataclasses import replace
 import importlib
 import os
 import select
@@ -380,22 +381,54 @@ def test_progress_stage_last_times_and_business_outcome(observed, monkeypatch):
         assert points(reader, "task.no_progress_age")[0].value == 5
         run.mark_progress()
         assert points(reader, "task.no_progress_age")[0].value == 0
-        run.business_outcome = "needs_review"
-        run.business_outcome = "failed"
         clock.update(wall=1100.0)
     assert points(reader, "task.no_progress_age") == []
     started = points(reader, "task.last_started")
     finished = points(reader, "task.last_finished")
     assert [(dict(p.attributes), p.value) for p in started] == [(labels, 1000.0)]
     assert [(dict(p.attributes), p.value) for p in finished] == [({**labels, "outcome": "succeeded"}, 1100.0)]
-    business = points(reader, "task.business_outcomes")
-    assert [(dict(p.attributes), p.value) for p in business] == [({**labels, "task.business.outcome": "failed"}, 1)]
     stage = next(span for span in exporter.get_finished_spans() if span.name == "render.pages")
     root = next(span for span in exporter.get_finished_spans() if span.name == "render")
     assert stage.parent.span_id == root.context.span_id
     assert stage.attributes["pages"] == 3 and stage.attributes["task.name"] == "render"
     # Stages live on child spans and lifecycle logs, not as attempt span events.
     assert not root.events
+
+
+def test_business_outcomes_are_metric_labels_only_when_declared(observed):
+    runtime, exporter, reader = observed
+    labels = {"task.name": "render", "task.framework": "manual", "task.queue": ""}
+
+    def counts():
+        return {p.attributes["task.business.outcome"]: p.value for p in points(reader, "task.business_outcomes")}
+
+    with runtime.task("render") as run:
+        run.escalate_business_outcome("failed")
+        run.escalate_business_outcome("succeeded")
+        assert run.business_outcome == "succeeded"
+    assert counts() == {}
+
+    runtime.configuration = replace(runtime.configuration, business_outcomes=("failed", "needs_review", "succeeded"))
+    with runtime.task("render") as run:
+        for value in ("succeeded", "requires_review", "failed", "needs_review"):
+            run.escalate_business_outcome(value)
+        assert run.business_outcome == "failed"
+    with runtime.task("render") as run:
+        run.escalate_business_outcome("requires_review")
+        run.escalate_business_outcome("succeeded")
+    with runtime.task("render") as run:
+        run.business_outcome = "requires_review"
+    assert counts() == {"failed": 1, "succeeded": 1, "other": 1}
+    assert {tuple(sorted(set(p.attributes) - {"task.business.outcome"})) for p in points(reader, "task.business_outcomes")} == {tuple(sorted(labels))}
+    spans = [span.attributes["task.business.outcome"] for span in exporter.get_finished_spans()]
+    assert spans == ["succeeded", "failed", "succeeded", "requires_review"]
+
+
+def test_business_outcome_declaration_is_validated():
+    assert module.Configuration(business_outcomes=["failed", "succeeded"]).business_outcomes == ("failed", "succeeded")
+    for invalid in (("failed", "failed"), ("",), ("x" * 65,), tuple(f"v{index}" for index in range(33)), "failed"):
+        with pytest.raises(ValueError):
+            module.Configuration(business_outcomes=invalid).validate()
 
 
 def test_publication_counts_outcomes_and_preserves_exception(observed):
@@ -471,17 +504,13 @@ async def test_module_stage_and_progress_helpers_are_noops_outside_tasks_and_kee
         observe.mark_progress()
     assert await render_async(2) == 4 and render_sync(1) == 2
     assert not exporter.get_finished_spans()
-    with runtime.task("render") as run:
+    with runtime.task("render"):
         assert await render_async(3) == 6
         with pytest.raises(ValueError):
             render_sync(-1)
         monkeypatch.setattr(module.TaskRun, "stage", Mock(side_effect=RuntimeError("instrumentation bug")))
         assert render_sync(5) == 6
-        run.escalate_business_outcome("partial")
-        run.escalate_business_outcome("failed")
-        run.escalate_business_outcome("succeeded")
-        assert run.business_outcome == "failed"
-    names = [span.name for span in exporter.get_finished_spans()]
+    names =[span.name for span in exporter.get_finished_spans()]
     assert names.count("render.async") == 1 and names.count("render.sync") == 1 and "outside" not in names
     assert calls == [2, 1, 3, -1, 5]
 
