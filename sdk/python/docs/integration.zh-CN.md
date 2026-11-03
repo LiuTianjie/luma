@@ -6,7 +6,7 @@ SDK 不导入 Luma Control、Django、业务模型或数据库。
 
 ## 安装与版本
 
-Python 要求为 3.10 及以上。当前源码版本是 `0.1.0`，独立的 `Observe SDK Checks`
+Python 要求为 3.10 及以上。当前源码版本是 `0.2.0`，独立的 `Observe SDK Checks`
 工作流构建 wheel 和 sdist，用于审核与验证；CI 工件会过期，不作为长期依赖来源。
 稳定分发方式见[独立 SDK 发版指南](releasing.md)：消费方锁定已发布版本，或使用包含
 SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装的远程 SHA；指南中的
@@ -15,12 +15,12 @@ SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装�
 如需检查下载的 wheel，可以选择对应框架 extra：
 
 ```sh
-python -m pip install './luma_observe_sdk-0.1.0-py3-none-any.whl[taskiq]'
+python -m pip install './luma_observe_sdk-0.2.0-py3-none-any.whl[taskiq]'
 ```
 
 Celery 进程使用 `[celery]`，同时运行两种框架的镜像使用 `[taskiq,celery]`。
 包 PyPI 发布是独立步骤；发布完成后，消费方可通过自己的包配置安装
-`luma-observe-sdk[taskiq]==0.1.0`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
+`luma-observe-sdk[taskiq]==0.2.0`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
 
 ## 地址、凭证与开关
 
@@ -70,6 +70,31 @@ def mark_review_required():
 `current_task()` 按执行上下文隔离，嵌套任务结束后恢复外层；不在活跃任务内时返回
 `None`，fork 子进程也不会继承父任务。
 
+每次执行最终的 `business_outcome` 会计入一次 `task.business_outcomes`，取值应限定在
+应用自己的一小组枚举内。长任务可以用阶段或显式标记报告进展：
+
+```python
+run = current_task()
+with run.stage("document.render", attributes={"pages": 12}):
+    render_pages()
+run.mark_progress()
+```
+
+阶段是一个子 Span，同时在执行 Span 上记录 `task.stage` 事件。进入和离开阶段、调用
+`mark_progress()` 都会重置该执行的 `task.no_progress_age`。
+
+应用自己掌握实际发送调用时，可以观测发送结果；适配器的准备 Span 不代表发送成功：
+
+```python
+from luma_observe import publication
+
+with publication("document.render", framework="taskiq", queue="documents", task_id=message_id):
+    redis.xadd(stream, payload)
+```
+
+它记录一个生产者 Span、按 `outcome`（`sent`、`failed`）区分的 `task.publications`，
+以及可选的 `task.published` 生命周期事件，并原样抛出原异常。
+
 以下任一条件完整关闭 SDK，包括可选生命周期日志：
 
 - 初始化时传入 `configure(enabled=False)`。
@@ -114,6 +139,22 @@ observation = instrument_celery()
 适配器作用于当前进程，重复注册保持幂等；Worker 子进程初始化 Provider，生产者在首次
 使用时初始化。任务排空后可调用 `observation.uninstrument()` 移除信号连接。
 同一任务选择一套适配器，避免同时安装 contrib `CeleryInstrumentor` 产生重复记录。
+
+两种适配器只通过应用提供的可选回调读取业务参数。回调接收
+`(task_name, args, kwargs)`，返回的字段写入本次执行的 Span 和生命周期事件：
+
+```python
+def business_fields(name, args, kwargs):
+    return {"document.id": kwargs.get("document_id", "")}
+
+TaskiqMiddleware(attributes=business_fields)
+instrument_celery(attributes=business_fields)
+```
+
+只返回可以存入 Trace 和日志的编号。框架字段不能被覆盖；回调出错时计入
+`observe.sdk.dropped`，不影响本次执行。Taskiq 的 Worker 和调度进程在 broker 启动时
+声明自己的角色，Worker 同时导出已注册的任务名；Celery 进程池在 `worker_process_init`、
+Beat 在 `beat_init` 时完成同样的声明。
 
 两种框架均传递标准 W3C 上下文和 baggage。每次框架执行单独开启一条 Trace，通过
 Span Link 关联生产者，让执行完成后的采样判断独立于较早结束的生产者。手动 `task()`、
@@ -163,6 +204,20 @@ size.record(12, {"document.format": "pdf"})
 | `worker_heartbeat_seconds` | 采集进程本次采集时刻，Unix 秒 |
 | `task_oldest_active_age_seconds` | 按任务名、队列和框架分组的最老活跃尝试时长 |
 | `task_active_tracking_overflow` | 超出有界时长登记表的活跃尝试数 |
+| `task_no_progress_age_seconds` | 活跃执行距开始、切换阶段或标记进展的最长时间 |
+| `task_last_started_seconds` | 本进程最近一次开始该任务的 Unix 时间 |
+| `task_last_finished_seconds` | 本进程最近一次结束该任务的 Unix 时间，按 `outcome` 区分 |
+| `task_business_outcomes_total` | 按最终 `task_business_outcome` 统计的已结束执行 |
+| `task_publications_total` | 应用观测到的实际发送，按 `outcome`（`sent`、`failed`）区分 |
+| `task_registered` | Worker 进程在框架中注册的任务 |
+| `task_process_started_seconds` | 进程启动时间，按 `task_framework`、`task_role`、`task_queue` 区分 |
+| `observe_sdk_dropped_total` | SDK 内部丢弃的遥测，按 `reason` 区分 |
+
+最近开始、结束时间保存在进程内存中，和任务名一样有上限（2048 个键）。跨 Worker 轮换
+保留时，取各实例的最大值，例如使用 recording rule。`task_registered` 和
+`task_process_started_seconds` 用来区分"任务没有存活的 Worker、调度进程缺失"和
+"任务只是空闲"。`observe_sdk_dropped_total` 统计有界写入队列丢弃的生命周期事件
+（`lifecycle_logs`），以及为保护业务而被 SDK 吞掉的异常（`instrumentation_error`）。
 
 固定任务维度为 `task_name`、`task_queue`、`task_framework`；标准资源属性提供
 `service_name`、`deployment_environment_name` 及平台已有的 Luma 维度。

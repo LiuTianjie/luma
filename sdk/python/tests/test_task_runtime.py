@@ -363,3 +363,85 @@ def test_fork_does_not_inherit_current_attempt_or_liveness(observed):
             if not ready:
                 os.kill(pid, signal.SIGKILL)
             os.waitpid(pid, 0)
+
+
+def test_progress_stage_last_times_and_business_outcome(observed, monkeypatch):
+    runtime, exporter, reader = observed
+    clock = {"wall": 1000.0, "monotonic": 10.0}
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=lambda: clock["wall"], monotonic=lambda: clock["monotonic"]))
+    labels = {"task.name": "render", "task.framework": "manual", "task.queue": "documents"}
+    with runtime.task("render", queue="documents") as run:
+        clock.update(monotonic=40.0)
+        assert points(reader, "task.no_progress_age")[0].value == 30
+        with run.stage("render.pages", attributes={"pages": 3}):
+            clock.update(monotonic=55.0)
+            assert points(reader, "task.no_progress_age")[0].value == 15
+        clock.update(monotonic=60.0)
+        assert points(reader, "task.no_progress_age")[0].value == 5
+        run.mark_progress()
+        assert points(reader, "task.no_progress_age")[0].value == 0
+        run.business_outcome = "needs_review"
+        run.business_outcome = "failed"
+        clock.update(wall=1100.0)
+    assert points(reader, "task.no_progress_age") == []
+    started = points(reader, "task.last_started")
+    finished = points(reader, "task.last_finished")
+    assert [(dict(p.attributes), p.value) for p in started] == [(labels, 1000.0)]
+    assert [(dict(p.attributes), p.value) for p in finished] == [({**labels, "outcome": "succeeded"}, 1100.0)]
+    business = points(reader, "task.business_outcomes")
+    assert [(dict(p.attributes), p.value) for p in business] == [({**labels, "task.business.outcome": "failed"}, 1)]
+    stage = next(span for span in exporter.get_finished_spans() if span.name == "render.pages")
+    root = next(span for span in exporter.get_finished_spans() if span.name == "render")
+    assert stage.parent.span_id == root.context.span_id
+    assert stage.attributes["pages"] == 3 and stage.attributes["task.name"] == "render"
+    assert [event.name for event in root.events] == ["task.stage"]
+
+
+def test_publication_counts_outcomes_and_preserves_exception(observed):
+    runtime, exporter, reader = observed
+    with runtime.publication("render", framework="taskiq", queue="documents", task_id="job-1") as span:
+        assert span.is_recording()
+    failure = ConnectionError("broker unavailable")
+    with pytest.raises(ConnectionError) as caught:
+        with observe.publication("render", framework="taskiq", queue="documents"):
+            raise failure
+    assert caught.value is failure
+    counts = {p.attributes["outcome"]: p.value for p in points(reader, "task.publications")}
+    assert counts == {"sent": 1, "failed": 1}
+    spans = [span for span in exporter.get_finished_spans() if span.name == "task.publish/render"]
+    assert [span.kind for span in spans] == [trace.SpanKind.PRODUCER] * 2
+    assert spans[0].attributes["messaging.message.id"] == "job-1"
+    assert spans[1].status.status_code is trace.StatusCode.ERROR
+
+
+def test_registration_dropped_counters_and_lifecycle_identity(monkeypatch, caplog):
+    for name in tuple(os.environ):
+        if name.startswith(("OTEL_", "LUMA_OBSERVE_")):
+            monkeypatch.delenv(name)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.invalid")
+    reader = InMemoryMetricReader()
+    monkeypatch.setattr(module, "OTLPSpanExporter", lambda **_: InMemorySpanExporter())
+    monkeypatch.setattr(module, "OTLPMetricExporter", lambda **_: Mock(_preferred_temporality=None, _preferred_aggregation=None))
+    monkeypatch.setattr(module, "PeriodicExportingMetricReader", lambda *_a, **_k: reader)
+    monkeypatch.setattr(module, "_MAX_TASK_KEYS", 2)
+    monkeypatch.setattr(module, "_instrumentation_errors", [0])
+    runtime = module.Runtime(module.Configuration(service_name="sample-worker", lifecycle_logs=True))
+    try:
+        runtime.register_process("taskiq", "worker", "documents")
+        runtime.register_tasks(["render", "index", "beyond-bound"], "taskiq", "documents")
+        assert {p.attributes["task.name"] for p in points(reader, "task.registered")} == {"render", "index"}
+        roles = points(reader, "task.process.started")
+        assert [dict(p.attributes) for p in roles] == [{"task.framework": "taskiq", "task.role": "worker", "task.queue": "documents"}]
+        assert roles[0].value == runtime.started_at
+        module._safe(lambda: 1 / 0)
+        dropped = {p.attributes["reason"]: p.value for p in points(reader, "observe.sdk.dropped")}
+        assert dropped == {"lifecycle_logs": 0, "instrumentation_error": 1}
+        with caplog.at_level("INFO", logger="luma_observe.events"):
+            with runtime.task("render"):
+                pass
+            assert runtime.force_flush(timeout=2)
+        records = [module.json.loads(record.getMessage()) for record in caplog.records if record.name == "luma_observe.events"]
+        assert [record["event"] for record in records] == ["task.started", "task.finished"]
+        assert {record["service.instance.id"] for record in records} == {runtime.instance_id}
+    finally:
+        runtime.shutdown()

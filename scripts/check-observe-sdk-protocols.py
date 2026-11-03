@@ -36,9 +36,15 @@ processed = runtime.counter('document.processed')
 processed.add(0, {'document.format': 'pdf', 'outcome': 'succeeded'})
 runtime.get_meter().create_observable_gauge('document.last_completion', unit='s',
     callbacks=[lambda _: [Observation(time.time())]])
+runtime.register_process('manual', 'worker', 'example')
+runtime.register_tasks(['example.fail'], 'manual', 'example')
 for iteration in range(3):
+    with runtime.publication('example.fail', framework='manual', queue='example'):
+        pass
     try:
-        with runtime.task('example.fail', framework='manual', queue='example', queue_wait_seconds=0.25):
+        with runtime.task('example.fail', framework='manual', queue='example', queue_wait_seconds=0.25) as run:
+            with run.stage('example.stage'):
+                run.business_outcome = 'failed'
             raise ValueError('synthetic failure')
     except ValueError:
         pass
@@ -183,10 +189,20 @@ def main() -> None:
             ('sum(task_duration_seconds_count{service_name="example-worker"})', 3),
             ('sum(task_queue_wait_seconds_count{service_name="example-worker"})', 3),
             ('sum(document_processed_total{service_name="example-worker",document_format="pdf",outcome="failed"})', 3),
+            # Prometheus names of the 0.2 task lifecycle, publication and SDK self-observation instruments.
+            ('sum(task_publications_total{service_name="example-worker",task_name="example.fail",outcome="sent"})', 3),
+            ('sum(task_business_outcomes_total{service_name="example-worker",task_business_outcome="failed"})', 3),
+            ('count(task_last_started_seconds{service_name="example-worker",task_name="example.fail"})', 1),
+            ('count(task_last_finished_seconds{service_name="example-worker",task_name="example.fail",outcome="failed"})', 1),
+            ('count(task_registered{service_name="example-worker",task_name="example.fail"})', 1),
+            ('count(task_process_started_seconds{service_name="example-worker",task_role="worker",task_queue="example"})', 1),
+            ('count(observe_sdk_dropped_total{service_name="example-worker"})', 2),
         ):
             wait_for(f"SDK metric verified: {expression}", lambda expr=expression, target=expected: value(expr) == target)
         docker("exec", "-d", names["probe"], "python", "-c", ACTIVE_PRODUCE)
         wait_for("SDK active-task fixture ready", lambda: fixture_marker("ready"), timeout=30)
+        wait_for("SDK no-progress age exported for the active task",
+                 lambda: value('count(task_no_progress_age_seconds{service_name="example-worker",task_name="example.running"})') == 1)
         for _ in range(3):
             docker("exec", names["probe"], "python", "-c", CHURN_PRODUCE, timeout=30)
         wait_for("Three fresh SDK processes exported 48 same-name attempts",

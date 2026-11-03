@@ -34,14 +34,22 @@ _EVENT_LOG = logging.getLogger("luma_observe.events")
 _BUCKETS = (0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 7200)
 _OUTCOMES = frozenset(("succeeded", "failed", "retrying", "skipped", "cancelled"))
 _MAX_ACTIVE_RUNS = 8192
+_MAX_TASK_KEYS = 2048
 _OVERFLOW = object()
 _current_task = ContextVar("luma_observe_current_task", default=None)
+# Swallowed instrumentation exceptions in this process, exported as observe.sdk.dropped.
+_instrumentation_errors = [0]
+
+
+def _note_error() -> None:
+    _instrumentation_errors[0] += 1
 
 
 def _safe(callback, *args, **kwargs):
     try:
         return callback(*args, **kwargs)
     except Exception:
+        _note_error()
         return None
 
 
@@ -94,6 +102,7 @@ class TaskRun:
         self.pid = os.getpid()
         self._finished = False
         self._runtime = _runtime
+        self._marker = None
         self._fields = dict(_fields or {})
         self._outcome = outcome if isinstance(outcome, str) and outcome in _OUTCOMES else "succeeded"
         self._explicit_outcome = False
@@ -163,6 +172,27 @@ class TaskRun:
         if self._runtime is not None:
             _safe(self._runtime.emit, name, {**self._fields, **fields}, self.span)
 
+    def mark_progress(self) -> None:
+        """Reset this attempt's task.no_progress_age without creating telemetry."""
+        if self._finished or self.pid != os.getpid() or self._runtime is None:
+            return
+        _safe(self._runtime._track_progress, self._marker)
+
+    @contextmanager
+    def stage(self, name: str, attributes: Mapping | None = None):
+        """Run one application stage as a child span and mark progress at entry and exit."""
+        if self._finished or self.pid != os.getpid() or self._runtime is None:
+            yield trace.INVALID_SPAN
+            return
+        fields = _safe(lambda: {**_attributes(attributes, limit=24), "task.name": self._fields.get("task.name", "")}) or {}
+        self.mark_progress()
+        self.add_event("task.stage", {"task.stage": str(name)[:128]})
+        try:
+            with self._runtime.span(name, attributes=fields) as span:
+                yield span
+        finally:
+            self.mark_progress()
+
 
 def current_task() -> TaskRun | None:
     """Return this execution context's live attempt, without initializing the SDK."""
@@ -196,6 +226,11 @@ class Runtime:
         self._activity_lock = threading.Lock()
         self._active_runs = {}
         self._tracking_overflow = 0
+        self._last_times = {}
+        self._registered = set()
+        self._roles = set()
+        self.started_at = time.time()
+        self.instance_id = ""
         self.dropped_events = 0
         created = []
         try:
@@ -210,6 +245,7 @@ class Runtime:
             if configuration.service_name:
                 resource_values["service.name"] = configuration.service_name
             resource_values.setdefault("service.instance.id", f"{os.getenv('NOMAD_ALLOC_ID', 'process')}:{self.pid}:{uuid.uuid4().hex[:8]}")
+            self.instance_id = str(resource_values["service.instance.id"])
             resource = Resource.create(resource_values)
             if traces_on:
                 provider = TracerProvider(resource=resource, shutdown_on_exit=False,
@@ -248,6 +284,20 @@ class Runtime:
             meter.create_observable_gauge("task.oldest_active_age", unit="s", callbacks=[self._observe_oldest],
                                           description="Oldest active attempt age per task name, queue and framework; idle/overflow are absent")
             meter.create_observable_gauge("task.active_tracking_overflow", unit="", callbacks=[self._observe_overflow])
+            meter.create_observable_gauge("task.no_progress_age", unit="s", callbacks=[self._observe_no_progress],
+                                          description="Longest time since an active attempt started, entered or left a stage, or marked progress")
+            meter.create_observable_gauge("task.last_started", unit="s", callbacks=[self._observe_last("started")],
+                                          description="Unix time this process last started an attempt of the task")
+            meter.create_observable_gauge("task.last_finished", unit="s", callbacks=[self._observe_last("finished")],
+                                          description="Unix time this process last finished an attempt of the task with the outcome")
+            meter.create_observable_gauge("task.registered", unit="", callbacks=[self._observe_registered],
+                                          description="Tasks a worker process registered with its framework")
+            meter.create_observable_gauge("task.process.started", unit="s", callbacks=[self._observe_roles],
+                                          description="Unix start time of this process for each declared framework role")
+            meter.create_observable_counter("observe.sdk.dropped", unit="1", callbacks=[self._observe_dropped],
+                                            description="Telemetry this process discarded inside the SDK")
+            self._publications = meter.create_counter("task.publications", unit="1")
+            self._business_outcomes = meter.create_counter("task.business_outcomes", unit="1")
             if configuration.lifecycle_logs:
                 self._events = queue.Queue(maxsize=256)
                 self._writer = threading.Thread(target=self._write_events, name="luma-observe-events", daemon=True)
@@ -292,7 +342,8 @@ class Runtime:
                 self._tracking_overflow += 1
                 return _OVERFLOW
             marker = object()
-            self._active_runs[marker] = (started, key)
+            # Start time, metric labels and last progress, all monotonic.
+            self._active_runs[marker] = [started, key, started]
             return marker
 
     def _track_end(self, marker) -> None:
@@ -304,8 +355,84 @@ class Runtime:
             else:
                 self._active_runs.pop(marker, None)
 
+    def _track_progress(self, marker) -> None:
+        if marker is None or marker is _OVERFLOW or self.pid != os.getpid():
+            return
+        with self._activity_lock:
+            record = self._active_runs.get(marker)
+            if record is not None:
+                record[2] = time.monotonic()
+
+    def _record_time(self, kind: str, labels: Mapping, outcome: str | None = None) -> None:
+        """Keep the latest wall time per task key; the key set is bounded like task names."""
+        key = (kind, tuple(labels.items()) + ((("outcome", outcome),) if outcome else ()))
+        with self._activity_lock:
+            if key in self._last_times or len(self._last_times) < _MAX_TASK_KEYS:
+                self._last_times[key] = time.time()
+
+    def register_process(self, framework: str, role: str, queue: str = "") -> None:
+        """Declare a framework role of this process, exported as task.process.started."""
+        if not self._live():
+            return
+        key = (("task.framework", str(framework)[:64]), ("task.role", str(role)[:64]), ("task.queue", str(queue)[:256]))
+        with self._activity_lock:
+            if len(self._roles) < 64:
+                self._roles.add(key)
+
+    def register_tasks(self, names, framework: str, queue: str = "") -> None:
+        """Declare the tasks a worker process serves, exported as task.registered."""
+        if not self._live():
+            return
+        with self._activity_lock:
+            for name in names:
+                if len(self._registered) >= _MAX_TASK_KEYS:
+                    break
+                self._registered.add((("task.name", str(name)[:256]), ("task.framework", str(framework)[:64]),
+                                      ("task.queue", str(queue)[:256])))
+
     def _observe_heartbeat(self, _options):
         return [metrics.Observation(time.time())] if self._live() else []
+
+    def _observe_no_progress(self, _options):
+        if not self._live():
+            return []
+        with self._activity_lock:
+            if self._tracking_overflow:
+                return []
+            stalled = {}
+            for _started, key, progress in self._active_runs.values():
+                stalled[key] = min(stalled.get(key, progress), progress)
+        now = time.monotonic()
+        return [metrics.Observation(max(0.0, now - progress), attributes=dict(key)) for key, progress in stalled.items()]
+
+    def _observe_last(self, kind: str):
+        def observe(_options):
+            if not self._live():
+                return []
+            with self._activity_lock:
+                values = [(key, value) for (recorded, key), value in self._last_times.items() if recorded == kind]
+            return [metrics.Observation(value, attributes=dict(key)) for key, value in values]
+        return observe
+
+    def _observe_registered(self, _options):
+        if not self._live():
+            return []
+        with self._activity_lock:
+            keys = tuple(self._registered)
+        return [metrics.Observation(1, attributes=dict(key)) for key in keys]
+
+    def _observe_roles(self, _options):
+        if not self._live():
+            return []
+        with self._activity_lock:
+            keys = tuple(self._roles)
+        return [metrics.Observation(self.started_at, attributes=dict(key)) for key in keys]
+
+    def _observe_dropped(self, _options):
+        if not self._live():
+            return []
+        return [metrics.Observation(self.dropped_events, attributes={"reason": "lifecycle_logs"}),
+                metrics.Observation(_instrumentation_errors[0], attributes={"reason": "instrumentation_error"})]
 
     def _observe_oldest(self, _options):
         if not self._live():
@@ -314,7 +441,7 @@ class Runtime:
             if self._tracking_overflow:
                 return []
             oldest = {}
-            for started, key in self._active_runs.values():
+            for started, key, _progress in self._active_runs.values():
                 oldest[key] = min(oldest.get(key, started), started)
         now = time.monotonic()
         # Only live keys are retained. Dashboard queries must join task.active
@@ -370,7 +497,8 @@ class Runtime:
             activation = _activate_task(run)
             marker = None
             if self._live():
-                marker = _safe(self._track_start, started, labels)
+                marker = run._marker = _safe(self._track_start, started, labels)
+                _safe(self._record_time, "started", labels)
                 _safe(self._active.add, 1, labels)
                 if isinstance(queue_wait_seconds, (int, float)) and 0 <= queue_wait_seconds <= 31 * 86400:
                     _safe(self._queue_wait.record, queue_wait_seconds, labels)
@@ -395,7 +523,28 @@ class Runtime:
                     _safe(self._executions.add, 1, {**labels, "outcome": outcome})
                     _safe(self._duration.record, elapsed, labels)
                     _safe(self._active.add, -1, labels)
+                    _safe(self._record_time, "finished", labels, outcome)
+                    business = run._fields.get("task.business.outcome")
+                    if business:
+                        _safe(self._business_outcomes.add, 1, {**labels, "task.business.outcome": business})
                     _safe(self.emit, "task.finished", {**run._fields, "outcome": outcome, "duration_seconds": elapsed}, span)
+
+    @contextmanager
+    def publication(self, name: str, *, framework: str = "manual", queue: str = "", task_id: str = ""):
+        """Observe one application transport send; the original return and exception are preserved."""
+        labels = {"task.name": str(name)[:256], "task.framework": str(framework)[:64], "task.queue": str(queue)[:256]}
+        fields = {**labels, "messaging.message.id": str(task_id)[:256]} if task_id else labels
+        outcome = "sent"
+        with self.span("task.publish/" + labels["task.name"], attributes=fields, kind=trace.SpanKind.PRODUCER) as span:
+            try:
+                yield span
+            except BaseException:
+                outcome = "failed"
+                raise
+            finally:
+                if self._live():
+                    _safe(self._publications.add, 1, {**labels, "outcome": outcome})
+                    _safe(self.emit, "task.published", {**fields, "outcome": outcome}, span)
 
     def emit(self, event: str, attributes: Mapping | None = None, span: trace.Span | None = None):
         """Queue opt-in structured events; callers never wait for a log sink."""
@@ -404,6 +553,7 @@ class Runtime:
         context = (span or trace.get_current_span()).get_span_context()
         record = {"attributes": _attributes(attributes), "event": event[:128], "timestamp": time.time(),
                   "service.name": self.configuration.service_name or os.getenv("OTEL_SERVICE_NAME", ""),
+                  "service.instance.id": self.instance_id,
                   "trace_id": trace.format_trace_id(context.trace_id) if context.is_valid else "",
                   "span_id": trace.format_span_id(context.span_id) if context.is_valid else ""}
         try:
@@ -511,6 +661,8 @@ def _after_fork():
     _runtime = None
     _lock = threading.RLock()
     _current_task.set(None)
+    # Cumulative counters belong to one process identity.
+    _instrumentation_errors[0] = 0
 
 
 if hasattr(os, "register_at_fork"):
