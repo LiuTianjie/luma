@@ -809,10 +809,14 @@ def test_celery_publications_record_actual_send_results_by_delivered_queue(obser
     try:
         assert mocked.amqp.send_task_message is not stub
         assert mocked.amqp.send_task_message(None, "document.plain", SimpleNamespace(headers={"id": "m-1"})) == "receipt"
+        # Positional exchange and routing key follow Celery's sender signature.
+        mocked.amqp.send_task_message(None, "document.positional", SimpleNamespace(headers={}), "documents", "doc.positional")
     finally:
         instrumentation.uninstrument()
         mocked.close()
     assert mocked.amqp.send_task_message is stub
+    labels = {p.attributes["task.name"]: p.attributes["task.queue"] for p in points(reader, "task.publications")}
+    assert labels["document.positional"] == "doc.positional"
 
 
 def test_celery_publication_queue_is_the_routing_key_the_worker_reads(observed):

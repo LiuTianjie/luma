@@ -48,7 +48,10 @@ def _routing_key(app, options) -> str:
         else:
             name = queue.name
     if exchange_type is None:
-        exchange_type = getattr(getattr(queue, "exchange", None), "type", None) or "direct"
+        try:
+            exchange_type = queue.exchange.type
+        except AttributeError:
+            exchange_type = "direct"
     if (not exchange or not routing_key) and exchange_type == "direct":
         return str(name or "")
     if exchange is None:
@@ -92,7 +95,9 @@ def _observe_sender(app) -> None:
 
     @functools.wraps(original)
     def send_task_message(producer, name, message, *args, **kwargs):
-        manager = _safe(_publication, app, name, message, kwargs) if state["active"] else None
+        # Celery passes these as keywords; positional callers follow its signature order.
+        options = {**dict(zip(("exchange", "routing_key", "queue"), args)), **kwargs}
+        manager = _safe(_publication, app, name, message, options) if state["active"] else None
         entered = manager is not None and _safe(manager.__enter__) is not None
         if not entered:
             return original(producer, name, message, *args, **kwargs)
