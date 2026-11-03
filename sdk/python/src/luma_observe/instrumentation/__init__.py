@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import math
 import os
 import time
@@ -30,13 +31,46 @@ def _safe(callback, *args, **kwargs):
         return None
 
 
-def _enrich(callback, name: str, args, kwargs) -> Mapping | None:
+def _wants_arguments(callback) -> bool:
+    """Pass bound arguments only to callbacks that declare an ``arguments`` parameter."""
+    try:
+        return "arguments" in inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _bind(function, args, kwargs) -> dict:
+    """Map positional and keyword values to the task function's parameter names.
+
+    Positional values are named by position, keyword values keep their names, and
+    keywords the signature does not declare are still passed through. A message that
+    no longer matches the current signature therefore still yields what can be named.
+    """
+    kwargs = dict(kwargs or {})
+    target = inspect.unwrap(function) if function is not None else None
+    if target is None:
+        return kwargs
+    try:
+        parameters = list(inspect.signature(target).parameters.values())
+    except (TypeError, ValueError):
+        return kwargs
+    named = {}
+    positional = [parameter for parameter in parameters
+                  if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+    for parameter, value in zip(positional, args or ()):
+        named[parameter.name] = value
+    named.update(kwargs)
+    return named
+
+
+def _enrich(callback, name: str, args, kwargs, function=None) -> Mapping | None:
     """Ask the application for attempt attributes; its failure never blocks the attempt."""
     if callback is None:
         return None
 
     def call():
-        value = callback(name, tuple(args or ()), dict(kwargs or {}))
+        options = {"arguments": _bind(function, args, kwargs)} if _wants_arguments(callback) else {}
+        value = callback(name, tuple(args or ()), dict(kwargs or {}), **options)
         return dict(value) if isinstance(value, Mapping) else None
 
     return _safe(call)

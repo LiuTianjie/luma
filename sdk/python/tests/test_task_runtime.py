@@ -448,3 +448,64 @@ def test_registration_dropped_counters_and_lifecycle_identity(monkeypatch, caplo
         assert {record["service.instance.id"] for record in records} == {runtime.instance_id}
     finally:
         runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_module_stage_and_progress_helpers_are_noops_outside_tasks_and_keep_results(observed, monkeypatch):
+    runtime, exporter, _reader = observed
+    calls = []
+
+    @observe.observed_stage("render.async")
+    async def render_async(value):
+        calls.append(value)
+        return value * 2
+
+    @observe.observed_stage("render.sync")
+    def render_sync(value):
+        calls.append(value)
+        if value < 0:
+            raise ValueError("business failure")
+        return value + 1
+
+    with observe.stage("outside"):
+        observe.mark_progress()
+    assert await render_async(2) == 4 and render_sync(1) == 2
+    assert not exporter.get_finished_spans()
+    with runtime.task("render") as run:
+        assert await render_async(3) == 6
+        with pytest.raises(ValueError):
+            render_sync(-1)
+        monkeypatch.setattr(module.TaskRun, "stage", Mock(side_effect=RuntimeError("instrumentation bug")))
+        assert render_sync(5) == 6
+        run.escalate_business_outcome("partial")
+        run.escalate_business_outcome("failed")
+        run.escalate_business_outcome("succeeded")
+        assert run.business_outcome == "failed"
+    names = [span.name for span in exporter.get_finished_spans()]
+    assert names.count("render.async") == 1 and names.count("render.sync") == 1 and "outside" not in names
+    assert calls == [2, 1, 3, -1, 5]
+
+
+def test_log_stream_writes_lifecycle_json_once(monkeypatch, capsys):
+    for name in tuple(os.environ):
+        if name.startswith(("OTEL_", "LUMA_OBSERVE_")):
+            monkeypatch.delenv(name)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.invalid")
+    monkeypatch.setattr(module, "OTLPSpanExporter", lambda **_: InMemorySpanExporter())
+    monkeypatch.setattr(module, "OTLPMetricExporter", lambda **_: Mock(_preferred_temporality=None, _preferred_aggregation=None))
+    monkeypatch.setattr(module, "PeriodicExportingMetricReader", lambda *_a, **_k: InMemoryMetricReader())
+    monkeypatch.setattr(module._EVENT_LOG, "handlers", [])
+    with pytest.raises(ValueError):
+        module.Configuration(log_stream="file").validate()
+    runtime = module.Runtime(module.Configuration(service_name="stream-worker", lifecycle_logs=True, log_stream="stdout"))
+    second = module.Runtime(module.Configuration(service_name="stream-worker", lifecycle_logs=True, log_stream="stdout"))
+    try:
+        with runtime.task("render"):
+            pass
+        assert runtime.force_flush(timeout=2)
+    finally:
+        runtime.shutdown()
+        second.shutdown()
+    lines = [module.json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+    assert [line["event"] for line in lines] == ["task.started", "task.finished"]
+    assert len(module._EVENT_LOG.handlers) == 1

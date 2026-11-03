@@ -754,3 +754,66 @@ def test_celery_attribute_callback_and_pool_registration(observed):
     assert "document.export" in names and not any(name.startswith("celery.") for name in names)
     assert sorted(p.attributes["task.role"] for p in points(reader, "task.process.started")) == ["scheduler", "worker"]
     assert celery_hooks.instrument_celery().attributes is None
+
+
+@pytest.mark.asyncio
+async def test_attribute_callback_receives_bound_arguments_when_declared(observed):
+    _runtime, _reader, exporter = observed
+    seen = []
+
+    def with_arguments(name, args, kwargs, arguments):
+        seen.append(arguments)
+        return {"document.id": arguments.get("document_id", "")}
+
+    def legacy(name, args, kwargs):
+        return {"legacy": len(args)}
+
+    broker = InMemoryBroker(await_inplace=True).with_middlewares(taskiq_hooks.TaskiqMiddleware(attributes=with_arguments))
+    legacy_broker = InMemoryBroker(await_inplace=True).with_middlewares(taskiq_hooks.TaskiqMiddleware(attributes=legacy))
+
+    @broker.task(task_name="document.bind")
+    async def bind(document_id, mode="fast"):
+        return document_id
+
+    @legacy_broker.task(task_name="document.legacy")
+    async def legacy_task(document_id):
+        return document_id
+
+    await bind.kiq("doc-1")
+    await bind.kiq(document_id="doc-2", mode="slow")
+    await legacy_task.kiq("doc-3")
+    assert seen == [{"document_id": "doc-1"}, {"document_id": "doc-2", "mode": "slow"}]
+    # A keyword the signature does not declare must not hide the positional binding.
+    assert hooks._bind(bind.original_func, ["doc-4"], {"legacy_flag": True}) == {"document_id": "doc-4", "legacy_flag": True}
+    attempts = {span.name: span for span in exporter.get_finished_spans() if span.name.startswith("document.")}
+    assert attempts["document.bind"].attributes["document.id"] == "doc-2"
+    assert attempts["document.legacy"].attributes["legacy"] == 1
+
+    app = Celery("adapter-bind", broker="memory://", backend="cache+memory://")
+    instrumentation = celery_hooks.instrument_celery(attributes=with_arguments, app=app)
+
+    @app.task(name="document.celery_bind")
+    def celery_bind(document_id, mode="fast"):
+        return document_id
+
+    try:
+        assert celery_bind.apply(args=["doc-9"], kwargs={"mode": "slow"}).get() == "doc-9"
+    finally:
+        instrumentation.uninstrument()
+        celery_hooks.instrument_celery().uninstrument()
+        app.close()
+    assert seen[-1] == {"document_id": "doc-9", "mode": "slow"}
+
+
+def test_attribute_lookup_failure_does_not_block_attempt(observed):
+    """A broker without find_task (or one that raises) still yields an observed attempt."""
+    _runtime, reader, exporter = observed
+    middleware = taskiq_hooks.TaskiqMiddleware(attributes=lambda name, args, kwargs, arguments: {"seen": len(arguments)})
+    middleware.set_broker(SimpleNamespace(queue_name="documents"))
+    message = TaskiqMessage(task_id="t-1", task_name="document.plain", labels={}, args=["a"], kwargs={})
+    middleware.pre_execute(message)
+    assert core.current_task() is not None
+    middleware.post_execute(message, SimpleNamespace(is_err=False, error=None))
+    span = next(span for span in exporter.get_finished_spans() if span.name == "document.plain")
+    assert span.attributes["seen"] == 0
+    assert outcomes(reader) == {"succeeded": 1}

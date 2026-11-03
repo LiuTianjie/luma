@@ -10,7 +10,7 @@ Python 3.10 or newer is required. See the [Chinese integration guide](docs/integ
 
 ## Install the distribution
 
-The package name is `luma-observe-sdk`, current source version `0.2.1`.
+The package name is `luma-observe-sdk`, current source version `0.3.0`.
 `Observe SDK Checks` builds wheel/sdist artifacts independently of Control for
 review and validation; expiring CI artifacts are not a permanent dependency source.
 The independent SDK release workflow publishes checked wheel/sdist files and
@@ -24,14 +24,14 @@ with the published asset hash or reviewed, pushed commit.
 To inspect a downloaded wheel, add only the framework extra used by that process:
 
 ```sh
-python -m pip install './luma_observe_sdk-0.2.1-py3-none-any.whl[taskiq]'
+python -m pip install './luma_observe_sdk-0.3.0-py3-none-any.whl[taskiq]'
 # Celery processes use the [celery] extra; processes needing both use [taskiq,celery].
 ```
 
 PyPI publication is optional and disabled unless the repository variable
 `OBSERVE_SDK_PYPI_ENABLED` is `true` and its Trusted Publisher is configured.
 Once that exact version is published there, consumers can use
-`luma-observe-sdk[taskiq]==0.2.1` with their normal package configuration.
+`luma-observe-sdk[taskiq]==0.3.0` with their normal package configuration.
 The existing `v*` Luma release workflow publishes `luma-infra`, not this package.
 
 ## Configure once per process
@@ -89,18 +89,31 @@ process until that child starts its own attempt.
 
 The final `business_outcome` of an attempt is also counted once in
 `task.business_outcomes`; keep its values to a small application-defined set.
-Long attempts can report progress through stages or explicit marks:
+Long attempts can report progress through stages or explicit marks. The
+module-level helpers work anywhere: inside an observed attempt they record, and
+outside one they simply run the code, so business functions need no guards:
 
 ```python
-run = current_task()
-with run.stage("document.render", attributes={"pages": 12}):
+from luma_observe import mark_progress, observed_stage, stage
+
+@observed_stage("document.prepare")
+def prepare(document): ...
+
+with stage("document.render", attributes={"pages": 12}):
     render_pages()
-run.mark_progress()
+mark_progress()
 ```
 
 A stage is a child span plus a `task.stage` lifecycle event; it does not use the
-attempt span's bounded event list. Entering and
-leaving it, like `mark_progress()`, resets `task.no_progress_age` for that attempt.
+attempt span's bounded event list. Entering and leaving it, like
+`mark_progress()`, resets `task.no_progress_age` for that attempt. An
+instrumentation failure never changes the wrapped function's return or exception.
+`TaskRun.stage()` and `TaskRun.mark_progress()` remain available on `current_task()`.
+
+For batches where one failed item should decide the attempt, use
+`run.escalate_business_outcome(value)`: it keeps the most severe value seen,
+ordered by `BUSINESS_SEVERITY` (`failed`, `needs_review`, `retrying`, `partial`,
+`waiting`, `succeeded`) unless the application passes its own order.
 
 Applications that own the transport call can observe the send result, which the
 adapters' preparation spans do not claim:
@@ -165,11 +178,13 @@ the adapter after tasks drain. Providers initialize in the actual process.
 
 Both adapters read business arguments only through an optional application
 callback. It receives `(task_name, args, kwargs)` and returns span fields for the
-attempt, which also appear in its lifecycle events:
+attempt, which also appear in its lifecycle events. A callback that declares an
+`arguments` parameter also receives the call bound to the task function's
+parameter names, so positional and keyword calls look the same:
 
 ```python
-def business_fields(name, args, kwargs):
-    return {"document.id": kwargs.get("document_id", "")}
+def business_fields(name, args, kwargs, arguments):
+    return {"document.id": str(arguments.get("document_id", ""))}
 
 TaskiqMiddleware(attributes=business_fields)
 instrument_celery(attributes=business_fields)
@@ -232,21 +247,18 @@ log configuration or exception contents on the business call path.
 Defaults are a 512-span queue, batches of 64, a five-second trace export interval,
 a 30-second metric interval, a 1.5-second HTTP export budget and a two-second
 shutdown budget. Lifecycle JSON logging is opt-in with `lifecycle_logs=True` and
-uses a bounded background queue. It writes INFO records to `luma_observe.events`
-using application-configured logging handlers. Route that logger to stdout for
-the existing Nomad shipper; a standalone process can configure it at startup:
+uses a bounded background queue. It writes INFO records to `luma_observe.events`.
+For the existing Nomad log shipper, let the SDK write them to stdout itself:
 
 ```python
-import logging
-import sys
 from luma_observe import configure
 
-logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(message)s")
-configure(lifecycle_logs=True)
+configure(lifecycle_logs=True, log_stream="stdout")
 ```
 
-Existing applications should use their current logging configuration for this
-logger. The SDK does not create another log store or collector.
+With `log_stream=None` (the default) the records go through the application's own
+logging configuration for that logger. The SDK does not create another log store
+or collector.
 
 Call `shutdown()` at the application's final process shutdown; atexit is also
 registered. Celery uses its process shutdown signals. Closing one Taskiq broker

@@ -163,8 +163,12 @@ class TaskiqMiddleware(BaseMiddleware):
             if owner is not None:
                 invocation.callback = lambda task: self._callback_done(task, invocation)
                 owner.add_done_callback(invocation.callback, context=Context())
-            extra = (_enrich(self._attributes, message.task_name, message.args, message.kwargs)
-                     if self._attributes is not None and get_runtime().enabled else None)
+            extra = None
+            if self._attributes is not None and get_runtime().enabled:
+                # Resolve lazily inside _safe: a broker without find_task must not block the attempt.
+                task = _safe(lambda: self.broker.find_task(message.task_name))
+                extra = _enrich(self._attributes, message.task_name, message.args, message.kwargs,
+                                function=getattr(task, "original_func", None))
             invocation.execution_context.run(
                 _start_attempt,
                 invocation,
