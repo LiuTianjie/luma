@@ -16,17 +16,17 @@ Use one published release for the CLI, Control and node agents. Wait for that re
 2. Install the CLI release locally and in CI:
 
 ```bash
-luma update --install-ref v0.2.34
-python -m pip install --upgrade "luma-infra==0.2.34"
+luma update --install-ref v0.2.35
+python -m pip install --upgrade "luma-infra==0.2.35"
 ```
 
 The first command updates the local Luma installation (and its agent on a joined node). The second is the equivalent package pin for a Python CI environment; do not install into an unrelated system Python just to run both.
 
-3. In System maintenance, use the same release ref and image `ghcr.io/liutianjie/luma-control:v0.2.34`. Prepare the image through the configured Builder, then update Control. Keep the verified internal registry digest and the operation record. The manager updater refreshes its CLI and agent as well. Verify the automatic route sentinel after reconnecting.
+3. In System maintenance, use the same release ref and image `ghcr.io/liutianjie/luma-control:v0.2.35`. Prepare the image through the configured Builder, then update Control. Keep the verified internal registry digest and the operation record. The manager updater refreshes its CLI and agent as well. Verify the automatic route sentinel after reconnecting.
 4. Update the remaining nodes from the same page, or run:
 
 ```bash
-luma update fleet --install-ref v0.2.34 --all
+luma update fleet --install-ref v0.2.35 --all
 luma node list
 luma version
 ```

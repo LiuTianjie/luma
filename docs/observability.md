@@ -215,6 +215,34 @@ incident becomes firing only when its condition lasts for that duration; a
 healthy observation resolves it. One active incident is maintained per rule
 and target, with a configurable repeat interval for continued failures.
 
+### First task alert on a new cluster {#first-task-alert}
+
+The public Control image and `luma-infra` distribution include these presets.
+After normal cluster bootstrap, an empty alert database initializes its tables automatically; no private
+configuration, old database or manual SQL is required. Other projects' rules,
+notification groups and credentials are never seeded.
+
+1. Deploy the shared [Observe stack](../observe/README.md). Updating a local CLI
+   alone does not deploy Observe or upgrade Control.
+2. Instrument application processes with the [public Python SDK](../sdk/python/README.md)
+   and the appropriate adapter. Explicitly set `OTEL_METRICS_EXPORTER=otlp`;
+   Control still defaults it to `none`. Preserve injected OTLP endpoints, bearer
+   headers and the `luma.stack` resource attribute. Traces alone are not task metrics.
+3. Run `luma observe tasks APP --view overview --since 1h --format json` and check
+   actual heartbeat and metric coverage. Use the reported OTel `service_name`,
+   which can differ from the Compose name. Queue-wait metrics currently come
+   from Taskiq; another framework must explicitly emit the same signals.
+4. Configure your own Feishu application and group under **Observability →
+   Notifications**. Create a rule with its metric, application, service, threshold
+   and channel. Heartbeat rules should alert on missing samples; disable them
+   when retiring the monitored service.
+5. Check the last evaluation, incidents and delivery records. A configured channel
+   does not establish delivery. Send a channel test explicitly when group-message
+   verification is wanted.
+
+An idle new worker can have no queue distribution yet. Missing telemetry is not
+zero. Resource alerts remain usable without SDK instrumentation.
+
 Task SDK presets are `app.task_heartbeat_age`, `app.task_queue_wait_p95`,
 `app.task_telemetry_dropped` and `app.task_tracking_overflow`. Select one
 application and optionally scope it with `taskQuery.service`, using the OTel

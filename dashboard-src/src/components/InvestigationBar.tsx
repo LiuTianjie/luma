@@ -9,13 +9,16 @@ import { Button } from "./ui/button";
 import { Card, CardContent } from "./ui/card";
 import type { Lang } from "../types";
 
-export function InvestigationBar({ app, lang }: { app: string; lang: Lang }) {
+type Filters = "all" | "service" | "none";
+
+export function InvestigationBar({ app, lang, filters = "all" }: { app: string; lang: Lang; filters?: Filters }) {
   const { search } = useRouter();
   const [notice, setNotice] = useState("");
   return (
     <InvestigationForm
-      key={search}
+      key={`${search}:${filters}`}
       app={app}
+      filters={filters}
       lang={lang}
       notice={notice}
       setNotice={setNotice}
@@ -24,11 +27,13 @@ export function InvestigationBar({ app, lang }: { app: string; lang: Lang }) {
 }
 function InvestigationForm({
   app,
+  filters,
   lang,
   notice,
   setNotice,
 }: {
   app: string;
+  filters: Filters;
   lang: Lang;
   notice: string;
   setNotice: (notice: string) => void;
@@ -37,9 +42,10 @@ function InvestigationForm({
     id = useId();
   const { path, search, navigate } = useRouter(),
     params = new URLSearchParams(search);
+  const filterNames = filters === "none" ? [] : filters === "service" ? ["environment", "service", "instance"] : ["environment", "service", "instance", "keyword"];
   const [values, setValues] = useState(
     Object.fromEntries(
-      ["environment", "service", "instance", "keyword"].map((k) => [
+      filterNames.map((k) => [
         k,
         params.get(`observe_${k}`) || "",
       ]),
@@ -93,8 +99,8 @@ function InvestigationForm({
     until: new Date(Number(q.until) * 1000).toISOString(),
   });
   return (
-    <Card>
-      <CardContent className="py-4">
+    <Card className="gap-0 py-0">
+      <CardContent className="py-3">
         <form
           className="flex min-w-0 flex-col gap-3"
           onSubmit={(e) => {
@@ -106,7 +112,6 @@ function InvestigationForm({
           <div className="flex flex-wrap items-center gap-2">
             <span className="mr-auto text-sm font-medium">
               {zh ? "排查范围" : "Investigation scope"}
-              <span className="ml-2 text-muted-foreground">{app}</span>
             </span>
             <SelectControl
               className="w-full sm:w-44"
@@ -180,8 +185,8 @@ function InvestigationForm({
           >
             <summary className="w-fit cursor-pointer rounded text-sm text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring">
               {zh
-                ? "服务、实例与更多筛选"
-                : "Service, instance and more filters"}
+                ? (filters === "none" ? "自定义时间" : "更多筛选")
+                : (filters === "none" ? "Custom time range" : "More filters")}
             </summary>
             <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {[
@@ -193,7 +198,7 @@ function InvestigationForm({
                   "日志 / Trace 名称关键词",
                   "Log / trace name keyword",
                 ],
-              ].map(([k, cn, en]) => (
+              ].filter(([key]) => filterNames.includes(key)).map(([k, cn, en]) => (
                 <label
                   key={k}
                   htmlFor={`${id}-${k}`}

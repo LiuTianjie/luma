@@ -72,6 +72,68 @@ with patch.object(skills, 'agent_roots', return_value=roots), \
         backups = list((root.parent / 'luma-skill-backups').glob('luma-observe-*'))
         assert any((p / 'SKILL.md').read_text() == 'operator customization' for p in backups)
     assert all(item['paired'] and not item['modified'] for item in skills.skill_status()['items'])
+# Exercise the shipped alert engine with an empty state directory and a local
+# metrics endpoint. No source checkout, saved login, business rules or real chat.
+import os
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from luma.control import alerting, task_alerts
+from luma.control.state import save_state
+assert Path(task_alerts.__file__).is_relative_to(target)
+metric_value = 10
+class Metrics(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+    def do_GET(self):
+        from urllib.parse import parse_qs, urlsplit
+        expr = parse_qs(urlsplit(self.path).query)['query'][0]
+        assert 'luma_stack="fresh-workers"' in expr and 'service_name="worker"' in expr
+        rows = [] if metric_value is None else [{'metric': {'luma_stack': 'fresh-workers'}, 'value': [1000, str(metric_value)]}]
+        raw = json.dumps({'status': 'success', 'data': {'resultType': 'vector', 'result': rows}}).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+server = ThreadingHTTPServer(('127.0.0.1', 0), Metrics)
+thread = threading.Thread(target=server.serve_forever, daemon=True)
+thread.start()
+try:
+    with patch.dict(os.environ, {'LUMA_CONTROL_STATE_DIR': str(workspace / 'fresh-control'),
+                                 'LUMA_OBSERVE_URL': 'http://127.0.0.1:' + str(server.server_port)}):
+        # Use the same state writer as bootstrap, with no applications or old alert tables.
+        save_state({'clusterId':'fixture-cluster', 'domain':'luma.example.test'})
+        assert task_alerts.METRICS <= {x['metric'] for x in alerting.dispatch('GET', 'presets')['items']}
+        assert alerting.dispatch('GET', 'rules')['items'] == []
+        assert alerting.dispatch('GET', 'channels')['items'] == []
+        channel = alerting.save_channel({'name':'Fixture only', 'appId':'cli_test1234', 'appSecret':'fixture-secret', 'chatId':'oc_group1234'})
+        rule = alerting.save_rule({'name':'Worker heartbeat', 'metric':'app.task_heartbeat_age',
+                                  'target':'fresh-workers', 'taskQuery':{'service':'worker'},
+                                  'threshold':120, 'forSeconds':0, 'channelIds':[channel['id']]})
+        alerting.tick(alerting.load_evaluation_state(now=1000), now=1000)
+        assert alerting.dispatch('GET', 'incidents')['items'] == []
+        metric_value = 180
+        alerting.tick(alerting.load_evaluation_state(now=1015), now=1015)
+        assert alerting.dispatch('GET', 'incidents')['items'][0]['status'] == 'firing'
+        messages = []
+        alerting.deliver_pending(now=1015, transport=lambda *args: messages.append(args))
+        assert len(messages) == 1 and 'worker' in messages[0][3]
+        metric_value = None
+        alerting.tick(alerting.load_evaluation_state(now=1030), now=1030)
+        incident = alerting.dispatch('GET', 'incidents')['items'][0]
+        assert incident['status'] == 'firing' and incident['noData']
+        metric_value = 10
+        alerting.tick(alerting.load_evaluation_state(now=1045), now=1045)
+        alerting.deliver_pending(now=1045, transport=lambda *args: messages.append(args))
+        assert alerting.dispatch('GET', 'incidents')['items'][0]['status'] == 'resolved'
+        assert len(messages) == 2
+        assert alerting.dispatch('GET', 'rules')['items'][0]['taskQuery'] == {'service':'worker'}
+        assert all(x['status'] == 'sent' for x in alerting.dispatch('GET', 'deliveries')['items'])
+finally:
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)
+print('Installed wheel: fresh Control presets, rule persistence, metric query, firing, missing data and recovery passed')
 print('Installed wheel: observe commands, Codex/Claude/custom installs, upgrade sync and backups passed')
 '''
 

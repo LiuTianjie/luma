@@ -142,6 +142,18 @@ async function charge(orderId) {
 
 此预设直接使用 Agent 采样，不依赖 observe。Control 在数据库事务外将 Nomad allocation ID 映射到应用名；心跳和容器采样均须在 120 秒内，且内存上限为正数。已知副本缺少有效采样或应用身份无法解析时，不会将其余低占用容器当成恢复依据；已有新鲜容器超过阈值时，仍可确认超限。`noData: keep` 会保留已触发事件，并中断 pending 的连续计时。Linux 下 Docker 使用量扣除了不活跃文件缓存，因此它是针对 Docker 所报内存上限的提前预警，不等同于磁盘压力或完整 cgroup 缓存用量；主机内存和磁盘告警仍应保留。
 
+### 新集群首次配置任务告警 {#first-task-alert}
+
+这些通用预设随公开 Control 镜像及 `luma-infra` 发布包提供，完成标准首次安装后，空告警数据库会自动创建告警表，无需旧集群、私有配置文件或 SQL 初始化。新集群不会预置任何其他项目的规则、接收群或凭证。
+
+1. 按 [Observe 部署说明](../observe/README.md) 部署共享观测栈；仅升级本地 CLI 不会部署 Observe 或升级 Control。
+2. 应用接入 [公开 Python SDK](../sdk/python/README.md)，在每个进程初始化对应适配器，显式设置 `OTEL_METRICS_EXPORTER=otlp`。Control 默认值仍为 `none`。保留注入的 OTLP 地址、认证头及 `luma.stack` 资源属性；仅有 Trace 不代表任务指标已经上报。
+3. 用 `luma observe tasks APP --view overview --since 1h --format json` 确认心跳和需要的指标有采样。`service_name` 是实际上报的 OTel 服务名；不要猜测它一定等于 Compose 服务名。排队等待目前来自 Taskiq 指标，其他框架只有明确上报相同指标才适用。
+4. 在 **可观测 → 通知渠道** 配置自己的飞书应用和群，再在 **规则 → 新建** 选择任务指标、应用、服务、阈值及该渠道。心跳规则选择“采样缺失时触发告警”；服务停止监测时停用对应规则。
+5. 查看最近评估时间、事件和投递记录。渠道已配置不等于消息已送达，以投递状态为准；需要验证群消息时再主动发送渠道测试。
+
+首次无任务执行时，排队分位数可能没有数据；不得将未上报或采集故障当作零。资源告警不依赖 SDK，仍可单独使用。
+
 Control 提供四种任务 SDK 指标预设：`app.task_heartbeat_age`、`app.task_queue_wait_p95`、`app.task_telemetry_dropped` 和 `app.task_tracking_overflow`。在规则页选择单个应用，并按需填写心跳表中的 OTel `service_name`；心跳规则必须指定预期持续运行的服务。每条规则在 `taskQuery.service` 保存服务范围，与部署服务名可能不同。每集群最多 20 条任务指标规则，查询在 SQLite 事务外执行，并复用相同范围的查询。
 
 - 心跳取指定服务所有进程中的最新值，默认超过 120 秒持续 180 秒；推荐 `noData: alert`，使所有序列消失也能触发。心跳缺失可能来自服务或采集链路，不能直接判定业务进程死亡。服务退役时停用对应规则。

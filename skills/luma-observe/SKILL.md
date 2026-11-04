@@ -68,6 +68,24 @@ silence, close, or resend notifications. Preserve each source's ownership and
 availability when reporting; a missing source cannot establish no incidents.
 For a single execution, continue with `luma-logs` and exact task/Trace identifiers.
 
+## First-use task metric alerts
+
+Public Control releases include task heartbeat age, queue-wait p95, SDK drops
+and active-tracking overflow presets. A fresh database initializes automatically;
+never copy another project's rule IDs, credentials or private dashboard files.
+Deploy Observe and instrument each application's processes with the public SDK.
+Set `OTEL_METRICS_EXPORTER=otlp` explicitly (the injected default is `none`) and
+preserve `luma.stack`, the OTLP endpoint and bearer headers. Confirm actual metrics
+with `luma observe tasks APP --view overview` before claiming coverage.
+
+Create a rule for one application and its own notification channel. Heartbeat
+rules require the expected OTel `service_name`, not a guessed Compose name;
+use `noData: alert` when loss of every series must notify. Queue-wait p95 requires
+at least 20 consumed-task observations per service/queue over 15 minutes and
+currently uses Taskiq metrics. SDK drops and tracking overflow do not cover every
+Collector or OTLP loss. The platform has no project-specific defaults, and a
+cleared alert is not proof of business-task compensation.
+
 ## When to use
 
 - Deploy, update, or debug `luma-observe`
