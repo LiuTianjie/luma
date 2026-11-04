@@ -51,6 +51,7 @@ const ICONS = {
   Cpu: "regular/cpu",
   Globe: "regular/globe-simple",
   Bell: "regular/bell-simple",
+  BellSlash: "regular/bell-simple-slash",
   BookOpen: "regular/book-open-text",
   Command: "regular/command",
   UserCircle: "regular/user-circle",

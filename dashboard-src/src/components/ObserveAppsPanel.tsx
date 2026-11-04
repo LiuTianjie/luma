@@ -1,20 +1,16 @@
 import { useRouter } from "../router";
 import { grafanaRange, logsExpression, observationQuery } from "../observeContext";
 import { useEffect, useId, useRef, useState } from "react";
-import { Maximize2, Minimize2 } from "@/components/icons";
+import { ExternalLink, Maximize2, Minimize2 } from "@/components/icons";
+import { cn } from "@/lib/utils";
+import { useObserveRefresh, useRefreshEvent } from "./observeRefresh";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Lang } from "../types";
 import { SelectControl } from "./primitives";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Spinner } from "@/components/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import "./ObservabilityPanel.css";
@@ -129,6 +125,13 @@ export function ObserveAppsPanel({
   const [expanded, setExpanded] = useState(false);
   const [loadedSrc, setLoadedSrc] = useState("");
   const [fullscreenError, setFullscreenError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
+  const refreshHost = useObserveRefresh();
+  // The page refresh reloads the embedded view in place.
+  useRefreshEvent(() => {
+    setLoadedSrc("");
+    setReloadKey((n) => n + 1);
+  });
   useEffect(() => {
     const onFullscreenChange = () =>
       setExpanded(document.fullscreenElement === container.current);
@@ -168,110 +171,96 @@ export function ObserveAppsPanel({
           ? "/grafana/?orgId=1"
           : dashboardSrc(current.uid, app, search);
   const showAppFilter = view !== "grafana";
+  const loading = loadedSrc !== src;
+  const openHref = src.replace(/([?&])kiosk=tv&?/, "$1").replace(/[?&]$/, "");
   return (
-    <Card ref={container} className="grafana-embed min-w-0">
-      <CardHeader>
-        <CardTitle>
-          {lockedView && app ? `${app} · ` : ""}
-          {zh ? current.zh : current.en}
-        </CardTitle>
-        <CardDescription>
-          {loadedSrc !== src ? (
-            <span role="status" className="flex items-center gap-2">
+    <Card ref={container} className="grafana-embed min-w-0 gap-0 py-0">
+      <div className="flex flex-wrap items-center gap-2 border-b border-hairline px-4 py-2.5" role="toolbar" aria-label={zh ? "观测视图" : "Observability view"}>
+        {lockedView ? (
+          <span className="text-[0.8125rem] font-medium">
+            {app ? `${app} · ` : ""}
+            {zh ? current.zh : current.en}
+          </span>
+        ) : (
+          <ToggleGroup
+            variant="segmented"
+            value={[view]}
+            onValueChange={(values) => {
+              if (values[0])
+                setView(values[0] as (typeof VIEWS)[number]["id"]);
+            }}
+            aria-label={zh ? "视图" : "View"}
+          >
+            {VIEWS.map((item) => (
+              <ToggleGroupItem key={item.id} value={item.id}>
+                {zh ? item.zh : item.en}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+        )}
+        <div className="ml-auto flex min-w-0 items-center gap-2">
+          {loading && (
+            <span role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <Spinner aria-hidden="true" />
-              {zh ? "正在加载观测面板…" : "Loading observability dashboard…"}
+              {zh ? "正在加载…" : "Loading…"}
             </span>
-          ) : zh ? (
-            "Grafana 观测面板"
-          ) : (
-            "Grafana observability dashboard"
           )}
-        </CardDescription>
-        {document.fullscreenEnabled && (
-          <CardAction>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              aria-pressed={expanded}
-              onClick={() => void toggleFullscreen()}
-            >
-              {expanded ? (
-                <Minimize2 data-icon="inline-start" />
-              ) : (
-                <Maximize2 data-icon="inline-start" />
-              )}
-              {expanded
-                ? zh
-                  ? "退出全屏"
-                  : "Exit fullscreen"
-                : zh
-                  ? "全屏"
-                  : "Fullscreen"}
-            </Button>
-          </CardAction>
-        )}
-      </CardHeader>
-      <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
-        {!lockedView && (
-          <FieldGroup className="flex flex-col flex-wrap lg:flex-row lg:items-end">
-            <Field className="min-w-0 lg:flex-1">
-              <FieldLabel id={`${fieldId}-views`}>
-                {zh ? "视图" : "View"}
-              </FieldLabel>
-              <ToggleGroup
-                variant="segmented"
-                value={[view]}
-                onValueChange={(values) => {
-                  if (values[0])
-                    setView(values[0] as (typeof VIEWS)[number]["id"]);
-                }}
-                aria-labelledby={`${fieldId}-views`}
-              >
-                {VIEWS.map((item) => (
-                  <ToggleGroupItem key={item.id} value={item.id}>
-                    {zh ? item.zh : item.en}
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-            </Field>
-            {showAppFilter && (
-              <Field className="lg:w-56">
-                <FieldLabel htmlFor={`${fieldId}-app`}>
-                  {zh ? "应用" : "Application"}
-                </FieldLabel>
-                <SelectControl
-                  id={`${fieldId}-app`}
-                  className="min-w-0"
-                  value={app}
-                  onChange={setApp}
-                  options={[
-                    { value: "", label: zh ? "全部应用" : "All apps" },
-                    ...names.map((name) => ({ value: name, label: name })),
-                  ]}
-                />
-              </Field>
-            )}
-          </FieldGroup>
-        )}
-        {fullscreenError && (
-          <Alert>
-            <AlertTitle>
-              {zh ? "全屏不可用" : "Fullscreen unavailable"}
-            </AlertTitle>
-            <AlertDescription>{fullscreenError}</AlertDescription>
-          </Alert>
-        )}
+          {!lockedView && showAppFilter && (
+            <div className="w-48 min-w-0">
+              <label htmlFor={`${fieldId}-app`} className="sr-only">
+                {zh ? "应用" : "Application"}
+              </label>
+              <SelectControl
+                id={`${fieldId}-app`}
+                className="min-w-0"
+                value={app}
+                onChange={setApp}
+                options={[
+                  { value: "", label: zh ? "全部应用" : "All apps" },
+                  ...names.map((name) => ({ value: name, label: name })),
+                ]}
+              />
+            </div>
+          )}
+          <Tooltip>
+            <TooltipTrigger render={<Button variant="ghost" size="icon-sm" nativeButton={false} render={<a href={openHref} target="_blank" rel="noopener noreferrer" />} aria-label={zh ? "在 Grafana 中打开（新窗口）" : "Open in Grafana (new window)"} />}>
+              <ExternalLink />
+            </TooltipTrigger>
+            <TooltipContent>{zh ? "在 Grafana 中打开" : "Open in Grafana"}</TooltipContent>
+          </Tooltip>
+          {document.fullscreenEnabled && (
+            <Tooltip>
+              <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" aria-pressed={expanded} aria-label={expanded ? (zh ? "退出全屏" : "Exit fullscreen") : (zh ? "全屏" : "Fullscreen")} onClick={() => void toggleFullscreen()} />}>
+                {expanded ? <Minimize2 /> : <Maximize2 />}
+              </TooltipTrigger>
+              <TooltipContent>{expanded ? (zh ? "退出全屏" : "Exit fullscreen") : (zh ? "全屏" : "Fullscreen")}</TooltipContent>
+            </Tooltip>
+          )}
+        </div>
+      </div>
+      {fullscreenError && (
+        <Alert className="m-4 w-auto">
+          <AlertTitle>
+            {zh ? "全屏不可用" : "Fullscreen unavailable"}
+          </AlertTitle>
+          <AlertDescription>{fullscreenError}</AlertDescription>
+        </Alert>
+      )}
+      <div className="relative min-h-0 flex-1 bg-background">
+        {loading && <Skeleton aria-hidden="true" className="absolute inset-4 rounded-md" />}
         <iframe
-          key={src}
+          key={`${src}:${reloadKey}`}
           title={zh ? current.zh : current.en}
           src={src}
           allow="fullscreen"
-          className="min-h-0 w-full flex-1 border-0"
-          aria-busy={loadedSrc !== src}
-          onLoad={() => setLoadedSrc(src)}
+          className={cn("relative size-full border-0 transition-opacity duration-200", loading ? "opacity-0" : "opacity-100")}
+          aria-busy={loading}
+          onLoad={() => {
+            setLoadedSrc(src);
+            refreshHost.markUpdated();
+          }}
         />
-      </CardContent>
+      </div>
     </Card>
   );
 }

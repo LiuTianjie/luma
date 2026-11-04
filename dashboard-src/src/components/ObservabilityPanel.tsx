@@ -14,14 +14,10 @@ import type {
   Lang,
   ResourceValues,
 } from "../types";
-import { SelectControl, StatePill } from "./primitives";
+import { SelectControl, StatePill, UsageMeter, usageTone } from "./primitives";
+import { cn } from "@/lib/utils";
+import { useObserveRefresh } from "./observeRefresh";
 import { Button } from "@/components/ui/button";
-import {
-  Field,
-  FieldDescription,
-  FieldGroup,
-  FieldLabel,
-} from "@/components/ui/field";
 import {
   Card,
   CardAction,
@@ -189,6 +185,12 @@ export function ObservabilityPanel({
   );
   const histories = useMetricsHistories(token, targets, historyWindow, query.has("observe_until") ? Number(scope.until) : undefined);
   const history = histories[historyKey(kind, selected)];
+  const refreshHost = useObserveRefresh();
+  useEffect(() => {
+    if (!history) return;
+    if (history.error) refreshHost.setRefreshing(false);
+    else refreshHost.markUpdated();
+  }, [history, refreshHost]);
   const retention = history?.payload?.retentionSeconds;
   const series = history?.payload?.series || {};
   const node = nodes.find((item) => item.name === selected);
@@ -240,100 +242,77 @@ export function ObservabilityPanel({
         ];
   return (
     <div className="flex min-w-0 flex-col gap-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>{zh ? "监测范围" : "Monitoring scope"}</CardTitle>
-          <CardDescription>
-            {zh
-              ? "每 30 秒刷新，采样断点不会插值。"
-              : "Refreshes every 30 seconds. Gaps in samples remain visible."}
-            {investigation && (zh ? " 资源数据按下方部署服务查看；环境与进程实例筛选用于业务遥测。" : " Resource data uses the deployed service below; environment and process instance filters apply to application telemetry.")}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FieldGroup className="grid md:grid-cols-[auto_minmax(0,1fr)_auto]">
-            <Field>
-              <FieldLabel id="metrics-kind-label">
-                {zh ? "对象类型" : "Object type"}
-              </FieldLabel>
-              <ToggleGroup
-                variant="segmented"
-                value={[kind]}
-                onValueChange={(values) => {
-                  if (values[0]) update({ kind: values[0], target: "" });
-                }}
-                aria-labelledby="metrics-kind-label"
+      <div className="flex flex-wrap items-center gap-2" role="toolbar" aria-label={zh ? "监测范围" : "Monitoring scope"}>
+        <ToggleGroup
+          variant="segmented"
+          value={[kind]}
+          onValueChange={(values) => {
+            if (values[0]) update({ kind: values[0], target: "" });
+          }}
+          aria-label={zh ? "对象类型" : "Object type"}
+        >
+          {nodes.length > 0 && (
+            <ToggleGroupItem value="node">
+              {zh ? "节点" : "Node"}
+            </ToggleGroupItem>
+          )}
+          <ToggleGroupItem value="service">
+            {zh ? "服务" : "Service"}
+          </ToggleGroupItem>
+        </ToggleGroup>
+        <div className="w-full min-w-0 sm:w-72">
+          <SelectControl
+            id="metrics-target"
+            ariaLabel={zh ? "监测对象" : "Target"}
+            className="min-w-0"
+            disabled={!available.length}
+            value={selected}
+            onChange={(value) => update({ target: value, ...(investigation ? {service: value} : {}) })}
+            options={[
+              ...(!valid
+                ? [
+                    {
+                      value: selected,
+                      label: selected || (zh ? "暂无对象" : "No targets"),
+                    },
+                  ]
+                : []),
+              ...available.map((item) => ({
+                value: item.name,
+                label: item.label,
+              })),
+            ]}
+          />
+        </div>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {shared ? <span className="text-[0.8125rem] text-muted-foreground">{zh ? "时间范围跟随上方排查范围" : "Using the investigation range above"}</span> : <ToggleGroup
+            variant="segmented"
+            value={[String(historyWindow)]}
+            onValueChange={(values) => {
+              if (values[0]) update({ window: values[0] });
+            }}
+            aria-label={zh ? "时间范围" : "Time range"}
+          >
+            {HISTORY_WINDOWS.map((value) => (
+              <ToggleGroupItem
+                key={value}
+                value={String(value)}
+                disabled={
+                  typeof retention === "number" && value > retention
+                }
+                title={typeof retention === "number" && value > retention ? (zh ? `超出历史保留（${Math.round(retention / 60)} 分钟）` : `Beyond retention (${Math.round(retention / 60)} min)`) : undefined}
               >
-                {nodes.length > 0 && (
-                  <ToggleGroupItem value="node">
-                    {zh ? "节点" : "Node"}
-                  </ToggleGroupItem>
-                )}
-                <ToggleGroupItem value="service">
-                  {zh ? "服务" : "Service"}
-                </ToggleGroupItem>
-              </ToggleGroup>
-            </Field>
-            <Field data-disabled={!available.length}>
-              <FieldLabel htmlFor="metrics-target">
-                {zh ? "监测对象" : "Target"}
-              </FieldLabel>
-              <SelectControl
-                id="metrics-target"
-                className="min-w-0"
-                disabled={!available.length}
-                value={selected}
-                onChange={(value) => update({ target: value, ...(investigation ? {service: value} : {}) })}
-                options={[
-                  ...(!valid
-                    ? [
-                        {
-                          value: selected,
-                          label: selected || (zh ? "暂无对象" : "No targets"),
-                        },
-                      ]
-                    : []),
-                  ...available.map((item) => ({
-                    value: item.name,
-                    label: item.label,
-                  })),
-                ]}
-              />
-            </Field>
-            <Field>
-              <FieldLabel id="metrics-window-label">
-                {zh ? "时间范围" : "Time range"}
-              </FieldLabel>
-              {shared ? <p className="text-sm text-muted-foreground">{zh ? "跟随上方排查范围" : "Using investigation range above"}</p> : <ToggleGroup
-                variant="segmented"
-                value={[String(historyWindow)]}
-                onValueChange={(values) => {
-                  if (values[0]) update({ window: values[0] });
-                }}
-                aria-labelledby="metrics-window-label"
-              >
-                {HISTORY_WINDOWS.map((value) => (
-                  <ToggleGroupItem
-                    key={value}
-                    value={String(value)}
-                    disabled={
-                      typeof retention === "number" && value > retention
-                    }
-                  >
-                    {value < 3600 ? `${value / 60} min` : `${value / 3600} h`}
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>}
-              {retention && (
-                <FieldDescription>
-                  {zh ? "历史保留" : "History retention"} ·{" "}
-                  {Math.round(retention / 60)} min
-                </FieldDescription>
-              )}
-            </Field>
-          </FieldGroup>
-        </CardContent>
-      </Card>
+                {value < 3600 ? (zh ? `${value / 60} 分钟` : `${value / 60}m`) : (zh ? `${value / 3600} 小时` : `${value / 3600}h`)}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>}
+        </div>
+      </div>
+      {investigation && (
+        <p className="-mt-3 text-xs text-muted-foreground">
+          {zh ? "资源数据按所选部署服务查看；环境与进程实例筛选用于业务遥测。" : "Resource data uses the selected deployed service; environment and process instance filters apply to application telemetry."}
+        </p>
+      )}
       {!valid ? (
         <Card>
           <CardHeader>
@@ -389,71 +368,38 @@ export function ObservabilityPanel({
             <CardContent className="flex flex-col gap-4">
               {kind === "node" && node ? (
                 <dl
-                  className="grid grid-cols-3 gap-3 sm:gap-6"
+                  className="grid grid-cols-1 gap-3 sm:grid-cols-3"
                   aria-label={zh ? "当前快照" : "Current snapshot"}
                 >
-                  <div className="flex min-w-0 flex-col gap-1">
-                    <dt className="text-sm text-muted-foreground">CPU</dt>
-                    <dd className="text-xl font-semibold tabular-nums sm:text-2xl">
-                      {formatPercent(
-                        node.metrics?.cpuPercent ?? node.metrics?.loadPercent,
-                      )}
-                    </dd>
-                    <span className="text-sm text-muted-foreground">
-                      {zh ? "当前使用率" : "Current utilization"}
-                    </span>
-                  </div>
-                  <div className="flex min-w-0 flex-col gap-1">
-                    <dt className="text-sm text-muted-foreground">
-                      {zh ? "内存" : "Memory"}
-                    </dt>
-                    <dd className="text-xl font-semibold tabular-nums sm:text-2xl">
-                      {formatPercent(node.metrics?.memoryUsedPercent)}
-                    </dd>
-                    <span className="text-sm text-muted-foreground">
-                      {zh ? "总量 " : "Total "}
-                      {formatBytes(
-                        node.metrics?.memoryTotalBytes ??
-                          node.capacity?.memoryBytes,
-                      )}
-                    </span>
-                  </div>
-                  <div className="flex min-w-0 flex-col gap-1">
-                    <dt className="text-sm text-muted-foreground">
-                      {zh ? "磁盘可用" : "Disk available"}
-                    </dt>
-                    <dd className="text-xl font-semibold tabular-nums sm:text-2xl">
-                      {formatBytes(node.metrics?.diskAvailableBytes)}
-                    </dd>
-                    {node.metrics?.metricsPath ? (
-                      <span className="text-sm text-muted-foreground wrap-anywhere">
-                        {node.metrics.metricsPath}
-                      </span>
-                    ) : null}
-                  </div>
+                  {[
+                    { key: "cpu", label: "CPU", value: node.metrics?.cpuPercent ?? node.metrics?.loadPercent, detail: zh ? "当前使用率" : "Current utilization" },
+                    { key: "memory", label: zh ? "内存" : "Memory", value: node.metrics?.memoryUsedPercent, detail: `${zh ? "总量" : "Total"} ${formatBytes(node.metrics?.memoryTotalBytes ?? node.capacity?.memoryBytes)}` },
+                    { key: "disk", label: zh ? "磁盘" : "Disk", value: node.metrics?.diskUsedPercent, detail: `${zh ? "可用" : "Free"} ${formatBytes(node.metrics?.diskAvailableBytes)}${node.metrics?.diskTotalBytes ? ` / ${formatBytes(node.metrics.diskTotalBytes)}` : ""}` },
+                  ].map((item) => (
+                    <div key={item.key} className="flex min-w-0 flex-col gap-2 rounded-lg bg-muted/50 px-4 py-3 ring-1 ring-hairline">
+                      <dt className="text-xs font-medium text-muted-foreground">{item.label}</dt>
+                      <dd className="flex min-w-0 flex-col gap-2">
+                        <span className={cn("text-xl/none font-semibold tracking-[-0.01em] tabular-nums", usageTone(item.value) === "critical" && "text-destructive-foreground", usageTone(item.value) === "warning" && "text-warning-foreground")}>{formatPercent(item.value)}</span>
+                        <UsageMeter value={item.value} label={item.label} className="w-full [&>[role=meter]]:max-w-none [&>span:last-child]:hidden" />
+                        <span className="truncate text-xs text-muted-foreground">{item.detail}</span>
+                      </dd>
+                    </div>
+                  ))}
                 </dl>
               ) : (
                 service && (
                   <>
-                    <dl className="grid gap-4 sm:grid-cols-3">
-                      <div className="flex flex-col gap-1">
-                        <dt className="text-muted-foreground">
-                          {zh ? "实际用量" : "Actual usage"}
-                        </dt>
-                        <dd>{actualText(service.resources?.actual)}</dd>
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <dt className="text-muted-foreground">
-                          {zh ? "限制" : "Limit"}
-                        </dt>
-                        <dd>{resourceText(service.resources?.limits)}</dd>
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <dt className="text-muted-foreground">
-                          {zh ? "预留" : "Reservation"}
-                        </dt>
-                        <dd>{resourceText(service.resources?.reservations)}</dd>
-                      </div>
+                    <dl className="grid grid-cols-1 gap-3 sm:grid-cols-3" aria-label={zh ? "当前快照" : "Current snapshot"}>
+                      {[
+                        { key: "actual", label: zh ? "实际用量" : "Actual usage", value: actualText(service.resources?.actual) },
+                        { key: "limit", label: zh ? "限制" : "Limit", value: resourceText(service.resources?.limits) },
+                        { key: "reservation", label: zh ? "预留" : "Reservation", value: resourceText(service.resources?.reservations) },
+                      ].map((item) => (
+                        <div key={item.key} className="flex min-w-0 flex-col gap-2 rounded-lg bg-muted/50 px-4 py-3 ring-1 ring-hairline">
+                          <dt className="text-xs font-medium text-muted-foreground">{item.label}</dt>
+                          <dd className="text-sm font-medium tabular-nums">{item.value}</dd>
+                        </div>
+                      ))}
                     </dl>
                     <div className="flex flex-wrap gap-2">
                       {(service.tasks || []).map((task, index) => (
@@ -525,10 +471,10 @@ export function ObservabilityPanel({
               );
             })}
           </div>
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             {zh
-              ? "180 秒未更新的节点不计入服务汇总；超过 90 秒的采样间隔显示为断点。"
-              : "Service totals exclude nodes stale for 180s. Gaps over 90s break the line."}
+              ? "每 30 秒刷新。180 秒未更新的节点不计入服务汇总；超过 90 秒的采样间隔显示为断点，不做插值。"
+              : "Refreshes every 30 seconds. Service totals exclude nodes stale for 180s; gaps over 90s break the line and are not interpolated."}
           </p>
         </>
       )}

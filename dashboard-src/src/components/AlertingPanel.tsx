@@ -30,9 +30,17 @@ import type {
   AlertRule,
   AlertTab,
 } from "../alertingApi";
-import { useRouter, useSearchParams } from "../router";
+import { spaLink, useRouter, useSearchParams } from "../router";
 import { SelectControl } from "./primitives";
-import { AlertCircle, CheckCircle2 } from "@/components/icons";
+import { AlertCircle, ArrowLeft, Bell, BellSlash, CheckCircle2, MoreHorizontal, Pause, Pencil, Play, Plus } from "@/components/icons";
+import { formatClock, useObserveRefresh } from "./observeRefresh";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Alert,
   AlertAction,
@@ -93,19 +101,36 @@ import { EMPTY_VALUE, formatDateTime } from "../format";
 function stamp(value: number | null | undefined, zh: boolean) {
   return value ? formatDateTime(value, zh ? "zh" : "en") : EMPTY_VALUE;
 }
+/** Compact elapsed time between two Unix-second stamps ("6 分钟" / "2h 5m"). */
+export function formatDuration(from: number | null | undefined, to: number | null | undefined, zh: boolean) {
+  if (!from) return EMPTY_VALUE;
+  const seconds = Math.max(0, Math.round((to || Date.now() / 1000) - from));
+  if (seconds < 60) return zh ? "不到 1 分钟" : "<1m";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return zh ? `${minutes} 分钟` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return zh ? `${hours} 小时${minutes % 60 ? ` ${minutes % 60} 分` : ""}` : `${hours}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
+  const days = Math.floor(hours / 24);
+  return zh ? `${days} 天${hours % 24 ? ` ${hours % 24} 小时` : ""}` : `${days}d${hours % 24 ? ` ${hours % 24}h` : ""}`;
+}
+function formatSeconds(value: number | null | undefined, zh: boolean) {
+  const seconds = Math.max(0, Math.round(Number(value) || 0));
+  if (seconds < 60 || seconds % 60) return `${seconds}${zh ? " 秒" : "s"}`;
+  const minutes = seconds / 60;
+  if (minutes < 60 || minutes % 60) return zh ? `${minutes} 分钟` : `${minutes}m`;
+  return zh ? `${minutes / 60} 小时` : `${minutes / 60}h`;
+}
 function AlertStatus({ status, zh }: { status: string; zh: boolean }) {
+  const variant = ["firing", "failed", "critical"].includes(status)
+    ? "destructive"
+    : ["pending", "warning", "retry", "sending"].includes(status)
+      ? "warning"
+      : ["sent", "resolved", "delivered"].includes(status)
+        ? "success"
+        : "outline";
+  // Settled states read quietly; only states that need a look get a filled tint.
   return (
-    <Badge
-      variant={
-        ["firing", "failed", "critical"].includes(status)
-          ? "destructive"
-          : ["pending", "warning", "retry", "sending"].includes(status)
-            ? "warning"
-            : ["sent", "resolved", "delivered"].includes(status)
-              ? "success"
-              : "outline"
-      }
-    >
+    <Badge variant={variant} appearance={variant === "success" || variant === "outline" ? "dot" : "filled"}>
       {alertStatusLabel(status, zh)}
     </Badge>
   );
@@ -132,6 +157,17 @@ function IncidentActions({ item, zh, busy, compact = false, onStop, onClose }: {
       {zh ? "关闭告警" : "Close incident"}
     </Button>
   </>;
+}
+
+/** Event details are free text from Control; structured values read as `key: value`. */
+function eventDetailText(detail: unknown): string {
+  if (detail === null || detail === undefined || detail === "") return "—";
+  if (typeof detail === "string") return detail;
+  if (typeof detail === "object" && !Array.isArray(detail)) {
+    const parts = Object.entries(detail as Record<string, unknown>).map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : String(value)}`);
+    return parts.length ? parts.join(" · ") : "—";
+  }
+  return JSON.stringify(detail);
 }
 
 function AlertEmpty({
@@ -196,6 +232,7 @@ export function AlertingPanel({
   application?: string;
 }) {
   const zh = lang === "zh";
+  const refreshHost = useObserveRefresh();
   const { confirm, element: confirmElement } = useConfirm(lang);
   const { path, navigate } = useRouter();
   const query = useSearchParams();
@@ -294,9 +331,12 @@ export function AlertingPanel({
         if (!expanded && next.deliveries) setDeliveries(next.deliveries);
         setLoaded(true);
         setError("");
+        refreshHost.markUpdated();
       } catch (err) {
-        if (!cancelled)
+        if (!cancelled) {
           setError(err instanceof Error ? err.message : String(err));
+          refreshHost.setRefreshing(false);
+        }
       } finally {
         window.clearTimeout(timeout);
         if (!cancelled) timer = window.setTimeout(() => void load(), 15000);
@@ -308,7 +348,7 @@ export function AlertingPanel({
       controller?.abort();
       window.clearTimeout(timer);
     };
-  }, [token, tab, filter, appFilter, refresh, expanded, zh]);
+  }, [token, tab, filter, appFilter, refresh, expanded, zh, refreshHost]);
 
   useEffect(() => {
     scope.current += 1;
@@ -413,6 +453,27 @@ export function AlertingPanel({
     navigate(`/observe/channels/${encodeURIComponent(item.id || "new")}`);
   }
   const silenceActive = (overview?.silencedUntil || 0) > Date.now() / 1000;
+  const appFilterControl = !application ? (
+    <div className="w-full sm:w-56">
+      <Combobox items={["", ...new Set([...applicationNames, ...knownApps, appFilter].filter(Boolean))]}
+        value={appFilter} onValueChange={(value) => {
+          setExpanded(false);
+          navigate(`${tab === "rules" ? "/observe/rules" : "/observe"}${value ? `?app=${encodeURIComponent(value)}` : ""}`);
+        }}>
+        <ComboboxInput id="alert-app-filter" className="w-full" aria-label={zh ? "筛选应用" : "Filter by application"} placeholder={zh ? "全部应用" : "All applications"} />
+        <ComboboxContent><ComboboxEmpty>{zh ? "没有匹配的应用" : "No matching applications"}</ComboboxEmpty>
+          <ComboboxList>{(name: string) => <ComboboxItem key={name || "all"} value={name}>{name || (zh ? "全部应用" : "All applications")}</ComboboxItem>}</ComboboxList>
+        </ComboboxContent>
+      </Combobox>
+    </div>
+  ) : null;
+  const crossLink = appFilter && !application ? (
+    <Button variant="ghost" size="sm" onClick={() => navigate(`${tab === "rules" ? "/observe" : "/observe/rules"}?${appQuery}`)}>
+      {tab === "rules" ? (zh ? "查看此应用告警" : "View app incidents") : (zh ? "管理此应用规则" : "Manage app rules")}
+    </Button>
+  ) : null;
+  const incidentHref = (item: AlertIncident) =>
+    `/${application ? `apps/${encodeURIComponent(application)}/alerts` : "observe/incidents"}/${encodeURIComponent(item.id)}${appQuery ? `?${appQuery}` : ""}`;
   const channelNames = (ids: string[]) =>
     ids.map((id) => channels.find((c) => c.id === id)?.name || id).join(", ");
   const refreshNow = () => {
@@ -589,24 +650,6 @@ export function AlertingPanel({
   return (
     <div className={cn("flex min-w-0 flex-col gap-6", editor && "max-w-4xl")}>
       {confirmElement}
-      {!editor && tab === "alerts" && <ExternalAlerts app={appFilter} lang={lang} token={token} />}
-      {!editor && tab !== "notifications" && (!application || appFilter) && <div className="flex flex-wrap items-center gap-2">
-        {!application && <div className="w-full max-w-xs">
-          <Combobox items={["", ...new Set([...applicationNames, ...knownApps, appFilter].filter(Boolean))]}
-            value={appFilter} onValueChange={(value) => {
-              setExpanded(false);
-              navigate(`${tab === "rules" ? "/observe/rules" : "/observe"}${value ? `?app=${encodeURIComponent(value)}` : ""}`);
-            }}>
-            <ComboboxInput id="alert-app-filter" aria-label={zh ? "筛选应用" : "Filter by application"} placeholder={zh ? "全部应用" : "All applications"} />
-            <ComboboxContent><ComboboxEmpty>{zh ? "没有匹配的应用" : "No matching applications"}</ComboboxEmpty>
-              <ComboboxList>{(name: string) => <ComboboxItem key={name || "all"} value={name}>{name || (zh ? "全部应用" : "All applications")}</ComboboxItem>}</ComboboxList>
-            </ComboboxContent>
-          </Combobox>
-        </div>}
-        {appFilter && <Button variant="outline" onClick={() => navigate(`${tab === "rules" ? "/observe" : "/observe/rules"}?${appQuery}`)}>
-          {tab === "rules" ? (zh ? "查看应用告警" : "View app incidents") : (zh ? "管理此应用规则" : "Manage app rules")}
-        </Button>}
-      </div>}
       {editor && (
         <Button
           type="button"
@@ -615,6 +658,7 @@ export function AlertingPanel({
           className="w-fit"
           onClick={() => navigate(basePath)}
         >
+          <ArrowLeft data-icon="inline-start" aria-hidden="true" />
           {zh ? "返回列表" : "Back to list"}
         </Button>
       )}
@@ -682,19 +726,50 @@ export function AlertingPanel({
         <>
           {!editor && tab === "alerts" && (
             <Card className="gap-0 py-0">
-              <dl className="grid grid-cols-2 @container md:grid-cols-4 md:divide-x md:divide-hairline max-md:[&>div:nth-child(n+3)]:border-t max-md:[&>div:nth-child(even)]:border-l [&>div]:border-hairline">
+              <dl className="grid grid-cols-2 md:grid-cols-4 md:divide-x md:divide-hairline max-md:[&>div:nth-child(n+3)]:border-t max-md:[&>div:nth-child(even)]:border-l [&>div]:border-hairline">
                 {[
-                  { label: zh ? "触发中" : "Firing", value: overview.counts.firing, tone: overview.counts.firing ? "critical" : "normal" },
-                  { label: zh ? "等待持续条件" : "Pending duration", value: overview.counts.pending, tone: overview.counts.pending ? "warning" : "normal" },
-                  { label: zh ? "启用规则" : "Enabled rules", value: overview.enabledRules, tone: "normal" },
-                  { label: appFilter ? `${appFilter} · ${zh ? "最近检查" : "last evaluation"}` : (zh ? "最近检查" : "Last evaluation"), value: stamp(overview.lastEvaluatedAt, zh), tone: "time" },
+                  { key: "firing", label: zh ? "触发中" : "Firing", value: overview.counts.firing, tone: overview.counts.firing ? "critical" : "normal", detail: overview.counts.firing ? (zh ? "需要处理" : "Needs attention") : (zh ? "没有触发中的告警" : "Nothing firing") },
+                  { key: "pending", label: zh ? "等待持续条件" : "Pending duration", value: overview.counts.pending, tone: overview.counts.pending ? "warning" : "normal", detail: zh ? "条件满足但未达持续时间" : "Condition met, duration not reached" },
+                  { key: "rules", label: zh ? "启用规则" : "Enabled rules", value: overview.enabledRules, tone: "normal", detail: overview.lastEvaluatedAt ? `${zh ? "最近检查" : "Last evaluated"} ${formatClock(overview.lastEvaluatedAt, lang)}` : (zh ? "等待首次检查" : "Awaiting first evaluation") },
+                  { key: "notify", label: zh ? "通知" : "Notifications", value: silenceActive ? (zh ? "已静默" : "Silenced") : (zh ? "正常发送" : "Sending"), tone: silenceActive ? "warning" : "normal", detail: silenceActive ? `${zh ? "至" : "Until"} ${formatClock(overview.silencedUntil, lang)}` : (overview.channels ? (zh ? `${overview.channels} 个渠道` : `${overview.channels} channels`) : (zh ? "尚未配置渠道" : "No channels configured")) },
                 ].map((item) => (
-                  <div key={item.label} className="flex min-w-0 flex-col gap-1.5 px-5 py-4">
-                    <dt className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
+                  <div key={item.key} className="flex min-w-0 flex-col gap-1.5 px-5 py-4">
+                    <dt className="flex min-h-5 items-center gap-1.5 text-xs font-medium text-muted-foreground">
                       {item.tone === "critical" ? <span className="size-1.5 rounded-full bg-destructive" aria-hidden="true" /> : item.tone === "warning" ? <span className="size-1.5 rounded-full bg-warning" aria-hidden="true" /> : null}
-                      {item.label}
+                      <span className="truncate">{item.label}</span>
                     </dt>
-                    <dd className={cn("truncate font-semibold tabular-nums", item.tone === "time" ? "text-[0.8125rem] font-medium" : "text-xl/7", item.tone === "critical" && "text-destructive-foreground", item.tone === "warning" && "text-warning-foreground")}>{item.value}</dd>
+                    <dd className="flex min-w-0 flex-col gap-0.5">
+                      <span className={cn("truncate text-xl/7 font-semibold tracking-[-0.01em] tabular-nums", item.tone === "critical" && "text-destructive-foreground", item.tone === "warning" && "text-warning-foreground")}>{item.value}</span>
+                      <span className="flex min-w-0 flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+                        <span className="truncate">{item.detail}</span>
+                        {item.key === "notify" && !appFilter ? (
+                          <Button
+                            type="button"
+                            variant="link"
+                            size="xs"
+                            className="h-auto px-0 text-xs"
+                            disabled={busy}
+                            title={silenceActive ? undefined : (zh ? "维护静默暂停通知，保留异常记录；到期自动恢复，手动测试仍会发送。" : "Silence pauses notifications but keeps recording incidents; it ends automatically and manual tests still send.")}
+                            onClick={() =>
+                              void act(
+                                (signal) =>
+                                  postAlerting(
+                                    "silence",
+                                    token,
+                                    { seconds: silenceActive ? 0 : 3600 },
+                                    signal,
+                                  ),
+                                zh ? "静默设置已更新" : "Silence updated",
+                              )
+                            }
+                          >
+                            {silenceActive
+                              ? zh ? "解除静默" : "End silence"
+                              : zh ? "维护静默 1 小时" : "Silence for 1 hour"}
+                          </Button>
+                        ) : null}
+                      </span>
+                    </dd>
                   </div>
                 ))}
               </dl>
@@ -726,49 +801,6 @@ export function AlertingPanel({
                     </Alert>
                   )}
               </div>}
-              {!appFilter && <CardFooter className="flex flex-wrap gap-3">
-                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="flex items-center gap-2 text-[0.8125rem] font-medium">
-                    <span className={cn("size-1.5 rounded-full", silenceActive ? "bg-warning" : "bg-success")} aria-hidden="true" />
-                    {silenceActive
-                      ? `${zh ? "通知静默至" : "Notifications silenced until"} ${stamp(overview.silencedUntil, zh)}`
-                      : zh
-                        ? "通知正常发送"
-                        : "Notifications are being sent"}
-                  </span>
-                  <p className="text-xs text-muted-foreground">
-                    {zh
-                      ? "维护静默暂停通知，保留异常记录；到期自动恢复，手动测试仍会发送。"
-                      : "Keep recording incidents while notifications pause until silence expires. Manual tests still send."}
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() =>
-                    void act(
-                      (signal) =>
-                        postAlerting(
-                          "silence",
-                          token,
-                          { seconds: silenceActive ? 0 : 3600 },
-                          signal,
-                        ),
-                      zh ? "静默设置已更新" : "Silence updated",
-                    )
-                  }
-                >
-                  {silenceActive
-                    ? zh
-                      ? "解除静默"
-                      : "End silence"
-                    : zh
-                      ? "维护静默 1 小时"
-                      : "Silence for 1 hour"}
-                </Button>
-              </CardFooter>}
             </Card>
           )}
           {silenceActive && tab !== "alerts" && (
@@ -786,63 +818,53 @@ export function AlertingPanel({
           )}
           {tab === "alerts" && !editor && (
             <Card>
-              <CardHeader>
+              <CardHeader className="border-b border-hairline">
                 <CardTitle>
-                  {zh ? "告警与历史" : "Incidents and history"}
+                  {zh ? "Control 告警" : "Control incidents"}
                 </CardTitle>
                 <CardDescription>
-                  {zh
-                    ? "停止提醒：保留当前告警，恢复时通知。关闭告警：结束本次告警并保留历史。"
-                    : "Stop reminders to keep an incident active with recovery notifications. Close it to end this incident and retain its history."}
+                  {zh ? "由告警规则产生，可停止提醒或关闭。" : "Raised by alert rules. Stop reminders or close them here."}
                 </CardDescription>
-                <CardAction className="row-span-2 self-center">
-                  <ToggleGroup
-                    variant="segmented"
-                    value={[filter || "all"]}
-                    onValueChange={(values) => {
-                      if (!values.length) return;
-                      setExpanded(false);
-                      setFilter(values[0] === "all" ? "" : values[0]);
-                      setError("");
-                    }}
-                    aria-label={zh ? "告警状态" : "Incident state"}
-                  >
-                    {[
-                      { value: "firing", label: zh ? "触发中" : "Firing" },
-                      {
-                        value: "pending",
-                        label: zh ? "等待持续条件" : "Pending duration",
-                      },
-                      {
-                        value: "resolved",
-                        label: zh ? "已恢复" : "Resolved",
-                      },
-                      {
-                        value: "closed",
-                        label: zh ? "已关闭" : "Closed",
-                      },
-                      { value: "all", label: zh ? "全部历史" : "All history" },
-                    ].map((item) => (
-                      <ToggleGroupItem key={item.value} value={item.value}>
-                        {item.label}
-                      </ToggleGroupItem>
-                    ))}
-                  </ToggleGroup>
-                </CardAction>
               </CardHeader>
-              <CardContent>
+              <div className="-mt-(--card-spacing) flex flex-wrap items-center gap-2 border-b border-hairline bg-muted/40 px-(--card-spacing) py-2.5" role="toolbar" aria-label={zh ? "筛选告警" : "Filter incidents"}>
+                <ToggleGroup
+                  variant="segmented"
+                  value={[filter || "all"]}
+                  onValueChange={(values) => {
+                    if (!values.length) return;
+                    setExpanded(false);
+                    setFilter(values[0] === "all" ? "" : values[0]);
+                    setError("");
+                  }}
+                  aria-label={zh ? "告警状态" : "Incident state"}
+                >
+                  {[
+                    { value: "firing", label: zh ? "触发中" : "Firing", count: overview.counts.firing },
+                    { value: "pending", label: zh ? "等待持续条件" : "Pending", count: overview.counts.pending },
+                    { value: "resolved", label: zh ? "已恢复" : "Resolved" },
+                    { value: "closed", label: zh ? "已关闭" : "Closed" },
+                    { value: "all", label: zh ? "全部历史" : "All history" },
+                  ].map((item) => (
+                    <ToggleGroupItem key={item.value} value={item.value}>
+                      {item.label}
+                      {item.count ? <span className="rounded-full bg-muted px-1.5 text-[0.6875rem]/4 tabular-nums text-muted-foreground">{item.count}</span> : null}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+                <div className="ml-auto flex flex-wrap items-center gap-2">
+                  {crossLink}
+                  {appFilterControl}
+                </div>
+              </div>
+              <CardContent className="-mt-(--card-spacing)">
                 {incidentsFilter !== `${filter}:${appFilter}` ? (
                   error ? null : (
-                    <div aria-busy="true" className="flex flex-col gap-3 border-t border-hairline px-(--card-spacing) pt-4">
-                      <p
-                        role="status"
-                        className="text-sm text-muted-foreground"
-                      >
-                        {zh
-                          ? "正在读取筛选结果…"
-                          : "Loading filtered incidents…"}
-                      </p>
-                      <Skeleton className="h-24 w-full" />
+                    <div aria-busy="true" className="flex flex-col gap-3 px-(--card-spacing) py-4">
+                      <span role="status" className="sr-only">
+                        {zh ? "正在读取筛选结果…" : "Loading filtered incidents…"}
+                      </span>
+                      <Skeleton className="h-10 w-full" />
+                      <Skeleton className="h-10 w-full" />
                     </div>
                   )
                 ) : incidents.items.length ? (
@@ -856,54 +878,44 @@ export function AlertingPanel({
                     <TableHeader className="hidden sm:table-header-group">
                       <TableRow>
                         <TableHead>
-                          {zh ? "规则 / 对象" : "Rule / target"}
+                          {zh ? "告警" : "Incident"}
                         </TableHead>
                         <TableHead>{zh ? "状态" : "State"}</TableHead>
                         <TableHead className="text-right">{zh ? "观测值" : "Observed"}</TableHead>
-                        <TableHead className="text-right">
-                          {zh ? "开始 / 结束" : "Started / ended"}
+                        <TableHead className="pl-8">
+                          {zh ? "开始" : "Started"}
                         </TableHead>
-                        <TableHead className="text-right">
-                          {zh ? "操作" : "Actions"}
+                        <TableHead className="w-12">
+                          <span className="sr-only">{zh ? "操作" : "Actions"}</span>
                         </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody className="max-sm:block">
                       {incidents.items.map((item) => (
-                        <TableRow key={item.id} className="max-sm:flex max-sm:flex-col max-sm:gap-3 max-sm:py-4">
+                        <TableRow key={item.id} className="max-sm:relative max-sm:flex max-sm:flex-col max-sm:gap-2 max-sm:px-(--card-spacing) max-sm:py-3.5 max-sm:pr-12">
                           <TableCell className="max-sm:block max-sm:whitespace-normal max-sm:p-0">
-                            <div className="flex flex-col items-start gap-1">
-                              <span className="font-medium">
-                                {item.ruleName} <Badge variant="outline">Control</Badge>
+                            <div className="flex min-w-0 flex-col items-start gap-1">
+                              <span className="flex min-w-0 flex-wrap items-center gap-2">
+                                <span aria-hidden="true" className={cn("size-2 shrink-0 rounded-full", item.severity === "critical" ? "bg-destructive" : "bg-warning")} />
+                                <a {...spaLink(incidentHref(item), navigate)} className="font-medium text-foreground underline-offset-4 hover:underline focus-visible:underline">
+                                  {item.ruleName}
+                                </a>
+                                <span className="text-xs text-muted-foreground">
+                                  {item.severity === "critical" ? (zh ? "严重" : "Critical") : (zh ? "警告" : "Warning")}
+                                </span>
                               </span>
-                              <span className="text-muted-foreground">
+                              <span className="pl-4 text-[0.8125rem] text-muted-foreground">
                                 {item.buildDetails?.service || item.target}
                               </span>
-                              {item.logDetails?.summary && <span className="max-w-lg line-clamp-2 wrap-anywhere text-sm text-muted-foreground">{evidenceSummary(item.logDetails.summary)}</span>}
+                              {item.logDetails?.summary && <span className="max-w-lg pl-4 line-clamp-2 wrap-anywhere text-xs text-muted-foreground">{evidenceSummary(item.logDetails.summary)}</span>}
                               {item.buildDetails?.reason && (
-                                <span className="max-w-lg line-clamp-2 wrap-anywhere text-sm text-muted-foreground">
+                                <span className="max-w-lg pl-4 line-clamp-2 wrap-anywhere text-xs text-muted-foreground">
                                   {item.buildDetails.stage ? `${item.buildDetails.stage}: ` : ""}{item.buildDetails.reason}
                                 </span>
                               )}
-                              <Badge
-                                variant={
-                                  item.severity === "critical"
-                                    ? "destructive"
-                                    : "warning"
-                                }
-                              >
-                                {item.severity === "critical"
-                                  ? zh
-                                    ? "严重"
-                                    : "Critical"
-                                  : zh
-                                    ? "警告"
-                                    : "Warning"}
-                              </Badge>
-                              <div className="mt-1 flex flex-wrap items-center gap-2 sm:hidden">
+                              <div className="mt-1 flex flex-wrap items-center gap-2 pl-4 sm:hidden">
                                 <AlertStatus status={item.status} zh={zh} />
-                                <span className="text-xs text-muted-foreground">{zh ? "观测值" : "Observed"} · {formatAlertObservedValue(item.metric, item.value, item.noData, zh)}</span>
-                                {item.acknowledgedAt ? <span className="basis-full text-xs text-muted-foreground">{zh ? "提醒已停止" : "Reminders stopped"} · {stamp(item.acknowledgedAt, zh)}</span> : null}
+                                <span className="text-xs text-muted-foreground tabular-nums">{formatAlertObservedValue(item.metric, item.value, item.noData, zh)} · {formatDuration(item.startedAt, item.resolvedAt, zh)}</span>
                               </div>
                             </div>
                           </TableCell>
@@ -911,14 +923,13 @@ export function AlertingPanel({
                             <div className="flex flex-col items-start gap-1">
                               <AlertStatus status={item.status} zh={zh} />
                               {item.acknowledgedAt ? (
-                                <span className="text-muted-foreground">
-                                  {zh ? "提醒已停止" : "Reminders stopped"} ·{" "}
-                                  {stamp(item.acknowledgedAt, zh)}
+                                <span className="text-xs text-muted-foreground">
+                                  {zh ? "提醒已停止" : "Reminders stopped"}
                                 </span>
                               ) : null}
                             </div>
                           </TableCell>
-                          <TableCell className="hidden text-right sm:table-cell">
+                          <TableCell className="hidden text-right font-medium tabular-nums sm:table-cell">
                             {formatAlertObservedValue(
                               item.metric,
                               item.value,
@@ -926,33 +937,43 @@ export function AlertingPanel({
                               zh,
                             )}
                           </TableCell>
-                          <TableCell className="max-sm:block max-sm:p-0 max-sm:text-xs max-sm:text-muted-foreground sm:text-right">
-                            <div><span className="sm:hidden">{zh ? "开始" : "Started"} · </span>{stamp(item.startedAt, zh)}</div>
-                            {item.resolvedAt ? (
-                              <div className="text-muted-foreground">
-                                <span className="sm:hidden">{zh ? "结束" : "Ended"} · </span>{stamp(item.resolvedAt, zh)}
-                              </div>
-                            ) : null}
-                          </TableCell>
-                          <TableCell className="max-sm:block max-sm:whitespace-normal max-sm:p-0">
-                            <div className="flex flex-wrap gap-2 sm:justify-end">
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                disabled={busy}
-                                onClick={() =>
-                                  navigate(
-                                    `/${application ? `apps/${encodeURIComponent(application)}/alerts` : "observe/incidents"}/${encodeURIComponent(item.id)}${appQuery ? `?${appQuery}` : ""}`,
-                                  )
-                                }
-                              >
-                                {zh ? "查看详情" : "View details"}
-                              </Button>
-                              <IncidentActions item={item} zh={zh} busy={busy} compact
-                                onStop={(item) => actOnIncident(item, "ack")}
-                                onClose={(item) => void closeIncident(item)} />
+                          <TableCell className="hidden pl-8 sm:table-cell">
+                            <div className="tabular-nums">{stamp(item.startedAt, zh)}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {item.resolvedAt
+                                ? `${item.status === "closed" ? (zh ? "已关闭" : "Closed") : (zh ? "已恢复" : "Resolved")} · ${zh ? "持续" : "lasted"} ${formatDuration(item.startedAt, item.resolvedAt, zh)}`
+                                : `${zh ? "已持续" : "Ongoing for"} ${formatDuration(item.startedAt, null, zh)}`}
                             </div>
+                          </TableCell>
+                          <TableCell className="max-sm:absolute max-sm:top-2.5 max-sm:right-2 max-sm:p-0 sm:text-right">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" disabled={busy} aria-label={`${item.ruleName} · ${zh ? "更多操作" : "More actions"}`} />}>
+                                <MoreHorizontal />
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="w-52">
+                                <DropdownMenuGroup>
+                                  <DropdownMenuItem onClick={() => navigate(incidentHref(item))}>
+                                    {zh ? "查看详情" : "View details"}
+                                  </DropdownMenuItem>
+                                  {["pending", "firing"].includes(item.status) && !item.acknowledgedAt && (
+                                    <DropdownMenuItem onClick={() => actOnIncident(item, "ack")}>
+                                      <span className="flex flex-col">
+                                        {zh ? "停止提醒" : "Stop reminders"}
+                                        <span className="text-xs text-muted-foreground">{zh ? "保留告警，恢复时仍通知" : "Keeps it open; notifies on recovery"}</span>
+                                      </span>
+                                    </DropdownMenuItem>
+                                  )}
+                                  {["pending", "firing"].includes(item.status) && (
+                                    <DropdownMenuItem onClick={() => void closeIncident(item)}>
+                                      <span className="flex flex-col">
+                                        {zh ? "关闭告警" : "Close incident"}
+                                        <span className="text-xs text-muted-foreground">{zh ? "结束本次告警并保留历史" : "Ends it and keeps history"}</span>
+                                      </span>
+                                    </DropdownMenuItem>
+                                  )}
+                                </DropdownMenuGroup>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           </TableCell>
                         </TableRow>
                       ))}
@@ -960,10 +981,10 @@ export function AlertingPanel({
                   </Table>
                 ) : (
                   <AlertEmpty
-                    title={zh ? "暂无告警" : "No incidents"}
+                    title={filter === "firing" ? (zh ? "没有触发中的告警" : "Nothing is firing") : (zh ? "暂无告警" : "No incidents")}
                     description={
                       zh
-                        ? "当前筛选下暂无告警。可在规则中配置需要关注的条件。"
+                        ? "当前筛选下暂无告警。可在告警规则中配置需要关注的条件。"
                         : "No incidents match this filter. Configure rules for the conditions you want to monitor."
                     }
                   />
@@ -1017,6 +1038,7 @@ export function AlertingPanel({
                 )}
             </Card>
           )}
+          {tab === "alerts" && !editor && <ExternalAlerts app={appFilter} lang={lang} token={token} />}
           {tab === "alerts" && editor && !detail && !actionError && (
             <Card aria-busy="true">
               <CardHeader>
@@ -1039,36 +1061,23 @@ export function AlertingPanel({
                 </CardAction>
               </CardHeader>
               <CardContent className="flex flex-col gap-6">
-                <dl className="grid gap-4 sm:grid-cols-2">
-                  <div className="flex flex-col gap-1">
-                    <dt className="text-muted-foreground">
-                      {zh ? "观测值" : "Observed"}
-                    </dt>
-                    <dd>
-                      {formatAlertObservedValue(
-                        detail.incident.metric,
-                        detail.incident.value,
-                        detail.incident.noData,
-                        zh,
-                      )}
-                    </dd>
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <dt className="text-muted-foreground">
-                      {zh ? "开始时间" : "Started"}
-                    </dt>
-                    <dd>{stamp(detail.incident.startedAt, zh)}</dd>
-                  </div>
-                  {detail.incident.resolvedAt && (
-                    <div className="flex flex-col gap-1">
-                      <dt className="text-muted-foreground">
-                        {detail.incident.status === "closed"
-                          ? zh ? "关闭时间" : "Closed at"
-                          : zh ? "恢复时间" : "Resolved at"}
-                      </dt>
-                      <dd>{stamp(detail.incident.resolvedAt, zh)}</dd>
+                <dl className="grid grid-cols-1 gap-3 sm:grid-cols-3" aria-label={zh ? "告警概况" : "Incident summary"}>
+                  {[
+                    { key: "value", label: zh ? "观测值" : "Observed", value: formatAlertObservedValue(detail.incident.metric, detail.incident.value, detail.incident.noData, zh) },
+                    { key: "started", label: zh ? "开始时间" : "Started", value: stamp(detail.incident.startedAt, zh) },
+                    detail.incident.resolvedAt
+                      ? {
+                          key: "resolved",
+                          label: detail.incident.status === "closed" ? (zh ? "关闭时间" : "Closed at") : (zh ? "恢复时间" : "Resolved at"),
+                          value: `${stamp(detail.incident.resolvedAt, zh)} · ${zh ? "持续" : "lasted"} ${formatDuration(detail.incident.startedAt, detail.incident.resolvedAt, zh)}`,
+                        }
+                      : { key: "duration", label: zh ? "已持续" : "Ongoing for", value: formatDuration(detail.incident.startedAt, null, zh) },
+                  ].map((item) => (
+                    <div key={item.key} className="flex min-w-0 flex-col gap-2 rounded-lg bg-muted/50 px-4 py-3 ring-1 ring-hairline">
+                      <dt className="text-xs font-medium text-muted-foreground">{item.label}</dt>
+                      <dd className="text-sm font-medium tabular-nums">{item.value}</dd>
                     </div>
-                  )}
+                  ))}
                 </dl>
                 {detail.incident.acknowledgedAt && (
                   <p className="text-sm text-muted-foreground">
@@ -1111,30 +1120,31 @@ export function AlertingPanel({
                   </div>
                 )}
                 {detail.events.length ? (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>{zh ? "事件" : "Event"}</TableHead>
-                        <TableHead>{zh ? "时间" : "Time"}</TableHead>
-                        <TableHead>{zh ? "详情" : "Details"}</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {detail.events.map((event) => (
-                        <TableRow key={event.id}>
-                          <TableCell>
-                            {alertEventLabel(event.kind, zh)}
-                          </TableCell>
-                          <TableCell>{stamp(event.at, zh)}</TableCell>
-                          <TableCell className="max-w-lg whitespace-pre-wrap wrap-anywhere">
-                            {typeof event.detail === "string"
-                              ? event.detail
-                              : JSON.stringify(event.detail)}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                  <section className="flex flex-col gap-3" aria-labelledby="incident-events-heading">
+                    <h3 id="incident-events-heading" className="text-sm font-medium">{zh ? "事件记录" : "Event log"}</h3>
+                    <div className="overflow-hidden rounded-lg ring-1 ring-hairline">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="pl-4">{zh ? "事件" : "Event"}</TableHead>
+                            <TableHead>{zh ? "时间" : "Time"}</TableHead>
+                            <TableHead className="pr-4">{zh ? "详情" : "Details"}</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {detail.events.map((event) => (
+                            <TableRow key={event.id}>
+                              <TableCell className="pl-4 font-medium">{alertEventLabel(event.kind, zh)}</TableCell>
+                              <TableCell className="text-muted-foreground tabular-nums">{stamp(event.at, zh)}</TableCell>
+                              <TableCell className="max-w-lg pr-4 whitespace-pre-wrap wrap-anywhere text-muted-foreground">
+                                {eventDetailText(event.detail)}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </section>
                 ) : (
                   <AlertEmpty
                     title={zh ? "暂无事件" : "No events"}
@@ -1157,23 +1167,23 @@ export function AlertingPanel({
           )}
           {tab === "rules" && !editor && (
             <Card>
-              <CardHeader>
-                <CardTitle>{zh ? "规则" : "Rules"}</CardTitle>
-                <CardDescription>
-                  {zh
-                    ? "条件持续满足后触发，恢复时通知。未分配渠道的规则只记录告警。"
-                    : "Alerts fire after a condition holds and notify on recovery. Rules without channels only record incidents."}
-                </CardDescription>
-                <CardAction>
+              <div className="-mt-(--card-spacing) flex flex-wrap items-center gap-2 border-b border-hairline px-(--card-spacing) py-3" role="toolbar" aria-label={zh ? "规则操作" : "Rule actions"}>
+                <span className="text-[0.8125rem] text-muted-foreground tabular-nums">
+                  {zh ? `${rules.length} 条规则 · ${rules.filter((item) => item.enabled).length} 条启用` : `${rules.length} rules · ${rules.filter((item) => item.enabled).length} enabled`}
+                </span>
+                <div className="ml-auto flex flex-wrap items-center gap-2">
+                  {crossLink}
+                  {appFilterControl}
                   <Button
                     disabled={busy || !presets.length}
                     onClick={() => navigate(`/observe/rules/new${appQuery ? `?${appQuery}` : ""}`)}
                   >
+                    <Plus data-icon="inline-start" aria-hidden="true" />
                     {zh ? "新建规则" : "Create rule"}
                   </Button>
-                </CardAction>
-              </CardHeader>
-              <CardContent>
+                </div>
+              </div>
+              <CardContent className="-mt-(--card-spacing)">
                 {rules.length ? (
                   <Table
                     containerProps={{
@@ -1185,143 +1195,105 @@ export function AlertingPanel({
                     <TableHeader>
                       <TableRow>
                         <TableHead>
-                          {zh ? "规则 / 对象" : "Rule / target"}
+                          {zh ? "规则" : "Rule"}
                         </TableHead>
                         <TableHead>{zh ? "条件" : "Condition"}</TableHead>
                         <TableHead>{zh ? "通知渠道" : "Channels"}</TableHead>
-                        <TableHead className="text-right">
-                          {zh ? "操作" : "Actions"}
+                        <TableHead>{zh ? "状态" : "State"}</TableHead>
+                        <TableHead className="w-12">
+                          <span className="sr-only">{zh ? "操作" : "Actions"}</span>
                         </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {rules.map((item) => (
-                        <TableRow key={item.id}>
+                      {rules.map((item) => {
+                        const silenced = (item.silencedUntil || 0) > Date.now() / 1000;
+                        const preset = presets.find((p) => p.metric === item.metric);
+                        const href = `/observe/rules/${encodeURIComponent(item.id)}${appQuery ? `?${appQuery}` : ""}`;
+                        return (
+                        <TableRow key={item.id} className={cn(!item.enabled && "text-muted-foreground")}>
                           <TableCell>
-                            <div className="flex flex-col items-start gap-1">
-                              <span className="font-medium">{item.name}</span>
-                              <span className="text-muted-foreground">
+                            <div className="flex flex-col items-start gap-0.5">
+                              <a {...spaLink(href, navigate)} className="font-medium text-foreground underline-offset-4 hover:underline focus-visible:underline">{item.name}</a>
+                              <span className="text-[0.8125rem] text-muted-foreground">
                                 {item.target === "*"
                                   ? zh
                                     ? "全部对象"
                                     : "All targets"
                                   : item.target}
+                                {item.metric === "app.log_matches" && item.logQuery?.task ? ` · ${item.logQuery.task}` : ""}
                               </span>
-                              {item.metric === "app.log_matches" && item.logQuery?.task && <span className="text-xs text-muted-foreground">{zh ? "服务" : "Task"} · {item.logQuery.task}</span>}
-                              <Badge
-                                variant={item.enabled ? "success" : "outline"}
-                              >
-                                {item.enabled
-                                  ? zh
-                                    ? "已启用"
-                                    : "Enabled"
-                                  : zh
-                                    ? "已停用"
-                                    : "Disabled"}
-                              </Badge>
-                              {(item.silencedUntil || 0) >
-                                Date.now() / 1000 && (
-                                <span className="text-muted-foreground">
-                                  {zh ? "静默至" : "Silenced until"}{" "}
-                                  {stamp(item.silencedUntil, zh)}
-                                </span>
-                              )}
                             </div>
                           </TableCell>
                           <TableCell>
                             <div>
-                              {presets.find((p) => p.metric === item.metric)
-                                ?.name || item.metric}
+                              {preset?.name || item.metric}
                             </div>
-                            {item.metric === "app.log_matches" && item.logQuery && <div className="max-w-md whitespace-normal wrap-anywhere text-sm text-muted-foreground">
-                              <div>{zh ? "统计窗口" : "Window"} · {item.logQuery.windowSeconds}s</div>
-                              {item.logQuery.contains && <div>{zh ? "包含" : "Contains"}：{item.logQuery.contains}</div>}
-                              {item.logQuery.exclude && <div>{zh ? "排除" : "Excludes"}：{item.logQuery.exclude}</div>}
-                              {item.logQuery.field && <div>{item.logQuery.field} = {item.logQuery.equals}</div>}
+                            <div className="text-[0.8125rem] text-muted-foreground tabular-nums">
+                              &gt; {item.threshold}{preset?.unit ? (preset.unit === "%" ? "%" : ` ${preset.unit}`) : ""} · {zh ? "持续" : "for"} {formatSeconds(item.forSeconds, zh)}
+                            </div>
+                            {item.metric === "app.log_matches" && item.logQuery && <div className="max-w-md whitespace-normal wrap-anywhere text-xs text-muted-foreground">
+                              {[
+                                `${zh ? "窗口" : "Window"} ${item.logQuery.windowSeconds}s`,
+                                item.logQuery.contains ? `${zh ? "包含" : "Contains"} “${item.logQuery.contains}”` : "",
+                                item.logQuery.exclude ? `${zh ? "排除" : "Excludes"} “${item.logQuery.exclude}”` : "",
+                                item.logQuery.field ? `${item.logQuery.field} = ${item.logQuery.equals}` : "",
+                              ].filter(Boolean).join(" · ")}
                             </div>}
-                            <div className="text-muted-foreground">
-                              &gt; {item.threshold}{" "}
-                              {presets.find((p) => p.metric === item.metric)
-                                ?.unit || ""}{" "}
-                              · {item.forSeconds}s
-                            </div>
                           </TableCell>
                           <TableCell>
-                            {channelNames(item.channelIds) ||
-                              (zh ? "仅记录" : "Record only")}
+                            {channelNames(item.channelIds) || <span className="text-muted-foreground">{zh ? "仅记录" : "Record only"}</span>}
                           </TableCell>
                           <TableCell>
-                            <div className="flex justify-end gap-2">
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                disabled={busy}
-                                onClick={() =>
-                                  navigate(
-                                    `/observe/rules/${encodeURIComponent(item.id)}${appQuery ? `?${appQuery}` : ""}`,
-                                  )
-                                }
-                              >
-                                {zh ? "编辑" : "Edit"}
-                              </Button>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                disabled={busy}
-                                onClick={() =>
-                                  void act((signal) =>
-                                    postAlerting(
-                                      "rules",
-                                      token,
-                                      { ...item, enabled: !item.enabled },
-                                      signal,
-                                    ),
-                                  )
-                                }
-                              >
-                                {item.enabled
-                                  ? zh
-                                    ? "停用"
-                                    : "Disable"
-                                  : zh
-                                    ? "启用"
-                                    : "Enable"}
-                              </Button>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                disabled={busy}
-                                onClick={() =>
-                                  void act((signal) =>
-                                    postAlerting(
-                                      "rules",
-                                      token,
-                                      {
-                                        ...item,
-                                        silencedUntil:
-                                          (item.silencedUntil || 0) >
-                                          Date.now() / 1000
-                                            ? 0
-                                            : Math.floor(Date.now() / 1000) +
-                                              3600,
-                                      },
-                                      signal,
-                                    ),
-                                  )
-                                }
-                              >
-                                {(item.silencedUntil || 0) > Date.now() / 1000
-                                  ? zh
-                                    ? "解除静默"
-                                    : "Unsilence"
-                                  : zh
-                                    ? "静默 1h"
-                                    : "Silence 1h"}
-                              </Button>
+                            <div className="flex flex-col items-start gap-1">
+                              <Badge appearance="dot" variant={item.enabled ? (silenced ? "warning" : "success") : "outline"}>
+                                {!item.enabled ? (zh ? "已停用" : "Disabled") : silenced ? (zh ? "已静默" : "Silenced") : (zh ? "已启用" : "Enabled")}
+                              </Badge>
+                              {silenced && (
+                                <span className="text-xs text-muted-foreground tabular-nums">
+                                  {zh ? "至" : "Until"} {formatClock(item.silencedUntil!, lang)}
+                                </span>
+                              )}
                             </div>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" disabled={busy} aria-label={`${item.name} · ${zh ? "更多操作" : "More actions"}`} />}>
+                                <MoreHorizontal />
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="w-44">
+                                <DropdownMenuGroup>
+                                  <DropdownMenuItem onClick={() => navigate(href)}>
+                                    <Pencil />{zh ? "编辑" : "Edit"}
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() =>
+                                    void act((signal) =>
+                                      postAlerting("rules", token, { ...item, enabled: !item.enabled }, signal),
+                                    )
+                                  }>
+                                    {item.enabled ? <Pause /> : <Play />}
+                                    {item.enabled ? (zh ? "停用" : "Disable") : (zh ? "启用" : "Enable")}
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() =>
+                                    void act((signal) =>
+                                      postAlerting(
+                                        "rules",
+                                        token,
+                                        { ...item, silencedUntil: silenced ? 0 : Math.floor(Date.now() / 1000) + 3600 },
+                                        signal,
+                                      ),
+                                    )
+                                  }>
+                                    {silenced ? <Bell /> : <BellSlash />}
+                                    {silenced ? (zh ? "解除静默" : "Unsilence") : (zh ? "静默 1 小时" : "Silence 1 hour")}
+                                  </DropdownMenuItem>
+                                </DropdownMenuGroup>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           </TableCell>
                         </TableRow>
-                      ))}
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 ) : (
@@ -1768,6 +1740,7 @@ export function AlertingPanel({
                       })
                     }
                   >
+                    <Plus data-icon="inline-start" aria-hidden="true" />
                     {zh ? "添加渠道" : "Add channel"}
                   </Button>
                 </CardAction>
@@ -1799,6 +1772,7 @@ export function AlertingPanel({
                             <div className="flex flex-col items-start gap-1">
                               <span className="font-medium">{item.name}</span>
                               <Badge
+                                appearance="dot"
                                 variant={item.enabled ? "success" : "outline"}
                               >
                                 {item.enabled
@@ -1812,27 +1786,31 @@ export function AlertingPanel({
                             </div>
                           </TableCell>
                           <TableCell>
-                            <div className="flex flex-col items-start gap-1">
-                              <span>App ID: {item.appId}</span>
-                              <span className="text-muted-foreground">
-                                {zh ? "群聊 ID" : "Chat ID"}: {item.chatId}
-                              </span>
+                            <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1 text-[0.8125rem]">
+                              <dt className="text-muted-foreground">App ID</dt>
+                              <dd className="font-mono text-xs wrap-anywhere" translate="no">{item.appId}</dd>
+                              <dt className="text-muted-foreground">{zh ? "群聊 ID" : "Chat ID"}</dt>
+                              <dd className="font-mono text-xs wrap-anywhere" translate="no">{item.chatId}</dd>
+                              <dt className="text-muted-foreground">App Secret</dt>
+                              <dd>
                               <Badge
+                                appearance={item.appSecretConfigured ? "dot" : "filled"}
                                 variant={
                                   item.appSecretConfigured
-                                    ? "outline"
+                                    ? "success"
                                     : "destructive"
                                 }
                               >
                                 {item.appSecretConfigured
                                   ? zh
-                                    ? "App Secret 已配置"
-                                    : "App Secret configured"
+                                    ? "已配置"
+                                    : "Configured"
                                   : zh
                                     ? "App Secret 缺失"
                                     : "App Secret missing"}
                               </Badge>
-                            </div>
+                              </dd>
+                            </dl>
                           </TableCell>
                           <TableCell>
                             <div className="flex justify-end gap-2">
@@ -2113,7 +2091,7 @@ export function AlertingPanel({
                               {channels.find((c) => c.id === item.channelId)
                                 ?.name || item.channelId}
                             </div>
-                            <div className="text-muted-foreground">
+                            <div className="text-xs text-muted-foreground">
                               {alertEventLabel(item.kind, zh)}
                             </div>
                           </TableCell>
@@ -2121,23 +2099,23 @@ export function AlertingPanel({
                             <AlertStatus status={item.status} zh={zh} />
                           </TableCell>
                           <TableCell>
-                            <div>
+                            <div className="tabular-nums">
                               {stamp(item.sentAt || item.createdAt, zh)}
                             </div>
-                            <div className="text-muted-foreground">
-                              {item.attempts} {zh ? "次尝试" : "attempts"}
+                            <div className="text-xs text-muted-foreground">
+                              {zh ? `${item.attempts} 次尝试` : `${item.attempts} ${item.attempts === 1 ? "attempt" : "attempts"}`}
                             </div>
                           </TableCell>
                           <TableCell className="max-w-sm whitespace-normal wrap-anywhere">
-                            <div>{item.lastError || "—"}</div>
+                            <div className={cn(item.lastError ? "text-destructive-foreground" : "text-muted-foreground")}>{item.lastError || (item.status === "sent" ? (zh ? "飞书已接收" : "Accepted by Feishu") : EMPTY_VALUE)}</div>
                             {item.status !== "sent" && !!item.nextAttemptAt && (
                               <div className="text-muted-foreground">
                                 {zh ? "下次尝试" : "Next attempt"} ·{" "}
                                 {stamp(item.nextAttemptAt, zh)}
                               </div>
                             )}
-                            <div className="text-muted-foreground">
-                              {item.id}
+                            <div className="font-mono text-xs text-subtle-foreground">
+                              #{item.id}
                             </div>
                           </TableCell>
                         </TableRow>
@@ -2192,7 +2170,7 @@ export function AlertingPanel({
           )}
         </>
       )}
-      {!editor && (
+      {!editor && !refreshHost.hosted && (
         <p className="flex flex-wrap items-center gap-1 text-sm text-muted-foreground">
           {zh ? "每 15 秒自动刷新。" : "Refreshes every 15 seconds."}
           <Button

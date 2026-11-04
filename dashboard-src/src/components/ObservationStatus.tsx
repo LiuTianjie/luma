@@ -2,7 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { apiGet } from "../apiClient";
 import { useRouter, toHref } from "../router";
 import { investigationPath, observationQuery } from "../observeContext";
-import { formatBytes, formatDateTime } from "../format";
+import { EMPTY_VALUE, formatBytes, formatDateTime } from "../format";
+import { cn } from "@/lib/utils";
+import { ArrowRight, Bell, CheckCircle2, Info, RefreshCw, TriangleAlert } from "@/components/icons";
+import { useObserveRefresh, useRefreshEvent } from "./observeRefresh";
 import {
   Card,
   CardHeader,
@@ -12,7 +15,7 @@ import {
 } from "./ui/card";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
-import { Alert, AlertDescription } from "./ui/alert";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "./ui/alert";
 import { Skeleton } from "./ui/skeleton";
 import {
   Table,
@@ -125,7 +128,8 @@ export function ObservationStatus({
   token: string;
 }) {
   const zh = lang === "zh",
-    { search } = useRouter();
+    { search } = useRouter(),
+    refreshHost = useObserveRefresh();
   const [revision, setRevision] = useState(0),
     [snapshot, setSnapshot] = useState<Snapshot>(),
     [error, setError] = useState(""),
@@ -153,18 +157,21 @@ export function ObservationStatus({
     const timeout = setTimeout(() => controller.abort(), 15000);
     setLoading(true);
     setError("");
-    setSnapshot(undefined);
     void apiGet<Snapshot>(
       `/v1/dashboard/observe/status?${query}`,
       token,
       controller.signal,
     )
       .then((data) => {
-        if (!disposed) setSnapshot(data);
+        if (disposed) return;
+        setSnapshot(data);
+        refreshHost.markUpdated(data.sampledAt);
       })
       .catch(() => {
-        if (!disposed)
-          setError(
+        if (disposed) return;
+        refreshHost.setRefreshing(false);
+        setSnapshot(undefined);
+        setError(
             zh
               ? "暂时无法读取观测状态，请重试。"
               : "Observation status is unavailable. Retry shortly.",
@@ -179,274 +186,250 @@ export function ObservationStatus({
       controller.abort();
       clearTimeout(timeout);
     };
-  }, [query, token, revision, zh]);
+  }, [query, token, revision, zh, refreshHost]);
+  useRefreshEvent(() => setRevision((n) => n + 1));
   const signals = snapshot?.signals || {},
     freshness = signals.freshness;
   const stale = freshness?.state === "ok" && (freshness.value || 0) > 120;
   const definitions = app ? APPLICATION : PLATFORM;
   const coverage = snapshot?.coverage;
+  const coverageRows = coverage?.items || [];
+  const rowState = (row: { at: number; gapAt?: number }) =>
+    !row.at || (snapshot?.sampledAt || 0) - row.at > 120
+      ? "incomplete"
+      : row.gapAt && (snapshot?.sampledAt || 0) - row.gapAt < 900
+        ? "gap"
+        : "ok";
+  const caughtUp = coverageRows.filter((row) => rowState(row) === "ok").length;
+  const targets = signals.targets?.items || [];
+  const targetsDown = targets.filter((row) => row.value !== 1).length;
+  const responded = Object.values(signals).filter((sig) => sig.state === "ok" || sig.state === "empty").length;
+  const total = Object.keys(signals).length;
+  const attention = definitions.filter(([key, , , , threshold]) => {
+    const sig = signals[key];
+    return sig?.value != null && threshold != null && sig.value > threshold;
+  }).length;
+  const failing = definitions.filter(([key]) => signals[key] && !["ok", "empty"].includes(signals[key].state)).length;
+  // One headline verdict, computed from the same facts the tiles show.
+  const verdict: { tone: "success" | "warning" | "destructive"; title: string; detail: string } | null =
+    !snapshot || snapshot.state !== "ok"
+      ? null
+      : stale
+        ? { tone: "destructive", title: zh ? "采集已停滞" : "Collection has stalled", detail: zh ? `最近一次指标采集在 ${valueText(freshness, "s")} 前，下方数值可能已过期。` : `The latest metric scrape was ${valueText(freshness, "s")} ago; values below may be stale.` }
+        : targetsDown || failing || attention
+          ? {
+              tone: "warning",
+              title: zh ? "部分信号需要关注" : "Some signals need attention",
+              detail: [
+                targetsDown ? (zh ? `${targetsDown} 个组件采集失败` : `${targetsDown} components down`) : "",
+                failing ? (zh ? `${failing} 项查询失败` : `${failing} queries failed`) : "",
+                attention ? (zh ? `${attention} 项超过阈值` : `${attention} over threshold`) : "",
+              ].filter(Boolean).join(zh ? "，" : ", "),
+            }
+          : { tone: "success", title: app ? (zh ? "遥测数据正常" : "Telemetry is flowing") : (zh ? "观测平台运行正常" : "Observability is healthy"), detail: (zh ? `${responded}/${total} 个查询来源已响应` : `${responded}/${total} query sources responded`) + (freshness?.state === "ok" ? (zh ? `，最近采集于 ${valueText(freshness, "s")} 前。` : `; last scrape ${valueText(freshness, "s")} ago.`) : (zh ? "。" : ".")) };
+  const hosted = refreshHost.hosted && !app;
+  const readAt = snapshot ? `${zh ? "查询于" : "Read at"} ${formatDateTime(snapshot.sampledAt, lang)}${snapshot.historical ? (zh ? " · 固定历史窗口" : " · Fixed historical window") : ""}` : "";
+  const footnote = app
+    ? zh
+      ? "0 仅表示已观测值为零；没有采样不代表正常。HTTP 为整个应用的入口汇总，任务统计遵循时间与身份筛选。活跃任务和投递次数不能推算 Broker 积压。"
+      : "Zero is an observed value; missing samples do not establish health. HTTP covers the application's ingress; task metrics use the selected time and identity. Active tasks and publications do not measure broker backlog."
+    : zh
+      ? "0 仅表示已观测值为零；没有采样不代表正常。日志覆盖显示当前状态，不能据此证明历史数据完整。"
+      : "Zero is an observed value; missing samples do not establish health. Current log coverage does not establish historical completeness.";
+  const tiles = (
+    <dl className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 [&>div]:border-hairline max-sm:[&>div+div]:border-t sm:max-xl:[&>div:nth-child(n+3)]:border-t sm:max-xl:[&>div:nth-child(even)]:border-l xl:[&>div:nth-child(n+4)]:border-t xl:[&>div:not(:nth-child(3n+1))]:border-l">
+      {definitions.map(([key, zhLabel, en, unit, threshold]) => {
+        const signal = signals[key],
+          warning = signal?.value != null && threshold != null && signal.value > threshold,
+          broken = signal && !["ok", "empty"].includes(signal.state),
+          missing = !signal || signal.state === "empty",
+          itemStale = stale && !key.startsWith("http_");
+        return (
+          <div key={key} className="flex min-w-0 flex-col gap-1.5 px-5 py-4">
+            <dt className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              {warning || broken ? <span aria-hidden="true" className={cn("size-1.5 rounded-full", broken ? "bg-destructive" : "bg-warning")} /> : null}
+              <span className="truncate">{zh ? zhLabel : en}</span>
+            </dt>
+            <dd className="flex min-w-0 flex-col gap-0.5">
+              <span className={cn("truncate text-xl/7 font-semibold tracking-[-0.01em] tabular-nums", missing && "text-subtle-foreground", warning && "text-warning-foreground")}>
+                {valueText(signal, unit)}
+              </span>
+              <span className={cn("truncate text-xs", warning ? "text-warning-foreground" : broken ? "text-destructive-foreground" : "text-muted-foreground")}>
+                {warning
+                  ? zh ? `超过阈值 ${valueText({ state: "ok", value: threshold }, unit)}` : `Above ${valueText({ state: "ok", value: threshold }, unit)}`
+                  : broken || missing || itemStale
+                    ? stateLabel(signal, zh, itemStale)
+                    : threshold != null
+                      ? zh ? `阈值 ${valueText({ state: "ok", value: threshold }, unit)}` : `Threshold ${valueText({ state: "ok", value: threshold }, unit)}`
+                      : zh ? "最新采样" : "Latest sample"}
+              </span>
+            </dd>
+          </div>
+        );
+      })}
+    </dl>
+  );
+  const coverageTable = coverage?.state !== "ok" ? (
+    <p className="px-(--card-spacing) pb-(--card-spacing) text-[0.8125rem] text-muted-foreground">
+      {coverage?.state === "empty"
+        ? zh ? "尚无此应用的日志覆盖记录。" : "No coverage records for this application."
+        : zh ? "日志覆盖状态暂不可用。" : "Log coverage is unavailable."}
+    </p>
+  ) : (
+    <Table containerProps={{ tabIndex: 0, role: "region", "aria-label": zh ? "日志覆盖" : "Log coverage" }}>
+      <TableHeader>
+        <TableRow>
+          <TableHead>{zh ? "应用 / 服务" : "Application / service"}</TableHead>
+          <TableHead>{zh ? "最近追平" : "Last caught up"}</TableHead>
+          <TableHead>{zh ? "状态" : "State"}</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {coverageRows.map((row) => {
+          const state = rowState(row);
+          return (
+            <TableRow key={`${row.app}/${row.task}`}>
+              <TableCell className="break-all">
+                <span className="font-medium">{row.app}</span>
+                <span className="text-muted-foreground"> / {row.task}</span>
+              </TableCell>
+              <TableCell className="tabular-nums">{row.at ? formatDateTime(row.at, lang) : EMPTY_VALUE}</TableCell>
+              <TableCell>
+                <Badge appearance={state === "ok" ? "dot" : "filled"} variant={state === "ok" ? "success" : state === "gap" ? "warning" : "destructive"}>
+                  {state === "incomplete" ? (zh ? "覆盖不完整" : "Incomplete") : state === "gap" ? (zh ? "近期有缺口" : "Recent gap") : (zh ? "已追平" : "Caught up")}
+                </Badge>
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="space-y-1.5">
-            <CardTitle>
-              {app
-                ? zh
-                  ? "业务状态与数据可信度"
-                  : "Application health and data coverage"
-                : zh
-                  ? "观测平台状态"
-                  : "Observation platform health"}
-            </CardTitle>
-            <CardDescription>
-              {snapshot
-                ? `${zh ? "查询于" : "Read at"} ${formatDateTime(snapshot.sampledAt, lang)}${snapshot.historical ? (zh ? " · 固定历史窗口" : " · Fixed historical window") : ""}`
-                : zh
-                  ? "指标、日志和链路的采集与查询状态"
-                  : "Collection and query health for metrics, logs and traces"}
-            </CardDescription>
-          </div>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={loading}
-            onClick={() => setRevision((n) => n + 1)}
-          >
-            {zh ? "刷新状态" : "Refresh"}
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent className="flex min-w-0 flex-col gap-4">
-        {loading ? (
-          <div className="grid gap-3 sm:grid-cols-3" aria-busy="true">
-            {[1, 2, 3].map((n) => (
-              <Skeleton key={n} className="h-20" />
-            ))}
-          </div>
-        ) : error || snapshot?.state !== "ok" ? (
-          <Alert variant="warning">
-            <AlertDescription>
-              {error ||
-                (zh
-                  ? "观测查询繁忙，请稍后重试。"
-                  : "Observation queries are busy. Retry shortly.")}
-            </AlertDescription>
-          </Alert>
-        ) : (
-          <>
-            {app && (
-              <p className="text-sm">
-                <a
-                  className="text-link hover:underline"
-                  href={toHref(
-                    investigationPath(
-                      `/apps/${encodeURIComponent(app)}/alerts`,
-                      search,
-                    ),
-                  )}
-                >
+    <div className="flex min-w-0 flex-col gap-6">
+      {loading && !snapshot ? (
+        <Card aria-busy="true">
+          <CardContent className="flex flex-col gap-4">
+            <span role="status" className="sr-only">{zh ? "正在读取观测状态…" : "Loading observation status…"}</span>
+            <Skeleton className="h-6 w-64" />
+            <div className="grid gap-3 sm:grid-cols-3">
+              {[1, 2, 3].map((n) => <Skeleton key={n} className="h-16" />)}
+            </div>
+          </CardContent>
+        </Card>
+      ) : error || snapshot?.state !== "ok" ? (
+        <Alert variant="warning">
+          <TriangleAlert />
+          <AlertTitle>{zh ? "无法读取观测状态" : "Observation status unavailable"}</AlertTitle>
+          <AlertDescription>
+            {error || (zh ? "观测查询繁忙，请稍后重试。" : "Observation queries are busy. Retry shortly.")}
+          </AlertDescription>
+          <AlertAction>
+            <Button size="sm" variant="outline" disabled={loading} onClick={() => setRevision((n) => n + 1)}>
+              {zh ? "重试" : "Retry"}
+            </Button>
+          </AlertAction>
+        </Alert>
+      ) : (
+        <>
+          <Card className="gap-0 py-0">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-hairline px-5 py-4">
+              {verdict && (
+                <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-full", verdict.tone === "success" ? "bg-success-soft text-success-foreground" : verdict.tone === "warning" ? "bg-warning-soft text-warning-foreground" : "bg-destructive-soft text-destructive-foreground")} aria-hidden="true">
+                  {verdict.tone === "success" ? <CheckCircle2 className="size-4" /> : <TriangleAlert className="size-4" />}
+                </span>
+              )}
+              <div className="flex min-w-0 flex-1 basis-64 flex-col gap-0.5">
+                <h2 className="font-heading text-[0.9375rem] font-semibold">
+                  {verdict?.title || (app ? (zh ? "业务状态与数据可信度" : "Application health and data coverage") : (zh ? "观测平台状态" : "Observation platform health"))}
+                </h2>
+                <p className="text-[0.8125rem] text-muted-foreground">{verdict?.detail}</p>
+              </div>
+              <div className="flex items-center gap-3 text-xs text-muted-foreground tabular-nums">
+                {!hosted && readAt ? <span>{readAt}</span> : snapshot?.historical ? <span>{zh ? "固定历史窗口" : "Fixed historical window"}</span> : null}
+                {!hosted && (
+                  <Button size="sm" variant="outline" disabled={loading} onClick={() => setRevision((n) => n + 1)}>
+                    <RefreshCw data-icon="inline-start" aria-hidden="true" className={cn(loading && "animate-spin")} />
+                    {zh ? "刷新" : "Refresh"}
+                  </Button>
+                )}
+              </div>
+            </div>
+            {app && snapshot && (
+              <a
+                className="flex items-center gap-2 border-b border-hairline px-5 py-3 text-[0.8125rem] hover:bg-muted/50"
+                href={toHref(investigationPath(`/apps/${encodeURIComponent(app)}/alerts`, search))}
+              >
+                <Bell className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                <span className="min-w-0 flex-1">
                   {snapshot.controlAlerts?.state === "ok"
                     ? snapshot.controlAlerts.enabledRules
                       ? zh
                         ? `当前 ${snapshot.controlAlerts.counts?.firing || 0} 条 Control 告警触发，${snapshot.controlAlerts.counts?.pending || 0} 条等待持续条件`
-                        : `${snapshot.controlAlerts.counts?.firing || 0} Control alerts firing`
-                      : zh
-                        ? "尚未配置应用告警规则"
-                        : "No application alert rules configured"
-                    : zh
-                      ? "应用告警状态未知"
-                      : "Application alert state unknown"}
-                </a>
-              </p>
+                        : `${snapshot.controlAlerts.counts?.firing || 0} Control alerts firing, ${snapshot.controlAlerts.counts?.pending || 0} pending`
+                      : zh ? "尚未配置应用告警规则" : "No application alert rules configured"
+                    : zh ? "应用告警状态未知" : "Application alert state unknown"}
+                </span>
+                <ArrowRight className="size-3.5 text-muted-foreground" aria-hidden="true" />
+              </a>
             )}
-            <dl className="grid divide-y rounded-lg border sm:grid-cols-2 sm:divide-y-0 xl:grid-cols-3">
-              {definitions.map(([key, cn, en, unit, threshold]) => {
-                const signal = signals[key],
-                  warning =
-                    signal?.value != null &&
-                    threshold != null &&
-                    signal.value > threshold;
-                return (
-                  <div key={key} className="min-w-0 space-y-2 p-4">
-                    <dt className="text-xs text-muted-foreground">
-                      {zh ? cn : en}
-                    </dt>
-                    <dd className="flex flex-wrap items-baseline gap-2">
-                      <span className="text-xl font-semibold tabular-nums">
-                        {valueText(signal, unit)}
-                      </span>
-                      <Badge variant={warning ? "warning" : "secondary"}>
-                        {warning
-                          ? zh
-                            ? "需关注"
-                            : "Attention"
-                          : stateLabel(
-                              signal,
-                              zh,
-                              stale && !key.startsWith("http_"),
-                            )}
-                      </Badge>
-                    </dd>
-                  </div>
-                );
-              })}
-            </dl>
-            <div
-              className="flex flex-wrap gap-x-5 gap-y-2 text-sm text-muted-foreground"
-              role="status"
-            >
-              <span>
-                {app
-                  ? zh
-                    ? "任务指标新鲜度："
-                    : "Task metric freshness: "
-                  : zh
-                    ? "Collector 指标新鲜度："
-                    : "Collector metric freshness: "}
-                {stateLabel(freshness, zh, stale)}
-                {freshness?.state === "ok"
-                  ? ` · ${valueText(freshness, "s")}`
-                  : ""}
-              </span>
-              <span>
-                {zh ? "查询来源：" : "Query sources: "}
-                {
-                  Object.values(signals).filter(
-                    (s) => s.state === "ok" || s.state === "empty",
-                  ).length
-                }
-                /{Object.keys(signals).length} {zh ? "响应成功" : "responded"}
-              </span>
-            </div>
-            <p className="text-sm text-muted-foreground">
-              {zh ? "日志覆盖（当前）：" : "Current log coverage: "}
-              {coverage?.state === "ok"
-                ? `${coverage.items?.filter((r) => r.at > 0 && snapshot.sampledAt - r.at < 120 && (!r.gapAt || snapshot.sampledAt - r.gapAt >= 900)).length || 0} / ${coverage.items?.length || 0} ${zh ? "服务已追平且近期无缺口" : "services caught up without recent gaps"}`
-                : zh
-                  ? "状态未知"
-                  : "Unknown"}
-            </p>
-            <details>
-              <summary className="w-fit cursor-pointer rounded text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
-                {zh
-                  ? "日志覆盖与采集缺口（当前）"
-                  : "Log coverage and collection gaps (current)"}
-              </summary>
-              <div className="mt-3">
-                {coverage?.state !== "ok" ? (
-                  <p className="text-sm text-muted-foreground">
-                    {coverage?.state === "empty"
-                      ? zh
-                        ? "尚无此应用的日志覆盖记录。"
-                        : "No coverage records for this application."
-                      : zh
-                        ? "日志覆盖状态暂不可用。"
-                        : "Log coverage is unavailable."}
-                  </p>
-                ) : (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>
-                          {zh ? "应用 / 服务" : "Application / service"}
-                        </TableHead>
-                        <TableHead>
-                          {zh ? "最近追平" : "Last caught up"}
-                        </TableHead>
-                        <TableHead>{zh ? "状态" : "State"}</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {coverage.items?.map((row) => (
-                        <TableRow key={`${row.app}/${row.task}`}>
-                          <TableCell className="break-all">
-                            {row.app} / {row.task}
-                          </TableCell>
-                          <TableCell>
-                            {row.at ? formatDateTime(row.at, lang) : "—"}
-                          </TableCell>
-                          <TableCell>
-                            {!row.at || snapshot.sampledAt - row.at > 120
-                              ? zh
-                                ? "覆盖不完整"
-                                : "Incomplete"
-                              : row.gapAt &&
-                                  snapshot.sampledAt - row.gapAt < 900
-                                ? zh
-                                  ? "近期有缺口"
-                                  : "Recent gap"
-                                : zh
-                                  ? "已追平"
-                                  : "Caught up"}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                )}
-              </div>
-            </details>
+            {tiles}
+          </Card>
+          <div className={cn("grid min-w-0 gap-6", !app && "xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]")}>
+            <Card className="self-start">
+              <CardHeader className={cn(coverage?.state === "ok" && "border-b border-hairline")}>
+                <CardTitle>{zh ? "日志覆盖与采集缺口" : "Log coverage and collection gaps"}</CardTitle>
+                <CardDescription>
+                  {coverage?.state === "ok"
+                    ? zh ? `${caughtUp} / ${coverageRows.length} 个服务已追平且近 15 分钟无缺口` : `${caughtUp} of ${coverageRows.length} services caught up without gaps in 15 minutes`
+                    : zh ? "当前状态" : "Current state"}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className={cn(coverage?.state === "ok" && "-mt-(--card-spacing)")}>{coverageTable}</CardContent>
+            </Card>
             {!app && (
-              <details>
-                <summary className="w-fit cursor-pointer text-sm font-medium">
-                  {zh ? "各组件采集状态" : "Component scrape status"}
-                </summary>
-                <ul className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
-                  {signals.targets?.items?.map((row, i) => (
-                    <li key={i}>
-                      {row.labels.job} ·{" "}
-                      {row.value === 1
-                        ? zh
-                          ? "可采集"
-                          : "Up"
-                        : zh
-                          ? "采集失败"
-                          : "Down"}
-                    </li>
-                  ))}
-                </ul>
-              </details>
+              <Card className="self-start has-[>ul:last-child]:pb-0">
+                <CardHeader className={cn(targets.length > 0 && "border-b border-hairline")}>
+                  <CardTitle>{zh ? "组件采集" : "Component scrapes"}</CardTitle>
+                  <CardDescription>
+                    {targets.length
+                      ? targetsDown
+                        ? zh ? `${targetsDown} 个组件采集失败` : `${targetsDown} of ${targets.length} components down`
+                        : zh ? `${targets.length} 个组件均可采集` : `All ${targets.length} components up`
+                      : zh ? "没有组件采集记录" : "No scrape targets reported"}
+                  </CardDescription>
+                </CardHeader>
+                {targets.length ? (
+                  <ul className="-mt-(--card-spacing) divide-y divide-hairline text-[0.8125rem]">
+                    {[...targets].sort((a, b) => a.value - b.value || String(a.labels.job).localeCompare(String(b.labels.job))).map((row, i) => (
+                      <li key={`${row.labels.job}-${row.labels.instance || i}`} className="flex items-center gap-3 px-(--card-spacing) py-2.5">
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs" translate="no" title={row.labels.instance}>{row.labels.job}</span>
+                        <Badge appearance={row.value === 1 ? "dot" : "filled"} variant={row.value === 1 ? "success" : "destructive"}>
+                          {row.value === 1 ? (zh ? "可采集" : "Up") : (zh ? "采集失败" : "Down")}
+                        </Badge>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </Card>
             )}
-            {app && (
-              <div className="flex flex-wrap gap-4 text-sm">
-                <a
-                  className="text-link hover:underline"
-                  href={toHref(
-                    investigationPath(
-                      `/apps/${encodeURIComponent(app)}/dashboards`,
-                      search,
-                      { observeView: "overview" },
-                    ),
-                  )}
-                >
-                  {zh ? "查看任务详情" : "Task details"}
-                </a>
-                <a
-                  className="text-link hover:underline"
-                  href={toHref(
-                    investigationPath(
-                      `/apps/${encodeURIComponent(app)}/logs`,
-                      search,
-                    ),
-                  )}
-                >
-                  {zh ? "检索相关日志" : "Related logs"}
-                </a>
-              </div>
-            )}
-          </>
-        )}
-        <p className="max-w-prose text-xs leading-relaxed text-muted-foreground">
-          {app
-            ? zh
-              ? "0 仅表示已观测值为零；没有采样不代表正常。HTTP 为整个应用的入口汇总，任务统计遵循时间与身份筛选。活跃任务和投递次数不能推算 Broker 积压。"
-              : "Zero is an observed value; missing samples do not establish health. HTTP covers the application's ingress; task metrics use the selected time and identity. Active tasks and publications do not measure broker backlog."
-            : zh
-              ? "0 仅表示已观测值为零；没有采样不代表正常。日志覆盖显示当前状态，不能据此证明历史数据完整。"
-              : "Zero is an observed value; missing samples do not establish health. Current log coverage does not establish historical completeness."}
-        </p>
-      </CardContent>
-    </Card>
+          </div>
+          {app && (
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" nativeButton={false} render={<a href={toHref(investigationPath(`/apps/${encodeURIComponent(app)}/dashboards`, search, { observeView: "overview" }))} />}>
+                {zh ? "查看任务详情" : "Task details"}
+              </Button>
+              <Button variant="outline" size="sm" nativeButton={false} render={<a href={toHref(investigationPath(`/apps/${encodeURIComponent(app)}/logs`, search))} />}>
+                {zh ? "检索相关日志" : "Related logs"}
+              </Button>
+            </div>
+          )}
+        </>
+      )}
+      <p className="flex max-w-3xl gap-2 text-xs/5 text-muted-foreground">
+        <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+        <span>{footnote}</span>
+      </p>
+    </div>
   );
 }

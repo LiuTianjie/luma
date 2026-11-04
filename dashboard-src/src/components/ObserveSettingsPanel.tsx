@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { apiGet, apiPost } from "../apiClient";
 import type { Lang } from "../types";
-import { AlertCircle, ExternalLink, RefreshCw } from "@/components/icons";
+import { AlertCircle, CheckCircle2, ExternalLink, KeyRound, RefreshCw } from "@/components/icons";
+import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Field, FieldContent, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -91,8 +92,11 @@ export function ObserveSettingsPanel({ lang, token }: { lang: Lang; token: strin
       if (!open) { setPassword(""); setPasswordError(""); }
     }}>
       <Card>
-        <CardHeader>
-          <CardTitle>{zh ? "看板对外分享" : "External dashboard sharing"}</CardTitle>
+        <CardHeader className="border-b border-hairline">
+          <CardTitle className="flex items-center gap-2">
+            {zh ? "看板对外分享" : "External dashboard sharing"}
+            {settings ? <Badge appearance="dot" variant={settings.grafanaPublicSharingEnabled ? "warning" : "outline"}>{settings.grafanaPublicSharingEnabled ? (zh ? "已开启" : "On") : (zh ? "已关闭" : "Off")}</Badge> : null}
+          </CardTitle>
           <CardDescription>{zh
             ? "通过链接和分享密码，让他人查看指定看板。默认关闭。"
             : "Let others view selected dashboards with a link and sharing password. Off by default."}</CardDescription>
@@ -109,8 +113,8 @@ export function ObserveSettingsPanel({ lang, token }: { lang: Lang; token: strin
               disabled={!settings || busy} onCheckedChange={(checked) => checked ? openPassword() : void changeSharing(false)} />
           </Field>
           {settings?.grafanaPublicSharingEnabled ? (
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-sm text-muted-foreground">{zh ? "已启用密码保护" : "Password protection is enabled"}</p>
+            <div className="flex items-center justify-between gap-3 rounded-lg bg-muted/50 px-4 py-3 ring-1 ring-hairline">
+              <p className="flex items-center gap-2 text-[0.8125rem]"><KeyRound className="size-4 text-muted-foreground" aria-hidden="true" />{zh ? "已启用密码保护" : "Password protection is enabled"}</p>
               <Button variant="outline" size="sm" disabled={busy} onClick={openPassword}>{zh ? "修改密码" : "Change password"}</Button>
             </div>
           ) : null}
@@ -129,16 +133,16 @@ export function ObserveSettingsPanel({ lang, token }: { lang: Lang; token: strin
               </Button>
             </Alert>
           )}
-          {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
-          <p className="text-sm text-muted-foreground">{zh
+          {notice && <p role="status" className="flex items-center gap-2 text-[0.8125rem] text-success-foreground"><CheckCircle2 className="size-4" aria-hidden="true" />{notice}</p>}
+        </CardContent>
+        <CardFooter className="flex-wrap gap-3">
+          <p className="min-w-0 flex-1 basis-80 text-xs/5 text-muted-foreground">{zh
             ? "开启后，在 Grafana 看板中选择“分享 → 外部分享（Share externally）”，将链接和密码提供给访客。可随时在 Grafana 停用单个链接。"
             : "After enabling, choose Share → Share externally in Grafana and give visitors the link and password. You can disable an individual link in Grafana at any time."}</p>
-          <div>
-            <a className={buttonVariants({ variant: "outline", size: "sm" })} href="/grafana/" target="_blank" rel="noopener noreferrer">
-              {zh ? "打开 Grafana" : "Open Grafana"}<ExternalLink data-icon="inline-end" />
-            </a>
-          </div>
-        </CardContent>
+          <a className={buttonVariants({ variant: "outline", size: "sm" })} href="/grafana/" target="_blank" rel="noopener noreferrer">
+            {zh ? "打开 Grafana" : "Open Grafana"}<ExternalLink data-icon="inline-end" />
+          </a>
+        </CardFooter>
       </Card>
       <DialogContent showCloseButton={!busy}>
         <form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); void changeSharing(true); }}>
