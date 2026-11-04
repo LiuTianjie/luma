@@ -29,7 +29,7 @@ services:
     environment:
       # Collect before the memory limiter starts refusing telemetry; leave room
       # for non-Go allocations below the container's hard limit.
-      GOMEMLIMIT: 384MiB
+      GOMEMLIMIT: 1024MiB
     depends_on:
       - victoria
       - nomad-exporter
@@ -38,9 +38,9 @@ services:
       resources:
         reservations:
           cpus: "0.10"
-          memory: 256M
-        limits:
           memory: 768M
+        limits:
+          memory: 2G
 
   tempo:
     build:

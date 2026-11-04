@@ -30,6 +30,9 @@ jobs:
       - name: Install Luma
         run: python -m pip install -e .
 
+      - name: Check idle metrics delivery and persistent WAL replay
+        run: python scripts/check-observe-wal.py
+
       - name: Check standard ingestion, sampling, query auth and config loading
         run: python scripts/check-observe-protocols.py --platform linux/amd64
 

@@ -76,8 +76,8 @@ receivers:
 processors:
   memory_limiter:
     check_interval: 1s
-    limit_mib: 512
-    spike_limit_mib: 128
+    limit_mib: 1536
+    spike_limit_mib: 256
   # Applications opt in through Resource attributes. Keep the branches
   # complementary so every accepted span reaches exactly one RED connector.
   filter/span-default:
@@ -211,6 +211,10 @@ connectors:
         buckets: [10ms, 50ms, 100ms, 500ms, 1s, 2s, 5s, 10s, 30s, 1m, 2m, 5m, 10m, 30m, 2h]
 
 extensions:
+  # Manager-local heap profiles let operators identify retained allocations
+  # without exposing diagnostic endpoints on the mesh or public interfaces.
+  pprof:
+    endpoint: 127.0.0.1:1777
   file_storage:
     directory: /var/lib/otelcol/storage
     create_directory: true
@@ -223,6 +227,11 @@ exporters:
     endpoint: http://127.0.0.1:8428/api/v1/write
     wal:
       directory: /var/lib/otelcol/prw
+      # PRW 0.122.0 waits for another WAL entry before checking its flush
+      # timer. Its default 300-entry buffer also retains decoded requests.
+      # Flush every entry so idle input or memory refusal cannot strand a
+      # partial buffer; keep persistence without accumulating decoded batches.
+      buffer_size: 1
     remote_write_queue:
       queue_size: 128
       num_consumers: 2
@@ -241,7 +250,7 @@ exporters:
       insecure: true
 
 service:
-  extensions: [bearertokenauth, file_storage]
+  extensions: [bearertokenauth, file_storage, pprof]
   telemetry:
     logs:
       level: info

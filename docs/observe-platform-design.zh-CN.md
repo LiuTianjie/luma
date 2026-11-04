@@ -61,3 +61,5 @@ SDK 面板编译器是可选离线工具。已有标准 Grafana JSON 的应用�
 SDK 版本与 `luma-infra` 独立。`observe-sdk-v*` 发布流程完成检查后将同次构建的 wheel、源码包及校验和发布到 GitHub Releases，可作为稳定依赖来源。PyPI OIDC 发布需先建立独立 Trusted Publisher 并启用仓库发布变量；工作流源码不代表包已经在 PyPI 可用。消费方锁定发布 wheel 的校验和或完整 Git SHA，不使用会过期的 CI 工件 URL 作为长期依赖。参见[发布指南](../sdk/python/docs/releasing.md)。
 
 Collector 固定版本为 contrib 0.122.1，实际 PRW 组件为 0.122.0。该版本 DELTA 限制、专用 WAL、队列单位和 Alpha 多 worker 开关见 [PRW README](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/v0.122.0/exporter/prometheusremotewriteexporter/README.md) 与[发行清单](https://github.com/open-telemetry/opentelemetry-collector-releases/blob/v0.122.1/distributions/otelcol-contrib/manifest.yaml)。升级组件时重新验证这些合同。
+
+PRW WAL 必须显式配置 `buffer_size: 1`。0.122.0 默认缓存 300 批解码请求，且读取下一条记录后才检查刷新定时器；输入停止或被内存保护拒收时，未满批次可能一直留在内存。逐批刷新保留落盘与崩溃恢复，并避免该等待依赖。`scripts/check-observe-wal.py` 验证单批后无新输入时仍能入库，以及下游中断、Collector 被终止后的持久回放；`--baseline` 可复现默认配置的空闲刷新问题。Exporter 队列为零不代表 WAL 读缓冲为空，排障需对照本机 pprof 堆快照与存储中的最新采样。
