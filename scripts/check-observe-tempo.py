@@ -53,6 +53,7 @@ def main() -> None:
     names = {name: prefix + "-" + name for name in ("probe", "tempo", "collector")}
     images = {name: prefix + "-" + name + ":local" for name in ("tempo", "collector")}
     volume = prefix + "-data"
+    collector_volume = prefix + "-collector-data"
     helper_image = "python:3.12-alpine"
     existing_images = set(docker("image", "ls", "--format", "{{.Repository}}:{{.Tag}}").splitlines())
     compose = yaml.safe_load((ROOT / "observe/docker-compose.yml").read_text())
@@ -75,7 +76,8 @@ def main() -> None:
         service = compose["services"][name]
         resources = _resource_values(service["deploy"]["resources"])
         env = [item for key, value in service.get("environment", {}).items() for item in ("-e", f"{key}={value}")]
-        mounts = ["-v", f"{volume}:/data"] if name == "tempo" else []
+        mounts = (["-v", f"{volume}:/data"] if name == "tempo" else
+                  ["--mount", f"type=volume,src={collector_volume},dst=/var/lib/otelcol,volume-nocopy"])
         docker("run", "-d", "--name", names[name], *platform,
                "--network", "container:" + names["probe"],
                "--memory", str(resources["MemoryMaxMB"]) + "m",
@@ -89,11 +91,12 @@ def main() -> None:
                    str(ROOT / "observe"), timeout=600)
             print(f"built {name}", flush=True)
         docker("volume", "create", volume)
+        docker("volume", "create", collector_volume)
         # Match Control's fresh local-volume preparation (0777); Tempo itself
         # still runs as the upstream non-root user. No production paths are used.
         docker("run", "-d", "--name", names["probe"], *platform, "--network", "none",
-               "--memory", "64m", "-v", f"{volume}:/data", helper_image,
-               "python", "-c", "import os,time; os.chmod('/data',0o777); time.sleep(3600)", timeout=180)
+               "--memory", "64m", "-v", f"{volume}:/data", "-v", f"{collector_volume}:/collector-data", helper_image,
+               "python", "-c", "import os,time; os.chmod('/data',0o777); os.chmod('/collector-data',0o777); time.sleep(3600)", timeout=180)
         start("tempo")
         wait_for("Tempo ready on fresh storage", lambda: request(3200, "/ready")["status"] == 200)
         start("collector")
@@ -136,6 +139,8 @@ def main() -> None:
         start("tempo")
         wait_for("Tempo ready after restart", lambda: request(3200, "/ready")["status"] == 200)
         wait_for("Persisted trace queryable after restart (mode=blocks)", lambda: found("?mode=blocks"))
+        start("collector")
+        wait_for("Collector ready with reused persistent storage", lambda: request(4318, "/v1/traces", '{"resourceSpans":[]}')["status"] == 200)
         print("Observe Tempo lifecycle check passed", flush=True)
     except BaseException:
         for name in names.values():
@@ -147,6 +152,7 @@ def main() -> None:
         for name in reversed(list(names.values())):
             subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=30)
         subprocess.run(["docker", "volume", "rm", volume], capture_output=True, timeout=30)
+        subprocess.run(["docker", "volume", "rm", collector_volume], capture_output=True, timeout=30)
         cleanup_images = list(images.values()) + ([] if helper_image in existing_images else [helper_image])
         for image in cleanup_images:
             subprocess.run(["docker", "image", "rm", image], capture_output=True, timeout=30)

@@ -213,6 +213,7 @@ connectors:
 extensions:
   file_storage:
     directory: /var/lib/otelcol/storage
+    create_directory: true
   bearertokenauth:
     scheme: Bearer
     token: ${env:LUMA_OTLP_TOKEN}
