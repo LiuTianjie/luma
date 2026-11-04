@@ -104,6 +104,51 @@ def test_changing_attribute_names_stay_bounded_and_preserve_first_failed_item(ag
     assert first["attributes"]["task.stage"] == "read"
 
 
+@pytest.mark.parametrize("framework", [False, True])
+def test_propagated_error_replaces_handled_stage_error_without_extra_details(aggregated, framework):
+    """A deferred earlier item keeps its phase evidence while the actual failure owns the attempt diagnosis."""
+    runtime, exporter, _reader = aggregated
+    original = ValueError("write failed for second item")
+
+    def batch():
+        with runtime.task("batch") as run:
+            with pytest.raises(TimeoutError):
+                with observe.stage("lock", {"object.id": "first"}, aggregate=True):
+                    raise TimeoutError("first item deferred")
+            try:
+                with observe.stage("outer", aggregate=True):
+                    with observe.stage("write", {"object.id": "second"}, aggregate=True):
+                        raise original
+            except ValueError as error:
+                if not framework:
+                    raise
+                run.record_error(error)
+                run.set_framework_outcome("retrying")
+
+    if framework:
+        batch()
+    else:
+        with pytest.raises(ValueError) as caught:
+            batch()
+        assert caught.value is original
+    span = exporter.get_finished_spans()[0]
+    assert span.attributes["task.outcome"] == ("retrying" if framework else "failed")
+    failure = [event for event in span.events if event.name == "task.failure"]
+    assert len(failure) == 1
+    assert failure[0].attributes["task.stage"] == "write"
+    assert failure[0].attributes["object.id"] == "second"
+    assert failure[0].attributes["error.type"] == "ValueError"
+    phases = {event.attributes["task.stage"]: event.attributes for event in span.events
+              if event.name == "task.phase.finished"}
+    assert phases["lock"]["phase.outcome"] == phases["write"]["phase.outcome"] == "failed"
+    assert phases["lock"]["object.id"] == "first"
+    details = [event for event in runtime._events.queue if event["event"] == "task.failure.detail"]
+    assert len(details) == 1
+    assert details[0]["exception"]["error_message"] == str(original)
+    assert "ValueError: write failed for second item" in details[0]["exception"]["stacktrace"]
+    assert "first item deferred" not in details[0]["exception"]["stacktrace"]
+
+
 @pytest.mark.parametrize("hook", ["start", "finish", "completed", "claim_failure", "emit", "add_event", "mark_progress", "current_task", "exception_details"])
 @pytest.mark.parametrize("fails", [False, True])
 def test_observation_faults_preserve_business_return_and_exception(aggregated, monkeypatch, hook, fails):

@@ -1,6 +1,6 @@
 # Read existing observability data
 
-Install `luma-observe-sdk[query]==0.6.1` in the server that serves an application's
+Install `luma-observe-sdk[query]==0.6.2` in the server that serves an application's
 administration UI. The optional extra supplies `httpx`; collection-only SDK users
 keep the existing dependencies. Import the client from `luma_observe.query`.
 
@@ -18,6 +18,7 @@ async def execution_evidence(task_id: str, read_token: str):
             "deployment.environment.name": "production",
         },
         attribute_aliases={"document_id": "document.id"},
+        problem_business_outcomes=("failed", "retrying"),
     ) as client:
         events = await client.events(task_id=task_id, hours=24)
         return {"events": events, "traces": client.traces(events)}
@@ -40,7 +41,9 @@ disabled. Applications continue to enforce their own management permissions.
   records. Attribute filters use original attribute names, such as `document.id`.
   `attribute_aliases` adds caller-chosen output fields; standard task identity
   fields remain SDK-owned. `outcome="problem"` selects failure events, failed or
-  retrying attempts, and the standard `failed` business outcome before pagination.
+  retrying attempts, and the caller's `problem_business_outcomes` before pagination.
+  This constructor option defaults to `("failed",)`; applications can include their
+  business retry states even when the framework returns successfully.
 - Continue a page with its returned `until` and `next_offset`. The fixed time
   window prevents the window from moving; late ingestion and retention can still
   change stored pages. The SDK merges related attempt records and reports omitted

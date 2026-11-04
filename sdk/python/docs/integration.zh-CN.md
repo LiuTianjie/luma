@@ -6,7 +6,7 @@ SDK 不导入 Luma Control、Django、业务模型或数据库。
 
 ## 安装与版本
 
-Python 要求为 3.10 及以上。当前源码版本是 `0.6.1`，独立的 `Observe SDK Checks`
+Python 要求为 3.10 及以上。当前源码版本是 `0.6.2`，独立的 `Observe SDK Checks`
 工作流构建 wheel 和 sdist，用于审核与验证；CI 工件会过期，不作为长期依赖来源。
 稳定分发方式见[独立 SDK 发版指南](releasing.md)：消费方锁定已发布版本，或使用包含
 SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装的远程 SHA；指南中的
@@ -15,12 +15,12 @@ SDK 的可访问、不可变 Git 提交。当前未提交源码没有可安装�
 如需检查下载的 wheel，可以选择对应框架 extra：
 
 ```sh
-python -m pip install './luma_observe_sdk-0.6.1-py3-none-any.whl[taskiq]'
+python -m pip install './luma_observe_sdk-0.6.2-py3-none-any.whl[taskiq]'
 ```
 
 Celery 进程使用 `[celery]`，同时运行两种框架的镜像使用 `[taskiq,celery]`。
 包 PyPI 发布是独立步骤；发布完成后，消费方可通过自己的包配置安装
-`luma-observe-sdk[taskiq]==0.6.1`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
+`luma-observe-sdk[taskiq]==0.6.2`。Luma 原有 `v*` 发版继续只发布 `luma-infra`。
 
 ## 地址、凭证与开关
 
@@ -116,17 +116,20 @@ with stage("document.read", attributes={"document.id": document_id}, aggregate=T
 
 应用声明稳定的阶段名和业务属性；SDK 负责计时、次数、异常关联和任务结束时的汇总。
 一次尝试最多保留八种阶段，每种阶段仅首次进入时输出开始日志，结束时在任务根 Span
-追加一次累计摘要。此模式新增子 Span 为零，首次失败与省略数量各最多追加一条摘要。
+追加一次累计摘要。此模式新增子 Span 为零，执行主错误与省略数量各最多追加一条摘要。
 `observed_stage(..., aggregate=True)` 支持同步和异步函数；并行阶段的累计工作耗时可能
 大于任务的实际经过时间。原有 `stage()` 默认行为保持为子 Span。
 每类阶段保留最近一次的有界属性集合，出现失败时保留首次失败的属性；汇总计数由 SDK 维护。
 
 需要异常正文与堆栈时，在原有 `configure(...)` 中设置 `capture_error_details=True`，
-并启用 `lifecycle_logs=True`。SDK 将首次原始异常写入 `task.failure.detail` JSON 事件的
+并启用 `lifecycle_logs=True`。SDK 在执行尝试结束时将选定的原始异常写入 `task.failure.detail` JSON 事件的
 `exception` 对象，自动带上本次 Trace 编号，继续使用已有异步日志队列和存储通道。
 正文、堆栈及原因链的 UTF-8 上限分别为 4 KiB、16 KiB，超过时标记 `truncated`；根 Span
 保留类型、最多 256 字的摘要和代码位置。默认仅记录异常类型。业务的 `logger.exception(...)`
 沿用原行为，应用接入只需配置和阶段声明。
+执行主错误优先采用最终传播到框架的原始异常，保留其最内层阶段；Celery 重试提取原始原因。
+框架成功返回时，首次阶段异常仍可结合独立的业务结果查询。每次尝试只输出一份主错误与详情，
+内存快照仅保存有界文本和标量身份，异常对象与堆栈帧随业务控制流释放。
 
 管理后端可安装 `[query]` extra，使用 `luma_observe.query.ObserveClient` 读取现有
 Metrics、生命周期、异常日志与 Trace。SDK 负责分页、超时、响应上限和格式解析；业务仅

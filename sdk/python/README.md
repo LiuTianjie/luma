@@ -10,7 +10,7 @@ Python 3.10 or newer is required. See the [Chinese integration guide](docs/integ
 
 ## Install the distribution
 
-The package name is `luma-observe-sdk`, current source version `0.6.1`.
+The package name is `luma-observe-sdk`, current source version `0.6.2`.
 `Observe SDK Checks` builds wheel/sdist artifacts independently of Control for
 review and validation; expiring CI artifacts are not a permanent dependency source.
 The independent SDK release workflow publishes checked wheel/sdist files and
@@ -24,14 +24,14 @@ with the published asset hash or reviewed, pushed commit.
 To inspect a downloaded wheel, add only the framework extra used by that process:
 
 ```sh
-python -m pip install './luma_observe_sdk-0.6.1-py3-none-any.whl[taskiq]'
+python -m pip install './luma_observe_sdk-0.6.2-py3-none-any.whl[taskiq]'
 # Celery processes use the [celery] extra; processes needing both use [taskiq,celery].
 ```
 
 PyPI publication is optional and disabled unless the repository variable
 `OBSERVE_SDK_PYPI_ENABLED` is `true` and its Trusted Publisher is configured.
 Once that exact version is published there, consumers can use
-`luma-observe-sdk[taskiq]==0.6.1` with their normal package configuration.
+`luma-observe-sdk[taskiq]==0.6.2` with their normal package configuration.
 The existing `v*` Luma release workflow publishes `luma-infra`, not this package.
 
 ## Configure once per process
@@ -144,7 +144,7 @@ with stage("document.read", attributes={"document.id": document_id}, aggregate=T
 The SDK owns timing, repeated-stage counts and error association on the existing
 task attempt. At most eight distinct stage names are retained per attempt, with
 one start log and one completion summary per name. Completion summaries use the
-task root span; no child spans are added in this mode. The first failure and the
+task root span; no child spans are added in this mode. The selected execution failure and the
 omitted-stage count each add at most one summary. Applications only supply stable
 stage names and business attributes. Each stage retains the latest bounded attribute
 set, or the first failed set; application fields cannot override its summary counters.
@@ -153,7 +153,7 @@ the same behavior for sync and async functions. Parallel intervals accumulate
 work duration, which may exceed wall-clock task duration.
 
 `configure(capture_error_details=True, lifecycle_logs=True)` also records the
-first original exception as a `task.failure.detail` lifecycle JSON event with
+selected original exception at attempt completion as a `task.failure.detail` lifecycle JSON event with
 the task's trace ID and an `exception` object. Message and stack/cause-chain
 budgets are 4 KiB and 16 KiB of UTF-8, with an explicit `truncated` flag. The root
 span receives the error type, a 256-character summary and source location. These
@@ -161,6 +161,12 @@ details are opt-in; default error recording keeps only the type. Exception logs
 use the same bounded asynchronous queue and existing log sink. Application
 `logger.exception(...)` calls keep their normal behavior. No logging filter,
 business exception wrapper or application-owned stage recorder is required.
+The exception propagated to the framework takes priority over an earlier handled
+stage error. Its innermost stage is retained, and Celery retries use the original
+cause. If the framework completes successfully, the first stage failure remains
+available alongside the separate framework and business outcomes. Error snapshots
+contain bounded text and scalar identities; exception objects and traceback frames
+are released with application control flow.
 
 ## Query existing telemetry
 

@@ -63,6 +63,7 @@ class QueryUnavailable(Exception):
 class ObserveClient:
     def __init__(self, endpoints: ReadEndpoints, *, apps: Sequence[str],
                  resource_attributes: Mapping[str, str], attribute_aliases: Mapping[str, str] | None = None,
+                 problem_business_outcomes: Sequence[str] = ("failed",),
                  query_timeout: float = QUERY_TIMEOUT_SECONDS, evidence_timeout: float = EVIDENCE_TIMEOUT_SECONDS):
         """Create a read-only client with caller-owned application and resource scope."""
         if not apps or isinstance(apps, str) or not resource_attributes:
@@ -71,6 +72,7 @@ class ObserveClient:
         self.apps = tuple(apps)
         self.resource_attributes = dict(resource_attributes)
         self.attribute_aliases = dict(attribute_aliases or {})
+        self.problem_business_outcomes = tuple(problem_business_outcomes)
         if self.attribute_aliases.keys() & EVENT_FIELDS:
             raise ValueError("Custom aliases must preserve standard event fields")
         self.query_timeout, self.evidence_timeout = query_timeout, evidence_timeout
@@ -162,9 +164,11 @@ class ObserveClient:
             if value:
                 filters.append(f"{json.dumps('attributes.' + key)}:={json.dumps(value)}")
         if outcome == "problem":
+            problem_outcomes = [f'"attributes.task.business.outcome":={json.dumps(value)}'
+                                for value in self.problem_business_outcomes]
             filters.append('(event:="task.failure" OR (event:="task.finished" AND '
                            '("attributes.outcome":="failed" OR "attributes.outcome":="retrying" '
-                           'OR "attributes.task.business.outcome":="failed")))')
+                           + ''.join(f'OR {condition} ' for condition in problem_outcomes) + ')))')
 
         async def read(selected_filters, page_offset=0):
             """读取一页及下一条证据，用明确游标区分已加载数量与更多结果。"""
