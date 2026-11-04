@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 from ..errors import LumaError
 from ..log_alert_rules import MAX_RULES, normalize as normalize_log_rule
-from . import container_alerts, database
+from . import container_alerts, database, task_alerts
 from .alert_notifications import FeishuError, alert_outbox_text, feishu_alert_card, send_feishu, validate_credentials
 from .build_alert_details import build_details, detail_rows
 from . import log_alert_details
@@ -35,6 +35,7 @@ PRESETS = [
     dict(metric='app.nomad_not_running', name='应用无运行实例', description='应运行的应用持续没有运行实例，来自 luma-observe', threshold=0, forSeconds=300, unit='count'),
     dict(metric='app.nomad_failed', name='应用失败 alloc', description='Nomad 仍想跑但失败的 alloc 数，来自 luma-observe', threshold=0, forSeconds=120, unit='count'),
 ]
+PRESETS += task_alerts.PRESETS
 METRICS = {p['metric'] for p in PRESETS}
 OBSERVE_ALERTS = {
     'app.http_p95': ('luma_app:http_duration_seconds:p95', 'app'),
@@ -66,6 +67,8 @@ def _schema(conn):
             conn.execute(f"ALTER TABLE alert_channels ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
     if 'log_query' not in {r[1] for r in conn.execute('PRAGMA table_info(alert_rules)')}:
         conn.execute("ALTER TABLE alert_rules ADD COLUMN log_query TEXT NOT NULL DEFAULT '{}'")
+    if 'task_query' not in {r[1] for r in conn.execute('PRAGMA table_info(alert_rules)')}:
+        conn.execute("ALTER TABLE alert_rules ADD COLUMN task_query TEXT NOT NULL DEFAULT '{}'")
     incident_columns = {r[1] for r in conn.execute('PRAGMA table_info(alert_incidents)')}
     if 'log_details' not in incident_columns:
         conn.execute("ALTER TABLE alert_incidents ADD COLUMN log_details TEXT NOT NULL DEFAULT '{}'")
@@ -112,7 +115,7 @@ def _text(value, name, limit=200):
 
 
 def _rule(conn, row):
-    return dict(logQuery=json.loads(row['log_query']), id=row['id'], name=row['name'], metric=row['metric'], target=row['target'], threshold=row['threshold'],
+    return dict(taskQuery=json.loads(row['task_query']), logQuery=json.loads(row['log_query']), id=row['id'], name=row['name'], metric=row['metric'], target=row['target'], threshold=row['threshold'],
                 forSeconds=row['for_seconds'], severity=row['severity'], enabled=bool(row['enabled']),
                 repeatSeconds=row['repeat_seconds'], noData=row['no_data'], silencedUntil=row['silenced_until'],
                 channelIds=[r[0] for r in conn.execute('SELECT channel_id FROM alert_rule_channels WHERE rule_id=? ORDER BY channel_id', (row['id'],))])
@@ -175,6 +178,16 @@ def save_rule(body, *, now=None):
             if count >= MAX_RULES:
                 raise LumaError('At most 20 log alert rules are supported')
         data['logQuery'] = log_query
+        task_query = {}
+        if metric in task_alerts.METRICS:
+            try:
+                task_query = task_alerts.normalize(metric, target, data.get('taskQuery', {}))
+            except ValueError as exc:
+                raise LumaError(str(exc)) from exc
+            count = conn.execute("SELECT count(*) FROM alert_rules WHERE metric IN (?,?,?,?) AND id!=?", (*sorted(task_alerts.METRICS), identifier)).fetchone()[0]
+            if count >= task_alerts.MAX_RULES:
+                raise LumaError('At most 20 task metric alert rules are supported')
+        data['taskQuery'] = task_query
         threshold = _bounded(data.get('threshold'),'threshold',0,31536000)
         duration = int(_bounded(data.get('forSeconds'),'forSeconds',0,86400))
         repeat = int(_bounded(data.get('repeatSeconds'),'repeatSeconds',60,604800))
@@ -185,10 +198,10 @@ def save_rule(body, *, now=None):
         for channel in channels:
             if not conn.execute('SELECT 1 FROM alert_channels WHERE id=?',(channel,)).fetchone():
                 raise LumaError('notification channel not found')
-        if existing and any(data.get(k) != _rule(conn,existing).get(k) for k in ('metric','target','threshold','forSeconds','noData','enabled','logQuery')):
+        if existing and any(data.get(k) != _rule(conn,existing).get(k) for k in ('metric','target','threshold','forSeconds','noData','enabled','logQuery','taskQuery')):
             _close_rule(conn,identifier,now,'rule_changed')
-        conn.execute('INSERT OR REPLACE INTO alert_rules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                     (identifier,name,metric,target,threshold,duration,data['severity'],int(data['enabled']),repeat,data['noData'],silence,existing['created_at'] if existing else now,now,json.dumps(log_query)))
+        conn.execute('INSERT OR REPLACE INTO alert_rules(id,name,metric,target,threshold,for_seconds,severity,enabled,repeat_seconds,no_data,silenced_until,created_at,updated_at,log_query,task_query) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                     (identifier,name,metric,target,threshold,duration,data['severity'],int(data['enabled']),repeat,data['noData'],silence,existing['created_at'] if existing else now,now,json.dumps(log_query),json.dumps(task_query)))
         conn.execute('DELETE FROM alert_rule_channels WHERE rule_id=?',(identifier,))
         conn.executemany('INSERT INTO alert_rule_channels VALUES(?,?)',[(identifier,c) for c in set(channels)])
         return _rule(conn,conn.execute('SELECT * FROM alert_rules WHERE id=?',(identifier,)).fetchone())
@@ -262,6 +275,9 @@ def _notify(conn,rule,incident,kind,now,cluster):
     if rule['metric'] == 'app.memory':
         value += '' if incident['no_data'] else '%'
         threshold += '%'
+    elif rule['metric'] in ('app.task_heartbeat_age', 'app.task_queue_wait_p95'):
+        value += '' if incident['no_data'] else ' 秒'
+        threshold += ' 秒'
     fallback = f"Luma {label} · {rule['name']}\n集群：{cluster}\n对象：{incident['target']}\n级别：{rule['severity']}\n当前值：{value}；阈值：{threshold}\n事件编号：{incident['id']}\n请在 Dashboard → 可观测 → 告警中心查看。"
     details = json.loads(incident['build_details'])
     if details:
@@ -286,6 +302,7 @@ def _notify(conn,rule,incident,kind,now,cluster):
             incident_id=incident['id'],
             build_details=details,
             log_details=log_details,
+            task_details=({**json.loads(rule['task_query']), 'description': next(p['description'] for p in task_alerts.PRESETS if p['metric'] == rule['metric'])} if rule['metric'] in task_alerts.METRICS else None),
         ),
     )
     for channel in channels:
@@ -372,8 +389,12 @@ def tick(state: dict[str,Any], *, now=None, services=None):
         for rule in rules:
             builds = _latest_builds(state) if rule['metric']=='build.failed' else {}
             log_sample = (state.get('_logAlerts') or {}).get(rule['id'])
-            observations = ({rule['target']: _num(log_sample.get('value') if isinstance(log_sample, dict) else log_sample)}
-                            if rule['metric'] == 'app.log_matches' else _observations(state,rule['metric'],now,threshold=rule['threshold']))
+            if rule['metric'] in task_alerts.METRICS:
+                observations = {rule['target']: _num((state.get('_taskAlerts') or {}).get(rule['id']))}
+            elif rule['metric'] == 'app.log_matches':
+                observations = {rule['target']: _num(log_sample.get('value') if isinstance(log_sample, dict) else log_sample)}
+            else:
+                observations = _observations(state,rule['metric'],now,threshold=rule['threshold'])
             if rule['target'] != '*': observations = {rule['target']:observations.get(rule['target'])}
             active = {r['target']:r for r in conn.execute("SELECT * FROM alert_incidents WHERE rule_id=? AND status IN ('pending','firing')",(rule['id'],))}
             dismissals = {(r['target'],r['build_id']) for r in conn.execute('SELECT target,build_id FROM alert_dismissals WHERE rule_id=?',(rule['id'],))}
@@ -551,10 +572,13 @@ def load_evaluation_state(*, now=None):
         log_columns = {r[1] for r in conn.execute('PRAGMA table_info(alert_rules)')} if table else set()
         log_rules = [dict(id=r['id'], target=r['target'], logQuery=json.loads(r['log_query']))
                      for r in conn.execute("SELECT id,target,log_query FROM alert_rules WHERE enabled=1 AND metric='app.log_matches' LIMIT 20")] if 'log_query' in log_columns else []
+        task_rules = [dict(id=r['id'], metric=r['metric'], target=r['target'], taskQuery=json.loads(r['task_query']))
+                      for r in conn.execute("SELECT id,metric,target,task_query FROM alert_rules WHERE enabled=1 AND metric IN (?,?,?,?) LIMIT 20", tuple(sorted(task_alerts.METRICS)))] if 'task_query' in log_columns else []
     from .log_alerts import samples
     result['_logAlerts'] = samples(log_rules, now)
     if 'app.memory' in result['_observeMetrics']:
         container_alerts.hydrate(result)
+    result['_taskAlerts'] = task_alerts.hydrate(result, task_rules)
     _hydrate_observe_alerts(result)
     return result
 

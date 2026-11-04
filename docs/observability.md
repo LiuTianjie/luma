@@ -215,6 +215,29 @@ incident becomes firing only when its condition lasts for that duration; a
 healthy observation resolves it. One active incident is maintained per rule
 and target, with a configurable repeat interval for continued failures.
 
+Task SDK presets are `app.task_heartbeat_age`, `app.task_queue_wait_p95`,
+`app.task_telemetry_dropped` and `app.task_tracking_overflow`. Select one
+application and optionally scope it with `taskQuery.service`, using the OTel
+`service_name` from its heartbeat table. Heartbeat rules require the expected
+continuously running service. Up to 20 task metric rules are supported; bounded
+queries run outside SQLite and identical queries share a read.
+
+Heartbeat age uses the newest process heartbeat within that service. The default
+is over 120 seconds for 180 seconds; use `noData: alert` to detect disappearance
+of all series. This can indicate a service or telemetry outage. Disable the rule
+when retiring a service. Queue p95 uses consumed-task waits over 15 minutes,
+requires at least 20 observations per service/queue, and takes the largest group.
+Observed low traffic clears the latency condition; missing telemetry does not
+become zero. This is not a backlog measurement. SDK drops count lifecycle log
+drops and instrumentation errors over 15 minutes. Tracking overflow sums
+untracked active tasks only in processes with fresh heartbeats; neither metric
+covers all OTLP or Collector losses.
+
+These presets read existing VictoriaMetrics data and do not require redeploying
+instrumented applications or observe. Rules and notification destinations must
+be explicitly configured. A recovered metric condition does not establish that
+historically failed business tasks were successfully compensated.
+
 The **Service container memory near limit** preset (`app.memory`) takes the
 highest Docker-reported memory percentage across an application's containers
 and replicas, including all tasks in a Compose stack. It does not average away

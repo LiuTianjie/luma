@@ -16,6 +16,7 @@ import {
   getAlerting,
   mergeAlertPages,
   newAlertRule,
+  isTaskMetric,
   postAlerting,
   ruleRequest,
 } from "../alertingApi";
@@ -206,6 +207,8 @@ export function formatAlertObservedValue(
   if (
     metric === "node.offline" ||
     metric === "task.queue_age" ||
+    metric === "app.task_heartbeat_age" ||
+    metric === "app.task_queue_wait_p95" ||
     metric === "app.http_p95"
   )
     return `${formatted} ${zh ? "秒" : "s"}`;
@@ -1222,6 +1225,7 @@ export function AlertingPanel({
                                     : "All targets"
                                   : item.target}
                                 {item.metric === "app.log_matches" && item.logQuery?.task ? ` · ${item.logQuery.task}` : ""}
+                                {item.taskQuery?.service ? ` · OTel ${item.taskQuery.service}` : ""}
                               </span>
                             </div>
                           </TableCell>
@@ -1372,7 +1376,8 @@ export function AlertingPanel({
                               ...rule,
                               metric: value,
                               logQuery: { windowSeconds: 300, ...rule.logQuery },
-                              target: value === "app.log_matches" && rule.target === "*" ? "" : rule.target,
+                              target: (value === "app.log_matches" || isTaskMetric(value)) && rule.target === "*" ? "" : rule.target,
+                              noData: value === "app.task_heartbeat_age" ? "alert" : rule.noData,
                               threshold: preset?.threshold ?? rule.threshold,
                               forSeconds: preset?.forSeconds ?? rule.forSeconds,
                             });
@@ -1400,7 +1405,7 @@ export function AlertingPanel({
                         </FieldLabel>
                         <Combobox
                           disabled={busy}
-                          items={[...(rule.metric === "app.log_matches" ? [] : ["*"]), ...new Set(targetNames)]}
+                          items={[...((rule.metric === "app.log_matches" || isTaskMetric(rule.metric)) ? [] : ["*"]), ...new Set(targetNames)]}
                           value={rule.target}
                           inputValue={rule.target}
                           onInputValueChange={(value) =>
@@ -1434,7 +1439,7 @@ export function AlertingPanel({
                           </ComboboxContent>
                         </Combobox>
                         <FieldDescription>
-                          {rule.metric === "app.log_matches" ? (zh ? "选择一个应用，下方可进一步限定服务名。" : "Select one application; optionally narrow by task below.") : rule.metric.startsWith("node.")
+                          {isTaskMetric(rule.metric) ? (zh ? "选择单个应用；下方可限定 OTel 服务名。" : "Select one application; optionally scope by OTel service below.") : rule.metric === "app.log_matches" ? (zh ? "选择一个应用，下方可进一步限定服务名。" : "Select one application; optionally narrow by task below.") : rule.metric.startsWith("node.")
                             ? zh
                               ? "使用节点 ID，可从节点页面复制。"
                               : "Use a node ID from the Fleet page."
@@ -1448,6 +1453,16 @@ export function AlertingPanel({
                           {fieldErrors["alert-rule-target"]}
                         </FieldError>
                       </Field>
+                      {isTaskMetric(rule.metric) && <Field data-disabled={busy}>
+                        <FieldLabel htmlFor="alert-task-service">{zh ? "OTel 服务名" : "OTel service name"}</FieldLabel>
+                        <Input id="alert-task-service" disabled={busy} maxLength={160}
+                          required={rule.metric === "app.task_heartbeat_age"}
+                          value={rule.taskQuery?.service || ""}
+                          onChange={(event) => setRule({ ...rule, taskQuery: { service: event.target.value } })} />
+                        <FieldDescription>{rule.metric === "app.task_heartbeat_age"
+                          ? (zh ? "填写该应用预期持续运行的 OTel 服务名。按服务聚合所有进程；停止监测服务时停用对应规则。缺失可能是服务或上报通道异常。" : "Enter the expected continuously running OTel service. All processes are aggregated; disable this rule when retiring the service. Missing data can mean a service or telemetry outage.")
+                          : (zh ? "可留空以覆盖整个应用。使用心跳表中的 service_name，与 Compose 服务名可能不同。" : "Optional: leave empty for the application. Use service_name from the heartbeat table; it may differ from the Compose name.")}</FieldDescription>
+                      </Field>}
                       {rule.metric === "app.log_matches" && <LogRuleFields rule={rule} onChange={setRule} token={token} zh={zh} disabled={busy} />}
                       <Field
                         data-disabled={busy}
