@@ -281,6 +281,31 @@ async def test_problem_filter_and_pagination_use_one_frozen_window():
 
 
 @pytest.mark.asyncio
+async def test_problem_filter_uses_application_business_outcomes_before_pagination():
+    """Business retries can return framework success and remain discoverable by the caller's policy."""
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, content=json.dumps({
+            "event": "task.finished", "timestamp": 1000, "trace_id": "a" * 32,
+            "attributes.outcome": "succeeded", "attributes.task.business.outcome": "deferred",
+        }))
+
+    async with query_client(ReadEndpoints(logs="https://observe.example.com/logs"),
+                            problem_business_outcomes=("failed", "deferred")) as client:
+        await client.http.aclose()
+        client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        result = await client.events(task_name="sample", outcome="problem")
+    query = requests[0].url.params["query"]
+    assert query.index('"attributes.task.business.outcome":="deferred"') < query.index("sort by")
+    assert '"attributes.task.business.outcome":="failed"' in query
+    assert '"attributes.task.business.outcome":="retrying"' not in query
+    assert result["items"][0]["outcome"] == "succeeded"
+    assert result["items"][0]["business_outcome"] == "deferred"
+
+
+@pytest.mark.asyncio
 async def test_raw_logs_use_exact_attempt_trace_and_preserve_full_error():
     """原始异常以 Trace 精确对应尝试，即使其他日志引用该 Trace 也按记录身份区分。"""
     trace_id, other = "a" * 32, "b" * 32

@@ -11,6 +11,7 @@ import sys
 from typing import Callable
 
 from celery import current_app, signals
+from celery.exceptions import Retry
 
 from luma_observe import get_runtime, shutdown, telemetry_disabled
 from luma_observe.instrumentation import (
@@ -255,7 +256,8 @@ class CeleryInstrumentation:
             owner = request or (sender.request if sender is not None else None)
             attempt = _attempt(owner)
             if attempt is not None and reason is not None:
-                attempt.run.record_error(reason)
+                original = reason.exc if isinstance(reason, Retry) and isinstance(reason.exc, BaseException) else reason
+                attempt.run.record_error(original)
 
         _safe(record)
 

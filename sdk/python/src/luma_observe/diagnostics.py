@@ -28,6 +28,14 @@ def error_attributes(error: BaseException, details: bool) -> dict:
     return fields
 
 
+def error_identity(error: BaseException) -> tuple[int, int]:
+    """Match a propagated exception to its innermost stage using scalar identities."""
+    frame = error.__traceback__
+    while frame is not None and frame.tb_next is not None:
+        frame = frame.tb_next
+    return id(error), id(frame)
+
+
 def exception_details(error: BaseException) -> dict:
     """Keep messages and cause chains in lifecycle logs, with explicit UTF-8 budgets."""
     message = str(error)
@@ -44,6 +52,7 @@ class StageSummaries:
     def __init__(self):
         self.rows = {}
         self.failure = None
+        self.last_failure = None
         self.omitted = 0
         self.lock = threading.Lock()
 
@@ -73,11 +82,14 @@ class StageSummaries:
                 if error:
                     row.update({"phase.outcome": "failed", **error})
 
-    def claim_failure(self, attributes: dict) -> bool:
+    def claim_failure(self, identity: tuple[int, int], attributes: dict, *, terminal: bool) -> bool:
+        """Keep the first stage error until the framework identifies the propagated failure."""
         with self.lock:
-            if self.failure is not None:
+            if self.last_failure is None or self.last_failure[0] != identity:
+                self.last_failure = (identity, attributes)
+            if self.failure is not None and not terminal:
                 return False
-            self.failure = attributes
+            self.failure = self.last_failure[1]
             return True
 
     def completed(self):

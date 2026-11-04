@@ -30,7 +30,7 @@ from opentelemetry.sdk.trace import SpanLimits, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from .config import Configuration
-from .diagnostics import StageSummaries, error_attributes, exception_details
+from .diagnostics import StageSummaries, error_attributes, error_identity, exception_details
 from .process import ProcessMetricExporter, ProcessSpanExporter, register_provider_cleanup
 
 
@@ -113,6 +113,7 @@ class TaskRun:
         self._outcome = outcome if isinstance(outcome, str) and outcome in _OUTCOMES else "succeeded"
         self._explicit_outcome = False
         self._stages = StageSummaries()
+        self._failure_detail = None
 
     @property
     def outcome(self) -> str:
@@ -191,22 +192,27 @@ class TaskRun:
         _safe(self.span.add_event, "exception", {"exception.type": type(exception).__name__})
         _safe(self._record_failure, exception, {"task.stage": "task.execution"})
 
-    def _record_failure(self, exception: BaseException, attributes: dict):
-        """Associate the first original error with this attempt, including framework retries."""
+    def _record_failure(self, exception: BaseException, attributes: dict, *, terminal: bool = True):
+        """Keep bounded error snapshots, preferring the exception propagated to the framework."""
         if self._runtime is None or not self._runtime.enabled:
             return
         capture = self._runtime.configuration.capture_error_details
         if not capture and not self._stages.rows and not self._stages.omitted:
             return
         fields = {**attributes, **error_attributes(exception, capture)}
-        if not self._stages.claim_failure(fields):
+        if not self._stages.claim_failure(error_identity(exception), fields, terminal=terminal):
             return
-        _safe(self.add_event, "task.failure", fields)
-        if capture:
-            _safe(self._runtime.emit, "task.failure.detail", {**self._fields, **fields}, self.span,
-                  exception=exception)
+        self._failure_detail = _safe(exception_details, exception) if capture else None
 
     def _finish_stages(self):
+        """Emit one selected execution error and the accumulated stage summaries."""
+        if self._stages.failure is not None:
+            fields = self._stages.failure
+            _safe(self.add_event, "task.failure", fields)
+            if self._failure_detail is not None:
+                _safe(self._runtime.emit, "task.failure.detail", {**self._fields, **fields}, self.span,
+                      exception_detail=self._failure_detail)
+        self._failure_detail = None
         rows, omitted = self._stages.completed()
         for fields in rows:
             _safe(self.add_event, "task.phase.finished", fields)
@@ -273,7 +279,7 @@ class TaskRun:
             error = _safe(error_attributes, exception, self._runtime.configuration.capture_error_details) or {
                 "error.type": type(exception).__name__,
             }
-            _safe(self._record_failure, exception, {**fields, "task.stage": name})
+            _safe(self._record_failure, exception, {**fields, "task.stage": name}, terminal=False)
             raise
         finally:
             _safe(self._stages.finish, name, state[0] if state is not None else None, fields, error)
@@ -715,7 +721,7 @@ class Runtime:
                     _safe(self.emit, "task.published", {**fields, "outcome": outcome}, span)
 
     def emit(self, event: str, attributes: Mapping | None = None, span: trace.Span | None = None,
-             *, exception: BaseException | None = None):
+             *, exception: BaseException | None = None, exception_detail: dict | None = None):
         """Queue opt-in structured events; callers never wait for a log sink."""
         if self._events is None or self._closed.is_set() or self.pid != os.getpid():
             return
@@ -725,8 +731,11 @@ class Runtime:
                   "service.instance.id": self.instance_id,
                   "trace_id": trace.format_trace_id(context.trace_id) if context.is_valid else "",
                   "span_id": trace.format_span_id(context.span_id) if context.is_valid else ""}
-        if exception is not None and self.configuration.capture_error_details:
-            record["exception"] = exception_details(exception)
+        if self.configuration.capture_error_details:
+            if exception_detail is not None:
+                record["exception"] = exception_detail
+            elif exception is not None:
+                record["exception"] = exception_details(exception)
         try:
             self._events.put_nowait(record)
         except queue.Full:
