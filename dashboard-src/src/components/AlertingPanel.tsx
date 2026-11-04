@@ -503,6 +503,8 @@ export function AlertingPanel({
     return true;
   }
   function clearFieldError(event: FormEvent<HTMLFormElement>) {
+    // Run during bubbling so controlled inputs commit their change before React
+    // restores DOM values; capture-phase state updates can erase the first edit.
     const input = event.target;
     if (
       !(input instanceof HTMLInputElement) ||
@@ -1317,7 +1319,7 @@ export function AlertingPanel({
             <form
               noValidate
               onSubmit={saveRule}
-              onInputCapture={clearFieldError}
+              onInput={clearFieldError}
             >
               <Card>
                 <CardHeader>
@@ -1887,7 +1889,7 @@ export function AlertingPanel({
             <form
               noValidate
               onSubmit={saveChannel}
-              onInputCapture={clearFieldError}
+              onInput={clearFieldError}
             >
               <Card>
                 <CardHeader>
