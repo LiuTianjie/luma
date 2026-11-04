@@ -16,6 +16,7 @@ import {
   type ApplicationDashboard,
 } from "./applicationDashboardModel";
 import "./ObservabilityPanel.css";
+import { ApplicationTaskBoard } from "./task-observability/ApplicationTaskBoard";
 
 type DashboardList = {
   status: "loading" | "ready" | "error";
@@ -24,6 +25,11 @@ type DashboardList = {
 };
 
 export function ApplicationDashboards({ app, lang, token }: { app: string; lang: Lang; token: string }) {
+  return <ApplicationTaskBoard app={app} token={token} zh={lang === "zh"}
+    metrics={<GrafanaDashboards app={app} lang={lang} token={token} />} />;
+}
+
+function GrafanaDashboards({ app, lang, token }: { app: string; lang: Lang; token: string }) {
   const zh = lang === "zh";
   const { path, search, navigate } = useRouter();
   const [list, setList] = useState<DashboardList>({ status: "loading", dashboards: [] });

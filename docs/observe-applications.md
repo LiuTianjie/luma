@@ -200,6 +200,18 @@ in a local directory excluded through `.git/info/exclude`, and back them up
 through your internal file-delivery process. Do not publish business-specific
 queries or identifiers in the Luma repository.
 
+### Task investigations and traces
+
+An application's **Dashboards** page provides Metrics, Tasks, Executions and Traces. Metrics loads the application's associated Grafana JSON. The other views read existing VictoriaMetrics, VictoriaLogs and Tempo data using standard SDK signals.
+
+- **Tasks** shows observed tasks, execution outcomes, duration and queue P95, activity, oldest execution, progress age, process heartbeats and SDK drop counters. Schedule declarations, actual Redis queue depth and business database state belong to the application.
+- **Executions** filters by task name, task ID, queue, outcome or reported attribute. Attempts are grouped by task, with retry outcomes, accumulated phase durations, exception summaries and lifecycle events. Pagination fixes the end of the window and indicates partial evidence and read limits.
+- **Traces** supports filtered search, minimum duration and exact Trace IDs. The waterfall includes parent/child spans, collapsing, zoom, error filtering, self time, attributes, events and Span Links. Exception details and related logs load on demand; nearby process logs are explicitly identified as context.
+
+Choose a 1, 6, 24 or 72-hour window. Tasks optionally refreshes every 30 seconds while visible; execution details and traces are queried on demand. Missing samples remain unknown. Traces are sampled and retained for a limited period; use Metrics for execution counts. Generic views preserve reported names; application-specific display aliases can continue to live in custom Grafana dashboards.
+
+Control installs the published `luma-observe-sdk[query]==0.6.2` through its `control` extra. Reads use fixed local observation endpoints, application scopes and the existing console authentication. Links preserve views, filters and Trace IDs. These interactive views require console sign-in. Password-protected Grafana shares continue to serve their explicitly shared metrics dashboards. Update Control to receive these views; collection has its own deployment lifecycle.
+
 ### Link dashboards to an application
 
 Add the exact tag `luma-app:<application-name>` to each dashboard's `tags` array,

@@ -15071,6 +15071,10 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             except ValueError as exc:
                 raise LumaError("window must be a number") from exc
             return _json_response(200, await run_in_threadpool(handle_observe_apps, token, window=window))
+        task_observe_match = re.fullmatch(r"/v1/dashboard/observe/tasks/(overview|events|traces|trace|logs)", parsed_path)
+        if task_observe_match:
+            from .observe_tasks import handle_task_observe
+            return _json_response(200, await handle_task_observe(token, task_observe_match.group(1), dict(request.query_params)))
         if parsed_path == "/v1/dashboard/observe/settings":
             from .observe_settings import get_settings
             return _json_response(200, await run_in_threadpool(get_settings, token))

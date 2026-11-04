@@ -101,6 +101,18 @@ OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20<ingest-token>
 
 看板配置可以独立于业务源码维护。开源仓库中的私有看板可放在通过 `.git/info/exclude` 忽略的本地目录，配置和生成文件由内部文件交付流程备份。业务查询与标识不应发布到 Luma 仓库。
 
+### 任务诊断与 Trace {#task-investigations-and-traces}
+
+应用详情的 **看板** 提供指标看板、任务总览、执行记录和 Trace 四个视图。指标看板继续加载应用关联的 Grafana JSON；其余视图读取已有的 VictoriaMetrics、VictoriaLogs 与 Tempo，适用于各应用已上报的标准 SDK 信号。
+
+- **任务总览**：已观测任务、执行结果、耗时与排队 P95、活跃数量、最长执行与无进展时间、进程心跳和 SDK 丢弃计数。任务与队列来自遥测；计划声明、实际 Redis 积压和业务数据库状态由业务系统维护。
+- **执行记录**：按任务名称、任务编号、队列、结果及已上报属性查询；同一任务按尝试分组，可核对重试后结果、累计阶段耗时、异常摘要与生命周期事件。分页固定截止时间，页面提示读取上限与部分证据。
+- **Trace**：按调用条件与最小耗时搜索，或输入完整 Trace ID；详情支持父子 Span 瀑布图、折叠、缩放、错误筛选、自身耗时、属性、事件和 Span Links。原始异常与关联日志按需读取；相邻进程日志会标记为上下文。
+
+查询范围为 1、6、24 或 72 小时。仅任务总览可选每 30 秒自动刷新，隐藏页面时暂停；执行详情与 Trace 按需查询。缺失采样保持未知，Trace 受采样与保留期影响，执行统计使用 Metrics。通用页面展示上报字段原名；应用中文别名仍可由自定义 Grafana 看板维护。
+
+Control 使用已发布的 `luma-observe-sdk[query]==0.6.2` 查询层，通过 `control` extra 安装。接口沿用控制台认证，固定读取本机观测服务并按应用限定范围。页面链接保留视图、筛选条件与 Trace ID。上述交互需要 Luma 控制台登录；Grafana 密码分享链接继续只展示其已分享的指标看板。更新 Control 后即可获得这些入口，已有采集链路保持独立。
+
 ### 关联到应用详情 {#link-dashboards-to-an-application}
 
 在生成工具的输入配置或标准 Grafana JSON 的 `tags` 数组中，添加精确标签 `luma-app:<application-name>`。例如：

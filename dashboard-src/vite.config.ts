@@ -2,6 +2,7 @@ import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { taskObservationFixture } from "./task-observability-fixtures";
 
 const devDashboardPayload = {
   cluster: { id: "luma-266ba124", leader: "cn-edge", updatedAt: new Date().toISOString() },
@@ -290,6 +291,16 @@ export default defineConfig({
     {
       name: "dev-dashboard-api",
       configureServer(server) {
+        server.middlewares.use("/v1/dashboard/observe/tasks", (request, response) => {
+          if (request.method !== "GET" || !request.headers.authorization?.startsWith("Bearer ")) {
+            response.statusCode = 401;
+            response.end(JSON.stringify({ error: "unauthorized" }));
+            return;
+          }
+          const url = new URL(request.url || "/", "http://localhost");
+          response.setHeader("Content-Type", "application/json");
+          response.end(JSON.stringify(taskObservationFixture(url.pathname.slice(1), url.searchParams)));
+        });
         const readBody = (request: any) => new Promise<Record<string, any>>((resolve) => {
           let raw = "";
           request.on("data", (chunk: unknown) => {
