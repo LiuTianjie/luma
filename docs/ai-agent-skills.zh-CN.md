@@ -60,6 +60,24 @@ luma skills sync --force
 
 wheel 和源码包都包含完整 Skill 及其引用文件。安装 Skill 不会升级 Control，也不会部署可观测栈；升级后请重新加载 Skill 或新开助手对话。
 
+## 观测排障命令的分发 {#observation-cli-delivery}
+
+`luma observe status/app/alerts/tasks` 与 `luma-observe`、`luma-logs` 来自同一个 `luma-infra` 安装包。其他用户按原有 pip、pipx、uv tool 或 Luma 安装流程升级 CLI 即可获取命令；已安装的 Skill 套件会同步，不需要复制开发者机器上的文件。首次使用的助手按上面的 `skills install` 安装，其他助手通过 `--path` 登记自己的目录。
+
+```sh
+luma version --local
+luma observe --help
+luma skills status --format json
+luma observe status --format json
+luma observe app APP --since 1h --format json
+luma observe alerts --app APP --format json
+luma observe tasks APP --view events --outcome problem --since 1h --format json
+```
+
+CLI 和 Skill 升级只改变客户端。共享查询需要集群管理员升级 Control；自监控、结构化日志和持久队列需要更新 Observe；资源身份回填需要更新节点代理。缺少命令时检查 CLI 版本，端点不存在时检查 Control 版本，指标无采样时检查 Observe 与业务采集。Skill 不会自动执行这些集群升级。
+
+源码 CI 与 PyPI 发布前都会校验最终 wheel 和源码包包含完整技能，并在源码目录外安装 wheel，验证新命令、Codex／Claude／自定义目录安装、升级自动同步及本地修改备份。校验失败会阻止该发布任务上传安装包。
+
 ## 参考文档 {#references}
 
 - [部署 YAML](deployment-yaml.zh-CN.md)

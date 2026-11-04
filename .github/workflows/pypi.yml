@@ -57,6 +57,9 @@ jobs:
       - name: Check distributions
         run: python -m twine check dist/*
 
+      - name: Verify installed CLI and bundled skill upgrades
+        run: python scripts/check-cli-package.py dist
+
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:

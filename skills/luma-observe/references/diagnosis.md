@@ -5,6 +5,22 @@ deployed version. Reuse an already known application/manager identity. These are
 read-only checks; an explanation request does not authorize a restart, stack
 redeploy, credential change or a business-task retry.
 
+## Start with a shared snapshot
+
+Use `luma observe status --format json` for ingestion, export queues, storage,
+query latency, unresolved container identities and log coverage. Then use
+`luma observe app APP --since 1h --until TIMESTAMP --format json` and
+`luma observe alerts --app APP --format json` to separate application signals
+from collector/query failures. These commands share the Web API and do not mutate
+runtime state. Missing self-metrics after a Control upgrade may require deploying
+the separately versioned Observe stack; do not report missing series as zero.
+
+Tempo local backend 2.10.10 enumerates block directories with `fs.WalkDir` and
+propagates a disappearing directory as a poll error. Concurrent block deletion
+is a plausible cause, not proof of corruption. Compare exact block IDs with
+compaction/deletion logs and test a known persisted trace before changing storage.
+Do not delete blocks or WAL to suppress this error.
+
 ## Get the evidence closest to the symptom
 
 | Symptom | First evidence |

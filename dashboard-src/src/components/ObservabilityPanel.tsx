@@ -1,3 +1,4 @@
+import { observationQuery } from "../observeContext";
 import { useEffect, useMemo } from "react";
 import { localizeState } from "../i18n";
 import {
@@ -46,7 +47,7 @@ import { formatBytes, formatPercent } from "../format";
 
 const HISTORY_WINDOWS = [900, 3600, 21600];
 
-function HistoryStatus({ lang, state }: { lang: Lang; state?: HistoryState }) {
+function HistoryStatus({ lang, state, until }: { lang: Lang; state?: HistoryState; until?: number }) {
   const zh = lang === "zh";
   if (!state)
     return (
@@ -64,7 +65,7 @@ function HistoryStatus({ lang, state }: { lang: Lang; state?: HistoryState }) {
   const earliest =
     state.payload?.availableFrom ??
     (points.length ? Math.min(...points.map(([ts]) => ts)) : null);
-  const stale = latest !== null && Date.now() / 1000 - latest > 180;
+  const stale = latest !== null && (until ?? Date.now() / 1000) - latest > 180;
   const format = (ts: number) =>
     new Date(ts * 1000).toLocaleTimeString(zh ? "zh-CN" : "en-US", {
       hour: "2-digit",
@@ -150,12 +151,14 @@ export function ObservabilityPanel({
   nodes,
   services,
   mode = "metrics",
+  investigation = false,
 }: {
   lang: Lang;
   token: string;
   nodes: DashboardNode[];
   services: DashboardService[];
   mode?: "metrics" | "logs";
+  investigation?: boolean;
 }) {
   const zh = lang === "zh";
   const { path, navigate } = useRouter();
@@ -172,17 +175,19 @@ export function ObservabilityPanel({
             ? [{ name: service.fullName, label: serviceTitle(service) }]
             : [],
         );
-  const requested = query.get("target") || "";
+  const requested = query.get("target") || (investigation ? query.get("service") : "") || "";
   const selected = requested || available[0]?.name || "";
   const valid = available.some((item) => item.name === selected);
-  const rawWindow = Number(query.get("window") || 900);
-  const historyWindow = HISTORY_WINDOWS.includes(rawWindow) ? rawWindow : 900;
+  const shared = investigation || query.has("observeHours") || query.has("observe_until") || query.has("observe_since");
+  const scope = observationQuery(query.toString());
+  const rawWindow = shared ? Number(scope.until)-Number(scope.since) : Number(query.get("window") || 900);
+  const historyWindow = shared ? rawWindow : HISTORY_WINDOWS.includes(rawWindow) ? rawWindow : 900;
   const targets = useMemo<HistoryTarget[]>(
     () =>
       mode === "metrics" && selected && valid ? [{ kind, name: selected }] : [],
     [mode, kind, selected, valid],
   );
-  const histories = useMetricsHistories(token, targets, historyWindow);
+  const histories = useMetricsHistories(token, targets, historyWindow, query.has("observe_until") ? Number(scope.until) : undefined);
   const history = histories[historyKey(kind, selected)];
   const retention = history?.payload?.retentionSeconds;
   const series = history?.payload?.series || {};
@@ -197,7 +202,7 @@ export function ObservabilityPanel({
     navigate(`${path}?${next}`);
   };
   useEffect(() => {
-    if (mode !== "metrics" || !retention || historyWindow <= retention) return;
+    if (shared || mode !== "metrics" || !retention || historyWindow <= retention) return;
     const next = new URLSearchParams(query);
     next.set(
       "window",
@@ -242,6 +247,7 @@ export function ObservabilityPanel({
             {zh
               ? "每 30 秒刷新，采样断点不会插值。"
               : "Refreshes every 30 seconds. Gaps in samples remain visible."}
+            {investigation && (zh ? " 资源数据按下方部署服务查看；环境与进程实例筛选用于业务遥测。" : " Resource data uses the deployed service below; environment and process instance filters apply to application telemetry.")}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -277,7 +283,7 @@ export function ObservabilityPanel({
                 className="min-w-0"
                 disabled={!available.length}
                 value={selected}
-                onChange={(value) => update({ target: value })}
+                onChange={(value) => update({ target: value, ...(investigation ? {service: value} : {}) })}
                 options={[
                   ...(!valid
                     ? [
@@ -298,7 +304,7 @@ export function ObservabilityPanel({
               <FieldLabel id="metrics-window-label">
                 {zh ? "时间范围" : "Time range"}
               </FieldLabel>
-              <ToggleGroup
+              {shared ? <p className="text-sm text-muted-foreground">{zh ? "跟随上方排查范围" : "Using investigation range above"}</p> : <ToggleGroup
                 variant="segmented"
                 value={[String(historyWindow)]}
                 onValueChange={(values) => {
@@ -317,7 +323,7 @@ export function ObservabilityPanel({
                     {value < 3600 ? `${value / 60} min` : `${value / 3600} h`}
                   </ToggleGroupItem>
                 ))}
-              </ToggleGroup>
+              </ToggleGroup>}
               {retention && (
                 <FieldDescription>
                   {zh ? "历史保留" : "History retention"} ·{" "}
@@ -461,7 +467,7 @@ export function ObservabilityPanel({
                   </>
                 )
               )}
-              <HistoryStatus lang={lang} state={history} />
+              <HistoryStatus lang={lang} state={history} until={query.has("observe_until") ? Number(scope.until) : undefined} />
             </CardContent>
             {kind === "service" && (
               <CardFooter>

@@ -62,7 +62,7 @@ function GrafanaDashboards({ app, lang, token }: { app: string; lang: Lang; toke
 
   const requestedUid = new URLSearchParams(search).get("dashboard");
   const selected = list.dashboards.find((item) => item.uid === requestedUid) || list.dashboards[0];
-  const src = selected ? applicationDashboardUrl(selected.uid, app) : "";
+  const src = selected ? applicationDashboardUrl(selected.uid, app, true, search) : "";
   const selectDashboard = (uid: string) => {
     const params = new URLSearchParams(search);
     params.set("dashboard", uid);
@@ -91,7 +91,7 @@ function GrafanaDashboards({ app, lang, token }: { app: string; lang: Lang; toke
             </Button>
             {selected && (
               <a className={buttonVariants({ variant: "outline", size: "sm" })}
-                href={applicationDashboardUrl(selected.uid, app, false)} target="_blank" rel="noopener noreferrer">
+                href={applicationDashboardUrl(selected.uid, app, false, search)} target="_blank" rel="noopener noreferrer">
                 <ExternalLink data-icon="inline-start" />
                 {zh ? "新窗口打开" : "Open in new tab"}
               </a>
@@ -141,6 +141,11 @@ function GrafanaDashboards({ app, lang, token }: { app: string; lang: Lang; toke
         )}
         {selected && (
           <>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {zh
+                ? "时间范围已同步。服务、环境和实例筛选仅对使用对应变量的图表生效；关键词用于日志和 Trace 检索。"
+                : "Time range is synchronized. Service, environment and instance filters apply only to charts using those variables; keywords filter logs and traces."}
+            </p>
             {loadedSrc !== src && (
               <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Spinner aria-hidden="true" />

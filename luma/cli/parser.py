@@ -39,6 +39,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     ("Operate", (
         ("status", "Show cluster, node and application health"),
         ("app", "Inspect, restart, roll back or remove deployed applications"),
+        ("observe", "Read platform health, application telemetry and alert evidence"),
         ("secret", "Manage application secrets"),
     )),
     ("Cluster administration", (
@@ -355,6 +356,33 @@ def _add_operate_commands(sub: argparse._SubParsersAction) -> None:
     _add_control_arguments(status)
     _add_output_arguments(status)
 
+    observe = _command(sub, "observe")
+    observe_sub = _commands(observe, "observe_command")
+    for name, help_text in (("status", "Read collection, query, storage and coverage health"),
+                            ("app", "Read application health and telemetry freshness"),
+                            ("alerts", "Read Control and Alertmanager alerts without changing notifications"),
+                            ("tasks", "Query task executions, traces or correlated logs")):
+        op = _command(observe_sub, name, help_text)
+        if name in {"app", "tasks"}:
+            op.add_argument("name", help="Application name")
+            op.add_argument("--since", default="", help="Start: RFC3339, Unix seconds, or duration such as 1h (max 72h)")
+            op.add_argument("--until", default="", help="Fixed end: RFC3339 or Unix seconds")
+            for field in ("environment", "service", "instance"):
+                op.add_argument("--" + field, default="", help="Filter by reported " + field)
+        elif name == "alerts":
+            op.add_argument("--app", dest="name", default="", help="Application filter")
+        else:
+            op.set_defaults(name="")
+        if name == "tasks":
+            op.add_argument("--keyword", default="", help="Literal log text or trace name filter")
+            op.add_argument("--view", choices=("overview", "events", "traces", "trace", "logs"), default="overview", help="Evidence view to read")
+            for field in ("trace-id", "task-id", "task-name", "queue"):
+                op.add_argument("--" + field, default="", help="Filter by reported " + field.replace("-", " "))
+            op.add_argument("--outcome", choices=("all", "problem"), default="all", help="All attempts or failures and retries")
+            op.add_argument("--offset", type=int, default=0, help="Execution page offset returned by the previous query")
+        _add_control_arguments(op)
+        _add_output_arguments(op)
+
     app = _command(sub, "app", epilog="Examples:\n  luma app list\n  luma app logs web --follow\n  luma app rollback web")
     app_sub = _commands(app, "app_command")
     app_list = _command(app_sub, "list", "List deployed services and their replica health")
@@ -481,7 +509,7 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
             "Update the local CLI. On a manager this also refreshes Luma Control, and on a joined "
             "node it refreshes the node agent."
         ),
-        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.30\n  luma update fleet",
+        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.31\n  luma update fleet",
     )
     _add_update_arguments(update)
     _add_control_arguments(update)

@@ -134,3 +134,12 @@ This skill is paired with the installed Luma release. `luma skills status` shows
 pairing and local edits; `luma skills sync` refreshes existing suites, backing up
 customizations. A CLI upgrade does not retroactively refresh an agent's already
 loaded instructions; reload the skill or start a new conversation.
+
+## Shared Web / CLI investigation context
+
+When available, `luma observe tasks APP --view events --since 1h --until TIMESTAMP
+--format json` uses the same bounded task investigation as the Web. Use `--view
+trace --trace-id ID` for normalized spans and `--view logs --trace-id ID` for
+correlated evidence. `luma observe app APP` reports signal freshness separately
+from execution state. Check `luma observe --help` before relying on these commands
+on an older installation. Keep `luma app log-query` for arbitrary retained logs.

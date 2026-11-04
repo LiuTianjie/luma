@@ -1,3 +1,4 @@
+import { observationStatusFixture } from "./observation-status-fixtures";
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
@@ -291,6 +292,14 @@ export default defineConfig({
     {
       name: "dev-dashboard-api",
       configureServer(server) {
+        server.middlewares.use("/v1/dashboard/observe/status", (request, response) => {
+          response.setHeader("Content-Type", "application/json");
+          response.end(JSON.stringify(observationStatusFixture(new URL(request.url || "/", "http://localhost").searchParams)));
+        });
+        server.middlewares.use("/v1/dashboard/observe/alerts", (_request, response) => {
+          response.setHeader("Content-Type", "application/json");
+          response.end(JSON.stringify({state:"ok",items:[{id:"example",app:"ledger",task:"worker",name:"LumaAllocRestartStorm",summary:"Worker 在最近 10 分钟重启 7 次",description:"查看对应时间范围的实例事件与日志。",startsAt:new Date(Date.now()-600000).toISOString(),updatedAt:new Date().toISOString(),status:"active"}]}));
+        });
         server.middlewares.use("/v1/dashboard/observe/tasks", (request, response) => {
           if (request.method !== "GET" || !request.headers.authorization?.startsWith("Bearer ")) {
             response.statusCode = 401;

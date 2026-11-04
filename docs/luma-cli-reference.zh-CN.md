@@ -33,6 +33,7 @@ Deploy:
 Operate:
   status        Show cluster, node and application health
   app           Inspect, restart, roll back or remove deployed applications
+  observe       Read platform health, application telemetry and alert evidence
   secret        Manage application secrets
 
 Cluster administration:
@@ -776,6 +777,138 @@ arguments:
   --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
 ```
 
+## `luma observe`
+
+```text
+usage: luma observe [-h] <command> ...
+
+Read platform health, application telemetry and alert evidence
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  <command>
+    status    Read collection, query, storage and coverage health
+    app       Read application health and telemetry freshness
+    alerts    Read Control and Alertmanager alerts without changing notifications
+    tasks     Query task executions, traces or correlated logs
+```
+
+## `luma observe status`
+
+```text
+usage: luma observe status [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+Read collection, query, storage and coverage health
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma observe app`
+
+```text
+usage: luma observe app [-h] [--since SINCE] [--until UNTIL] [--environment ENVIRONMENT] [--service SERVICE] [--instance INSTANCE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Read application health and telemetry freshness
+
+arguments:
+  name                        Application name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --since SINCE               Start: RFC3339, Unix seconds, or duration such as 1h (max 72h)
+  --until UNTIL               Fixed end: RFC3339 or Unix seconds
+  --environment ENVIRONMENT   Filter by reported environment
+  --service SERVICE           Filter by reported service
+  --instance INSTANCE         Filter by reported instance
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma observe alerts`
+
+```text
+usage: luma observe alerts [-h] [--app NAME] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+Read Control and Alertmanager alerts without changing notifications
+
+arguments:
+  -h, --help                  show this help message and exit
+  --app NAME                  Application filter
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma observe tasks`
+
+```text
+usage: luma observe tasks [-h] [--since SINCE] [--until UNTIL] [--environment ENVIRONMENT] [--service SERVICE] [--instance INSTANCE] [--keyword KEYWORD] [--view {overview,events,traces,trace,logs}] [--trace-id TRACE_ID] [--task-id TASK_ID] [--task-name TASK_NAME] [--queue QUEUE] [--outcome {all,problem}] [--offset OFFSET] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Query task executions, traces or correlated logs
+
+arguments:
+  name                        Application name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --since SINCE               Start: RFC3339, Unix seconds, or duration such as 1h (max 72h)
+  --until UNTIL               Fixed end: RFC3339 or Unix seconds
+  --environment ENVIRONMENT   Filter by reported environment
+  --service SERVICE           Filter by reported service
+  --instance INSTANCE         Filter by reported instance
+  --keyword KEYWORD           Literal log text or trace name filter
+  --view {overview,events,traces,trace,logs}
+                              Evidence view to read
+  --trace-id TRACE_ID         Filter by reported trace id
+  --task-id TASK_ID           Filter by reported task id
+  --task-name TASK_NAME       Filter by reported task name
+  --queue QUEUE               Filter by reported queue
+  --outcome {all,problem}     All attempts or failures and retries
+  --offset OFFSET             Execution page offset returned by the previous query
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
 ## `luma app`
 
 ```text
@@ -1346,7 +1479,7 @@ arguments:
 
 Examples:
   luma update
-  luma update --install-ref v0.2.30
+  luma update --install-ref v0.2.31
   luma update fleet
 ```
 

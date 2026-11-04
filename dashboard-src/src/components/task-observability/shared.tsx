@@ -1,3 +1,4 @@
+import { useRouter } from "../../router";
 import { useEffect, useState } from "react";
 import { apiGet } from "../../apiClient";
 import { StatePill } from "../primitives";
@@ -21,7 +22,11 @@ export function useObservation<T>(
   revision = 0,
   enabled = true,
 ) {
+  const { search } = useRouter();
+  const context = new URLSearchParams(search);
+  const inherited = Object.fromEntries(["since", "until", "service", "environment", "instance", "keyword"].flatMap(k => context.has(`observe_${k}`) ? [[k,context.get(`observe_${k}`)!]] : []));
   const params = new URLSearchParams({
+    ...inherited,
     app,
     ...Object.fromEntries(
       Object.entries(query).map(([k, v]) => [k, String(v)]),

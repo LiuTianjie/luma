@@ -5,6 +5,16 @@ compose: docker-compose.yml
 region: cn
 
 volumes:
+  collector-data:
+    local:
+      node: manager
+      path: /srv/luma/data/luma-observe/collector
+    initialize: empty
+  log-shipper-data:
+    local:
+      node: manager
+      path: /srv/luma/data/luma-observe/log-shipper
+    initialize: empty
   victoria-data:
     local:
       node: manager

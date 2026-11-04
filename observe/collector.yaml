@@ -47,6 +47,32 @@ receivers:
           static_configs:
             - targets: ["127.0.0.1:8429"]
 
+        - job_name: victoria
+          scrape_interval: 30s
+          scrape_timeout: 5s
+          static_configs:
+            - targets: ["127.0.0.1:8428"]
+        - job_name: victoria-logs
+          scrape_interval: 30s
+          scrape_timeout: 5s
+          static_configs:
+            - targets: ["127.0.0.1:9428"]
+        - job_name: tempo
+          scrape_interval: 30s
+          scrape_timeout: 5s
+          static_configs:
+            - targets: ["127.0.0.1:3200"]
+        - job_name: vmalert
+          scrape_interval: 30s
+          scrape_timeout: 5s
+          static_configs:
+            - targets: ["127.0.0.1:8880"]
+        - job_name: alertmanager
+          scrape_interval: 30s
+          scrape_timeout: 5s
+          static_configs:
+            - targets: ["127.0.0.1:9093"]
+
 processors:
   memory_limiter:
     check_interval: 1s
@@ -185,6 +211,8 @@ connectors:
         buckets: [10ms, 50ms, 100ms, 500ms, 1s, 2s, 5s, 10s, 30s, 1m, 2m, 5m, 10m, 30m, 2h]
 
 extensions:
+  file_storage:
+    directory: /var/lib/otelcol/storage
   bearertokenauth:
     scheme: Bearer
     token: ${env:LUMA_OTLP_TOKEN}
@@ -192,6 +220,8 @@ extensions:
 exporters:
   prometheusremotewrite:
     endpoint: http://127.0.0.1:8428/api/v1/write
+    wal:
+      directory: /var/lib/otelcol/prw
     remote_write_queue:
       queue_size: 128
       num_consumers: 2
@@ -201,6 +231,7 @@ exporters:
     endpoint: http://127.0.0.1:4418
     timeout: 5s
     sending_queue:
+      storage: file_storage
       queue_size: 128
       num_consumers: 2
     retry_on_failure:
@@ -209,7 +240,7 @@ exporters:
       insecure: true
 
 service:
-  extensions: [bearertokenauth]
+  extensions: [bearertokenauth, file_storage]
   telemetry:
     logs:
       level: info

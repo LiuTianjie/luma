@@ -43,7 +43,8 @@ def task_query(params: dict) -> dict:
     query = {"app": app, "hours": _number(params, "hours", 1, 1, 72),
              "offset": _number(params, "offset", 0, 0, 2000)}
     for key, maximum in (("task_name", 160), ("task_id", 100), ("queue", 160),
-                         ("attribute", 100), ("value", 256)):
+                         ("attribute", 100), ("value", 256), ("environment", 100), ("service", 160),
+                         ("instance", 200), ("keyword", 256)):
         value = str(params.get(key, ""))
         if len(value) > maximum or any(ord(char) < 32 for char in value):
             raise LumaError(f"invalid {key}")
@@ -56,6 +57,9 @@ def task_query(params: dict) -> dict:
     if query["outcome"] not in {"all", "problem"}:
         raise LumaError("invalid outcome")
     query["until"] = min(_number(params, "until", int(time.time()), 1, 2**40), int(time.time()))
+    query["since"] = _number(params, "since", query["until"]-query["hours"]*3600, 1, 2**40)
+    if not 0 < query["until"]-query["since"] <= 72*3600:
+        raise LumaError("time range must be between 1 second and 72 hours")
     query["min_duration_ms"] = _number(params, "min_duration_ms", 0, 0, 259200000)
     query["trace_id"] = str(params.get("trace_id", "")).lower()
     if query["trace_id"] and not re.fullmatch(r"[0-9a-f]{32}", query["trace_id"]):
@@ -63,9 +67,12 @@ def task_query(params: dict) -> dict:
     return query
 
 
-def metric_queries(app: str, hours: int) -> dict[str, str]:
+def metric_queries(app: str, hours: int, query: dict | None = None) -> dict[str, str]:
     """Read framework signals with freshness and tracking-overflow guards."""
     scope = "luma_stack=" + json.dumps(app)
+    for key, label in (("environment", "deployment_environment_name"), ("service", "service_name"), ("instance", "service_instance_id")):
+        if (query or {}).get(key):
+            scope += "," + label + "=" + json.dumps(query[key])
     group = "task_name,task_framework,task_queue"
     live = f"(time()-worker_heartbeat_seconds{{{scope}}} < 120)"
     join = "on(service_name,service_instance_id)"
@@ -75,7 +82,7 @@ def metric_queries(app: str, hours: int) -> dict[str, str]:
                 f"(task_active_tracking_overflow{{{scope}}} == 0)")
     native = scope + ',task_framework="taskiq"'
     span = scope + ',task_framework="celery",luma_observe_span_metrics="service"'
-    window = f"{hours}h"
+    window = str(query["until"]-query["since"]) + "s" if query else f"{hours}h"
     return {
         "registered": f"max by({group})(task_registered{{{scope}}} and {join} {live})",
         "active": f"sum by({group})({active})",
@@ -98,6 +105,11 @@ def trace_query(query: dict) -> str:
     for key, field in (("task_name", "task.name"), ("task_id", "messaging.message.id"), ("queue", "task.queue")):
         if query[key]:
             filters.append(f"span.{field} = {json.dumps(query[key])}")
+    for key, attribute in (("environment", "deployment.environment.name"), ("service", "service.name"), ("instance", "service.instance.id")):
+        if query.get(key):
+            filters.append(f"resource.{attribute} = {json.dumps(query[key])}")
+    if query.get("keyword"):
+        filters.append("name =~ " + json.dumps(".*" + re.escape(query["keyword"]) + ".*"))
     if query["attribute"]:
         filters.append(f'span.{query["attribute"]} = {json.dumps(query["value"])}')
     if query["outcome"] == "problem":
@@ -113,11 +125,29 @@ async def _read(view: str, query: dict) -> dict:
 
     endpoints = ReadEndpoints(metrics=observe_base_url(), logs="http://127.0.0.1:9428",
                               traces="http://127.0.0.1:3200")
-    async with ObserveClient(endpoints, apps=[query["app"]],
+    class ScopedClient(ObserveClient):
+        async def request(self, kind, path, params=None):
+            params = dict(params or {})
+            if kind == "metrics":
+                params["time"] = query["until"]
+            elif kind == "logs":
+                params["start"] = max(int(params.get("start", query["since"])), query["since"])
+                params["end"] = min(int(params.get("end", query["until"])), query["until"])
+                filters = []
+                for key, field in (("environment", "environment"), ("service", "service_name"), ("instance", "service_instance_id")):
+                    if query.get(key):
+                        filters.append(f"{field}:={json.dumps(query[key])}")
+                if query.get("keyword"):
+                    filters.append("_msg:" + json.dumps(query["keyword"]))
+                if filters:
+                    params["query"] = " ".join(filters) + " " + params.get("query", "")
+            return await super().request(kind, path, params)
+
+    async with ScopedClient(endpoints, apps=[query["app"]],
                              resource_attributes={"luma.stack": query["app"]}) as client:
         if view == "overview":
-            sources = await client.metrics(metric_queries(query["app"], query["hours"]))
-            return {"state": "ok", "sources": sources, "sampled_at": int(time.time())}
+            sources = await client.metrics(metric_queries(query["app"], query["hours"], query))
+            return {"state": "ok", "sources": sources, "sampled_at": query["until"]}
         if view == "events":
             attributes = {"task.queue": query["queue"]} if query["queue"] else {}
             if query["attribute"]:
@@ -131,7 +161,7 @@ async def _read(view: str, query: dict) -> dict:
             return await client.logs(query["trace_id"], hours=query["hours"], until=query["until"])
         try:
             body = json.loads(await client.request("traces", "/api/search", {
-                "q": trace_query(query), "start": query["until"] - query["hours"] * 3600,
+                "q": trace_query(query), "start": query["since"],
                 "end": query["until"], "limit": 51,
             }))
             traces = body["traces"] if "traces" in body else []

@@ -452,7 +452,7 @@ class ObserveTraceStackTests(unittest.TestCase):
         self.assertIn('uid: "luma-nodes"', text)
         self.assertIn("autofitpanels", text)
         self.assertIn('uid: "victorialogs"', text)
-        self.assertIn('app:="', text)
+        self.assertIn("logsExpression(stack, search)", text)
         page = (ROOT / "dashboard-src" / "src" / "pages" / "ObservabilityPage.tsx").read_text(encoding="utf-8")
         self.assertIn("initialView={section === \"logs\" ? \"logs\" : \"http\"}", page)
         self.assertNotIn("ServiceLogsModal", page)

@@ -76,6 +76,12 @@ jobs:
       - name: Validate sources
         run: bash scripts/check-luma.sh
 
+      - name: Verify CLI distribution and assistant skill delivery
+        run: |
+          python -m pip install build
+          python -m build --outdir "$RUNNER_TEMP/cli-dist"
+          python scripts/check-cli-package.py "$RUNNER_TEMP/cli-dist"
+
   runtime-python39:
     # Home nodes may self-update with macOS's system Python 3.9. The test suite
     # needs 3.10+, so this job checks that the package installs and runs on 3.9.
@@ -95,5 +101,7 @@ jobs:
           python -m pip install .
           python -m compileall -q luma
           luma --version
+          luma observe --help
+          luma observe tasks --help
           python -m luma.cli node-agent run --help > /dev/null
           bash scripts/validate-stacks.sh

@@ -445,7 +445,8 @@ def _update_agent_heartbeat(
         agent["metrics"] = _agent_metrics(metrics)
         agent["metricsCollectedAt"] = int(time.time())
     if isinstance(container_stats, list):
-        normalized_container_stats = _container_stats(container_stats)
+        normalized_container_stats = _normalize_container_stats_for_engine(
+            container_stats, config=config, state=state, allocation_index={})
         agent["containerStats"] = normalized_container_stats
         agent["containerStatsCollectedAt"] = int(time.time())
     if isinstance(diagnostics, dict):
@@ -564,6 +565,11 @@ def _normalize_container_stats_for_engine(
                 item["nomadGroup"] = str(meta.get("group") or item.get("nomadGroup") or "")
                 item["nomadNode"] = str(meta.get("node") or "")
                 item["nomadNodeId"] = str(meta.get("nodeId") or "")
+        # Agent-supplied Job/Task identities also work without an API lookup.
+        base = str(item.get("service") or "")
+        task = str(item.get("nomadTask") or item.get("taskId") or "")
+        if base in compose_stacks and task:
+            item["service"] = _dashboard_task_full_name(base, task, compose=True)
         normalized.append(item)
     return _container_stats(normalized)
 
@@ -633,7 +639,7 @@ def _container_stats(raw_items: list[Any]) -> list[Dict[str, Any]]:
             "name": str(raw.get("name") or ""),
             "taskId": str(raw.get("taskId") or ""),
         }
-        for key in ("nomadAllocId", "nomadTask", "nomadGroup", "nomadNode", "nomadNodeId"):
+        for key in ("nomadAllocId", "nomadTask", "nomadGroup", "nomadNode", "nomadNodeId", "containerRole"):
             value = str(raw.get(key) or "").strip()
             if value:
                 item[key] = value
@@ -12164,7 +12170,7 @@ def _service_stats_by_name(
             if not isinstance(raw, dict):
                 continue
             service = str(raw.get("service") or "").strip()
-            if not service:
+            if not service or raw.get("containerRole") == "infrastructure":
                 continue
             item = dict(raw)
             item["node"] = node_name
@@ -12198,6 +12204,9 @@ def _attach_service_actual_resources(service: Dict[str, Any], stats: list[Dict[s
         actual["memoryPercent"] = round(total_memory / total_limit * 100, 2)
     elif stats:
         actual["memoryPercent"] = round(sum(float(item.get("memoryPercent") or 0) for item in stats), 2)
+    if not stats:
+        for key in ("cpuPercent", "memoryUsageBytes", "memoryPercent", "memoryLimitBytes"):
+            actual.pop(key, None)
     resources["actual"] = actual
     service["resources"] = resources
 
@@ -15075,6 +15084,12 @@ async def _asgi_authenticated_get(request: Request) -> Response:
         if task_observe_match:
             from .observe_tasks import handle_task_observe
             return _json_response(200, await handle_task_observe(token, task_observe_match.group(1), dict(request.query_params)))
+        if parsed_path == "/v1/dashboard/observe/status":
+            from .observe_status import handle_observe_status
+            return _json_response(200, await run_in_threadpool(handle_observe_status, token, dict(request.query_params)))
+        if parsed_path == "/v1/dashboard/observe/alerts":
+            from .observe_status import handle_external_alerts
+            return _json_response(200, await run_in_threadpool(handle_external_alerts, token, str(request.query_params.get("app") or "")))
         if parsed_path == "/v1/dashboard/observe/settings":
             from .observe_settings import get_settings
             return _json_response(200, await run_in_threadpool(get_settings, token))

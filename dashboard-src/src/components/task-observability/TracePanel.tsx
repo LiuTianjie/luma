@@ -4,6 +4,8 @@ import {
   ChevronRightIcon,
 } from "@/components/icons";
 import { useMemo, useState } from "react";
+import { useRouter } from "../../router";
+import { grafanaRange, investigationPath } from "../../observeContext";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SelectControl } from "../primitives";
@@ -138,7 +140,12 @@ export function TracePanel({
   onTrace: (id: string) => void;
 }) {
   const [revision, setRevision] = useState(0);
-  const [selected, setSelected] = useState("");
+  const { path, search, navigate } = useRouter();
+  const selected = new URLSearchParams(search).get("observeSpan") || "";
+  const setSelected = (id: string) =>
+    navigate(investigationPath(path, search, { observeSpan: id }), {
+      replace: true,
+    });
   const [filter, setFilter] = useState("");
   const [errorsOnly, setErrorsOnly] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -178,7 +185,7 @@ export function TracePanel({
     trace: {
       datasource: "tempo",
       queries: [{ refId: "A", queryType: "traceql", query: traceId }],
-      range: { from: `now-${hours}h`, to: "now" },
+      range: grafanaRange(search),
     },
   };
   const explore =

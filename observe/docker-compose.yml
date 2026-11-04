@@ -22,6 +22,8 @@ services:
       context: .
       dockerfile: Dockerfile.collector
     image: luma-observe-collector:local
+    volumes:
+      - collector-data:/var/lib/otelcol
     network_mode: host
     restart: unless-stopped
     environment:
@@ -172,6 +174,9 @@ services:
       LUMA_OBSERVE_BIND: "127.0.0.1"
       LUMA_OBSERVE_PORT: "9108"
       VICTORIALOGS_URL: "http://127.0.0.1:9428"
+      LUMA_LOG_CHECKPOINT: /var/lib/log-shipper/cursors.json
+    volumes:
+      - log-shipper-data:/var/lib/log-shipper
     deploy:
       resources:
         reservations:
@@ -310,6 +315,8 @@ services:
           memory: 256M
 
 volumes:
+  collector-data:
+  log-shipper-data:
   victoria-data:
   tempo-data:
   victorialogs-data:

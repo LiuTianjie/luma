@@ -79,6 +79,35 @@ explicitly while developing. All skill references are included in wheel and sour
 packages. Installing a skill does not upgrade Control or deploy luma-observe.
 Reload the skill or start a new assistant conversation after an update.
 
+## Observation CLI delivery
+
+`luma observe status/app/alerts/tasks`, `luma-observe` and `luma-logs` ship together
+in `luma-infra`. Other users upgrade through their existing pip, pipx, uv tool or
+Luma installation workflow. Existing assistant suites synchronize from that
+package; no files from a developer's computer are required. First-time users run
+`skills install` above, using `--path` to register another assistant's directory.
+
+```sh
+luma version --local
+luma observe --help
+luma skills status --format json
+luma observe status --format json
+luma observe app APP --since 1h --format json
+luma observe alerts --app APP --format json
+luma observe tasks APP --view events --outcome problem --since 1h --format json
+```
+
+CLI and skill upgrades change the client only. Shared queries require an updated
+Control; self-monitoring, structured logs and durable queues require updated
+Observe; resource identity completion requires updated node agents. Check the CLI
+version for missing commands, Control for missing endpoints, and collection for
+missing samples. Skills do not perform these cluster upgrades automatically.
+
+Source CI and the PyPI release job verify the final wheel and source distribution
+contain every canonical skill file, then install the wheel outside the checkout
+to verify commands, Codex/Claude/custom installations, automatic upgrade sync and
+local-edit backups. Failure blocks distribution upload in that release job.
+
 ## References
 
 - [Deployment YAML](deployment-yaml.md)

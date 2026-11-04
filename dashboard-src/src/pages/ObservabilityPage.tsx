@@ -1,3 +1,4 @@
+import { ObservationStatus } from "../components/ObservationStatus";
 import { useEffect } from "react";
 import { AlertingPanel } from "../components/AlertingPanel";
 import { useRouter, useSearchParams } from "../router";
@@ -49,6 +50,7 @@ export function ObservabilityPage({
     metrics: ["资源指标", "Resource metrics"],
     rules: ["告警规则", "Alert rules"],
     channels: ["通知渠道", "Notification channels"],
+    status: ["平台状态", "Platform health"],
     settings: ["观测设置", "Observability settings"],
   };
   const title = titles[section] || titles.incidents;
@@ -62,7 +64,7 @@ export function ObservabilityPage({
           description: "",
         }}
       />
-      {section === "settings" ? (
+      {section === "status" ? <ObservationStatus lang={lang} token={token} /> : section === "settings" ? (
         <ObserveSettingsPanel key={token} lang={lang} token={token} />
       ) : section === "apps" || section === "logs" ? (
         <ObserveAppsPanel

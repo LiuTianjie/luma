@@ -133,6 +133,8 @@ def render_metrics(state: dict[str, Any], *, now: float | None = None, compose_j
         for item in stats:
             if not isinstance(item, dict) or not item.get("service"):
                 continue
+            if item.get("containerRole") == "infrastructure":
+                continue
             service = str(item["service"])
             if service.startswith("nomad:"):
                 unresolved += 1

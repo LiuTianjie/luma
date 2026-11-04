@@ -1,3 +1,4 @@
+import { investigationPath } from "../observeContext";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ArrowDown, ArrowLeft, ChevronDown, GitBranch, SlidersHorizontal, Plus, RefreshCw, RotateCcw, ScrollText, Search, Square } from "@/components/icons";
 import { cancelBuildRun, retryBuildRunStream } from "../deploy/deployApi";
@@ -405,7 +406,7 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
     return () => window.removeEventListener("luma:refresh", refresh);
   }, [showingDetail, load]);
   const navigateSearch = (query: string) => navigate(`${path}${query ? `?${query}` : ""}`);
-  const select = (entry: HistorySelection | null) => navigate(`/deployments${entry ? `/${entry.kind}/${encodeURIComponent(entry.id)}` : ""}${filters ? `?${filters}` : ""}`);
+  const select = (entry: HistorySelection | null) => navigate(investigationPath(`/deployments${entry ? `/${entry.kind}/${encodeURIComponent(entry.id)}` : ""}${filters ? `?${filters}` : ""}`,search));
   const staleFilters = list.filters !== filters && Boolean(list.loadedAt);
   const apply = (next: URLSearchParams) => {
     const params = new URLSearchParams(search);
@@ -437,6 +438,7 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
           </div>
         ),
       }} />
+      {new URLSearchParams(search).get("app") && <a className="w-fit text-sm text-link hover:underline" href={toHref(investigationPath(`/apps/${encodeURIComponent(new URLSearchParams(search).get("app")!)}/overview`,search))}>{zh ? "返回应用排查" : "Back to application investigation"}</a>}
       <HistoryFilters key={filters} lang={lang} filters={filters} onApply={apply} />
       {error ? (
         <Alert variant="destructive">

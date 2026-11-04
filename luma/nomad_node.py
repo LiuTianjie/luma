@@ -149,6 +149,7 @@ def render_agent_config(
     lines.append('plugin "docker" {')
     lines.append("  config {")
     lines.append('    pull_activity_timeout = "30m"')
+    lines.append('    extra_labels = ["job_id", "job_name", "task_group_name", "task_name"]')
     lines.append("    volumes {")
     lines.append("      enabled = true")
     lines.append("    }")

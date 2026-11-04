@@ -63,6 +63,7 @@ export function buildNavGroups(lang: Lang, vm: DashboardViewModel): NavGroup[] {
       { id: "deployments", icon: "deployments", label: zh ? "部署记录" : "Deployments", detail: zh ? "构建、部署与任务记录" : "Builds, deployments and tasks" },
       { id: "observability", icon: "observability", label: zh ? "可观测" : "Observability", detail: zh ? "指标、日志与告警" : "Metrics, logs and alerts", children: [
         { href: "/observe", label: zh ? "告警事件" : "Incidents", detail: zh ? "当前触发与历史告警" : "Active and historical incidents" },
+        { href: "/observe/status", label: zh ? "平台状态" : "Platform health", detail: zh ? "采集、查询与存储健康" : "Collection, query and storage health" },
         { href: "/observe/apps", label: zh ? "应用监控" : "App monitoring", detail: zh ? "按应用查看请求、日志与链路" : "Requests, logs and traces by app", also: ["/observe/logs"] },
         { href: "/observe/metrics", label: zh ? "资源指标" : "Metrics", detail: zh ? "节点与服务资源曲线" : "Node and service metrics" },
         { href: "/observe/rules", label: zh ? "告警规则" : "Rules", detail: zh ? "配置触发条件" : "Configure alert conditions" },

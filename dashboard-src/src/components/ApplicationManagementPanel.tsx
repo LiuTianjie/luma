@@ -1,3 +1,6 @@
+import { InvestigationBar } from "./InvestigationBar";
+import { ObservationStatus } from "./ObservationStatus";
+import { investigationPath } from "../observeContext";
 import { AlertingPanel } from "./AlertingPanel";
 import { ApplicationSecrets } from "./ApplicationSecrets";
 import {
@@ -905,7 +908,7 @@ export function ApplicationManagementPanel({
             return;
           }
           const next = APPLICATION_TABS.find((item) => item.id === value);
-          if (next) navigate(applicationPath(selected.stack, next.id));
+          if (next) navigate(investigationPath(applicationPath(selected.stack, next.id), search));
         }}
       >
         <div className="max-w-full overflow-x-auto">
@@ -920,7 +923,7 @@ export function ApplicationManagementPanel({
                 nativeButton={false}
                 render={
                   <a
-                    href={toHref(applicationPath(selected.stack, item.id))}
+                    href={toHref(investigationPath(applicationPath(selected.stack, item.id), search))}
                     aria-current={tab === item.id ? "page" : undefined}
                   />
                 }
@@ -941,6 +944,8 @@ export function ApplicationManagementPanel({
           </TabsList>
         </div>
         <TabsContent value={tab} className="flex min-w-0 flex-col gap-6">
+          {["overview", "logs", "metrics", "dashboards", "alerts", "versions", "services"].includes(tab) && <InvestigationBar app={selected.stack} lang={lang} />}
+          {tab === "overview" && <ObservationStatus app={selected.stack} lang={lang} token={token} />}
           {tab === "alerts" ? <AlertingPanel key={selected.stack} lang={lang} token={token} tab="alerts" application={selected.stack} /> : null}
           {tab === "secrets" ? (
             <ApplicationSecrets
@@ -1517,7 +1522,7 @@ export function ApplicationManagementPanel({
           ) : null}
           {tab === "logs" ? (
             <ApplicationLogs
-              key={`${selected.stack}:${search}`}
+              key={selected.stack}
               app={selected.stack}
               lang={lang}
               token={token}
@@ -1533,6 +1538,7 @@ export function ApplicationManagementPanel({
           {tab === "metrics" ? (
             <ObservabilityPanel
               key={selected.stack}
+              investigation
               lang={lang}
               token={token}
               services={selected.services}

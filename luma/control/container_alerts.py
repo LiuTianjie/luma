@@ -36,7 +36,7 @@ def observations(state, now, threshold):
                  and 0 <= now - sampled <= SAMPLE_TTL_SECONDS)
         containers = agent.get('containerStats')
         for item in containers if isinstance(containers, list) else []:
-            if not isinstance(item, dict):
+            if not isinstance(item, dict) or item.get("containerRole") == "infrastructure":
                 continue
             service = str(item.get('service') or '').strip()
             allocation = str(item.get('nomadAllocId') or item.get('allocationId') or '').strip()

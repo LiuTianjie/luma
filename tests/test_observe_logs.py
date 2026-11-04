@@ -112,7 +112,7 @@ class LogShipperTests(unittest.TestCase):
         self.assertEqual(rows[0]["node"], "worker")
         self.assertEqual(rows[0]["_msg"], "hello")
 
-    def test_victorialogs_error_drops_batch_and_advances_cursor(self):
+    def test_victorialogs_error_retains_cursor_for_retry(self):
         def boom(_rows):
             raise URLError("down")
 
@@ -132,9 +132,10 @@ class LogShipperTests(unittest.TestCase):
         )
         shipper.cursors["alloc-1/web/stdout"] = self.mod.Cursor(file="alloc/logs/web.stdout.0", offset=0)
         shipper.poll()
-        self.assertEqual(shipper.dropped, 1)
+        self.assertEqual(shipper.dropped, 0)
+        self.assertEqual(shipper.export_retries, 1)
         self.assertEqual(shipper.exported, 0)
-        self.assertEqual(shipper.cursors["alloc-1/web/stdout"].offset, 5)
+        self.assertEqual(shipper.cursors["alloc-1/web/stdout"].offset, 0)
 
     def test_nomad_list_timeout_sets_nomad_down(self):
         def fail():
@@ -173,7 +174,7 @@ class LogShipperTests(unittest.TestCase):
 
 
 class LogShipperHttpErrorTests(unittest.TestCase):
-    def test_http_500_is_a_drop(self):
+    def test_http_500_is_retryable(self):
         mod = load_observe("log_shipper.py", "log_shipper")
 
         def boom(_rows):
@@ -194,4 +195,34 @@ class LogShipperHttpErrorTests(unittest.TestCase):
         )
         shipper.cursors["alloc-1/web/stdout"] = mod.Cursor(file="alloc/logs/web.stdout.0", offset=0)
         shipper.poll()
-        self.assertGreaterEqual(shipper.dropped, 1)
+        self.assertEqual(shipper.dropped, 0)
+        self.assertEqual(shipper.export_retries, 1)
+
+class StructuredLogsAndCheckpointTests(unittest.TestCase):
+    def test_keep_both_clocks_and_only_normalized_correlation_fields(self):
+        import json
+        m=load_observe('log_shipper.py','shipper_clocks')
+        source=m.Source('alloc','app','worker','group','stdout','node')
+        data={'timestamp':1000, 'trace_id':'a'*32,'span_id':'b'*16,'service.name':'worker',
+              'service.instance.id':'worker:1','attributes':{'messaging.message.id':'task-1'},'secret':'never-a-label'}
+        row=m.records_for(source,[json.dumps(data)],'2026-11-04T00:00:00Z')[0]
+        self.assertEqual(row['_time'],row['observed_at'])
+        self.assertNotEqual(row['event_time'],row['observed_at'])
+        self.assertEqual(row['trace_id'],'a'*32)
+        self.assertEqual(row['task_id'],'task-1')
+        self.assertEqual(row['service_name'],'worker')
+        self.assertNotIn('secret',row)
+
+    def test_cursor_checkpoint_survives_process_recreation(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        m=load_observe('log_shipper.py','shipper_checkpoint')
+        with tempfile.TemporaryDirectory() as root, patch.dict(m.os.environ,{'LUMA_LOG_CHECKPOINT':str(Path(root)/'checkpoint.json')}):
+            args=dict(list_allocs=lambda:[],list_files=lambda _:[],readat=lambda *_:b'',insert=lambda _:None)
+            first=m.Shipper(**args)
+            first.cursors['alloc/task/stdout']=m.Cursor('alloc/logs/task.stdout.2',42,b'partial')
+            first.save_checkpoint()
+            second=m.Shipper(**args)
+            self.assertEqual(second.cursors['alloc/task/stdout'].offset,42)
+            self.assertEqual(second.cursors['alloc/task/stdout'].leftover,b'partial')

@@ -13,13 +13,14 @@ export function historyKey(kind: "node" | "service", name: string) {
   return `${kind}:${name}`;
 }
 
-export async function fetchMetricsHistoryBatch({ token, targets, window = 3600, signal }: {
+export async function fetchMetricsHistoryBatch({ token, targets, window = 3600, until, signal }: {
   token: string;
   targets: HistoryTarget[];
   window?: number;
+  until?: number;
   signal?: AbortSignal;
 }): Promise<MetricsHistoryBatch> {
-  return apiPost<MetricsHistoryBatch>("/v1/dashboard/metrics/history/batch", token, { targets, window }, signal);
+  return apiPost<MetricsHistoryBatch>("/v1/dashboard/metrics/history/batch", token, { targets, window, ...(until !== undefined ? { until } : {}) }, signal);
 }
 
 export async function fetchMetricsHistory({

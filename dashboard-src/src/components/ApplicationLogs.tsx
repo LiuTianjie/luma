@@ -1,5 +1,6 @@
 import { Info } from "@/components/icons";
-import { useState } from "react";
+import { useRouter } from "../router";
+import { investigationPath } from "../observeContext";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { DashboardService, Lang } from "../types";
 import { ObserveAppsPanel } from "./ObserveAppsPanel";
@@ -21,7 +22,10 @@ export function ApplicationLogs({
   onClose: () => void;
 }) {
   const zh = lang === "zh";
-  const [mode, setMode] = useState(initialServiceName ? "live" : "logs");
+  const { path, search, navigate } = useRouter();
+  const requested = new URLSearchParams(search).get("logView");
+  const mode = requested && ["live","logs","traces"].includes(requested) ? requested : initialServiceName ? "live" : "logs";
+  const setMode = (value: string) => navigate(investigationPath(path, search, {logView:value}));
   const views = [
     { id: "logs", label: zh ? "日志检索" : "Log search" },
     { id: "traces", label: zh ? "链路追踪" : "Traces" },
@@ -45,6 +49,8 @@ export function ApplicationLogs({
         ))}
       </ToggleGroup>
       {mode === "live" ? (
+        <>
+        <p className="text-sm text-muted-foreground">{zh ? "实时日志读取当前实例输出；固定时间范围用于日志检索和 Trace。" : "Live logs read current instance output. Fixed time ranges apply to log search and traces."}</p>
         <ServiceLogsModal
           inline
           lang={lang}
@@ -57,6 +63,7 @@ export function ApplicationLogs({
           }
           onClose={onClose}
         />
+        </>
       ) : (
         <>
           <p className="flex items-start gap-2 text-sm text-muted-foreground">

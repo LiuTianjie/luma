@@ -647,7 +647,7 @@ class ProductConfigTests(unittest.TestCase):
             )
             + "\n",
         )
-        with patch("shutil.which", return_value="/usr/bin/docker"), patch("subprocess.run", side_effect=[ps, stats]):
+        with patch("shutil.which", return_value="/usr/bin/docker"), patch("subprocess.run", side_effect=[ps, Mock(returncode=0, stdout=""), stats]):
             result = node_agent_container_stats()
 
         self.assertEqual(result[0]["service"], f"nomad:{allocation_id}")

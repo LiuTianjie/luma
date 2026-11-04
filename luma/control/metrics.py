@@ -243,6 +243,8 @@ def record_samples(
     # Group this heartbeat's containers into per-service contributions.
     this_node_services: Dict[str, Dict[str, float]] = {}
     for raw in container_stats or []:
+        if isinstance(raw, dict) and (raw.get("containerRole") == "infrastructure" or str(raw.get("service", "")).startswith("nomad:")):
+            continue
         if not isinstance(raw, dict):
             continue
         full_name = str(raw.get("service") or "").strip()

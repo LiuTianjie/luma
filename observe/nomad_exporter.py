@@ -169,6 +169,7 @@ def collect(addr: str, token: str, *, routes_dir: Path | None = None) -> str:
         "# TYPE luma_observe_allocs gauge",
         "# HELP luma_observe_alloc_restarts Task restart count on a live allocation.",
         "# TYPE luma_observe_alloc_restarts gauge",
+        "# TYPE luma_observe_alloc_restarts_total counter",
         "# HELP luma_observe_router_app Maps a Traefik router label to a Luma app.",
         "# TYPE luma_observe_router_app gauge",
     ]
@@ -221,6 +222,7 @@ def collect(addr: str, token: str, *, routes_dir: Path | None = None) -> str:
             f"luma_observe_allocs{_labels(app=job, job=job, task_group=group, status=status)} {count}"
         )
     lines.extend(restart_lines)
+    lines.extend(line.replace("luma_observe_alloc_restarts{", "luma_observe_alloc_restarts_total{") for line in restart_lines)
     for row in router_mappings(jobs, allocations, file_route_stems(routes_dir or ROUTES_DIR)):
         lines.append(
             "luma_observe_router_app"

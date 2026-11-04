@@ -27,7 +27,7 @@ Luma Observe 接收标准遥测，应用拥有埋点、业务字段、面板和�
 | 层级 | 当前机制 | 边界 |
 | --- | --- | --- |
 | SDK | Trace 内存队列 512、批次 64；Metrics 本地聚合、默认每 30 秒导出；有界超时和 flush | 不阻塞业务等待平台恢复；溢出、硬退出和导出失败可能丢失 |
-| Collector | 内存限制、批处理、有界采样状态；Tempo exporter 128 请求队列与重试；PRW 128 OTLP metrics batch 队列 | 当前没有持久导出队列或 PRW WAL；Collector 重启会丢内存数据 |
+| Collector | 内存限制、批处理、有界采样状态；Tempo exporter 128 请求持久队列与重试；PRW 128 OTLP metrics batch 队列和专用 WAL | 独立持久卷保护导出阶段；入队前的 batch / tail sampling 内存仍会在重启时丢失，WAL 尚无硬磁盘配额 |
 | 存储 | Tempo、VictoriaMetrics、VictoriaLogs 的现有磁盘存储和保留期 | 仅保护已到达该存储的数据；当前单 Manager、单副本部署不是 HA |
 | 业务可靠性 | 业务自己的事务、outbox、消息队列及结果存储 | 计费、审计、任务交付不能依赖可采样、可丢失的遥测 |
 
@@ -37,10 +37,10 @@ Luma Observe 接收标准遥测，应用拥有埋点、业务字段、面板和�
 
 `service.instance.id` 必须区分并发写入 SDK 累计指标的进程。简单移除该维度会把独立计数器和直方图混为一条序列，破坏 Single Writer 语义。主动开启的服务级 Span 指标使用另一条路径：共享 Collector 先将 Span 聚合为服务级计数器和直方图，再作为写入方导出。Celery 的完成 Span 统计已通过这条路径避免按 child 进程拆分序列；Taskiq 原生指标继续保留进程身份。上线验收仍需测量进程轮换率、任务/队列/结果维度和 VictoriaMetrics 实际新增序列。重写多个进程各自导出的累计指标标签，不等于由 Collector 聚合 Span。
 
-下一阶段可靠性方案（本轮未实施）：
+后续可靠性与容量验收：
 
-1. Tempo exporter 使用官方 `file_storage` 持久发送队列；Prometheus Remote Write 使用该 exporter 专用 WAL。配置独立持久挂载、磁盘容量/剩余空间预算、重试上限和故障恢复操作。
-2. 监控接收拒绝、SDK/Collector 丢弃、队列占用与导出失败、磁盘增长、信号新鲜度，并测量积压后的恢复速率。写入网关按预算限流；客户端保持有界退避，不能无限重试挤占业务资源。
+1. 本分支已配置 Tempo exporter 的 `file_storage`、PRW 专用 WAL 和独立持久挂载。部署后验证恢复能力，并按实测配置磁盘容量预算和故障恢复操作；不能把队列请求数当作硬磁盘配额。
+2. 平台状态页与 `luma observe status` 已提供接收拒绝、Collector 导出失败、队列占用、存储空间、日志缺口和信号新鲜度。继续补充 SDK 丢弃与磁盘增长趋势，并测量积压后的恢复速率。写入网关按预算限流；客户端保持有界退避，不能无限重试挤占业务资源。
 3. 用代表性 payload、spans/s、活跃 trace 数、series 数和进程轮换率验收；覆盖下游不可用、Collector 重启、磁盘不足和超载。仅队列大小不能推导吞吐承诺。
 4. 有跨节点持久性、长时间回放或多消费者的实测需求时再引入 Kafka 等消息系统；Collector 扩容尾采样时同时保证 Trace ID 路由一致性，存储也需要对应的 HA 方案。
 

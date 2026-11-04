@@ -1,3 +1,4 @@
+import { useRouter } from "../router";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Activity, Copy, Download, Info, Pause, Play, RefreshCw, Search, Terminal, WrapText, X } from "@/components/icons";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -108,6 +109,9 @@ export function ServiceLogsModal({
   onClose?: () => void;
   inline?: boolean;
 }) {
+  const {path, search, navigate} = useRouter();
+  const liveParams = new URLSearchParams(search);
+  const updateLive = (values: Record<string,string>) => {const next=new URLSearchParams(search);for(const [key,value] of Object.entries(values)) value ? next.set(key,value) : next.delete(key);navigate(`${path}?${next}`,{replace:true});};
   const applications = useMemo(() => {
     const groups = new Map<string, DashboardService[]>();
     for (const service of services.filter((item) => item.fullName)) {
@@ -136,14 +140,16 @@ export function ServiceLogsModal({
     [appServices],
   );
   const [selectedService, setSelectedService] = useState(() => initialService?.fullName || firstService);
-  const [allocation, setAllocation] = useState("");
+  const allocation = liveParams.get("allocation") || "";
+  const setAllocation = (value:string) => updateLive({allocation:value});
   const [logSources, setLogSources] = useState<LogSource[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [retryDelay, setRetryDelay] = useState(0);
   const [refreshVersion, setRefreshVersion] = useState(0);
   useEffect(() => { const refresh = () => setRefreshVersion((value) => value + 1); window.addEventListener("luma:refresh", refresh); return () => window.removeEventListener("luma:refresh", refresh); }, []);
-  const [keyword, setKeyword] = useState("");
+  const keyword = liveParams.get("observe_keyword") || "";
+  const setKeyword = (value:string) => updateLive({observe_keyword:value});
   const [paused, setPaused] = useState(false);
   const [wrapLines, setWrapLines] = useState(false);
   const [expandedContext, setExpandedContext] = useState<string[]>([]);
@@ -213,7 +219,6 @@ export function ServiceLogsModal({
     return () => downloadControllerRef.current?.abort();
   }, [selectedService, allocation]);
   useEffect(() => {
-    setAllocation("");
     setLogSources([]);
     setWarnings([]);
     return () => pullControllerRef.current?.abort();
@@ -604,7 +609,7 @@ export function ServiceLogsModal({
             <Select
               items={[{ value: null, label: lang === "zh" ? "无可用服务" : "No services" }, ...serviceOptions]}
               value={selectedService || null}
-              onValueChange={(value) => { if (value !== null) setSelectedService(value); }}
+              onValueChange={(value) => { if (value !== null) { setSelectedService(value); updateLive({service:value,allocation:""}); } }}
               disabled={!serviceOptions.length}
             >
               <SelectTrigger id={`${fieldId}-service`} className="w-full min-w-0" title={selectedService}>

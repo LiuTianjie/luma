@@ -619,6 +619,48 @@ def _token_after(parts: list[str], token: str) -> str:
     return parts[index + 1]
 
 
+# Container identity is immutable for a Docker ID. Keep only running IDs and
+# extract the Nomad allowlist; application environment values never leave here.
+_CONTAINER_IDENTITIES: dict[str, dict[str, str]] = {}
+
+
+def _complete_container_identities(docker: str, containers: dict[str, Dict[str, Any]]) -> None:
+    global _CONTAINER_IDENTITIES
+    _CONTAINER_IDENTITIES = {k: v for k, v in _CONTAINER_IDENTITIES.items() if k in containers}
+    missing = [k for k, v in containers.items() if k not in _CONTAINER_IDENTITIES
+               and (str(v.get("service", "")).startswith("nomad:") or not v.get("nomadTask"))]
+    if missing:
+        try:
+            result = subprocess.run([docker, "inspect", "--format", "{{json .}}", *missing[:200]],
+                                    text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    check=False, timeout=5)
+            for line in result.stdout.splitlines() if result.returncode == 0 else []:
+                row = json.loads(line)
+                cid = str(row.get("Id", ""))[:12]
+                if cid not in containers:
+                    continue
+                item = containers[cid]
+                allocation = str(item.get("nomadAllocId", ""))
+                if allocation and str(row.get("Name", "")).lstrip("/") == "nomad_init_" + allocation:
+                    _CONTAINER_IDENTITIES[cid] = {"containerRole": "infrastructure"}
+                    continue
+                env = {}
+                for entry in (row.get("Config") or {}).get("Env") or []:
+                    key, sep, value = entry.partition("=")
+                    if sep and key in {"NOMAD_ALLOC_ID", "NOMAD_JOB_ID", "NOMAD_TASK_NAME", "NOMAD_GROUP_NAME"}:
+                        env[key] = value
+                if env.get("NOMAD_ALLOC_ID") != allocation:
+                    continue
+                if env.get("NOMAD_JOB_ID") and env.get("NOMAD_TASK_NAME"):
+                    _CONTAINER_IDENTITIES[cid] = {"service": env["NOMAD_JOB_ID"],
+                        "nomadTask": env["NOMAD_TASK_NAME"], "taskId": env["NOMAD_TASK_NAME"],
+                        "nomadGroup": env.get("NOMAD_GROUP_NAME", ""), "containerRole": "task"}
+        except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, AttributeError):
+            pass  # Resource samples remain available with explicit unresolved identity.
+    for cid, item in containers.items():
+        item.update(_CONTAINER_IDENTITIES.get(cid, {}))
+
+
 def node_agent_container_stats() -> list[Dict[str, Any]]:
     # Use _docker_binary() (not a bare shutil.which) so this works on macOS,
     # where the node agent runs under launchd's minimal PATH
@@ -639,7 +681,7 @@ def node_agent_container_stats() -> list[Dict[str, Any]]:
                         "{{.ID}}",
                         "{{.Names}}",
                         "{{.Label \"com.hashicorp.nomad.alloc_id\"}}",
-                        "{{.Label \"com.hashicorp.nomad.job_name\"}}",
+                        "{{.Label \"com.hashicorp.nomad.job_id\"}}",
                         "{{.Label \"com.hashicorp.nomad.task_name\"}}",
                         "{{.Label \"com.hashicorp.nomad.task_group_name\"}}",
                     ]
@@ -684,6 +726,7 @@ def node_agent_container_stats() -> list[Dict[str, Any]]:
         containers[container_id] = item
     if not containers:
         return []
+    _complete_container_identities(docker, containers)
     ids = list(containers)[:200]
     try:
         stats = subprocess.run(

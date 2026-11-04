@@ -70,14 +70,14 @@ groups:
           description: "The Nomad job is active but not running and not queued."
 
       - alert: LumaAllocRestartStorm
-        expr: max by (app, job, task) (luma_observe_alloc_restarts) > 5
-        for: 10m
+        expr: sum by (app, job, task) (increase(luma_observe_alloc_restarts_total[10m])) > 5
+        for: 1m
         labels:
           severity: warning
           source: luma-observe
         annotations:
           summary: "App {{ $labels.app }} task {{ $labels.task }} is restarting"
-          description: "A live allocation exceeded 5 restarts."
+          description: "Tasks restarted more than 5 times within the last 10 minutes."
 
       - alert: LumaObserveNomadDown
         expr: luma_observe_nomad_up == 0

@@ -18,16 +18,18 @@ import {
   useObservation,
 } from "./shared";
 import { processMetrics, taskMetrics } from "./overviewModel";
-import type { BoardProps, OverviewResult } from "./types";
+import type { BoardProps, OverviewResult, Query } from "./types";
 
 export function TaskOverview({
   app,
   token,
   zh,
   hours,
+  query,
   onTask,
 }: BoardProps & {
   hours: number;
+  query?: Query;
   onTask: (name: string, queue: string) => void;
 }) {
   const [revision, setRevision] = useState(0);
@@ -38,7 +40,7 @@ export function TaskOverview({
     "overview",
     app,
     token,
-    { hours },
+    query || { hours },
     revision,
   );
   useEffect(() => {

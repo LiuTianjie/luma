@@ -27,7 +27,7 @@ The SDK's execution context owns attempt state; messages carry only serializable
 | Layer | Current mechanism | Boundary |
 | --- | --- | --- |
 | SDK | An in-memory trace queue of 512, batches of 64; local metric aggregation with a default 30-second export interval; bounded timeouts and flush | Business execution does not wait for platform recovery. Overflow, hard termination and export failures can lose telemetry. |
-| Collector | Memory limits, batching and bounded sampling state; a 128-request Tempo exporter queue with retries; a PRW queue of 128 OTLP metrics batches | There is currently no persistent export queue or PRW WAL. A Collector restart loses in-memory data. |
+| Collector | Memory limits, batching and bounded sampling state; a persistent 128-request Tempo exporter queue with retries; a PRW queue of 128 OTLP metrics batches and dedicated WAL | Dedicated volumes protect the export stage. Restarts still lose pre-queue batch and tail-sampling state; the WAL has no hard disk quota. |
 | Storage | Existing Tempo, VictoriaMetrics and VictoriaLogs disk storage and retention | Only data that has reached the relevant store is protected. The current single-manager, single-replica deployment is not HA. |
 | Business reliability | Application transactions, outboxes, message queues and result stores | Billing, auditing and task delivery cannot depend on telemetry that may be sampled or lost. |
 
@@ -37,10 +37,10 @@ A process heartbeat timestamp indicates that metric collection and export are wo
 
 `service.instance.id` must distinguish concurrent processes writing SDK cumulative metrics. Simply removing it merges independent counters and histograms into one series and violates single-writer semantics. The opt-in service span-metrics path has a different writer: the shared Collector aggregates spans into service-level counters and histograms before exporting them. This already avoids per-child series for Celery completed-span statistics; native Taskiq metrics keep their process identity. Deployment acceptance must still measure process turnover, task/queue/outcome dimensions and actual new series in VictoriaMetrics. Rewriting labels on independently exported cumulative streams is not equivalent to Collector-owned span aggregation.
 
-Reliability proposals for the next stage, not implemented in this change:
+Remaining reliability and capacity acceptance:
 
-1. Give the Tempo exporter a persistent sending queue backed by official `file_storage`; use the Prometheus Remote Write exporter's own WAL. Configure dedicated persistent mounts, disk capacity and free-space budgets, retry limits and recovery procedures.
-2. Monitor reception refusals, SDK/Collector drops, queue occupancy, export failures, disk growth and signal freshness. Measure backlog recovery throughput. Limit ingestion against its budget, and keep client backoff bounded so unlimited retries cannot consume business resources.
+1. This branch configures Tempo `file_storage`, the PRW-specific WAL and dedicated persistent mounts. Verify recovery after deployment, and define measured disk budgets and recovery procedures. Queue request limits are not hard disk quotas.
+2. The platform status page and `luma observe status` expose refusals, export failures, queue occupancy, storage space, log gaps and freshness. Extend SDK-drop and disk-growth trends, and measure backlog recovery throughput. Limit ingestion against its budget, and keep client backoff bounded so unlimited retries cannot consume business resources.
 3. Accept the deployment against representative payloads, spans/s, active traces, series counts and process turnover. Cover downstream outages, Collector restarts, disk pressure and overload. Queue size alone cannot establish throughput capacity.
 4. Introduce Kafka or similar messaging infrastructure only when measured needs require cross-node durability, long replay windows or multiple consumers. Scaling collectors that perform tail sampling also requires trace-ID routing affinity and corresponding storage HA.
 

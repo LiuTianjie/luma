@@ -5,9 +5,9 @@ const HISTORY_REFRESH_MS = 30000;
 const HISTORY_TIMEOUT_MS = 20000;
 
 /** One bounded request, with refresh deduplication and cancellation on navigation. */
-export function useMetricsHistories(token: string, targets: HistoryTarget[], historyWindow: number) {
+export function useMetricsHistories(token: string, targets: HistoryTarget[], historyWindow: number, until?: number) {
   const signature = JSON.stringify(targets.map((item) => [item.kind, item.name]).sort());
-  const requestKey = JSON.stringify([token, signature, historyWindow]);
+  const requestKey = JSON.stringify([token, signature, historyWindow, until]);
   const [state, setState] = useState<{ requestKey: string; histories: Record<string, HistoryState> }>({ requestKey: "", histories: {} });
 
   useEffect(() => {
@@ -23,7 +23,7 @@ export function useMetricsHistories(token: string, targets: HistoryTarget[], his
       const timeout = window.setTimeout(() => active.abort(), HISTORY_TIMEOUT_MS);
       let next: Record<string, HistoryState>;
       try {
-        const batch = await fetchMetricsHistoryBatch({ token, targets, window: historyWindow, signal: active.signal });
+        const batch = await fetchMetricsHistoryBatch({ token, targets, window: historyWindow, until, signal: active.signal });
         if (active.signal.aborted) throw new Error("Metrics history request timed out");
         const results = new Map(batch.results.map((item) => [historyKey(item.kind, item.name), item]));
         next = Object.fromEntries(targets.map((target) => {
@@ -71,6 +71,6 @@ export function useMetricsHistories(token: string, targets: HistoryTarget[], his
     };
     // The signature covers all targets without restarting on dashboard refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, signature, historyWindow]);
+  }, [token, signature, historyWindow, until]);
   return state.requestKey === requestKey ? state.histories : {};
 }

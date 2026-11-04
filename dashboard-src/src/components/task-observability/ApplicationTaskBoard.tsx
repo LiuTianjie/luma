@@ -1,3 +1,4 @@
+import { observationQuery } from "../../observeContext";
 import { ArrowLeft } from "@/components/icons";
 import {
   Table,
@@ -7,7 +8,7 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
-import { useState, type ReactNode } from "react";
+import { useState, useMemo, type ReactNode } from "react";
 import { useRouter } from "../../router";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -251,7 +252,8 @@ export function ApplicationTaskBoard({
   const rawId = params.get("observeTrace") || "";
   const traceId = /^[0-9a-f]{32}$/i.test(rawId) ? rawId.toLowerCase() : "";
   const [lookup, setLookup] = useState("");
-  const query: Query = { hours, outcome: "all" };
+  const context = useMemo(() => observationQuery(search), [search]);
+  const query: Query = { ...context, outcome: "all" };
   for (const key of [
     "task_name",
     "task_id",
@@ -274,7 +276,11 @@ export function ApplicationTaskBoard({
     navigate(`${path}?${next}`);
   };
   const onTrace = (id: string, until?: number) =>
-    change({ observeTrace: id, ...(until ? { observe_until: until } : {}) });
+    change({
+      observeTrace: id,
+      observeSpan: "",
+      ...(until ? { observe_until: until } : {}),
+    });
   const props = { app, token, zh };
   const filtersKey = JSON.stringify(query);
   return (
@@ -298,20 +304,6 @@ export function ApplicationTaskBoard({
               </TabsTrigger>
             ))}
           </TabsList>
-          {view !== "metrics" && (
-            <SelectControl
-              className="observe-hours"
-              value={String(hours)}
-              onChange={(value) =>
-                change({ observeHours: value, observe_until: undefined })
-              }
-              ariaLabel={zh ? "时间范围" : "Time range"}
-              options={[1, 6, 24, 72].map((value) => ({
-                value: String(value),
-                label: zh ? `最近 ${value} 小时` : `Last ${value} ${value === 1 ? "hour" : "hours"}`,
-              }))}
-            />
-          )}
         </div>
         <TabsContent value="metrics">
           {view === "metrics" && metrics}
@@ -344,6 +336,7 @@ export function ApplicationTaskBoard({
                   <TaskOverview
                     {...props}
                     hours={hours}
+                    query={query}
                     onTask={(name, queue) =>
                       change({
                         observeView: "events",
@@ -351,7 +344,7 @@ export function ApplicationTaskBoard({
                         observe_queue: queue,
                         observe_task_id: undefined,
                         observe_outcome: "all",
-                        observe_until: undefined,
+
                         observe_attribute: undefined,
                         observe_value: undefined,
                         observe_min_duration_ms: undefined,
@@ -368,7 +361,6 @@ export function ApplicationTaskBoard({
                         onClick={() =>
                           change({
                             observe_task_id: undefined,
-                            observe_until: undefined,
                           })
                         }
                       >
@@ -390,7 +382,6 @@ export function ApplicationTaskBoard({
                                 value,
                               ]),
                             ),
-                            observe_until: undefined,
                           })
                         }
                       />

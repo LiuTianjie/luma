@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from pathlib import Path
 import sys
 import threading
 import time
@@ -155,20 +157,47 @@ def rfc3339(now: float | None = None) -> str:
 
 
 def records_for(source: Source, lines: list[str], observed_at: str) -> list[dict[str, str]]:
-    return [
-        {
-            "_time": observed_at,
-            "_msg": line,
-            "app": source.app,
-            "job": source.job,
-            "task": source.task,
-            "task_group": source.task_group,
-            "alloc": source.alloc,
-            "stream": source.stream,
-            "node": source.node,
-        }
-        for line in lines
-    ]
+    records = []
+    for line in lines:
+        row = {"_time": observed_at, "observed_at": observed_at, "_msg": line,
+               "app": source.app, "job": source.job, "task": source.task,
+               "task_group": source.task_group, "alloc": source.alloc,
+               "stream": source.stream, "node": source.node}
+        try:
+            data = json.loads(line)
+        except ValueError:
+            data = {}
+        if isinstance(data, dict):
+            attributes = data.get("attributes") if isinstance(data.get("attributes"), dict) else {}
+            resource = data.get("resource") if isinstance(data.get("resource"), dict) else {}
+            for key, aliases in {"trace_id": ("trace_id", "traceId"), "span_id": ("span_id", "spanId")}.items():
+                value = next((data.get(alias) for alias in aliases if data.get(alias)), "")
+                size = 32 if key == "trace_id" else 16
+                if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{%d}" % size, value) and int(value, 16):
+                    row[key] = value.lower()
+            for key, value in {"task_id": data.get("task_id") or attributes.get("messaging.message.id"),
+                               "attempt_id": data.get("attempt_id") or attributes.get("task.attempt.id"),
+                               "service_name": resource.get("service.name") or data.get("service.name") or data.get("service_name"),
+                               "service_instance_id": resource.get("service.instance.id") or data.get("service.instance.id"),
+                               "environment": resource.get("deployment.environment.name") or data.get("deployment.environment.name"),
+                               "severity": data.get("severity_text") or data.get("level")}.items():
+                if isinstance(value, (str, int)) and len(str(value)) <= 256:
+                    row[key] = str(value)
+            timestamp = data.get("timestamp") or data.get("time") or data.get("ts")
+            try:
+                if isinstance(timestamp, (int, float)):
+                    event = datetime.fromtimestamp(timestamp, timezone.utc)
+                elif isinstance(timestamp, str):
+                    event = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                    if event.tzinfo is None:
+                        raise ValueError("timezone required")
+                else:
+                    raise ValueError("no timestamp")
+                row["event_time"] = event.isoformat()
+            except (ValueError, TypeError, OverflowError, OSError):
+                pass
+        records.append(row)
+    return records
 
 
 def insert_jsonline_url(base: str) -> str:
@@ -222,6 +251,33 @@ class Shipper:
         self.coverage = {}
         self.gaps = {}
         self.source_counts = {}
+        self.backlog_bytes = 0
+        self.export_retries = 0
+        self.tempo_poll_errors = 0
+        self.checkpoint = os.environ.get("LUMA_LOG_CHECKPOINT", "")
+        if self.checkpoint:
+            try:
+                saved = json.loads(Path(self.checkpoint).read_text())
+                for key, value in list(saved.get("cursors", {}).items())[:2048]:
+                    self.cursors[key] = Cursor(file=value["file"], offset=int(value["offset"]),
+                                               leftover=bytes.fromhex(value.get("leftover", "")))
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+
+    def save_checkpoint(self) -> None:
+        if not self.checkpoint:
+            return
+        path = Path(self.checkpoint)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = {key: {"file": c.file, "offset": c.offset, "leftover": c.leftover.hex()}
+                    for key, c in self.cursors.items()}
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"cursors": data}))
+            os.replace(temporary, path)
+        except OSError:
+            self.gaps.update({key: time.time() for key in self.cursors})
+
 
     def poll(self) -> None:
         try:
@@ -242,6 +298,10 @@ class Shipper:
                 pair = (source.job, source.task)
                 counts[pair] = counts.get(pair, 0) + 1
         self.source_counts = counts
+        # Commit offsets only after storage accepted the complete batch. A crash
+        # may replay a batch (at-least-once), but must not silently skip it.
+        previous_cursors = dict(self.cursors)
+        self.backlog_bytes = 0
         batch: list[dict[str, str]] = []
         caught_up = set()
         visited = round_robin(sources, self.round)
@@ -258,6 +318,7 @@ class Shipper:
                 cursor = start_cursor(files)
                 if cursor is None:
                     continue
+                previous_cursors[source.key] = cursor
             matching = [item for item in files if item[1] == cursor.file]
             if not matching:
                 prefix = f"{source.task}.{source.stream}."
@@ -291,6 +352,9 @@ class Shipper:
                 batch.extend(records_for(source, lines, observed))
                 if len(data) >= READ_LIMIT:
                     break
+            cursor_index = next((index for index, path, _ in files if path == cursor.file), -1)
+            self.backlog_bytes += sum(max(0, size - (cursor.offset if path == cursor.file else 0))
+                                      for index, path, size in files if index >= cursor_index)
             self.cursors[source.key] = cursor
             if files and cursor.file == files[-1][1] and cursor.offset >= files[-1][2]:
                 caught_up.add(source.key)
@@ -300,13 +364,18 @@ class Shipper:
             if batch:
                 self.insert(batch)
             self.exported += len(batch)
+            self.tempo_poll_errors += sum(row["task"] == "tempo" and 'level=error' in row["_msg"]
+                                          and 'failed to poll' in row["_msg"] for row in batch)
+            self.save_checkpoint()
             stamp = time.time()
             fresh = {source.key: (source.job, source.task, stamp) for source in visited if source.key in caught_up and source.key in monitored}
             self.coverage = {key: value for key, value in self.coverage.items() if key in monitored and stamp-value[2] < 120}
             self.coverage.update(fresh)
             self.gaps = {key: value for key, value in self.gaps.items() if key in monitored and stamp-value < 900}
         except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
-            self.dropped += len(batch)
+            self.export_retries += 1
+            self.cursors = previous_cursors
+            self.save_checkpoint()
             self.gaps.update({source.key: time.time() for source in visited if source.key in monitored})
 
     def coverage_snapshot(self):
@@ -325,6 +394,10 @@ class Shipper:
     def metrics(self) -> str:
         return "".join(
             [
+                f"luma_observe_log_backlog_bytes {self.backlog_bytes}\n",
+                f"luma_observe_log_export_retries_total {self.export_retries}\n",
+                f"luma_observe_tempo_poll_errors_total {self.tempo_poll_errors}\n",
+                *[f'luma_observe_log_coverage_timestamp_seconds{{app={json.dumps(r["app"])},task={json.dumps(r["task"])}}} {r["at"]}\n' for r in self.coverage_snapshot()],
                 "# HELP luma_observe_log_shipper_up 1 if the shipper process is running.\n",
                 "# TYPE luma_observe_log_shipper_up gauge\n",
                 "luma_observe_log_shipper_up 1\n",

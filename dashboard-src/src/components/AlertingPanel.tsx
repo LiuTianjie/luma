@@ -1,3 +1,4 @@
+import { ExternalAlerts, evidenceSummary } from "./ExternalAlerts";
 import { LogIncidentDetails } from "./LogIncidentDetails";
 import { LogRuleFields } from "./LogRuleFields";
 import { fetchAlertTab } from "../alertingApi";
@@ -588,6 +589,7 @@ export function AlertingPanel({
   return (
     <div className={cn("flex min-w-0 flex-col gap-6", editor && "max-w-4xl")}>
       {confirmElement}
+      {!editor && tab === "alerts" && <ExternalAlerts app={appFilter} lang={lang} token={token} />}
       {!editor && tab !== "notifications" && (!application || appFilter) && <div className="flex flex-wrap items-center gap-2">
         {!application && <div className="w-full max-w-xs">
           <Combobox items={["", ...new Set([...applicationNames, ...knownApps, appFilter].filter(Boolean))]}
@@ -872,12 +874,12 @@ export function AlertingPanel({
                           <TableCell className="max-sm:block max-sm:whitespace-normal max-sm:p-0">
                             <div className="flex flex-col items-start gap-1">
                               <span className="font-medium">
-                                {item.ruleName}
+                                {item.ruleName} <Badge variant="outline">Control</Badge>
                               </span>
                               <span className="text-muted-foreground">
                                 {item.buildDetails?.service || item.target}
                               </span>
-                              {item.logDetails?.summary && <span className="max-w-lg line-clamp-2 wrap-anywhere text-sm text-muted-foreground">{item.logDetails.summary}</span>}
+                              {item.logDetails?.summary && <span className="max-w-lg line-clamp-2 wrap-anywhere text-sm text-muted-foreground">{evidenceSummary(item.logDetails.summary)}</span>}
                               {item.buildDetails?.reason && (
                                 <span className="max-w-lg line-clamp-2 wrap-anywhere text-sm text-muted-foreground">
                                   {item.buildDetails.stage ? `${item.buildDetails.stage}: ` : ""}{item.buildDetails.reason}

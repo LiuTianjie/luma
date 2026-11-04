@@ -31,6 +31,12 @@ def handle_metrics_history_batch(token: str, body: dict[str, Any]) -> dict[str, 
         raise LumaError("window must be an integer") from exc
     window = min(max(requested_window, 60), retention_seconds())
     now = int(time.time())
+    try:
+        until = min(int(body.get("until") or now), now)
+        if until <= 0:
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise LumaError("until must be a positive Unix timestamp")
     # One JSON parse per request and a common clock for every target. Duplicate
     # targets keep their response position but do not repeat filtering/compaction.
     snapshot = None
@@ -53,12 +59,12 @@ def handle_metrics_history_batch(token: str, body: dict[str, Any]) -> dict[str, 
             if key not in cache:
                 if snapshot is None:
                     snapshot = load_history_snapshot()
-                series = load_history(kind, name, window=window, now=now, snapshot=snapshot)
+                series = load_history(kind, name, window=window, now=until, snapshot=snapshot)
                 cache[key] = {
                     "kind": kind,
                     "name": name,
                     "series": series,
-                    **history_metadata(series, requested_window, now=now),
+                    **history_metadata(series, requested_window, now=until),
                 }
             item["payload"] = cache[key]
         except (LumaError, OSError, TypeError, ValueError, OverflowError) as exc:

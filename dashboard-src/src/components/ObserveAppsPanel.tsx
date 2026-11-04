@@ -1,3 +1,5 @@
+import { useRouter } from "../router";
+import { grafanaRange, logsExpression, observationQuery } from "../observeContext";
 import { useEffect, useId, useRef, useState } from "react";
 import { Maximize2, Minimize2 } from "@/components/icons";
 import type { Lang } from "../types";
@@ -30,11 +32,20 @@ const VIEWS = [
 // rejects TraceQL search ("backend TraceQL search queries are not supported").
 // Explore uses the datasource proxy instead. kiosk=tv on Explore sends Trace ID
 // clicks to Grafana home, so this tab is not kiosk.
-function tracesExploreSrc(app: string): string {
+function tracesExploreSrc(app: string, search: string): string {
   const stack = app.replace(/[^a-zA-Z0-9._-]/g, "");
-  const query = stack
+  let query = stack
     ? `{ resource.luma.stack = "${stack}" }`
-    : '{ resource.service.name = "traefik" || resource.luma.stack =~ ".+" }';
+    : '{ (resource.service.name = "traefik" || resource.luma.stack =~ ".+") }';
+  const scope = observationQuery(search);
+  const filters: string[] = [];
+  for (const [key,field] of [["environment","deployment.environment.name"],["service","service.name"],["instance","service.instance.id"]]) {
+    if (scope[key]) filters.push(`resource.${field} = ${JSON.stringify(scope[key])}`);
+  }
+  const id = new URLSearchParams(search).get("observeTrace");
+  if (scope.keyword) filters.push(`name =~ ${JSON.stringify(".*" + String(scope.keyword).replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ".*")}`);
+  if (filters.length) query = query.replace(/}$/, ` && ${filters.join(" && ")} }`);
+  if (id && /^[a-f0-9]{32}$/i.test(id)) query = id.toLowerCase();
   return (
     "/grafana/explore?orgId=1&schemaVersion=1&panes=" +
     encodeURIComponent(
@@ -51,16 +62,16 @@ function tracesExploreSrc(app: string): string {
               tableType: "traces",
             },
           ],
-          range: { from: "now-1h", to: "now" },
+          range: grafanaRange(search),
         },
       }),
     )
   );
 }
 
-function logsExploreSrc(app: string): string {
+function logsExploreSrc(app: string, search: string): string {
   const stack = app.replace(/[^a-zA-Z0-9._-]/g, "");
-  const expr = stack ? `app:="${stack}"` : 'app:~".+"';
+  const expr = logsExpression(stack, search);
   return (
     "/grafana/explore?orgId=1&schemaVersion=1&panes=" +
     encodeURIComponent(
@@ -79,15 +90,16 @@ function logsExploreSrc(app: string): string {
               maxLines: 1000,
             },
           ],
-          range: { from: "now-1h", to: "now" },
+          range: grafanaRange(search),
         },
       }),
     )
   );
 }
 
-function dashboardSrc(uid: string, app: string): string {
+function dashboardSrc(uid: string, app: string, search: string): string {
   const params = new URLSearchParams({
+    ...grafanaRange(search),
     orgId: "1",
     kiosk: "tv",
     autofitpanels: "true",
@@ -111,6 +123,7 @@ export function ObserveAppsPanel({
   lockedView?: boolean;
 }) {
   const zh = lang === "zh";
+  const { path, search, navigate } = useRouter();
   const container = useRef<HTMLDivElement>(null);
   const fieldId = useId();
   const [expanded, setExpanded] = useState(false);
@@ -137,24 +150,23 @@ export function ObserveAppsPanel({
       );
     }
   };
-  const [view, setView] = useState<(typeof VIEWS)[number]["id"]>(initialView);
-  const [app, setApp] = useState(initialApp.replace(/[^a-zA-Z0-9._-]/g, ""));
-  useEffect(() => {
-    setView(initialView);
-  }, [initialView]);
-  useEffect(() => {
-    setApp(initialApp.replace(/[^a-zA-Z0-9._-]/g, ""));
-  }, [initialApp]);
+  const params = new URLSearchParams(search);
+  const requested = params.get("view");
+  const view = lockedView ? initialView : VIEWS.find(v=>v.id===requested)?.id || initialView;
+  const app = lockedView ? initialApp : params.get("app") ?? initialApp;
+  const update = (key: string, value: string) => {const next = new URLSearchParams(search); next.set(key,value); navigate(`${path}?${next}`);};
+  const setView = (value: string) => update("view",value);
+  const setApp = (value: string) => update("app",value);
   const names = [...new Set([...applicationNames, app].filter(Boolean))].sort();
   const current = VIEWS.find((item) => item.id === view) || VIEWS[0];
   const src =
     view === "traces"
-      ? tracesExploreSrc(app)
+      ? tracesExploreSrc(app, search)
       : view === "logs"
-        ? logsExploreSrc(app)
+        ? logsExploreSrc(app, search)
         : view === "grafana"
           ? "/grafana/?orgId=1"
-          : dashboardSrc(current.uid, app);
+          : dashboardSrc(current.uid, app, search);
   const showAppFilter = view !== "grafana";
   return (
     <Card ref={container} className="grafana-embed min-w-0">

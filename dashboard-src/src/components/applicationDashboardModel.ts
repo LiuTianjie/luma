@@ -1,3 +1,4 @@
+import { grafanaRange, observationQuery } from "../observeContext.ts";
 export type ApplicationDashboard = {
   uid: string;
   title: string;
@@ -35,9 +36,11 @@ export function readApplicationDashboards(payload: unknown, app: string): Applic
   return [...dashboards.values()].sort((a, b) => a.title.localeCompare(b.title) || a.uid.localeCompare(b.uid));
 }
 
-export function applicationDashboardUrl(uid: string, app: string, embedded = true): string {
+export function applicationDashboardUrl(uid: string, app: string, embedded = true, search = ""): string {
   if (!DASHBOARD_UID.test(uid)) throw new Error("Invalid Grafana dashboard UID");
-  const params = new URLSearchParams({ orgId: "1", "var-app": app });
+  const params = new URLSearchParams({ orgId: "1", "var-app": app, ...grafanaRange(search) });
+  const scope = observationQuery(search);
+  for (const key of ["environment", "service", "instance"]) if (scope[key]) params.set(`var-${key}`,String(scope[key]));
   if (embedded) {
     params.set("kiosk", "tv");
     params.set("autofitpanels", "true");

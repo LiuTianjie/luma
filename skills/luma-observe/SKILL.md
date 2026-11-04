@@ -25,6 +25,49 @@ Do not tell an operator that merely selecting the Observability page deploys the
 stack. Application monitoring needs `luma-observe`; resource metrics, incidents,
 rules and notification channels remain available without it.
 
+## Read platform and application health
+
+This skill and the observation commands ship together in `luma-infra` wheels and
+source distributions. Other operators install or upgrade the CLI through their
+existing installation method, then use `luma skills install --agent codex`,
+`--agent claude`, or `--path PATH` for a first-time assistant installation.
+Existing suites synchronize on normal CLI startup after an upgrade. Check pairing
+with `luma skills status --format json`; do not copy another machine's credentials
+or skill directories. Client upgrades do not upgrade Control or deploy Observe.
+
+Prefer the CLI over SSH or hand-written HTTP queries. Check `luma observe --help`
+when the installed CLI or Control may predate these commands. An unavailable
+command/endpoint means an upgrade is needed; retain the read-only fallback in
+[platform diagnosis](references/diagnosis.md), without silently upgrading a cluster.
+
+```sh
+luma observe status --format json
+luma observe app APP --since 1h --format json
+luma observe alerts --app APP --format json
+luma observe tasks APP --view overview --since 1h --format json
+luma observe tasks APP --view events --outcome problem --since 6h --format json
+luma observe tasks APP --view trace --trace-id TRACE_ID --format json
+luma observe tasks APP --view logs --trace-id TRACE_ID --since 1h --format json
+```
+
+Use `--until` with RFC3339 including a timezone (or Unix seconds) to freeze the
+same investigation window across commands. Application summaries and task reads
+also accept `--environment`, `--service`, and `--instance`. Task log/trace searches
+accept `--keyword`; numeric summaries do not filter by log text. `status` and
+`alerts` read current state and do not accept a historical window.
+`--service` is the reported OTel service name, not a Compose display name.
+Read returned source states: `empty` is no samples, not zero; `timeout`,
+`rate_limited`, and `unreachable` are query failures, not application failures.
+The response's `sampledAt` is query time; the freshness signal and coverage
+records describe telemetry age. Log coverage and external alerts are current
+state even when a historical application window is selected. Task Trace
+retention/sampling can leave a partial trace or no trace after an actual execution.
+
+`observe alerts` reads both Control and Alertmanager. It does not acknowledge,
+silence, close, or resend notifications. Preserve each source's ownership and
+availability when reporting; a missing source cannot establish no incidents.
+For a single execution, continue with `luma-logs` and exact task/Trace identifiers.
+
 ## When to use
 
 - Deploy, update, or debug `luma-observe`
