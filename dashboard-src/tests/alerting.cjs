@@ -128,3 +128,13 @@ test("application filters reach the server and log links retain the evidence win
     assert.equal(pane.queries[0].maxLines, 100);
   } finally { global.fetch = original; }
 });
+
+
+test("task heartbeat editing requires an explicit application and expected service", () => {
+  const rule = newAlertRule({metric: "app.task_heartbeat_age", name: "Heartbeat", threshold: 120, forSeconds: 180});
+  assert.equal(rule.noData, "alert");
+  assert.throws(() => ruleRequest({...rule, target: "tasks"}), /OTel/);
+  assert.throws(() => ruleRequest({...rule, target: "*", taskQuery: {service: "worker"}}), /one application/);
+  const saved = ruleRequest({...rule, target: "tasks", taskQuery: {service: "worker"}});
+  assert.deepEqual(saved.taskQuery, {service: "worker"});
+});

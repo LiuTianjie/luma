@@ -44,6 +44,61 @@ class AlertingTest(unittest.TestCase):
             ]}},
         }, '_memoryAllocationIndex':{'alloc-tempo':{'service':'luma-observe'}}}
 
+    def test_task_rule_scope_persists_and_scope_changes_close_old_incident(self):
+        rule = self.rule(metric='app.task_heartbeat_age', target='tasks', forSeconds=0,
+                         taskQuery={'service':'tasks-worker'})
+        self.assertEqual(self.items('rules')[0]['taskQuery'], {'service':'tasks-worker'})
+        for target, config in [('*', {'service':'worker'}), ('tasks', {}), ('tasks', {'service':'bad\nname'})]:
+            with self.assertRaises(LumaError):
+                self.rule(metric='app.task_heartbeat_age', target=target, taskQuery=config)
+        alerting.tick({'_taskAlerts': {rule['id']: 200}}, now=1000)
+        self.assertEqual(self.items('incidents')[0]['status'], 'firing')
+        alerting.save_rule({**rule, 'taskQuery': {'service':'tasks-scheduler'}}, now=1001)
+        self.assertEqual(self.items('incidents')[0]['status'], 'closed')
+        self.assertEqual(self.items('rules')[0]['taskQuery']['service'], 'tasks-scheduler')
+
+    def test_task_metric_rules_keep_service_isolation_and_missing_is_not_recovery(self):
+        ch = self.channel()
+        first = self.rule(metric='app.task_heartbeat_age', target='tasks', threshold=120,
+                          forSeconds=0, channelIds=[ch['id']], taskQuery={'service':'worker'})
+        second = self.rule(metric='app.task_heartbeat_age', target='tasks', threshold=120,
+                           forSeconds=0, taskQuery={'service':'scheduler'})
+        alerting.tick({'_taskAlerts': {first['id']: 180, second['id']: 5}}, now=1000)
+        self.assertEqual(len(self.items('incidents')), 1)
+        self.assertEqual(self.items('incidents')[0]['ruleId'], first['id'])
+        delivered = []
+        alerting.deliver_pending(now=1000, transport=lambda *args: delivered.append(args))
+        card = json.loads(delivered[0][3])['card']
+        self.assertIn('180 秒', json.dumps(card, ensure_ascii=False))
+        self.assertIn('OTel 服务：worker', json.dumps(card, ensure_ascii=False))
+        alerting.tick({'_taskAlerts': {second['id']: 5}}, now=1015)
+        self.assertEqual(self.items('incidents')[0]['status'], 'firing')
+        self.assertTrue(self.items('incidents')[0]['noData'])
+        alerting.tick({'_taskAlerts': {first['id']: 10, second['id']: 5}}, now=1030)
+        self.assertEqual(self.items('incidents')[0]['status'], 'resolved')
+        self.assertEqual(self.items('incidents')[0]['application'], 'tasks')
+
+    def test_task_heartbeat_can_alert_when_service_series_disappear(self):
+        rule = self.rule(metric='app.task_heartbeat_age', target='tasks', threshold=120,
+                         forSeconds=30, noData='alert', taskQuery={'service':'worker'})
+        for now in (1000, 1015, 1030):
+            alerting.tick({'_taskAlerts': {}}, now=now)
+        incident = self.items('incidents')[0]
+        self.assertEqual((incident['status'], incident['noData']), ('firing', True))
+        alerting.tick({'_taskAlerts': {rule['id']: 1}}, now=1045)
+        self.assertEqual(self.items('incidents')[0]['status'], 'resolved')
+
+    def test_task_snapshot_deduplicates_queries_and_reads_persisted_rule_scope(self):
+        from luma.control.state import save_state
+        save_state({'clusterId':'test'})
+        first = self.rule(metric='app.task_queue_wait_p95', target='tasks', taskQuery={'service':'worker'})
+        second = self.rule(metric='app.task_queue_wait_p95', target='tasks', threshold=600, taskQuery={'service':'worker'})
+        with patch('luma.control.observe.instant_values', return_value={'tasks':350}) as query:
+            state = alerting.load_evaluation_state(now=1000)
+        self.assertEqual(query.call_count, 1)
+        self.assertEqual(state['_taskAlerts'], {first['id']:350, second['id']:350})
+        self.assertEqual(query.call_args.args[2], 'luma_stack')
+
     def test_container_memory_maximum_and_missing_replica_lifecycle(self):
         ch = self.channel()
         self.rule(name='内存预警', metric='app.memory', target='luma-observe', threshold=80,

@@ -164,6 +164,7 @@ def feishu_alert_card(
     incident_id: object = '',
     build_details: dict | None = None,
     log_details: dict | None = None,
+    task_details: dict | None = None,
 ) -> dict[str, object]:
     """Interactive card so firing and recovery are visually distinct in Feishu."""
     label, template = _KIND_HEADER.get(kind, ('告警通知', 'grey'))
@@ -199,6 +200,11 @@ def feishu_alert_card(
             elements.extend({'tag':'div','text':{'tag':'plain_text','content':f'{name}\n{item}'}} for name,item in log_detail_rows(log_details))
             if log_details.get('incidentUrl'):
                 elements.append({'tag':'action','actions':[{'tag':'button','text':{'tag':'plain_text','content':'查看异常详情与日志'},'type':'primary','url':log_details['incidentUrl']}]})
+        if task_details:
+            if task_details.get('service'):
+                elements.append({'tag':'div','text':{'tag':'plain_text','content':'OTel 服务：' + _plain(task_details['service'], 160)}})
+            note = ('指标条件已恢复到阈值以内；不代表历史失败任务已补偿成功。' if kind == 'resolved' else _plain(task_details.get('description'), 300))
+            elements.append({'tag':'div','text':{'tag':'plain_text','content':note}})
         subtitle_parts = [p for p in (f"集群 `{_plain(cluster, 80)}`" if cluster else '', f"事件 #{incident_id}" if incident_id not in ('', None) else '') if p]
         if subtitle_parts:
             elements.append({'tag': 'div', 'text': {'tag': 'lark_md', 'content': ' · '.join(subtitle_parts)}})
