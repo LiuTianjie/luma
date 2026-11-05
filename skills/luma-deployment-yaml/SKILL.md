@@ -10,6 +10,11 @@ Application telemetry, Traefik RED/OTLP, and `observe/` belong to
 log shipping, OTLP receivers and telemetry storage stay in the optional stack.
 Do not publish metrics/OTLP on the public NIC.
 
+For requested interactive node or container access, use the bundled `luma-shell`
+skill (`luma node shell NODE` / `luma app shell FULL_SERVICE_NAME`). It explains
+direct TLS, Control relay, TTY requirements and upgrade boundaries. Shell access
+does not replace the application's recorded build/deploy workflow.
+
 Use this skill for Luma deployment artifacts:
 
 - Single-service manifests consumed by `luma deploy`.
@@ -287,7 +292,7 @@ Direct `compose render` with local paths requires an explicit node. Control dry-
 For generic CI, install a published PyPI version; verify publication before using the version example below. A source version bump or a successful Control rollout does not prove PyPI availability. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.2.39"
+python -m pip install "luma-infra==0.2.40"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:

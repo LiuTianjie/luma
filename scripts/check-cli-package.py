@@ -22,6 +22,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import shutil
 import sys
 from unittest.mock import patch
 
@@ -41,6 +42,9 @@ for args in (
     ['observe', 'tasks', 'example', '--view', 'trace', '--trace-id', 'a' * 32],
 ):
     assert build_parser().parse_args(args).command == 'observe'
+for command, name in [('node', 'worker'), ('app', 'shop_api')]:
+    parsed = build_parser().parse_args([command, 'shell', name, '--transport', 'relay'])
+    assert parsed.command == command and parsed.name == name and parsed.transport == 'relay'
 
 # Redirect only installation destinations and local config loading. CLI dispatch,
 # packaged bundle lookup, copying, registration and automatic sync remain real.
@@ -64,6 +68,8 @@ with patch.object(skills, 'agent_roots', return_value=roots), \
         marker['version'] = '0.0.0'
         (folder / skills.MARKER).write_text(json.dumps(marker))
         (folder / 'SKILL.md').write_text('operator customization')
+        # The previous suite had no shell skill; an ordinary command must add it.
+        shutil.rmtree(root / 'luma-shell')
     assert main(['version', '--local']) == 0
     for root in [*roots.values(), custom]:
         for source in skills.bundle_root().iterdir():

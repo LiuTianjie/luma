@@ -9,6 +9,10 @@ For read-only investigation of an application's errors and historical logs, use
 `luma-logs` and `luma app log-query`. This skill owns the observability stack's
 deployment and operation, not routine application log analysis.
 
+Interactive node/container sessions and terminal transport troubleshooting belong
+to the bundled `luma-shell` skill. `luma node shell` and `luma app shell` provide
+direct TLS or Control relay without SSH; they require a local TTY.
+
 For intermittent missing metrics, unavailable dashboards, query limits or a
 suspected overloaded collector/store, start with the read-only workflow in
 [platform diagnosis](references/diagnosis.md). It separates query, authentication,

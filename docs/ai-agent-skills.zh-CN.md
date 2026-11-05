@@ -1,6 +1,6 @@
 # AI Agent Skills {#ai-agent-skills}
 
-Luma 提供三个面向 AI 编码助手的 Skill，包含项目专用的部署与可观测工作流、参考资料和校验规则。Skill 安装在助手中，不安装到运行中的集群。
+Luma 提供四个面向 AI 编码助手的 Skill，覆盖部署、可观测、日志分析和交互终端。Skill 安装在助手中，不安装到运行中的集群。
 
 ## 部署工作流 {#deployment-workflows}
 
@@ -31,6 +31,14 @@ Luma 提供三个面向 AI 编码助手的 Skill，包含项目专用的部署�
 示例指令：
 
 > 分析这个应用最近一小时的报错，区分重试与最终失败，并给出原因、业务影响和日志证据。
+
+## 交互终端 {#interactive-terminals}
+
+[`luma-shell`](../skills/luma-shell/) 介绍 `luma node shell NODE` 和 `luma app shell FULL_SERVICE_NAME`，包含 PTY 交互、无需 SSH 的 TLS 直连与 Control 中转。它说明端口关闭时为何必须中转、如何识别实际通道，以及 CLI、控制面和节点的升级要求。配置和用法见[本地终端](operations.zh-CN.md#cli-shell)。
+
+示例指令：
+
+> 从本地终端连接这个 Luma 节点，不使用 SSH。优先直连，节点入站端口关闭时使用 Control 中转。
 
 ## 安装与自动升级 {#installation-and-automatic-updates}
 

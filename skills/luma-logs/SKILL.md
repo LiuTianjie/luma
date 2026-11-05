@@ -10,6 +10,11 @@ call Grafana's datasource proxy, or SSH to nodes for ordinary log analysis.
 The CLI owns authentication and structured output; the Control API queries the
 existing manager-local VictoriaLogs store. No additional collector is needed.
 
+When the user needs an interactive node/container session, use the bundled
+`luma-shell` skill and `luma node shell NODE` / `luma app shell FULL_SERVICE_NAME`.
+It covers direct and relayed transport without SSH. Ordinary log/trace searches
+remain on the structured commands below; shell commands require a TTY.
+
 ## Start with the known identifier
 
 Use the application's stack ID and the requested time window immediately when

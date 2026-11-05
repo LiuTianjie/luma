@@ -1,6 +1,6 @@
 # AI Agent Skills
 
-Luma includes three skills for AI coding assistants. They give the assistant repository-specific deployment and observability workflows, reference material and validation rules. They are installed in the assistant, not in the running cluster.
+Luma includes four skills for AI coding assistants. They cover deployment, observability, log investigation and interactive terminals. They are installed in the assistant, not in the running cluster.
 
 ## Deployment workflows
 
@@ -35,6 +35,19 @@ Example request:
 
 > Analyze this application's errors over the last hour, distinguish retries from
 > final task failures, and explain the impact with log evidence.
+
+## Interactive terminals {#interactive-terminals}
+
+[`luma-shell`](../skills/luma-shell/) introduces `luma node shell NODE` and
+`luma app shell FULL_SERVICE_NAME`, including PTY interaction, direct TLS and
+Control relay without SSH. It explains why closed inbound ports require relay,
+how to read the selected route and which components need upgrading. See
+[local terminals](operations.md#cli-shell) for configuration and usage.
+
+Example request:
+
+> Connect to this Luma node from my terminal without SSH. Prefer direct transport,
+> but use Control relay if the node's inbound ports are closed.
 
 ## Installation and automatic updates
 
