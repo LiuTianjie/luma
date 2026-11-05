@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import codecs
 import contextlib
 import fcntl
 import json
@@ -974,6 +975,12 @@ def install_node_agent(
         "pollIntervalSeconds": 5,
         "statsIntervalSeconds": DEFAULT_CONTAINER_STATS_INTERVAL_SECONDS,
     }
+    try:
+        previous = json.loads(config_path.read_text(encoding="utf-8"))
+        if previous.get("nodeName") == node_name and isinstance(previous.get("terminalDirect"), dict):
+            config["terminalDirect"] = previous["terminalDirect"]
+    except (OSError, ValueError):
+        pass
     executor = LocalExecutor()
     escaped_config = shlex.quote(json.dumps(config, separators=(",", ":")))
     escaped_config_path = shlex.quote(str(config_path))
@@ -1924,6 +1931,8 @@ def _terminal_supervisor_shutdown_signal(_signum: int, _frame: Any) -> None:
 
 
 async def _run_terminal_supervisor(config_path: Path) -> None:
+    from .terminal_direct import DirectTerminals
+
     config = json.loads(config_path.read_text(encoding="utf-8"))
     endpoint = str(config.get("endpoint") or "")
     token = str(config.get("token") or "")
@@ -1937,6 +1946,21 @@ async def _run_terminal_supervisor(config_path: Path) -> None:
     backoff = 1.0
     max_backoff = 60.0
 
+    def open_terminal(message, output):
+        sid = str(message["sessionId"])
+        terminal = _PtySession(sid, outbound=output, loop=loop,
+                               rows=int(message.get("rows") or 32), cols=int(message.get("cols") or 120),
+                               argv=_terminal_open_argv(message))
+        if output is outbound:
+            sessions[sid] = terminal
+        return terminal
+
+    direct = DirectTerminals(config, outbound=outbound, open_terminal=open_terminal)
+    try:
+        await direct.start()
+    except Exception as exc:
+        print(f"luma: direct terminal unavailable; relay remains available ({exc})", file=sys.stderr, flush=True)
+
     try:
         while True:
             try:
@@ -1949,7 +1973,8 @@ async def _run_terminal_supervisor(config_path: Path) -> None:
                     resolve_ip=str(config.get("resolveIp") or "") or None,
                 ) as websocket:
                     backoff = 1.0  # connection established; reset reconnect backoff
-                    await websocket.send(json.dumps({"type": "auth", "token": token}, separators=(",", ":")))
+                    await websocket.send(json.dumps({"type": "auth", "token": token,
+                                                     "directTerminal": bool(direct.server)}, separators=(",", ":")))
                     send_task = asyncio.create_task(_terminal_sender(websocket, outbound))
                     try:
                         async for raw in websocket:
@@ -1958,9 +1983,15 @@ async def _run_terminal_supervisor(config_path: Path) -> None:
                             except (TypeError, json.JSONDecodeError):
                                 continue
                             if isinstance(message, dict):
-                                _handle_terminal_control_message(message, sessions=sessions, outbound=outbound, loop=loop)
+                                try:
+                                    if not direct.handle(message):
+                                        _handle_terminal_control_message(message, sessions=sessions, outbound=outbound, loop=loop)
+                                except Exception as exc:
+                                    outbound.put_nowait({"type": "error", "sessionId": message.get("sessionId"), "message": str(exc)})
                     finally:
                         send_task.cancel()
+                        await asyncio.gather(send_task, return_exceptions=True)
+                        await direct.reset()
                         for session in list(sessions.values()):
                             session.close()
                         sessions.clear()
@@ -1978,6 +2009,7 @@ async def _run_terminal_supervisor(config_path: Path) -> None:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, max_backoff)
     finally:
+        await direct.stop()
         for session in list(sessions.values()):
             session.close()
         sessions.clear()
@@ -2059,6 +2091,13 @@ def _handle_terminal_control_message(
         sessions.pop(session_id, None)
 
 
+def _terminal_child_setup() -> None:
+    os.setsid()
+    # Opening the slave in the parent doesn't give the child a controlling TTY.
+    # Claim it after setsid so Ctrl-C and shell job control reach foreground jobs.
+    fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+
 class _PtySession:
     def __init__(
         self,
@@ -2089,9 +2128,14 @@ class _PtySession:
         if command[:1] == [_terminal_shell()]:
             kwargs["cwd"] = str(Path.home()) if Path.home().exists() else "/"
         if hasattr(os, "setsid"):
-            kwargs["preexec_fn"] = os.setsid
-        self.process = subprocess.Popen(command, **kwargs)
-        os.close(slave_fd)
+            kwargs["preexec_fn"] = _terminal_child_setup
+        try:
+            self.process = subprocess.Popen(command, **kwargs)
+        except BaseException:
+            os.close(self.master_fd)
+            raise
+        finally:
+            os.close(slave_fd)
         self.reader = threading.Thread(target=self._read_loop, name=f"luma-terminal-{session_id}", daemon=True)
         self.reader.start()
 
@@ -2140,6 +2184,7 @@ class _PtySession:
             pass
 
     def _read_loop(self) -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
         try:
             while not self.closed.is_set():
                 ready, _, _ = select.select([self.master_fd], [], [], 0.2)
@@ -2150,9 +2195,12 @@ class _PtySession:
                         break
                     if not data:
                         break
-                    self._emit({"type": "output", "sessionId": self.session_id, "data": data.decode("utf-8", errors="replace")})
-                if self.process.poll() is not None:
+                    self._emit({"type": "output", "sessionId": self.session_id, "data": decoder.decode(data)})
+                if not ready and self.process.poll() is not None:
                     break
+            remaining = decoder.decode(b"", final=True)
+            if remaining:
+                self._emit({"type": "output", "sessionId": self.session_id, "data": remaining})
             exit_code = self.process.poll()
             if exit_code is None:
                 try:

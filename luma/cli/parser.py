@@ -385,6 +385,8 @@ def _add_operate_commands(sub: argparse._SubParsersAction) -> None:
 
     app = _command(sub, "app", epilog="Examples:\n  luma app list\n  luma app logs web --follow\n  luma app rollback web")
     app_sub = _commands(app, "app_command")
+    app_shell = _command(app_sub, "shell", "Open an interactive service container terminal through Luma")
+    _add_shell_arguments(app_shell, "Full service name from 'luma app list'")
     app_list = _command(app_sub, "list", "List deployed services and their replica health")
     app_list.add_argument("--region", help="Only this region")
     app_list.add_argument("--app", dest="stack", help="Only this application")
@@ -527,6 +529,8 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
 
     node = _command(sub, "node")
     node_sub = _commands(node, "node_command")
+    node_shell = _command(node_sub, "shell", "Open an interactive node terminal through Luma")
+    _add_shell_arguments(node_shell, "Node name or ID from 'luma node list'")
     node_join = _command(
         node_sub, "join", "Join this machine to the cluster",
         epilog="Example: luma node join https://luma.example.com --token <node-join-token> --region global --name sg-1",
@@ -777,6 +781,14 @@ def _add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--workflow-app", default="", help="Application whose workflow to check, when a repository has several")
     group.add_argument("--accept-workflow-change", action="store_true", help="Proceed after reviewing the reported workflow differences")
     group.add_argument("--workflow-note", default=None, help="Record why this workflow is used; never include secrets")
+
+
+def _add_shell_arguments(parser: argparse.ArgumentParser, name_help: str) -> None:
+    parser.add_argument("name", help=name_help)
+    parser.add_argument("--transport", choices=("auto", "direct", "relay"), default="auto",
+                        help="Prefer direct TLS with Control relay fallback, or require one route (default: auto)")
+    _add_control_arguments(parser)
+    parser.epilog = "Requires a local TTY. Ctrl-] disconnects; Ctrl-C is sent to the remote shell. No SSH is used."
 
 
 def _add_control_arguments(parser: argparse.ArgumentParser) -> None:

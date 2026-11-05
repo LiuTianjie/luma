@@ -24,6 +24,9 @@ from .manager import _host_from_hostport, _install_node_agent_from_token, _local
 
 
 def cmd_node(args: argparse.Namespace) -> int:
+    if args.node_command == "shell":
+        from .terminal import cmd_shell
+        return cmd_shell(args)
     if args.node_command == "tailscale":
         ensure_interactive_config("worker", keys=["TAILSCALE_AUTHKEY"], required_keys=["TAILSCALE_AUTHKEY"])
         log("[start] Install and connect Tailscale")

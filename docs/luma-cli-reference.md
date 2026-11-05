@@ -922,6 +922,7 @@ arguments:
 
 arguments:
   <command>
+    shell      Open an interactive service container terminal through Luma
     list       List deployed services and their replica health
     show       Show an application or one of its services
     logs       Read application logs
@@ -938,6 +939,33 @@ Examples:
   luma app list
   luma app logs web --follow
   luma app rollback web
+```
+
+## `luma app shell`
+
+```text
+usage: luma app shell [-h] [--transport {auto,direct,relay}] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] name
+
+Open an interactive service container terminal through Luma
+
+arguments:
+  name                        Full service name from 'luma app list'
+
+arguments:
+  -h, --help                  show this help message and exit
+  --transport {auto,direct,relay}
+                              Prefer direct TLS with Control relay fallback, or require one route
+                              (default: auto)
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+
+Requires a local TTY. Ctrl-] disconnects; Ctrl-C is sent to the remote shell. No SSH is used.
 ```
 
 ## `luma app list`
@@ -1545,6 +1573,7 @@ arguments:
 
 arguments:
   <command>
+    shell       Open an interactive node terminal through Luma
     join        Join this machine to the cluster
     list        List registered nodes
     status      Show node readiness, agent and resource details
@@ -1552,6 +1581,33 @@ arguments:
     exit        Stop Nomad on this machine and remove its Luma state
     tailscale   Install Tailscale on this machine and join the tailnet (needs TAILSCALE_AUTHKEY)
     nomad-join  Ask a ready node's agent to reinstall Nomad and rejoin
+```
+
+## `luma node shell`
+
+```text
+usage: luma node shell [-h] [--transport {auto,direct,relay}] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] name
+
+Open an interactive node terminal through Luma
+
+arguments:
+  name                        Node name or ID from 'luma node list'
+
+arguments:
+  -h, --help                  show this help message and exit
+  --transport {auto,direct,relay}
+                              Prefer direct TLS with Control relay fallback, or require one route
+                              (default: auto)
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+
+Requires a local TTY. Ctrl-] disconnects; Ctrl-C is sent to the remote shell. No SSH is used.
 ```
 
 ## `luma node join`

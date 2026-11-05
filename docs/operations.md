@@ -133,6 +133,40 @@ The response includes `replacementAllocations` and a structured `delivery` resul
 
 Restart refuses the system stacks `traefik`, `egress`, and `luma-control` (Control runs inside the `luma-control` allocation, so cycling it from application management would kill Control itself).
 
+## Connect From A Local Terminal {#cli-shell}
+
+Use credentials saved by `luma login` from a macOS or Linux terminal:
+
+```bash
+luma node shell <node-name-or-id>
+luma app shell <full-service-name>
+luma node shell <node-name> --transport direct
+luma node shell <node-name> --transport relay
+```
+
+The default `--transport auto` authenticates through Control, then races the node's direct addresses. If none connects within about three seconds, it falls back to Control relay. The CLI prints `direct` or `relay`. `direct` fails if a direct connection cannot be established; `relay` always uses Control. Older Controls or agents automatically use relay. Container terminals retain the dashboard's running-allocation and system-stack checks.
+
+Both routes use Luma WebSockets, with no SSH or Tailscale SSH. Direct connections use TLS: the CLI verifies the node certificate fingerprint received through authenticated Control before sending a single-use, session-bound ticket valid for 20 seconds. The management token is sent only to Control. The Control connection stays open for session limits and revocation; terminal input/output travels directly to the node. An interrupted session ends rather than silently switching routes or replaying input after a shell has started.
+
+Updated node terminal supervisors listen on TCP `17443` (IPv4) by default and advertise local interface addresses; Control also supplies registered public addresses. The client must be able to reach that port. Luma does not change firewalls/security groups or configure NAT traversal. Unreachable nodes use relay. Dashboard terminals continue to use relay. Compare the routes on the actual network: direct transport does not guarantee a fix for node load or browser rendering delays.
+
+To disable the listener, change its binding, or advertise a NAT-mapped public address, add this to `/opt/luma/node-agent/agent.json` on the node, preserving other fields, and restart the node agent:
+
+```json
+{
+  "terminalDirect": {
+    "enabled": true,
+    "listenHost": "0.0.0.0",
+    "port": 17443,
+    "advertiseUrls": ["wss://node.example.com:17443/v1/terminal/direct"]
+  }
+}
+```
+
+`advertiseUrls` is optional. `enabled: false` disables the listener while keeping relay available. Agent updates preserve this node's existing `terminalDirect` configuration. Node shells run as the agent's OS user, just like dashboard node shells.
+
+Window resizing, Unicode input and ordinary terminal programs are supported. Ctrl-C reaches the remote foreground process; Ctrl-] disconnects; `exit` ends the remote shell and returns its exit code. Both stdin and stdout must be TTYs. This command does not provide non-interactive script execution or file transfer.
+
 ## Remove A Deployment
 
 Use the deployed service or Compose application name:

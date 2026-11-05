@@ -133,6 +133,40 @@ luma app restart <app> --mode task
 
 拒绝重启 `traefik`、`egress`、`luma-control` 系统 stack；Control 本身就在 `luma-control` allocation 内，应用管理中循环重启会终止自身。
 
+## 本地终端连接节点和容器 {#cli-shell}
+
+使用 `luma login` 保存的登录信息，在 macOS 或 Linux 的本地终端运行：
+
+```bash
+luma node shell <节点名或节点ID>
+luma app shell <完整服务名>
+luma node shell <节点名> --transport direct
+luma node shell <节点名> --transport relay
+```
+
+默认 `--transport auto`：Control 完成认证、节点选择和会话限额检查后，CLI 并行尝试节点地址，优先连接可达的节点 Agent；约 3 秒内无法建立直连时，经 Control 中转。连接后显示 `direct` 或 `relay`。`direct` 要求直连成功，失败就退出；`relay` 始终中转。旧 Control 或旧 Agent 自动使用中转。容器终端沿用网页端的运行状态和系统 stack 限制。
+
+所有通道都使用 Luma WebSocket，不调用 SSH 或 Tailscale SSH。直连通过 TLS 加密：CLI 从已认证的 Control 通道取得节点证书指纹，核验后才发送 20 秒有效、绑定该会话的一次性凭据。管理 Token 只发送给 Control。Control 连接保留用于会话管理和撤销，直连的输入输出不经 Control。连接中断会结束会话，不会在已开始执行命令后静默切换通道或重放输入。
+
+新版节点终端 supervisor 默认监听 TCP `17443`（IPv4），公布本机接口地址；Control 还会补充已登记的节点公网地址。CLI 必须能够访问该端口。不会自动修改防火墙、安全组或设置 NAT 穿透；不可达时使用中转。网页端仍使用原有中转通道。直连是否改善卡顿需在实际网络上对比，并不保证解决节点负载或网页渲染问题。
+
+如需关闭监听、指定绑定地址，或公布 NAT 映射后的公网地址，可在节点 `/opt/luma/node-agent/agent.json` 中增加以下配置并重启节点 agent；已有其他字段保留：
+
+```json
+{
+  "terminalDirect": {
+    "enabled": true,
+    "listenHost": "0.0.0.0",
+    "port": 17443,
+    "advertiseUrls": ["wss://node.example.com:17443/v1/terminal/direct"]
+  }
+}
+```
+
+`advertiseUrls` 可省略。`enabled: false` 关闭直连监听，保留中转。节点更新保留该节点已有的 `terminalDirect` 配置。默认终端权限与网页节点 Shell 一致，即节点 Agent 的运行用户。
+
+支持窗口尺寸变化、中文输入和常用终端程序。`Ctrl-C` 发送给远端前台进程，`Ctrl-]` 断开本次连接，`exit` 结束远端 shell 并返回退出码。需要 stdin/stdout 都是 TTY；此命令不提供非交互脚本执行或文件传输。
+
 ## 删除部署 {#remove-a-deployment}
 
 使用已部署的服务名或 Compose 应用名：

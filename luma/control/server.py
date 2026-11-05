@@ -14392,6 +14392,14 @@ def _terminal_browser_target(token: str, node_name: str, service: str) -> tuple[
     return entry[0], None
 
 
+def _terminal_direct_hosts(node_name: str) -> list[str]:
+    state = load_dashboard_state()
+    record = (state.get("nodes") or {}).get(node_name) or {}
+    # Cloud public IPs may be NATed and absent from the node's interfaces.
+    return [str(record[key]) for key in ("publicIp", "publicIP", "public_ip", "advertiseAddr", "tailscaleIP")
+            if record.get(key)][:8]
+
+
 class _TerminalSession:
     def __init__(self, session_id: str, node_name: str, browser: WebSocket, agent: "_TerminalAgentConnection"):
         self.id = session_id
@@ -14407,9 +14415,10 @@ class _TerminalSession:
 
 
 class _TerminalAgentConnection:
-    def __init__(self, node_name: str, websocket: WebSocket):
+    def __init__(self, node_name: str, websocket: WebSocket, *, direct_terminal: bool = False):
         self.node_name = node_name
         self.websocket = websocket
+        self.direct_terminal = direct_terminal
         self.send_lock: asyncio.Lock | None = None
 
     def send_lock_for_loop(self) -> asyncio.Lock:
@@ -14465,6 +14474,9 @@ class TerminalBroker:
                         )
                 if not token:
                     raise LumaError("terminal auth token required")
+                transport = str(auth.get("transport") or "relay")
+                if transport not in {"auto", "direct", "relay"}:
+                    raise LumaError("unsupported terminal transport")
             except Exception:
                 await websocket.close(code=1008)
                 return
@@ -14498,11 +14510,20 @@ class TerminalBroker:
                     await websocket.send_json({"type": "error", "message": f"terminal session limit reached on {node_name}"})
                     await websocket.close(code=1013)
                     return
+                if transport == "direct" and not agent.direct_terminal:
+                    await websocket.send_json({"type": "error", "message": "node agent does not support direct terminals; update the agent or use --transport relay"})
+                    await websocket.close(code=1013)
+                    return
                 session_id = f"term-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
                 session = _TerminalSession(session_id, node_name, websocket, agent)
                 self._sessions[session_id] = session
             open_payload: Dict[str, Any] = {"type": "open", "sessionId": session.id, "node": node_name, "cols": 120, "rows": 32}
             browser_open: Dict[str, Any] = {"type": "open", "sessionId": session.id, "node": node_name}
+            route = transport if agent.direct_terminal else "relay"
+            open_payload["transport"] = route
+            browser_open["transport"] = route
+            if route != "relay":
+                open_payload["directHosts"] = await run_in_threadpool(_terminal_direct_hosts, node_name)
             if container_target:
                 extra = {
                     "target": "container",
@@ -14521,7 +14542,7 @@ class TerminalBroker:
                 if not isinstance(message, dict):
                     continue
                 kind = str(message.get("type") or "")
-                if kind not in {"input", "resize", "close", "ping"}:
+                if kind not in {"input", "resize", "close", "ping", "relay"}:
                     continue
                 session.touch()
                 payload = dict(message)
@@ -14566,7 +14587,7 @@ class TerminalBroker:
         except LumaError:
             await websocket.close(code=1008)
             return
-        connection = _TerminalAgentConnection(canonical_node_name, websocket)
+        connection = _TerminalAgentConnection(canonical_node_name, websocket, direct_terminal=auth.get("directTerminal") is True)
         async with self._lock_for_loop():
             previous = self._agents.get(canonical_node_name)
             self._agents[canonical_node_name] = connection
@@ -14584,7 +14605,7 @@ class TerminalBroker:
                 session_id = str(message.get("sessionId") or "")
                 if not session_id:
                     continue
-                await self.forward_to_browser(session_id, message)
+                await self.forward_to_browser(session_id, message, agent=connection)
         except Exception:
             pass
         finally:
@@ -14595,13 +14616,15 @@ class TerminalBroker:
             for session_id in session_ids:
                 await self.close_session(session_id, notify_agent=False, browser_message="terminal agent disconnected")
 
-    async def forward_to_browser(self, session_id: str, message: Dict[str, Any]) -> None:
+    async def forward_to_browser(self, session_id: str, message: Dict[str, Any], *, agent: _TerminalAgentConnection | None = None) -> None:
         async with self._lock_for_loop():
             session = self._sessions.get(session_id)
-        if not session or session.closed:
+        if not session or session.closed or (agent is not None and session.agent is not agent):
             return
         session.touch()
         kind = str(message.get("type") or "")
+        if kind == "activity":
+            return
         try:
             async with session.browser_lock:
                 await session.browser.send_json(dict(message))

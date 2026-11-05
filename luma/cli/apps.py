@@ -10,6 +10,9 @@ from .common import _control_context, _format_epoch, _history_query, _output_for
 
 
 def cmd_app(args: argparse.Namespace) -> int:
+    if args.app_command == "shell":
+        from .terminal import cmd_shell
+        return cmd_shell(args)
     handlers = {
         "list": cmd_app_read,
         "show": cmd_app_read,
