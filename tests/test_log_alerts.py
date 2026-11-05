@@ -106,6 +106,11 @@ class LogRulesTest(unittest.TestCase):
         self.assertEqual(overview['counts']['firing'],1)
         self.assertEqual(overview['counts']['resolved'],1)
         self.assertEqual(overview['enabledRules'],1)
+        historical = alerting.dispatch('GET','overview',query={'app':'ledger','since':999,'until':1020})
+        self.assertEqual(historical['window']['fired'],1)
+        self.assertEqual(historical['window']['resolved'],1)
+        self.assertEqual(historical['counts']['firing'],1)
+        self.assertEqual(alerting.dispatch('GET','overview',query={'app':'ledger','since':1016,'until':1020})['window']['fired'],0)
         self.assertEqual([r['id'] for r in alerting.dispatch('GET','rules',query={'app':'ledger'})['items']],[first['id']])
         with self.assertRaises(LumaError):
             alerting.dispatch('GET',f"incidents/{page['items'][0]['id']}",query={'app':'other'})
@@ -118,11 +123,13 @@ class LogRulesTest(unittest.TestCase):
 
     def test_observe_build_contract_is_identical(self):
         root = Path(__file__).resolve().parents[1]
-        self.assertEqual((root/'luma/log_alert_rules.py').read_bytes(), (root/'observe/log_alert_rules.py').read_bytes())
+        for file in ('log_alert_rules.py', 'task_results.py'):
+            self.assertEqual((root/'luma'/file).read_bytes(), (root/'observe'/file).read_bytes())
 
 
 class LogEngineTest(unittest.TestCase):
     def setUp(self):
+        load_observe('task_results.py', 'task_results')
         load_observe('log_alert_rules.py', 'log_alert_rules')
         self.mod = load_observe('log_alerts.py', 'observe_log_alerts')
 

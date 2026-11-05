@@ -150,7 +150,7 @@ export function TaskOverview({
                       "任务 / 队列",
                       "框架",
                       "活跃",
-                      "成功 / 失败 / 重试",
+                      "成功 / 失败 / 重试 / 取消 / 未知",
                       "耗时 P95",
                       "排队 P95",
                       "最长执行 / 无进展",
@@ -196,7 +196,7 @@ export function TaskOverview({
                     >
                       {count(task.results.failed)}
                     </span>{" "}
-                    / {count(task.results.retrying)}
+                    / {count(task.results.retrying)} / {count(task.results.cancelled)} / {count(task.results.unknown)}
                   </TableCell>
                   <TableCell className="observe-numeric">
                     {durationText(task.duration)}

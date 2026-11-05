@@ -2,12 +2,12 @@ import { apiGet, apiPost, authHeaders, readJson } from "./apiClient";
 
 export type AlertTab = "alerts" | "rules" | "notifications";
 export type AlertPreset = { metric: string; name: string; description: string; threshold: number; forSeconds: number; unit: string };
-export type LogQuery = { windowSeconds: number; task?: string; contains?: string; exclude?: string; field?: string; equals?: string };
+export type LogQuery = { mode?: "lines" | "task_failures"; windowSeconds: number; task?: string; contains?: string; exclude?: string; field?: string; equals?: string };
 export type AlertRule = { taskQuery?: { service: string; taskName?: string; framework?: "taskiq" | "celery"; windowSeconds?: number }; logQuery?: LogQuery; id: string; name: string; metric: string; target: string; threshold: number; forSeconds: number; severity: "warning" | "critical"; channelIds: string[]; enabled: boolean; repeatSeconds: number; noData: "keep" | "alert"; silencedUntil?: number };
 export type AlertChannel = { id: string; name: string; type: "feishu"; enabled: boolean; appId: string; chatId: string; appSecretConfigured: boolean };
 export type BuildAlertDetails = { buildId?: string; service?: string; image?: string; images?: Record<string, string>; imageRepository?: string; buildNode?: string; repository?: string; ref?: string; stage?: string; reason?: string; createdAt?: number; failedAt?: number; completedAt?: number };
-export type LogAlertSample = { _msg: string; _time?: string; task?: string; alloc?: string; stream?: string };
-export type LogAlertDetails = { app: string; task?: string; windowSeconds: number; windowStart: number; windowEnd: number; sampledAt: number; matchCount: number; total?: number; samples?: LogAlertSample[]; summary?: string; query?: Record<string, string>; historicalBackfill?: boolean };
+export type LogAlertSample = { trace_id?: string; span_id?: string; task_id?: string; _msg: string; _time?: string; task?: string; alloc?: string; stream?: string };
+export type LogAlertDetails = { countUnit?: "attempts" | "lines"; app: string; task?: string; windowSeconds: number; windowStart: number; windowEnd: number; sampledAt: number; matchCount: number; total?: number; samples?: LogAlertSample[]; summary?: string; query?: Record<string, string>; historicalBackfill?: boolean };
 export function alertLogExploreUrl(details: LogAlertDetails): string {
   const fields = [`app=${JSON.stringify(details.app)}`, ...(details.task ? [`task=${JSON.stringify(details.task)}`] : [])];
   const pane = { logs: { datasource: "victorialogs", queries: [{ refId: "A", datasource: { type: "victoriametrics-logs-datasource", uid: "victorialogs" }, queryType: "instant", expr: `{${fields.join(",")}}`, maxLines: 100 }], range: { from: new Date(details.windowStart * 1000).toISOString(), to: new Date(details.windowEnd * 1000).toISOString() } } };

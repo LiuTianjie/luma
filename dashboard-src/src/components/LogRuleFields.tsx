@@ -41,13 +41,21 @@ export function LogRuleFields({ rule, onChange, token, zh, disabled }: {
     <p className="sm:col-span-2 text-sm text-muted-foreground">{zh
       ? "按应用和服务统计匹配日志条数。文本条件区分大小写，所有条件同时满足；JSON 字段支持点分路径。优先匹配错误摘要，避免重复计算堆栈。"
       : "Count matching log lines per application and service. Text is case-sensitive; all conditions must match. JSON fields support dotted paths. Match summary lines to avoid counting stack traces repeatedly."}</p>
+    <Field className="sm:col-span-2">
+      <FieldLabel htmlFor="log-mode">{zh ? "统计口径" : "Counting mode"}</FieldLabel>
+      <select id="log-mode" className="rounded-md border bg-background p-2 text-sm" disabled={disabled} value={query.mode || "lines"}
+        onChange={e => onChange({ ...rule, logQuery: { windowSeconds: query.windowSeconds, task: query.task, mode: e.target.value as "lines" | "task_failures" } })}>
+        <option value="task_failures">{zh ? "任务失败（业务或执行失败，每次执行只计一次）" : "Failed attempts (business or execution failure, deduplicated)"}</option>
+        <option value="lines">{zh ? "自定义日志行匹配" : "Custom log-line matching"}</option>
+      </select>
+    </Field>
     {([
       ["task", zh ? "服务名（留空包含该应用全部服务）" : "Task name (blank for all tasks in this app)"],
       ["contains", zh ? "日志包含文本" : "Log contains"],
       ["exclude", zh ? "排除包含文本的日志" : "Exclude text"],
       ["field", zh ? "JSON 字段（可选）" : "JSON field (optional)"],
       ["equals", zh ? "JSON 字段等于" : "JSON field equals"],
-    ] as const).map(([key, label]) => <Field key={key}>
+    ] as const).filter(([key]) => query.mode !== "task_failures" || key === "task").map(([key, label]) => <Field key={key}>
       <FieldLabel htmlFor={`log-${key}`}>{label}</FieldLabel>
       <Input id={`log-${key}`} disabled={disabled} maxLength={key === "field" ? 128 : key === "task" ? 300 : 256}
         value={query[key] || ""} onChange={e => update(key, e.target.value)} />

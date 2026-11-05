@@ -66,8 +66,13 @@ also accept an application filter. Incident counts and pagination are scoped in
 SQL using application indexes; global app rules remain visible in scoped rule
 lists. Infrastructure alerts are not attributed to an app by a coincidental name.
 
-The existing native aggregate also selects at most three representative log rows
-with `json_values(...) limit 3`; it does not sort or issue a second log query.
+The native aggregate selects at most three representative log rows with
+`json_values(...) limit 3`. Structured task samples retain trace/span identity
+before truncation. One additional batched lookup (1-second server deadline,
+2-second client timeout) fetches matching `task.failure.detail` records in
+the same app, service, allocation and execution, extending the window start by
+60 seconds for boundary ingestion. Detail lookup failure never suppresses a
+valid alert count.
 Samples are redacted for common credential patterns and bounded to 512 UTF-8 bytes
 of message text (head and tail), 900 encoded bytes per row. The 64 KiB rule/result
 exchange cap, serial query schedule and 96 MiB worker limit are unchanged.
@@ -76,7 +81,10 @@ An incident replaces one bounded evidence snapshot only on a new breached sample
 no append-only sample history is created. Recovery keeps the last breached window.
 Lists receive a single summary, while detail views read the saved snapshot from
 SQLite without querying VictoriaLogs. Notifications include the same window,
-counts, source and error samples, plus a link to the app's incident page. Opening
+counts, source and readable exception summaries, plus a link to the app's incident page.
+The detail page separately reads the retained original stack for the exact
+trace/span and message ID. Unavailable, missing and truncated evidence remain
+explicit; retained logs can expire while the bounded snapshot survives. Opening
 log search explicitly uses the recorded app/task and original time range, capped
 at 100 initial lines. Deleted rules do not erase incident ownership or evidence.
 
@@ -85,3 +93,40 @@ The arbitrary sample order and deduplication may yield fewer than three examples
 Logs in snapshots follow existing alert-history retention. Older incidents without
 evidence show an explicit missing-evidence state; current logs are not substituted
 for historical failures.
+
+
+## Task failure semantics
+
+Set `logQuery.mode` to `task_failures` for SDK tasks. This mode uses a fixed
+predicate on `task.finished`: business `failed` OR execution `failed`, regardless
+of framework success. Do not combine it with text/JSON predicates. The application,
+optional service (`task`), window, severity, threshold and notification channels
+remain configurable. Duplicate log delivery for the same trace/span is counted
+once. Failure details, phases and producer publications do not increase the count.
+
+Application failure ratios and task result tables use the same retained completion
+records and deduplication. Failure wins over retry/cancellation; otherwise retries,
+cancellations and unknown business states (including `needs_review`) are separate.
+The ratio is failed / (failed + succeeded). No decided completions, unavailable
+queries and response limits produce unknown, not zero. These are observed attempts,
+not unique orders or guaranteed complete records; missing lifecycle emission or
+expired/lost logs cannot be repaired from sampled spans. Framework-only tasks
+without SDK completion logs remain unknown. Duration and activity still use metrics.
+Subsequent successful retries preserve previous failed attempts.
+
+The status page shows both app-wide incidents that were firing during the selected
+window and current firing/pending counts. An alert's recovery means the condition
+cleared, not that its failed business task was compensated.
+
+Delivery requires Control/Dashboard and the independently deployed `log-alerts`
+worker. Change SDK task failure rules to `mode: task_failures` after both are
+updated; remove overlapping framework/text failure rules for the same instrumented
+services. Keep producer failure and legacy non-SDK rules separately scoped.
+
+
+For prebuilt-image Compose deployments, maintainers can publish just this worker
+from an already validated immutable Luma release tag with
+`gh workflow run log-alerts-image.yml --ref v0.2.38`. It publishes
+`ghcr.io/liutianjie/luma-log-alerts:v0.2.38` without changing other Observe images.
+Deploy it through the recorded Compose workflow; publishing an image does not
+upgrade a running stack or enable/change rules.

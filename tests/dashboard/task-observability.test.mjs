@@ -9,7 +9,7 @@ test('retry recovery requires a later successful completion and preserves incomp
   const rows = [event('a', 1, 'task_started'), event('a', 2, 'task_finished', { outcome: 'retrying' }), event('b', 3, 'task_started', { retry: 1 })];
   assert.equal(executions(rows)[0].outcome, 'unknown');
   assert.equal(executions([...rows, event('b', 4, 'task_finished', { outcome: 'succeeded' })])[0].outcome, 'recovered');
-  assert.equal(executions([...rows, event('b', 4, 'task_finished', { outcome: 'succeeded', business_outcome: 'failed' })])[0].outcome, 'business_failed');
+  assert.equal(executions([...rows, event('b', 4, 'task_finished', { outcome: 'succeeded', business_outcome: 'failed' })])[0].outcome, 'failed');
   assert.equal(mergeEvents(rows, rows).length, rows.length);
 });
 
@@ -42,4 +42,19 @@ test('unavailable activity and non-finite metrics never become measured zero', (
   assert.equal(tasks[0].duration, undefined);
   assert.equal(tasks[0].results.failed, 2.5);
   assert.equal(tasks[0].results.succeeded, undefined);
+});
+
+
+test('business failure wins once; later successful retry preserves the failure; roots in one trace stay separate', () => {
+  const finish = (trace, span, task, time, outcome, business) => ({ trace_id: trace, span_id: span, task_id: task, task_name: task, timestamp: time, event: 'task_finished', outcome, business_outcome: business });
+  const failed = finish('trace', 'root-a', 'print', 1, 'succeeded', 'failed');
+  const other = finish('trace', 'root-b', 'download', 2, 'succeeded');
+  const retried = finish('retry-trace', 'root', 'print', 3, 'succeeded');
+  const rows = executions([failed, other, retried]);
+  assert.equal(rows.length, 2);
+  const print = rows.find(r => r.latest.taskName === 'print');
+  assert.deepEqual(print.attempts.map(a => a.outcome), ['failed', 'succeeded']);
+  assert.equal(print.outcome, 'recovered');
+  assert.equal(executions([finish('x', 's', 'print', 1, 'retrying', 'failed')])[0].outcome, 'failed');
+  assert.equal(executions([finish('x', 's', 'print', 1, 'succeeded', 'needs_review')])[0].outcome, 'unknown');
 });

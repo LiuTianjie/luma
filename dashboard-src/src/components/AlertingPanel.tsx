@@ -1092,7 +1092,7 @@ export function AlertingPanel({
                     {zh ? "停止提醒时间" : "Reminders stopped at"} · {stamp(detail.incident.acknowledgedAt, zh)}
                   </p>
                 )}
-                {detail.incident.metric === "app.log_matches" && <LogIncidentDetails details={detail.incident.logDetails} zh={zh} />}
+                {detail.incident.metric === "app.log_matches" && <LogIncidentDetails details={detail.incident.logDetails} zh={zh} token={token} />}
                 {detail.incident.metric === "build.failed" && (
                   <div className="flex flex-col gap-4">
                     <p className="text-sm text-muted-foreground">
@@ -1244,6 +1244,7 @@ export function AlertingPanel({
                             {item.metric === "app.log_matches" && item.logQuery && <div className="max-w-md whitespace-normal wrap-anywhere text-xs text-muted-foreground">
                               {[
                                 `${zh ? "窗口" : "Window"} ${item.logQuery.windowSeconds}s`,
+                                item.logQuery.mode === "task_failures" ? (zh ? "业务或执行失败（去重）" : "Business or execution failure (deduplicated)") : "",
                                 item.logQuery.contains ? `${zh ? "包含" : "Contains"} “${item.logQuery.contains}”` : "",
                                 item.logQuery.exclude ? `${zh ? "排除" : "Excludes"} “${item.logQuery.exclude}”` : "",
                                 item.logQuery.field ? `${item.logQuery.field} = ${item.logQuery.equals}` : "",

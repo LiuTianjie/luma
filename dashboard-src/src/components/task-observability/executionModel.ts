@@ -62,12 +62,20 @@ export function mergeEvents(
 // 用任务编号聚合重试，每次尝试仍使用独立 Trace；缺少结束记录时保留未知。
 export function executions(events: TaskEvent[]): ExecutionGroup[] {
   const attempts = new Map<string, ExecutionAttempt>();
+  const anchors = events.filter(e => ["task_started", "task_finished"].includes(e.event));
+  const identity = (e: TaskEvent) => `${e.trace_id}:${e.span_id || e.task_id || e.task_name || ""}`;
   for (const event of [...events].sort((a, b) => timestamp(a) - timestamp(b))) {
     if (!event.trace_id || event.event === "task_published") continue;
-    let attempt = attempts.get(event.trace_id);
+    let attemptId = identity(event);
+    if (!["task_started", "task_finished"].includes(event.event) && !anchors.some(e => identity(e) === attemptId)) {
+      const related = anchors.filter(e => e.trace_id === event.trace_id && e.task_id === event.task_id && e.task_name === event.task_name);
+      const ids = [...new Set(related.map(identity))];
+      if (ids.length === 1) attemptId = ids[0]!;
+    }
+    let attempt = attempts.get(attemptId);
     if (!attempt) {
       attempt = {
-        id: event.trace_id,
+        id: attemptId,
         traceId: event.trace_id,
         taskId: "",
         taskName: "",
@@ -76,25 +84,21 @@ export function executions(events: TaskEvent[]): ExecutionGroup[] {
         outcome: "unknown",
         events: [],
       };
-      attempts.set(event.trace_id, attempt);
+      attempts.set(attemptId, attempt);
     }
     attempt.events.push(event);
     attempt.taskId = event.task_id || attempt.taskId;
     attempt.taskName = event.task_name || attempt.taskName;
     attempt.businessId = event.business_id || attempt.businessId;
     attempt.businessKind = event.business_kind || attempt.businessKind;
-    attempt.businessOutcome = event.business_outcome || attempt.businessOutcome;
+    if (event.event === "task_finished") attempt.businessOutcome = event.business_outcome;
+    else if (!attempt.events.some(e => e.event === "task_finished"))
+      attempt.businessOutcome = event.business_outcome || attempt.businessOutcome;
     attempt.businessStatus = event.business_status || attempt.businessStatus;
     if (event.retry != null) attempt.retry = Number(event.retry);
     attempt.timestamp = Math.max(attempt.timestamp, timestamp(event));
     if (event.event === "task_finished") {
       attempt.frameworkOutcome = event.outcome || "unknown";
-      attempt.outcome =
-        attempt.frameworkOutcome === "succeeded" &&
-        attempt.businessOutcome &&
-        attempt.businessOutcome !== "succeeded"
-          ? `business_${attempt.businessOutcome}`
-          : attempt.frameworkOutcome;
       attempt.duration = event.elapsed_seconds;
     }
     if (event.event === "task_failure" || (event.error_type && !attempt.error))
@@ -102,7 +106,15 @@ export function executions(events: TaskEvent[]): ExecutionGroup[] {
   }
   const groups = new Map<string, ExecutionAttempt[]>();
   for (const attempt of attempts.values()) {
-    const id = attempt.taskId || attempt.id;
+    attempt.outcome = attempt.businessOutcome === "failed" || attempt.frameworkOutcome === "failed"
+      ? "failed"
+      : attempt.frameworkOutcome === "retrying" || attempt.businessOutcome === "retrying"
+        ? "retrying"
+        : attempt.frameworkOutcome === "cancelled" || attempt.businessOutcome === "cancelled"
+          ? "cancelled"
+          : attempt.frameworkOutcome === "succeeded" && (!attempt.businessOutcome || attempt.businessOutcome === "succeeded")
+            ? "succeeded" : "unknown";
+    const id = attempt.taskId ? `${attempt.taskName}:${attempt.taskId}` : attempt.id;
     const group = groups.get(id) || [];
     group.push(attempt);
     groups.set(id, group);

@@ -133,6 +133,9 @@ def _incident(row, *, summary=False):
     result = {mapping.get(k,k): (bool(v) if k == 'no_data' else v) for k,v in dict(row).items() if k not in ('build_details', 'log_details')}
     result['buildDetails'] = json.loads(row['build_details'])
     details = json.loads(row['log_details'])
+    if details and not summary:
+        from ..log_alert_rules import bounded_samples
+        details = {**details, 'samples': bounded_samples(details.get('samples'))}
     if summary and details:
         details = {**details, 'summary': next(iter(details.get('samples', [])), {}).get('_msg', '')}
         details.pop('samples', None)
@@ -664,7 +667,18 @@ def dispatch(method: str, resource: str, body=None, query=None):
         if method=='GET' and name=='overview':
             counts = {s:0 for s in ('pending','firing','resolved','closed')}
             counts.update({r['status']:r['n'] for r in conn.execute('SELECT status,COUNT(*) n FROM alert_incidents' + (' WHERE application=?' if application else '') + ' GROUP BY status', (application,) if application else ())})
-            return dict(counts=counts,lastEvaluatedAt=float(_setting(conn,'last_evaluated_at')) or None,silencedUntil=float(_setting(conn,'silenced_until')),enabledRules=conn.execute("SELECT COUNT(*) FROM alert_rules WHERE enabled=1" + (" AND (metric LIKE 'app.%' OR metric='build.failed') AND target IN (?, '*')" if application else ''), (application,) if application else ()).fetchone()[0],channels=conn.execute('SELECT COUNT(*) FROM alert_channels WHERE enabled=1').fetchone()[0])
+            window = {}
+            if 'since' in query or 'until' in query:
+                since = _bounded(query.get('since'), 'since', 1, 2**40)
+                until = _bounded(query.get('until'), 'until', 1, 2**40)
+                if not 0 < until-since <= 72*3600:
+                    raise LumaError('Alert window must be between 1 second and 72 hours')
+                scope = ' AND application=?' if application else ''
+                args = (until, since, application) if application else (until, since)
+                # An incident active during this window remains visible after recovery.
+                row = conn.execute('SELECT count(*) AS fired, sum(CASE WHEN resolved_at IS NOT NULL THEN 1 ELSE 0 END) AS resolved FROM alert_incidents WHERE fired_at IS NOT NULL AND fired_at<=? AND (resolved_at IS NULL OR resolved_at>=?)' + scope, args).fetchone()
+                window = dict(since=since, until=until, fired=row['fired'], resolved=row['resolved'] or 0, scope='application')
+            return dict(window=window,counts=counts,lastEvaluatedAt=float(_setting(conn,'last_evaluated_at')) or None,silencedUntil=float(_setting(conn,'silenced_until')),enabledRules=conn.execute("SELECT COUNT(*) FROM alert_rules WHERE enabled=1" + (" AND (metric LIKE 'app.%' OR metric='build.failed') AND target IN (?, '*')" if application else ''), (application,) if application else ()).fetchone()[0],channels=conn.execute('SELECT COUNT(*) FROM alert_channels WHERE enabled=1').fetchone()[0])
         if method=='POST' and name=='silence':
             seconds = _bounded(body.get('seconds'),'seconds',0,604800)
             until = now+seconds if seconds else 0

@@ -33,16 +33,56 @@ def bounded_samples(rows):
     for row in rows[:3]:
         if not isinstance(row, dict):
             continue
+        row = execution_sample(row)
         sample = {key: clean_sample_text(row.get(key), limit) for key, limit in
                   [('_msg', 512), ('_time', 40), ('task', 128), ('alloc', 64), ('stream', 16)]}
+        for key, length in [('trace_id', 32), ('span_id', 16), ('task_id', 100)]:
+            if row.get(key):
+                sample[key] = clean_sample_text(row[key], length)
         # Account for JSON escaping, not just character counts, so 20 rules
         # remain below the 64 KiB exchange cap even with adversarial messages.
-        budget = 512
         while len(json.dumps(sample, ensure_ascii=False).encode()) > 900:
-            budget //= 2
-            sample['_msg'] = clean_sample_text(sample['_msg'], budget)
+            key = max(('_msg', 'task', 'task_id'), key=lambda k: len(json.dumps(sample.get(k, ''), ensure_ascii=False).encode()))
+            budget = len(sample.get(key, '').encode()) // 2
+            sample[key] = clean_sample_text(sample[key], budget) if budget >= 16 else ''
         result.append(sample)
     return result
+
+
+def execution_sample(row):
+    """Extract identity before truncation and show the error rather than raw JSON."""
+    try:
+        payload = json.loads(row.get('_msg', ''))
+    except (ValueError, TypeError):
+        # Recover exact IDs from the old head/tail JSON snapshot format. The
+        # full-log reader still verifies every ID against a structured record.
+        raw = str(row.get('_msg', ''))
+        if raw.startswith('{') and '\n…\n' in raw:
+            row = dict(row)
+            for key, length in [('trace_id', 32), ('span_id', 16)]:
+                matches = re.findall(r'"' + key + r'"\s*:\s*"([0-9a-f]{' + str(length) + r'})"', raw)
+                if len(matches) == 1:
+                    row[key] = matches[0]
+        return row
+    if not isinstance(payload, dict) or not str(payload.get('event', '')).startswith('task.'):
+        return row
+    attrs = payload.get('attributes')
+    if not isinstance(attrs, dict):
+        return row
+    exception = payload.get('exception') or {}
+    if not isinstance(exception, dict):
+        exception = {}
+    parts = [attrs.get('task.name'), exception.get('error_message') or attrs.get('error.message'),
+             attrs.get('error.location'), exception.get('stacktrace')]
+    if not parts[1]:
+        parts[1] = attrs.get('error.type') or payload.get('event')
+    sample = {**row, '_msg': '\n'.join(str(part) for part in parts if part)}
+    for key, length in [('trace_id', 32), ('span_id', 16)]:
+        value = payload.get(key, '')
+        if isinstance(value, str) and re.fullmatch('[0-9a-f]{%d}' % length, value):
+            sample[key] = value
+    sample['task_id'] = attrs.get('messaging.message.id', '')
+    return sample
 
 
 def normalize(target, config):
@@ -52,6 +92,11 @@ def normalize(target, config):
     if not isinstance(config, dict):
         raise ValueError('logQuery must be an object')
     result = {}
+    mode = config.get('mode', 'lines')
+    if mode not in ('lines', 'task_failures'):
+        raise ValueError('Invalid logQuery.mode')
+    if mode != 'lines':
+        result['mode'] = mode
     for key, default, limit in [('task', '', 300), ('contains', '', 256), ('exclude', '', 256),
                                 ('field', '', 128), ('equals', '', 256)]:
         value = config.get(key, default)
@@ -64,7 +109,9 @@ def normalize(target, config):
     result['windowSeconds'] = window
     if result['field'] and not re.fullmatch(r'[A-Za-z][A-Za-z0-9_.]{0,127}', result['field']):
         raise ValueError('JSON field must contain letters, digits, underscores or dots')
-    if not result['contains'] and not (result['field'] and result['equals']):
+    if mode == 'task_failures' and any(result[k] for k in ('contains', 'exclude', 'field', 'equals')):
+        raise ValueError('Task failure rules use the fixed business-or-execution failure condition')
+    if mode == 'lines' and not result['contains'] and not (result['field'] and result['equals']):
         raise ValueError('Provide text to match or a JSON field and value')
     if bool(result['field']) != bool(result['equals']):
         raise ValueError('JSON field and value must be provided together')

@@ -10,7 +10,8 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from log_alert_rules import INTERVAL, MAX_AGE, MAX_RULES, bounded_samples, compile_query, fingerprint, normalize
+from task_results import failure_query
+from log_alert_rules import execution_sample, INTERVAL, MAX_AGE, MAX_RULES, bounded_samples, compile_query, fingerprint, normalize
 
 MAX_BODY = 65536
 QUERY_TIMEOUT = 2
@@ -25,8 +26,11 @@ def query_logs(rule, now):
                            (r.get('gapAt', 0) and now-r['gapAt'] < rule['logQuery']['windowSeconds'])
                            for r in selected):
         raise ValueError('Log collection is not caught up')
-    base, condition = compile_query(rule['target'], rule['logQuery'])
+    task_failures = rule['logQuery'].get('mode') == 'task_failures'
+    base, condition = ('', '') if task_failures else compile_query(rule['target'], rule['logQuery'])
     query = base + f' | stats count() as total, count() if ({condition}) as matches, json_values(_time, _msg, task, alloc, stream) limit 3 if ({condition}) as samples'
+    if task_failures:
+        query = failure_query(rule['target'], rule['logQuery'])
     if rule['logQuery']['field']:
         query += f", count(parsed.{rule['logQuery']['field']}) as parsed"
     params = urllib.parse.urlencode({'query': query, 'start': now-rule['logQuery']['windowSeconds'],
@@ -47,10 +51,61 @@ def query_logs(rule, now):
         return {'status': 'invalid_format', 'value': None, 'total': total, 'sampledAt': now}
     packed = json.loads(rows[0].get('samples') or '[]')
     # v1.25 returns an array of JSON strings; newer versions may return objects.
-    samples = bounded_samples([json.loads(row) if isinstance(row, str) else row for row in packed[:3]])
+    if task_failures:
+        packed = []
+        for attempt in json.loads(rows[0].get('attempts') or '[]'):
+            attempt = json.loads(attempt) if isinstance(attempt, str) else attempt
+            for group in json.loads(attempt.get('samples') or '[]'):
+                packed.append(group)
+    original = [json.loads(row) if isinstance(row, str) else row for row in packed[:3]]
+    samples = bounded_samples(enrich_samples(rule, now, original))
     return {'value': matches if total else None, 'total': total, 'sampledAt': now,
             'sample': samples[0]['_msg'] if samples else '', 'samples': samples,
             'status': 'ok' if total else 'no_source_logs'}
+
+
+def enrich_samples(rule, now, rows):
+    """One batched lookup for at most three executions; count availability is independent."""
+    samples = [execution_sample(row) for row in rows]
+    predicates = []
+    for row, sample in zip(rows, samples):
+        if not sample.get('trace_id') or not sample.get('span_id'):
+            continue
+        parts = ['sdk.trace_id:=' + json.dumps(sample['trace_id']), 'sdk.span_id:=' + json.dumps(sample['span_id'])]
+        if sample.get('task_id'):
+            parts.append('"sdk.attributes.messaging.message.id":=' + json.dumps(sample['task_id']))
+        for key in ('task', 'alloc'):
+            if row.get(key):
+                parts.append(f'{key}:={json.dumps(row[key])}')
+        predicates.append('(' + ' AND '.join(parts) + ')')
+    if not predicates:
+        return samples
+    try:
+        query = ('{app=' + json.dumps(rule['target']) + '} | unpack_json result_prefix "sdk."'
+                 ' | filter sdk.event:="task.failure.detail" AND (' + ' OR '.join(predicates) + ')'
+                 ' | stats by (sdk.trace_id, sdk.span_id, sdk.attributes.messaging.message.id) '
+                 'json_values(_time, _msg, task, alloc, stream) limit 1 as details | limit 4')
+        params = urllib.parse.urlencode({'query': query, 'start': now-rule['logQuery']['windowSeconds']-60,
+                                        'end': now, 'timeout': '1s'})
+        request = urllib.request.Request('http://127.0.0.1:9428/select/logsql/query', data=params.encode())
+        with urllib.request.urlopen(request, timeout=QUERY_TIMEOUT) as response:
+            raw = response.read(262145)
+        if len(raw) > 262144:
+            return samples
+        groups = [json.loads(line) for line in raw.splitlines() if line]
+        if len(groups) > 3:
+            return samples
+        for group in groups:
+            for row in json.loads(group.get('details') or '[]')[:1]:
+                detail = execution_sample(json.loads(row) if isinstance(row, str) else row)
+                for index, sample in enumerate(samples):
+                    if (all(detail.get(k) == sample.get(k) for k in ('trace_id', 'span_id'))
+                            and (not sample.get('task_id') or detail.get('task_id') == sample['task_id'])
+                            and all(not sample.get(k) or detail.get(k) == sample[k] for k in ('task', 'alloc'))):
+                        samples[index] = detail
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        pass
+    return samples
 
 
 class Engine:

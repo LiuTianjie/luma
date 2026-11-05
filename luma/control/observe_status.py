@@ -92,13 +92,7 @@ def application_queries(app: str, params: dict) -> dict[str, str]:
             labels.append(label + "=" + json.dumps(q[key]))
     scope = ",".join(labels)
     window = str(q["until"]-q["since"]) + "s"
-    native = f'task_executions_total{{{scope},task_framework="taskiq"}}'
-    spans = f'task_span_calls_total{{{scope},task_framework="celery",luma_observe_span_metrics="service"}}'
-    total = f'(sum(increase({native}[{window}])) or vector(0)) + (sum(increase({spans}[{window}])) or vector(0))'
-    failures = f'(sum(increase({native[:-1]},outcome="failed"}}[{window}])) or vector(0)) + (sum(increase({spans[:-1]},task_outcome="failed"}}[{window}])) or vector(0))'
-    # A zero ratio exists only after observing an actual execution denominator.
     return {
-        "task_error_ratio": f'({failures}) / (({total}) > 0)',
         "task_p95": f'max(histogram_quantile(0.95,sum by(le)(rate(task_duration_seconds_bucket{{{scope}}}[{window}]))))',
         "active": f'sum(task_active{{{scope}}} and on(service_name,service_instance_id) (time()-worker_heartbeat_seconds{{{scope}}} < 120))',
         "heartbeat_age": f'max(time()-worker_heartbeat_seconds{{{scope}}})',
@@ -115,9 +109,11 @@ def handle_observe_status(token: str, params: dict) -> dict:
         raise LumaError("invalid application")
     now = int(time.time())
     queries = application_queries(app, params) if app else PLATFORM_QUERIES
-    from .observe_tasks import _number
+    from .observe_tasks import _number, task_query
+    from .task_results import signal as task_result_signal
     at = min(_number(params, "until", now, 1, 2**40), now)
-    key = json.dumps([app, queries, at // 15], sort_keys=True)
+    task_scope = task_query({**params, "app": app}) if app else None
+    key = json.dumps([app, queries, task_scope, at // 15], sort_keys=True)
     with _CACHE_LOCK:
         cached = _CACHE.get(key)
         if cached and now-cached[0] < 15:
@@ -126,7 +122,10 @@ def handle_observe_status(token: str, params: dict) -> dict:
         return {"state": "rate_limited", "signals": {}, "sampledAt": now}
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            completion = pool.submit(task_result_signal, task_scope) if app else None
             signals = dict(pool.map(lambda item: (item[0], metric(item[1], at)), queries.items()))
+            if completion:
+                signals["task_error_ratio"] = completion.result()
         coverage = read_json("http://127.0.0.1:9108/coverage")
         if coverage["state"] == "ok":
             rows = coverage.pop("body")
@@ -139,7 +138,7 @@ def handle_observe_status(token: str, params: dict) -> dict:
         if app:
             try:
                 from .alerting import dispatch
-                overview = dispatch("GET", "overview", query={"app": app})
+                overview = dispatch("GET", "overview", query={"app": app, "since": task_scope["since"], "until": task_scope["until"]})
                 control_alerts = {"state": "ok", **overview}
             except (sqlite3.Error, LumaError, OSError):
                 control_alerts = {"state": "unreachable"}

@@ -6,7 +6,8 @@ export function observationStatusFixture(params: URLSearchParams) {
   return {
     controlAlerts: {
       state: "ok",
-      counts: { firing: 1, pending: 0 },
+      counts: { firing: 0, pending: 0 },
+      window: { fired: 1, resolved: 1, since: now - 3600, until: now },
       enabledRules: 4,
     },
     state: "ok",
@@ -29,7 +30,7 @@ export function observationStatusFixture(params: URLSearchParams) {
       freshness: signal(25),
       http_error_ratio: signal(0.003),
       http_p95: signal(0.128),
-      task_error_ratio: signal(0.007),
+      task_error_ratio: { ...signal(1 / 132), counts: { failed: 1, succeeded: 131, retrying: 3, cancelled: 0, unknown: 0 }, source: "completion_logs" },
       task_p95: signal(1.82),
       active: signal(3),
       heartbeat_age: signal(25),

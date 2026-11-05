@@ -146,7 +146,12 @@ async def _read(view: str, query: dict) -> dict:
     async with ScopedClient(endpoints, apps=[query["app"]],
                              resource_attributes={"luma.stack": query["app"]}) as client:
         if view == "overview":
-            sources = await client.metrics(metric_queries(query["app"], query["hours"], query))
+            from .task_results import read as completion_results
+            metrics = metric_queries(query["app"], query["hours"], query)
+            metrics.pop("executions", None)
+            metrics.pop("span_executions", None)
+            sources, completions = await asyncio.gather(client.metrics(metrics), run_in_threadpool(completion_results, query))
+            sources["executions"] = completions
             return {"state": "ok", "sources": sources, "sampled_at": query["until"]}
         if view == "events":
             attributes = {"task.queue": query["queue"]} if query["queue"] else {}

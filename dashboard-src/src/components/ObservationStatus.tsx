@@ -31,6 +31,8 @@ type Signal = {
   state: string;
   value?: number | null;
   durationMs?: number;
+  counts?: Record<string, number>;
+  source?: string;
   items?: { labels: Record<string, string>; value: number }[];
 };
 type Snapshot = {
@@ -41,6 +43,7 @@ type Snapshot = {
     state: string;
     counts?: { firing: number; pending: number };
     enabledRules?: number;
+    window?: { fired: number; resolved: number; since: number; until: number };
   };
   signals: Record<string, Signal>;
   coverage?: {
@@ -82,7 +85,7 @@ const APPLICATION: Definition[] = [
     "%",
   ],
   ["http_p95", "应用 HTTP P95 · 5 分钟", "App HTTP P95 · 5m", "s"],
-  ["task_error_ratio", "任务执行失败比例", "Failed task attempts", "%"],
+  ["task_error_ratio", "任务失败比例（含业务失败）", "Failed attempts (including business failures)", "%", 0],
   ["task_p95", "Taskiq 耗时 P95", "Taskiq duration P95", "s"],
   ["active", "活跃任务", "Active tasks", ""],
   ["heartbeat_age", "最旧进程心跳距采样", "Oldest heartbeat age", "s", 120],
@@ -231,8 +234,8 @@ export function ObservationStatus({
   const readAt = snapshot ? `${zh ? "查询于" : "Read at"} ${formatDateTime(snapshot.sampledAt, lang)}${snapshot.historical ? (zh ? " · 固定历史窗口" : " · Fixed historical window") : ""}` : "";
   const footnote = app
     ? zh
-      ? "0 仅表示已观测值为零；没有采样不代表正常。HTTP 为整个应用的入口汇总，任务统计遵循时间与身份筛选。活跃任务和投递次数不能推算 Broker 积压。"
-      : "Zero is an observed value; missing samples do not establish health. HTTP covers the application's ingress; task metrics use the selected time and identity. Active tasks and publications do not measure broker backlog."
+      ? "失败比例按窗口内任务结束日志去重统计：业务失败或执行失败计一次失败，分母为成功加失败；重试中、取消和未知单列。没有记录不代表正常。HTTP 为应用入口汇总；日志覆盖为当前状态。"
+      : "The ratio uses deduplicated completion logs: business or execution failure counts once; the denominator is successes plus failures. Retrying, cancelled and unknown are separate. Missing records do not establish health. HTTP covers app ingress; log coverage is current."
     : zh
       ? "0 仅表示已观测值为零；没有采样不代表正常。日志覆盖显示当前状态，不能据此证明历史数据完整。"
       : "Zero is an observed value; missing samples do not establish health. Current log coverage does not establish historical completeness.";
@@ -254,14 +257,16 @@ export function ObservationStatus({
               <span className={cn("truncate text-xl/7 font-semibold tracking-[-0.01em] tabular-nums", missing && "text-subtle-foreground", warning && "text-warning-foreground")}>
                 {valueText(signal, unit)}
               </span>
-              <span className={cn("truncate text-xs", warning ? "text-warning-foreground" : broken ? "text-destructive-foreground" : "text-muted-foreground")}>
-                {warning
+              <span className={cn(key === "task_error_ratio" ? "text-xs whitespace-normal" : "truncate text-xs", warning ? "text-warning-foreground" : broken ? "text-destructive-foreground" : "text-muted-foreground")}>
+                {key === "task_error_ratio" && signal?.counts
+                  ? (zh ? `失败 ${signal.counts.failed} / 成功 ${signal.counts.succeeded} · 重试 ${signal.counts.retrying} · 取消 ${signal.counts.cancelled} · 未知 ${signal.counts.unknown}` : `Failed ${signal.counts.failed} / succeeded ${signal.counts.succeeded} · retrying ${signal.counts.retrying} · cancelled ${signal.counts.cancelled} · unknown ${signal.counts.unknown}`)
+                  : warning
                   ? zh ? `超过阈值 ${valueText({ state: "ok", value: threshold }, unit)}` : `Above ${valueText({ state: "ok", value: threshold }, unit)}`
                   : broken || missing || itemStale
                     ? stateLabel(signal, zh, itemStale)
                     : threshold != null
                       ? zh ? `阈值 ${valueText({ state: "ok", value: threshold }, unit)}` : `Threshold ${valueText({ state: "ok", value: threshold }, unit)}`
-                      : zh ? "最新采样" : "Latest sample"}
+                      : snapshot?.historical ? (zh ? "窗口结束时采样" : "Sample at window end") : zh ? "最新采样" : "Latest sample"}
               </span>
             </dd>
           </div>
@@ -365,8 +370,8 @@ export function ObservationStatus({
                   {snapshot.controlAlerts?.state === "ok"
                     ? snapshot.controlAlerts.enabledRules
                       ? zh
-                        ? `当前 ${snapshot.controlAlerts.counts?.firing || 0} 条 Control 告警触发，${snapshot.controlAlerts.counts?.pending || 0} 条等待持续条件`
-                        : `${snapshot.controlAlerts.counts?.firing || 0} Control alerts firing, ${snapshot.controlAlerts.counts?.pending || 0} pending`
+                        ? `所选窗口内 ${snapshot.controlAlerts.window?.fired ?? "—"} 条告警曾触发；当前 ${snapshot.controlAlerts.counts?.firing ?? "—"} 条触发，${snapshot.controlAlerts.counts?.pending ?? "—"} 条等待持续条件（应用全部服务）`
+                        : `${snapshot.controlAlerts.window?.fired ?? "—"} alerts fired in the selected window; ${snapshot.controlAlerts.counts?.firing ?? "—"} currently firing, ${snapshot.controlAlerts.counts?.pending ?? "—"} pending (all app services)`
                       : zh ? "尚未配置应用告警规则" : "No application alert rules configured"
                     : zh ? "应用告警状态未知" : "Application alert state unknown"}
                 </span>
