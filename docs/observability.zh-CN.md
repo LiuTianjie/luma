@@ -238,7 +238,7 @@ Luma 自动申请 tenant access token，仅缓存于进程内存，并在过期�
 
 官方参考：[Prometheus 抓取配置](https://prometheus.io/docs/prometheus/latest/configuration/configuration/)、[Traefik 指标](https://doc.traefik.io/traefik/observe/metrics/)、[Alertmanager 分组与静默](https://prometheus.io/docs/alerting/latest/alertmanager/)。
 
-### 采集断流与周期任务停滞
+### 采集断流与周期任务停滞 {#missing-telemetry-and-periodic-task-stalls}
 
 `observe.metrics_age` 监测共享 Collector 自监控样本的新鲜度，对象固定为 `metrics`。默认样本超过 120 秒并持续 180 秒触发，缺失数据策略应选 `alert`。Collector 停止、指标写入断流、存储查询失败或首次从未采集到样本都能触发；事件表示观测链路不可用，不能据此判断所有业务服务已经停止。此规则由 Control 评估，通知沿用 Control 渠道；Control 自身停止仍依赖外部监控。它验证共享指标链路，不代表覆盖每个应用的全部指标、日志和 Trace。
 
