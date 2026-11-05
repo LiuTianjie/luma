@@ -138,10 +138,10 @@ luma app restart <app> --mode task
 使用 `luma login` 保存的登录信息，在 macOS 或 Linux 的本地终端运行：
 
 ```bash
-luma node shell <节点名或节点ID>
-luma app shell <完整服务名>
-luma node shell <节点名> --transport direct
-luma node shell <节点名> --transport relay
+luma node shell <node-name-or-id>
+luma app shell <full-service-name>
+luma node shell <node-name> --transport direct
+luma node shell <node-name> --transport relay
 ```
 
 默认 `--transport auto`：Control 完成认证、节点选择和会话限额检查后，CLI 并行尝试节点地址，优先连接可达的节点 Agent；约 3 秒内无法建立直连时，经 Control 中转。连接后显示 `direct` 或 `relay`。`direct` 要求直连成功，失败就退出；`relay` 始终中转。旧 Control 或旧 Agent 自动使用中转。容器终端沿用网页端的运行状态和系统 stack 限制。
