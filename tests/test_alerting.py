@@ -99,6 +99,38 @@ class AlertingTest(unittest.TestCase):
         self.assertEqual(state['_taskAlerts'], {first['id']:350, second['id']:350})
         self.assertEqual(query.call_args.args[2], 'luma_stack')
 
+    def test_periodic_completion_rule_survives_series_loss_and_requires_observed_recovery(self):
+        config = {'service': 'worker', 'framework': 'celery', 'taskName': 'periodic.flush', 'windowSeconds': 120}
+        rule = self.rule(metric='app.task_completion_missing', target='tasks', threshold=0,
+                         forSeconds=30, noData='alert', taskQuery=config)
+        self.assertEqual(self.items('rules')[0]['taskQuery'], config)
+        for now, values in [(1000, {rule['id']: 0}), (1015, {rule['id']: 1}), (1030, {}), (1045, {})]:
+            alerting.tick({'_taskAlerts': values}, now=now)
+        incident = self.items('incidents')[0]
+        self.assertEqual((incident['status'], incident['noData']), ('firing', True))
+        alerting.tick({'_taskAlerts': {rule['id']: 0}}, now=1060)
+        self.assertEqual(self.items('incidents')[0]['status'], 'resolved')
+        alerting.save_rule({**rule, 'taskQuery': {**config, 'taskName': 'another.task'}})
+        for update in ({'service': ''}, {'taskName': ''}, {'taskName': 'invalid\nname'},
+                       {'framework': 'unknown'}, {'windowSeconds': True}, {'windowSeconds': 59},
+                       {'windowSeconds': 3601}, {'windowSeconds': 120.5}):
+            with self.subTest(update=update), self.assertRaises(LumaError):
+                self.rule(metric='app.task_completion_missing', target='tasks', taskQuery={**config, **update})
+
+    def test_observe_pipeline_alerts_before_first_sample_and_after_query_outage(self):
+        rule = self.rule(metric='observe.metrics_age', target='metrics', threshold=120,
+                         forSeconds=30, noData='alert')
+        for now in (1000, 1015, 1030):
+            alerting.tick({}, now=now)
+        self.assertEqual((self.items('incidents')[0]['status'], self.items('incidents')[0]['noData']), ('firing', True))
+        alerting.tick({'_observeAlerts': {'observe.metrics_age': {'metrics': 10}}}, now=1045)
+        self.assertEqual(self.items('incidents')[0]['status'], 'resolved')
+        for now in (1060, 1075, 1090):
+            alerting.tick({'_observeAlerts': {'observe.metrics_age': {}}}, now=now)
+        self.assertEqual(self.items('incidents')[0]['status'], 'firing')
+        with self.assertRaises(LumaError):
+            alerting.save_rule({**rule, 'target': '*'})
+
     def test_container_memory_maximum_and_missing_replica_lifecycle(self):
         ch = self.channel()
         self.rule(name='内存预警', metric='app.memory', target='luma-observe', threshold=80,

@@ -154,7 +154,7 @@ async function charge(orderId) {
 
 首次无任务执行时，排队分位数可能没有数据；不得将未上报或采集故障当作零。资源告警不依赖 SDK，仍可单独使用。
 
-Control 提供四种任务 SDK 指标预设：`app.task_heartbeat_age`、`app.task_queue_wait_p95`、`app.task_telemetry_dropped` 和 `app.task_tracking_overflow`。在规则页选择单个应用，并按需填写心跳表中的 OTel `service_name`；心跳规则必须指定预期持续运行的服务。每条规则在 `taskQuery.service` 保存服务范围，与部署服务名可能不同。每集群最多 20 条任务指标规则，查询在 SQLite 事务外执行，并复用相同范围的查询。
+Control 提供任务 SDK 指标预设：`app.task_heartbeat_age`、`app.task_queue_wait_p95`、`app.task_telemetry_dropped` 、`app.task_tracking_overflow` 和 `app.task_completion_missing`。在规则页选择单个应用，并按需填写心跳表中的 OTel `service_name`；心跳规则必须指定预期持续运行的服务。每条规则在 `taskQuery.service` 保存服务范围，与部署服务名可能不同。每集群最多 20 条任务指标规则，查询在 SQLite 事务外执行，并复用相同范围的查询。
 
 - 心跳取指定服务所有进程中的最新值，默认超过 120 秒持续 180 秒；推荐 `noData: alert`，使所有序列消失也能触发。心跳缺失可能来自服务或采集链路，不能直接判定业务进程死亡。服务退役时停用对应规则。
 - 排队 P95 按服务、队列分别计算近 15 分钟已消费任务，再取最大值；每组至少 20 次样本。观测到的低流量不触发延迟告警，完全缺失采样不会补零。它不代表实际队列积压或尚未消费任务的等待时间。
@@ -237,3 +237,11 @@ Luma 自动申请 tenant access token，仅缓存于进程内存，并在过期�
 请求率、状态码和延迟需要启用 Traefik metrics，并将 router/service 标签关联到 Luma 应用身份。私网工作节点和绕过 Traefik 的路由需要单独埋点。检测 Control 故障时，采集器或独立探针应运行在 Control 进程及其故障域之外。
 
 官方参考：[Prometheus 抓取配置](https://prometheus.io/docs/prometheus/latest/configuration/configuration/)、[Traefik 指标](https://doc.traefik.io/traefik/observe/metrics/)、[Alertmanager 分组与静默](https://prometheus.io/docs/alerting/latest/alertmanager/)。
+
+### 采集断流与周期任务停滞
+
+`observe.metrics_age` 监测共享 Collector 自监控样本的新鲜度，对象固定为 `metrics`。默认样本超过 120 秒并持续 180 秒触发，缺失数据策略应选 `alert`。Collector 停止、指标写入断流、存储查询失败或首次从未采集到样本都能触发；事件表示观测链路不可用，不能据此判断所有业务服务已经停止。此规则由 Control 评估，通知沿用 Control 渠道；Control 自身停止仍依赖外部监控。它验证共享指标链路，不代表覆盖每个应用的全部指标、日志和 Trace。
+
+`app.task_completion_missing` 适用于预期持续完成的周期任务，必须配置单个应用及 `taskQuery.service`、`framework`（`taskiq` 或 `celery`）、`taskName`。`windowSeconds` 为 60–3600 秒整数，默认 300 秒，应大于正常调度间隔加执行耗时。Taskiq 使用原生执行计数；Celery 使用 Collector 的任务完成 Span 计数，需已有 `luma.observe.span_metrics=service` 接入。窗口内有完成记录时为 0、没有完成记录时为 1；使用阈值 0，并选择采样缺失时告警。它统计所有已结束尝试，包括失败；失败结果由现有异常规则处理。按每条序列先算增量，适配进程更换和计数器重置。
+
+按需触发、可能长时间空闲的任务应使用服务心跳告警。固定周期任务完成观测中断可能来自调度、任务阻塞或采集故障，需结合心跳与链路告警定位。停止服务或调整周期时同步停用或修改对应规则，恢复通知只代表重新收到符合条件的观测。

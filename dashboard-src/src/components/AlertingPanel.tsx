@@ -17,6 +17,8 @@ import {
   mergeAlertPages,
   newAlertRule,
   isTaskMetric,
+  alertsOnMissingData,
+  requiresTaskService,
   postAlerting,
   ruleRequest,
 } from "../alertingApi";
@@ -207,6 +209,7 @@ export function formatAlertObservedValue(
   if (
     metric === "node.offline" ||
     metric === "task.queue_age" ||
+    metric === "observe.metrics_age" ||
     metric === "app.task_heartbeat_age" ||
     metric === "app.task_queue_wait_p95" ||
     metric === "app.http_p95"
@@ -1378,8 +1381,8 @@ export function AlertingPanel({
                               ...rule,
                               metric: value,
                               logQuery: { windowSeconds: 300, ...rule.logQuery },
-                              target: (value === "app.log_matches" || isTaskMetric(value)) && rule.target === "*" ? "" : rule.target,
-                              noData: value === "app.task_heartbeat_age" ? "alert" : "keep",
+                              target: value === "observe.metrics_age" ? "metrics" : rule.metric === "observe.metrics_age" ? newAlertRule(preset).target : (value === "app.log_matches" || isTaskMetric(value)) && rule.target === "*" ? "" : rule.target,
+                              noData: alertsOnMissingData(value) ? "alert" : "keep",
                               threshold: preset?.threshold ?? rule.threshold,
                               forSeconds: preset?.forSeconds ?? rule.forSeconds,
                             });
@@ -1406,8 +1409,8 @@ export function AlertingPanel({
                             : "Target ID (* for all)"}
                         </FieldLabel>
                         <Combobox
-                          disabled={busy}
-                          items={[...((rule.metric === "app.log_matches" || isTaskMetric(rule.metric)) ? [] : ["*"]), ...new Set(targetNames)]}
+                          disabled={busy || rule.metric === "observe.metrics_age"}
+                          items={rule.metric === "observe.metrics_age" ? ["metrics"] : [...((rule.metric === "app.log_matches" || isTaskMetric(rule.metric)) ? [] : ["*"]), ...new Set(targetNames)]}
                           value={rule.target}
                           inputValue={rule.target}
                           onInputValueChange={(value) =>
@@ -1441,7 +1444,7 @@ export function AlertingPanel({
                           </ComboboxContent>
                         </Combobox>
                         <FieldDescription>
-                          {isTaskMetric(rule.metric) ? (zh ? "选择单个应用；下方可限定 OTel 服务名。" : "Select one application; optionally scope by OTel service below.") : rule.metric === "app.log_matches" ? (zh ? "选择一个应用，下方可进一步限定服务名。" : "Select one application; optionally narrow by task below.") : rule.metric.startsWith("node.")
+                          {rule.metric === "observe.metrics_age" ? (zh ? "监测共享 Collector 到指标存储的采样新鲜度；查询不可用时按缺失数据策略处理。" : "Monitor sample freshness from the shared Collector to metric storage; unavailable reads follow the no-data policy.") : isTaskMetric(rule.metric) ? (zh ? "选择单个应用；下方可限定 OTel 服务名。" : "Select one application; optionally scope by OTel service below.") : rule.metric === "app.log_matches" ? (zh ? "选择一个应用，下方可进一步限定服务名。" : "Select one application; optionally narrow by task below.") : rule.metric.startsWith("node.")
                             ? zh
                               ? "使用节点 ID，可从节点页面复制。"
                               : "Use a node ID from the Fleet page."
@@ -1458,14 +1461,35 @@ export function AlertingPanel({
                       {isTaskMetric(rule.metric) && <Field data-disabled={busy} data-invalid={Boolean(fieldErrors["alert-task-service"])}>
                         <FieldLabel htmlFor="alert-task-service">{zh ? "OTel 服务名" : "OTel service name"}</FieldLabel>
                         <Input id="alert-task-service" aria-invalid={Boolean(fieldErrors["alert-task-service"])} disabled={busy} maxLength={160}
-                          required={rule.metric === "app.task_heartbeat_age"}
+                          required={requiresTaskService(rule.metric)}
                           value={rule.taskQuery?.service || ""}
-                          onChange={(event) => setRule({ ...rule, taskQuery: { service: event.target.value } })} />
-                        <FieldDescription>{rule.metric === "app.task_heartbeat_age"
+                          onChange={(event) => setRule({ ...rule, taskQuery: { ...rule.taskQuery, service: event.target.value } })} />
+                        <FieldDescription>{requiresTaskService(rule.metric)
                           ? (zh ? "填写该应用预期持续运行的 OTel 服务名。按服务聚合所有进程；停止监测服务时停用对应规则。缺失可能是服务或上报通道异常。" : "Enter the expected continuously running OTel service. All processes are aggregated; disable this rule when retiring the service. Missing data can mean a service or telemetry outage.")
                           : (zh ? "可留空以覆盖整个应用。使用心跳表中的 service_name，与 Compose 服务名可能不同。" : "Optional: leave empty for the application. Use service_name from the heartbeat table; it may differ from the Compose name.")}</FieldDescription>
                         <FieldError>{fieldErrors["alert-task-service"]}</FieldError>
                       </Field>}
+                      {rule.metric === "app.task_completion_missing" && <>
+                        <Field data-disabled={busy}>
+                          <FieldLabel htmlFor="alert-task-framework">{zh ? "任务框架" : "Task framework"}</FieldLabel>
+                          <SelectControl id="alert-task-framework" disabled={busy} value={rule.taskQuery?.framework || ""}
+                            options={[{ value: "taskiq", label: "Taskiq" }, { value: "celery", label: "Celery" }]}
+                            onChange={(value) => setRule({ ...rule, taskQuery: { service: "", ...rule.taskQuery, framework: value as "taskiq" | "celery" } })} />
+                        </Field>
+                        <Field data-disabled={busy}>
+                          <FieldLabel htmlFor="alert-task-name">{zh ? "预期周期任务名" : "Expected periodic task"}</FieldLabel>
+                          <Input id="alert-task-name" required disabled={busy} maxLength={256} value={rule.taskQuery?.taskName || ""}
+                            onChange={(event) => setRule({ ...rule, taskQuery: { service: "", ...rule.taskQuery, taskName: event.target.value } })} />
+                          <FieldDescription>{zh ? "选择应持续完成的固定周期任务。统计窗口需大于正常调度间隔和执行耗时；按需触发的任务可能正常空闲。" : "Choose a regularly completing task. The window must exceed its normal schedule interval and runtime; on-demand tasks can legitimately be idle."}</FieldDescription>
+                        </Field>
+                        <Field data-disabled={busy}>
+                          <FieldLabel htmlFor="alert-task-window">{zh ? "完成记录统计窗口（秒）" : "Completion window (seconds)"}</FieldLabel>
+                          <Input id="alert-task-window" type="number" min={60} max={3600} step={1} required disabled={busy}
+                            value={rule.taskQuery?.windowSeconds ?? 300}
+                            onChange={(event) => setRule({ ...rule, taskQuery: { service: "", ...rule.taskQuery, windowSeconds: Number(event.target.value) } })} />
+                          <FieldDescription>{zh ? "窗口内有完成记录时为 0，没有完成记录时为 1；阈值设为 0。采样完全缺失时应触发告警。" : "The value is 0 with completions and 1 without; use threshold 0. Configure missing samples to alert."}</FieldDescription>
+                        </Field>
+                      </>}
                       {rule.metric === "app.log_matches" && <LogRuleFields rule={rule} onChange={setRule} token={token} zh={zh} disabled={busy} />}
                       <Field
                         data-disabled={busy}

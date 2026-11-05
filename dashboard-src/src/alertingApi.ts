@@ -3,7 +3,7 @@ import { apiGet, apiPost, authHeaders, readJson } from "./apiClient";
 export type AlertTab = "alerts" | "rules" | "notifications";
 export type AlertPreset = { metric: string; name: string; description: string; threshold: number; forSeconds: number; unit: string };
 export type LogQuery = { windowSeconds: number; task?: string; contains?: string; exclude?: string; field?: string; equals?: string };
-export type AlertRule = { taskQuery?: { service: string }; logQuery?: LogQuery; id: string; name: string; metric: string; target: string; threshold: number; forSeconds: number; severity: "warning" | "critical"; channelIds: string[]; enabled: boolean; repeatSeconds: number; noData: "keep" | "alert"; silencedUntil?: number };
+export type AlertRule = { taskQuery?: { service: string; taskName?: string; framework?: "taskiq" | "celery"; windowSeconds?: number }; logQuery?: LogQuery; id: string; name: string; metric: string; target: string; threshold: number; forSeconds: number; severity: "warning" | "critical"; channelIds: string[]; enabled: boolean; repeatSeconds: number; noData: "keep" | "alert"; silencedUntil?: number };
 export type AlertChannel = { id: string; name: string; type: "feishu"; enabled: boolean; appId: string; chatId: string; appSecretConfigured: boolean };
 export type BuildAlertDetails = { buildId?: string; service?: string; image?: string; images?: Record<string, string>; imageRepository?: string; buildNode?: string; repository?: string; ref?: string; stage?: string; reason?: string; createdAt?: number; failedAt?: number; completedAt?: number };
 export type LogAlertSample = { _msg: string; _time?: string; task?: string; alloc?: string; stream?: string };
@@ -25,10 +25,13 @@ export async function deleteAlerting(path: string, token: string, signal?: Abort
   return readJson(await fetch(`${base}/${path}`, { method: "DELETE", headers: authHeaders(token), signal }));
 }
 
-export const isTaskMetric = (metric: string) => ["app.task_heartbeat_age", "app.task_queue_wait_p95", "app.task_telemetry_dropped", "app.task_tracking_overflow"].includes(metric);
+export const isTaskMetric = (metric: string) => ["app.task_heartbeat_age", "app.task_queue_wait_p95", "app.task_telemetry_dropped", "app.task_tracking_overflow", "app.task_completion_missing"].includes(metric);
+
+export const alertsOnMissingData = (metric: string) => ["app.task_heartbeat_age", "app.task_completion_missing", "observe.metrics_age"].includes(metric);
+export const requiresTaskService = (metric: string) => ["app.task_heartbeat_age", "app.task_completion_missing"].includes(metric);
 
 export function newAlertRule(preset?: AlertPreset): AlertRule {
-  return { id: "", name: preset?.name || "", metric: preset?.metric || "", target: (preset?.metric === "app.log_matches" || isTaskMetric(preset?.metric || "")) ? "" : "*", ...(preset?.metric === "app.log_matches" ? { logQuery: { windowSeconds: 300 } } : {}), threshold: preset?.threshold ?? 90, forSeconds: preset?.forSeconds ?? 300, severity: "warning", channelIds: [], enabled: true, repeatSeconds: 3600, noData: preset?.metric === "app.task_heartbeat_age" ? "alert" : "keep" };
+  return { id: "", name: preset?.name || "", metric: preset?.metric || "", target: preset?.metric === "observe.metrics_age" ? "metrics" : (preset?.metric === "app.log_matches" || isTaskMetric(preset?.metric || "")) ? "" : "*", ...(preset?.metric === "app.log_matches" ? { logQuery: { windowSeconds: 300 } } : {}), threshold: preset?.threshold ?? 90, forSeconds: preset?.forSeconds ?? 300, severity: "warning", channelIds: [], enabled: true, repeatSeconds: 3600, noData: alertsOnMissingData(preset?.metric || "") ? "alert" : "keep" };
 }
 export function ruleRequest(rule: AlertRule) {
   if (!rule.name.trim() || !rule.metric || !rule.target.trim()) throw new Error("Name, metric and target are required / 请填写名称、指标和对象");
@@ -44,7 +47,15 @@ export function ruleRequest(rule: AlertRule) {
     if (rule.target.trim() === "*") throw new Error("Task metric rules require one application / 任务指标规则请选择单个应用");
     const service = rule.taskQuery?.service || "";
     if (service.length > 160 || /[\x00-\x1f]/.test(service)) throw new Error("Invalid OTel service name / OTel 服务名无效");
-    if (rule.metric === "app.task_heartbeat_age" && !service.trim()) throw new Error("Heartbeat rules require the expected OTel service / 心跳规则必须填写预期 OTel 服务名");
+    if (requiresTaskService(rule.metric) && !service.trim()) throw new Error("Heartbeat rules require the expected OTel service / 心跳规则必须填写预期 OTel 服务名");
+  }
+  if (rule.metric === "observe.metrics_age" && rule.target !== "metrics") throw new Error("Observe metrics rules use the fixed target metrics / 观测链路规则对象固定为 metrics");
+  if (rule.metric === "app.task_completion_missing") {
+    const q = rule.taskQuery;
+    if (!q?.taskName?.trim() || q.taskName.length > 256 || /[\x00-\x1f]/.test(q.taskName)) throw new Error("Enter the expected periodic task name / 请填写预期周期任务名");
+    if (!["taskiq", "celery"].includes(q.framework || "")) throw new Error("Select a task framework / 请选择任务框架");
+    const window = q.windowSeconds ?? 300;
+    if (!Number.isInteger(window) || window < 60 || window > 3600) throw new Error("Use a 60–3600 second observation window / 统计窗口须为 60–3600 秒整数");
   }
   return { ...rule, id: rule.id || undefined, name: rule.name.trim(), target: rule.target.trim(), channelIds: [...new Set(rule.channelIds)] };
 }
@@ -75,6 +86,8 @@ export function localizeAlertPreset(preset: AlertPreset, zh: boolean): AlertPres
     "task.queue_age": ["Task queue delay", "Age of the oldest queued task, grouped by agent / builder / build"],
     "build.failed": ["Latest build failed", "A new failed build starts a separate incident; a later success resolves it, or it can be closed manually"],
     "app.log_matches": ["Service log matches", "Matching log lines for one application / task, aggregated by observe"],
+    "observe.metrics_age": ["Observe metrics pipeline missing", "Age of the Collector self-monitoring sample; covers collection, metric writes and reads. Missing data means observability is unavailable"],
+    "app.task_completion_missing": ["Periodic task completion missing", "An expected periodic task has no completions in the observation window; use heartbeats to investigate scheduling, execution and telemetry"],
     "app.task_heartbeat_age": ["Task service heartbeat missing", "Age of the newest process heartbeat for the selected OTel service; missing data may indicate a telemetry outage"],
     "app.task_queue_wait_p95": ["Task queue wait p95", "Largest consumed-task queue p95 over 15 minutes, with at least 20 samples per service and queue"],
     "app.task_telemetry_dropped": ["Task SDK telemetry dropped", "SDK lifecycle log drops and instrumentation errors over 15 minutes; excludes other OTLP/Collector drops"],

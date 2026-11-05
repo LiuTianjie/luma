@@ -203,6 +203,8 @@ def feishu_alert_card(
         if task_details:
             if task_details.get('service'):
                 elements.append({'tag':'div','text':{'tag':'plain_text','content':'OTel 服务：' + _plain(task_details['service'], 160)}})
+            if task_details.get('taskName'):
+                elements.append({'tag':'div','text':{'tag':'plain_text','content':f'周期任务：{_plain(task_details["taskName"], 256)}\n统计窗口：{_plain(task_details.get("windowSeconds"))} 秒'}})
             note = ('指标条件已恢复到阈值以内；不代表历史失败任务已补偿成功。' if kind == 'resolved' else _plain(task_details.get('description'), 300))
             elements.append({'tag':'div','text':{'tag':'plain_text','content':note}})
         subtitle_parts = [p for p in (f"集群 `{_plain(cluster, 80)}`" if cluster else '', f"事件 #{incident_id}" if incident_id not in ('', None) else '') if p]

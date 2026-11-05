@@ -138,3 +138,17 @@ test("task heartbeat editing requires an explicit application and expected servi
   const saved = ruleRequest({...rule, target: "tasks", taskQuery: {service: "worker"}});
   assert.deepEqual(saved.taskQuery, {service: "worker"});
 });
+
+test("expected signal rules retain explicit scope and enable missing-data alerts", () => {
+  const pipeline = newAlertRule({ metric: "observe.metrics_age", name: "Pipeline" });
+  assert.equal(ruleRequest(pipeline).target, "metrics");
+  assert.equal(pipeline.noData, "alert");
+  assert.throws(() => ruleRequest({ ...pipeline, target: "*" }));
+  const completion = { ...newAlertRule({ metric: "app.task_completion_missing", name: "Periodic task" }), target: "tasks",
+    taskQuery: { service: "worker", framework: "celery", taskName: "periodic.flush", windowSeconds: 120 } };
+  assert.deepEqual(ruleRequest(completion).taskQuery, completion.taskQuery);
+  assert.equal(completion.noData, "alert");
+  for (const change of [{ service: "" }, { taskName: "" }, { taskName: "bad\nname" }, { framework: "invalid" }, { windowSeconds: 59 }, { windowSeconds: 3601 }, { windowSeconds: 120.5 }]) {
+    assert.throws(() => ruleRequest({ ...completion, taskQuery: { ...completion.taskQuery, ...change } }));
+  }
+});

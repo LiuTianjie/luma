@@ -9,6 +9,7 @@ PRESETS = [
     dict(metric='app.task_queue_wait_p95', name='任务排队等待 P95', description='近 15 分钟已消费任务排队 P95；每个服务/队列至少 20 次样本，取最大值', threshold=300, forSeconds=300, unit='seconds'),
     dict(metric='app.task_telemetry_dropped', name='任务 SDK 遥测丢弃', description='近 15 分钟 SDK 生命周期日志丢弃及埋点异常增量；不含全部 OTLP/Collector 丢弃', threshold=10, forSeconds=0, unit='count'),
     dict(metric='app.task_tracking_overflow', name='活跃任务跟踪溢出', description='有新鲜心跳的进程中，当前未被 SDK 跟踪的活跃任务数', threshold=0, forSeconds=300, unit='count'),
+    dict(metric='app.task_completion_missing', name='周期任务完成观测中断', description='预期按固定周期执行的任务在统计窗口内没有完成记录；需结合心跳排查调度、执行和采集链路', threshold=0, forSeconds=180, unit='count'),
 ]
 METRICS = {p['metric'] for p in PRESETS}
 MAX_RULES = 20
@@ -23,8 +24,19 @@ def normalize(metric, target, config):
     if not isinstance(service, str) or len(service) > 160 or any(ord(c) < 32 for c in service):
         raise ValueError('Invalid taskQuery.service')
     service = service.strip()
-    if metric == 'app.task_heartbeat_age' and not service:
+    if metric in ('app.task_heartbeat_age', 'app.task_completion_missing') and not service:
         raise ValueError('Heartbeat rules require the expected OTel service name')
+    if metric == 'app.task_completion_missing':
+        name = config.get('taskName', '')
+        framework = config.get('framework', '')
+        window = config.get('windowSeconds', 300)
+        if not isinstance(name, str) or not name.strip() or len(name) > 256 or any(ord(c) < 32 for c in name):
+            raise ValueError('Completion rules require an expected periodic task name')
+        if framework not in ('taskiq', 'celery'):
+            raise ValueError('taskQuery.framework must be taskiq or celery')
+        if isinstance(window, bool) or not isinstance(window, int) or not 60 <= window <= 3600:
+            raise ValueError('taskQuery.windowSeconds must be an integer from 60 to 3600')
+        return {'service': service, 'taskName': name.strip(), 'framework': framework, 'windowSeconds': window}
     return {'service': service}
 
 
@@ -33,6 +45,14 @@ def expression(metric, target, config):
     scope = 'luma_stack=' + json.dumps(target)
     if config['service']:
         scope += ',service_name=' + json.dumps(config['service'])
+    if metric == 'app.task_completion_missing':
+        scope += ',task_name=' + json.dumps(config['taskName']) + ',task_framework=' + json.dumps(config['framework'])
+        counter = 'task_executions_total' if config['framework'] == 'taskiq' else 'task_span_calls_total'
+        if config['framework'] == 'celery':
+            scope += ',luma_observe_span_metrics="service"'
+        # Sum per-series increases so process replacement and counter resets are
+        # handled independently. Missing series stay missing for noData policy.
+        return f'(sum by(luma_stack)(increase({counter}{{{scope}}}[{config["windowSeconds"]}s])) == bool 0)'
     heartbeat = f'worker_heartbeat_seconds{{{scope}}}'
     live = f'max by(luma_stack,service_name)({heartbeat} > time()-120)'
     if metric == 'app.task_heartbeat_age':

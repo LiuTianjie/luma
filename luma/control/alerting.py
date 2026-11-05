@@ -34,6 +34,7 @@ PRESETS = [
     dict(metric='app.http_5xx_ratio', name='应用 5xx 占比', description='公开 HTTP 5xx / 总请求，来自 luma-observe', threshold=0.05, forSeconds=300, unit='ratio'),
     dict(metric='app.nomad_not_running', name='应用无运行实例', description='应运行的应用持续没有运行实例，来自 luma-observe', threshold=0, forSeconds=300, unit='count'),
     dict(metric='app.nomad_failed', name='应用失败 alloc', description='Nomad 仍想跑但失败的 alloc 数，来自 luma-observe', threshold=0, forSeconds=120, unit='count'),
+    dict(metric='observe.metrics_age', name='观测指标链路中断', description='Collector 自监控样本距今；覆盖采集、指标写入及查询链路，缺失表示观测不可用', threshold=120, forSeconds=180, unit='seconds'),
 ]
 PRESETS += task_alerts.PRESETS
 METRICS = {p['metric'] for p in PRESETS}
@@ -42,6 +43,7 @@ OBSERVE_ALERTS = {
     'app.http_5xx_ratio': ('luma_app:http_errors:rate5m / clamp_min(luma_app:http_requests:rate5m, 0.001)', 'app'),
     'app.nomad_not_running': ('max by (app) ((luma_observe_job_running == bool 0) * luma_observe_job_active)', 'app'),
     'app.nomad_failed': ('sum by (app) (luma_observe_job_failed)', 'app'),
+    'observe.metrics_age': ('label_replace(clamp_min(time()-max(timestamp(otelcol_process_uptime_seconds_total)),0),"app","metrics","","")', 'app'),
 }
 
 
@@ -168,6 +170,8 @@ def save_rule(body, *, now=None):
         if not isinstance(data.get('enabled'), bool):
             raise LumaError('enabled must be a boolean')
         target = _text(data.get('target'),'target',300)
+        if metric == 'observe.metrics_age' and target != 'metrics':
+            raise LumaError('Observe metrics rules require the fixed target metrics')
         log_query = {}
         if metric == 'app.log_matches':
             try:
@@ -184,7 +188,8 @@ def save_rule(body, *, now=None):
                 task_query = task_alerts.normalize(metric, target, data.get('taskQuery', {}))
             except ValueError as exc:
                 raise LumaError(str(exc)) from exc
-            count = conn.execute("SELECT count(*) FROM alert_rules WHERE metric IN (?,?,?,?) AND id!=?", (*sorted(task_alerts.METRICS), identifier)).fetchone()[0]
+            placeholders = ','.join('?' for _ in task_alerts.METRICS)
+            count = conn.execute(f"SELECT count(*) FROM alert_rules WHERE metric IN ({placeholders}) AND id!=?", (*sorted(task_alerts.METRICS), identifier)).fetchone()[0]
             if count >= task_alerts.MAX_RULES:
                 raise LumaError('At most 20 task metric alert rules are supported')
         data['taskQuery'] = task_query
@@ -275,7 +280,7 @@ def _notify(conn,rule,incident,kind,now,cluster):
     if rule['metric'] == 'app.memory':
         value += '' if incident['no_data'] else '%'
         threshold += '%'
-    elif rule['metric'] in ('app.task_heartbeat_age', 'app.task_queue_wait_p95'):
+    elif rule['metric'] in ('app.task_heartbeat_age', 'app.task_queue_wait_p95', 'observe.metrics_age'):
         value += '' if incident['no_data'] else ' 秒'
         threshold += ' 秒'
     fallback = f"Luma {label} · {rule['name']}\n集群：{cluster}\n对象：{incident['target']}\n级别：{rule['severity']}\n当前值：{value}；阈值：{threshold}\n事件编号：{incident['id']}\n请在 Dashboard → 可观测 → 告警中心查看。"
@@ -572,8 +577,9 @@ def load_evaluation_state(*, now=None):
         log_columns = {r[1] for r in conn.execute('PRAGMA table_info(alert_rules)')} if table else set()
         log_rules = [dict(id=r['id'], target=r['target'], logQuery=json.loads(r['log_query']))
                      for r in conn.execute("SELECT id,target,log_query FROM alert_rules WHERE enabled=1 AND metric='app.log_matches' LIMIT 20")] if 'log_query' in log_columns else []
+        placeholders = ','.join('?' for _ in task_alerts.METRICS)
         task_rules = [dict(id=r['id'], metric=r['metric'], target=r['target'], taskQuery=json.loads(r['task_query']))
-                      for r in conn.execute("SELECT id,metric,target,task_query FROM alert_rules WHERE enabled=1 AND metric IN (?,?,?,?) LIMIT 20", tuple(sorted(task_alerts.METRICS)))] if 'task_query' in log_columns else []
+                      for r in conn.execute(f"SELECT id,metric,target,task_query FROM alert_rules WHERE enabled=1 AND metric IN ({placeholders}) LIMIT 20", tuple(sorted(task_alerts.METRICS)))] if 'task_query' in log_columns else []
     from .log_alerts import samples
     result['_logAlerts'] = samples(log_rules, now)
     if 'app.memory' in result['_observeMetrics']:
