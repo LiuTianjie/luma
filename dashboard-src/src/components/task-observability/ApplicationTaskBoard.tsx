@@ -416,9 +416,10 @@ export function ApplicationTaskBoard({
                         key={`events:${filtersKey}`}
                         {...props}
                         query={query}
-                        onTask={(id, until) =>
+                        onTask={(id, until, taskName) =>
                           change({
                             observe_task_id: id,
+                            observe_task_name: taskName,
                             observe_outcome: "all",
                             observe_until: until,
                           })

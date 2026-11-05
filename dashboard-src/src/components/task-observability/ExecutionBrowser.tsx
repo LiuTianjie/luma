@@ -30,7 +30,7 @@ export function ExecutionBrowser({
   onTrace,
 }: BoardProps & {
   query: Query;
-  onTask: (taskId: string, until?: number) => void;
+  onTask: (taskId: string, until?: number, taskName?: string) => void;
   onTrace: (traceId: string, until?: number) => void;
 }) {
   const [page, setPage] = useState<{
@@ -61,7 +61,8 @@ export function ExecutionBrowser({
   }, [data, page.offset]);
   const groups = executions(loaded);
   const group = query.task_id
-    ? groups.find((item) => item.id === query.task_id)
+    ? groups.find((item) => item.latest.taskId === query.task_id &&
+        (!query.task_name || item.latest.taskName === query.task_name))
     : undefined;
   const attempt =
     group?.attempts.find((item) => item.id === selectedAttempt) ||
@@ -135,7 +136,7 @@ export function ExecutionBrowser({
                     className="observe-task-link"
                     onClick={() =>
                       item.latest.taskId
-                        ? onTask(item.latest.taskId, data?.until)
+                        ? onTask(item.latest.taskId, data?.until, item.latest.taskName)
                         : onTrace(item.latest.traceId, data?.until)
                     }
                   >
@@ -168,7 +169,7 @@ export function ExecutionBrowser({
           <header className="observe-detail-heading">
             <div>
               <h3>{attempt.taskName}</h3>
-              <code>{group.id}</code>
+              <code>{attempt.taskId || attempt.traceId}</code>
             </div>
             <div className="observe-actions">
               <Outcome value={group.outcome} zh={zh} />
@@ -372,7 +373,7 @@ export function ExecutionBrowser({
           </ol>
         </details>
       )}
-      {!loading && data?.state === "ok" && !groups.length && (
+      {!loading && data?.state === "ok" && (query.task_id ? !group : !groups.length) && (
         <ReadState
           zh={zh}
           empty={

@@ -20,6 +20,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install validation dependencies
+        run: python -m pip install -e ".[test]"
       - name: Verify immutable release and shared contracts
         run: |
           version="$(python scripts/bump-version.py --check)"
