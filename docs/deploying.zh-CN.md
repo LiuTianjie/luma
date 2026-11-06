@@ -178,7 +178,12 @@ CLI 必须支持该参数，Control 必须声明 `required-build-capability-v1`�
 
 ### 构建记录与队列 {#build-runs-and-the-queue}
 
-导入和重试会进入按仓库、ref 和部署目标划分的持久队列：同一目标的新提交会取消更早的排队请求，而 `main` 和 `dev` 互不阻塞。忙碌的构建节点只会让自己的请求排队，不会影响其他构建节点。
+导入和重试会进入持久队列，分两个阶段执行：
+
+- **构建**：每次构建都推送自己的不可变镜像，所以构建不会等待同一应用的其他构建，只等一个空闲的兼容构建节点。不指定 `--build-node` 时，所有原生平台和 agent 能力都匹配的已声明构建节点组成一个池，谁先空闲谁领下一个构建。项目上次使用的构建节点保有 BuildKit 缓存，会先等它一小段时间（Control 上的 `LUMA_BUILD_AFFINITY_WAIT_SECONDS`，默认 20 秒），之后其他空闲节点才可以接手。构建池要求配置 `registryHost`，并且 `pushHost` 是所有构建节点都能访问的地址，不能是 `localhost`。`--build-node` 会固定使用一个构建节点。
+- **部署**：构建好的镜像要等同一应用（manifest 的 `name`）更早的请求，以及同一仓库、同一 ref 下还没构建完的更早请求都处理完，才会部署。在同一仓库、同一 ref 内，最新的提交生效：仍在等待的旧请求会被取消，已经在执行的部署不会被打断。`main` 和 `dev` 之间只排先后，不会互相取消。
+
+镜像推送完成后构建节点立即释放，下一个构建可以在上一个部署期间开始。`LUMA_BUILD_QUEUE_CONCURRENCY`（默认 4）限制 Control 上同时执行的构建阶段数量，部署阶段有单独的执行槽。
 
 ```bash
 luma build list --app api --status failed

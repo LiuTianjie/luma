@@ -202,9 +202,12 @@ class NativeBuildRoutingTests(unittest.TestCase):
         return {"kind": "service", "image": "100.64.0.70:5000/acme/app:aaaaaaa", "buildCapabilities": [PLAN, NATIVE],
                 "manifest": "name: app\nregion: render\nexposure: none\n"}
 
-    def execute(self, item):
+    def execute(self, item, *, drain=False):
+        """Run one queue stage, or with ``drain`` every stage that follows."""
         with patch.object(srv, "_run_node_agent_task", side_effect=self.task), patch.object(srv, "handle_deployment", return_value={"service": "app"}) as deploy:
             queue.execute(item)
+            while drain and (item := queue.claim()):
+                queue.execute(item)
         return deploy
 
     def test_arm_import_transfers_queue_and_pins_commit_without_leaking_secrets(self):
@@ -219,7 +222,7 @@ class NativeBuildRoutingTests(unittest.TestCase):
         self.assertNotIn("private-value", json.dumps(srv.handle_build_run_get(self.token, build_id)))
         queue.recover()
         second = queue.claim()
-        deploy = self.execute(second)
+        deploy = self.execute(second, drain=True)
         self.assertEqual([node for node, _ in self.calls], ["builder", "air3"])
         actual = self.calls[1][1]
         self.assertEqual(actual["ref"], COMMIT)
@@ -282,7 +285,7 @@ class NativeBuildRoutingTests(unittest.TestCase):
         run = load_state()["buildRuns"][build_id]
         self.assertEqual((run["status"], run["buildNode"]), ("running", "air3"))
         self.assertTrue(run["queueExecuting"])
-        self.execute(next_items[0])
+        self.execute(next_items[0], drain=True)
         self.assertEqual(load_state()["buildRuns"][build_id]["status"], "succeeded")
 
     def test_busy_default_uses_idle_planner_then_queues_amd_build_on_default(self):
@@ -299,7 +302,7 @@ class NativeBuildRoutingTests(unittest.TestCase):
         self.platforms = ["linux/amd64"]
         build_id = self.submit(buildNode="builder")
         self.execute(queue.claim())
-        self.execute(queue.claim())
+        self.execute(queue.claim(), drain=True)
         self.assertEqual(load_state()["buildRuns"][build_id]["status"], "succeeded")
         self.assertEqual([node for node, _ in self.calls], ["builder", "builder"])
 
@@ -315,7 +318,7 @@ class NativeBuildRoutingTests(unittest.TestCase):
     def test_compatible_arm_pin_stays_pinned(self):
         build_id = self.submit(buildNode="air3")
         self.execute(queue.claim())
-        self.execute(queue.claim())
+        self.execute(queue.claim(), drain=True)
         self.assertEqual(load_state()["buildRuns"][build_id]["status"], "succeeded")
         self.assertEqual([node for node, _ in self.calls], ["air3", "air3"])
 
@@ -323,7 +326,7 @@ class NativeBuildRoutingTests(unittest.TestCase):
         self.platforms = ["linux/amd64", "linux/arm64"]
         self.submit()
         self.execute(queue.claim())
-        self.execute(queue.claim())
+        self.execute(queue.claim(), drain=True)
         self.assertEqual([node for node, _ in self.calls], ["builder", "air3"])
         self.assertEqual(self.calls[1][1]["nativePlatform"], "linux/arm64")
         self.assertEqual(self.calls[1][1]["plannedPlatforms"], ["linux/amd64", "linux/arm64"])

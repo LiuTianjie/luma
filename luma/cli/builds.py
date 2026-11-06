@@ -118,8 +118,9 @@ def _wait_for_queued_build(args: argparse.Namespace, client: ControlClient, resu
                 message += f"; queue position {state[1] or 1}"
                 if state[2]:
                     message += f"; waiting for {state[2]}"
-                reasons = {"target": "same branch/target is still active", "builder": "builder is busy",
-                           "builder-offline": "builder is offline", "capacity": "Control execution slots are full"}
+                reasons = {"target": "an earlier request for the same application has not deployed yet",
+                           "builder": "builder is busy", "builder-offline": "builder is offline",
+                           "capacity": "Control execution slots are full", "deploy": "another deployment is running"}
                 if state[3] in reasons:
                     message += "; " + reasons[state[3]]
                 if state[4]:

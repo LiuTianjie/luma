@@ -64,7 +64,9 @@ class ControlRecoveryTests(unittest.TestCase):
         ), patch.object(server, "handle_deployment", return_value={"service": "app", "image": "registry/app:sha"}) as deploy, patch.object(
             database, "update_entity_metadata", side_effect=locked_once
         ), patch.object(database_errors.time, "sleep", side_effect=retry_wait):
-            result = server.handle_build_deploy("management", body, _queued_run_id=run)
+            staged = server.handle_build_deploy("management", body, _queued_run_id=run)
+            # The queued build hands its image back; deployment is its own stage.
+            result = server.handle_queued_repository_deploy("management", run, body, staged["requeueDeploy"])
         self.assertEqual(result["image"], "registry/app:sha")
         deploy.assert_called_once()
         self.assertEqual(len(attempts), 2)

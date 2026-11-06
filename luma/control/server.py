@@ -784,40 +784,112 @@ def _has_native_builder_choices(state: Dict[str, Any]) -> bool:
     }) > 1
 
 
-def _busy_build_nodes(state: Dict[str, Any]) -> set[str]:
+def _busy_build_nodes(state: Dict[str, Any], *, exclude_run: str = "") -> set[str]:
     from .build_queue import _builder_owners, _current_runs
 
-    return set(_builder_owners(state, _current_runs(state)))
+    # A queued run being executed reserves a builder for itself; that
+    # reservation must not make its own candidates look busy.
+    return {node for node, owner in _builder_owners(state, _current_runs(state)).items()
+            if not exclude_run or owner != exclude_run}
+
+
+BUILD_AFFINITY_LIMIT = 500
+
+
+def _build_affinity_seconds() -> int:
+    """How long pooled builds wait for the builder that holds their warm cache."""
+    try:
+        return max(int(os.environ.get("LUMA_BUILD_AFFINITY_WAIT_SECONDS", "20")), 0)
+    except ValueError as exc:
+        raise LumaError("LUMA_BUILD_AFFINITY_WAIT_SECONDS must be a non-negative integer") from exc
+
+
+def _build_affinity_node(state: Dict[str, Any], project_key: str) -> str:
+    affinity = state.get("buildAffinity") if isinstance(state.get("buildAffinity"), dict) else {}
+    entry = affinity.get(project_key) if project_key else None
+    return str(entry.get("node") or "") if isinstance(entry, dict) else ""
+
+
+def _remember_build_affinity(state: Dict[str, Any], project_key: str, node: str) -> None:
+    """Remember where a project last built, so its BuildKit cache is reused."""
+    if not project_key or not node:
+        return
+    affinity = state.get("buildAffinity") if isinstance(state.get("buildAffinity"), dict) else {}
+    affinity[project_key] = {"node": node, "at": int(time.time())}
+    if len(affinity) > BUILD_AFFINITY_LIMIT:
+        oldest = sorted(affinity, key=lambda key: int((affinity[key] or {}).get("at") or 0))
+        for key in oldest[:len(affinity) - BUILD_AFFINITY_LIMIT]:
+            affinity.pop(key, None)
+    state["buildAffinity"] = affinity
+
+
+def _build_pool_enabled(state: Dict[str, Any], body: Dict[str, Any]) -> bool:
+    """Pooling needs registry endpoints that every builder reaches identically."""
+    config = _build_config(state)
+    registry_host = str(body.get("registryHost") or config.get("registryHost") or "").strip()
+    push_host = str(body.get("pushHost") or config.get("pushHost") or "localhost:5000").strip()
+    push_hostname = urllib.parse.urlsplit("//" + push_host).hostname
+    return bool(registry_host) and push_hostname not in {"localhost", "127.0.0.1", "::1"}
+
+
+def _rank_build_candidates(
+    state: Dict[str, Any], records: list[Dict[str, Any]], *, project_key: str, prefer_idle: bool, exclude_run: str = ""
+) -> list[str]:
+    """Order builders best first: ready, then warm cache (or idle), then default.
+
+    Builds prefer the project's previous builder over an idle one: the lease
+    gives the warm builder a short head start before any idle candidate may
+    take the work. Planning only clones, so it prefers whatever is idle.
+    """
+    default = str(_build_config(state).get("defaultNode") or DEFAULT_BUILD_NODE_NAME)
+    warm = _build_affinity_node(state, project_key)
+    busy = _busy_build_nodes(state, exclude_run=exclude_run)
+
+    def rank(record: Dict[str, Any]) -> tuple:
+        name = str(record.get("name") or "")
+        ready = _node_agent_is_ready(record, required_capability="docker-build")
+        cache = (name != warm, name in busy) if not prefer_idle else (name in busy, name != warm)
+        return (not ready, *cache, name != default, name)
+
+    return [str(record.get("name")) for record in sorted(records, key=rank)]
+
+
+def _compatible_build_records(state: Dict[str, Any], required: list[str]) -> list[Dict[str, Any]]:
+    needed = set(["docker-build", *required])
+    return [record for record in _build_node_records(state, require_ready=False)
+            if needed.issubset((record.get("agent") or {}).get("capabilities") or [])]
+
+
+def _native_build_candidates(
+    state: Dict[str, Any], platforms: list[str], *, fallback: str, required: list[str], project_key: str = "",
+    exclude_run: str = "",
+) -> tuple[list[str], bool]:
+    # Any ARM output makes a native ARM builder mandatory, even when the same
+    # request also builds AMD64 images. Only non-ARM builds may use a fallback.
+    arm_platform = native_arm_build_platform(platforms)
+    if not arm_platform and len(platforms) != 1:
+        return [fallback], False
+    native_platform = arm_platform or platforms[0]
+    native = [record for record in _build_node_records(state, require_ready=False)
+              if (native_arm_build_platform([_container_platform_for_node(record)]) or _container_platform_for_node(record)) == native_platform]
+    if not native:
+        if arm_platform:
+            raise LumaError(f"no declared native builder for {arm_platform}; register an ARM builder such as air3; ARM emulation is disabled")
+        return [fallback], False
+    needed = set(["docker-build", *required])
+    compatible = [record for record in native if needed.issubset((record.get("agent") or {}).get("capabilities") or [])]
+    if not compatible:
+        raise LumaError(f"native builders for {native_platform} need an agent update supporting {', '.join(required)}")
+    # Retain offline native builders in the plan: the durable queue waits for
+    # one to return instead of silently falling back to architecture emulation.
+    return _rank_build_candidates(state, compatible, project_key=project_key, prefer_idle=False, exclude_run=exclude_run), True
 
 
 def _select_native_build_node(
     state: Dict[str, Any], platforms: list[str], *, fallback: str, required: list[str]
 ) -> tuple[str, bool]:
-    # Any ARM output makes a native ARM builder mandatory, even when the same
-    # request also builds AMD64 images. Only non-ARM builds may use a fallback.
-    arm_platform = native_arm_build_platform(platforms)
-    if not arm_platform and len(platforms) != 1:
-        return fallback, False
-    native_platform = arm_platform or platforms[0]
-    candidates = [record for record in _build_node_records(state, require_ready=False)
-                  if (native_arm_build_platform([_container_platform_for_node(record)]) or _container_platform_for_node(record)) == native_platform]
-    if not candidates:
-        if arm_platform:
-            raise LumaError(f"no declared native builder for {arm_platform}; register an ARM builder such as air3; ARM emulation is disabled")
-        return fallback, False
-    compatible = [record for record in candidates
-                  if set(["docker-build", *required]).issubset((record.get("agent") or {}).get("capabilities") or [])]
-    if not compatible:
-        raise LumaError(f"native builders for {native_platform} need an agent update supporting {', '.join(required)}")
-    # Retain an offline native builder in the plan: the durable queue waits for
-    # it to return instead of silently falling back to architecture emulation.
-    busy = _busy_build_nodes(state)
-    compatible.sort(key=lambda record: (
-        not _node_agent_is_ready(record, required_capability="docker-build"),
-        str(record.get("name")) in busy,
-        str(record.get("name")) != fallback,
-    ))
-    return str(compatible[0]["name"]), True
+    names, native = _native_build_candidates(state, platforms, fallback=fallback, required=required)
+    return names[0], native
 
 
 def _checked_repository_build_plan(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -989,6 +1061,7 @@ def _create_build_run(
     expires_at: int = 0,
     retry_of: str = "",
     queued_work: Dict[str, Any] | None = None,
+    build_candidates: list[str] | None = None,
 ) -> str:
     run_id = f"build-{secrets.token_hex(8)}"
     now = int(time.time())
@@ -1022,6 +1095,8 @@ def _create_build_run(
         if ident:
             runs[run_id]["queueKey"] = ident
             runs[run_id]["queueIdentityVersion"] = 2
+        if build_candidates and len(build_candidates) > 1:
+            runs[run_id]["buildCandidates"] = list(build_candidates)
         if queued_work is not None:
             from .build_queue import attach
             attach(state, runs[run_id], "remote", queued_work)
@@ -1493,13 +1568,24 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
             # Reserve its single slot transactionally, including handoff time.
             active_values = getattr(tasks, "active_values", None)
             running = active_values({"running"}) if callable(active_values) else tasks.values()
-            if any(isinstance(task, dict) and task.get("nodeName") == canonical_node_name
-                   and task.get("status") == "running" for task in running):
+            running_nodes = {str(task.get("nodeName") or "") for task in running
+                             if isinstance(task, dict) and task.get("status") == "running"}
+            if canonical_node_name in running_nodes:
                 return None, changed
+            owners: Dict[str, str] | None = None
             for task_id, task in sorted(_agent_task_items_with_status(tasks, {"queued"})):
-                if not isinstance(task, dict):
+                if not isinstance(task, dict) or task.get("status") != "queued":
                     continue
-                if task.get("nodeName") != canonical_node_name or task.get("status") != "queued":
+                pooled = not task.get("nodeName") and isinstance(task.get("poolCandidates"), list)
+                if pooled:
+                    # A shared builder pool: the first eligible candidate to
+                    # poll binds the task to itself in this transaction.
+                    if owners is None:
+                        from .build_queue import _builder_owners, _current_runs
+                        owners = _builder_owners(state, _current_runs(state))
+                    if not _pool_lease_eligible(state, task, canonical_node_name, running_nodes, now, owners):
+                        continue
+                elif task.get("nodeName") != canonical_node_name:
                     continue
                 required_capabilities_raw = task.get("requiredCapabilitiesAny")
                 required_capabilities = tuple(
@@ -1518,9 +1604,21 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                         _require_builder_capabilities(record, canonical_node_name, required)
                         task.setdefault("payload", {})["requireBuildCapabilities"] = required
                     except LumaError as exc:
+                        if pooled:
+                            continue  # Another candidate may still run it.
                         task.update(status="failed", message=str(exc), result={}, completedAt=now, updatedAt=now)
                         changed = True
                         continue
+                if pooled:
+                    by_node = task.pop("payloadByNode", None)
+                    node_payload = by_node.get(canonical_node_name) if isinstance(by_node, dict) else None
+                    task.setdefault("payload", {}).update(node_payload if isinstance(node_payload, dict) else {})
+                    task["nodeName"] = canonical_node_name
+                    run = _build_runs(state).get(str(task.get("buildRunId") or "")) if task.get("buildRunId") else None
+                    if isinstance(run, dict):
+                        run["buildNode"] = canonical_node_name
+                        run.setdefault("request", {})["buildNode"] = canonical_node_name
+                        run["updatedAt"] = now
                 task["status"] = "running"
                 task["leasedAt"] = now
                 task["updatedAt"] = now
@@ -1816,16 +1914,135 @@ def _run_node_agent_task(
     progress: Callable[[dict[str, str]], None] | None = None,
     build_run_id: str = "",
     progress_batch: Callable[[list[dict[str, str]]], None] | None = None,
+    pool: list[str] | None = None,
+    payload_by_node: Dict[str, Dict[str, Any]] | None = None,
+    affinity_seconds: int = 0,
 ) -> Dict[str, Any]:
+    """Run one agent task; with several ``pool`` candidates, any may lease it.
+
+    A pooled result carries ``agentNode``: the builder that actually ran it.
+    """
+    names = [str(name) for name in (pool or []) if str(name or "").strip()]
+    if len(names) > 1:
+        task_id = _queue_pooled_agent_task(
+            state, names, action, payload, payload_by_node=payload_by_node or {},
+            required_capability=required_capability, build_run_id=build_run_id,
+            affinity_seconds=affinity_seconds,
+        )
+        step = _agent_task_progress_step_name(action)
+
+        def leased(node: str) -> None:
+            _emit_progress(progress, {"name": step, "status": "progress", "message": f"Leased by builder {node}"})
+
+        result = _wait_node_agent_task(task_id, "builder pool " + ",".join(names), action, timeout=timeout,
+                                       progress=progress, progress_batch=progress_batch, on_leased=leased)
+        from .state import load_entity
+        task = load_entity("agentTasks", task_id)
+        return {**result, "agentNode": str((task or {}).get("nodeName") or "")}
+    node = names[0] if names else node_name
+    if payload_by_node and node in payload_by_node:
+        payload = {**payload, **payload_by_node[node]}
     task_id = _queue_node_agent_task(
         state,
-        node_name,
+        node,
         action,
         payload,
         required_capability=required_capability,
         build_run_id=build_run_id,
     )
-    return _wait_node_agent_task(task_id, node_name, action, timeout=timeout, progress=progress, progress_batch=progress_batch)
+    return _wait_node_agent_task(task_id, node, action, timeout=timeout, progress=progress, progress_batch=progress_batch)
+
+
+def _queue_pooled_agent_task(
+    state: Dict[str, Any],
+    candidates: list[str],
+    action: str,
+    payload: Dict[str, Any],
+    *,
+    payload_by_node: Dict[str, Dict[str, Any]],
+    required_capability: str | None,
+    build_run_id: str = "",
+    affinity_seconds: int = 0,
+) -> str:
+    """Queue work for the first compatible candidate agent that leases it.
+
+    The task names no node until a lease binds it. Node-specific payload
+    fields (egress proxy, registry host) are resolved per candidate here and
+    merged at lease time; credentials are still injected only at lease.
+    """
+    if action == "build-image":
+        payload = {**payload, "requireBuildCapabilities": sorted(set(
+            normalize_build_capabilities(payload.get("requireBuildCapabilities")) + [NATIVE_ARM_BUILD_CAPABILITY]
+        ))}
+    task_id = f"task-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
+
+    def mutate(current: Dict[str, Any]) -> None:
+        nodes = current.get("nodes") if isinstance(current.get("nodes"), dict) else {}
+        ready = [name for name in candidates
+                 if isinstance(record := _node_record_for_name(nodes, name), dict)
+                 and _node_agent_is_ready(record, required_capability=required_capability)]
+        if not ready:
+            raise LumaError(f"no node agent is ready in builder pool: {', '.join(candidates)}")
+        now = int(time.time())
+        task = {
+            "id": task_id,
+            "nodeName": "",
+            "poolCandidates": list(candidates),
+            "poolAffinitySeconds": max(int(affinity_seconds), 0),
+            "payloadByNode": {name: dict(payload_by_node.get(name) or {}) for name in candidates},
+            "action": action,
+            "payload": dict(payload),
+            "progress": [],
+            "progressOffset": 0,
+            "status": "queued",
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        if required_capability:
+            task["requiredCapability"] = required_capability
+        if build_run_id:
+            run = _build_runs(current).get(build_run_id)
+            if not isinstance(run, dict):
+                raise LumaError(f"build run not found: {build_run_id}")
+            if run.get("cancelRequestedAt") or str(run.get("status") or "") in {"canceling", "canceled", "failed"}:
+                raise LumaError("build canceled")
+            task["buildRunId"] = build_run_id
+            run["agentTaskId"] = task_id
+            run["buildCandidates"] = list(candidates)
+            run["updatedAt"] = now
+        _agent_tasks(current)[task_id] = task
+
+    _mutate_control_state(mutate)
+    return task_id
+
+
+def _pool_lease_eligible(
+    state: Dict[str, Any], task: Dict[str, Any], node: str, running_nodes: set[str], now: int,
+    owners: Dict[str, str] | None = None,
+) -> bool:
+    """Let a better-ranked idle candidate take pooled work first.
+
+    A builder that queue admission promised to other work never takes pooled
+    work. Rank order encodes cache affinity: a lower-ranked agent may lease
+    once every better candidate is offline or busy, or after the affinity
+    window, which also bounds the wait on a ready agent that does not poll.
+    """
+    pool = [str(name) for name in task.get("poolCandidates") or []]
+    if node not in pool:
+        return False
+    owner = (owners or {}).get(node)
+    if owner and owner not in {str(task.get("buildRunId") or ""), str(task.get("id") or "")}:
+        return False
+    rank = pool.index(node)
+    if rank == 0 or now - int(task.get("createdAt") or now) >= int(task.get("poolAffinitySeconds") or 0):
+        return True
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    capability = str(task.get("requiredCapability") or "") or None
+    for better in pool[:rank]:
+        record = _node_record_for_name(nodes, better)
+        if isinstance(record, dict) and _node_agent_is_ready(record, required_capability=capability) and better not in running_nodes:
+            return False
+    return True
 
 
 def _queue_node_agent_task(
@@ -1897,11 +2114,13 @@ def _wait_node_agent_task(
     timeout: int | None = None,
     progress: Callable[[dict[str, str]], None] | None = None,
     progress_batch: Callable[[list[dict[str, str]]], None] | None = None,
+    on_leased: Callable[[str], None] | None = None,
 ) -> Dict[str, Any]:
     wait_started = time.time()
     execution_timeout = float(timeout or AGENT_TASK_TIMEOUT_SECONDS)
     queue_deadline = _agent_task_wait_deadline({}, wait_started, execution_timeout)
     cursor = 0
+    lease_reported = on_leased is None
     while True:
         from .state import load_entity
         task = load_entity("agentTasks", task_id)
@@ -1911,6 +2130,9 @@ def _wait_node_agent_task(
             raise LumaError(f"node agent task receipt missing on {node_name}: {task_id}")
         status = "missing"
         if isinstance(task, dict):
+            if not lease_reported and task.get("nodeName") and task.get("status") != "queued":
+                lease_reported = True
+                on_leased(str(task["nodeName"]))
             task_progress, cursor = _agent_task_progress_since(task, cursor)
             events = []
             for event in task_progress:
@@ -3979,6 +4201,35 @@ def handle_local_build_fail(token: str, build_id: str, body: Dict[str, Any]) -> 
     return {**handle_build_run_get(token, build_id), "replayed": False}
 
 
+def _build_run_progress(
+    build_run_id: str, progress: Callable[[dict[str, str]], None] | None
+) -> tuple[Callable[[dict[str, str]], None], Callable[[list[dict[str, str]]], None]]:
+    def run_progress(event: dict[str, str]) -> None:
+        if event.get("status") == "start" and _build_run_cancel_requested(build_run_id):
+            raise LumaError("build canceled")
+        _append_build_run_event(build_run_id, event)
+        _emit_progress(progress, event)
+
+    def run_progress_batch(events: list[dict[str, str]]) -> None:
+        append_build_run_events(build_run_id, events, message_limit=BUILD_RUN_MESSAGE_LIMIT)
+        for event in events:
+            _emit_progress(progress, event)
+
+    return run_progress, run_progress_batch
+
+
+def _ready_build_candidates(state: Dict[str, Any], names: list[str], required: list[str]) -> list[str]:
+    """Keep declared, ready builders that support ``required``, in rank order."""
+    allowed = {str(record.get("name") or "") for record in _build_node_records(state, require_ready=True)}
+    ready = []
+    for name in names:
+        record = _node_record_for_name(state.get("nodes") or {}, name)
+        if name in allowed and isinstance(record, dict) and all(
+                _node_agent_is_ready(record, required_capability=cap) for cap in required):
+            ready.append(name)
+    return ready
+
+
 def handle_build_deploy(
     token: str,
     body: Dict[str, Any],
@@ -3988,6 +4239,12 @@ def handle_build_deploy(
     _queued_run_id: str = "",
     _build_plan: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    """Build a repository image and deploy it.
+
+    Queued work runs one stage per call and hands the next stage back to the
+    durable queue: ``requeueBuild`` after planning, ``requeueDeploy`` after the
+    image is pushed. Unqueued (legacy) requests still run all stages inline.
+    """
     state = load_state()
     require_token(state, token, token_type="deploy")
     _reject_control_maintenance(state)
@@ -4004,16 +4261,47 @@ def handle_build_deploy(
     selection_mode = str(body.get("buildNodeMode") or ("pinned" if body.get("buildNode") else "auto"))
     if selection_mode not in {"auto", "pinned"}:
         raise LumaError("buildNodeMode must be auto or pinned")
+    repo = _image_repo_from_repo_url(repo_url)
+    default_node = str(build_config.get("defaultNode") or DEFAULT_BUILD_NODE_NAME)
+    fallback_manifest = str(body.get("manifest") or "").strip()
+    requested_build_capabilities = repository_build_requirements(body.get("requireBuildCapabilities"), fallback_manifest=bool(fallback_manifest))
+    # This is Control policy, not a user workflow option. Older clients and
+    # explicit pins must not be able to dispatch ARM work to emulating agents.
+    required_build_capabilities = sorted(set(requested_build_capabilities + [NATIVE_ARM_BUILD_CAPABILITY]))
+    pooled = selection_mode == "auto" and _build_pool_enabled(state, body)
     needs_plan = _build_plan is None and _has_native_builder_choices(state)
-    initial_node = str((_build_plan or {}).get("node") or body.get("buildNode") or build_config.get("defaultNode") or DEFAULT_BUILD_NODE_NAME).strip()
+    initial_node = str((_build_plan or {}).get("node") or body.get("buildNode") or default_node).strip()
+    # Candidates for this call's agent task, best first. One name binds the
+    # task to that builder; several form a pool that any of them may lease.
+    pool: list[str] = []
     if needs_plan:
         ready = _build_node_records(state)
-        planners = [record["name"] for record in ready if _node_agent_is_ready(record, required_capability=REPOSITORY_BUILD_PLAN_CAPABILITY)]
+        planners = [record for record in ready if _node_agent_is_ready(record, required_capability=REPOSITORY_BUILD_PLAN_CAPABILITY)]
         if not planners:
             raise LumaError(f"automatic native builder selection requires a ready builder with {REPOSITORY_BUILD_PLAN_CAPABILITY}; update the builder node agent")
-        if not _queued_run_id and selection_mode == "auto":
-            busy = _busy_build_nodes(state)
-            initial_node = str(min(planners, key=lambda name: (name in busy, name != initial_node)))
+        if selection_mode == "auto":
+            ranked = _rank_build_candidates(state, planners, project_key=repo, prefer_idle=True, exclude_run=_queued_run_id)
+            if pooled:
+                pool = ranked
+                initial_node = ranked[0]
+            elif not _queued_run_id:
+                initial_node = ranked[0]
+    elif _build_plan is not None:
+        planned = [str(name) for name in _build_plan.get("candidates") or [] if str(name)] or [initial_node]
+        pool = _ready_build_candidates(state, planned, ["docker-build", *required_build_capabilities, REPOSITORY_BUILD_PLAN_CAPABILITY]) or planned[:1]
+        initial_node = pool[0]
+    elif pooled:
+        # Without a plan the image platform is resolved on the builder, so only
+        # builders sharing the default builder's engine platform are equivalent.
+        default_record = _node_record_for_name(state.get("nodes") or {}, default_node) or {}
+        engine = _container_platform_for_node(default_record)
+        compatible = [record for record in _compatible_build_records(state, required_build_capabilities)
+                      if engine and _container_platform_for_node(record) == engine]
+        # Offline candidates stay in the pool: admission skips them, and one
+        # that returns may take queued work.
+        pool = _rank_build_candidates(state, compatible, project_key=repo, prefer_idle=False, exclude_run=_queued_run_id)
+        ready_pool = _ready_build_candidates(state, pool, ["docker-build", *required_build_capabilities])
+        initial_node = (ready_pool or pool or [initial_node])[0]
     build_node = _require_build_node(
         state,
         initial_node,
@@ -4027,12 +4315,7 @@ def handle_build_deploy(
         )
         if str(body.get("manifest") or "").strip():
             raise LumaError("composeSidecar cannot be combined with manifest")
-    fallback_manifest = str(body.get("manifest") or "").strip()
     fallback_inputs = _repository_fallback_build_inputs(fallback_manifest, region=str(body.get("region") or "")) if fallback_manifest else {}
-    requested_build_capabilities = repository_build_requirements(body.get("requireBuildCapabilities"), fallback_manifest=bool(fallback_manifest))
-    # This is Control policy, not a user workflow option. Older clients and
-    # explicit pins must not be able to dispatch ARM work to emulating agents.
-    required_build_capabilities = sorted(set(requested_build_capabilities + [NATIVE_ARM_BUILD_CAPABILITY]))
     _require_builder_capabilities(
         _node_record_for_name(state.get("nodes") or {}, build_node) or {}, build_node, required_build_capabilities
     )
@@ -4041,13 +4324,16 @@ def handle_build_deploy(
     registry_host = str(body.get("registryHost") or "").strip()
     if not registry_host:
         registry_host = str(build_config.get("registryHost") or "").strip() or f"{_nomad_route_host_for_node(state, build_node)}:5000"
-    repo = _image_repo_from_repo_url(repo_url)
 
     # git clone and BuildKit run on the build node. Preserve the distinction
     # between a missing proxy (auto policy) and an explicitly empty proxy/direct
     # mode; `body.get("proxy") or auto` would incorrectly erase that intent.
     config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
     proxy = _build_proxy_for_request(config, state, build_node, body)
+
+    def per_node(names: list[str]) -> Dict[str, Dict[str, Any]]:
+        # Egress differs per builder region; resolve it for every candidate.
+        return {name: {"proxy": _build_proxy_for_request(config, state, name, body)} for name in names} if len(names) > 1 else {}
 
     # gitToken and registryAuth are injected at lease time (see
     # _agent_task_lease_payload) so they are never persisted in agentTasks state.
@@ -4099,22 +4385,13 @@ def handle_build_deploy(
             project_key=repo,
             retry_of=retry_of,
             queued_work=run_body if body.get("queue") is True else None,
+            build_candidates=pool,
         )
         if body.get("queue") is True:
             return {"queued": True, "buildRunId": build_run_id,
                     **handle_build_run_get(token, build_run_id)}
     git_source = _git_source_from_build_body(run_body, repo_url=repo_url, build_node=build_node, build_run_id=build_run_id)
-
-    def run_progress(event: dict[str, str]) -> None:
-        if event.get("status") == "start" and _build_run_cancel_requested(build_run_id):
-            raise LumaError("build canceled")
-        _append_build_run_event(build_run_id, event)
-        _emit_progress(progress, event)
-
-    def run_progress_batch(events: list[dict[str, str]]) -> None:
-        append_build_run_events(build_run_id, events, message_limit=BUILD_RUN_MESSAGE_LIMIT)
-        for event in events:
-            _emit_progress(progress, event)
+    run_progress, run_progress_batch = _build_run_progress(build_run_id, progress)
 
     try:
         # Publish the new identity before work starts, so streaming clients can
@@ -4133,43 +4410,54 @@ def handle_build_deploy(
                     timeout=min(int(body.get("buildTimeout") or 7200), 600) + 120,
                     required_capability=REPOSITORY_BUILD_PLAN_CAPABILITY,
                     progress=run_progress, build_run_id=build_run_id, progress_batch=run_progress_batch,
+                    pool=pool, payload_by_node=per_node(pool),
                 ), progress=run_progress,
             )
             if _build_run_cancel_requested(build_run_id):
                 raise LumaError("build canceled")
+            planning_node = str(plan_result.pop("agentNode", "") or build_node)
             _build_plan = _checked_repository_build_plan(plan_result)
             state = load_state()
             arm_platform = native_arm_build_platform(_build_plan["platforms"])
             if selection_mode == "pinned":
-                selected_node = build_node
-                record = _node_record_for_name(state.get("nodes") or {}, selected_node) or {}
+                selected = [build_node]
+                record = _node_record_for_name(state.get("nodes") or {}, build_node) or {}
                 engine = _container_platform_for_node(record)
                 engine = native_arm_build_platform([engine]) or engine
                 if arm_platform and engine != arm_platform:
-                    raise LumaError(f"ARM build requires a native {arm_platform} builder; pinned builder {selected_node} reports {engine or 'unknown'}; omit --build-node or select an ARM builder")
+                    raise LumaError(f"ARM build requires a native {arm_platform} builder; pinned builder {build_node} reports {engine or 'unknown'}; omit --build-node or select an ARM builder")
                 native = engine in _build_plan["platforms"] or bool(arm_platform)
             else:
-                selected_node, native = _select_native_build_node(
+                selected, native = _native_build_candidates(
                     state, _build_plan["platforms"],
-                    fallback=str(_build_config(state).get("defaultNode") or DEFAULT_BUILD_NODE_NAME),
+                    fallback=default_node,
                     required=planning_requirements,
+                    project_key=repo,
+                    exclude_run=build_run_id,
                 )
-            _build_plan.update(node=selected_node, native=native, planningNode=build_node,
+                if not pooled:
+                    selected = selected[:1]
+            _build_plan.update(node=selected[0], candidates=selected, native=native, planningNode=planning_node,
                                nativePlatform=arm_platform or (_build_plan["platforms"][0] if native else ""))
             run_progress({"name": "Select builder", "status": "ok", "message":
-                          f"{','.join(_build_plan['platforms']) or 'no build'} -> {selected_node}"
+                          f"{','.join(_build_plan['platforms']) or 'no build'} -> {', '.join(selected)}"
                           + (" (native)" if native else " (default Buildx)")})
             if _queued_run_id:
                 # The queue owner transfers its reservation atomically only
                 # after this completed planning task has released the agent.
                 return {"requeueBuild": _build_plan}
+            planned = [str(name) for name in selected]
+            pool = _ready_build_candidates(state, planned, ["docker-build", *planning_requirements]) or planned[:1]
+            build_node = pool[0]
 
         if _build_plan is not None:
-            build_node = _require_build_node(state, str(_build_plan["node"]), purpose="planned repository build")
             planned_requirements = sorted(set(required_build_capabilities + [REPOSITORY_BUILD_PLAN_CAPABILITY]))
+            pool = [name for name in pool if name == build_node or name in _ready_build_candidates(
+                state, [name], ["docker-build", *planned_requirements])]
+            build_node = _require_build_node(state, pool[0] if pool else build_node, purpose="planned repository build")
             _require_builder_capabilities(_node_record_for_name(state.get("nodes") or {}, build_node) or {}, build_node, planned_requirements)
             push_hostname = urllib.parse.urlsplit("//" + str(build_payload["pushHost"])).hostname
-            if build_node != _build_plan.get("planningNode") and push_hostname in {"localhost", "127.0.0.1", "::1"}:
+            if (len(pool) > 1 or build_node != _build_plan.get("planningNode")) and push_hostname in {"localhost", "127.0.0.1", "::1"}:
                 raise LumaError("native builder routing requires a mesh-reachable build.pushHost; localhost refers to each builder separately")
             build_payload.update(
                 ref=_build_plan["commit"], expectedCommit=_build_plan["commit"],
@@ -4178,8 +4466,6 @@ def handle_build_deploy(
             )
             if _build_plan.get("native"):
                 build_payload["nativePlatform"] = _build_plan.get("nativePlatform") or native_arm_build_platform(_build_plan["platforms"]) or _build_plan["platforms"][0]
-            run_body["buildNode"] = build_node
-            git_source = _git_source_from_build_body(run_body, repo_url=repo_url, build_node=build_node, build_run_id=build_run_id)
 
             def record_plan(current: Dict[str, Any]) -> None:
                 run = _build_runs(current).get(build_run_id)
@@ -4201,20 +4487,21 @@ def handle_build_deploy(
                 progress=run_progress,
                 build_run_id=build_run_id,
                 progress_batch=run_progress_batch,
+                pool=pool,
+                payload_by_node=per_node(pool),
+                affinity_seconds=_build_affinity_seconds(),
             ),
             progress=run_progress,
         )
+        build_node = str(build_result.pop("agentNode", "") or build_node)
         if _build_run_cancel_requested(build_run_id):
             raise LumaError("build canceled")
         require_build_result_capabilities(build_result, required_build_capabilities, owner="Builder")
         if _build_plan is not None:
             require_build_result_capabilities(build_result, [REPOSITORY_BUILD_PLAN_CAPABILITY], owner="Builder")
-        built_image = str(build_result.get("image") or "").strip()
-        built_images = build_result.get("images") if isinstance(build_result.get("images"), dict) else {}
-        if not built_image and not built_images:
+        if not str(build_result.get("image") or "").strip() and not (
+                build_result.get("images") if isinstance(build_result.get("images"), dict) else {}):
             raise LumaError("build did not return an image reference")
-        repo_manifest = str(build_result.get("manifest") or "").strip()
-        repo_compose_content = str(build_result.get("composeContent") or "").strip()
         if compose_sidecar and (
             str(build_result.get("kind") or "") != "compose"
             or str(build_result.get("composeSidecar") or "") != compose_sidecar
@@ -4222,101 +4509,27 @@ def handle_build_deploy(
             raise LumaError(
                 "builder did not honor the selected composeSidecar; update the builder node agent"
             )
-
-        if fallback_manifest and not repo_manifest and build_result.get("fallbackManifestUsed") is not True:
+        if fallback_manifest and not str(build_result.get("manifest") or "").strip() and build_result.get("fallbackManifestUsed") is not True:
             raise LumaError("builder did not confirm the fallback manifest build inputs; refusing to deploy")
-        # The supplied manifest is a fallback, matching Builder discovery and
-        # the CLI contract. Never build a repository recipe then deploy a
-        # different caller-supplied manifest.
-        manifest_text = repo_manifest or fallback_manifest
-        if not manifest_text:
+        if not str(build_result.get("manifest") or "").strip() and not fallback_manifest:
             raise LumaError("no Luma deployment manifest found in repository and no manifest provided")
-
-        if str(build_result.get("kind") or "") == "compose" or repo_compose_content or body.get("composeContent"):
-            # The Builder result is authoritative for repository imports.  It
-            # replaces every service that consumes a built Compose image with
-            # the immutable internal-registry reference.  Reusing a
-            # caller-supplied/source copy here would silently discard that
-            # rewrite and make sibling workers pull the original logical or
-            # retired external tag.
-            compose_content = repo_compose_content or str(
-                body.get("composeContent") or ""
-            ).strip()
-            if not compose_content:
-                raise LumaError("luma.compose.yml found but composeContent is missing")
-            compose_content = _rewrite_compose_import_images(
-                compose_content,
-                build_result=build_result,
-            )
-            ignored_overrides = [key for key in ("exposure", "domain", "port") if body.get(key)]
-            if ignored_overrides:
-                step = {
-                    "name": "Import warning",
-                    "status": "ok",
-                    "message": "Compose import ignores service-level override(s): "
-                    + ", ".join(ignored_overrides)
-                    + ". Set them in luma.compose.yml services instead.",
-                }
-                steps.append(step)
-                run_progress(step)
-
-            def _inject_compose() -> tuple[str, str]:
-                data = yaml.safe_load(manifest_text) or {}
-                if not isinstance(data, dict):
-                    raise LumaError("luma.compose.yml must contain a YAML mapping")
-                if body.get("region"):
-                    data["region"] = body.get("region")
-                return yaml.safe_dump(data, sort_keys=False, allow_unicode=False), compose_content
-
-            final_manifest, final_compose_content = _deploy_step(steps, "Resolve compose manifest", _inject_compose, progress=run_progress)
-            deploy_body = dict(body)
-            deploy_body["manifest"] = final_manifest
-            deploy_body["composeContent"] = final_compose_content
-            deploy_body["sourceName"] = repo_url
-            deploy_body["gitSource"] = git_source
-            deploy_body.pop("repoUrl", None)
-            result = handle_compose_deployment(token, deploy_body, progress=run_progress)
-            if isinstance(result, dict):
-                merged_steps = steps + list(result.get("steps") or [])
-                result = {
-                    **result,
-                    "steps": merged_steps,
-                    "image": built_image,
-                    "images": built_images,
-                    "buildRunId": build_run_id,
-                    **({"composeSidecar": compose_sidecar} if compose_sidecar else {}),
-                    **({"buildCapabilities": required_build_capabilities} if required_build_capabilities else {}),
-                }
-            _complete_build_run(build_run_id, "succeeded", result=result if isinstance(result, dict) else {})
-            return result
-
-        def _inject() -> str:
-            data = yaml.safe_load(manifest_text) or {}
-            if not isinstance(data, dict):
-                raise LumaError(".luma.yml must contain a YAML mapping")
-            data.pop("build", None)
-            data["image"] = built_image
-            for key in ("region", "exposure", "domain"):
-                if body.get(key):
-                    data[key] = body.get(key)
-            if body.get("port"):
-                data["port"] = int(body["port"])
-            return yaml.safe_dump(data, sort_keys=False, allow_unicode=False)
-
-        final_manifest = _deploy_step(steps, "Resolve manifest", _inject, progress=run_progress)
-
-        deploy_body = dict(body)
-        deploy_body["manifest"] = final_manifest
-        deploy_body["sourceName"] = repo_url
-        deploy_body["gitSource"] = git_source
-        deploy_body.pop("repoUrl", None)
-        result = handle_deployment(token, deploy_body, progress=run_progress)
-        if isinstance(result, dict):
-            merged_steps = steps + list(result.get("steps") or [])
-            result = {**result, "steps": merged_steps, "image": built_image, "buildRunId": build_run_id,
-                      **({"buildCapabilities": required_build_capabilities} if required_build_capabilities else {})}
-        _complete_build_run(build_run_id, "succeeded", result=result if isinstance(result, dict) else {})
-        return result
+        run_body["buildNode"] = build_node
+        git_source = _git_source_from_build_body(run_body, repo_url=repo_url, build_node=build_node, build_run_id=build_run_id)
+        built = {
+            "repoUrl": repo_url,
+            "builtOn": build_node,
+            "projectKey": repo,
+            "buildResult": build_result,
+            "steps": steps,
+            "gitSource": git_source,
+            "requiredBuildCapabilities": required_build_capabilities,
+            "composeSidecar": compose_sidecar,
+        }
+        if _queued_run_id:
+            # The image is immutable and pushed; deployment is admitted
+            # separately so the builder is free for the next build.
+            return {"requeueDeploy": built}
+        return _deploy_repository_build(token, body, built, build_run_id=build_run_id, progress=run_progress)
     except LumaError as exc:
         _complete_build_run(
             build_run_id,
@@ -4331,6 +4544,143 @@ def handle_build_deploy(
             message=str(exc),
         )
         raise
+
+
+def handle_queued_repository_deploy(
+    token: str, build_run_id: str, body: Dict[str, Any], built: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Deploy an image a queued build stage already pushed."""
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    run_progress, _batch = _build_run_progress(build_run_id, None)
+    try:
+        _reject_control_maintenance(state)
+        _apply_state_secrets(state)
+        if _build_run_cancel_requested(build_run_id):
+            raise LumaError("build canceled")
+        return _deploy_repository_build(token, body, built, build_run_id=build_run_id, progress=run_progress)
+    except Exception as exc:
+        _complete_build_run(
+            build_run_id,
+            "canceled" if _build_run_cancel_requested(build_run_id) else "failed",
+            message=str(exc),
+        )
+        raise
+
+
+def _deploy_repository_build(
+    token: str,
+    body: Dict[str, Any],
+    built: Dict[str, Any],
+    *,
+    build_run_id: str,
+    progress: Callable[[dict[str, str]], None],
+) -> Dict[str, Any]:
+    """Resolve the built manifest and deploy it; completes the build run."""
+    run_progress = progress
+    build_result = built.get("buildResult") if isinstance(built.get("buildResult"), dict) else {}
+    steps: list[dict[str, str]] = [dict(step) for step in built.get("steps") or [] if isinstance(step, dict)]
+    git_source = built.get("gitSource") if isinstance(built.get("gitSource"), dict) else {}
+    required_build_capabilities = [str(value) for value in built.get("requiredBuildCapabilities") or []]
+    compose_sidecar = str(built.get("composeSidecar") or "")
+    repo_url = str(built.get("repoUrl") or git_source.get("repoUrl") or body.get("repoUrl") or "")
+    fallback_manifest = str(body.get("manifest") or "").strip()
+    built_image = str(build_result.get("image") or "").strip()
+    built_images = build_result.get("images") if isinstance(build_result.get("images"), dict) else {}
+    repo_manifest = str(build_result.get("manifest") or "").strip()
+    repo_compose_content = str(build_result.get("composeContent") or "").strip()
+    # The supplied manifest is a fallback, matching Builder discovery and
+    # the CLI contract. Never build a repository recipe then deploy a
+    # different caller-supplied manifest.
+    manifest_text = repo_manifest or fallback_manifest
+    if not manifest_text:
+        raise LumaError("no Luma deployment manifest found in repository and no manifest provided")
+
+    if str(build_result.get("kind") or "") == "compose" or repo_compose_content or body.get("composeContent"):
+        # The Builder result is authoritative for repository imports.  It
+        # replaces every service that consumes a built Compose image with
+        # the immutable internal-registry reference.  Reusing a
+        # caller-supplied/source copy here would silently discard that
+        # rewrite and make sibling workers pull the original logical or
+        # retired external tag.
+        compose_content = repo_compose_content or str(
+            body.get("composeContent") or ""
+        ).strip()
+        if not compose_content:
+            raise LumaError("luma.compose.yml found but composeContent is missing")
+        compose_content = _rewrite_compose_import_images(
+            compose_content,
+            build_result=build_result,
+        )
+        ignored_overrides = [key for key in ("exposure", "domain", "port") if body.get(key)]
+        if ignored_overrides:
+            step = {
+                "name": "Import warning",
+                "status": "ok",
+                "message": "Compose import ignores service-level override(s): "
+                + ", ".join(ignored_overrides)
+                + ". Set them in luma.compose.yml services instead.",
+            }
+            steps.append(step)
+            run_progress(step)
+
+        def _inject_compose() -> tuple[str, str]:
+            data = yaml.safe_load(manifest_text) or {}
+            if not isinstance(data, dict):
+                raise LumaError("luma.compose.yml must contain a YAML mapping")
+            if body.get("region"):
+                data["region"] = body.get("region")
+            return yaml.safe_dump(data, sort_keys=False, allow_unicode=False), compose_content
+
+        final_manifest, final_compose_content = _deploy_step(steps, "Resolve compose manifest", _inject_compose, progress=run_progress)
+        deploy_body = dict(body)
+        deploy_body["manifest"] = final_manifest
+        deploy_body["composeContent"] = final_compose_content
+        deploy_body["sourceName"] = repo_url
+        deploy_body["gitSource"] = git_source
+        deploy_body.pop("repoUrl", None)
+        result = handle_compose_deployment(token, deploy_body, progress=run_progress)
+        if isinstance(result, dict):
+            merged_steps = steps + list(result.get("steps") or [])
+            result = {
+                **result,
+                "steps": merged_steps,
+                "image": built_image,
+                "images": built_images,
+                "buildRunId": build_run_id,
+                **({"composeSidecar": compose_sidecar} if compose_sidecar else {}),
+                **({"buildCapabilities": required_build_capabilities} if required_build_capabilities else {}),
+            }
+        _complete_build_run(build_run_id, "succeeded", result=result if isinstance(result, dict) else {})
+        return result
+
+    def _inject() -> str:
+        data = yaml.safe_load(manifest_text) or {}
+        if not isinstance(data, dict):
+            raise LumaError(".luma.yml must contain a YAML mapping")
+        data.pop("build", None)
+        data["image"] = built_image
+        for key in ("region", "exposure", "domain"):
+            if body.get(key):
+                data[key] = body.get(key)
+        if body.get("port"):
+            data["port"] = int(body["port"])
+        return yaml.safe_dump(data, sort_keys=False, allow_unicode=False)
+
+    final_manifest = _deploy_step(steps, "Resolve manifest", _inject, progress=run_progress)
+
+    deploy_body = dict(body)
+    deploy_body["manifest"] = final_manifest
+    deploy_body["sourceName"] = repo_url
+    deploy_body["gitSource"] = git_source
+    deploy_body.pop("repoUrl", None)
+    result = handle_deployment(token, deploy_body, progress=run_progress)
+    if isinstance(result, dict):
+        merged_steps = steps + list(result.get("steps") or [])
+        result = {**result, "steps": merged_steps, "image": built_image, "buildRunId": build_run_id,
+                  **({"buildCapabilities": required_build_capabilities} if required_build_capabilities else {})}
+    _complete_build_run(build_run_id, "succeeded", result=result if isinstance(result, dict) else {})
+    return result
 
 
 def _docker_restart_allocation_ids(result: Any) -> set[str]:

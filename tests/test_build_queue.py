@@ -54,9 +54,21 @@ class BuildQueueTests(unittest.TestCase):
         srv._complete_build_run(item[0], status)
         srv._mutate_control_state(lambda state: queue.discard(state, state['buildRuns'][item[0]]))
 
+    def built(self, item, name='app'):
+        """Finish a claimed build stage; the run returns to the queue to deploy."""
+        result = {'requeueDeploy': {'buildResult': {'kind': 'service', 'image': f'builder:5000/acme/{name}:immutable',
+                                                    'manifest': f'name: {name}\nregion: cn\nexposure: none\n'},
+                                    'steps': [], 'gitSource': {}, 'requiredBuildCapabilities': []}}
+        with patch.object(srv, 'handle_build_deploy', return_value=result):
+            queue.execute(item)
+
+    def drain(self):
+        while (item := queue.claim()):
+            queue.execute(item)
+
     def test_fifo_atomic_claim_and_other_project_independence(self):
         first, second, other = self.remote(), self.remote(), self.remote('acme/other', build_node='builder2')
-        self.assertEqual(queue.position(second), {'queuePosition': 2, 'waitingFor': first, 'waitReason': 'target'})
+        self.assertEqual(queue.position(second), {'queuePosition': 2, 'waitingFor': first, 'waitingForNode': 'builder', 'waitReason': 'builder'})
         with ThreadPoolExecutor(max_workers=6) as pool:
             claims = list(pool.map(lambda _: queue.claim(), range(6)))
         self.assertEqual({item[0] for item in claims if item}, {first, other})
@@ -110,7 +122,13 @@ class BuildQueueTests(unittest.TestCase):
         main, dev = self.prepare(ref='main'), self.prepare(ref='dev')
         self.submit(main)
         self.submit(dev)
-        self.assertEqual(queue.claim()[0], main['run']['id'])
+        self.assertEqual(load_state()['buildRuns'][main['run']['id']]['status'], 'queued')
+        item = queue.claim()
+        self.assertEqual(item[0], main['run']['id'])
+        # Both branches deploy the same application: ordered, never dropped.
+        self.assertEqual(queue.position(dev['run']['id'])['waitReason'], 'target')
+        self.assertIsNone(queue.claim())
+        self.finish(item)
         self.assertEqual(queue.claim()[0], dev['run']['id'])
 
     def test_same_paths_on_different_git_hosts_do_not_replace(self):
@@ -121,13 +139,83 @@ class BuildQueueTests(unittest.TestCase):
         self.assertEqual(queue.claim()[0], first)
         self.assertEqual(queue.claim()[0], other)
 
-    def test_unknown_target_fences_known_target_only_on_same_branch(self):
+    def test_unknown_target_builds_in_parallel_and_fences_only_its_deployment(self):
         first = self.remote(ref='main')
         same = self.remote(ref='main', composeSidecar='prod.yml', build_node='builder2')
         dev = self.remote(ref='dev', composeSidecar='prod.yml', build_node='builder2')
-        self.assertEqual(queue.claim()[0], first)
-        self.assertEqual(queue.position(same)['waitReason'], 'target')
-        self.assertEqual(queue.claim()[0], dev)
+        first_item = queue.claim()
+        self.assertEqual(first_item[0], first)
+        same_item = queue.claim()
+        self.assertEqual(same_item[0], same)  # Builds never wait for a target.
+        self.assertEqual(queue.position(dev)['waitReason'], 'builder')
+        self.built(same_item, 'prod')
+        # The older bare import may still deploy "prod": wait for its build.
+        self.assertEqual(queue.position(same), {'queuePosition': 2, 'waitingFor': first, 'waitReason': 'target'})
+        dev_item = queue.claim()
+        self.assertEqual(dev_item[0], dev)  # Another branch is not fenced.
+        self.built(first_item, 'other')
+        deploy = queue.claim()
+        self.assertEqual(deploy[0], first)  # FIFO among ready deployments.
+        self.finish(deploy)
+        self.assertEqual(queue.claim()[0], same)
+
+    def test_build_finishes_into_deploy_stage_without_holding_the_builder(self):
+        first, second = self.remote(), self.remote('acme/other')
+        item = queue.claim()
+        self.assertEqual(queue.position(second)['waitReason'], 'builder')
+        self.built(item)
+        run = load_state()['buildRuns'][first]
+        self.assertEqual((run['status'], run['deployKey']), ('queued', '["deploy","app"]'))
+        self.assertEqual(run['result']['image'], 'builder:5000/acme/app:immutable')
+        claimed = {queue.claim()[0], queue.claim()[0]}
+        self.assertEqual(claimed, {first, second})
+        self.assertEqual(load_state()['buildRuns'][first]['status'], 'finalizing')
+
+    def test_deployments_of_one_application_are_serialized_and_latest_wins(self):
+        first, second, third = (self.remote(ref='main', composeSidecar=f'{i}.yml', build_node=node)
+                                for i, node in ((1, 'builder'), (2, 'builder2'), (3, 'builder')))
+        a, b = queue.claim(), queue.claim()
+        self.built(a)
+        deploying = queue.claim()
+        self.assertEqual(deploying[0], first)
+        self.built(b)
+        self.assertEqual(queue.position(second)['waitReason'], 'target')
+        third_item = queue.claim()
+        self.assertEqual(third_item[0], third)  # Building is independent.
+        self.built(third_item)
+        runs = load_state()['buildRuns']
+        self.assertEqual(runs[second]['status'], 'canceled')  # Superseded while waiting.
+        self.assertEqual(runs[second]['supersededBy'], third)
+        self.assertEqual(runs[first]['status'], 'finalizing')  # A running rollout is never interrupted.
+        self.finish(deploying)
+        self.assertEqual(queue.claim()[0], third)
+
+    def test_restart_resumes_a_built_run_at_its_deployment(self):
+        first = self.remote()
+        self.built(queue.claim())
+        with patch.object(srv, '_CONTROL_PROCESS_INSTANCE_ID', 'new-process'):
+            srv._reconcile_orphaned_build_runs_after_control_restart()
+            queue.recover()
+        item = queue.claim()
+        self.assertEqual(item[0], first)
+        with patch.object(srv, 'handle_deployment', return_value={'service': 'app'}) as deploy:
+            queue.execute(item)
+        self.assertEqual(deploy.call_args.args[1]['manifest'].splitlines()[0], 'name: app')
+        self.assertEqual(load_state()['buildRuns'][first]['status'], 'succeeded')
+
+    def test_older_build_cannot_deploy_over_a_newer_rollout(self):
+        first = self.remote(ref='main', composeSidecar='a.yml')
+        second = self.remote(ref='main', composeSidecar='b.yml', build_node='builder2')
+        a, b = queue.claim(), queue.claim()
+        self.built(b)
+        state = load_state()
+        state['deployedQueueOrder'] = {queue._supersede_key(state, state['buildRuns'][second]):
+                                       state['buildRuns'][second]['queueOrder']}
+        save_state(state)
+        self.built(a)
+        run = load_state()['buildRuns'][first]
+        self.assertEqual(run['status'], 'canceled')
+        self.assertIn('Superseded', run['message'])
 
     def test_main_latest_wins_does_not_cancel_dev(self):
         main = self.remote(ref='main', composeSidecar='luma.compose.yml')
@@ -560,6 +648,31 @@ class BuildQueueTests(unittest.TestCase):
             queue.execute(item)
         self.assertEqual(queue.claim()[0], second)
 
+    def test_silent_deployment_is_not_reaped_like_a_stalled_upload(self):
+        first = self.remote()
+        self.built(queue.claim())
+        item = queue.claim()
+        self.assertEqual(item[0], first)
+        state = load_state()
+        state['buildRuns'][first]['updatedAt'] = int(time.time()) - queue.FINALIZING_STALE_SECONDS - 1
+        save_state(state)
+        self.assertIsNone(queue.claim())
+        self.assertEqual(load_state()['buildRuns'][first]['status'], 'finalizing')
+        state = load_state()
+        state['buildRuns'][first]['updatedAt'] = int(time.time()) - queue.DEPLOY_STALE_SECONDS - 1
+        save_state(state)
+        queue.claim()
+        self.assertEqual(load_state()['buildRuns'][first]['status'], 'failed')
+
+    def test_fallback_manifest_names_the_deployment(self):
+        first = self.remote(manifest='name: fallback\nregion: cn\nexposure: none\n')
+        item = queue.claim()
+        result = {'requeueDeploy': {'buildResult': {'kind': 'service', 'image': 'builder:5000/acme/app:x', 'fallbackManifestUsed': True},
+                                    'steps': [], 'gitSource': {}, 'requiredBuildCapabilities': []}}
+        with patch.object(srv, 'handle_build_deploy', return_value=result):
+            queue.execute(item)
+        self.assertEqual(load_state()['buildRuns'][first]['deployKey'], '["deploy","fallback"]')
+
     def test_stale_canceling_retains_fence_until_worker_exits(self):
         first = self.remote()
         second = self.remote()
@@ -683,7 +796,7 @@ class BuildQueueTests(unittest.TestCase):
                 'kind': 'service', 'image': 'builder:5000/acme/app:immutable',
                 'manifest': 'name: app\nimage: placeholder\nregion: cn\nexposure: none\n',
             }), patch.object(srv, 'handle_deployment', return_value={'service': 'app'}) as deploy:
-                queue.execute(queue.claim())
+                self.drain()
         state = load_state()
         self.assertEqual(len(state['buildRuns']), 1)
         self.assertEqual(state['buildRuns'][build_id]['status'], 'succeeded')
@@ -764,6 +877,7 @@ class BuildQueueTests(unittest.TestCase):
                         item = queue.claim()
                         self.assertEqual(item[0], accepted['buildRunId'])
                         queue.execute(item)
+                        self.drain()  # The finished image deploys as its own stage.
                     elif method == 'GET' and path.startswith('/v1/builds/'):
                         readbacks.append(response.json())
                     result = io.BytesIO(response.content)

@@ -1,11 +1,22 @@
-"""Durable management build/deploy FIFO, independent of HTTP request lifetime.
+"""Durable management build/deploy queue, independent of HTTP request lifetime.
 
-Queue ownership is per repository, ref and deployment target. Unknown targets
-keep a conservative lock within that repository/ref, never across branches.
-Builder admission follows the serial node-agent's capacity; waiting for a busy
-builder must not consume a Control execution slot.
+A queued repository import moves through explicit stages, each admitted here:
 
-Only queued work is resumed after restart. An interrupted active deployment is
+``build``   planning and image builds. Builds are pure (every attempt owns an
+            immutable image tag), so they never wait for a deployment target.
+            They wait only for a compatible builder. Auto-selected work names
+            a ranked candidate list; the first compatible agent to lease the
+            pooled task runs it (see ``server.handle_node_agent_lease``).
+``deploy``  runtime deployment of a finished image. Deployments of one
+            application (the manifest ``name``) run one at a time in queue
+            order, behind earlier work of the same repository branch whose
+            application is not known yet. Uploaded local builds enter here.
+
+Within a repository branch a newer request supersedes older waiting work. Waiting for
+a busy builder or an earlier deployment never consumes a Control execution
+slot: work returns to the queue between stages and keeps its FIFO order.
+
+Only queued work is resumed after restart. An interrupted active stage is
 failed explicitly rather than replaying possibly completed runtime side effects.
 Payloads live in private Control state, never public build history. In particular
 per-attempt envSecrets are not mixed into other attempts or the public request.
@@ -17,6 +28,7 @@ import json
 import logging
 import os
 import posixpath
+import secrets
 import threading
 import time
 import urllib.parse
@@ -31,10 +43,16 @@ TERMINAL = {"succeeded", "failed", "canceled"}
 ACTIVE = {"running", "canceling", "finalizing"}
 # Silence can trigger cancellation, but never proves that a worker has exited.
 FINALIZING_STALE_SECONDS = 600
+# A deployment can wait silently on the runtime lock or a cold image pull;
+# keep its silence window above Nomad's rollout timeout.
+DEPLOY_STALE_SECONDS = 3600
 CANCELING_STALE_SECONDS = 180
 State = dict[str, Any]
 WorkItem = tuple[str, dict[str, Any]]
 QUEUE_METADATA_KINDS = {"buildRuns", "agentTasks"}
+# Deployments already serialize on the runtime lock; admitting more would only
+# park execution threads behind it.
+DEPLOY_SLOTS = 1
 
 
 def _runs(state: State) -> State:
@@ -61,13 +79,46 @@ def _current_runs(state: State) -> list[State]:
     return list(current.values())
 
 
-def _holds_project(run: State) -> bool:
-    caller_upload = (
+def _caller_upload(run: State) -> bool:
+    """A local build still running on the caller holds no queue position."""
+    return (
         run.get("mode") == "local"
         and run.get("request", {}).get("queue") is True
         and not run.get("queueManaged")
     )
-    return bool(run.get("queueExecuting")) or (run.get("status") in ACTIVE and not caller_upload)
+
+
+def _holds_project(run: State) -> bool:
+    return bool(run.get("queueExecuting")) or (run.get("status") in ACTIVE and not _caller_upload(run))
+
+
+def _stage(state: State, run: State) -> str:
+    """Return the queue stage of a run: ``deploy`` once an image exists."""
+    payload = (state.get("buildQueue") or {}).get(run.get("id"))
+    if isinstance(payload, dict) and (payload.get("kind") == "local" or isinstance(payload.get("built"), dict)):
+        return "deploy"
+    return "build"
+
+
+def deploy_key_for_manifest(manifest: Any) -> str:
+    """Identify the runtime deployment a manifest replaces (its Nomad job name)."""
+    if not isinstance(manifest, str) or not manifest.strip():
+        return ""
+    import yaml
+    from ..service import slugify
+    try:
+        data = yaml.safe_load(manifest)
+        name = data.get("name") if isinstance(data, dict) else None
+        return json.dumps(["deploy", slugify(name)], separators=(",", ":")) if isinstance(name, str) and name.strip() else ""
+    except (yaml.YAMLError, LumaError):
+        return ""
+
+
+def candidates(run: State) -> list[str]:
+    """Builders that may run this run's next agent task, best first."""
+    raw = run.get("buildCandidates")
+    names = [str(name) for name in raw if str(name or "").strip()] if isinstance(raw, list) else []
+    return names or [str(run.get("buildNode") or "")]
 
 
 def _digest(body: State) -> str:
@@ -210,7 +261,8 @@ def reap_stale(state: State, *, now: int | None = None) -> bool:
             )
             _request_stop(state, run, current)
             changed = True
-        elif status == "finalizing" and updated and current - updated >= FINALIZING_STALE_SECONDS:
+        elif status == "finalizing" and updated and current - updated >= (
+                DEPLOY_STALE_SECONDS if _stage(state, run) == "deploy" else FINALIZING_STALE_SECONDS):
             run.update(
                 status="failed",
                 completedAt=current,
@@ -243,15 +295,7 @@ def attach(state: State, run: State, kind: str, body: State) -> None:
             older_key = replacement_key(older, older_payload.get("body") or {})
             if older_key != key or older.get("status") in TERMINAL and not older.get("queueExecuting"):
                 continue
-            older.update(supersededBy=run["id"], cancelRequestedAt=now,
-                         updatedAt=now, message="Superseded by " + run["id"])
-            if older.get("queueExecuting"):
-                if older.get("status") not in TERMINAL:
-                    older["status"] = "canceling"
-                _request_stop(state, older, now)
-            else:
-                older.update(status="canceled", completedAt=now, canceledAt=now)
-                discard(state, older)
+            _cancel_superseded(state, older, run["id"], now)
     run["queueKey"] = queue_identity(run, body)
     run["queueIdentityVersion"] = 2
     order = int(state.get("buildQueueSequence") or 0) + 1
@@ -265,6 +309,79 @@ def discard(state: State, run: State) -> None:
     run.pop("queueExecuting", None)
     run.pop("queueOwnerReleased", None)
     run.pop("queueOwnerReleasedAt", None)
+    run.pop("queueClaimToken", None)
+
+
+def _cancel_superseded(state: State, older: State, newer_id: str, now: int) -> None:
+    if _deploying(state, older):
+        # Interrupting a rollout between steps would leave it half applied;
+        # the newer work deploys after it instead (see _deploy_ahead).
+        return
+    older.update(supersededBy=newer_id, cancelRequestedAt=now,
+                 updatedAt=now, message="Superseded by " + newer_id)
+    if older.get("queueExecuting"):
+        if older.get("status") not in TERMINAL:
+            older["status"] = "canceling"
+        _request_stop(state, older, now)
+    else:
+        older.update(status="canceled", completedAt=now, canceledAt=now)
+        discard(state, older)
+
+
+def _supersede_key(state: State, run: State) -> str:
+    """Deployed application within its repository branch: latest submission wins."""
+    key = str(run.get("deployKey") or "")
+    ident = _identity(state, run)
+    if not key or not ident:
+        return ""
+    return json.dumps([*json.loads(ident)[:3], key], separators=(",", ":"))
+
+
+def enter_deploy_stage(state: State, run: State, manifest: Any, now: int) -> bool:
+    """Bind a built run to its deployment; return False when it is obsolete.
+
+    Within one repository branch the latest submitted request for a deployed
+    application wins: older work still waiting to deploy it is dropped, and
+    this run is dropped when newer work already deployed it or is ahead.
+    Other branches deploying the same application are only ordered, never
+    dropped (see _deploy_ahead).
+    """
+    key = deploy_key_for_manifest(manifest)
+    if not key:
+        return True
+    run["deployKey"] = key
+    mine = _supersede_key(state, run)
+    order = _order(run)
+    deployed = int((state.get("deployedQueueOrder") or {}).get(mine) or 0) if mine else 0
+    runs = _runs(state)
+    newer = ""
+    for other_id in list(state.get("buildQueue") or {}):
+        other = runs.get(other_id)
+        if (other_id == run["id"] or not isinstance(other, dict) or other.get("status") in TERMINAL
+                or _stage(state, other) != "deploy" or not mine or _supersede_key(state, other) != mine):
+            continue
+        if _order(other) > order:
+            newer = newer or other_id
+        else:
+            _cancel_superseded(state, other, run["id"], now)
+    if newer or deployed > order[0]:
+        reason = newer or "a newer deployment"
+        run.update(status="canceled", completedAt=now, canceledAt=now, updatedAt=now,
+                   supersededBy=newer, message="Superseded by " + reason)
+        discard(state, run)
+        return False
+    return True
+
+
+def record_deployed(state: State, run: State) -> None:
+    key = _supersede_key(state, run)
+    if not key:
+        return
+    deployed = state.setdefault("deployedQueueOrder", {})
+    deployed[key] = max(int(deployed.get(key) or 0), _order(run)[0])
+    if len(deployed) > 1000:
+        for stale in sorted(deployed, key=lambda name: deployed[name])[:len(deployed) - 1000]:
+            deployed.pop(stale, None)
 
 
 def submit_local(token: str, build_id: str, body: State) -> State:
@@ -288,6 +405,8 @@ def submit_local(token: str, build_id: str, body: State) -> State:
         srv._validate_local_build_result(run, private["buildResult"])
         srv._request_env_secrets(private)
         attach(state, run, "local", private)
+        if not enter_deploy_stage(state, run, private["buildResult"].get("manifest"), int(time.time())):
+            return
         # Protect the immutable uploaded images from Registry retention while
         # waiting; a result image is not deployment success (status is queued).
         run["result"] = srv._build_run_result_summary(private["buildResult"])
@@ -316,51 +435,96 @@ def _identity(state: State, run: State) -> str:
     return queue_identity(run, payload.get("body") if isinstance(payload, dict) else None)
 
 
+def _node_ready(state: State, node: str) -> bool:
+    from . import server as srv
+    record = srv._node_record_for_name(state.get("nodes") or {}, node)
+    return isinstance(record, dict) and srv._node_agent_is_ready(record, required_capability="docker-build")
+
+
 def _builder_owners(state: State, current: list[State]) -> dict[str, str]:
-    """Reserve a serial builder before dispatch and until its child stops."""
+    """Reserve serial builders before dispatch and until their child stops.
+
+    Bound or leased agent tasks own their node. Admitted work that has not
+    leased yet reserves its node, or for a pooled run one idle candidate in
+    queue order, so admission never promises the same builder twice.
+    """
     tasks = state.get("agentTasks") or {}
-    owners = {}
+    owners: dict[str, str] = {}
     for task in sorted(_active(tasks, {"queued", "running"}), key=lambda t: (t.get("createdAt", 0), t.get("id", ""))):
-        owners.setdefault(str(task.get("nodeName") or ""), str(task.get("buildRunId") or task.get("id") or ""))
+        node = str(task.get("nodeName") or "")
+        if node:
+            owners.setdefault(node, str(task.get("buildRunId") or task.get("id") or ""))
     for run in sorted(current, key=_order):
-        if run.get("mode") == "local" or not _holds_project(run):
+        if run.get("mode") == "local" or not _holds_project(run) or _stage(state, run) == "deploy":
             continue
         task = tasks.get(run.get("agentTaskId"))
         if isinstance(task, dict) and task.get("status") in TERMINAL:
             continue  # Deployment can continue while the next image builds.
-        owners.setdefault(str(run.get("buildNode") or ""), str(run["id"]))
+        if isinstance(task, dict) and task.get("status") in {"queued", "running"} and task.get("nodeName"):
+            continue  # Already owns its node above.
+        names = [str(task["nodeName"])] if isinstance(task, dict) and task.get("nodeName") else candidates(run)
+        if len(names) == 1:
+            owners.setdefault(names[0], str(run["id"]))
+            continue
+        for node in names:
+            if node not in owners and _node_ready(state, node):
+                owners[node] = str(run["id"])
+                break
     return owners
 
 
-def _target_ahead(state: State, run: State, current: list[State]) -> list[State]:
+def _deploying(state: State, run: State) -> bool:
+    return bool(run.get("queueExecuting")) and _stage(state, run) == "deploy"
+
+
+def _deploy_ahead(state: State, run: State, current: list[State]) -> list[State]:
+    """Work that must deploy before ``run``: the same application, in order.
+
+    Known deployed names are compared exactly. Work whose application is not
+    known yet (still building) is fenced by its repository/branch identity.
+    """
+    key = str(run.get("deployKey") or "")
     ident = _identity(state, run)
-    ahead = [other for other in current if other["id"] != run["id"]
-             and identities_conflict(ident, _identity(state, other))
-             and (_holds_project(other) or other.get("status") == "queued" and _order(other) < _order(run))]
-    ahead.sort(key=lambda other: (not _holds_project(other), _order(other)))
+    ahead = []
+    for other in current:
+        if other["id"] == run["id"] or _caller_upload(other):
+            continue
+        other_key = str(other.get("deployKey") or "")
+        same = other_key == key if key and other_key else identities_conflict(ident, _identity(state, other))
+        if same and (_deploying(state, other) or _order(other) < _order(run)):
+            ahead.append(other)
+    ahead.sort(key=lambda other: (not _deploying(state, other), _order(other)))
     return ahead
 
 
 def _blocker(state: State, run: State, current: list[State], builders: dict[str, str], concurrency: int, *, describe: bool = False) -> State:
-    from . import server as srv
-    ahead = _target_ahead(state, run, current)
-    if ahead:
-        return {"queuePosition": len(ahead) + 1, "waitingFor": ahead[0]["id"], "waitReason": "target"}
-    if run.get("mode") != "local":
-        node = str(run.get("buildNode") or "")
-        node_ahead = sorted((other for other in current if other.get("status") == "queued"
-                            and other.get("mode") != "local" and other.get("buildNode") == node
-                            and _order(other) < _order(run) and not _target_ahead(state, other, current)), key=_order) if describe else []
-        rank = 1 + len(node_ahead) + int(node in builders)
-        record = srv._node_record_for_name(state.get("nodes") or {}, node)
-        if not isinstance(record, dict) or not srv._node_agent_is_ready(record, required_capability="docker-build"):
-            return {"queuePosition": rank, "waitingFor": "", "waitingForNode": node, "waitReason": "builder-offline"}
-        if node in builders or node_ahead:
-            return {"queuePosition": rank, "waitingFor": builders[node] if node in builders else node_ahead[0]["id"],
-                    "waitingForNode": node, "waitReason": "builder"}
-    executing = [other for other in current if other.get("queueExecuting")]
-    if len(executing) >= concurrency:
-        return {"queuePosition": 1, "waitingFor": min(executing, key=_order)["id"], "waitReason": "capacity"}
+    if _stage(state, run) == "deploy":
+        ahead = _deploy_ahead(state, run, current)
+        if ahead:
+            return {"queuePosition": len(ahead) + 1, "waitingFor": ahead[0]["id"], "waitReason": "target"}
+        deploying = [other for other in current if _deploying(state, other)]
+        if len(deploying) >= DEPLOY_SLOTS:
+            return {"queuePosition": 1, "waitingFor": min(deploying, key=_order)["id"], "waitReason": "deploy"}
+        return {}
+    names = candidates(run)
+    ready = [node for node in names if _node_ready(state, node)]
+    if not ready:
+        return {"queuePosition": 1, "waitingFor": "", "waitingForNode": names[0], "waitReason": "builder-offline"}
+    idle = [node for node in ready if node not in builders]
+    ahead: list[State] = []
+    if describe:
+        pool = set(names)
+        ahead = sorted((other for other in current if other["id"] != run["id"] and other.get("status") == "queued"
+                        and _stage(state, other) == "build" and _order(other) < _order(run)
+                        and pool.intersection(candidates(other))), key=_order)
+    if len(idle) <= len(ahead):
+        busy = next((node for node in ready if node in builders), ready[0])
+        return {"queuePosition": 1 + len(ahead) + int(not idle),
+                "waitingFor": builders[busy] if not idle else ahead[0]["id"],
+                "waitingForNode": busy if not idle else idle[0], "waitReason": "builder"}
+    building = [other for other in current if other.get("queueExecuting") and _stage(state, other) == "build"]
+    if len(building) >= concurrency:
+        return {"queuePosition": 1, "waitingFor": min(building, key=_order)["id"], "waitReason": "capacity"}
     return {}
 
 
@@ -387,7 +551,7 @@ def claim(*, concurrency: int | None = None) -> WorkItem | None:
         changed = srv._expire_stale_local_build_runs(runs, int(time.time()))
         changed = reconcile_released(state) or changed
         current = _current_runs(state)
-        if sum(bool(run.get("queueExecuting")) for run in current) >= limit:
+        if sum(bool(run.get("queueExecuting")) for run in current) >= limit + DEPLOY_SLOTS:
             return None, changed
         payloads = state.setdefault("buildQueue", {})
         builders = _builder_owners(state, current)
@@ -400,10 +564,15 @@ def claim(*, concurrency: int | None = None) -> WorkItem | None:
                 continue
             if _blocker(state, run, current, builders, limit):
                 continue
-            run.update(status="finalizing" if payload["kind"] == "local" else "running",
-                       queueExecuting=True, controlProcessInstanceId=srv._CONTROL_PROCESS_INSTANCE_ID,
-                       updatedAt=int(time.time()), message="Executing queued deployment")
-            return (run["id"], dict(payload)), True
+            deploy = _stage(state, run) == "deploy"
+            # The claim token fences receipts: a retried cleanup of an earlier
+            # stage must never release the worker that owns a later stage.
+            claim_token = secrets.token_hex(8)
+            run.update(status="finalizing" if deploy else "running",
+                       queueExecuting=True, queueClaimToken=claim_token,
+                       controlProcessInstanceId=srv._CONTROL_PROCESS_INSTANCE_ID,
+                       updatedAt=int(time.time()), message="Deploying built image" if deploy and payload.get("built") else "Executing queued deployment")
+            return (run["id"], {**payload, "claimToken": claim_token}), True
         return None, changed
     return mutate_state_if_changed(mutate, metadata_kinds=QUEUE_METADATA_KINDS)
 
@@ -411,13 +580,18 @@ def claim(*, concurrency: int | None = None) -> WorkItem | None:
 def execute(item: WorkItem) -> None:
     from . import server as srv
     build_id, payload = item
+    claim_token = payload.get("claimToken")
     reroute: State | None = None
+    built: State | None = None
+    deployed = False
     try:
         token = str(load_auth_state().get("deployToken") or "")
         body = dict(payload["body"])
         workflow = body.pop("workflow", None)
         if payload["kind"] == "local":
             result = srv.handle_local_build_complete(token, build_id, body, _from_queue=True)
+        elif isinstance(payload.get("built"), dict):
+            result = srv.handle_queued_repository_deploy(token, build_id, body, payload["built"])
         else:
             plan = payload.get("buildPlan")
             result = srv.handle_build_deploy(
@@ -427,6 +601,10 @@ def execute(item: WorkItem) -> None:
             if isinstance(result.get("requeueBuild"), dict):
                 reroute = result["requeueBuild"]
                 return
+            if isinstance(result.get("requeueDeploy"), dict):
+                built = result["requeueDeploy"]
+                return
+        deployed = True
         if isinstance(workflow, dict):
             # Recording belongs to the accepted task too, not the waiting CLI.
             # Keep the existing expectedRevision guard; never overwrite a newer
@@ -453,37 +631,55 @@ def execute(item: WorkItem) -> None:
     finally:
         def cleanup(state):
             run = _runs(state).get(build_id)
-            if isinstance(run, dict):
-                if (reroute is not None and run.get("plannedCommit") == reroute["commit"]
-                        and run.get("buildNode") == reroute["node"]):
-                    # An ambiguous commit can be retried after the next worker
-                    # has already claimed this phase. Never release that owner.
-                    return
-                if (reroute is not None and run.get("status") == "running"
-                        and not run.get("cancelRequestedAt") and _safe_to_release(state, run)):
-                    # Preserve FIFO identity/order and the private request.
-                    # Until this transaction commits, the old agent reservation
-                    # remains owned; afterward the new builder admits the run.
-                    stored = state.setdefault("buildQueue", {}).get(build_id)
-                    if isinstance(stored, dict):
+            if not isinstance(run, dict):
+                return
+            if claim_token and run.get("queueClaimToken") != claim_token:
+                # This stage was already handed back to the queue (an ambiguous
+                # commit is being retried) or the next stage owns the run now.
+                return
+            now = int(time.time())
+            if ((reroute is not None or built is not None) and run.get("status") == "running"
+                    and not run.get("cancelRequestedAt") and _safe_to_release(state, run)):
+                # Preserve FIFO identity/order and the private request. Until
+                # this transaction commits the stage keeps its reservation;
+                # afterward the next stage is admitted like any queued work.
+                stored = state.setdefault("buildQueue", {}).get(build_id)
+                if isinstance(stored, dict):
+                    run.pop("agentTaskId", None)
+                    run.pop("queueExecuting", None)
+                    run.pop("queueClaimToken", None)
+                    if reroute is not None:
                         stored["buildPlan"] = reroute
-                        run.update(status="queued", buildNode=reroute["node"],
+                        names = [str(name) for name in reroute.get("candidates") or [] if str(name)] or [reroute["node"]]
+                        run.update(status="queued", buildNode=reroute["node"], buildCandidates=names,
                                    buildPlatforms=reroute["platforms"], plannedCommit=reroute["commit"],
-                                   updatedAt=int(time.time()), message=f"Waiting for builder {reroute['node']}")
+                                   updatedAt=now, message="Waiting for builder " + ", ".join(names))
                         run.setdefault("request", {})["buildNode"] = reroute["node"]
-                        run.pop("agentTaskId", None)
-                        run.pop("queueExecuting", None)
                         return
-                if run.get("status") not in TERMINAL:
-                    canceled = bool(run.get("cancelRequestedAt"))
-                    run.update(status="canceled" if canceled else "failed", completedAt=int(time.time()),
-                               updatedAt=int(time.time()),
-                               message="Build canceled" if canceled else "Execution ended without a recorded result; inspect runtime before retrying")
-                run["queueOwnerReleased"] = True
-                run.setdefault("queueOwnerReleasedAt", int(time.time()))
-                _request_stop(state, run, int(time.time()))
-                if _safe_to_release(state, run):
-                    discard(state, run)
+                    stored["built"] = built
+                    srv._remember_build_affinity(state, str(built.get("projectKey") or run.get("projectKey") or ""),
+                                                 str(built.get("builtOn") or run.get("buildNode") or ""))
+                    build_result = built.get("buildResult") if isinstance(built.get("buildResult"), dict) else {}
+                    # The pushed images must survive Registry retention while
+                    # waiting; a result image is not deployment success.
+                    run.update(status="queued", updatedAt=now, message="Image built; waiting to deploy",
+                               result=srv._build_run_result_summary(build_result))
+                    # A fallback manifest deploys when the repository has none.
+                    body = stored.get("body") if isinstance(stored.get("body"), dict) else {}
+                    enter_deploy_stage(state, run, build_result.get("manifest") or body.get("manifest"), now)
+                    return
+            if deployed and run.get("status") == "succeeded":
+                record_deployed(state, run)
+            if run.get("status") not in TERMINAL:
+                canceled = bool(run.get("cancelRequestedAt"))
+                run.update(status="canceled" if canceled else "failed", completedAt=now,
+                           updatedAt=now,
+                           message="Build canceled" if canceled else "Execution ended without a recorded result; inspect runtime before retrying")
+            run["queueOwnerReleased"] = True
+            run.setdefault("queueOwnerReleasedAt", now)
+            _request_stop(state, run, now)
+            if _safe_to_release(state, run):
+                discard(state, run)
         persist_receipt(lambda: mutate_state(cleanup, metadata_kinds=QUEUE_METADATA_KINDS), owner="queue.release")
 
 
@@ -526,7 +722,9 @@ class BuildQueueWorker:
         self.stop.clear()
         self.threads.clear()
         recover()
-        for index in range(self.concurrency):
+        # Build stages share ``concurrency`` slots; deployments have their own
+        # so a finished image never waits behind long-running builds.
+        for index in range(self.concurrency + DEPLOY_SLOTS):
             thread = threading.Thread(target=self.run, name=f"luma-build-queue-{index}", daemon=True)
             self.threads.append(thread)
             thread.start()

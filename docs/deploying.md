@@ -178,7 +178,12 @@ An external `--manifest` automatically requires the same capability, even withou
 
 ### Build runs and the queue
 
-Imports and retries enter a persistent queue per repository, ref and deployment target: a newer submission for the same target cancels older queued ones, while `main` and `dev` never block each other. A busy builder keeps its requests queued without holding up other builders.
+Imports and retries enter a persistent queue and move through two stages:
+
+- **Build.** Builds never wait for another build of the same application, because every attempt pushes its own immutable image. They wait only for a free compatible builder. Without `--build-node`, every declared builder with the right native platform and agent capabilities forms a pool: whichever becomes free first takes the next build. A project's previous builder holds its BuildKit cache, so it gets a short head start (`LUMA_BUILD_AFFINITY_WAIT_SECONDS` on Control, default 20) before another idle builder may take over. Pooling requires `registryHost` and a `pushHost` that every builder reaches, rather than `localhost`. `--build-node` pins one builder.
+- **Deploy.** A finished image deploys after earlier requests for the same application (the manifest `name`), and after earlier requests from the same repository and ref that have not finished building yet. Within one repository and ref, the latest submission wins: older requests still waiting are canceled, and a deployment that is already running is never interrupted. `main` and `dev` are only ordered, never canceled by each other.
+
+The builder is released as soon as its image is pushed, so the next build starts while the previous one deploys. `LUMA_BUILD_QUEUE_CONCURRENCY` (default 4) limits concurrent build stages on Control; deployments have their own slot.
 
 ```bash
 luma build list --app api --status failed
