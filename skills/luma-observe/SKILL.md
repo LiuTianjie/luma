@@ -11,7 +11,10 @@ deployment and operation, not routine application log analysis.
 
 Interactive node/container sessions and terminal transport troubleshooting belong
 to the bundled `luma-shell` skill. `luma node shell` and `luma app shell` provide
-direct TLS or Control relay without SSH; they require a local TTY.
+direct TLS or Control relay without SSH; they require a local TTY. For AI agents
+and scripts, `luma node exec NODE -- COMMAND...` streams stdout/stderr and returns
+the command's exit status without a TTY. Relay requires no client Tailscale access
+or open node inbound port; use the shell skill for latency diagnosis.
 
 For intermittent missing metrics, unavailable dashboards, query limits or a
 suspected overloaded collector/store, start with the read-only workflow in

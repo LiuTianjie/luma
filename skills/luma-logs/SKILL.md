@@ -13,7 +13,9 @@ existing manager-local VictoriaLogs store. No additional collector is needed.
 When the user needs an interactive node/container session, use the bundled
 `luma-shell` skill and `luma node shell NODE` / `luma app shell FULL_SERVICE_NAME`.
 It covers direct and relayed transport without SSH. Ordinary log/trace searches
-remain on the structured commands below; shell commands require a TTY.
+remain on the structured commands below. `node exec NODE -- COMMAND...` works
+without a TTY; `node shell` and `app shell` require one. Clients need no Tailscale
+membership; exec defaults to relay over the Agent's outbound Control connection.
 
 ## Start with the known identifier
 

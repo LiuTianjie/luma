@@ -32,9 +32,11 @@ import luma
 from luma import skills
 from luma.cli import build_parser
 from luma.cli.main import main
+from luma import command_session
 
 assert Path(luma.__file__).is_relative_to(target), luma.__file__
 assert skills.bundle_root().is_relative_to(target), skills.bundle_root()
+assert Path(command_session.__file__).is_relative_to(target)
 for args in (
     ['observe', 'status', '--format', 'json'],
     ['observe', 'app', 'example', '--since', '1h', '--service', 'worker'],
@@ -45,6 +47,9 @@ for args in (
 for command, name in [('node', 'worker'), ('app', 'shop_api')]:
     parsed = build_parser().parse_args([command, 'shell', name, '--transport', 'relay'])
     assert parsed.command == command and parsed.name == name and parsed.transport == 'relay'
+parsed = build_parser().parse_args(['node', 'exec', '--stdin', '--timeout', '60', 'worker', '--', 'python3', '-'])
+assert parsed.node_command == 'exec' and parsed.argv == ['python3', '-']
+assert parsed.stdin and parsed.timeout == 60 and parsed.transport == 'relay'
 
 # Redirect only installation destinations and local config loading. CLI dispatch,
 # packaged bundle lookup, copying, registration and automatic sync remain real.
@@ -163,6 +168,8 @@ def main() -> None:
             member = source.extractfile(prefix + "/" + name)
             assert member is not None and member.read() == content, f"source skill mismatch: {name}"
         assert wheel.read("luma/cli/observe.py") == (ROOT / "luma/cli/observe.py").read_bytes()
+        for name in ("luma/command_session.py", "luma/cli/terminal.py", "luma/terminal_direct.py"):
+            assert wheel.read(name) == (ROOT / name).read_bytes(), f"wheel command module mismatch: {name}"
         print(f"Wheel and source distribution contain all {len(canonical)} canonical skill files")
     with tempfile.TemporaryDirectory(prefix="luma-package-check-") as temporary:
         workspace = Path(temporary)

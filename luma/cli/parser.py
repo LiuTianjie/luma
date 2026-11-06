@@ -511,7 +511,7 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
             "Update the local CLI. On a manager this also refreshes Luma Control, and on a joined "
             "node it refreshes the node agent."
         ),
-        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.41\n  luma update fleet",
+        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.42\n  luma update fleet",
     )
     _add_update_arguments(update)
     _add_control_arguments(update)
@@ -531,6 +531,14 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
     node_sub = _commands(node, "node_command")
     node_shell = _command(node_sub, "shell", "Open an interactive node terminal through Luma")
     _add_shell_arguments(node_shell, "Node name or ID from 'luma node list'")
+    node_exec = _command(node_sub, "exec", "Run a node command without a TTY; stream output and return its exit code")
+    _add_shell_arguments(node_exec, "Node name or ID from 'luma node list'")
+    node_exec.set_defaults(transport="relay")
+    next(action for action in node_exec._actions if action.dest == "transport").help = "Connection route (default: relay; no node inbound connection required)"
+    node_exec.add_argument("--timeout", type=float, default=300, help="Remote command deadline in seconds (default: 300; maximum: 86400)")
+    node_exec.add_argument("--stdin", action="store_true", help="Forward stdin (otherwise send EOF immediately)")
+    node_exec.add_argument("argv", nargs=argparse.REMAINDER, help="Executable and arguments after --; use sh -lc for shell syntax")
+    node_exec.epilog = "Put Luma options before NODE. Example: luma node exec --timeout 30 NODE -- uname -a. No TTY or Tailscale required; defaults to relay."
     node_join = _command(
         node_sub, "join", "Join this machine to the cluster",
         epilog="Example: luma node join https://luma.example.com --token <node-join-token> --region global --name sg-1",
@@ -787,6 +795,7 @@ def _add_shell_arguments(parser: argparse.ArgumentParser, name_help: str) -> Non
     parser.add_argument("name", help=name_help)
     parser.add_argument("--transport", choices=("auto", "direct", "relay"), default="auto",
                         help="Prefer direct TLS with Control relay fallback, or require one route (default: auto)")
+    parser.add_argument("--diagnose", action="store_true", help="Print selected socket addresses and Control WebSocket RTT to stderr")
     _add_control_arguments(parser)
     parser.epilog = "Requires a local TTY. Ctrl-] disconnects; Ctrl-C is sent to the remote shell. No SSH is used."
 

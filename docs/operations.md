@@ -167,6 +167,55 @@ To disable the listener, change its binding, or advertise a NAT-mapped public ad
 
 Window resizing, Unicode input and ordinary terminal programs are supported. Ctrl-C reaches the remote foreground process; Ctrl-] disconnects; `exit` ends the remote shell and returns its exit code. Both stdin and stdout must be TTYs. This command does not provide non-interactive script execution or file transfer.
 
+
+### Public relay origin
+
+To optimize the Agent-to-Control leg independently of client network membership,
+set `terminalRelay: {"resolveIp": "CONTROL_PUBLIC_ORIGIN_IP"}` in the node Agent
+config. Only terminal traffic uses this preference; other Control API traffic is
+unchanged. Both the preferred and fallback routes verify TLS against the endpoint hostname.
+Failure reconnects through the normal Control route, without replaying commands.
+Web terminals and CLI sessions share this Agent connection; the client-to-Control
+leg is unchanged.
+Agent upgrades preserve this setting. Verify origin reachability before enabling
+it; it neither changes firewall rules nor opens ports.
+
+### Commands for agents and scripts
+
+`node exec` runs without a TTY, forwards separate binary stdout/stderr and returns
+its remote exit code. It defaults to relay: the client needs public HTTPS access
+to Control, while the node only needs its outbound Agent connection. Neither client
+Tailscale membership nor an open node inbound port is required.
+
+```sh
+luma node exec bd-prod -- uname -a
+luma node exec --timeout 30 bd-prod -- sh -lc 'uptime; df -h'
+luma node exec --stdin bd-prod -- sha256sum < artifact.tar
+```
+
+Put Luma flags before NODE. Arguments after NODE/`--` are literal argv; shell
+expansion requires an explicit `sh -lc`. Without `--stdin`, send EOF immediately.
+The default remote deadline is 300 seconds (maximum 86400). Exit statuses: remote
+status normally; 124 on deadline, 126/127 for permission/missing executable, 130 on
+Ctrl-C, 143 on SIGTERM, 255 on transport failure. Silent commands follow their
+execution deadline rather than the shell idle timeout; traffic cannot extend that
+deadline. Connection loss can leave completion unknown: never automatically retry a mutation. Disconnect/deadline terminate the
+supervised process group; network cancellation is best-effort until disconnection
+or the remote deadline is observed. Exec requires CLI, Control and Agent support
+for `exec-v1`; installing only the CLI is insufficient.
+
+For route evidence use `luma node shell NODE --transport relay --diagnose` or
+`luma node exec --diagnose NODE -- uptime`. The Control ping measures only the
+client-to-Control leg. Direct shell output includes its actual peer: a private or
+Tailscale peer does not establish public reachability. Fake-IP peers (`198.18.*`)
+indicate a virtual network path. Compare network/CDN/proxy routing before tuning
+PTY buffering. An operator-provided public Control origin can be selected with
+`--resolve-ip` while preserving Host, SNI and certificate verification; this does
+not bypass TUN routing or open a closed port. Agent terminal `resolveIp` uses the
+same hostname-preserving TLS behavior. No `--insecure` is needed for these terminal
+connections. A lower-latency origin is useful only when reachable from ordinary
+Internet clients; private mesh access is not a general relay performance fix.
+
 ## Remove A Deployment
 
 Use the deployed service or Compose application name:
@@ -248,7 +297,7 @@ sudo docker pull hello-world:latest
 
 ```bash
 luma update                                  # manager: CLI + Control; node: CLI + agent; client: CLI
-luma update --install-ref v0.2.41           # a specific release, branch or full commit
+luma update --install-ref v0.2.42           # a specific release, branch or full commit
 luma update fleet                            # every non-manager node with a ready agent
 luma update fleet --include-manager          # explicit repair only
 ```

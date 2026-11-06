@@ -66,6 +66,7 @@ class TerminalResponsivenessTests(unittest.IsolatedAsyncioTestCase):
             return {"node": "worker", "service": service, "job": "app", "task": "api", "allocId": "alloc"}
 
         broker = server.TerminalBroker(per_node_limit=2, idle_timeout_seconds=60)
+        broker._pending_auth = asyncio.Semaphore(1)
         query = {"service": "app_api"} if application else {"node": "worker-alias", "nodeId": "node-id"}
         socket = FakeWebSocket(query, "agent-token" if agent else "management-token")
         with patch.object(server, "load_state", side_effect=AssertionError("terminal must not load history")) as full, \
@@ -75,6 +76,9 @@ class TerminalResponsivenessTests(unittest.IsolatedAsyncioTestCase):
             try:
                 self.assertTrue(await asyncio.wait_for(asyncio.to_thread(started.wait, 2), 3))
                 self.assertFalse(task.done())
+                overflow = FakeWebSocket(query, "agent-token" if agent else "management-token")
+                await asyncio.wait_for(broker.connect_agent(overflow) if agent else broker.connect_browser(overflow), 1)
+                self.assertEqual(overflow.closed, 1013)
                 # Exercise the real health handler on the same event loop while
                 # terminal DB/upstream work is deliberately still blocked.
                 response = await asyncio.wait_for(server._asgi_health(None), 1)

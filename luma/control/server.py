@@ -14407,6 +14407,7 @@ class _TerminalSession:
         self.browser = browser
         self.agent = agent
         self.last_activity = time.time()
+        self.execution_deadline: float | None = None
         self.browser_lock = asyncio.Lock()
         self.closed = False
 
@@ -14415,10 +14416,11 @@ class _TerminalSession:
 
 
 class _TerminalAgentConnection:
-    def __init__(self, node_name: str, websocket: WebSocket, *, direct_terminal: bool = False):
+    def __init__(self, node_name: str, websocket: WebSocket, *, direct_terminal: bool = False, exec_v1: bool = False):
         self.node_name = node_name
         self.websocket = websocket
         self.direct_terminal = direct_terminal
+        self.exec_v1 = exec_v1
         self.send_lock: asyncio.Lock | None = None
 
     def send_lock_for_loop(self) -> asyncio.Lock:
@@ -14450,7 +14452,7 @@ class TerminalBroker:
         return set(self._agents)
 
     async def connect_browser(self, websocket: WebSocket) -> None:
-        requested_node = str(websocket.query_params.get("node") or "").strip()
+        requested_node = str(websocket.query_params.get("exec-node") or websocket.query_params.get("node") or "").strip()
         requested_service = str(websocket.query_params.get("service") or "").strip()
         if not requested_node and not requested_service:
             await websocket.close(code=1008)
@@ -14477,25 +14479,35 @@ class TerminalBroker:
                 transport = str(auth.get("transport") or "relay")
                 if transport not in {"auto", "direct", "relay"}:
                     raise LumaError("unsupported terminal transport")
+                mode = auth.get("mode", "shell")
+                if mode not in {"shell", "exec"}:
+                    raise LumaError("unsupported terminal mode")
+                if websocket.query_params.get("exec-node") and mode != "exec":
+                    raise LumaError("exec target requires exec mode")
+                execution = None
+                if mode == "exec":
+                    from ..command_session import command_request
+                    if requested_service or not requested_node:
+                        raise LumaError("exec requires a node target")
+                    execution = command_request(auth)
             except Exception:
+                await websocket.close(code=1008)
+                return
+            try:
+                # Hold the auth slot through validation, including off-loop DB
+                # work. Supplying any token must not bypass the auth concurrency bound.
+                node_name, container_target = await run_in_threadpool(
+                    _terminal_browser_target, token, requested_node, requested_service,
+                )
+            except LumaError as exc:
+                try:
+                    await websocket.send_json({"type": "error", "message": str(exc)})
+                except Exception:
+                    pass
                 await websocket.close(code=1008)
                 return
         finally:
             self._pending_auth_for_loop().release()
-        container_target: Dict[str, str] | None = None
-        try:
-            # SQLite and Nomad calls must not hold up unrelated HTTP requests
-            # on the ASGI event loop while a terminal connection is opening.
-            node_name, container_target = await run_in_threadpool(
-                _terminal_browser_target, token, requested_node, requested_service,
-            )
-        except LumaError as exc:
-            try:
-                await websocket.send_json({"type": "error", "message": str(exc)})
-            except Exception:
-                pass
-            await websocket.close(code=1008)
-            return
         session: _TerminalSession | None = None
         idle_task: asyncio.Task[Any] | None = None
         try:
@@ -14504,6 +14516,10 @@ class TerminalBroker:
                 active = [item for item in self._sessions.values() if item.node_name == node_name and not item.closed]
                 if not agent:
                     await websocket.send_json({"type": "error", "message": f"terminal agent is not connected on {node_name}"})
+                    await websocket.close(code=1013)
+                    return
+                if execution and not agent.exec_v1:
+                    await websocket.send_json({"type": "error", "message": "node agent does not support exec-v1; update the node agent"})
                     await websocket.close(code=1013)
                     return
                 if len(active) >= self.per_node_limit:
@@ -14516,9 +14532,16 @@ class TerminalBroker:
                     return
                 session_id = f"term-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
                 session = _TerminalSession(session_id, node_name, websocket, agent)
+                if execution:
+                    # The Agent owns the execution timer. Control also enforces
+                    # an immutable upper bound, allowing route setup and cleanup.
+                    session.execution_deadline = time.monotonic() + execution["timeoutSeconds"] + 30
                 self._sessions[session_id] = session
             open_payload: Dict[str, Any] = {"type": "open", "sessionId": session.id, "node": node_name, "cols": 120, "rows": 32}
             browser_open: Dict[str, Any] = {"type": "open", "sessionId": session.id, "node": node_name}
+            if execution:
+                open_payload.update(execution)
+                browser_open["mode"] = "exec"
             route = transport if agent.direct_terminal else "relay"
             open_payload["transport"] = route
             browser_open["transport"] = route
@@ -14542,7 +14565,11 @@ class TerminalBroker:
                 if not isinstance(message, dict):
                     continue
                 kind = str(message.get("type") or "")
-                if kind not in {"input", "resize", "close", "ping", "relay"}:
+                if kind not in {"input", "resize", "close", "ping", "relay", "stdin", "stdin-eof", "exec-ack"}:
+                    continue
+                if kind in {"stdin", "stdin-eof", "exec-ack"} and not execution:
+                    continue
+                if execution and kind in {"input", "resize"}:
                     continue
                 session.touch()
                 payload = dict(message)
@@ -14578,16 +14605,17 @@ class TerminalBroker:
             except Exception:
                 await websocket.close(code=1008)
                 return
+            try:
+                canonical_node_name = await run_in_threadpool(
+                    _terminal_agent_identity, token, node_name, node_id,
+                )
+            except LumaError:
+                await websocket.close(code=1008)
+                return
         finally:
             self._pending_auth_for_loop().release()
-        try:
-            canonical_node_name = await run_in_threadpool(
-                _terminal_agent_identity, token, node_name, node_id,
-            )
-        except LumaError:
-            await websocket.close(code=1008)
-            return
-        connection = _TerminalAgentConnection(canonical_node_name, websocket, direct_terminal=auth.get("directTerminal") is True)
+        connection = _TerminalAgentConnection(canonical_node_name, websocket, direct_terminal=auth.get("directTerminal") is True,
+                                              exec_v1=auth.get("execV1") is True)
         async with self._lock_for_loop():
             previous = self._agents.get(canonical_node_name)
             self._agents[canonical_node_name] = connection
@@ -14683,11 +14711,17 @@ class TerminalBroker:
         try:
             while not session.closed:
                 await asyncio.sleep(10)
-                if time.time() - session.last_activity < self.idle_timeout_seconds:
-                    continue
+                if session.execution_deadline is not None:
+                    if time.monotonic() < session.execution_deadline:
+                        continue
+                    message = "remote command deadline exceeded"
+                else:
+                    if time.time() - session.last_activity < self.idle_timeout_seconds:
+                        continue
+                    message = "terminal session idle timeout"
                 try:
                     async with session.browser_lock:
-                        await session.browser.send_json({"type": "error", "sessionId": session.id, "message": "terminal session idle timeout"})
+                        await session.browser.send_json({"type": "error", "sessionId": session.id, "message": message})
                 except Exception:
                     pass
                 await self.close_session(session.id, notify_agent=True)

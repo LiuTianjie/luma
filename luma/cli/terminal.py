@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import codecs
 import contextlib
 import hashlib
@@ -11,26 +12,75 @@ import os
 import re
 import secrets
 import signal
+import stat
 import ssl
 import sys
 import termios
 import tty
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from ..control.client import ControlClient
 from ..errors import LumaError
 from ..terminal_direct import DirectTerminals
+from ..command_session import CHUNK_SIZE, WINDOW, command_request
 from .common import _control_context
+
+
+@dataclass
+class TerminalClient:
+    endpoint: str
+    token: str
+    insecure: bool = False
+    resolve_ip: str | None = None
+
+
+def _terminal_client(args) -> TerminalClient:
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    # Validate the HTTPS endpoint without adopting HTTP's URL-rewrite resolver.
+    validated = ControlClient(endpoint, token, insecure=insecure)
+    return TerminalClient(validated.endpoint, token, insecure, resolve_ip)
 
 
 def cmd_shell(args: argparse.Namespace) -> int:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise LumaError("shell requires an interactive terminal (stdin and stdout must be TTYs)")
-    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
-    client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    client = _terminal_client(args)
     return asyncio.run(run_shell(client, name=args.name, target="service" if args.command == "app" else "node",
-                                 transport=args.transport))
+                                 transport=args.transport, diagnose=args.diagnose))
+
+
+def cmd_exec(args: argparse.Namespace) -> int:
+    argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
+    try:
+        request = command_request({"argv": argv, "timeoutSeconds": args.timeout})
+    except ValueError as exc:
+        raise LumaError(str(exc)) from exc
+    client = _terminal_client(args)
+    async def run():
+        task = asyncio.current_task()
+        loop = asyncio.get_running_loop()
+        terminated = False
+        def terminate():
+            nonlocal terminated
+            terminated = True
+            task.cancel()
+        loop.add_signal_handler(signal.SIGTERM, terminate)
+        try:
+            return await run_shell(client, name=args.name, target="node", transport=args.transport,
+                                   execution=request, forward_stdin=args.stdin, diagnose=args.diagnose)
+        except asyncio.CancelledError:
+            if terminated:
+                return 143
+            raise
+        finally:
+            loop.remove_signal_handler(signal.SIGTERM)
+    try:
+        return asyncio.run(run())
+    except LumaError as exc:
+        print(f"luma: {exc}; remote completion may be unknown; command was not retried", file=sys.stderr)
+        return 255
 
 
 def control_connection(client: ControlClient, *, name: str, target: str):
@@ -43,7 +93,7 @@ def control_connection(client: ControlClient, *, name: str, target: str):
     options: dict[str, Any] = {}
     if client.resolve_ip:
         # Override only the TCP destination; preserve Host and TLS server name.
-        options.update(host=client.resolve_ip, port=parsed.port or 443, proxy=None)
+        options.update(host=client.resolve_ip, port=parsed.port or 443, proxy=None, server_hostname=parsed.hostname)
     return connect(uri, ssl=tls, open_timeout=10, close_timeout=2, ping_interval=20,
                    ping_timeout=20, max_size=1024 * 1024, **options)
 
@@ -115,15 +165,20 @@ async def connect_direct(offer: dict[str, Any]):
     return selected
 
 
-async def run_shell(client: ControlClient, *, name: str, target: str, transport: str) -> int:
+async def run_shell(client: ControlClient, *, name: str, target: str, transport: str,
+                    execution: dict | None = None, forward_stdin: bool = False, diagnose: bool = False) -> int:
     direct = None
     try:
-        async with control_connection(client, name=name, target=target) as control:
+        # Old Controls reject this unknown target before opening a PTY. They must
+        # not silently interpret an exec request as an interactive shell.
+        async with control_connection(client, name=name, target="exec-node" if execution else target) as control:
             try:
-                await _send(control, {"type": "auth", "token": client.token, "transport": transport})
+                await _send(control, {"type": "auth", "token": client.token, "transport": transport, **(execution or {})})
                 opened = await _receive(control, timeout=15)
                 if opened.get("type") != "open":
                     raise LumaError("Control did not open a terminal session")
+                if execution and opened.get("mode") != "exec":
+                    raise LumaError("Control does not support exec-v1; update Control before running commands")
                 route = opened.get("transport", "relay")
                 if route == "relay":
                     if transport == "direct":
@@ -153,7 +208,22 @@ async def run_shell(client: ControlClient, *, name: str, target: str, transport:
                         if ready.get("type") != "open":
                             raise LumaError("node did not accept the direct terminal ticket")
                 actual = "direct" if direct else "relay"
-                print(f"luma: connected to {name} via {actual}; Ctrl-] disconnects", file=sys.stderr, flush=True)
+                peer = direct.transport.get_extra_info("peername") if direct else None
+                address = f" ({peer[0]}:{peer[1]})" if peer else ""
+                if diagnose:
+                    control_peer = control.transport.get_extra_info("peername")
+                    samples = []
+                    try:
+                        for _ in range(3):
+                            pong = await control.ping()
+                            samples.append(round(1000 * await asyncio.wait_for(pong, 2), 1))
+                        print(f"luma: route={actual}{address}; Control peer={control_peer}; Control RTT ms={samples}", file=sys.stderr)
+                    except asyncio.TimeoutError:
+                        print(f"luma: route={actual}{address}; Control peer={control_peer}; Control ping timed out", file=sys.stderr)
+                if execution:
+                    return await interact_command(direct or control, control=control if direct else None,
+                                                  forward_stdin=forward_stdin)
+                print(f"luma: connected to {name} via {actual}{address}; Ctrl-] disconnects", file=sys.stderr, flush=True)
                 return await interact(direct or control, control=control if direct else None)
             finally:
                 if direct:
@@ -165,6 +235,91 @@ async def run_shell(client: ControlClient, *, name: str, target: str, transport:
     except Exception as exc:
         # Don't print frames, handshake headers or credentials from transport errors.
         raise LumaError(f"terminal connection ended ({type(exc).__name__}); check Control and node connectivity") from exc
+
+
+async def _read_stdin() -> bytes:
+    fd = sys.stdin.fileno()
+    if stat.S_ISREG(os.fstat(fd).st_mode):
+        return os.read(fd, CHUNK_SIZE)
+    loop = asyncio.get_running_loop()
+    ready = loop.create_future()
+    def readable():
+        if not ready.done():
+            try:
+                ready.set_result(os.read(fd, CHUNK_SIZE))
+            except Exception as exc:
+                ready.set_exception(exc)
+    loop.add_reader(fd, readable)
+    try:
+        return await ready
+    finally:
+        loop.remove_reader(fd)
+
+
+async def _watch_control_lease(control) -> None:
+    from websockets.exceptions import ConnectionClosedOK
+    try:
+        while True:
+            await _receive(control)
+    except ConnectionClosedOK:
+        # The direct exit frame can race Control's normal close. Drain briefly,
+        # but never keep an unleased direct command alive indefinitely.
+        await asyncio.sleep(1)
+        raise LumaError("Control session closed before the terminal exit was received")
+
+
+async def interact_command(websocket, *, control=None, forward_stdin=False) -> int:
+    from websockets.exceptions import ConnectionClosed
+    credits = asyncio.Semaphore(WINDOW)
+    async def send_input():
+        try:
+            if forward_stdin:
+                while True:
+                    await credits.acquire()
+                    data = await _read_stdin()
+                    if not data:
+                        break
+                    await _send(websocket, {"type": "stdin", "data": base64.b64encode(data).decode("ascii")})
+            await _send(websocket, {"type": "stdin-eof"})
+        except ConnectionClosed:
+            # A fast command may finish without reading any stdin.
+            pass
+
+    async def receive_output():
+        while True:
+            message = await _receive(websocket)
+            if message.get("type") == "stdin-ack":
+                credits.release()
+            elif message.get("type") == "exec-output":
+                data = base64.b64decode(message.get("data", ""), validate=True)
+                stream = sys.stdout if message.get("stream") == "stdout" else sys.stderr
+                stream.buffer.write(data)
+                stream.buffer.flush()
+                with contextlib.suppress(ConnectionClosed):
+                    await _send(websocket, {"type": "exec-ack"})
+            elif message.get("type") == "exit":
+                if message.get("timedOut"):
+                    print("luma: remote command timed out", file=sys.stderr, flush=True)
+                code = int(message.get("exitCode", 255))
+                return code if 0 <= code <= 255 else 255
+
+    sender = asyncio.create_task(send_input())
+    receiver = asyncio.create_task(receive_output())
+    tasks = [sender, receiver]
+    if control:
+        tasks.append(asyncio.create_task(_watch_control_lease(control)))
+    pending = set(tasks)
+    try:
+        while True:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            if receiver in done:
+                return receiver.result()
+            for task in done:
+                task.result()
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _size() -> dict[str, Any]:
@@ -215,17 +370,6 @@ async def interact(websocket: Any, *, control: Any = None) -> int:
                 code = int(message.get("exitCode", -1))
                 return code if 0 <= code <= 255 else 1
 
-    async def watch_control():
-        # A direct terminal retains the Control authorization/session lease.
-        # Shell bytes travel only on the direct socket. Normal close races with
-        # the direct exit frame; let receive_output drain that frame.
-        from websockets.exceptions import ConnectionClosedOK
-        try:
-            while True:
-                await _receive(control)
-        except ConnectionClosedOK:
-            await asyncio.Future()
-
     try:
         await _send(websocket, _size())
         tty.setraw(fd)
@@ -235,7 +379,7 @@ async def interact(websocket: Any, *, control: Any = None) -> int:
             loop.add_signal_handler(signum, lambda sig=signum: queue.put_nowait(_size() if sig == signal.SIGWINCH else None))
         tasks = [asyncio.create_task(receive_output()), asyncio.create_task(send_input())]
         if control:
-            tasks.append(asyncio.create_task(watch_control()))
+            tasks.append(asyncio.create_task(_watch_control_lease(control)))
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         # Prefer the actual remote exit status if input/Control closes concurrently.
         for task in tasks:

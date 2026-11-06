@@ -34,7 +34,7 @@ Luma 提供四个面向 AI 编码助手的 Skill，覆盖部署、可观测、�
 
 ## 交互终端 {#interactive-terminals}
 
-[`luma-shell`](../skills/luma-shell/) 介绍 `luma node shell NODE` 和 `luma app shell FULL_SERVICE_NAME`，包含 PTY 交互、无需 SSH 的 TLS 直连与 Control 中转。它说明端口关闭时为何必须中转、如何识别实际通道，以及 CLI、控制面和节点的升级要求。配置和用法见[本地终端](operations.zh-CN.md#cli-shell)。
+[`luma-shell`](../skills/luma-shell/) 包含 AI Agent/脚本使用的非 TTY `luma node exec NODE -- COMMAND...`（stdin、分离输出、退出码、超时与取消），以及 `luma node shell NODE` 和 `luma app shell FULL_SERVICE_NAME`，包含 PTY 交互、无需 SSH 的 TLS 直连与 Control 中转。exec 默认中转，客户端无需加入 Tailscale。它说明端口关闭时为何必须中转、如何读取实际 socket 地址和 Control RTT，以及 CLI、控制面和节点的升级要求。配置和用法见[本地终端](operations.zh-CN.md#cli-shell)。
 
 示例指令：
 

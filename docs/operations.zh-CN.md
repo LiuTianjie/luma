@@ -167,6 +167,46 @@ luma node shell <node-name> --transport relay
 
 支持窗口尺寸变化、中文输入和常用终端程序。`Ctrl-C` 发送给远端前台进程，`Ctrl-]` 断开本次连接，`exit` 结束远端 shell 并返回退出码。需要 stdin/stdout 都是 TTY；此命令不提供非交互脚本执行或文件传输。
 
+
+### 中转源站配置
+
+可在节点 Agent 配置中设置 `terminalRelay: {"resolveIp": "CONTROL公网源站IP"}`，
+仅优化 Agent 到 Control 的终端链路，不改变客户端网络要求和其他 Control API
+请求。优先和回退链路均校验域名证书；不可达时重连原有 Control 路径，不重放命令。
+网页终端和 CLI 共用该 Agent 出站链路，客户端到 Control 的路径不变。
+Agent 升级保留该字段。启用前验证源站可达性；它不会修改防火墙或打开端口。
+
+### AI Agent 与脚本执行命令
+
+`node exec` 无需 TTY，分别传输二进制 stdout/stderr，并返回远端退出码。默认走
+relay：普通公网客户端通过 HTTPS 连接 Control，节点通过 Agent 出站连接接受命令。
+不要求客户端加入 Tailscale，也不要求节点开放入站端口。
+
+```sh
+luma node exec bd-prod -- uname -a
+luma node exec --timeout 30 bd-prod -- sh -lc 'uptime; df -h'
+luma node exec --stdin bd-prod -- sha256sum < artifact.tar
+```
+
+Luma 参数放在节点名前，后续参数按原样作为 argv；管道、变量展开等使用显式
+`sh -lc`。未加 `--stdin` 时立即发送 EOF。远端超时默认 300 秒、最大 86400 秒。
+正常返回远端退出码；超时 124、无执行权限 126、程序不存在 127、Ctrl-C 130、
+SIGTERM 143、传输失败 255。静默命令按执行期限管理，不套用交互 Shell 的空闲
+超时；持续输入输出也不能延长该期限。断线可能使最终结果未知，不自动重试命令；变更命令
+重试前先查状态。断线/超时会取消受监督的进程组；网络故障下要等节点感知断线或
+远端期限到达。CLI、Control、Agent 均须支持 `exec-v1`，只安装 CLI 不足以使用。
+
+使用 `luma node shell NODE --transport relay --diagnose` 或
+`luma node exec --diagnose NODE -- uptime` 查看实际 socket 地址和 Control ping。
+该 ping 只测客户端到 Control。直连输出中的内网/Tailscale 地址不能证明公网可达；
+`198.18.*` 是虚拟网络路径，不能当作远端服务器地址。先比较网络、CDN 和代理
+路由，再判断是否需要调整 PTY 缓冲。
+
+操作方提供可达的 Control 公网源站 IP 时，终端命令的 `--resolve-ip` 可保留域名、
+SNI 和证书校验，只改变 TCP 目标。它不能绕过系统 TUN 或打开已关闭的端口；节点
+终端 `resolveIp` 同样保留域名校验。这些终端连接不需要添加 `--insecure`。
+优化 relay 入口必须以普通公网客户端可达为前提，不能把私网访问作为通用解法。
+
 ## 删除部署 {#remove-a-deployment}
 
 使用已部署的服务名或 Compose 应用名：
@@ -248,7 +288,7 @@ sudo docker pull hello-world:latest
 
 ```bash
 luma update                                  # manager: CLI + Control; node: CLI + agent; client: CLI
-luma update --install-ref v0.2.41           # a specific release, branch or full commit
+luma update --install-ref v0.2.42           # a specific release, branch or full commit
 luma update fleet                            # every non-manager node with a ready agent
 luma update fleet --include-manager          # explicit repair only
 ```

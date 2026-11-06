@@ -943,7 +943,7 @@ Examples:
 ## `luma app shell`
 
 ```text
-usage: luma app shell [-h] [--transport {auto,direct,relay}] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] name
+usage: luma app shell [-h] [--transport {auto,direct,relay}] [--diagnose] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] name
 
 Open an interactive service container terminal through Luma
 
@@ -955,6 +955,7 @@ arguments:
   --transport {auto,direct,relay}
                               Prefer direct TLS with Control relay fallback, or require one route
                               (default: auto)
+  --diagnose                  Print selected socket addresses and Control WebSocket RTT to stderr
 
 arguments:
   --control-context CONTROL_CONTEXT
@@ -1507,7 +1508,7 @@ arguments:
 
 Examples:
   luma update
-  luma update --install-ref v0.2.41
+  luma update --install-ref v0.2.42
   luma update fleet
 ```
 
@@ -1573,6 +1574,7 @@ arguments:
 arguments:
   <command>
     shell       Open an interactive node terminal through Luma
+    exec        Run a node command without a TTY; stream output and return its exit code
     join        Join this machine to the cluster
     list        List registered nodes
     status      Show node readiness, agent and resource details
@@ -1585,7 +1587,7 @@ arguments:
 ## `luma node shell`
 
 ```text
-usage: luma node shell [-h] [--transport {auto,direct,relay}] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] name
+usage: luma node shell [-h] [--transport {auto,direct,relay}] [--diagnose] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] name
 
 Open an interactive node terminal through Luma
 
@@ -1597,6 +1599,7 @@ arguments:
   --transport {auto,direct,relay}
                               Prefer direct TLS with Control relay fallback, or require one route
                               (default: auto)
+  --diagnose                  Print selected socket addresses and Control WebSocket RTT to stderr
 
 arguments:
   --control-context CONTROL_CONTEXT
@@ -1607,6 +1610,37 @@ arguments:
   --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
 
 Requires a local TTY. Ctrl-] disconnects; Ctrl-C is sent to the remote shell. No SSH is used.
+```
+
+## `luma node exec`
+
+```text
+usage: luma node exec [-h] [--transport {auto,direct,relay}] [--diagnose] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--timeout TIMEOUT] [--stdin] name ...
+
+Run a node command without a TTY; stream output and return its exit code
+
+arguments:
+  name                        Node name or ID from 'luma node list'
+  argv                        Executable and arguments after --; use sh -lc for shell syntax
+
+arguments:
+  -h, --help                  show this help message and exit
+  --transport {auto,direct,relay}
+                              Connection route (default: relay; no node inbound connection required)
+  --diagnose                  Print selected socket addresses and Control WebSocket RTT to stderr
+  --timeout TIMEOUT           Remote command deadline in seconds (default: 300; maximum: 86400)
+  --stdin                     Forward stdin (otherwise send EOF immediately)
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+
+Put Luma options before NODE. Example: luma node exec --timeout 30 NODE -- uname -a. No TTY or
+Tailscale required; defaults to relay.
 ```
 
 ## `luma node join`

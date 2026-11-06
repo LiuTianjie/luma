@@ -1,6 +1,6 @@
 # AI Agent Skills
 
-Luma includes four skills for AI coding assistants. They cover deployment, observability, log investigation and interactive terminals. They are installed in the assistant, not in the running cluster.
+Luma includes four skills for AI coding assistants. They cover deployment, observability, log investigation, remote commands and interactive terminals. They are installed in the assistant, not in the running cluster.
 
 ## Deployment workflows
 
@@ -38,10 +38,10 @@ Example request:
 
 ## Interactive terminals {#interactive-terminals}
 
-[`luma-shell`](../skills/luma-shell/) introduces `luma node shell NODE` and
+[`luma-shell`](../skills/luma-shell/) covers non-TTY `luma node exec NODE -- COMMAND...` for agents and scripts (stdin, separate stdout/stderr, exit status and cancellation), plus `luma node shell NODE` and
 `luma app shell FULL_SERVICE_NAME`, including PTY interaction, direct TLS and
 Control relay without SSH. It explains why closed inbound ports require relay,
-how to read the selected route and which components need upgrading. See
+how to read actual socket addresses and Control RTT, and which components need upgrading. Clients need no Tailscale membership; exec defaults to relay. See
 [local terminals](operations.md#cli-shell) for configuration and usage.
 
 Example request:

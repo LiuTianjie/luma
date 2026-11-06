@@ -33,6 +33,7 @@ from . import __version__
 from . import disk_hygiene
 from .build_capabilities import NATIVE_ARM_BUILD_CAPABILITY, REPOSITORY_BUILD_PLAN_CAPABILITY, native_arm_build_platform
 from .errors import LumaError
+from .command_session import CommandSession
 from .installer import luma_installer_command
 from .installation import runtime_record, installer_environment
 from .local import LocalExecutor, LocalResult
@@ -979,6 +980,8 @@ def install_node_agent(
         previous = json.loads(config_path.read_text(encoding="utf-8"))
         if previous.get("nodeName") == node_name and isinstance(previous.get("terminalDirect"), dict):
             config["terminalDirect"] = previous["terminalDirect"]
+        if previous.get("nodeName") == node_name and isinstance(previous.get("terminalRelay"), dict):
+            config["terminalRelay"] = previous["terminalRelay"]
     except (OSError, ValueError):
         pass
     executor = LocalExecutor()
@@ -1945,12 +1948,29 @@ async def _run_terminal_supervisor(config_path: Path) -> None:
     loop = asyncio.get_running_loop()
     backoff = 1.0
     max_backoff = 60.0
+    relay_options = config.get("terminalRelay") or {}
+    preferred_relay_ip = str(relay_options.get("resolveIp") or "") if isinstance(relay_options, dict) else ""
+    if preferred_relay_ip:
+        import ipaddress
+        ipaddress.ip_address(preferred_relay_ip)
+        if urllib.parse.urlsplit(endpoint).scheme != "https":
+            raise LumaError("preferred terminal relay requires an HTTPS Control endpoint")
+    normal_relay_ip = str(config.get("resolveIp") or "") or None
+    use_preferred_relay = bool(preferred_relay_ip)
+
+    async def close_sessions():
+        closing = list(sessions.values())
+        sessions.clear()
+        for session in closing:
+            session.close()
+        await asyncio.gather(*(session.wait_closed() for session in closing if isinstance(session, CommandSession)))
 
     def open_terminal(message, output):
         sid = str(message["sessionId"])
-        terminal = _PtySession(sid, outbound=output, loop=loop,
-                               rows=int(message.get("rows") or 32), cols=int(message.get("cols") or 120),
-                               argv=_terminal_open_argv(message))
+        terminal = (CommandSession(sid, message, outbound=output) if message.get("mode") == "exec" else
+                    _PtySession(sid, outbound=output, loop=loop,
+                                rows=int(message.get("rows") or 32), cols=int(message.get("cols") or 120),
+                                argv=_terminal_open_argv(message)))
         if output is outbound:
             sessions[sid] = terminal
         return terminal
@@ -1969,12 +1989,12 @@ async def _run_terminal_supervisor(config_path: Path) -> None:
                     token=token,
                     node_name=node_name,
                     node_id=node_id,
-                    insecure=bool(config.get("insecure")),
-                    resolve_ip=str(config.get("resolveIp") or "") or None,
+                    insecure=False if preferred_relay_ip else bool(config.get("insecure")),
+                    resolve_ip=preferred_relay_ip if use_preferred_relay else normal_relay_ip,
                 ) as websocket:
                     backoff = 1.0  # connection established; reset reconnect backoff
                     await websocket.send(json.dumps({"type": "auth", "token": token,
-                                                     "directTerminal": bool(direct.server)}, separators=(",", ":")))
+                                                     "directTerminal": bool(direct.server), "execV1": True}, separators=(",", ":")))
                     send_task = asyncio.create_task(_terminal_sender(websocket, outbound))
                     try:
                         async for raw in websocket:
@@ -1992,13 +2012,14 @@ async def _run_terminal_supervisor(config_path: Path) -> None:
                         send_task.cancel()
                         await asyncio.gather(send_task, return_exceptions=True)
                         await direct.reset()
-                        for session in list(sessions.values()):
-                            session.close()
-                        sessions.clear()
+                        await close_sessions()
             except Exception as exc:
-                for session in list(sessions.values()):
-                    session.close()
-                sessions.clear()
+                await close_sessions()
+                if use_preferred_relay:
+                    # Retry the established Control route, never a command/session.
+                    use_preferred_relay = False
+                    print("luma: preferred terminal relay unavailable; reconnecting through the normal Control route", file=sys.stderr, flush=True)
+                    continue
                 # Log the cause instead of silently swallowing it, and back off
                 # exponentially so a persistently-down Control isn't hammered.
                 print(
@@ -2010,9 +2031,7 @@ async def _run_terminal_supervisor(config_path: Path) -> None:
                 backoff = min(backoff * 2, max_backoff)
     finally:
         await direct.stop()
-        for session in list(sessions.values()):
-            session.close()
-        sessions.clear()
+        await close_sessions()
 
 
 async def _terminal_ws_connect(
@@ -2029,20 +2048,16 @@ async def _terminal_ws_connect(
     parsed = urllib.parse.urlparse(endpoint)
     scheme = "wss" if parsed.scheme == "https" else "ws"
     query = urllib.parse.urlencode({"node": node_name, "nodeId": node_id})
-    netloc = parsed.netloc
-    headers: Dict[str, str] = {}
-    if resolve_ip:
-        port = f":{parsed.port}" if parsed.port else ""
-        netloc = f"{resolve_ip}{port}"
-        headers["Host"] = parsed.netloc
-    uri = urllib.parse.urlunparse((scheme, netloc, "/v1/terminal/agent", "", query, ""))
+    uri = urllib.parse.urlunparse((scheme, parsed.netloc, parsed.path.rstrip("/") + "/v1/terminal/agent", "", query, ""))
     ssl_context: ssl.SSLContext | bool | None = None
     if scheme == "wss":
         ssl_context = ssl._create_unverified_context() if insecure else ssl.create_default_context()
-    try:
-        return websockets.connect(uri, ssl=ssl_context, additional_headers=headers or None, ping_interval=20, ping_timeout=20, max_size=None)
-    except TypeError:
-        return websockets.connect(uri, ssl=ssl_context, extra_headers=headers or None, ping_interval=20, ping_timeout=20, max_size=None)
+    options: Dict[str, Any] = {}
+    if resolve_ip:
+        options.update(host=resolve_ip, port=parsed.port or (443 if scheme == "wss" else 80), proxy=None)
+        if scheme == "wss":
+            options["server_hostname"] = parsed.hostname
+    return websockets.connect(uri, ssl=ssl_context, ping_interval=20, ping_timeout=20, max_size=1024 * 1024, **options)
 
 
 async def _terminal_sender(websocket: Any, outbound: "asyncio.Queue[Dict[str, Any]]") -> None:
@@ -2072,6 +2087,9 @@ def _handle_terminal_control_message(
         if session_id in sessions:
             return
         try:
+            if message.get("mode") == "exec":
+                sessions[session_id] = CommandSession(session_id, message, outbound=outbound)
+                return
             rows = int(message.get("rows") or 32)
             cols = int(message.get("cols") or 120)
             argv = _terminal_open_argv(message)
@@ -2081,6 +2099,9 @@ def _handle_terminal_control_message(
         return
     session = sessions.get(session_id)
     if not session:
+        return
+    if isinstance(session, CommandSession) and kind in {"stdin", "stdin-eof", "exec-ack"}:
+        session.receive(message)
         return
     if kind == "input":
         session.write(str(message.get("data") or ""))

@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+from .command_session import CommandSession
+
 
 DIRECT_PORT = 17443
 TICKET_SECONDS = 20
@@ -226,7 +228,10 @@ class DirectTerminals:
             sender = asyncio.create_task(send_output())
             async for raw in websocket:
                 message = json.loads(raw)
-                if message.get("type") == "input":
+                if isinstance(terminal, CommandSession) and message.get("type") in {"stdin", "stdin-eof", "exec-ack"}:
+                    terminal.receive(message)
+                    touch()
+                elif message.get("type") == "input":
                     terminal.write(str(message.get("data") or ""))
                     touch()
                 elif message.get("type") == "resize":
@@ -244,6 +249,8 @@ class DirectTerminals:
                 await asyncio.gather(sender, return_exceptions=True)
             if terminal:
                 await asyncio.to_thread(terminal.close)
+                if isinstance(terminal, CommandSession):
+                    await terminal.wait_closed()
             if sid:
                 self.active.pop(sid, None)
                 self.outbound.put_nowait({"type": "close", "sessionId": sid})

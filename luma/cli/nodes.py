@@ -24,6 +24,9 @@ from .manager import _host_from_hostport, _install_node_agent_from_token, _local
 
 
 def cmd_node(args: argparse.Namespace) -> int:
+    if args.node_command == "exec":
+        from .terminal import cmd_exec
+        return cmd_exec(args)
     if args.node_command == "shell":
         from .terminal import cmd_shell
         return cmd_shell(args)
