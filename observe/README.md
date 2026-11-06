@@ -172,24 +172,28 @@ default five-minute block flush and subsequent five-minute blocklist scan.
 
 The Collector reserves 768 MiB and has a 2 GiB container ceiling. Its Go memory
 target is 1024 MiB, below the memory limiter's 1280 MiB soft / 1536 MiB hard
-thresholds. The PRW WAL uses `buffer_size: 1`: the pinned PRW 0.122.0 otherwise
-buffers up to 300 decoded write requests and checks its flush timer only after
-reading another entry. Idle input can strand a partial batch; memory refusal
-can then prevent the next entry from ever arriving. Each entry is already a
-batched metrics request, so this setting retains disk persistence while avoiding
-the extra decoded-request backlog. Do not remove the WAL to recover memory.
+thresholds. The PRW exporter runs without its WAL. In the pinned PRW 0.122.0
+(and upstream main) the WAL's `TruncateFront` cannot remove the newest entry,
+so the exporter re-sends that entry in a tight loop until new input arrives.
+With `buffer_size: 1` the production manager stored each point about 300
+times; the default buffer instead strands an idle partial batch. The
+exporter's in-memory queue and default 5-minute retry cover VictoriaMetrics
+restarts; a Collector crash loses at most the batches still queued in memory
+(cumulative counters recover their value on the next export). Do not
+re-enable the WAL.
 
 For heap evidence, pprof is available only on Manager loopback
 `127.0.0.1:1777/debug/pprof/heap`. Compare after-GC `?gc=1` profiles and fresh
-VictoriaMetrics samples, not only exporter queue size: an empty exporter queue
-does not account for the PRW WAL's decoded read buffer. Recheck disk latency and
-export throughput when increasing the batch rate.
+VictoriaMetrics samples, not only exporter queue size. Compare
+`vm_rows_inserted_total{type="promremotewrite"}` with the Collector's sent
+metric points: a large gap means duplicate writes. Recheck export throughput
+when increasing the batch rate.
 
 From the repository root, with the Python package dependencies and Docker
 installed:
 
 ```bash
-python scripts/check-observe-wal.py
+python scripts/check-observe-metrics-delivery.py
 python scripts/check-observe-tempo.py --platform linux/amd64
 python scripts/check-observe-protocols.py --platform linux/amd64
 ```

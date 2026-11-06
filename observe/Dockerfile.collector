@@ -1,5 +1,5 @@
 FROM alpine:3.21 AS storage
-RUN mkdir -p /var/lib/otelcol/storage /var/lib/otelcol/prw && chmod -R 0777 /var/lib/otelcol
+RUN mkdir -p /var/lib/otelcol/storage && chmod -R 0777 /var/lib/otelcol
 FROM otel/opentelemetry-collector-contrib:0.122.1
 COPY --from=storage /var/lib/otelcol /var/lib/otelcol
 ENV LUMA_OTLP_MESH_BIND=127.0.0.1
