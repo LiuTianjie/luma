@@ -121,6 +121,14 @@ default syntax is not resolved by Luma. Configure only the enabled roles using
 random bearer tokens of 32–512 characters. The CLI prompts privately. The safe
 variable list is in [`observe/.env.example`](../observe/.env.example).
 
+Keep enabled roles' `${NAME}` references in the actual deployment configuration
+when upgrading Observe. Saved Secrets and container environment values are separate:
+a saved Secret does not override a literal empty value in the template. Before
+writing the new job, Control compares the previous generated job. If a role had
+credentials, its deployment Secret is still saved, and the new environment clears
+the credential, the update is rejected with the reference to retain. Fresh
+installations still start with zero authorized users.
+
 Rebuild and deploy this independently managed stack from `observe/` using the
 existing build workflow, for example `luma build local . --platform linux/amd64`.
 A CLI/Control update does not update the stack. The original storage paths,
@@ -182,8 +190,10 @@ this gateway adds no log write endpoint.
 For rotation, replace the appropriate scoped secret and redeploy the stack,
 then update consumers. The gateway accepts one credential per role, so plan a
 short read outage or telemetry loss during rotation. Application execution
-must remain independent of telemetry delivery. To disable a role, restore its
-literal empty environment value and redeploy. Remove the explicit Traefik file
+must remain independent of telemetry delivery. To disable a role intentionally,
+first remove its saved scoped Secret, then restore its literal empty environment
+value and redeploy. For legacy global credentials, remove the global Secret.
+Remove the explicit Traefik file
 when HTTPS machine access is no longer needed.
 
 ## Application-owned dashboards and rules

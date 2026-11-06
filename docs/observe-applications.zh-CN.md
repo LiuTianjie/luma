@@ -93,7 +93,9 @@ OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20<ingest-token>
 
 当前 PRW exporter 要求单调计数、直方图等使用 cumulative temporality。SDK 默认满足该条件；外部 SDK 或显式设置 DELTA 的进程需要改回 cumulative，本栈尚无 delta-to-cumulative 转换。接入身份、长任务采样和持久队列的现状与后续方案见[通用观测平台设计](observe-platform-design.zh-CN.md)。
 
-轮换时替换对应 scope Secret、重新部署，再更新消费者；每个角色同时接受一个 Token，切换期间允许短暂查询中断或遥测丢弃，业务执行继续。停用角色时把其环境值恢复为字面量空字符串后重新部署；停用 HTTPS 访问时移除显式安装的 Traefik 配置文件。
+升级观测栈时，实际部署配置应保留已启用角色的 `${NAME}` 引用。Secret 存储与容器环境是两层配置，保存同名 Secret 不会自动覆盖模板中的空字符串。Control 在写入新任务前检查上一份生成的任务：若角色原来已有凭证、对应部署 Secret 仍在，而新环境把凭证清空，则拒绝更新并指出需要保留的引用。全新安装继续默认零授权用户。
+
+轮换时替换对应 scope Secret、重新部署，再更新消费者；每个角色同时接受一个 Token，切换期间允许短暂查询中断或遥测丢弃，业务执行继续。主动停用角色时，先删除对应 scope 中保存的 Secret，再把其环境值恢复为字面量空字符串并重新部署；旧版全局凭证应删除对应全局 Secret。停用 HTTPS 访问时移除显式安装的 Traefik 配置文件。
 
 ## 应用自行维护看板与规则 {#application-owned-dashboards-and-rules}
 
