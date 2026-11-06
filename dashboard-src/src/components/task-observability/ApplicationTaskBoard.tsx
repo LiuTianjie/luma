@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent } from "@/components/ui/card";
 import { SelectControl } from "../primitives";
+import { InvestigationBar } from "../InvestigationBar";
 import { TaskOverview } from "./TaskOverview";
 import { ExecutionBrowser } from "./ExecutionBrowser";
 import { TracePanel } from "./TracePanel";
@@ -309,9 +310,10 @@ export function ApplicationTaskBoard({
           {view === "metrics" && metrics}
         </TabsContent>
         {view !== "metrics" && (
-          <Card>
-            <CardContent>
-              <TabsContent value={view}>
+          <TabsContent value={view} className="flex min-w-0 flex-col gap-4">
+            <InvestigationBar app={app} lang={zh ? "zh" : "en"} filters="service" />
+            <Card>
+              <CardContent>
                 {traceId ? (
                   <>
                     <Button
@@ -431,9 +433,9 @@ export function ApplicationTaskBoard({
                     )}
                   </>
                 )}
-              </TabsContent>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          </TabsContent>
         )}
       </Tabs>
     </div>

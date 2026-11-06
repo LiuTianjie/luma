@@ -837,9 +837,6 @@ export function ApplicationManagementPanel({
       <span className="sr-only">{label}</span>
     </div>
   );
-  const logView = new URLSearchParams(search).get("logView");
-  const liveLogs = logView === "live" || (!logView && Boolean(new URLSearchParams(search).get("service")));
-  const showInvestigation = ["overview", "logs", "metrics", "dashboards"].includes(tab) && !(tab === "logs" && liveLogs);
   const detailPage = selected ? (
     <section
       className="flex min-w-0 flex-col gap-6"
@@ -947,7 +944,6 @@ export function ApplicationManagementPanel({
           </TabsList>
         </div>
         <TabsContent value={tab} className="flex min-w-0 flex-col gap-6">
-          {showInvestigation && <InvestigationBar app={selected.stack} lang={lang} filters={tab === "metrics" ? "none" : tab === "logs" ? "all" : "service"} />}
           {tab === "overview" && <ObservationStatus app={selected.stack} lang={lang} token={token} />}
           {tab === "alerts" ? <AlertingPanel key={selected.stack} lang={lang} token={token} tab="alerts" application={selected.stack} /> : null}
           {tab === "secrets" ? (
@@ -1539,14 +1535,17 @@ export function ApplicationManagementPanel({
             />
           ) : null}
           {tab === "metrics" ? (
-            <ObservabilityPanel
-              key={selected.stack}
-              investigation
-              lang={lang}
-              token={token}
-              services={selected.services}
-              nodes={[]}
-            />
+            <>
+              <InvestigationBar app={selected.stack} lang={lang} filters="none" />
+              <ObservabilityPanel
+                key={selected.stack}
+                investigation
+                lang={lang}
+                token={token}
+                services={selected.services}
+                nodes={[]}
+              />
+            </>
           ) : null}
           {tab === "dashboards" ? (
             <ApplicationDashboards

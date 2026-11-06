@@ -5,6 +5,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { DashboardService, Lang } from "../types";
 import { ObserveAppsPanel } from "./ObserveAppsPanel";
 import { ServiceLogsModal } from "./ServiceLogsModal";
+import { InvestigationBar } from "./InvestigationBar";
 
 export function ApplicationLogs({
   app,
@@ -66,6 +67,7 @@ export function ApplicationLogs({
         </>
       ) : (
         <>
+          <InvestigationBar app={app} lang={lang} />
           <p className="flex items-start gap-2 text-sm text-muted-foreground">
             <Info className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
             <span>

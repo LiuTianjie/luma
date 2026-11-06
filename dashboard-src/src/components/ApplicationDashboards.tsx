@@ -143,8 +143,8 @@ function GrafanaDashboards({ app, lang, token }: { app: string; lang: Lang; toke
           <>
             <p className="text-xs leading-relaxed text-muted-foreground">
               {zh
-                ? "时间范围已同步。服务、环境和实例筛选仅对使用对应变量的图表生效；关键词用于日志和 Trace 检索。"
-                : "Time range is synchronized. Service, environment and instance filters apply only to charts using those variables; keywords filter logs and traces."}
+                ? "在看板内调整时间和筛选。打开时会带入排查范围；服务、环境和实例筛选仅对使用对应变量的图表生效。"
+                : "Adjust time and filters inside the dashboard. The investigation range is applied when opening it; service, environment and instance filters affect only charts using those variables."}
             </p>
             {loadedSrc !== src && (
               <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
