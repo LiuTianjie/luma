@@ -92,6 +92,10 @@ def main() -> None:
             # Keep retries short so the outage case finishes quickly; the
             # shipped config uses the exporter's default 5-minute window.
             exporter["retry_on_failure"] = {"initial_interval": "1s", "max_interval": "2s", "max_elapsed_time": "60s"}
+            # The default batch deadline can expire during the injected
+            # outage before its next retry. Keep this test-only deadline
+            # consistent with the retry window, including Docker startup.
+            exporter["timeout"] = "60s"
             config = {"receivers": {"otlp": {"protocols": {"http": {"endpoint": "127.0.0.1:4318"}}}},
                       "exporters": {"prometheusremotewrite": exporter},
                       "service": {"telemetry": {"metrics": {"level": "none"}},
