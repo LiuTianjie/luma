@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { executions, executionPhases, mergeEvents } from '../../dashboard-src/src/components/task-observability/executionModel.ts';
 import { buildTrace } from '../../dashboard-src/src/components/task-observability/traceModel.ts';
-import { taskMetrics } from '../../dashboard-src/src/components/task-observability/overviewModel.ts';
+import { completionCounts, overviewProgress, overviewSources, taskMetrics } from '../../dashboard-src/src/components/task-observability/overviewModel.ts';
 
 test('retry recovery requires a later successful completion and preserves incomplete attempts', () => {
   const event = (trace, time, kind, extra = {}) => ({ trace_id: trace, task_id: 'task-1', timestamp: time, event: kind, ...extra });
@@ -42,6 +42,32 @@ test('unavailable activity and non-finite metrics never become measured zero', (
   assert.equal(tasks[0].duration, undefined);
   assert.equal(tasks[0].results.failed, 2.5);
   assert.equal(tasks[0].results.succeeded, undefined);
+});
+
+test('completion logs distinguish an empty window from unavailable or missing metric samples', () => {
+  const empty = { state: 'empty', rows: [], source: 'completion_logs', counts: { succeeded: 0, failed: 0, retrying: 0, cancelled: 0, unknown: 0 } };
+  assert.equal(completionCounts({ executions: empty }).succeeded, 0);
+  assert.equal(completionCounts({ executions: { state: 'timeout', rows: [] } }), undefined);
+  assert.equal(completionCounts({ executions: { state: 'ok', rows: [] } }), undefined);
+  const row = (value) => ({ metric: { task_name: 'orders', task_framework: 'taskiq' }, value: [100, value] });
+  const tasks = taskMetrics({ registered: { state: 'ok', rows: [row('1')] }, executions: empty });
+  assert.equal(tasks[0].results.succeeded, 0);
+  assert.equal(tasks[0].active, undefined);
+  assert.deepEqual(overviewSources({ executions: empty, active: { state: 'stale', rows: [] }, wait: { state: 'timeout', rows: [] } }).unavailable.map(([key]) => key), ['wait']);
+});
+
+test('active-task progress prioritizes missing updates and excludes idle or stale samples', () => {
+  const source = (values) => ({ state: 'ok', rows: values.map(([name, value]) => ({ metric: { task_name: name, task_framework: 'taskiq' }, value: [100, String(value)] })) });
+  const sources = { active: source([['idle', 0], ['quick', 1], ['slow', 2]]), no_progress: source([['idle', 999], ['quick', 10], ['slow', 50]]), oldest: source([['slow', 80], ['quick', 20]]) };
+  const tasks = taskMetrics(sources);
+  assert.deepEqual(tasks.map(task => task.name), ['slow', 'quick', 'idle']);
+  const progress = overviewProgress(sources, tasks);
+  assert.equal(progress.active, 3);
+  assert.equal(progress.activeTypes, 2);
+  assert.equal(progress.noProgress.name, 'slow');
+  assert.equal(progress.oldest.oldest, 80);
+  const stale = { ...sources, active: { state: 'stale', rows: sources.active.rows } };
+  assert.equal(overviewProgress(stale, taskMetrics(stale)).active, undefined);
 });
 
 
