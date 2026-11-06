@@ -141,6 +141,18 @@ class RepoManifestTests(unittest.TestCase):
         queries = int(args["search.maxConcurrentRequests"]) * int(args["search.maxMemoryPerQuery"].removesuffix("MiB"))
         self.assertLess(cache + queries, tasks["victoria"]["Resources"]["MemoryMaxMB"] * 0.8)
 
+    def test_prometheus_remote_write_does_not_use_its_wal(self):
+        # PRW's WAL never truncates its newest entry and re-sends it in a
+        # loop until new input arrives.
+        import yaml
+
+        config = yaml.safe_load((ROOT / "observe" / "collector.yaml").read_text())
+        exporter = config["exporters"]["prometheusremotewrite"]
+        self.assertNotIn("wal", exporter)
+        # Without the WAL, the in-memory queue and retry cover VictoriaMetrics restarts.
+        self.assertGreater(exporter["remote_write_queue"]["queue_size"], 0)
+        self.assertTrue(exporter.get("retry_on_failure", {}).get("enabled", True))
+
     def test_repo_manifest_renders_host_network(self):
         from luma.compose import load_compose_deployment
         dep = load_compose_deployment(ROOT / "observe" / "luma.compose.yml", allow_build_services=True)
