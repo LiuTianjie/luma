@@ -168,7 +168,7 @@ luma node shell <node-name> --transport relay
 支持窗口尺寸变化、中文输入和常用终端程序。`Ctrl-C` 发送给远端前台进程，`Ctrl-]` 断开本次连接，`exit` 结束远端 shell 并返回退出码。需要 stdin/stdout 都是 TTY；此命令不提供非交互脚本执行或文件传输。
 
 
-### 中转源站配置
+### 中转源站配置 {#public-relay-origin}
 
 可在节点 Agent 配置中设置 `terminalRelay: {"resolveIp": "CONTROL公网源站IP"}`，
 仅优化 Agent 到 Control 的终端链路，不改变客户端网络要求和其他 Control API
@@ -176,7 +176,7 @@ luma node shell <node-name> --transport relay
 网页终端和 CLI 共用该 Agent 出站链路，客户端到 Control 的路径不变。
 Agent 升级保留该字段。启用前验证源站可达性；它不会修改防火墙或打开端口。
 
-### AI Agent 与脚本执行命令
+### AI Agent 与脚本执行命令 {#commands-for-agents-and-scripts}
 
 `node exec` 无需 TTY，分别传输二进制 stdout/stderr，并返回远端退出码。默认走
 relay：普通公网客户端通过 HTTPS 连接 Control，节点通过 Agent 出站连接接受命令。
