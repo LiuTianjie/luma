@@ -129,9 +129,11 @@ def main() -> None:
             time.sleep(3)
             docker("start", names["victoria"])
             wait_for(lambda: request(8428, "/health")["status"] == 200)
-            before = rows()
             wait_for(lambda: found("prw_outage_probe"))
-            expect_rows(before, "retry after outage")
+            # VictoriaMetrics restarts its ingestion counter at zero. A retry
+            # can arrive before the health probe, so sampling rows() after
+            # startup would count that delivery as the baseline.
+            expect_rows(0, "retry after outage")
             print("A point sent during a VictoriaMetrics outage was retried and stored exactly once.", flush=True)
     except BaseException:
         for name in (names["collector"], names["victoria"]):
