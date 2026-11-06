@@ -12,6 +12,8 @@ PRESETS = [
     dict(metric='app.task_completion_missing', name='周期任务完成观测中断', description='预期按固定周期执行的任务在统计窗口内没有完成记录；需结合心跳排查调度、执行和采集链路', threshold=0, forSeconds=180, unit='count'),
 ]
 METRICS = {p['metric'] for p in PRESETS}
+# Largest finite task.queue_wait bucket in sdk/python luma_observe.runtime._BUCKETS.
+QUEUE_WAIT_TOP_BUCKET = 7200
 MAX_RULES = 20
 
 

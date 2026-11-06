@@ -16,7 +16,7 @@ from typing import Any, Callable
 from ..errors import LumaError
 from ..log_alert_rules import MAX_RULES, normalize as normalize_log_rule
 from . import container_alerts, database, task_alerts
-from .alert_notifications import FeishuError, alert_outbox_text, feishu_alert_card, send_feishu, validate_credentials
+from .alert_notifications import FeishuError, alert_outbox_text, feishu_alert_card, send_feishu, severity_label, validate_credentials
 from .build_alert_details import build_details, detail_rows
 from . import log_alert_details
 
@@ -283,10 +283,18 @@ def _notify(conn,rule,incident,kind,now,cluster):
     if rule['metric'] == 'app.memory':
         value += '' if incident['no_data'] else '%'
         threshold += '%'
+    elif rule['metric'] == 'app.task_completion_missing':
+        # The query is boolean (1 = no completion in the window), not a count.
+        window = json.loads(rule['task_query']).get('windowSeconds', 300)
+        if not incident['no_data']:
+            value = '无完成记录' if incident['value'] > 0 else '有完成记录'
+        threshold = f'{window} 秒内至少 1 次完成'
     elif rule['metric'] in ('app.task_heartbeat_age', 'app.task_queue_wait_p95', 'observe.metrics_age'):
-        value += '' if incident['no_data'] else ' 秒'
+        # Queue wait P95 beyond the SDK's top finite bucket reports that bound.
+        capped = rule['metric'] == 'app.task_queue_wait_p95' and not incident['no_data'] and incident['value'] >= task_alerts.QUEUE_WAIT_TOP_BUCKET
+        value = ('≥ ' if capped else '') + value + ('' if incident['no_data'] else ' 秒')
         threshold += ' 秒'
-    fallback = f"Luma {label} · {rule['name']}\n集群：{cluster}\n对象：{incident['target']}\n级别：{rule['severity']}\n当前值：{value}；阈值：{threshold}\n事件编号：{incident['id']}\n请在 Dashboard → 可观测 → 告警中心查看。"
+    fallback = f"Luma {label} · {rule['name']}\n集群：{cluster}\n对象：{incident['target']}\n级别：{severity_label(rule['severity'])}\n当前值：{value}；阈值：{threshold}\n事件编号：{incident['id']}\n请在 Dashboard → 可观测 → 告警中心查看。"
     details = json.loads(incident['build_details'])
     if details:
         value = '无新鲜数据' if incident['no_data'] else ('已恢复' if kind == 'resolved' else '失败')

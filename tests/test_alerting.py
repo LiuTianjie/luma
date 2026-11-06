@@ -117,6 +117,21 @@ class AlertingTest(unittest.TestCase):
             with self.subTest(update=update), self.assertRaises(LumaError):
                 self.rule(metric='app.task_completion_missing', target='tasks', taskQuery={**config, **update})
 
+    def test_task_alert_text_states_capped_queue_wait_and_missing_completion(self):
+        self.channel()
+        channel = self.items('channels')[0]['id']
+        queue = self.rule(metric='app.task_queue_wait_p95', target='tasks', threshold=600, forSeconds=0,
+                          taskQuery={'service':'worker'}, channelIds=[channel])
+        missing = self.rule(metric='app.task_completion_missing', target='tasks', threshold=0, forSeconds=0,
+                            taskQuery={'service':'worker','framework':'taskiq','taskName':'periodic.flush','windowSeconds':120},
+                            channelIds=[channel])
+        alerting.tick({'_taskAlerts': {queue['id']: 7200, missing['id']: 1}}, now=1000)
+        sent=[]
+        alerting.deliver_pending(now=1000, transport=lambda *args: sent.append(json.loads(args[3])))
+        texts = sorted(item['fallback'] for item in sent)
+        self.assertIn('当前值：无完成记录；阈值：120 秒内至少 1 次完成', texts[0] + texts[1])
+        self.assertIn('当前值：≥ 7200 秒；阈值：600 秒', texts[0] + texts[1])
+
     def test_observe_pipeline_alerts_before_first_sample_and_after_query_outage(self):
         rule = self.rule(metric='observe.metrics_age', target='metrics', threshold=120,
                          forSeconds=30, noData='alert')
@@ -233,7 +248,9 @@ class AlertingTest(unittest.TestCase):
         alerting.deliver_pending(now=1060,transport=lambda *args:sent.append(args))
         self.assertIn('告警触发',sent[0][3]); self.assertIn('告警恢复',sent[1][3])
         firing=json.loads(sent[0][3]); recovered=json.loads(sent[1][3])
-        self.assertEqual(firing['card']['header']['template'],'red')
+        # Default rules are warning severity: never red.
+        self.assertEqual(firing['card']['header']['template'],'orange')
+        self.assertIn('级别：警告',firing['fallback'])
         self.assertEqual(recovered['card']['header']['template'],'green')
 
     def test_missing_data_does_not_recover_and_breaks_pending(self):
@@ -789,13 +806,25 @@ class FeishuTransportTest(unittest.TestCase):
         send=[c[1] for c in calls if c[0]==notifications.MESSAGE_URL][0]
         self.assertEqual(send['msg_type'],'interactive')
         card=json.loads(send['content'])
-        self.assertEqual(card['header']['template'],'red')
+        self.assertEqual(card['header']['template'],'orange')
         self.assertIn('告警触发',card['header']['title']['content'])
+        self.assertIn('**级别**\n警告',json.dumps(card,ensure_ascii=False).replace('\\n','\n'))
         recovered=alert_outbox_text(kind='resolved',fallback='Luma 告警恢复 · CPU',card=feishu_alert_card(kind='resolved',title='CPU持续高占用',cluster='luma-1',target='ppt',severity='warning',value='42.9',threshold='90',incident_id=3))
         with patch.object(notifications,'_post',side_effect=post):
             send_feishu('cli_test1234','private-app-secret','oc_group1234',recovered,'card-id-2')
         send=[c[1] for c in calls if c[0]==notifications.MESSAGE_URL][-1]
         self.assertEqual(json.loads(send['content'])['header']['template'],'green')
+
+    def test_alert_card_reserves_red_for_critical(self):
+        from luma.control.alert_notifications import feishu_alert_card
+        def template(kind, severity):
+            return feishu_alert_card(kind=kind,title='t',severity=severity)['header']['template']
+        self.assertEqual(template('firing','critical'),'red')
+        self.assertEqual(template('reminder','critical'),'orange')
+        self.assertEqual(template('firing','warning'),'orange')
+        self.assertEqual(template('reminder','warning'),'yellow')
+        self.assertEqual(template('resolved','warning'),'green')
+        self.assertEqual(template('resolved','critical'),'green')
 
     def test_token_expiry_and_secret_rotation_reacquire(self):
         with patch.object(notifications,'_post',return_value={'code':0,'tenant_access_token':'tenant-token','expire':100}) as post:
