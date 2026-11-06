@@ -145,6 +145,13 @@ _KIND_HEADER = {
     'reminder': ('告警持续', 'orange'),
     'test': ('通知测试', 'blue'),
 }
+# Red is reserved for critical rules; warning rules stay visibly lower priority.
+_WARNING_HEADER = {'firing': 'orange', 'reminder': 'yellow'}
+SEVERITY_LABELS = {'critical': '严重', 'warning': '警告'}
+
+
+def severity_label(severity: str) -> str:
+    return SEVERITY_LABELS.get(severity, severity)
 
 
 def _plain(value: object, limit: int = 200) -> str:
@@ -168,6 +175,9 @@ def feishu_alert_card(
 ) -> dict[str, object]:
     """Interactive card so firing and recovery are visually distinct in Feishu."""
     label, template = _KIND_HEADER.get(kind, ('告警通知', 'grey'))
+    if severity == 'warning':
+        template = _WARNING_HEADER.get(kind, template)
+    severity = severity_label(severity)
     heading = f"{label} · {title}".strip(' ·') if title else label
     if kind == 'test':
         elements: list[dict[str, object]] = [{
