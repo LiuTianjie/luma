@@ -101,6 +101,8 @@ export interface LogsResult {
 export interface MetricSource {
   state: string;
   rows: { metric: Record<string, string>; value: [number, string] }[];
+  counts?: Record<string, number>;
+  source?: string;
 }
 export interface OverviewResult {
   state: string;

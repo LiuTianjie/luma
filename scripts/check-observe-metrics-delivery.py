@@ -92,6 +92,10 @@ def main() -> None:
             # Keep retries short so the outage case finishes quickly; the
             # shipped config uses the exporter's default 5-minute window.
             exporter["retry_on_failure"] = {"initial_interval": "1s", "max_interval": "2s", "max_elapsed_time": "60s"}
+            # The default batch deadline can expire during the injected
+            # outage before its next retry. Keep this test-only deadline
+            # consistent with the retry window, including Docker startup.
+            exporter["timeout"] = "60s"
             config = {"receivers": {"otlp": {"protocols": {"http": {"endpoint": "127.0.0.1:4318"}}}},
                       "exporters": {"prometheusremotewrite": exporter},
                       "service": {"telemetry": {"metrics": {"level": "none"}},
@@ -129,9 +133,11 @@ def main() -> None:
             time.sleep(3)
             docker("start", names["victoria"])
             wait_for(lambda: request(8428, "/health")["status"] == 200)
-            before = rows()
             wait_for(lambda: found("prw_outage_probe"))
-            expect_rows(before, "retry after outage")
+            # VictoriaMetrics restarts its ingestion counter at zero. A retry
+            # can arrive before the health probe, so sampling rows() after
+            # startup would count that delivery as the baseline.
+            expect_rows(0, "retry after outage")
             print("A point sent during a VictoriaMetrics outage was retried and stored exactly once.", flush=True)
     except BaseException:
         for name in (names["collector"], names["victoria"]):

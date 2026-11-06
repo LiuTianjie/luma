@@ -76,6 +76,8 @@ export function useObservation<T>(
 }
 
 const states: Record<string, [string, string]> = {
+  empty: ["所选范围暂无记录", "No records in the selected range"],
+  stale: ["观测数据已过期", "Observation data is stale"],
   timeout: ["观测查询超时", "Observation query timed out"],
   rate_limited: ["观测查询繁忙", "Observation queries are busy"],
   unauthorized: ["观测查询权限已失效", "Observation access has expired"],
@@ -124,6 +126,8 @@ export function ReadState({
         ))}
       </div>
     );
+  if (state === "empty")
+    return <p className="observe-empty">{empty || sourceText(state, zh)}</p>;
   if (state && state !== "ok")
     return (
       <Alert variant="warning">
@@ -176,7 +180,11 @@ export const durationText = (seconds?: number | null) =>
       ? `${Math.round(seconds * 1000)} ms`
       : seconds < 60
         ? `${seconds.toFixed(2)} s`
-        : `${(seconds / 60).toFixed(1)} min`;
+        : seconds < 3600
+          ? `${(seconds / 60).toFixed(1)} min`
+          : seconds < 86400
+            ? `${(seconds / 3600).toFixed(1)} h`
+            : `${(seconds / 86400).toFixed(1)} d`;
 
 export function AttributeTable({
   values,

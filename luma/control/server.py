@@ -81,6 +81,7 @@ from ..local_storage import (
 from ..nomad_api import NomadApi, deploy_to_nomad, remove_from_nomad, revert_job, job_versions, nomad_addr, nomad_status_summary, nomad_services_summary, nomad_service_directory
 from ..nomad_render import EDGE_EXPOSURES, render_nomad_job, render_compose_job, resource_policy_warnings
 from ..observe_instrument import OBSERVE_STACK, manager_tailscale_ip, mint_otlp_token, otlp_mesh_endpoint
+from .observe_access import guard_access_credentials
 from ..registry import (
     DOCKER_HUB_HOSTS,
     docker_registry_auth_header,
@@ -9612,6 +9613,12 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
             ),
             progress=progress,
         )
+        if deployment.slug == OBSERVE_STACK:
+            _deploy_step(
+                steps, "Check Observe access credentials",
+                lambda: guard_access_credentials(target, stack_text, state),
+                progress=progress,
+            )
         if not _skip_orchestrator(body):
             _deploy_step(
                 steps, "Verify managed registry access",
