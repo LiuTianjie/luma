@@ -17,6 +17,8 @@ Application config ── read-only extension volume ──────── Gr
 
 原生 Metrics 直接进入指标存储；spanmetrics 在 Trace 采样前生成。Trace 存储保留错误、HTTP 5xx、超过一秒的慢链路和 10% 基础采样。无父级、带 `task.name` / `task.framework` 的 CONSUMER 根 Span 在独立分支按完成结果采样，避免长任务较早结束的子 Span 决定丢弃最终失败摘要；子 Span 仍可能不完整。统计代表 Collector 接收到的信号，SDK 采样、缓冲满、内存拒收和导出失败仍可能造成证据缺口。Collector 诊断指标从 `127.0.0.1:8888/metrics` 抓取，vmauth 诊断使用 `127.0.0.1:8429/metrics`。
 
+Nomad 日志采集每轮最多访问 64 个来源，单来源读取上限 512 KiB、全轮总读取上限 4 MiB；同一 allocation 共享一次目录查询。耗尽字节额度后，下一轮从后续来源继续。导出失败保留断点重试，告警覆盖仍要求 stdout/stderr 都成功追平。积压指标汇总所有已发现来源最后一次观测到的未读字节，包括本轮未访问的来源。
+
 应用使用官方自定义 Metrics/Span 描述业务阶段和结果。指标标签使用有限的服务、任务类型、结果枚举；执行编号放在 Span 或结构化日志中。导出通过后台有界缓冲完成；观测不可用时，业务的返回、异常、重试和确认语义仍由业务自身决定。
 
 ## Luma 内应用 {#luma-managed-producers}

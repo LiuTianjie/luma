@@ -27,6 +27,13 @@ bounded buffers, memory refusal and exporter failures can still leave gaps.
 Collector diagnostics are scraped locally at `127.0.0.1:8888/metrics`; vmauth
 diagnostics use `127.0.0.1:8429/metrics`.
 
+The Nomad log shipper reads up to 512 KiB per source and 4 MiB across at most
+64 sources per poll, sharing one directory listing per allocation. A poll that
+exhausts its byte budget resumes with the next source. Failed exports retain
+their checkpoints for retry; alert coverage still requires successful catch-up
+of both streams. The backlog gauge sums the last observed unread bytes for all
+discovered sources, including those not visited in the current poll.
+
 Official auto-instrumentation alone cannot determine business completion.
 Applications can use official custom metrics and spans. Keep metric attributes
 bounded (service, task type, outcome), and place individual execution IDs on
