@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Ship Nomad allocation stdout/stderr to VictoriaLogs.
 
-Talks to Nomad on the manager loopback. VictoriaLogs down drops the batch;
-Nomad, Control and application tasks are not blocked.
+Talks to Nomad on the manager loopback. Failed exports retain their cursors
+for retry; Nomad, Control and application tasks are not blocked.
 """
 from __future__ import annotations
 
@@ -23,7 +23,8 @@ from typing import Any, Callable
 
 MAX_SOURCES = 64
 MAX_LINE = 32768
-READ_LIMIT = 65536
+READ_LIMIT = 512 * 1024
+POLL_READ_LIMIT = 4 * 1024 * 1024
 FIRST_TAIL = 65536
 POLL_INTERVAL = 2.0
 INSERT_TIMEOUT = 4.0
@@ -252,6 +253,7 @@ class Shipper:
         self.gaps = {}
         self.source_counts = {}
         self.backlog_bytes = 0
+        self.backlogs: dict[str, int] = {}
         self.export_retries = 0
         self.tempo_poll_errors = 0
         self.checkpoint = os.environ.get("LUMA_LOG_CHECKPOINT", "")
@@ -301,16 +303,30 @@ class Shipper:
         # Commit offsets only after storage accepted the complete batch. A crash
         # may replay a batch (at-least-once), but must not silently skip it.
         previous_cursors = dict(self.cursors)
-        self.backlog_bytes = 0
         batch: list[dict[str, str]] = []
         caught_up = set()
-        visited = round_robin(sources, self.round)
+        visited = []
         live = {source.key for source in sources}
+        self.backlogs = {key: size for key, size in self.backlogs.items() if key in live}
+        backlogs = dict(self.backlogs)
+        read_bytes: dict[str, int] = {}
+        listings: dict[str, Any] = {}
+        remaining = POLL_READ_LIMIT
         observed = rfc3339()
-        for source in visited:
+        for source in round_robin(sources, self.round):
+            if remaining <= 0:
+                break
+            visited.append(source)
             self.coverage.pop(source.key, None)
             try:
-                files = log_files(self.list_files(source.alloc), source.task, source.stream)
+                # An allocation's tasks and both streams share one directory.
+                # Cache failures too, so an unreachable allocation is tried once per poll.
+                if source.alloc not in listings:
+                    listings[source.alloc] = None
+                    listings[source.alloc] = self.list_files(source.alloc)
+                if listings[source.alloc] is None:
+                    continue
+                files = log_files(listings[source.alloc], source.task, source.stream)
             except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, ValueError):
                 continue
             cursor = self.cursors.get(source.key)
@@ -334,6 +350,7 @@ class Shipper:
             else:
                 files = [item for item in files if item[0] >= matching[0][0]]
             leftover = cursor.leftover
+            source_remaining = READ_LIMIT
             for _index, path, size in files:
                 start = cursor.offset if path == cursor.file else 0
                 if size < start:
@@ -343,21 +360,27 @@ class Shipper:
                     cursor = Cursor(file=path, offset=start, leftover=leftover)
                     continue
                 try:
-                    data = self.readat(source.alloc, path, start, min(size - start, READ_LIMIT))
+                    data = self.readat(source.alloc, path, start, min(size - start, source_remaining, remaining))
                 except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
                     self.gaps[source.key] = time.time()
                     break
                 lines, leftover = split_lines(data, leftover)
                 cursor = Cursor(file=path, offset=start + len(data), leftover=leftover)
+                source_remaining -= len(data)
+                remaining -= len(data)
+                read_bytes[source.key] = read_bytes.get(source.key, 0) + len(data)
                 batch.extend(records_for(source, lines, observed))
-                if len(data) >= READ_LIMIT:
+                # Do not skip an unread tail when Nomad returns a short read.
+                if cursor.offset < size or source_remaining <= 0 or remaining <= 0:
                     break
             cursor_index = next((index for index, path, _ in files if path == cursor.file), -1)
-            self.backlog_bytes += sum(max(0, size - (cursor.offset if path == cursor.file else 0))
-                                      for index, path, size in files if index >= cursor_index)
+            backlogs[source.key] = sum(max(0, size - (cursor.offset if path == cursor.file else 0))
+                                       for index, path, size in files if index >= cursor_index)
             self.cursors[source.key] = cursor
             if files and cursor.file == files[-1][1] and cursor.offset >= files[-1][2]:
                 caught_up.add(source.key)
+        # Advance only past visited sources when the shared byte budget runs out.
+        # This lets quiet sources and later allocations run on the following poll.
         self.round += len(visited)
         self.cursors = {key: value for key, value in self.cursors.items() if key in live}
         try:
@@ -377,6 +400,12 @@ class Shipper:
             self.cursors = previous_cursors
             self.save_checkpoint()
             self.gaps.update({source.key: time.time() for source in visited if source.key in monitored})
+            for key, size in read_bytes.items():
+                backlogs[key] += size
+        # Keep unvisited sources in the estimate instead of reporting a false zero
+        # whenever a different part of the round-robin is being read.
+        self.backlogs = backlogs
+        self.backlog_bytes = sum(backlogs.values())
 
     def coverage_snapshot(self):
         # Both stdout/stderr and every discovered allocation must be caught up.
@@ -394,6 +423,8 @@ class Shipper:
     def metrics(self) -> str:
         return "".join(
             [
+                "# HELP luma_observe_log_backlog_bytes Last observed unread bytes across discovered log sources.\n",
+                "# TYPE luma_observe_log_backlog_bytes gauge\n",
                 f"luma_observe_log_backlog_bytes {self.backlog_bytes}\n",
                 f"luma_observe_log_export_retries_total {self.export_retries}\n",
                 f"luma_observe_tempo_poll_errors_total {self.tempo_poll_errors}\n",

@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError, URLError
 
 from tests.test_observe import load_observe
@@ -136,6 +136,84 @@ class LogShipperTests(unittest.TestCase):
         self.assertEqual(shipper.export_retries, 1)
         self.assertEqual(shipper.exported, 0)
         self.assertEqual(shipper.cursors["alloc-1/web/stdout"].offset, 0)
+        self.assertEqual(shipper.backlog_bytes, 5)
+
+    def test_backlogged_stream_catches_up_and_shares_allocation_listing(self):
+        data = {"alloc/logs/web.stdout.0": b"event\n" * 20000,
+                "alloc/logs/web.stderr.0": b"quiet\n"}
+        listing = Mock(return_value=[{"Name": path.rsplit("/", 1)[1], "Size": len(value)}
+                                     for path, value in data.items()])
+        inserted = []
+        shipper = self.mod.Shipper(
+            list_allocs=lambda: [{"ID": "a", "JobID": "app", "ClientStatus": "running", "TaskStates": {"web": {}}}],
+            list_files=listing, readat=lambda alloc, path, offset, limit: data[path][offset:offset+limit],
+            insert=inserted.extend)
+        shipper.cursors["a/web/stdout"] = self.mod.Cursor("alloc/logs/web.stdout.0", 0)
+        shipper.poll()
+        listing.assert_called_once_with("a")
+        self.assertEqual(len(inserted), 20001)
+        self.assertEqual(shipper.backlog_bytes, 0)
+        self.assertGreater(shipper.coverage_snapshot()[0]["at"], 0)
+
+    def test_byte_budget_rotates_sources_and_keeps_unvisited_backlog(self):
+        data = {f"alloc/logs/{task}.{stream}.0": (task.encode()+b"\n") * (1024 if task != "quiet" else 1)
+                if stream == "stdout" else b"" for task in ("hot", "next", "quiet") for stream in ("stdout", "stderr")}
+        reads, inserted = [], []
+        def readat(alloc, path, offset, limit):
+            value = data[path][offset:offset+limit]
+            reads.append(len(value))
+            return value
+        shipper = self.mod.Shipper(
+            list_allocs=lambda: [{"ID": "a", "JobID": "app", "ClientStatus": "running",
+                                 "TaskStates": {task: {} for task in ("hot", "next", "quiet")}}],
+            list_files=lambda alloc: [{"Name": path.rsplit("/", 1)[1], "Size": len(value)} for path, value in data.items()],
+            readat=readat, insert=inserted.extend)
+        for path in data:
+            task, stream, _ = path.rsplit("/", 1)[1].split(".")
+            shipper.cursors[f"a/{task}/{stream}"] = self.mod.Cursor(path, 0)
+        with patch.object(self.mod, "READ_LIMIT", 1024), patch.object(self.mod, "POLL_READ_LIMIT", 1024):
+            shipper.poll()
+            hot_backlog = shipper.backlog_bytes
+            reads.clear()
+            shipper.poll()
+            self.assertLessEqual(sum(reads), 1024)
+            self.assertEqual(shipper.backlogs["a/hot/stdout"], hot_backlog)
+            self.assertGreater(shipper.backlog_bytes, hot_backlog)
+            reads.clear()
+            shipper.poll()
+            self.assertLessEqual(sum(reads), 1024)
+        self.assertIn("quiet", [row["_msg"] for row in inserted])
+        self.assertGreater(shipper.backlogs["a/hot/stdout"], 0)
+
+    def test_short_read_keeps_unread_tail_before_following_rotation(self):
+        data = {"alloc/logs/web.stdout.0": b"one\ntwo\n", "alloc/logs/web.stdout.1": b"three\n",
+                "alloc/logs/web.stderr.0": b""}
+        inserted = []
+        def readat(alloc, path, offset, limit):
+            if path.endswith("stdout.0") and offset == 0:
+                return data[path][:4]
+            return data[path][offset:offset+limit]
+        shipper = self.mod.Shipper(
+            list_allocs=lambda: [{"ID": "a", "JobID": "app", "ClientStatus": "running", "TaskStates": {"web": {}}}],
+            list_files=lambda alloc: [{"Name": path.rsplit("/", 1)[1], "Size": len(value)} for path, value in data.items()],
+            readat=readat, insert=inserted.extend)
+        shipper.cursors["a/web/stdout"] = self.mod.Cursor("alloc/logs/web.stdout.0", 0)
+        shipper.poll()
+        self.assertEqual(shipper.coverage_snapshot()[0]["at"], 0)
+        shipper.poll()
+        self.assertEqual([row["_msg"] for row in inserted], ["one", "two", "three"])
+        self.assertGreater(shipper.coverage_snapshot()[0]["at"], 0)
+
+    def test_unreachable_allocation_listing_is_attempted_once_per_poll(self):
+        listing = Mock(side_effect=TimeoutError("offline"))
+        shipper = self.mod.Shipper(
+            list_allocs=lambda: [{"ID": "a", "JobID": "app", "ClientStatus": "running",
+                                 "TaskStates": {"web": {}, "worker": {}}}],
+            list_files=listing, readat=Mock(), insert=Mock())
+        shipper.poll()
+        listing.assert_called_once_with("a")
+        shipper.readat.assert_not_called()
+        self.assertTrue(all(row["at"] == 0 for row in shipper.coverage_snapshot()))
 
     def test_nomad_list_timeout_sets_nomad_down(self):
         def fail():
