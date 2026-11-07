@@ -87,6 +87,18 @@ def attach_actions(conn, channel_id, delivery, payload):
     return payload
 
 
+def _request_time(stamp):
+    """Feishu callbacks also send Go Time.String(), including its monotonic suffix."""
+    if stamp.isdigit() and len(stamp) <= 12:
+        return int(stamp)
+    match = re.fullmatch(r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(\.\d{1,9})? ([+-]\d{4}) '
+                         r'[A-Za-z0-9+-]{1,16}(?: m=[+-]\d+(?:\.\d{1,9})?)?', stamp)
+    if not match:
+        raise ValueError()
+    return (datetime.strptime(match[1] + match[3], '%Y-%m-%d %H:%M:%S%z').timestamp()
+            + float(match[2] or 0))
+
+
 def decode_callback(raw, headers, config, now):
     """Verify the challenge token or signed request before exposing action values."""
     try:
@@ -110,7 +122,7 @@ def decode_callback(raw, headers, config, now):
             return payload
         header = payload['header']
         stamp, nonce = headers.get('x-lark-request-timestamp', ''), headers.get('x-lark-request-nonce', '')
-        if not stamp.isdigit() or abs(now - int(stamp)) > 300 or not 1 <= len(nonce) <= 256:
+        if len(stamp) > 128 or abs(now - _request_time(stamp)) > 300 or not 1 <= len(nonce) <= 256:
             raise ValueError()
         expected = hashlib.sha256((stamp + nonce + config['encrypt_key']).encode() + raw).hexdigest()
         if not hmac.compare_digest(expected.encode(), headers.get('x-lark-signature', '').encode()):

@@ -168,6 +168,27 @@ class SourceSilenceTests(unittest.TestCase):
         with patch.object(alerting.time, 'time', return_value=1001):
             self.assertEqual(alerting.dispatch('GET', 'source-silences')['items'], [])
 
+    def test_callback_accepts_feishu_go_timestamp_without_changing_signed_bytes(self):
+        self.tick(1000, [(self.alpha, 1)])
+        stamp = '1970-01-01 08:16:41.407450147 +0800 CST m=+253106.540946804'
+        raw, headers = self.encode(self.action_event(), now=stamp)
+        result = feishu_callbacks.handle('cli_test1234', raw, headers, now=1002)
+        self.assertEqual(result['toast']['type'], 'success')
+        for now in (600, 1402):
+            with self.assertRaises(feishu_callbacks.CallbackDenied):
+                feishu_callbacks.handle('cli_test1234', raw, headers, now=now)
+        headers['x-lark-request-timestamp'] = '1001'
+        with self.assertRaises(feishu_callbacks.CallbackDenied):
+            feishu_callbacks.handle('cli_test1234', raw, headers, now=1002)
+
+    def test_callback_rejects_signed_malformed_timestamps(self):
+        self.tick(1000, [(self.alpha, 1)])
+        for stamp in ('', 'NaN', '1970-01-01 08:16:41',
+                      '1970-13-01 08:16:41 +0800 CST m=+1.0', '1' * 129):
+            raw, headers = self.encode(self.action_event(), now=stamp)
+            with self.assertRaises(feishu_callbacks.CallbackDenied):
+                feishu_callbacks.handle('cli_test1234', raw, headers, now=1002)
+
     def test_callback_http_challenge_credentials_shared_and_not_exposed(self):
         second = alerting.save_channel({'name': 'Other group', 'appId': 'cli_test1234', 'appSecret': 'app-private', 'chatId': 'oc_other1234'})
         self.assertTrue(second['cardActionsEnabled'])
