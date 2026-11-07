@@ -71,7 +71,7 @@ SDK 任务失败规则切到 `task_failures`，停用同一服务上重复的框
 `ghcr.io/liutianjie/luma-log-alerts:v0.2.38`。通过已有 Compose 工作流替换该镜像，
 其余 Observe 镜像保持原引用。发布镜像本身不升级运行中的服务，也不修改规则。
 
-## 按来源限时静默 {#source-silences}
+## 按来源限时静默 {#expiring-source-silences}
 
 告警详情提供「按来源限时静默」，可选择 1、6、24 小时；告警列表展示生效中的来源和截止时间，并支持提前解除。匹配范围为规则 ID、实际对象和来源标签：结构化任务日志优先使用 `attributes.task.name`，普通日志使用采集的服务 `task` 标签，指标告警使用规则限定的任务、服务或实际对象。Luma 读取观测字段，不登记业务任务、订单或业务错误码。
 
