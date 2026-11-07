@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 from ..errors import LumaError
 from ..log_alert_rules import MAX_RULES, normalize as normalize_log_rule
-from . import container_alerts, database, task_alerts
+from . import alert_source_silences, container_alerts, database, task_alerts
 from .alert_notifications import FeishuError, alert_outbox_text, feishu_alert_card, send_feishu, severity_label, validate_credentials
 from .build_alert_details import build_details, detail_rows
 from . import log_alert_details
@@ -63,6 +63,13 @@ def _schema(conn):
     ]
     for sql in statements:
         conn.execute(sql)
+    alert_source_silences.schema(conn)
+    conn.execute('''CREATE TABLE IF NOT EXISTS alert_feishu_callbacks(
+        app_id TEXT PRIMARY KEY, verification_token TEXT NOT NULL, encrypt_key TEXT NOT NULL)''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS alert_card_actions(
+        app_id TEXT NOT NULL,event_id TEXT NOT NULL,delivery_id INTEGER NOT NULL REFERENCES alert_outbox(id) ON DELETE CASCADE,
+        source_key TEXT NOT NULL,until_at REAL NOT NULL,PRIMARY KEY(app_id,event_id))''')
+    conn.execute('CREATE INDEX IF NOT EXISTS alert_card_actions_delivery ON alert_card_actions(delivery_id)')
     columns={r[1] for r in conn.execute('PRAGMA table_info(alert_channels)')}
     for name in ('app_id','app_secret','chat_id'):
         if name not in columns:
@@ -72,6 +79,10 @@ def _schema(conn):
     if 'task_query' not in {r[1] for r in conn.execute('PRAGMA table_info(alert_rules)')}:
         conn.execute("ALTER TABLE alert_rules ADD COLUMN task_query TEXT NOT NULL DEFAULT '{}'")
     incident_columns = {r[1] for r in conn.execute('PRAGMA table_info(alert_incidents)')}
+    if 'notification_sources' not in incident_columns:
+        conn.execute("ALTER TABLE alert_incidents ADD COLUMN notification_sources TEXT NOT NULL DEFAULT '[]'")
+    if 'action_token' not in {r[1] for r in conn.execute('PRAGMA table_info(alert_outbox)')}:
+        conn.execute("ALTER TABLE alert_outbox ADD COLUMN action_token TEXT NOT NULL DEFAULT ''")
     if 'log_details' not in incident_columns:
         conn.execute("ALTER TABLE alert_incidents ADD COLUMN log_details TEXT NOT NULL DEFAULT '{}'")
     if 'application' not in incident_columns:
@@ -123,14 +134,16 @@ def _rule(conn, row):
                 channelIds=[r[0] for r in conn.execute('SELECT channel_id FROM alert_rule_channels WHERE rule_id=? ORDER BY channel_id', (row['id'],))])
 
 
-def _channel(row):
+def _channel(conn, row):
+    callback = conn.execute('SELECT app_id FROM alert_feishu_callbacks WHERE app_id=?', (row['app_id'],)).fetchone()
     return dict(id=row['id'], name=row['name'], type=row['type'], enabled=bool(row['enabled']),
-                appId=row['app_id'],chatId=row['chat_id'],appSecretConfigured=bool(row['app_secret']))
+                appId=row['app_id'],chatId=row['chat_id'],appSecretConfigured=bool(row['app_secret']),
+                cardActionsEnabled=bool(callback), callbackPath='/v1/alerting/feishu/callback/' + row['app_id'])
 
 
 def _incident(row, *, summary=False):
     mapping = {'rule_id':'ruleId','rule_name':'ruleName','no_data':'noData','started_at':'startedAt','fired_at':'firedAt','resolved_at':'resolvedAt','updated_at':'updatedAt','acknowledged_at':'acknowledgedAt','last_notified_at':'lastNotifiedAt'}
-    result = {mapping.get(k,k): (bool(v) if k == 'no_data' else v) for k,v in dict(row).items() if k not in ('build_details', 'log_details')}
+    result = {mapping.get(k,k): (bool(v) if k == 'no_data' else v) for k,v in dict(row).items() if k not in ('build_details', 'log_details', 'notification_sources')}
     result['buildDetails'] = json.loads(row['build_details'])
     details = json.loads(row['log_details'])
     if details and not summary:
@@ -145,7 +158,7 @@ def _incident(row, *, summary=False):
 
 def _delivery(row):
     mapping = {'channel_id':'channelId','incident_id':'incidentId','next_attempt_at':'nextAttemptAt','last_error':'lastError','created_at':'createdAt','sent_at':'sentAt'}
-    return {mapping.get(k,k):v for k,v in dict(row).items() if k not in {'text','lease_until','lease_token'}}
+    return {mapping.get(k,k):v for k,v in dict(row).items() if k not in {'text','lease_until','lease_token','action_token'}}
 
 
 def _event(conn, incident, kind, now, detail=''):
@@ -239,7 +252,12 @@ def save_channel(body, *, now=None):
         updates='name=excluded.name,app_id=excluded.app_id,app_secret=excluded.app_secret,chat_id=excluded.chat_id,enabled=excluded.enabled,updated_at=excluded.updated_at'
         if 'webhook' in legacy: updates+=",webhook='',secret=''"
         conn.execute('INSERT INTO alert_channels('+','.join(columns)+') VALUES('+','.join('?' for _ in values)+') ON CONFLICT(id) DO UPDATE SET '+updates,values)
-        return _channel(conn.execute('SELECT * FROM alert_channels WHERE id=?',(identifier,)).fetchone())
+        if 'cardActionsEnabled' in body:
+            from .feishu_callbacks import save_config
+            save_config(conn, app_id, body)
+        if old and old['app_id'] != app_id:
+            conn.execute('DELETE FROM alert_feishu_callbacks WHERE app_id=? AND NOT EXISTS(SELECT 1 FROM alert_channels WHERE app_id=?)', (old['app_id'], old['app_id']))
+        return _channel(conn, conn.execute('SELECT * FROM alert_channels WHERE id=?',(identifier,)).fetchone())
 
 
 def _cancel_fault_notifications(conn, identifier, reason):
@@ -253,6 +271,7 @@ def _close_incident(conn, row, now, reason, detail=''):
 
 
 def _close_rule(conn,identifier,now,reason):
+    conn.execute('DELETE FROM alert_source_silences WHERE rule_id=?', (identifier,))
     # New metric conditions can be evaluated afresh. A manually dismissed build
     # stays dismissed when a rule is edited or temporarily disabled.
     if reason == 'rule_deleted':
@@ -277,6 +296,9 @@ def _notify(conn,rule,incident,kind,now,cluster):
     channels = conn.execute('SELECT c.id FROM alert_channels c JOIN alert_rule_channels rc ON rc.channel_id=c.id WHERE rc.rule_id=? AND c.enabled=1',(rule['id'],)).fetchall()
     if not channels:
         return False
+    view = alert_source_silences.notification_view(conn, rule, incident, now) if kind != 'resolved' else None
+    if kind != 'resolved' and view is None:
+        return False
     label = {'firing':'告警触发','resolved':'告警恢复','reminder':'告警持续'}[kind]
     value = '无新鲜数据' if incident['no_data'] else f"{incident['value']:g}"
     threshold = f"{rule['threshold']:g}"
@@ -294,13 +316,15 @@ def _notify(conn,rule,incident,kind,now,cluster):
         capped = rule['metric'] == 'app.task_queue_wait_p95' and not incident['no_data'] and incident['value'] >= task_alerts.QUEUE_WAIT_TOP_BUCKET
         value = ('≥ ' if capped else '') + value + ('' if incident['no_data'] else ' 秒')
         threshold += ' 秒'
+    if view and view['details'] and not incident['no_data']:
+        value = f"{view['details']['matchCount']:g}"
     fallback = f"Luma {label} · {rule['name']}\n集群：{cluster}\n对象：{incident['target']}\n级别：{severity_label(rule['severity'])}\n当前值：{value}；阈值：{threshold}\n事件编号：{incident['id']}\n请在 Dashboard → 可观测 → 告警中心查看。"
     details = json.loads(incident['build_details'])
     if details:
         value = '无新鲜数据' if incident['no_data'] else ('已恢复' if kind == 'resolved' else '失败')
         fallback += '\n' + '\n'.join(f'{name}：{value}' for name,value in detail_rows(details))
         fallback += '\n' + (details.get('url') or f"luma build logs {details['buildId']}")
-    log_details = json.loads(incident['log_details'])
+    log_details = view['details'] if view else json.loads(incident['log_details'])
     if log_details:
         fallback += '\n' + '\n'.join(f'{name}：{value}' for name,value in log_alert_details.detail_rows(log_details))
         fallback += '\n' + log_details.get('incidentUrl', '')
@@ -325,9 +349,17 @@ def _notify(conn,rule,incident,kind,now,cluster):
         if kind == 'resolved' and not conn.execute("SELECT 1 FROM alert_outbox WHERE incident_id=? AND channel_id=? AND kind IN ('firing','reminder') AND status IN ('sent','sending')",(incident['id'],channel['id'])).fetchone():
             continue
         delivery = _enqueue(conn,channel['id'],incident['id'],kind,text,now)
+        if view:
+            payload = json.loads(text)
+            payload['sources'] = view['sources']
+            from .feishu_callbacks import attach_actions
+            payload = attach_actions(conn, channel['id'], delivery, payload)
+            conn.execute('UPDATE alert_outbox SET text=? WHERE id=?', (json.dumps(payload, ensure_ascii=False), delivery))
         if now < silence:
             conn.execute('UPDATE alert_outbox SET next_attempt_at=? WHERE id=?',(silence,delivery))
     conn.execute('UPDATE alert_incidents SET last_notified_at=? WHERE id=?',(now,incident['id']))
+    if view:
+        conn.execute('UPDATE alert_incidents SET notification_sources=? WHERE id=?', (json.dumps(view['keys']), incident['id']))
     return True
 
 
@@ -400,6 +432,7 @@ def tick(state: dict[str,Any], *, now=None, services=None):
     now = _now(now)
     with database.transaction(immediate=True) as conn:
         _schema(conn)
+        conn.execute('DELETE FROM alert_source_silences WHERE until_at<?', (now - 86400,))
         previous = float(_setting(conn,'last_evaluated_at'))
         rules = conn.execute('SELECT * FROM alert_rules WHERE enabled=1').fetchall()
         for rule in rules:
@@ -480,10 +513,11 @@ def tick(state: dict[str,Any], *, now=None, services=None):
                         conn.execute("UPDATE alert_incidents SET status='firing',fired_at=? WHERE id=?",(now,identifier))
                         _event(conn,identifier,'firing',now)
                         _notify(conn,rule,current,'firing',now,str(state.get('clusterId') or ''))
-                    elif current['status']=='firing' and not current['acknowledged_at'] and (current['last_notified_at'] is None or now-current['last_notified_at']>=rule['repeat_seconds']):
+                    elif current['status']=='firing' and not current['acknowledged_at']:
                         # Silence expiry sends an active alert even if initial firing was suppressed.
-                        if now>=max(float(_setting(conn,'silenced_until')),rule['silenced_until']):
-                            _notify(conn,rule,current,'reminder' if current['last_notified_at'] else 'firing',now,str(state.get('clusterId') or ''))
+                        kind = alert_source_silences.notification_kind(conn,rule,current,now)
+                        if kind and now>=max(float(_setting(conn,'silenced_until')),rule['silenced_until']):
+                            _notify(conn,rule,current,kind,now,str(state.get('clusterId') or ''))
                 elif row:
                     conn.execute("UPDATE alert_incidents SET status='resolved',value=?,no_data=0,resolved_at=?,updated_at=? WHERE id=?",(value,now,now,row['id']))
                     _event(conn,row['id'],'resolved',now)
@@ -513,6 +547,10 @@ def deliver_pending(*, now=None, transport: Callable = send_feishu, limit=10):
                 current = conn.execute('SELECT i.status,i.acknowledged_at,r.enabled FROM alert_incidents i LEFT JOIN alert_rules r ON r.id=i.rule_id WHERE i.id=?',(row['incident_id'],)).fetchone()
                 if not current or current['status']!='firing' or not current['enabled'] or current['acknowledged_at'] is not None:
                     conn.execute("UPDATE alert_outbox SET status='cancelled',last_error='Incident no longer firing or rule disabled',lease_until=NULL,lease_token=NULL WHERE id=?",(row['id'],))
+                    continue
+                if alert_source_silences.delivery_is_silenced(conn, row, now):
+                    conn.execute("UPDATE alert_outbox SET status='cancelled',last_error='Alert source silenced',lease_until=NULL,lease_token=NULL WHERE id=?", (row['id'],))
+                    conn.execute("UPDATE alert_incidents SET notification_sources='[]' WHERE id=?", (row['incident_id'],))
                     continue
             channel = conn.execute('SELECT * FROM alert_channels WHERE id=?',(row['channel_id'],)).fetchone()
             if not channel or not channel['enabled']:
@@ -672,6 +710,10 @@ def dispatch(method: str, resource: str, body=None, query=None):
             rows = conn.execute("SELECT application AS app FROM alert_incidents WHERE application!='' UNION SELECT target AS app FROM alert_rules WHERE metric LIKE 'app.%' AND target!='*' ORDER BY app LIMIT 1000")
             return {'items':[r['app'] for r in rows]}
         if method=='GET' and name=='presets': return {'items':PRESETS}
+        if method=='GET' and name=='source-silences':
+            return {'items': alert_source_silences.list_silences(conn, now, application=application)}
+        if method=='POST' and resource=='source-silences/remove':
+            return alert_source_silences.remove(conn, body, now, application=application)
         if method=='GET' and name=='overview':
             counts = {s:0 for s in ('pending','firing','resolved','closed')}
             counts.update({r['status']:r['n'] for r in conn.execute('SELECT status,COUNT(*) n FROM alert_incidents' + (' WHERE application=?' if application else '') + ' GROUP BY status', (application,) if application else ())})
@@ -694,11 +736,13 @@ def dispatch(method: str, resource: str, body=None, query=None):
             return {'silencedUntil':until}
         if name in ('rules','channels') and method=='GET':
             scope = " WHERE (metric LIKE 'app.%' OR metric='build.failed') AND target IN (?, '*')" if name=='rules' and application else ''
-            return {'items':[(_rule(conn,r) if name=='rules' else _channel(r)) for r in conn.execute('SELECT * FROM alert_'+name+scope+' ORDER BY created_at DESC', (application,) if scope else ())]}
+            return {'items':[(_rule(conn,r) if name=='rules' else _channel(conn,r)) for r in conn.execute('SELECT * FROM alert_'+name+scope+' ORDER BY created_at DESC', (application,) if scope else ())]}
         if method=='DELETE' and name in ('rules','channels') and identifier:
             if name=='rules': _close_rule(conn,identifier,now,'rule_deleted')
             changed = conn.execute('DELETE FROM alert_'+name+' WHERE id=?',(identifier,)).rowcount
             if not changed: raise LumaError('alert item not found')
+            if name=='channels':
+                conn.execute('DELETE FROM alert_feishu_callbacks WHERE NOT EXISTS(SELECT 1 FROM alert_channels WHERE alert_channels.app_id=alert_feishu_callbacks.app_id)')
             return {'deleted':True}
         if method=='POST' and name=='channels' and identifier and parts[-1]=='test':
             channel = conn.execute('SELECT * FROM alert_channels WHERE id=?',(identifier,)).fetchone()
@@ -721,6 +765,11 @@ def dispatch(method: str, resource: str, body=None, query=None):
         if name=='incidents' and identifier:
             row = conn.execute('SELECT * FROM alert_incidents WHERE id=?',(identifier,)).fetchone()
             if not row or (application and row['application'] != application): raise LumaError('alert incident not found')
+            if method=='POST' and parts[-1]=='silence-source':
+                rule = conn.execute('SELECT * FROM alert_rules WHERE id=?', (row['rule_id'],)).fetchone()
+                if not rule:
+                    raise LumaError('alert rule not found')
+                return {'silence': alert_source_silences.silence(conn, rule, row, body.get('sourceKey'), body.get('seconds'), now)}
             if method=='POST' and parts[-1] in ('ack','close'):
                 action = parts[-1]
                 if action=='close' and row['status']=='closed':
@@ -739,7 +788,13 @@ def dispatch(method: str, resource: str, body=None, query=None):
                     _event(conn,row['id'],'acknowledged',now)
                 return {'incident':_incident(conn.execute('SELECT * FROM alert_incidents WHERE id=?',(identifier,)).fetchone())}
             if method=='GET':
-                return {'incident':_incident(row),'events':[dict(r) for r in conn.execute('SELECT id,kind,at,detail FROM alert_events WHERE incident_id=? ORDER BY id',(identifier,))]}
+                rule = conn.execute('SELECT * FROM alert_rules WHERE id=?', (row['rule_id'],)).fetchone()
+                return {'incident':_incident(row),
+                        'sources': alert_source_silences.incident_sources(rule, row) if rule else [],
+                        'sourceSilences': {r['source_key']: r['until_at'] for r in conn.execute(
+                            'SELECT source_key,until_at FROM alert_source_silences WHERE rule_id=? AND target=? AND until_at>?',
+                            (row['rule_id'], row['target'], now))},
+                        'events':[dict(r) for r in conn.execute('SELECT id,kind,at,detail FROM alert_events WHERE incident_id=? ORDER BY id',(identifier,))]}
         if method=='GET' and name in ('incidents','deliveries'):
             limit = int(_bounded(query.get('limit',50),'limit',1,200))
             try:

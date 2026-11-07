@@ -15937,6 +15937,7 @@ async def _operations_lifespan(app: Starlette):
 
 
 def create_app() -> Starlette:
+    from .feishu_callbacks import endpoint as feishu_callback
     _reconcile_orphaned_build_runs_after_control_restart()
     return Starlette(
         lifespan=_operations_lifespan,
@@ -15946,6 +15947,7 @@ def create_app() -> Starlette:
             Route("/v1/health", _asgi_health, methods=["GET"]),
             Route("/v1/metrics", _asgi_metrics, methods=["GET"]),
             Route("/v1/auth/{path:path}", _asgi_auth, methods=["GET", "POST"]),
+            Route("/v1/alerting/feishu/callback/{app_id}", feishu_callback, methods=["POST"]),
             Route("/v1/{path:path}", _asgi_authenticated_get, methods=["GET"]),
             Route("/v1/{path:path}", _asgi_authenticated_post, methods=["POST"]),
             Route("/v1/{path:path}", _asgi_operations_delete, methods=["DELETE"]),

@@ -168,9 +168,10 @@ def _record_authority(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def transaction(*, immediate: bool = True, owner: str = "control.transaction") -> Iterator[sqlite3.Connection]:
+def transaction(*, immediate: bool = True, owner: str = "control.transaction", wait_seconds: float | None = None) -> Iterator[sqlite3.Connection]:
     started = time.monotonic()
-    admission = _writer_gate.acquire(owner, timeout=WRITER_WAIT_SECONDS) if immediate else nullcontext(None)
+    wait_seconds = WRITER_WAIT_SECONDS if wait_seconds is None else wait_seconds
+    admission = _writer_gate.acquire(owner, timeout=wait_seconds) if immediate else nullcontext(None)
     with admission as deadline:
         timeout = max(0, deadline - time.monotonic()) if deadline is not None else WRITER_WAIT_SECONDS
         conn = connect(timeout=timeout) if immediate else connect()

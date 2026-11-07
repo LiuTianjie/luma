@@ -4,7 +4,10 @@ export type AlertTab = "alerts" | "rules" | "notifications";
 export type AlertPreset = { metric: string; name: string; description: string; threshold: number; forSeconds: number; unit: string };
 export type LogQuery = { mode?: "lines" | "task_failures"; windowSeconds: number; task?: string; contains?: string; exclude?: string; field?: string; equals?: string };
 export type AlertRule = { taskQuery?: { service: string; taskName?: string; framework?: "taskiq" | "celery"; windowSeconds?: number }; logQuery?: LogQuery; id: string; name: string; metric: string; target: string; threshold: number; forSeconds: number; severity: "warning" | "critical"; channelIds: string[]; enabled: boolean; repeatSeconds: number; noData: "keep" | "alert"; silencedUntil?: number };
-export type AlertChannel = { id: string; name: string; type: "feishu"; enabled: boolean; appId: string; chatId: string; appSecretConfigured: boolean };
+export type AlertChannel = { id: string; name: string; type: "feishu"; enabled: boolean; appId: string; chatId: string; appSecretConfigured: boolean; cardActionsEnabled?: boolean; callbackPath?: string };
+export type AlertSource = { key: string; kind: "task" | "service" | "target"; name: string; count: number };
+export type AlertSourceSilence = { ruleId: string; ruleName: string; target: string; sourceKey: string; kind: AlertSource["kind"]; name: string; until: number };
+export type AlertIncidentDetail = { incident: AlertIncident; events: AlertEvent[]; sources?: AlertSource[]; sourceSilences?: Record<string, number> };
 export type BuildAlertDetails = { buildId?: string; service?: string; image?: string; images?: Record<string, string>; imageRepository?: string; buildNode?: string; repository?: string; ref?: string; stage?: string; reason?: string; createdAt?: number; failedAt?: number; completedAt?: number };
 export type LogAlertSample = { trace_id?: string; span_id?: string; task_id?: string; _msg: string; _time?: string; task?: string; alloc?: string; stream?: string };
 export type LogAlertDetails = { countUnit?: "attempts" | "lines"; app: string; task?: string; windowSeconds: number; windowStart: number; windowEnd: number; sampledAt: number; matchCount: number; total?: number; samples?: LogAlertSample[]; summary?: string; query?: Record<string, string>; historicalBackfill?: boolean };
@@ -103,20 +106,21 @@ export function localizeAlertPreset(preset: AlertPreset, zh: boolean): AlertPres
 }
 
 export function alertEventLabel(kind: string, zh: boolean): string {
-  const labels: Record<string, [string, string]> = { test: ["渠道测试", "Channel test"], firing: ["告警触发", "Alert fired"], resolved: ["恢复", "Recovered"], repeat: ["重复提醒", "Repeat reminder"], pending: ["等待持续条件", "Pending duration"], acknowledged: ["停止提醒", "Reminders stopped"], manual_closed: ["手动关闭", "Closed by operator"], build_superseded: ["新失败已接替", "Superseded by a new failure"], notification_silenced: ["通知已静默", "Notification silenced"], rule_deleted: ["规则删除", "Rule deleted"], rule_changed: ["规则变更", "Rule changed"], rule_disabled: ["规则停用", "Rule disabled"] };
+  const labels: Record<string, [string, string]> = { source_silenced: ["来源已限时静默", "Source silenced"], source_unsilenced: ["来源已恢复提醒", "Source unsilenced"], test: ["渠道测试", "Channel test"], firing: ["告警触发", "Alert fired"], resolved: ["恢复", "Recovered"], repeat: ["重复提醒", "Repeat reminder"], pending: ["等待持续条件", "Pending duration"], acknowledged: ["停止提醒", "Reminders stopped"], manual_closed: ["手动关闭", "Closed by operator"], build_superseded: ["新失败已接替", "Superseded by a new failure"], notification_silenced: ["通知已静默", "Notification silenced"], rule_deleted: ["规则删除", "Rule deleted"], rule_changed: ["规则变更", "Rule changed"], rule_disabled: ["规则停用", "Rule disabled"] };
   return labels[kind]?.[zh ? 0 : 1] || kind;
 }
 
 // Each tab has independent data needs; hidden tables must not delay its load.
 export async function fetchAlertTab(tab: AlertTab, token: string, filter: string, signal?: AbortSignal, application = "") {
   const appQuery = application ? `app=${encodeURIComponent(application)}` : "";
-  const [overview, presets, rules, channels, incidents, deliveries] = await Promise.all([
+  const [overview, presets, rules, channels, incidents, deliveries, sourceSilences] = await Promise.all([
     getAlerting<AlertOverview>(`overview${appQuery ? `?${appQuery}` : ""}`, token, signal),
     tab === "rules" ? getAlerting<AlertPage<AlertPreset>>("presets", token, signal) : undefined,
     tab === "rules" ? getAlerting<AlertPage<AlertRule>>(`rules${appQuery ? `?${appQuery}` : ""}`, token, signal) : undefined,
     tab !== "alerts" ? getAlerting<AlertPage<AlertChannel>>("channels", token, signal) : undefined,
     tab === "alerts" ? getAlerting<AlertPage<AlertIncident>>(`incidents?limit=50${appQuery ? `&${appQuery}` : ""}${filter ? `&status=${encodeURIComponent(filter)}` : ""}`, token, signal) : undefined,
     tab === "notifications" ? getAlerting<AlertPage<AlertDelivery>>("deliveries?limit=50", token, signal) : undefined,
+    tab === "alerts" ? getAlerting<AlertPage<AlertSourceSilence>>(`source-silences${appQuery ? `?${appQuery}` : ""}`, token, signal) : undefined,
   ]);
-  return { overview, presets, rules, channels, incidents, deliveries };
+  return { overview, presets, rules, channels, incidents, deliveries, sourceSilences };
 }

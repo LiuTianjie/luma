@@ -5,6 +5,11 @@ import hashlib
 import json
 import re
 
+if __package__:
+    from .alert_sources import sample_source, source
+else:
+    from alert_sources import sample_source, source
+
 MAX_RULES = 20
 INTERVAL = 60
 MAX_AGE = 150
@@ -39,8 +44,13 @@ def bounded_samples(rows):
         for key, length in [('trace_id', 32), ('span_id', 16), ('task_id', 100)]:
             if row.get(key):
                 sample[key] = clean_sample_text(row[key], length)
+        if source('task', row.get('task_name')):
+            sample['task_name'] = row['task_name']
+        identity = sample_source(row)
+        if identity:
+            sample['source_key'] = identity['key']
         # Account for JSON escaping, not just character counts, so 20 rules
-        # remain below the 64 KiB exchange cap even with adversarial messages.
+        # fit the exchange budget alongside source counts even with adversarial messages.
         while len(json.dumps(sample, ensure_ascii=False).encode()) > 900:
             key = max(('_msg', 'task', 'task_id'), key=lambda k: len(json.dumps(sample.get(k, ''), ensure_ascii=False).encode()))
             budget = len(sample.get(key, '').encode()) // 2
@@ -64,10 +74,13 @@ def execution_sample(row):
                 if len(matches) == 1:
                     row[key] = matches[0]
         return row
-    if not isinstance(payload, dict) or not str(payload.get('event', '')).startswith('task.'):
+    if not isinstance(payload, dict):
         return row
     attrs = payload.get('attributes')
     if not isinstance(attrs, dict):
+        return row
+    row = {**row, 'task_name': attrs.get('task.name', '')}
+    if not str(payload.get('event', '')).startswith('task.'):
         return row
     exception = payload.get('exception') or {}
     if not isinstance(exception, dict):
@@ -82,6 +95,7 @@ def execution_sample(row):
         if isinstance(value, str) and re.fullmatch('[0-9a-f]{%d}' % length, value):
             sample[key] = value
     sample['task_id'] = attrs.get('messaging.message.id', '')
+    sample['task_name'] = attrs.get('task.name', '')
     return sample
 
 

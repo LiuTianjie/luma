@@ -11,9 +11,10 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from task_results import failure_query
+from alert_sources import MAX_EXCHANGE_BYTES, bounded_sources
 from log_alert_rules import execution_sample, INTERVAL, MAX_AGE, MAX_RULES, bounded_samples, compile_query, fingerprint, normalize
 
-MAX_BODY = 65536
+MAX_BODY = MAX_EXCHANGE_BYTES
 QUERY_TIMEOUT = 2
 
 
@@ -28,11 +29,19 @@ def query_logs(rule, now):
         raise ValueError('Log collection is not caught up')
     task_failures = rule['logQuery'].get('mode') == 'task_failures'
     base, condition = ('', '') if task_failures else compile_query(rule['target'], rule['logQuery'])
-    query = base + f' | stats count() as total, count() if ({condition}) as matches, json_values(_time, _msg, task, alloc, stream) limit 3 if ({condition}) as samples'
+    query = (base + ' | unpack_json result_prefix "source."'
+             + f' | stats by (source.attributes.task.name, task) count() as total, count() if ({condition}) as matches, '
+             + f'json_values(_time, _msg, task, alloc, stream) limit 1 if ({condition}) as samples')
     if task_failures:
-        query = failure_query(rule['target'], rule['logQuery'])
-    if rule['logQuery']['field']:
-        query += f", count(parsed.{rule['logQuery']['field']}) as parsed"
+        query = failure_query(rule['target'], rule['logQuery'], sources=True)
+    else:
+        if rule['logQuery']['field']:
+            query += f", count(parsed.{rule['logQuery']['field']}) as parsed"
+        query += (' | stats count() as source_groups, sum(total) as total, sum(matches) as matches, '
+                  'json_values(samples) limit 3 if (matches:>0) as sample_groups, '
+                  'json_values(source.attributes.task.name, task, matches) limit 17 if (matches:>0) as sources')
+        if rule['logQuery']['field']:
+            query += ', sum(parsed) as parsed'
     params = urllib.parse.urlencode({'query': query, 'start': now-rule['logQuery']['windowSeconds'],
                                     'end': now, 'timeout': '1s'})
     req = urllib.request.Request('http://127.0.0.1:9428/select/logsql/query', data=params.encode())
@@ -43,25 +52,50 @@ def query_logs(rule, now):
     rows = [json.loads(line) for line in raw.splitlines() if line]
     if len(rows) != 1:
         raise ValueError('Missing aggregate')
-    total, matches = float(rows[0]['total']), float(rows[0]['matches'])
+    # sum() over no groups is NaN in VictoriaLogs 1.25. A zero group count
+    # identifies an empty source window, which remains unknown to the evaluator.
+    total, matches = ((0.0, 0.0) if float(rows[0].get('source_groups', -1)) == 0 else
+                      (float(rows[0]['total']), float(rows[0]['matches'])))
     if not all(math.isfinite(v) and v >= 0 for v in (total, matches)) or matches > total:
         raise ValueError('Invalid aggregate')
     # No source logs is unknown, never automatic recovery. Idle services may stay unknown.
     if rule['logQuery']['field'] and total and not float(rows[0].get('parsed', 0)):
         return {'status': 'invalid_format', 'value': None, 'total': total, 'sampledAt': now}
-    packed = json.loads(rows[0].get('samples') or '[]')
-    # v1.25 returns an array of JSON strings; newer versions may return objects.
-    if task_failures:
-        packed = []
-        for attempt in json.loads(rows[0].get('attempts') or '[]'):
-            attempt = json.loads(attempt) if isinstance(attempt, str) else attempt
-            for group in json.loads(attempt.get('samples') or '[]'):
-                packed.append(group)
-    original = [json.loads(row) if isinstance(row, str) else row for row in packed[:3]]
+    original = aggregate_samples(rows[0])
     samples = bounded_samples(enrich_samples(rule, now, original))
+    sources = []
+    for packed in json.loads(rows[0].get('sources') or '[]')[:17]:
+        item = json.loads(packed) if isinstance(packed, str) else packed
+        name = item.get('sdk.attributes.task.name') or item.get('source.attributes.task.name')
+        sources.append({'kind': 'task' if name else 'service', 'name': name or item.get('task'),
+                        'count': float(item.get('matches', 0))})
     return {'value': matches if total else None, 'total': total, 'sampledAt': now,
             'sample': samples[0]['_msg'] if samples else '', 'samples': samples,
+            'sources': bounded_sources(sources, matches),
             'status': 'ok' if total else 'no_source_logs'}
+
+
+def aggregate_samples(aggregate):
+    """Unpack bounded nested json_values results from both LogsQL encodings."""
+    result = []
+
+    def visit(value, depth=0):
+        if depth > 20 or len(result) >= 3:
+            return
+        if isinstance(value, str):
+            visit(json.loads(value), depth + 1)
+        elif isinstance(value, list):
+            for item in value[:3]:
+                visit(item, depth + 1)
+        elif isinstance(value, dict):
+            if '_msg' in value:
+                result.append(value)
+            else:
+                for key in ('sample_groups', 'attempts', 'samples'):
+                    if key in value:
+                        visit(value[key], depth + 1)
+    visit(aggregate)
+    return result
 
 
 def enrich_samples(rule, now, rows):

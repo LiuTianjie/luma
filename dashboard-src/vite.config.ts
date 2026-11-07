@@ -676,10 +676,16 @@ export default defineConfig({
             ] });
             return;
           }
+          if (rest.startsWith("/source-silences")) {
+            json({ items: [] });
+            return;
+          }
           if (rest.startsWith("/incidents/")) {
             json({
               incident: { id: 101, ruleId: "cpu-home", ruleName: "home CPU", target: "home-mac-mini", metric: "node.cpu", severity: "warning", status: "firing", value: 93.2, startedAt: nowSec - 420, firedAt: nowSec - 120, updatedAt: nowSec - 12 },
               events: [{ id: 1, kind: "firing", at: nowSec - 120, detail: { value: 93.2 } }],
+              sources: [{ key: "demo-host-source", kind: "target", name: "home-mac-mini", count: 1 }],
+              sourceSilences: {},
             });
             return;
           }
