@@ -21,7 +21,8 @@ Neither an observe outage nor an absent preview blocks deployments or heartbeats
 - A single coalesced preview slot, at most one new preview per 10 seconds; previews
   share the oldest-first query budget, never run in Control request handlers. UI polling stops after
   50 seconds. Users may request again if pending.
-- Aggregate responses capped at 256 KiB; rule exchange at 64 KiB. Control has a
+- Aggregate responses and rule exchange are capped at 256 KiB, including at most
+  16 source counts per rule. Control has a
   500 ms loopback timeout, independent of query execution. No log files, temp
   directories, disk caches, recording-rule files, volumes or background retries.
 - Runtime root filesystem is read-only, bytecode disabled, memory limit 96 MiB,
@@ -74,7 +75,7 @@ the same app, service, allocation and execution, extending the window start by
 60 seconds for boundary ingestion. Detail lookup failure never suppresses a
 valid alert count.
 Samples are redacted for common credential patterns and bounded to 512 UTF-8 bytes
-of message text (head and tail), 900 encoded bytes per row. The 64 KiB rule/result
+of message text (head and tail), 900 encoded bytes per row. The 256 KiB rule/result
 exchange cap, serial query schedule and 96 MiB worker limit are unchanged.
 
 An incident replaces one bounded evidence snapshot only on a new breached sample;
@@ -130,3 +131,38 @@ from an already validated immutable Luma release tag with
 `ghcr.io/liutianjie/luma-log-alerts:v0.2.38` without changing other Observe images.
 Deploy it through the recorded Compose workflow; publishing an image does not
 upgrade a running stack or enable/change rules.
+
+## Expiring source silences
+
+Incident details offer 1, 6 and 24 hour source silences. The incident list shows
+active scopes and expiry times, with an option to resume early. A matcher contains
+the rule ID, actual target and exact source identity: SDK `attributes.task.name`,
+the collected service `task` label for ordinary logs, or the metric rule's task,
+service or target. Luma has no registry of business tasks, orders or payment codes.
+
+Source counts come from the full native aggregation, independently of the three
+display samples. At most 16 identifiable sources are exchanged per rule. Remaining
+unidentified or overflowing matches stay eligible for notification. Silences filter
+notification counts and samples, while raw measurements still determine recovery.
+A different unmuted source bypasses another source's repeat interval. Expiry or
+early removal resumes notifications on the next fresh evaluation. Matchers survive
+recovery and recurrence within the same scope; changing rule conditions clears them.
+
+Enable card actions in Notifications → Edit channel and save the Feishu app's
+Verification Token and Encrypt Key. Credentials are never returned by the API;
+channels using the same App ID share callback settings. In Feishu's developer
+console, select callback delivery to your server, enter the displayed
+`https://<Control domain>/v1/alerting/feishu/callback/<App ID>` URL, subscribe to
+`card.action.trigger` and publish the configuration as required by Feishu.
+
+New firing/reminder cards offer duration buttons for up to three exact sources.
+Group members can silence a source from their alert group's card. Requests verify
+the app, signature, timestamp, chat and persisted action capability; duplicate
+callbacks are idempotent. Only the clicked card is updated with the silence expiry.
+Recovery is a separate new card carrying the same incident ID, so it remains visible
+in a busy group. Dashboard management APIs retain their existing authentication.
+
+Deploy matching Control and log-alerts versions for log source actions. Older
+aggregators keep notifying without deriving scopes from sample text. Configure the
+callback credentials and Feishu subscription before using new card buttons; existing
+cards retain their incident links for dashboard actions.

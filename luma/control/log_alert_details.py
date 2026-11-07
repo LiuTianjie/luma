@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlsplit
 
 from ..log_alert_rules import bounded_samples, clean_sample_text
+from ..alert_sources import bounded_sources
 
 
 def snapshot(rule, sample):
@@ -15,7 +16,8 @@ def snapshot(rule, sample):
                 windowEnd=at, sampledAt=at, matchCount=sample['value'], total=sample.get('total'),
                 countUnit='attempts' if query.get('mode') == 'task_failures' else 'lines',
                 query={k: clean_sample_text(v, 256) for k, v in query.items() if k in ('contains', 'exclude', 'field', 'equals', 'mode') and v},
-                samples=bounded_samples(sample.get('samples')))
+                samples=bounded_samples(sample.get('samples')),
+                sources=bounded_sources(sample.get('sources'), sample['value']))
 
 
 def links(details, incident_id, domain):
@@ -33,6 +35,8 @@ def detail_rows(details):
     rows = [('应用 / 服务', details['app'] + ' / ' + (details.get('task') or '全部服务')),
             ('异常窗口 UTC+08:00', f"{stamp(details['windowStart'])} — {stamp(details['windowEnd'])}"),
             ('窗口内匹配', f"{details['matchCount']:g} {unit}；展示 {len(details.get('samples', []))} 条样例（最多 3 条）")]
+    if details.get('silencedMatchCount'):
+        rows.append(('来源静默', f"另有 {details['silencedMatchCount']:g} {unit}来自已静默来源；本通知展示其余匹配。"))
     for index, sample in enumerate(details.get('samples', [])):
         source = ' · '.join(filter(None, [sample.get('_time'), sample.get('task'), sample.get('stream')]))
         rows.append((f'异常样例 {index+1}', source + '\n' + sample.get('_msg', '')))

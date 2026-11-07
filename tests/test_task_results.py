@@ -35,6 +35,46 @@ class TaskResultTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get('LUMA_TEST_LOGS_URL'), 'requires an isolated VictoriaLogs fixture')
 class TaskResultLogsIntegrationTests(unittest.TestCase):
+    def test_source_counts_cover_the_window_independently_of_display_samples(self):
+        from tests.test_observe import load_observe
+        load_observe('alert_sources.py', 'alert_sources')
+        load_observe('task_results.py', 'task_results')
+        load_observe('log_alert_rules.py', 'log_alert_rules')
+        engine = load_observe('log_alerts.py', 'source_result_engine')
+        base = os.environ['LUMA_TEST_LOGS_URL']
+        now = int(time.time())
+        application = 'source-fixture-' + str(time.time_ns())
+        rows = [{'_time': now-10, 'app': application, 'task': 'worker', '_msg': json.dumps({
+            'event': 'business_outcome' if name == 'jobs.beta' else 'task.finished', 'attributes': {'task.name': name, 'task.business.outcome': 'needs_review'}})}
+            for name in ['jobs.alpha'] * 5 + ['jobs.beta']]
+        rows.append({'_time': now-10, 'app': application, 'task': 'legacy', '_msg': 'needs_review'})
+        request = urllib.request.Request(base + '/insert/jsonline?_stream_fields=app,task',
+            data='\n'.join(json.dumps(row) for row in rows).encode(), headers={'Content-Type': 'application/stream+json'})
+        with urllib.request.urlopen(request) as response:
+            self.assertEqual(response.status, 200)
+        # Publish this isolated fixture deterministically before checking queries.
+        with urllib.request.urlopen(urllib.request.Request(base + '/internal/force_flush', data=b'')) as response:
+            self.assertEqual(response.status, 200)
+        urlopen = urllib.request.urlopen
+
+        def local(request, **kwargs):
+            url = request if isinstance(request, str) else request.full_url
+            if url.endswith('/coverage'):
+                return io.BytesIO(json.dumps([{'app': application, 'task': task, 'at': now} for task in ('worker', 'legacy')]).encode())
+            return urlopen(urllib.request.Request(url.replace('http://127.0.0.1:9428', base), data=request.data), **kwargs)
+
+        with patch.object(urllib.request, 'urlopen', side_effect=local):
+            for query, expected in [({'contains': 'needs_review'}, {('task', 'jobs.alpha'): 5, ('task', 'jobs.beta'): 1, ('service', 'legacy'): 1}),
+                                    ({'field': 'attributes.task.business.outcome', 'equals': 'needs_review'}, {('task', 'jobs.alpha'): 5, ('task', 'jobs.beta'): 1})]:
+                result = engine.query_logs({'target': application, 'logQuery': log_alert_rules.normalize(application, query)}, now)
+                self.assertEqual(result['value'], sum(expected.values()))
+                self.assertEqual({(item['kind'], item['name']): item['count'] for item in result['sources']}, expected)
+                self.assertLessEqual(len(result['samples']), 3)
+            now += 61
+            empty = engine.query_logs({'target': application, 'logQuery': log_alert_rules.normalize(application, {'contains': 'needs_review', 'windowSeconds': 60})}, now)
+            self.assertEqual(empty['status'], 'no_source_logs')
+            self.assertIsNone(empty['value'])
+
     def test_business_execution_overlap_retry_dedup_and_scopes(self):
         base = os.environ['LUMA_TEST_LOGS_URL']
         now = int(time.time())
@@ -63,7 +103,8 @@ class TaskResultLogsIntegrationTests(unittest.TestCase):
             with urllib.request.urlopen(urllib.request.Request(base+'/select/logsql/query', data=data)) as response:
                 return [json.loads(line) for line in response.read().splitlines() if line]
 
-        time.sleep(1)  # VictoriaLogs publishes inserted blocks asynchronously.
+        with urllib.request.urlopen(urllib.request.Request(base + '/internal/force_flush', data=b'')) as response:
+            self.assertEqual(response.status, 200)
         result = query(completion_query('result-fixture', {'service': 'result-worker', 'environment': 'production'}))
         self.assertEqual(len(result), 1)
         self.assertEqual({key: int(result[0][key]) for key in ('failed', 'succeeded', 'retrying', 'cancelled', 'unknown')},
@@ -75,6 +116,7 @@ class TaskResultLogsIntegrationTests(unittest.TestCase):
         self.assertEqual(len(json.loads(failed['attempts'])), 3)
 
         from tests.test_observe import load_observe
+        load_observe('alert_sources.py', 'alert_sources')
         load_observe('task_results.py', 'task_results')
         load_observe('log_alert_rules.py', 'log_alert_rules')
         engine = load_observe('log_alerts.py', 'task_result_engine')
@@ -90,6 +132,7 @@ class TaskResultLogsIntegrationTests(unittest.TestCase):
             self.assertEqual(totals['ratio'], 3/5)
             result = engine.query_logs({'target': 'result-fixture', 'logQuery': log_alert_rules.normalize('result-fixture', {'mode': 'task_failures'})}, now)
         self.assertEqual(result['value'], 3)
-        self.assertEqual(len(result['samples']), 3)
+        self.assertEqual(len(result['samples']), 1)
         self.assertTrue(any('RuntimeError: HTTP 400' in row['_msg'] for row in result['samples']))
         self.assertNotIn('private', json.dumps(result))
+        self.assertEqual([(item['kind'], item['name'], item['count']) for item in result['sources']], [('task', 'print', 3)])

@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from luma import log_alert_rules as contract
+from luma.alert_sources import MAX_EXCHANGE_BYTES, bounded_sources, source
 from luma.control import alerting, log_alerts
 from luma.errors import LumaError
 from tests.test_observe import load_observe
@@ -119,16 +120,17 @@ class LogRulesTest(unittest.TestCase):
     def test_configuration_overflow_cannot_break_other_alerts(self):
         with self.assertRaises(ValueError):
             contract.normalize('app', {'contains':'错'*256, 'exclude':'误'*256, 'equals':'值'*256, 'field':'level', 'task':'服'*300})
-        self.assertEqual(log_alerts.request('sync', {'rules':['x'*65537]}), {})
+        self.assertEqual(log_alerts.request('sync', {'rules':['x'*262145]}), {})
 
     def test_observe_build_contract_is_identical(self):
         root = Path(__file__).resolve().parents[1]
-        for file in ('log_alert_rules.py', 'task_results.py'):
+        for file in ('log_alert_rules.py', 'task_results.py', 'alert_sources.py'):
             self.assertEqual((root/'luma'/file).read_bytes(), (root/'observe'/file).read_bytes())
 
 
 class LogEngineTest(unittest.TestCase):
     def setUp(self):
+        load_observe('alert_sources.py', 'alert_sources')
         load_observe('task_results.py', 'task_results')
         load_observe('log_alert_rules.py', 'log_alert_rules')
         self.mod = load_observe('log_alerts.py', 'observe_log_alerts')
@@ -173,11 +175,12 @@ class LogEngineTest(unittest.TestCase):
         samples = contract.bounded_samples([row] * 10)
         self.assertEqual(len(samples),3)
         self.assertTrue(all(len(json.dumps(r,ensure_ascii=False).encode())<=900 for r in samples))
-        engine = self.mod.Engine(lambda rule, now: {'status':'ok','value':3,'total':4,'sampledAt':now,'samples':samples,'sample':samples[0]['_msg']},lambda:1000)
+        sources = bounded_sources([{**source('task', '\\' * 250 + str(index)), 'count': 1234567890.1234567} for index in range(16)], 1e12)
+        engine = self.mod.Engine(lambda rule, now: {'status':'ok','value':1e12,'total':1e12,'sources':sources,'sampledAt':now,'samples':samples,'sample':samples[0]['_msg']},lambda:1000)
         rules = [{'target':str(n),'logQuery':{'contains':'failed'}} for n in range(20)]
         engine.exchange(rules)
         for _ in rules: engine.step()
-        self.assertLess(len(json.dumps(engine.exchange(rules),ensure_ascii=False).encode()),65536)
+        self.assertLess(len(json.dumps(engine.exchange(rules),ensure_ascii=False).encode()),MAX_EXCHANGE_BYTES)
 
     def test_preview_is_asynchronous_coalesced_and_read_only(self):
         engine = self.mod.Engine(lambda rule, now: {'status':'ok','value':3,'sampledAt':now}, lambda:1000)

@@ -49,8 +49,14 @@ def completion_query(app, filters=None):
     ]) + ' | limit 2001'
 
 
-def failure_query(app, filters=None):
+def failure_query(app, filters=None, *, sources=False):
     # Count every observed attempt once; details are selected only as evidence.
-    return (attempt_stats(completion_base(app, filters), samples=True)
-            + ' | stats count() as total, count() if (failed:>0) as matches, '
-            'json_values(samples) limit 3 if (failed:>0) as attempts')
+    query = (attempt_stats(completion_base(app, filters), samples=True)
+             + (' | stats by (sdk.attributes.task.name) ' if sources else ' | stats ')
+             + 'count() as total, count() if (failed:>0) as matches, '
+             + f'json_values(samples) limit {1 if sources else 3} if (failed:>0) as attempts')
+    if sources:
+        query += (' | stats count() as source_groups, sum(total) as total, sum(matches) as matches, '
+                  'json_values(attempts) limit 3 if (matches:>0) as sample_groups, '
+                  'json_values(sdk.attributes.task.name, matches) limit 17 if (matches:>0) as sources')
+    return query

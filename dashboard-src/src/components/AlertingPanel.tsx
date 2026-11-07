@@ -1,4 +1,5 @@
 import { ExternalAlerts, evidenceSummary } from "./ExternalAlerts";
+import { ActiveSourceSilences, AlertSourceControls } from "./AlertSourceControls";
 import { LogIncidentDetails } from "./LogIncidentDetails";
 import { LogRuleFields } from "./LogRuleFields";
 import { fetchAlertTab } from "../alertingApi";
@@ -25,7 +26,8 @@ import {
 import type {
   AlertChannel,
   AlertDelivery,
-  AlertEvent,
+  AlertIncidentDetail,
+  AlertSourceSilence,
   AlertIncident,
   AlertOverview,
   AlertPage,
@@ -287,10 +289,10 @@ export function AlertingPanel({
   const [rule, setRule] = useState<AlertRule | null>(null);
   const [channel, setChannel] = useState<AlertChannel | null>(null);
   const [secret, setSecret] = useState("");
-  const [detail, setDetail] = useState<{
-    incident: AlertIncident;
-    events: AlertEvent[];
-  }>();
+  const [callbackToken, setCallbackToken] = useState("");
+  const [callbackKey, setCallbackKey] = useState("");
+  const [sourceSilences, setSourceSilences] = useState<AlertSourceSilence[]>([]);
+  const [detail, setDetail] = useState<AlertIncidentDetail>();
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
     const reload = () => {
@@ -329,6 +331,7 @@ export function AlertingPanel({
           );
         if (next.rules) setRules(next.rules.items);
         if (next.channels) setChannels(next.channels.items);
+        if (next.sourceSilences) setSourceSilences(next.sourceSilences.items);
         // Expanded history remains a browsing snapshot until explicit refresh.
         if (!expanded && next.incidents) {
           setIncidents(next.incidents);
@@ -365,6 +368,8 @@ export function AlertingPanel({
     setRule(null);
     setChannel(null);
     setSecret("");
+    setCallbackToken("");
+    setCallbackKey("");
   }, [tab, token, filter, appFilter, path]);
   useEffect(() => {
     if (!loaded || initializedRoute.current === path) return;
@@ -373,6 +378,8 @@ export function AlertingPanel({
     setRule(null);
     setChannel(null);
     setSecret("");
+    setCallbackToken("");
+    setCallbackKey("");
     if (!routeId) return;
     if (tab === "rules") {
       const item =
@@ -406,7 +413,7 @@ export function AlertingPanel({
     const controller = new AbortController();
     let cancelled = false;
     setDetail(undefined);
-    void getAlerting<{ incident: AlertIncident; events: AlertEvent[] }>(
+    void getAlerting<AlertIncidentDetail>(
       `incidents/${encodeURIComponent(routeId)}${appQuery ? `?${appQuery}` : ""}`,
       token,
       controller.signal,
@@ -545,19 +552,23 @@ export function AlertingPanel({
         await postAlerting(
           "channels",
           token,
-          channelRequest(
+          { ...channelRequest(
             channel.id,
             channel.name,
             channel.enabled,
             channel.appId,
             secret,
             channel.chatId,
-          ),
+          ), cardActionsEnabled: Boolean(channel.cardActionsEnabled),
+            ...(callbackToken ? { callbackVerificationToken: callbackToken } : {}),
+            ...(callbackKey ? { callbackEncryptKey: callbackKey } : {}) },
           signal,
         );
         if (signal.aborted) return;
         setChannel(null);
         setSecret("");
+        setCallbackToken("");
+        setCallbackKey("");
         setRefresh((n) => n + 1);
         navigate(basePath);
       },
@@ -650,6 +661,8 @@ export function AlertingPanel({
       if (signal.aborted) return;
       setChannel(null);
       setSecret("");
+      setCallbackToken("");
+      setCallbackKey("");
       setRefresh((n) => n + 1);
       navigate(basePath);
     });
@@ -1047,6 +1060,8 @@ export function AlertingPanel({
             </Card>
           )}
           {tab === "alerts" && !editor && <ExternalAlerts app={appFilter} lang={lang} token={token} />}
+          {tab === "alerts" && !editor && <ActiveSourceSilences items={sourceSilences} zh={zh} busy={busy} stamp={stamp}
+            onRemove={(item) => void act((signal) => postAlerting(`source-silences/remove${appQuery ? `?${appQuery}` : ""}`, token, item, signal), zh ? "已恢复此来源通知" : "Source notifications resumed")} />}
           {tab === "alerts" && editor && !detail && !actionError && (
             <Card aria-busy="true">
               <CardHeader>
@@ -1093,6 +1108,9 @@ export function AlertingPanel({
                   </p>
                 )}
                 {detail.incident.metric === "app.log_matches" && <LogIncidentDetails details={detail.incident.logDetails} zh={zh} token={token} />}
+                <AlertSourceControls detail={detail} zh={zh} busy={busy} stamp={stamp}
+                  onSilence={(sourceKey, seconds) => void act((signal) => postAlerting(`incidents/${detail.incident.id}/silence-source${appQuery ? `?${appQuery}` : ""}`, token, { sourceKey, seconds }, signal), zh ? "此来源已限时静默" : "Source silenced")}
+                  onRemove={(sourceKey) => void act((signal) => postAlerting(`source-silences/remove${appQuery ? `?${appQuery}` : ""}`, token, { ruleId: detail.incident.ruleId, target: detail.incident.target, sourceKey }, signal), zh ? "已恢复此来源通知" : "Source notifications resumed")} />
                 {detail.incident.metric === "build.failed" && (
                   <div className="flex flex-col gap-4">
                     <p className="text-sm text-muted-foreground">
@@ -1968,9 +1986,12 @@ export function AlertingPanel({
                           autoComplete="off"
                           value={channel.appId}
                           placeholder="cli_…"
-                          onChange={(e) =>
-                            setChannel({ ...channel, appId: e.target.value })
-                          }
+                          onChange={(e) => {
+                            const appId = e.target.value;
+                            setCallbackToken("");
+                            setCallbackKey("");
+                            setChannel({ ...channel, appId, cardActionsEnabled: Boolean(channels.find((item) => item.appId === appId.trim())?.cardActionsEnabled) });
+                          }}
                         />
                         <FieldError>
                           {fieldErrors["alert-channel-app-id"]}
@@ -2054,6 +2075,37 @@ export function AlertingPanel({
                         {zh ? "启用渠道" : "Enable channel"}
                       </FieldLabel>
                     </Field>
+                    <FieldSet>
+                      <FieldLegend>{zh ? "飞书卡片操作" : "Feishu card actions"}</FieldLegend>
+                      <FieldDescription>{zh
+                        ? "群成员可从卡片限时静默指定来源。同一 App ID 的渠道共用回调配置。"
+                        : "Group members can silence a card's source temporarily. Channels with the same App ID share callback settings."}</FieldDescription>
+                      <Field orientation="horizontal" data-disabled={busy}>
+                        <Checkbox id="alert-card-actions" disabled={busy} checked={Boolean(channel.cardActionsEnabled)}
+                          onCheckedChange={(checked) => setChannel({ ...channel, cardActionsEnabled: checked })} />
+                        <FieldLabel htmlFor="alert-card-actions">{zh ? "启用来源静默按钮" : "Enable source silence buttons"}</FieldLabel>
+                      </Field>
+                      {channel.cardActionsEnabled && <FieldGroup>
+                        <Field><FieldLabel htmlFor="alert-callback-url">{zh ? "回调地址" : "Callback URL"}</FieldLabel>
+                          <Input id="alert-callback-url" readOnly value={`${window.location.origin}/v1/alerting/feishu/callback/${encodeURIComponent(channel.appId)}`} />
+                          <FieldDescription>{zh
+                            ? "保存后，在飞书开发者后台「事件与回调 → 回调配置」选择发送至开发者服务器，填写此地址并订阅 card.action.trigger。"
+                            : "After saving, choose delivery to your server under Events & Callbacks → Callback configuration, enter this URL and subscribe to card.action.trigger."}</FieldDescription>
+                        </Field>
+                        <FieldGroup className="grid sm:grid-cols-2">
+                          <Field><FieldLabel htmlFor="alert-callback-token">Verification Token</FieldLabel>
+                            <Input id="alert-callback-token" type="password" autoComplete="new-password" disabled={busy} value={callbackToken}
+                              placeholder={zh ? "填写飞书回调凭据，留空保留已有值" : "Feishu callback credential; blank keeps saved value"}
+                              onChange={(e) => setCallbackToken(e.target.value)} />
+                          </Field>
+                          <Field><FieldLabel htmlFor="alert-callback-key">Encrypt Key</FieldLabel>
+                            <Input id="alert-callback-key" type="password" autoComplete="new-password" disabled={busy} value={callbackKey}
+                              placeholder={zh ? "填写飞书回调凭据，留空保留已有值" : "Feishu callback credential; blank keeps saved value"}
+                              onChange={(e) => setCallbackKey(e.target.value)} />
+                          </Field>
+                        </FieldGroup>
+                      </FieldGroup>}
+                    </FieldSet>
                   </FieldGroup>
                 </CardContent>
                 <CardFooter className="flex flex-wrap gap-2">

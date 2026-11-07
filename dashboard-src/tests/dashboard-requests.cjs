@@ -36,7 +36,7 @@ test('alert tabs fetch only displayed resources, preserving auth and cancellatio
   const { fetchAlertTab } = load('alertingApi', { './apiClient': { apiGet: async (...args) => { calls.push(args); return { items: [] }; } } });
   const signal = new AbortController().signal;
   for (const [tab, paths] of [
-    ['alerts', ['overview', 'incidents?limit=50&status=firing']],
+    ['alerts', ['overview', 'incidents?limit=50&status=firing', 'source-silences']],
     ['rules', ['overview', 'presets', 'rules', 'channels']],
     ['notifications', ['overview', 'channels', 'deliveries?limit=50']],
   ]) {

@@ -7,18 +7,19 @@ import urllib.request
 
 from ..log_alert_rules import MAX_AGE, MAX_RULES, bounded_samples, fingerprint, normalize
 from ..errors import LumaError
+from ..alert_sources import MAX_EXCHANGE_BYTES, bounded_sources
 
 
 def request(path, body):
     raw = json.dumps(body, ensure_ascii=False).encode()
-    if len(raw) > 65536:
+    if len(raw) > MAX_EXCHANGE_BYTES:
         return {}
     req = urllib.request.Request('http://127.0.0.1:9109/'+path, data=raw,
                                  headers={'Content-Type': 'application/json'})
     try:
         with urllib.request.urlopen(req, timeout=0.5) as response:
-            data = response.read(65537)
-        if len(data) > 65536:
+            data = response.read(MAX_EXCHANGE_BYTES + 1)
+        if len(data) > MAX_EXCHANGE_BYTES:
             return {}
         result = json.loads(data)
         return result if isinstance(result, dict) else {}
@@ -37,7 +38,8 @@ def samples(rules, now):
         key = fingerprint(rule['target'], rule['logQuery'])
         row = rows.get(key)
         if isinstance(row, dict) and isinstance(row.get('sampledAt'), (int, float)) and 0 <= now-row['sampledAt'] <= MAX_AGE:
-            values[rule['id']] = {**row, 'samples': bounded_samples(row.get('samples', []))} if row.get('status') == 'ok' else None
+            values[rule['id']] = {**row, 'samples': bounded_samples(row.get('samples', [])),
+                                  'sources': bounded_sources(row.get('sources'), row.get('value'))} if row.get('status') == 'ok' else None
     return values
 
 
