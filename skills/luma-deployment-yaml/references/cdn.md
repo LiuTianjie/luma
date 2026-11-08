@@ -19,7 +19,9 @@ CDN, when `cdn:` appears in a manifest, or when a deploy fails or warns at
   WebSocket, and the `ali-real-client-ip` header. Paid features (smart
   routing) stay off.
 - Prepare CDN writes `_acme-challenge.<domain>` CNAME (DCV delegation) and waits
-  for the free certificate before DNS moves, so there is no HTTPS gap. Keep that
+  until a certificate whose SAN covers the domain exists and the ESA edge
+  completes a TLS handshake for it, before DNS moves, so there is no HTTPS gap.
+  (ESA lists other site certificates for a record; never trust its count.) Keep that
   record; renewals use it.
 - Each `cdn.cache` path is one cache rule on the site. The per-site quota is
   shared by every app on the root domain: Free 5, Basic 10, Standard 50.

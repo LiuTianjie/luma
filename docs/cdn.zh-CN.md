@@ -95,7 +95,7 @@ cdn:
 
 ## 部署时发生什么 {#what-a-deploy-does}
 
-1. **Prepare CDN**，在改 DNS 之前执行。某个 Luma zone 第一次接入时，Luma 以 CNAME 方式创建该 zone 的 ESA 站点，在 Cloudflare 写入 `_esaauth` TXT 记录完成归属验证，并写入下面的站点级配置。之后每个服务都会创建一条指向 edge 的代理加速记录，edge 地址变化时更新这条记录，并同步它的 `cache` 路径规则。接着写入 `_acme-challenge` CNAME，把证书验证委托给 ESA，并等待 ESA 签发免费证书，最多 15 分钟。这一步任何失败（包括证书还在签发中）都会在改 DNS 之前中止部署，稍后重新部署即可。ESA 会通过同一条委托记录自动续期证书。
+1. **Prepare CDN**，在改 DNS 之前执行。某个 Luma zone 第一次接入时，Luma 以 CNAME 方式创建该 zone 的 ESA 站点，在 Cloudflare 写入 `_esaauth` TXT 记录完成归属验证，并写入下面的站点级配置。之后每个服务都会创建一条指向 edge 的代理加速记录，edge 地址变化时更新这条记录，并同步它的 `cache` 路径规则。接着写入 `_acme-challenge` CNAME，把证书验证委托给 ESA，并等待 ESA 签发覆盖该域名的免费证书、且边缘节点用该域名完成 TLS 握手，最多 15 分钟。这一步任何失败（包括证书还在签发中）都会在改 DNS 之前中止部署，稍后重新部署即可。ESA 会通过同一条委托记录自动续期证书。
 2. **Sync DNS** 把域名指向 ESA 的 CNAME，此时 ESA 已经能提供 HTTPS。A 记录和 CNAME 之间切换时原地替换记录。
 3. Nomad 发布照常进行。发布完成、跳转路由生效之后，`redirectFrom` 里的主机才切到 edge；这些主机的 DNS 失败只记警告。从 `redirectFrom` 删掉的主机，其 DNS 记录会被删除。
 4. 公网路由探测直接连 edge，并以域名作为 SNI，这样 CDN 的报错不会触发对健康应用的恢复操作。
