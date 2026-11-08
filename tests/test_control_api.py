@@ -3209,6 +3209,67 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
+    def test_failed_restart_keeps_the_deployment_status_and_records_the_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state.setdefault("deployments", {}).setdefault("compose", {})["myapp"] = {
+                    "name": "myapp", "status": "active", "lastError": "",
+                }
+                save_state(state)
+                api = Mock()
+                api.request.side_effect = [
+                    [],
+                    {"ID": "myapp", "TaskGroups": [{"Name": "api", "Count": 1}]},
+                    {"EvalID": "eval-blocked"},
+                    [],
+                    {
+                        "ID": "eval-blocked",
+                        "Status": "blocked",
+                        "FailedTGAllocs": {"api": {"ConstraintFiltered": {"${meta.luma_node_name} = lab": 2}}},
+                    },
+                ]
+                with patch("luma.control.server.NomadApi", return_value=api):
+                    with self.assertRaisesRegex(LumaError, "requested node lab is unavailable"):
+                        handle_application_restart(state["deployToken"], {"stack": "myapp"})
+                record = load_state()["deployments"]["compose"]["myapp"]
+                self.assertEqual(record["status"], "active")
+                self.assertEqual(record["lastError"], "")
+                self.assertEqual(record["lastRestart"]["status"], "failed")
+                self.assertIn("requested node lab is unavailable", record["lastRestart"]["error"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_successful_restart_clears_an_earlier_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state.setdefault("deployments", {}).setdefault("compose", {})["myapp"] = {
+                    "name": "myapp", "status": "failed_partial", "lastError": "rollout failed",
+                    "lastRestart": {"status": "failed", "error": "node down", "at": 1},
+                }
+                save_state(state)
+                api = Mock()
+                api.request.side_effect = [
+                    [{"ID": "alloc-api", "ClientStatus": "running", "TaskStates": {"api": {}}}],
+                    {},
+                    [{"ID": "alloc-api-new", "ClientStatus": "running", "TaskStates": {"api": {}}}],
+                ]
+                with (
+                    patch("luma.control.server.NomadApi", return_value=api),
+                    patch("luma.control.server._reconcile_application_delivery", return_value={"status": "skipped"}),
+                ):
+                    handle_application_restart(state["deployToken"], {"stack": "myapp"})
+                record = load_state()["deployments"]["compose"]["myapp"]
+                self.assertEqual(record["status"], "active")
+                self.assertEqual(record["lastError"], "")
+                self.assertEqual(record["lastRestart"]["status"], "succeeded")
+                self.assertEqual(record["lastRestart"]["error"], "")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
     def test_application_restart_reports_placement_failure_from_completed_parent_evaluation(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
