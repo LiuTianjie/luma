@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from .cdn import CdnSpec, parse_cdn_block, validate_cdn_exposure
 from .config import LumaConfig
 from .container_dns import parse_dns_servers
 from .errors import LumaError
@@ -69,6 +70,7 @@ class ComposeServiceSpec:
     tunnel: Dict[str, Any] = field(default_factory=dict)
     tcp: Dict[str, Any] = field(default_factory=dict)
     requirements: Dict[str, Any] = field(default_factory=dict)
+    cdn: Optional[CdnSpec] = None
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -346,6 +348,7 @@ def validate_compose_deployment_data(
                 raise LumaError(f"compose service {service_name} public exposure requires domain")
             if not isinstance(override.port, int):
                 raise LumaError(f"compose service {service_name} public exposure requires integer port")
+        validate_cdn_exposure(override.cdn, override.exposure, label=f"services.{service_name}.cdn")
         try:
             validate_region_exposure_syntax(region, override.exposure)
         except LumaError as exc:
@@ -556,6 +559,7 @@ def _load_compose_services(raw: Any) -> Dict[str, ComposeServiceSpec]:
             tunnel=dict(tunnel),
             tcp=dict(tcp),
             requirements=requirements,
+            cdn=parse_cdn_block(value.get("cdn"), label=f"services.{name}.cdn"),
             raw=dict(value),
         )
     return result

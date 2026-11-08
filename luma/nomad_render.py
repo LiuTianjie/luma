@@ -84,6 +84,8 @@ NOMAD_TAILSCALE_SERVICE_ADDRESS = f"${{meta.{NOMAD_TAILSCALE_META_KEY}}}"
 NOMAD_LOCAL_HOST_SERVICE_ADDRESS = "__luma_nomad_host__"
 
 
+TRAEFIK_LETSENCRYPT_VOLUME = "traefik_traefik_letsencrypt"
+
 def uses_traefik_tags(service: ServiceSpec) -> bool:
     return service.exposure in EDGE_EXPOSURES
 
@@ -117,6 +119,9 @@ def render_traefik_job(
         "--providers.nomad.watch=true",
         "--accesslog=true",
         "--accesslog.format=json",
+        # Behind Alibaba Cloud CDN the TCP peer is a CDN node; keep the real
+        # client address the CDN forwards.
+        "--accesslog.fields.headers.names.Ali-Cdn-Real-Ip=keep",
         "--entrypoints.metrics.address=" + TRAEFIK_METRICS_ADDRESS,
         "--metrics.prometheus=true",
         "--metrics.prometheus.entryPoint=metrics",
@@ -172,7 +177,7 @@ def render_traefik_job(
                     "network_mode": "host",
                     "args": args,
                     "mount": [
-                        {"type": "volume", "target": "/letsencrypt", "source": "traefik_traefik_letsencrypt"},
+                        {"type": "volume", "target": "/letsencrypt", "source": TRAEFIK_LETSENCRYPT_VOLUME},
                         {"type": "bind", "target": "/dynamic", "source": "/opt/luma/routes"},
                     ],
                 },
@@ -759,6 +764,9 @@ def render_control_job(
                     "mount": [
                         {"type": "bind", "target": "/opt/luma", "source": "/opt/luma"},
                         {"type": "bind", "target": "/var/run/docker.sock", "source": "/var/run/docker.sock"},
+                        # Read-only view of Traefik's ACME store: CDN HTTPS reuses
+                        # the edge certificate (see luma.cdn.load_edge_certificate).
+                        {"type": "volume", "target": "/run/luma/traefik-acme", "source": TRAEFIK_LETSENCRYPT_VOLUME, "readonly": True},
                     ],
                 },
                 "Env": environment,

@@ -9,6 +9,7 @@ Luma 将控制面和数据面分开。
 - Tailscale：管理网络，以及 `home` 或已启用中继的自定义 Region 服务的显式中继路径。
 - Luma Control：驱动 Nomad HTTP API 的部署控制面。
 - Nomad / Docker：运行时执行层。
+- 阿里云 CDN：可选，放在 Traefik 前面为公网 HTTP 服务做缓存，见 [CDN](cdn.md)。
 
 Tailscale 不是默认业务数据面。只有服务明确选择 `exposure: tailscale-relay` 时才承载该中继数据流量。
 

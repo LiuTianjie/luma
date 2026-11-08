@@ -1138,6 +1138,18 @@ class ControlClient:
     def revoke_browser_sessions(self, *, session_id: str = "") -> Dict[str, Any]:
         return self.request("POST", "/v1/auth/sessions/revoke", {"id": session_id} if session_id else {"all": True})
 
+    def cdn_check(self) -> Dict[str, Any]:
+        return self.request("POST", "/v1/cdn/check", {}, timeout=60)
+
+    def cdn_status(self) -> Dict[str, Any]:
+        return self.request("GET", "/v1/cdn")
+
+    def cdn_purge(self, domain: str, paths: list[str]) -> Dict[str, Any]:
+        return self.request("POST", "/v1/cdn/purge", {"domain": domain, "paths": paths}, timeout=60)
+
+    def cdn_remove(self, domain: str) -> Dict[str, Any]:
+        return self.request("POST", "/v1/cdn/remove", {"domain": domain}, timeout=60)
+
     def list_git_providers(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/git-providers")
 

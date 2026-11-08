@@ -55,21 +55,11 @@ class CloudflareClient:
         return payload
 
 
-def sync_dns(
-    config: LumaConfig,
-    service: ServiceSpec,
-    *,
-    secrets: Mapping[str, object] | None = None,
-) -> str:
-    if not service.public:
-        return "DNS skipped: service is not public"
-    if service.exposure == "cloudflare-tunnel":
-        return "DNS skipped: Cloudflare Tunnel public hostname is managed by the tunnel"
+ADDRESS_RECORD_TYPES = ("A", "AAAA", "CNAME")
 
+
+def _zone_client(config: LumaConfig, secrets: Mapping[str, object] | None) -> tuple["CloudflareClient", str]:
     dns_config = config.dns
-    if dns_config.get("provider") != "cloudflare":
-        return "DNS skipped: dns.provider is not cloudflare"
-
     token_env = str(dns_config.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))
     token = os.environ.get(token_env) or (
         str(secrets.get(token_env) or "") if isinstance(secrets, Mapping) else ""
@@ -82,21 +72,60 @@ def sync_dns(
         zone_id = dns_config.get("zoneId")
     if not zone_id:
         raise LumaError("missing Cloudflare zone id: run luma manager cloudflare --zone <domain> or set providers.dns.zoneId")
+    return CloudflareClient(token), str(zone_id)
 
-    target = service.dns.get("target") or dns_config.get("edgeTarget")
+
+def _conflicting_types(record_type: str) -> set[str]:
+    # A CNAME cannot coexist with address records of the same name, so a
+    # switch between them (CDN on/off) must replace, not add, the record.
+    if record_type == "CNAME":
+        return {"A", "AAAA"}
+    if record_type in {"A", "AAAA"}:
+        return {"CNAME"}
+    return set()
+
+
+def _records_by_name(client: "CloudflareClient", zone_id: str, name: str) -> list[Dict[str, Any]]:
+    query = urllib.parse.urlencode({"name": name, "per_page": 100})
+    return [item for item in client.request("GET", f"/zones/{zone_id}/dns_records?{query}")["result"] if isinstance(item, dict)]
+
+
+def sync_dns(
+    config: LumaConfig,
+    service: ServiceSpec,
+    *,
+    secrets: Mapping[str, object] | None = None,
+    override: Mapping[str, Any] | None = None,
+) -> str:
+    """Point the service domain at its edge, or at ``override`` (CDN CNAME)."""
+    if not service.public:
+        return "DNS skipped: service is not public"
+    if service.exposure == "cloudflare-tunnel":
+        return "DNS skipped: Cloudflare Tunnel public hostname is managed by the tunnel"
+
+    dns_config = config.dns
+    if dns_config.get("provider") != "cloudflare":
+        return "DNS skipped: dns.provider is not cloudflare"
+
+    client, zone_id = _zone_client(config, secrets)
+    override = override or {}
+    target = override.get("target") or service.dns.get("target") or dns_config.get("edgeTarget")
     if not target:
         target = config.dns_target_for(exposure=service.exposure, region=service.region)
     if not target:
         raise LumaError("missing DNS target: configure an edge node publicIp or set service dns.target")
 
-    record_type = str(service.dns.get("type") or dns_config.get("recordType", "A")).upper()
-    proxied = bool(service.dns.get("proxied", dns_config.get("proxied", False)))
+    record_type = str(override.get("type") or service.dns.get("type") or dns_config.get("recordType", "A")).upper()
+    if "proxied" in override:
+        proxied = bool(override["proxied"])
+    else:
+        proxied = bool(service.dns.get("proxied", dns_config.get("proxied", False)))
     ttl = int(service.dns.get("ttl", dns_config.get("ttl", 1)))
 
-    client = CloudflareClient(token)
     name = service.domain
-    query = urllib.parse.urlencode({"type": record_type, "name": name})
-    existing = client.request("GET", f"/zones/{zone_id}/dns_records?{query}")["result"]
+    existing = _records_by_name(client, zone_id, str(name))
+    same = [item for item in existing if str(item.get("type") or "").upper() == record_type]
+    conflicting = [item for item in existing if str(item.get("type") or "").upper() in _conflicting_types(record_type)]
     body = {
         "type": record_type,
         "name": name,
@@ -105,12 +134,43 @@ def sync_dns(
         "proxied": proxied,
         "comment": f"managed by Luma for {service.name}",
     }
-    if existing:
-        record_id = existing[0]["id"]
-        client.request("PUT", f"/zones/{zone_id}/dns_records/{record_id}", body)
+    replace_target = same[0] if same else (conflicting[0] if conflicting else None)
+    for item in conflicting:
+        if item is not replace_target and item.get("id"):
+            client.request("DELETE", f"/zones/{zone_id}/dns_records/{item['id']}")
+    if replace_target is not None:
+        client.request("PUT", f"/zones/{zone_id}/dns_records/{replace_target['id']}", body)
         return f"DNS updated: {name} -> {target}"
     client.request("POST", f"/zones/{zone_id}/dns_records", body)
     return f"DNS created: {name} -> {target}"
+
+
+def dns_records(config: LumaConfig, name: str, *, secrets: Mapping[str, object] | None = None) -> list[Dict[str, Any]]:
+    if config.dns.get("provider") != "cloudflare":
+        return []
+    client, zone_id = _zone_client(config, secrets)
+    return _records_by_name(client, zone_id, name)
+
+
+def upsert_txt_record(
+    config: LumaConfig,
+    name: str,
+    content: str,
+    *,
+    secrets: Mapping[str, object] | None = None,
+) -> str:
+    """Create or update one TXT record (used for CDN ownership verification)."""
+    if config.dns.get("provider") != "cloudflare":
+        raise LumaError("TXT record publishing requires providers.dns.provider: cloudflare")
+    client, zone_id = _zone_client(config, secrets)
+    query = urllib.parse.urlencode({"type": "TXT", "name": name})
+    existing = client.request("GET", f"/zones/{zone_id}/dns_records?{query}")["result"]
+    body = {"type": "TXT", "name": name, "content": content, "ttl": 1, "comment": "managed by Luma"}
+    if existing:
+        client.request("PUT", f"/zones/{zone_id}/dns_records/{existing[0]['id']}", body)
+    else:
+        client.request("POST", f"/zones/{zone_id}/dns_records", body)
+    return name
 
 
 def delete_dns(
@@ -118,6 +178,7 @@ def delete_dns(
     service: ServiceSpec,
     *,
     secrets: Mapping[str, object] | None = None,
+    override: Mapping[str, Any] | None = None,
 ) -> str:
     if not service.public:
         return "DNS skipped: service is not public"
@@ -128,21 +189,8 @@ def delete_dns(
     if dns_config.get("provider") != "cloudflare":
         return "DNS skipped: dns.provider is not cloudflare"
 
-    token_env = str(dns_config.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))
-    token = os.environ.get(token_env) or (
-        str(secrets.get(token_env) or "") if isinstance(secrets, Mapping) else ""
-    )
-    if not token:
-        raise LumaError(f"missing Cloudflare API token env var: {token_env}")
-
-    zone_id = os.environ.get(str(dns_config.get("zoneIdEnv", "CLOUDFLARE_ZONE_ID")))
-    if not zone_id:
-        zone_id = dns_config.get("zoneId")
-    if not zone_id:
-        raise LumaError("missing Cloudflare zone id: run luma manager cloudflare --zone <domain> or set providers.dns.zoneId")
-
-    record_type = str(service.dns.get("type") or dns_config.get("recordType", "A")).upper()
-    client = CloudflareClient(token)
+    client, zone_id = _zone_client(config, secrets)
+    record_type = str((override or {}).get("type") or service.dns.get("type") or dns_config.get("recordType", "A")).upper()
     name = service.domain
     query = urllib.parse.urlencode({"type": record_type, "name": name})
     existing = client.request("GET", f"/zones/{zone_id}/dns_records?{query}")["result"]

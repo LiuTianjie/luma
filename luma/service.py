@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
+from .cdn import CdnSpec, parse_cdn_block, validate_cdn_exposure
 from .container_dns import parse_dns_servers
 from .errors import LumaError
 from .dependencies import validate_requirement_block
@@ -17,6 +18,7 @@ VALID_ENGINES = {"nomad"}
 TCP_RELAY_RESERVED_PORTS = {80, 443}
 SERVICE_FIELDS = {
     "build",
+    "cdn",
     "command",
     "constraints",
     "dns",
@@ -111,6 +113,7 @@ class ServiceSpec:
     proxy: bool = False
     engine: str = ""
     requirements: Dict[str, Any] = field(default_factory=dict)
+    cdn: Optional[CdnSpec] = None
 
     @property
     def slug(self) -> str:
@@ -195,6 +198,8 @@ def load_service(path: Path) -> ServiceSpec:
         if not isinstance(port, int):
             raise LumaError("public service requires integer field: port")
     validate_region_exposure_syntax(region, exposure)
+    cdn = parse_cdn_block(raw.get("cdn"))
+    validate_cdn_exposure(cdn, exposure)
 
     relay = raw.get("relay") or {}
     if not isinstance(relay, dict):
@@ -282,6 +287,7 @@ def load_service(path: Path) -> ServiceSpec:
         proxy=bool(raw.get("proxy", False)),
         engine=engine,
         requirements=requirements,
+        cdn=cdn,
     )
 
 

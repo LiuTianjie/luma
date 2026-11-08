@@ -50,6 +50,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("storage", "Manage NFS storage classes"),
         ("registry", "Manage registry credentials and the managed registry"),
         ("git-provider", "Manage saved GitHub and Gitea credentials"),
+        ("cdn", "Check, refresh and clean up Alibaba Cloud CDN domains"),
         ("passkey", "Enroll dashboard passkeys and manage browser sign-in"),
         ("manager", "Repair manager networking, DNS and IP changes"),
     )),
@@ -695,6 +696,33 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
     registry_policy.add_argument("--emergency-percent", type=int, help="Disk usage that triggers emergency cleanup")
     _add_control_arguments(registry_policy)
     _add_output_arguments(registry_policy)
+
+    cdn = _command(
+        sub,
+        "cdn",
+        description=(
+            "Manage Alibaba Cloud CDN domains. A service enables the CDN with `cdn: aliyun` in its manifest; "
+            "deploys then create the domain, install the edge certificate, point DNS at the CDN and refresh "
+            "entry URLs. Store the RAM user key first with `luma secret set ALIBABA_CLOUD_ACCESS_KEY_ID` and "
+            "`luma secret set ALIBABA_CLOUD_ACCESS_KEY_SECRET`."
+        ),
+    )
+    cdn_sub = _commands(cdn, "cdn_command")
+    cdn_check = _command(cdn_sub, "check", "Verify credentials, API access, the certificate store and the DNS zone")
+    _add_control_arguments(cdn_check)
+    _add_output_arguments(cdn_check)
+    cdn_status = _command(cdn_sub, "status", "List CDN domains with CNAME, certificate expiry and last refresh")
+    _add_control_arguments(cdn_status)
+    _add_output_arguments(cdn_status)
+    cdn_purge = _command(cdn_sub, "purge", "Refresh cached URLs now")
+    cdn_purge.add_argument("domain", help="CDN domain, for example app.example.com")
+    cdn_purge.add_argument("paths", nargs="*", help="URL paths (default /); a trailing /* refreshes a directory")
+    _add_control_arguments(cdn_purge)
+    _add_output_arguments(cdn_purge)
+    cdn_remove = _command(cdn_sub, "remove", "Delete a CDN domain that DNS no longer points at")
+    cdn_remove.add_argument("domain", help="CDN domain, for example app.example.com")
+    _add_control_arguments(cdn_remove)
+    _add_output_arguments(cdn_remove)
 
     git_provider = _command(sub, "git-provider")
     git_provider_sub = _commands(git_provider, "git_provider_command")

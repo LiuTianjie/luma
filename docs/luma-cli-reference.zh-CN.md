@@ -44,6 +44,7 @@ Cluster administration:
   storage       Manage NFS storage classes
   registry      Manage registry credentials and the managed registry
   git-provider  Manage saved GitHub and Gitea credentials
+  cdn           Check, refresh and clean up Alibaba Cloud CDN domains
   passkey       Enroll dashboard passkeys and manage browser sign-in
   manager       Repair manager networking, DNS and IP changes
 
@@ -2341,6 +2342,122 @@ arguments:
                               Disk usage that raises a critical alert
   --emergency-percent EMERGENCY_PERCENT
                               Disk usage that triggers emergency cleanup
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma cdn`
+
+```text
+usage: luma cdn [-h] <command> ...
+
+Manage Alibaba Cloud CDN domains. A service enables the CDN with `cdn: aliyun` in its manifest;
+deploys then create the domain, install the edge certificate, point DNS at the CDN and refresh entry
+URLs. Store the RAM user key first with `luma secret set ALIBABA_CLOUD_ACCESS_KEY_ID` and `luma
+secret set ALIBABA_CLOUD_ACCESS_KEY_SECRET`.
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  <command>
+    check     Verify credentials, API access, the certificate store and the DNS zone
+    status    List CDN domains with CNAME, certificate expiry and last refresh
+    purge     Refresh cached URLs now
+    remove    Delete a CDN domain that DNS no longer points at
+```
+
+## `luma cdn check`
+
+```text
+usage: luma cdn check [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+Verify credentials, API access, the certificate store and the DNS zone
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma cdn status`
+
+```text
+usage: luma cdn status [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List CDN domains with CNAME, certificate expiry and last refresh
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma cdn purge`
+
+```text
+usage: luma cdn purge [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] domain [paths ...]
+
+Refresh cached URLs now
+
+arguments:
+  domain                      CDN domain, for example app.example.com
+  paths                       URL paths (default /); a trailing /* refreshes a directory
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma cdn remove`
+
+```text
+usage: luma cdn remove [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] domain
+
+Delete a CDN domain that DNS no longer points at
+
+arguments:
+  domain                      CDN domain, for example app.example.com
+
+arguments:
+  -h, --help                  show this help message and exit
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
