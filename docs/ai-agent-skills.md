@@ -4,7 +4,7 @@ Luma includes four skills for AI coding assistants. They cover deployment, obser
 
 ## Deployment workflows
 
-[`luma-deployment-yaml`](../skills/luma-deployment-yaml/) helps generate and review single-service manifests and Compose sidecars, choose region and exposure, configure local storage, and troubleshoot builds or deployments.
+[`luma-deployment-yaml`](../skills/luma-deployment-yaml/) helps generate and review single-service manifests and Compose sidecars, choose region and exposure, enable and audit CDN caching, configure local storage, and troubleshoot builds or deployments.
 
 For an existing application, it follows the recorded build and deployment workflow. A change of workflow must be explained and confirmed; a skill installation alone does not update the CLI or Control. Secrets remain references such as `${DATABASE_PASSWORD}`, not plaintext in YAML.
 
@@ -127,3 +127,4 @@ local-edit backups. Failure blocks distribution upload in that release job.
 - [Compose and local storage](compose-storage.md)
 - [Observability](observability.md)
 - [Deployment workflow records](../skills/luma-deployment-yaml/references/deployment-workflow.md)
+- [CDN (Alibaba Cloud ESA) for agents](../skills/luma-deployment-yaml/references/cdn.md)

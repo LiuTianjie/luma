@@ -117,6 +117,9 @@ def render_traefik_job(
         "--providers.nomad.watch=true",
         "--accesslog=true",
         "--accesslog.format=json",
+        # Behind Alibaba Cloud ESA the TCP peer is an ESA node; keep the real
+        # client address ESA forwards (managed transform ali-real-client-ip).
+        "--accesslog.fields.headers.names.Ali-Real-Client-Ip=keep",
         "--entrypoints.metrics.address=" + TRAEFIK_METRICS_ADDRESS,
         "--metrics.prometheus=true",
         "--metrics.prometheus.entryPoint=metrics",

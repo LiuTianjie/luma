@@ -45,6 +45,7 @@ Cluster administration:
   storage       Manage NFS storage classes
   registry      Manage registry credentials and the managed registry
   git-provider  Manage saved GitHub and Gitea credentials
+  cdn           Check, refresh and clean up Alibaba Cloud ESA records
   passkey       Enroll dashboard passkeys and manage browser sign-in
   manager       Repair manager networking, DNS and IP changes
 
@@ -2342,6 +2343,127 @@ arguments:
                               Disk usage that raises a critical alert
   --emergency-percent EMERGENCY_PERCENT
                               Disk usage that triggers emergency cleanup
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma cdn`
+
+```text
+usage: luma cdn [-h] <command> ...
+
+Manage Alibaba Cloud ESA (edge acceleration) for services. A service enables it with `cdn: esa` in
+its manifest; deploys then create the ESA site and record, point DNS at ESA, wait for the free
+certificate and refresh the cache. Store the RAM user key first with `luma secret set
+LUMA_ALIBABA_CLOUD_ACCESS_KEY_ID` and `luma secret set LUMA_ALIBABA_CLOUD_ACCESS_KEY_SECRET`.
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  <command>
+    check     Without a domain: verify the ESA setup. With a domain: audit how its pages are cached
+    status    List ESA records with CNAME and last refresh
+    purge     Refresh the cache now
+    remove    Delete an ESA record that DNS no longer points at
+```
+
+## `luma cdn check`
+
+```text
+usage: luma cdn check [-h] [--path EXTRA_PATHS] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] [domain]
+
+Without a domain: verify the ESA setup. With a domain: audit how its pages are cached
+
+arguments:
+  domain                      Public domain to audit, for example www.example.com (read-only)
+
+arguments:
+  -h, --help                  show this help message and exit
+  --path EXTRA_PATHS          Extra URL path to audit; repeatable
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma cdn status`
+
+```text
+usage: luma cdn status [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List ESA records with CNAME and last refresh
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma cdn purge`
+
+```text
+usage: luma cdn purge [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] domain [paths ...]
+
+Refresh the cache now
+
+arguments:
+  domain                      Domain, for example app.example.com
+  paths                       URL paths; a trailing /* refreshes a directory (default: the whole
+                              hostname)
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma cdn remove`
+
+```text
+usage: luma cdn remove [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] domain
+
+Delete an ESA record that DNS no longer points at
+
+arguments:
+  domain                      Domain, for example app.example.com
+
+arguments:
+  -h, --help                  show this help message and exit
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error

@@ -21,7 +21,7 @@ from .manager import cmd_bootstrap, cmd_manager, cmd_update
 from .nodes import cmd_node, cmd_region, cmd_storage
 from .parser import build_parser
 from .session import cmd_context, cmd_doctor, cmd_init, cmd_login, cmd_status, cmd_version
-from .settings import cmd_git_provider, cmd_passkey, cmd_registry, cmd_secret
+from .settings import cmd_cdn, cmd_git_provider, cmd_passkey, cmd_registry, cmd_secret
 from .skills import cmd_skills
 from ..skills import auto_sync
 
@@ -50,6 +50,7 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "region": cmd_region,
     "storage": cmd_storage,
     "registry": cmd_registry,
+    "cdn": cmd_cdn,
     "git-provider": cmd_git_provider,
     "passkey": cmd_passkey,
     "manager": cmd_manager,

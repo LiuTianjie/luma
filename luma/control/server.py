@@ -133,6 +133,21 @@ from . import operations as operations_api
 from .workflows import handle_workflow_check, handle_workflow_get, handle_workflow_list, handle_workflow_record
 from . import history as control_history
 
+from .cdn import (
+    cdn_records,
+    cdn_status,
+    check_setup as check_cdn_setup,
+    disabled_cdn_notice,
+    dns_override as cdn_dns_override,
+    issue_service_certificate,
+    owned_domains as cdn_owned_domains,
+    prepare_service_cdn,
+    purge_domain as purge_cdn_domain,
+    purge_service_cdn,
+    remove_cdn_domain,
+    remove_unused_domain as remove_unused_cdn_domain,
+    service_dns_override as cdn_service_dns_override,
+)
 from .state import (
     init_state,
     load_dashboard_state,
@@ -7298,7 +7313,9 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
             )
         _deploy_step(steps, "Write Nomad job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
         written = [str(target)]
-        dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service), progress=progress)
+        cdn_prepared = _prepare_cdn_step(steps, progress, config, state, service)
+        dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service, override=cdn_prepared.get("override")), progress=progress)
+        _cdn_certificate_step(steps, progress, state, service, cdn_prepared, skip_dns=bool(body.get("skipDns")))
         orchestrator_result = _deploy_step(
             steps,
             "Deploy Nomad job",
@@ -7365,6 +7382,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
             ),
             progress=progress,
         )
+        cdn_purge = _purge_cdn_step(steps, progress, state, service, prepared=cdn_prepared, skip_orchestrator=_skip_orchestrator(body))
     except Exception as exc:
         # Any failure (LumaError, OSError from a full/read-only disk, raw socket
         # errors from the Nomad/DNS calls) must drive the record to a terminal
@@ -7388,6 +7406,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         "health": _deployment_health_result(service, probe_result),
         "cniHostports": cni_hostports,
         "storagePreparation": storage_preparation,
+        "cdn": {"prepare": cdn_prepared.get("message"), "purge": cdn_purge} if service.cdn is not None else None,
         "steps": steps,
     }
     return result
@@ -7557,9 +7576,10 @@ def _remove_service_deployment(
         "Delete DNS",
         lambda: "DNS skipped: --skip-dns"
         if body.get("skipDns")
-        else (_planned_delete_dns_message(service) if dry_run else delete_dns(config, service)),
+        else (_planned_delete_dns_message(service) if dry_run else delete_dns(config, service, override=_cdn_delete_override(state, service))),
         progress=progress,
     )
+    _remove_cdn_steps(steps, progress, state, service, dry_run=dry_run)
     orchestrator_result = _deploy_step(
         steps,
         "Remove Nomad job",
@@ -7640,10 +7660,11 @@ def _remove_compose_deployment(
                 f"Delete DNS {service.name}",
                 lambda service_spec=service_spec: "DNS skipped: --skip-dns"
                 if body.get("skipDns")
-                else (_planned_delete_dns_message(service_spec) if dry_run else delete_dns(config, service_spec)),
+                else (_planned_delete_dns_message(service_spec) if dry_run else delete_dns(config, service_spec, override=_cdn_delete_override(state, service_spec))),
                 progress=progress,
             )
         )
+        _remove_cdn_steps(steps, progress, state, service_spec, dry_run=dry_run, label=service.name)
     orchestrator_result = _deploy_step(
         steps,
         "Remove Nomad job",
@@ -8047,7 +8068,7 @@ def _reconcile_application_delivery(
             )
             route_target.parent.mkdir(parents=True, exist_ok=True)
             route_results.append(_write_route_file(route_target, route_text, routes_root=routes_root))
-        dns_results.append(sync_dns(config, route_service))
+        dns_results.append(sync_dns(config, route_service, override=cdn_service_dns_override(state, route_service)))
         if route_service.exposure in {"cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel"} and route_service.domain:
             probe_results.append(_wait_for_public_route(route_service))
 
@@ -9667,16 +9688,20 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         written = [str(target)]
 
         dns_results: list[str] = []
+        cdn_prepared_by_service: dict[str, dict[str, Any]] = {}
         for service in compose_public_services(deployment):
             service_spec = _compose_service_as_service_spec(deployment, service)
+            cdn_prepared = _prepare_cdn_step(steps, progress, config, state, service_spec, label=service.name)
+            cdn_prepared_by_service[service.name] = cdn_prepared
             dns_results.append(
                 _deploy_step(
                     steps,
                     f"Sync DNS {service.name}",
-                    lambda service_spec=service_spec: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service_spec),
+                    lambda service_spec=service_spec, cdn_prepared=cdn_prepared: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service_spec, override=cdn_prepared.get("override")),
                     progress=progress,
                 )
             )
+            _cdn_certificate_step(steps, progress, state, service_spec, cdn_prepared, skip_dns=bool(body.get("skipDns")), label=service.name)
 
         orchestrator_result = _deploy_step(
             steps,
@@ -9770,6 +9795,16 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
             )
             probe_results.append(probe_result)
             probe_by_service[service.name] = probe_result
+        for service in compose_public_services(deployment):
+            _purge_cdn_step(
+                steps,
+                progress,
+                state,
+                _compose_service_as_service_spec(deployment, service),
+                prepared=cdn_prepared_by_service.get(service.name) or {},
+                skip_orchestrator=_skip_orchestrator(body),
+                label=service.name,
+            )
     except Exception as exc:
         # See handle_deployment: any failure (not just LumaError — OSError, raw
         # socket errors) must reach a terminal state so the record never strands
@@ -10841,6 +10876,7 @@ def _compose_service_as_service_spec(deployment: ComposeDeploymentSpec, service:
         tcp=service.tcp,
         proxy=service.proxy,
         requirements=service.requirements,
+        cdn=service.cdn,
     )
 
 
@@ -11423,6 +11459,44 @@ def _normalized_repository_item(provider: Dict[str, Any], raw: Dict[str, Any]) -
         "defaultBranch": str(raw.get("default_branch") or raw.get("defaultBranch") or ""),
         "private": bool(raw.get("private")),
     }
+
+
+def handle_cdn_list(token: str) -> Dict[str, Any]:
+    state = load_auth_state()
+    require_token(state, token, token_type="deploy")
+    return {"domains": cdn_status(state)}
+
+
+def _cdn_domain_from_body(body: Dict[str, Any]) -> str:
+    domain = str(body.get("domain") or "").strip().rstrip(".").lower()
+    if not domain:
+        raise LumaError("domain is required")
+    return domain
+
+
+def handle_cdn_check(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_auth_state()
+    require_token(state, token, token_type="deploy")
+    config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
+    checks = check_cdn_setup(config, state)
+    return {"ready": all(item["ok"] for item in checks), "checks": checks}
+
+
+def handle_cdn_purge(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_auth_state()
+    require_token(state, token, token_type="deploy")
+    paths = body.get("paths") or []
+    if not isinstance(paths, list) or any(not isinstance(item, str) for item in paths):
+        raise LumaError("paths must be a list of URL paths")
+    return purge_cdn_domain(state, _cdn_domain_from_body(body), [str(item) for item in paths])
+
+
+def handle_cdn_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_auth_state()
+    require_token(state, token, token_type="deploy")
+    _reject_control_maintenance(state)
+    config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
+    return remove_unused_cdn_domain(config, state, _cdn_domain_from_body(body))
 
 
 def handle_git_provider_list(token: str) -> Dict[str, Any]:
@@ -12231,6 +12305,141 @@ def _deploy_step(steps: list[dict[str, str]], name: str, action: Any, *, progres
     steps.append(step)
     _emit_progress(progress, step)
     return result
+
+
+def _prepare_cdn_step(
+    steps: list[dict[str, str]],
+    progress: Callable[[dict[str, str]], None] | None,
+    config: Any,
+    state: Dict[str, Any],
+    service: ServiceSpec,
+    *,
+    label: str = "",
+) -> Dict[str, Any]:
+    """Prepare the CDN before DNS points at it; failures abort the deploy."""
+    suffix = f" {label}" if label else ""
+    if service.cdn is None:
+        notice = disabled_cdn_notice(state, service)
+        if notice:
+            step = {"name": f"CDN{suffix}", "status": "warning", "message": notice}
+            steps.append(step)
+            _emit_progress(progress, step)
+        return {}
+    return _deploy_step(steps, f"Prepare CDN{suffix}", lambda: prepare_service_cdn(config, state, service), progress=progress)
+
+
+def _cdn_certificate_step(
+    steps: list[dict[str, str]],
+    progress: Callable[[dict[str, str]], None] | None,
+    state: Dict[str, Any],
+    service: ServiceSpec,
+    prepared: Mapping[str, Any],
+    *,
+    skip_dns: bool,
+    label: str = "",
+) -> str | None:
+    """ESA issues its free certificate over HTTP, so this runs right after DNS."""
+    if service.cdn is None:
+        return None
+    name = f"ESA certificate{f' {label}' if label else ''}"
+    if skip_dns:
+        message = "ESA certificate skipped: DNS not managed (--skip-dns)"
+        step = {"name": name, "status": "ok", "message": message}
+        steps.append(step)
+        _emit_progress(progress, step)
+        return message
+    _emit_progress(progress, {"name": name, "status": "start", "message": ""})
+    try:
+        message = issue_service_certificate(state, service, prepared)
+        status = "ok"
+    except LumaError as exc:
+        # DNS already points at ESA, so aborting would only skip the rollout
+        # and leave HTTPS broken anyway: report it and keep going.
+        message = f"{exc}; ESA keeps issuing it, check again with luma cdn status"
+        status = "warning"
+    except Exception as exc:
+        step = {"name": name, "status": "fail", "message": f"{type(exc).__name__}: {exc}"}
+        steps.append(step)
+        _emit_progress(progress, step)
+        raise
+    step = {"name": name, "status": status, "message": message}
+    steps.append(step)
+    _emit_progress(progress, step)
+    return message
+
+
+def _purge_cdn_step(
+    steps: list[dict[str, str]],
+    progress: Callable[[dict[str, str]], None] | None,
+    state: Dict[str, Any],
+    service: ServiceSpec,
+    *,
+    prepared: Mapping[str, Any],
+    skip_orchestrator: bool,
+    label: str = "",
+) -> str | None:
+    """Refresh entry URLs after the rollout is live.
+
+    The new version is already serving, so a provider failure only delays
+    freshness by the HTML cache TTL: it becomes a warning, never a failed
+    deploy.  Non-LumaError exceptions still propagate unwrapped.
+    """
+    if service.cdn is None:
+        return None
+    name = f"Purge CDN{f' {label}' if label else ''}"
+    if skip_orchestrator or prepared.get("created"):
+        reason = "orchestrator deploy skipped" if skip_orchestrator else "new ESA record has no cache yet"
+        message = f"CDN purge skipped: {reason}"
+        step = {"name": name, "status": "ok", "message": message}
+        steps.append(step)
+        _emit_progress(progress, step)
+        return message
+    _emit_progress(progress, {"name": name, "status": "start", "message": ""})
+    try:
+        message = purge_service_cdn(state, service)
+    except LumaError as exc:
+        message = f"CDN purge failed (deployment kept): {exc}; retry with luma cdn purge {service.domain}"
+        step = {"name": name, "status": "warning", "message": message}
+        steps.append(step)
+        _emit_progress(progress, step)
+        return message
+    except Exception as exc:
+        step = {"name": name, "status": "fail", "message": f"{type(exc).__name__}: {exc}"}
+        steps.append(step)
+        _emit_progress(progress, step)
+        raise
+    step = {"name": name, "status": "ok", "message": message}
+    steps.append(step)
+    _emit_progress(progress, step)
+    return message
+
+
+def _cdn_delete_override(state: Mapping[str, Any], service: ServiceSpec) -> Dict[str, Any] | None:
+    if service.cdn is None or not service.domain:
+        return None
+    return cdn_dns_override(cdn_records(state).get(service.domain))
+
+
+def _remove_cdn_steps(
+    steps: list[dict[str, str]],
+    progress: Callable[[dict[str, str]], None] | None,
+    state: Dict[str, Any],
+    service: ServiceSpec,
+    *,
+    dry_run: bool,
+    label: str = "",
+) -> None:
+    name = f"Delete CDN domain{f' {label}' if label else ''}"
+    for domain in cdn_owned_domains(state, service.name):
+        if dry_run:
+            step = {"name": name, "status": "ok", "message": f"CDN domain {domain} would be deleted"}
+        else:
+            try:
+                step = {"name": name, "status": "ok", "message": remove_cdn_domain(state, domain)}
+            except LumaError as exc:
+                step = {"name": name, "status": "warning", "message": f"CDN domain {domain} was not deleted: {exc}; run luma cdn remove {domain}"}
+        steps.append(step)
+        _emit_progress(progress, step)
 
 
 def _emit_progress(progress: Callable[[dict[str, str]], None] | None, event: dict[str, str]) -> None:
@@ -15389,6 +15598,8 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             return _json_response(200, result)
         if parsed_path == "/v1/git-providers":
             return _json_response(200, await run_in_threadpool(handle_git_provider_list, token))
+        if parsed_path == "/v1/cdn":
+            return _json_response(200, await run_in_threadpool(handle_cdn_list, token))
         if parsed_path == "/v1/control-resources":
             return _json_response(200, await run_in_threadpool(handle_credentials_resources_list, token))
         git_repos_match = re.fullmatch(r"/v1/git-providers/([^/]+)/repositories", parsed_path)
@@ -15644,6 +15855,9 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/regions/remove": handle_region_remove,
             "/v1/regions/update": handle_region_update,
             "/v1/dashboard/metrics/history/batch": handle_metrics_history_batch,
+            "/v1/cdn/check": handle_cdn_check,
+            "/v1/cdn/purge": handle_cdn_purge,
+            "/v1/cdn/remove": handle_cdn_remove,
             "/v1/git-providers": handle_git_provider_set,
             "/v1/git-providers/remove": handle_git_provider_remove,
             "/v1/registries": handle_registry_set,

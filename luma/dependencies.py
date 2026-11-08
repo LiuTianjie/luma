@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Mapping
 
+from .cdn import ESA_SECRET_NAMES
 from .registry import DOCKER_HUB_HOSTS, registry_host_from_image
 from .errors import LumaError
 
@@ -104,8 +106,11 @@ def service_requirements(
     exposure = str(getattr(service, "exposure", "none") or "none")
     dns_provider = str(getattr(config, "dns", {}).get("provider") or "")
     explicit_capabilities = {str(value).strip() for value in (explicit.get("capabilities") or [])} if isinstance(explicit, Mapping) else set()
-    needs_cloudflare = exposure in {"cn-edge", "external-edge", "cloudflare-tunnel"} or "cloudflare" in explicit_capabilities
-    cloudflare_token = str(secrets.get(str(getattr(config, "dns", {}).get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))) or "")
+    cdn = getattr(service, "cdn", None)
+    needs_cloudflare = exposure in {"cn-edge", "external-edge", "cloudflare-tunnel"} or "cloudflare" in explicit_capabilities or cdn is not None
+    token_env = str(getattr(config, "dns", {}).get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))
+    # sync_dns reads the process environment first; count it here too.
+    cloudflare_token = str(secrets.get(token_env) or os.environ.get(token_env) or "")
     setup_checks = state.get("setupChecks") if isinstance(state.get("setupChecks"), Mapping) else {}
     setup_check_items = setup_checks.get("checks") if isinstance(setup_checks, Mapping) else {}
     cloudflare_check = setup_check_items.get("cloudflare") if isinstance(setup_check_items, Mapping) else {}
@@ -117,7 +122,13 @@ def service_requirements(
         cloudflare_missing = ["providers.dns.provider=cloudflare", "CLOUDFLARE_API_TOKEN"]
     elif needs_cloudflare and require_verified and not verified_cloudflare:
         cloudflare_missing = ["run Dashboard setup check for Cloudflare"]
-    add("cloudflare", needs_cloudflare, cloudflare_ready, "Cloudflare DNS provider and token available" if not require_verified or verified_cloudflare else "Cloudflare configuration is not verified", missing=cloudflare_missing, explicit="cloudflare" in explicit_capabilities)
+    add("cloudflare", needs_cloudflare, cloudflare_ready, "Cloudflare DNS provider and token available" if not require_verified or verified_cloudflare else "Cloudflare configuration is not verified", missing=cloudflare_missing, explicit="cloudflare" in explicit_capabilities or cdn is not None)
+
+    if cdn is not None:
+        cdn_missing = [name for name in ESA_SECRET_NAMES if not str(secrets.get(name) or "").strip()]
+        # A manifest that declares cdn asked for it explicitly, so CLI deploys
+        # enforce this check as well as dashboard ones.
+        add("cdn", True, not cdn_missing, "Alibaba Cloud ESA credentials available", missing=cdn_missing, explicit=True)
 
     needs_tailnet = exposure == "tailscale-relay" or region == "home" or "tailscale" in explicit_capabilities
     tailnet_ready = any(bool(record.get("tailscaleIP") or record.get("tailscaleName")) for record in region_nodes)

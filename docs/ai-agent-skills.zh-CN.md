@@ -4,7 +4,7 @@ Luma 提供四个面向 AI 编码助手的 Skill，覆盖部署、可观测、�
 
 ## 部署工作流 {#deployment-workflows}
 
-[`luma-deployment-yaml`](../skills/luma-deployment-yaml/) 帮助生成和审查单服务清单与 Compose 旁车配置，选择区域与暴露方式，配置本地存储，并排查构建和部署问题。
+[`luma-deployment-yaml`](../skills/luma-deployment-yaml/) 帮助生成和审查单服务清单与 Compose 旁车配置，选择区域与暴露方式，开启并体检 CDN 缓存，配置本地存储，并排查构建和部署问题。
 
 对于已有应用，它会沿用记录的构建与部署方式。更改工作流时应说明差异并确认；仅安装 Skill 不会更新 CLI 或 Control。密钥使用 `${DATABASE_PASSWORD}` 等引用，不以明文写入 YAML。
 
@@ -92,3 +92,4 @@ CLI 和 Skill 升级只改变客户端。共享查询需要集群管理员升级
 - [Compose 与本地存储](compose-storage.zh-CN.md)
 - [可观测](observability.zh-CN.md)
 - [部署工作流记录](../skills/luma-deployment-yaml/references/deployment-workflow.md)
+- [CDN（阿里云 ESA）技能参考](../skills/luma-deployment-yaml/references/cdn.md)
