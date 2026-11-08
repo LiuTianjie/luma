@@ -253,7 +253,11 @@ class AliyunClient:
 
     def call(self, host: str, version: str, action: str, params: Mapping[str, Any]) -> Dict[str, Any]:
         clean = {key: _param_value(value) for key, value in params.items() if value is not None}
-        body = _encode_params(clean).encode("utf-8")
+        encoded = _encode_params(clean)
+        # ESA read actions accept only GET (parameters in the query string);
+        # writes take POST with a form body.
+        method = "GET" if action.startswith(READ_ACTION_PREFIXES) and action != "VerifySite" else "POST"
+        query, body = (encoded, b"") if method == "GET" else ("", encoded.encode("utf-8"))
         last_error: Exception | None = None
         for attempt in range(API_ATTEMPTS):
             headers = {
@@ -262,17 +266,18 @@ class AliyunClient:
                 "x-acs-date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "x-acs-signature-nonce": secrets_module.token_hex(16),
                 "x-acs-content-sha256": hashlib.sha256(body).hexdigest(),
-                "content-type": "application/x-www-form-urlencoded",
             }
+            if method == "POST":
+                headers["content-type"] = "application/x-www-form-urlencoded"
             authorization, _ = acs3_signature(
-                method="POST", host=host, headers=headers, query="", body=body,
+                method=method, host=host, headers=headers, query=query, body=body,
                 key_id=self.key_id, key_secret=self.key_secret,
             )
             request = urllib.request.Request(
-                f"https://{host}/",
-                data=body,
+                f"https://{host}/" + (f"?{query}" if query else ""),
+                data=body if method == "POST" else None,
                 headers={**headers, "Authorization": authorization, "Accept": "application/json"},
-                method="POST",
+                method=method,
             )
             try:
                 with urllib.request.urlopen(request, timeout=API_TIMEOUT_SECONDS) as response:
@@ -554,7 +559,7 @@ def ensure_record(client: AliyunClient, *, site_id: Any, domain: str, origin: st
     """Make ``domain`` a proxied ESA record pointing at the edge; return it with notes."""
     notes: List[str] = []
     record = find_record(client, site_id, domain)
-    data = {"value": origin}
+    data = {"Value": origin}
     if record is None:
         client.esa("CreateRecord", SiteId=site_id, RecordName=domain, Type="A/AAAA", Proxied=True, BizName="web", Ttl=1, Data=data)
         notes.append(f"record created -> {origin}")
