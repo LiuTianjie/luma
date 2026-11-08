@@ -22,7 +22,9 @@ image: ghcr.io/example/web:1.4.0
 region: cn
 exposure: cn-edge
 domain: www.example.com
-redirectFrom: [example.com]
+redirectFrom:
+  hosts: [example.com]
+  except: ["/api/*"]   # optional: served directly on example.com, never redirected
 port: 3000
 cdn: esa
 ```
@@ -30,6 +32,7 @@ cdn: esa
 - 根域名不能写成 CNAME，Cloudflare 只能"展平"：由 Cloudflare 自己去解析 ESA，再把 IP 返回给访客。这样 ESA 是按 Cloudflare 的位置给访客分配节点，而不是按访客自己的位置。itool.tech 上实测：国内访客被分到美国节点，一个页面要 10 秒。所以 Luma 拒绝在根域名上开 `cdn`，并在报错里给出下面的改法。
 - `www.example.com` 是普通 CNAME，访客自己的 DNS 会直接去问 ESA，拿到就近的节点。
 - `example.com` 保持直连 edge 的 A 记录。GET 和 HEAD 永久跳转到 `https://www.example.com`，保留路径和查询参数，浏览器会缓存这个跳转。其他方法直接转给应用，所以发到旧地址的支付回调和 webhook 仍然有效。
+- `except` 列出在旧主机上对所有方法都直接提供、不跳转的路径。凡是其他客户端带 `Authorization` 头调用的 API 都应该列进来：浏览器和大多数 HTTP 库在跳转到另一个主机时会丢掉这个头，请求到达时就没有认证信息了。简写 `redirectFrom: [example.com]` 会让所有 GET 和 HEAD 都跳转。
 - 应用的 canonical 地址、sitemap 和 OAuth 回调都要改成 `www`。WebAuthn 的 RP ID 保持根域名，passkey 就继续有效。
 
 ## 一次性准备 {#one-time-setup}

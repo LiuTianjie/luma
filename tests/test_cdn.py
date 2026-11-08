@@ -551,9 +551,15 @@ class ApexAndRedirectTests(unittest.TestCase):
     def test_redirect_from_is_validated(self):
         from luma.service import parse_redirect_from
 
-        self.assertEqual(parse_redirect_from(["Example.com.", "example.com"], domain="www.example.com", exposure="cn-edge"), ["example.com"])
+        self.assertEqual(parse_redirect_from(["Example.com.", "example.com"], domain="www.example.com", exposure="cn-edge"), (["example.com"], []))
+        self.assertEqual(
+            parse_redirect_from({"hosts": ["example.com"], "except": ["/api/*", "/healthz"]}, domain="www.example.com", exposure="cn-edge"),
+            (["example.com"], ["/api/*", "/healthz"]),
+        )
         for raw, exposure, message in [
             ("example.com", "cn-edge", "must be a list"),
+            ({"hosts": ["example.com"], "except": ["api/*"]}, "cn-edge", "except entries must be URL paths"),
+            ({"hosts": ["example.com"], "paths": []}, "cn-edge", "unsupported redirectFrom field"),
             (["www.example.com"], "cn-edge", "must not repeat domain"),
             (["not a host"], "cn-edge", "must be hostnames"),
             (["example.com"], "tcp-relay", "requires exposure"),
@@ -574,6 +580,11 @@ class ApexAndRedirectTests(unittest.TestCase):
         self.assertIn("traefik.http.middlewares.web-to-primary.redirectregex.replacement=https://www.example.com$1", tags)
         self.assertIn("traefik.http.middlewares.web-to-primary.redirectregex.permanent=true", tags)
         self.assertIn("traefik.http.routers.web-redirect.tls.domains[0].sans=example.com", tags)
+        kept = redirect_router_tags(config, "web", "www.example.com", ["example.com"], service="web", except_paths=["/api/*", "/healthz"])
+        self.assertIn(
+            "traefik.http.routers.web-redirect.rule=(Host(`example.com`)) && (Method(`GET`) || Method(`HEAD`)) && !(PathPrefix(`/api/`) || Path(`/healthz`))",
+            kept,
+        )
         # Nomad interpolates ${...}; the replacement must not use it.
         self.assertFalse(any("${" in tag for tag in tags))
 

@@ -38,7 +38,7 @@
 | `dns.proxied` | no | boolean | Optional Cloudflare proxied flag. |
 | `dns.servers` | no | IP string or list | Runtime container DNS servers; IPv4/IPv6. Omit to inherit the existing resolver defaults. |
 | `cdn` | no | string or mapping | Alibaba Cloud ESA: `cdn: esa`, or `provider`, `scope` (`global`/`domestic`/`overseas`), `purge` (paths refreshed after deploy; omitted = whole hostname, `[]` = none, trailing `/*` = directory), `cache` (list of `{path, ttl}` for paths identical for every visitor, max 8). Only `cn-edge`, `external-edge`, `tailscale-relay`. Needs `LUMA_ALIBABA_CLOUD_ACCESS_KEY_ID`/`_SECRET` Control secrets and an ESA plan. Audit with `luma cdn check DOMAIN`. |
-| `redirectFrom` | no | list of hostnames | GET/HEAD on these hosts get a 301 to `domain` (path and query kept); other methods pass to the service so webhooks keep working. Always a direct A record, never on the CDN. Only `cn-edge`, `external-edge`, `tailscale-relay`. Use for the zone apex next to a CDN-served `www`. |
+| `redirectFrom` | no | list of hostnames, or `{hosts, except}` | GET/HEAD on these hosts get a 301 to `domain` (path and query kept); other methods pass to the service. `except` paths (`/api/*` = prefix) are served directly for every method, for APIs called with `Authorization` (dropped on cross-host redirects). Always a direct A record, never on the CDN. Only `cn-edge`, `external-edge`, `tailscale-relay`. |
 | `stackPath` | no | string | Override generated stack path. Rare. |
 | `routePath` | no | string | Override generated tailscale route path. Rare. |
 
@@ -566,7 +566,7 @@ CI:
 
 ```bash
 # Verify this version is published before installing.
-python -m pip install "luma-infra==0.2.48"
+python -m pip install "luma-infra==0.2.49"
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 luma validate service.yaml --format json

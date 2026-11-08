@@ -72,6 +72,7 @@ class ComposeServiceSpec:
     requirements: Dict[str, Any] = field(default_factory=dict)
     cdn: Optional[CdnSpec] = None
     redirect_from: List[str] = field(default_factory=list)
+    redirect_except: List[str] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -546,6 +547,12 @@ def _load_compose_services(raw: Any) -> Dict[str, ComposeServiceSpec]:
             raise LumaError(f"services.{name}.tunnel must be a mapping")
         if not isinstance(tcp, dict):
             raise LumaError(f"services.{name}.tcp must be a mapping")
+        redirect = parse_redirect_from(
+            value.get("redirectFrom"),
+            domain=value.get("domain"),
+            exposure=str(value.get("exposure") or "none"),
+            label=f"services.{name}.redirectFrom",
+        )
         result[str(name)] = ComposeServiceSpec(
             name=str(name),
             region=parse_region_name(value["region"]) if value.get("region") else None,
@@ -561,12 +568,8 @@ def _load_compose_services(raw: Any) -> Dict[str, ComposeServiceSpec]:
             tcp=dict(tcp),
             requirements=requirements,
             cdn=parse_cdn_block(value.get("cdn"), label=f"services.{name}.cdn"),
-            redirect_from=parse_redirect_from(
-                value.get("redirectFrom"),
-                domain=value.get("domain"),
-                exposure=str(value.get("exposure") or "none"),
-                label=f"services.{name}.redirectFrom",
-            ),
+            redirect_from=redirect[0],
+            redirect_except=redirect[1],
             raw=dict(value),
         )
     return result

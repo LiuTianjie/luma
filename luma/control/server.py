@@ -10884,6 +10884,7 @@ def _compose_service_as_service_spec(deployment: ComposeDeploymentSpec, service:
         requirements=service.requirements,
         cdn=service.cdn,
         redirect_from=service.redirect_from,
+        redirect_except=service.redirect_except,
     )
 
 

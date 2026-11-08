@@ -22,7 +22,9 @@ image: ghcr.io/example/web:1.4.0
 region: cn
 exposure: cn-edge
 domain: www.example.com
-redirectFrom: [example.com]
+redirectFrom:
+  hosts: [example.com]
+  except: ["/api/*"]   # optional: served directly on example.com, never redirected
 port: 3000
 cdn: esa
 ```
@@ -30,6 +32,7 @@ cdn: esa
 - A root domain cannot be a CNAME, so Cloudflare must "flatten" it: Cloudflare resolves ESA itself and returns IP addresses. ESA then schedules every visitor by Cloudflare's location instead of the visitor's. Measured on itool.tech: a visitor in mainland China was served from US nodes and a page took 10 seconds. Luma therefore refuses `cdn` on the zone apex and explains this fix.
 - `www.example.com` is a plain CNAME, so each visitor's own DNS resolver asks ESA and gets a nearby node.
 - `example.com` stays a direct A record to the edge. GET and HEAD get a permanent redirect to `https://www.example.com` with the path and query kept; browsers cache it. Other methods reach the application unchanged, so payment callbacks and webhooks sent to the old address keep working.
+- `except` lists paths served directly on the old host for every method. Use it for APIs other clients call with an `Authorization` header: browsers and most HTTP libraries drop that header when a redirect changes host, so the request would arrive unauthenticated. The short list form `redirectFrom: [example.com]` redirects every GET and HEAD.
 - Point the application's canonical URL, sitemap and OAuth callbacks at `www`. Passkeys keep working when the WebAuthn RP ID stays the root domain.
 
 ## One-time setup
