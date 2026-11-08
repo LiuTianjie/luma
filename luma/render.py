@@ -69,7 +69,7 @@ def render_tailscale_route(config: LumaConfig, service: ServiceSpec) -> str:
             },
         }
     }
-    extra = redirect_routes(service_name, str(service.domain), list(service.redirect_from))
+    extra = redirect_routes(service_name, str(service.domain), list(service.redirect_from), list(service.redirect_except))
     for router, spec in extra.get("routers", {}).items():
         route["http"]["routers"][router] = {
             **spec,

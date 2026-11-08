@@ -23,7 +23,9 @@ CDN, when `cdn:` appears in a manifest, or when a deploy fails or warns at
   CNAMEs, so ESA schedules visitors by Cloudflare's location (China visitors got
   US nodes, 10 s pages). Use `domain: www.<zone>` plus `redirectFrom: [<zone>]`;
   the apex stays a direct A record, GET/HEAD 301 to www, other methods pass
-  through (webhooks keep working). App side: canonical/sitemap/OAuth on www,
+  through (webhooks keep working). If other products call apex APIs with an
+  `Authorization` header, use `redirectFrom: {hosts: [<zone>], except: ["/api/*"]}`:
+  clients drop that header on cross-host redirects. App side: canonical/sitemap/OAuth on www,
   keep the WebAuthn RP ID at the root domain so passkeys survive.
 - One site-wide cache rule (`luma_site_origin_headers`, `Rule: true`,
   `follow_origin`) makes HTML honour app headers; ESA's global cache config

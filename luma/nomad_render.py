@@ -623,7 +623,7 @@ def render_compose_job(
                 _router_tls_domain_tags(config, service_id, str(override.domain))
             )
             service_block["Tags"].extend(
-                redirect_router_tags(config, service_id, str(override.domain), override.redirect_from, service=service_id)
+                redirect_router_tags(config, service_id, str(override.domain), override.redirect_from, service=service_id, except_paths=override.redirect_except)
             )
             if health_check is not None:
                 service_block["Checks"] = [health_check]
@@ -1073,7 +1073,7 @@ def _service_block(config: LumaConfig, service: ServiceSpec, port_label: str | N
         f"traefik.http.routers.{name}.tls.certresolver={config.cert_resolver}",
     ]
     tags.extend(_router_tls_domain_tags(config, name, str(service.domain)))
-    tags.extend(redirect_router_tags(config, name, str(service.domain), service.redirect_from, service=name))
+    tags.extend(redirect_router_tags(config, name, str(service.domain), service.redirect_from, service=name, except_paths=service.redirect_except))
     tags.extend(str(t) for t in service.labels)
     block: Dict[str, Any] = {
         "Name": name,
@@ -1092,21 +1092,29 @@ def _hosts_rule(hosts: List[str]) -> str:
     return " || ".join(f"Host(`{host}`)" for host in hosts)
 
 
-def redirect_routes(name: str, primary: str, hosts: List[str]) -> Dict[str, Dict[str, Any]]:
+def _path_rule(path: str) -> str:
+    return f"PathPrefix(`{path[:-1]}`)" if path.endswith("*") else f"Path(`{path}`)"
+
+
+def redirect_routes(name: str, primary: str, hosts: List[str], except_paths: List[str] = ()) -> Dict[str, Dict[str, Any]]:
     """Traefik routers/middleware for ``redirectFrom`` hosts.
 
     GET and HEAD get a permanent redirect to the primary domain with path and
     query kept. Every other method (payment callbacks, webhooks, form posts
     already in flight) reaches the service unchanged, because most senders do
-    not follow redirects for POST.
+    not follow redirects for POST. ``except_paths`` are served directly for
+    every method too, for clients that drop credentials on cross-host redirects.
     """
     if not hosts:
         return {}
     hosts_rule = _hosts_rule(hosts)
+    excluded = ""
+    if except_paths:
+        excluded = " && !(" + " || ".join(_path_rule(path) for path in except_paths) + ")"
     return {
         "routers": {
             f"{name}-redirect": {
-                "rule": f"({hosts_rule}) && (Method(`GET`) || Method(`HEAD`))",
+                "rule": f"({hosts_rule}) && (Method(`GET`) || Method(`HEAD`)){excluded}",
                 "priority": 200,
                 "middlewares": [f"{name}-to-primary"],
             },
@@ -1125,9 +1133,9 @@ def redirect_routes(name: str, primary: str, hosts: List[str]) -> Dict[str, Dict
 
 
 def redirect_router_tags(
-    config: LumaConfig, name: str, primary: str, hosts: List[str], *, service: str
+    config: LumaConfig, name: str, primary: str, hosts: List[str], *, service: str, except_paths: List[str] = ()
 ) -> List[str]:
-    routes = redirect_routes(name, primary, hosts)
+    routes = redirect_routes(name, primary, hosts, list(except_paths))
     if not routes:
         return []
     tags: List[str] = []

@@ -58,7 +58,7 @@ luma deploy status.yaml
 | `tunnel` | cloudflare-tunnel 可用 | map | Cloudflare Tunnel token env 等设置。 |
 | `dns.servers` | 否 | IP 或 IP 数组 | 容器使用的 DNS 解析服务器；省略时继承原有默认设置。 |
 | `cdn` | 否 | string 或 map | 开启阿里云 ESA：`cdn: esa`，或写 `provider`、`scope`（`global` / `domestic` / `overseas`）、`purge`（部署后刷新的路径；省略时刷新整个主机名，`[]` 不刷新）、`cache`（对所有访客都一样的路径及缓存秒数）。仅支持 `cn-edge`、`external-edge`、`tailscale-relay`。见 [CDN](cdn.md)。 |
-| `redirectFrom` | 否 | 主机名数组 | 这些主机名的 GET/HEAD 请求 301 跳转到 `domain`（保留路径和查询参数），其他方法直接转发给服务，回调不丢。DNS 始终是直连 edge 的 A 记录，不进 CDN。仅支持 `cn-edge`、`external-edge`、`tailscale-relay`。常用于 `domain: www.example.com` + `redirectFrom: [example.com]`。 |
+| `redirectFrom` | 否 | 主机名数组或 map | 这些主机名的 GET/HEAD 请求 301 跳转到 `domain`（保留路径和查询参数），其他方法直接转发给服务，回调不丢。写成 `{hosts: [...], except: ["/api/*"]}` 时，`except` 里的路径在旧主机上对所有方法都不跳转，适合带 `Authorization` 头调用的 API。DNS 始终是直连 edge 的 A 记录，不进 CDN。仅支持 `cn-edge`、`external-edge`、`tailscale-relay`。 |
 | `stackPath` | 否 | string | 覆盖生成 jobspec 路径。通常不用。 |
 | `routePath` | 否 | string | 覆盖 tailscale route 文件路径。通常不用。 |
 

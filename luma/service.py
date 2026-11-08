@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .cdn import CdnSpec, parse_cdn_block, validate_cdn_exposure
 from .container_dns import parse_dns_servers
@@ -118,6 +118,8 @@ class ServiceSpec:
     # Extra hostnames that redirect GET/HEAD to ``domain`` and pass every other
     # method straight to the service (webhooks keep working). Never on the CDN.
     redirect_from: List[str] = field(default_factory=list)
+    # Paths on those hosts served directly for every method (no redirect).
+    redirect_except: List[str] = field(default_factory=list)
 
     @property
     def slug(self) -> str:
@@ -204,7 +206,7 @@ def load_service(path: Path) -> ServiceSpec:
     validate_region_exposure_syntax(region, exposure)
     cdn = parse_cdn_block(raw.get("cdn"))
     validate_cdn_exposure(cdn, exposure)
-    redirect_from = parse_redirect_from(raw.get("redirectFrom"), domain=domain, exposure=exposure)
+    redirect_from, redirect_except = parse_redirect_from(raw.get("redirectFrom"), domain=domain, exposure=exposure)
 
     relay = raw.get("relay") or {}
     if not isinstance(relay, dict):
@@ -294,6 +296,7 @@ def load_service(path: Path) -> ServiceSpec:
         requirements=requirements,
         cdn=cdn,
         redirect_from=redirect_from,
+        redirect_except=redirect_except,
     )
 
 
@@ -301,25 +304,48 @@ REDIRECT_EXPOSURES = frozenset({"cn-edge", "external-edge", "tailscale-relay"})
 _HOSTNAME = re.compile(r"^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
 
 
-def parse_redirect_from(raw: Any, *, domain: Any, exposure: str, label: str = "redirectFrom") -> List[str]:
-    """Hostnames that permanently redirect to ``domain``."""
+def parse_redirect_from(
+    raw: Any, *, domain: Any, exposure: str, label: str = "redirectFrom"
+) -> Tuple[List[str], List[str]]:
+    """Return ``(hosts, except_paths)`` for hosts that redirect to ``domain``.
+
+    Accepts a list of hostnames, or ``{hosts: [...], except: [...]}`` where
+    ``except`` lists paths (``/api/*`` for a prefix) served directly on those
+    hosts for every method, for clients that drop credentials on redirects.
+    """
     if raw is None:
-        return []
-    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
-        raise LumaError(f"{label} must be a list of hostnames")
+        return [], []
+    except_raw: Any = []
+    if isinstance(raw, Mapping):
+        unknown = sorted(str(key) for key in raw if str(key) not in {"hosts", "except"})
+        if unknown:
+            raise LumaError(f"unsupported {label} field(s): {', '.join(unknown)}")
+        except_raw = raw.get("except") or []
+        raw = raw.get("hosts")
+    if not isinstance(raw, list) or not raw or any(not isinstance(item, str) for item in raw):
+        raise LumaError(f"{label} must be a list of hostnames or a mapping with hosts")
     if exposure not in REDIRECT_EXPOSURES:
         raise LumaError(f"{label} requires exposure {', '.join(sorted(REDIRECT_EXPOSURES))}; got {exposure}")
     primary = str(domain or "").strip().lower().rstrip(".")
-    result: List[str] = []
+    hosts: List[str] = []
     for item in raw:
         host = item.strip().lower().rstrip(".")
         if not _HOSTNAME.match(host):
             raise LumaError(f"{label} entries must be hostnames: {item!r}")
         if host == primary:
             raise LumaError(f"{label} must not repeat domain {primary}")
-        if host not in result:
-            result.append(host)
-    return result
+        if host not in hosts:
+            hosts.append(host)
+    if not isinstance(except_raw, list) or any(not isinstance(item, str) for item in except_raw):
+        raise LumaError(f"{label}.except must be a list of URL paths")
+    paths: List[str] = []
+    for item in except_raw:
+        path = item.strip()
+        if not path.startswith("/") or "*" in path[:-1] or any(ch.isspace() or ch in "`\"" for ch in path):
+            raise LumaError(f"{label}.except entries must be URL paths starting with / and may only end with *: {item!r}")
+        if path not in paths:
+            paths.append(path)
+    return hosts, paths
 
 
 def _load_service_build(raw: Any, slug: str) -> Optional["ServiceBuildSpec"]:
