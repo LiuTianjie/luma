@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Mapping
 
@@ -107,7 +108,9 @@ def service_requirements(
     explicit_capabilities = {str(value).strip() for value in (explicit.get("capabilities") or [])} if isinstance(explicit, Mapping) else set()
     cdn = getattr(service, "cdn", None)
     needs_cloudflare = exposure in {"cn-edge", "external-edge", "cloudflare-tunnel"} or "cloudflare" in explicit_capabilities or cdn is not None
-    cloudflare_token = str(secrets.get(str(getattr(config, "dns", {}).get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))) or "")
+    token_env = str(getattr(config, "dns", {}).get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))
+    # sync_dns reads the process environment first; count it here too.
+    cloudflare_token = str(secrets.get(token_env) or os.environ.get(token_env) or "")
     setup_checks = state.get("setupChecks") if isinstance(state.get("setupChecks"), Mapping) else {}
     setup_check_items = setup_checks.get("checks") if isinstance(setup_checks, Mapping) else {}
     cloudflare_check = setup_check_items.get("cloudflare") if isinstance(setup_check_items, Mapping) else {}

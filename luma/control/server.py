@@ -12325,7 +12325,24 @@ def _cdn_certificate_step(
         steps.append(step)
         _emit_progress(progress, step)
         return message
-    return _deploy_step(steps, name, lambda: issue_service_certificate(state, service, prepared), progress=progress)
+    _emit_progress(progress, {"name": name, "status": "start", "message": ""})
+    try:
+        message = issue_service_certificate(state, service, prepared)
+        status = "ok"
+    except LumaError as exc:
+        # DNS already points at ESA, so aborting would only skip the rollout
+        # and leave HTTPS broken anyway: report it and keep going.
+        message = f"{exc}; ESA keeps issuing it, check again with luma cdn status"
+        status = "warning"
+    except Exception as exc:
+        step = {"name": name, "status": "fail", "message": f"{type(exc).__name__}: {exc}"}
+        steps.append(step)
+        _emit_progress(progress, step)
+        raise
+    step = {"name": name, "status": status, "message": message}
+    steps.append(step)
+    _emit_progress(progress, step)
+    return message
 
 
 def _purge_cdn_step(

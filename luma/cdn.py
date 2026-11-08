@@ -3,8 +3,9 @@
 A Luma zone is one ESA site joined by CNAME. For each service with ``cdn: esa``
 Luma creates a proxied ESA record pointing at the edge, points the Cloudflare
 DNS record at the ESA CNAME, lets ESA issue its free certificate and refreshes
-the cache after each rollout. Caching policy is left to the application's own
-``Cache-Control`` headers.
+the cache after each rollout. Per-domain rules make ESA honour the
+application's ``Cache-Control`` headers on every path (ESA alone ignores them
+for HTML) and cache the manifest's ``cdn.cache`` paths.
 
 Requests are signed with ACS3-HMAC-SHA256 using the standard library, so the
 package keeps no Alibaba Cloud SDK dependency.
@@ -31,7 +32,12 @@ from .errors import LumaError
 CDN_PROVIDERS = frozenset({"esa"})
 CDN_SCOPES = frozenset({"global", "domestic", "overseas"})
 CDN_EXPOSURES = frozenset({"cn-edge", "external-edge", "tailscale-relay"})
-CDN_FIELDS = frozenset({"provider", "scope", "purge"})
+CDN_FIELDS = frozenset({"provider", "scope", "purge", "cache"})
+CACHE_FIELDS = frozenset({"path", "ttl"})
+# A rule may hold at most 10 sub-conditions on Free/Basic plans; the host-wide
+# rule spends one on the host and one per excluded cache path.
+MAX_CACHE_PATHS = 8
+MAX_CACHE_TTL = 31536000
 
 # Prefixed so they never collide with an application's own Alibaba Cloud keys.
 ESA_KEY_ID_ENV = "LUMA_ALIBABA_CLOUD_ACCESS_KEY_ID"
@@ -47,7 +53,11 @@ VERIFY_TIMEOUT_SECONDS = 180
 VERIFY_POLL_SECONDS = 10.0
 CERTIFICATE_TIMEOUT_SECONDS = 600
 CERTIFICATE_POLL_SECONDS = 15.0
-RETRYABLE_CODE_PREFIXES = ("Throttling", "ServiceUnavailable", "InternalError", "InternalException", "TooManyRequests", "Site.ServiceBusy", "Record.ServiceBusy", "Record.Reserved")
+# Rejections that guarantee nothing was applied: safe to retry any action.
+THROTTLE_CODE_PREFIXES = ("Throttling", "TooManyRequests", "Site.ServiceBusy", "Record.ServiceBusy", "Record.Reserved")
+# Network errors and 5xx may hide an applied write, so only reads retry them;
+# writes are reconciled by the next deploy instead.
+READ_ACTION_PREFIXES = ("List", "Get", "Describe", "Verify")
 
 
 # ---------------------------------------------------------------------------
@@ -56,11 +66,20 @@ RETRYABLE_CODE_PREFIXES = ("Throttling", "ServiceUnavailable", "InternalError", 
 
 
 @dataclass(frozen=True)
+class CachePath:
+    path: str
+    ttl: int
+
+
+@dataclass(frozen=True)
 class CdnSpec:
     provider: str = "esa"
     scope: str = "global"
     # None refreshes the whole hostname after each deploy; () disables refresh.
     purge: Optional[Tuple[str, ...]] = None
+    # Paths that are the same for every visitor: cached for ``ttl`` when the
+    # application sends no cache headers of its own.
+    cache: Tuple[CachePath, ...] = ()
 
 
 def parse_cdn_block(raw: Any, *, label: str = "cdn") -> Optional[CdnSpec]:
@@ -80,8 +99,9 @@ def parse_cdn_block(raw: Any, *, label: str = "cdn") -> Optional[CdnSpec]:
     scope = str(raw.get("scope") or "global").strip()
     if scope not in CDN_SCOPES:
         raise LumaError(f"{label}.scope must be one of {sorted(CDN_SCOPES)}")
+    cache = _parse_cache_paths(raw.get("cache"), label=f"{label}.cache")
     if raw.get("purge") is None:
-        return CdnSpec(provider=provider, scope=scope, purge=None)
+        return CdnSpec(provider=provider, scope=scope, purge=None, cache=cache)
     purge_raw = raw.get("purge")
     if not isinstance(purge_raw, list) or any(not isinstance(item, str) for item in purge_raw):
         raise LumaError(f"{label}.purge must be a list of URL paths")
@@ -94,7 +114,38 @@ def parse_cdn_block(raw: Any, *, label: str = "cdn") -> Optional[CdnSpec]:
             raise LumaError(f"{label}.purge only supports * as a trailing /* directory: {item!r}")
         if path not in purge:
             purge.append(path)
-    return CdnSpec(provider=provider, scope=scope, purge=tuple(purge))
+    return CdnSpec(provider=provider, scope=scope, purge=tuple(purge), cache=cache)
+
+
+def _parse_cache_paths(raw: Any, *, label: str) -> Tuple[CachePath, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise LumaError(f"{label} must be a list of {{path, ttl}} entries")
+    if len(raw) > MAX_CACHE_PATHS:
+        raise LumaError(f"{label} supports at most {MAX_CACHE_PATHS} paths")
+    result: List[CachePath] = []
+    for index, item in enumerate(raw):
+        where = f"{label}[{index}]"
+        if not isinstance(item, Mapping):
+            raise LumaError(f"{where} must be a mapping with path and ttl")
+        unknown = sorted(str(key) for key in item if str(key) not in CACHE_FIELDS)
+        if unknown:
+            raise LumaError(f"unsupported {where} field(s): {', '.join(unknown)}")
+        path = str(item.get("path") or "").strip()
+        if not path.startswith("/") or any(ch.isspace() or ch == '"' for ch in path) or "*" in path[:-1]:
+            raise LumaError(f"{where}.path must start with / and may only end with *: {path!r}")
+        ttl = item.get("ttl")
+        if isinstance(ttl, bool) or not isinstance(ttl, int) or not 1 <= ttl <= MAX_CACHE_TTL:
+            raise LumaError(f"{where}.ttl must be seconds between 1 and {MAX_CACHE_TTL}")
+        if any(existing.path == path for existing in result):
+            raise LumaError(f"{where}.path is listed twice: {path}")
+        result.append(CachePath(path=path, ttl=ttl))
+    for first in result:
+        for second in result:
+            if first is not second and first.path.endswith("*") and second.path.startswith(first.path[:-1]):
+                raise LumaError(f"{label} paths overlap: {first.path} covers {second.path}")
+    return tuple(result)
 
 
 def validate_cdn_exposure(cdn: Optional[CdnSpec], exposure: str, *, label: str = "cdn") -> None:
@@ -230,10 +281,12 @@ class AliyunClient:
                 payload = _decode_error(exc)
                 code = str(payload.get("Code") or f"HTTP{exc.code}")
                 error = AliyunApiError(action, int(exc.code), code, str(payload.get("Message") or exc.reason), str(payload.get("RequestId") or ""))
-                if int(exc.code) < 500 and not code.startswith(RETRYABLE_CODE_PREFIXES):
+                if not (code.startswith(THROTTLE_CODE_PREFIXES) or (int(exc.code) >= 500 and action.startswith(READ_ACTION_PREFIXES))):
                     raise error from exc
                 last_error = error
             except (urllib.error.URLError, OSError, socket.timeout) as exc:
+                if not action.startswith(READ_ACTION_PREFIXES):
+                    raise LumaError(f"Alibaba Cloud {action} did not answer ({exc}); the next deploy reconciles it") from exc
                 last_error = exc
             if attempt + 1 < API_ATTEMPTS:
                 self._sleep(0.5 * (2**attempt))
@@ -278,9 +331,11 @@ def _wait_until(
     *,
     timeout: float,
     interval: float,
-    sleep: Callable[[float], None],
-    clock: Callable[[], float],
+    sleep: Optional[Callable[[float], None]],
+    clock: Optional[Callable[[], float]],
 ) -> Optional[Dict[str, Any]]:
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
     deadline = clock() + timeout
     while True:
         result = predicate()
@@ -318,8 +373,8 @@ def ensure_site(
     site_name: str,
     scope: str,
     publish_txt: Callable[[str, str], str],
-    sleep: Callable[[float], None] = time.sleep,
-    clock: Callable[[], float] = time.monotonic,
+    sleep: Optional[Callable[[float], None]] = None,
+    clock: Optional[Callable[[], float]] = None,
 ) -> Tuple[Dict[str, Any], List[str]]:
     """Return an active CNAME-access ESA site for the zone, creating it once."""
     notes: List[str] = []
@@ -358,18 +413,8 @@ def ensure_site(
 
 
 def configure_site(client: AliyunClient, site_id: Any) -> List[str]:
-    """Site-wide defaults, applied once. Existing global configs are left alone."""
+    """Site-wide defaults, applied once. An existing global compression config is left alone."""
     applied: List[str] = []
-    # follow: HTTPS requests fetch over HTTPS, plain HTTP gets Traefik's redirect.
-    # An http origin would loop against Traefik's HTTP->HTTPS redirect, so an
-    # existing global rule is corrected rather than left alone.
-    origin = [item for item in client.esa("ListOriginRules", SiteId=site_id, ConfigType="global").get("Configs") or [] if isinstance(item, dict)]
-    if not origin:
-        client.esa("CreateOriginRule", SiteId=site_id, OriginScheme="follow")
-        applied.append("origin follow")
-    elif str(origin[0].get("OriginScheme") or "") not in {"follow", "https"}:
-        client.esa("UpdateOriginRule", SiteId=site_id, ConfigId=origin[0]["ConfigId"], OriginScheme="follow")
-        applied.append("origin follow (was http)")
     compression = client.esa("ListCompressionRules", SiteId=site_id, ConfigType="global")
     if not compression.get("Configs"):
         client.esa("CreateCompressionRule", SiteId=site_id, Gzip="on", Brotli="on")
@@ -377,6 +422,94 @@ def configure_site(client: AliyunClient, site_id: Any) -> List[str]:
     client.esa("UpdateManagedTransform", SiteId=site_id, AddRealClientIpHeader="on")
     applied.append("real client IP header")
     return applied
+
+
+def _q(value: str) -> str:
+    return json.dumps(value)
+
+
+def _path_condition(path: str) -> str:
+    if path.endswith("*"):
+        return f"starts_with(http.request.uri.path, {_q(path[:-1])})"
+    return f"http.request.uri.path eq {_q(path)}"
+
+
+def _rule_prefix(domain: str) -> str:
+    return "luma_" + "".join(ch if ch.isalnum() else "-" for ch in domain.lower()) + "_"
+
+
+def domain_rules(domain: str, cache: Iterable[CachePath]) -> Dict[str, List[Dict[str, Any]]]:
+    """Per-domain ESA rules Luma owns, keyed by rule kind.
+
+    Rules are mutually exclusive so the result never depends on rule order:
+    each cache path has its own rule, and the host-wide rule excludes them.
+    """
+    prefix = _rule_prefix(domain)
+    host = f"http.host eq {_q(domain)}"
+    cache = list(cache)
+    excluded = "".join(f" and not {_path_condition(item.path)}" for item in cache)
+    cache_rules: List[Dict[str, Any]] = [{
+        # Honour the application's cache headers on every path, HTML
+        # included; without headers fall back to ESA defaults (static
+        # extensions only), so nothing personalised is cached by accident.
+        "RuleName": prefix + "main",
+        "Rule": f"({host}{excluded})",
+        "EdgeCacheMode": "follow_origin",
+    }]
+    for index, item in enumerate(cache, start=1):
+        cache_rules.append({
+            "RuleName": f"{prefix}cache{index}",
+            "Rule": f"({host} and {_path_condition(item.path)})",
+            "EdgeCacheMode": "follow_origin_override",
+            "EdgeCacheTtl": str(item.ttl),
+        })
+    origin_rules = [{
+        # follow: HTTPS fetches over HTTPS; plain HTTP gets Traefik's redirect.
+        "RuleName": prefix + "origin",
+        "Rule": f"({host})",
+        "OriginScheme": "follow",
+        "OriginHost": domain,
+        "OriginSni": domain,
+    }]
+    return {"CacheRule": cache_rules, "OriginRule": origin_rules}
+
+
+def _reconcile_rules(client: AliyunClient, *, site_id: Any, kind: str, prefix: str, desired: List[Dict[str, Any]]) -> List[str]:
+    listing = client.esa(f"List{kind}s", SiteId=site_id, ConfigType="rule", PageSize=500)
+    existing = {
+        str(item.get("RuleName")): item
+        for item in listing.get("Configs") or []
+        if isinstance(item, dict) and str(item.get("RuleName") or "").startswith(prefix)
+    }
+    changes: List[str] = []
+    for rule in desired:
+        current = existing.pop(rule["RuleName"], None)
+        if current is None:
+            client.esa(f"Create{kind}", SiteId=site_id, RuleEnable="on", **rule)
+            changes.append(f"{rule['RuleName']} created")
+        elif str(current.get("RuleEnable") or "on") != "on" or any(str(current.get(key) or "") != str(value) for key, value in rule.items()):
+            client.esa(f"Update{kind}", SiteId=site_id, ConfigId=current["ConfigId"], RuleEnable="on", **rule)
+            changes.append(f"{rule['RuleName']} updated")
+    for name, current in existing.items():
+        client.esa(f"Delete{kind}", SiteId=site_id, ConfigId=current["ConfigId"])
+        changes.append(f"{name} deleted")
+    return changes
+
+
+def reconcile_domain_rules(client: AliyunClient, *, site_id: Any, domain: str, cache: Iterable[CachePath]) -> List[str]:
+    prefix = _rule_prefix(domain)
+    changes: List[str] = []
+    for kind, desired in domain_rules(domain, cache).items():
+        changes.extend(_reconcile_rules(client, site_id=site_id, kind=kind, prefix=prefix, desired=desired))
+    return changes
+
+
+def delete_domain_rules(client: AliyunClient, *, site_id: Any, domain: str) -> List[str]:
+    prefix = _rule_prefix(domain)
+    changes: List[str] = []
+    for kind in ("CacheRule", "OriginRule"):
+        changes.extend(_reconcile_rules(client, site_id=site_id, kind=kind, prefix=prefix, desired=[]))
+    return changes
 
 
 def find_record(client: AliyunClient, site_id: Any, name: str) -> Optional[Dict[str, Any]]:
@@ -425,8 +558,8 @@ def ensure_certificate(
     *,
     site_id: Any,
     domain: str,
-    sleep: Callable[[float], None] = time.sleep,
-    clock: Callable[[], float] = time.monotonic,
+    sleep: Optional[Callable[[float], None]] = None,
+    clock: Optional[Callable[[], float]] = None,
 ) -> str:
     """Request ESA's free certificate once DNS points at ESA, and wait for it."""
     status, count = certificate_status(client, site_id=site_id, domain=domain)
@@ -462,6 +595,7 @@ def purge_esa(client: AliyunClient, *, site_id: Any, domain: str, paths: Optiona
 
 
 def delete_esa_record(client: AliyunClient, *, site_id: Any, domain: str) -> bool:
+    delete_domain_rules(client, site_id=site_id, domain=domain)
     record = find_record(client, site_id, domain)
     if record is None:
         return False

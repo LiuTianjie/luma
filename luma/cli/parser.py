@@ -708,7 +708,13 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
         ),
     )
     cdn_sub = _commands(cdn, "cdn_command")
-    cdn_check = _command(cdn_sub, "check", "Verify credentials, the ESA plan, the DNS zone and the ESA site")
+    cdn_check = _command(
+        cdn_sub,
+        "check",
+        "Without a domain: verify the ESA setup. With a domain: audit how its pages are cached",
+    )
+    cdn_check.add_argument("domain", nargs="?", help="Public domain to audit, for example www.example.com (read-only)")
+    cdn_check.add_argument("--path", action="append", default=[], dest="extra_paths", help="Extra URL path to audit; repeatable")
     _add_control_arguments(cdn_check)
     _add_output_arguments(cdn_check)
     cdn_status = _command(cdn_sub, "status", "List ESA records with CNAME and last refresh")

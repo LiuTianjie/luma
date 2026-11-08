@@ -21,6 +21,7 @@ from ..cdn import (
     esa_credentials,
     find_site,
     purge_esa,
+    reconcile_domain_rules,
 )
 from ..cloudflare import dns_records, upsert_txt_record
 from ..errors import LumaError
@@ -118,10 +119,8 @@ def service_dns_override(state: Mapping[str, Any], service: ServiceSpec) -> Opti
     """DNS target for a service whose ESA record was prepared by an earlier deploy."""
     if service.cdn is None or not service.domain:
         return None
-    override = dns_override(cdn_records(state).get(service.domain))
-    if override is None:
-        raise LumaError(f"ESA for {service.domain} has not been prepared yet; redeploy the service")
-    return override
+    # No record means Prepare CDN never finished, so DNS still points at the edge.
+    return dns_override(cdn_records(state).get(service.domain))
 
 
 def prepare_service_cdn(config: Any, state: Mapping[str, Any], service: ServiceSpec) -> Dict[str, Any]:
@@ -144,6 +143,7 @@ def prepare_service_cdn(config: Any, state: Mapping[str, Any], service: ServiceS
         _update(SITE_STATE_KEY, site_name, {"siteId": site_id, "configured": True})
     record, record_notes = ensure_record(client, site_id=site_id, domain=domain, origin=_origin_for(config, service))
     notes.extend(record_notes)
+    notes.extend(reconcile_domain_rules(client, site_id=site_id, domain=domain, cache=service.cdn.cache))
     saved = {
         "provider": "esa",
         "service": service.name,
@@ -152,6 +152,8 @@ def prepare_service_cdn(config: Any, state: Mapping[str, Any], service: ServiceS
         "recordId": record.get("RecordId"),
         "cname": str(record["RecordCname"]),
         "scope": str(site.get("Coverage") or service.cdn.scope),
+        "purge": None if service.cdn.purge is None else list(service.cdn.purge),
+        "cache": [{"path": item.path, "ttl": item.ttl} for item in service.cdn.cache],
         "lastError": "",
     }
     _update(CDN_STATE_KEY, domain, saved)
@@ -244,6 +246,8 @@ def cdn_status(state: Mapping[str, Any]) -> List[Dict[str, Any]]:
             "site": record.get("site") or "",
             "scope": record.get("scope") or "",
             "cname": record.get("cname") or "",
+            "purge": record.get("purge"),
+            "cache": record.get("cache") or [],
             "lastPurge": record.get("lastPurge") or {},
             "lastError": record.get("lastError") or "",
             "updatedAt": record.get("updatedAt") or 0,

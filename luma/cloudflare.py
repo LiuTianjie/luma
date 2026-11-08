@@ -55,9 +55,6 @@ class CloudflareClient:
         return payload
 
 
-ADDRESS_RECORD_TYPES = ("A", "AAAA", "CNAME")
-
-
 def _zone_client(config: LumaConfig, secrets: Mapping[str, object] | None) -> tuple["CloudflareClient", str]:
     dns_config = config.dns
     token_env = str(dns_config.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))

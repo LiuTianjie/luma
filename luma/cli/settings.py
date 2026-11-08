@@ -257,10 +257,50 @@ def _format_epoch(value: Any) -> str:
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp)) if stamp else ""
 
 
+def _cdn_audit(args: argparse.Namespace, client: Any, text: bool) -> int:
+    from ..cdn_check import audit_domain
+
+    domain = str(args.domain).strip().rstrip(".").lower()
+    domains = client.cdn_status().get("domains") or []
+    record = next((item for item in domains if isinstance(item, dict) and item.get("domain") == domain), None)
+    rows = audit_domain(
+        domain,
+        purge=(record or {}).get("purge"),
+        cache=(record or {}).get("cache") or [],
+        extra=list(args.extra_paths or []),
+    )
+    dangerous = any(row["verdict"] == "danger" for row in rows)
+    if not text:
+        _print_success(args, {"domain": domain, "managed": record is not None, "results": rows})
+        return 1 if dangerous else 0
+    if record is None:
+        print(f"{domain} is not a Luma ESA domain yet; auditing it as served today")
+    _print_table(
+        ["verdict", "path", "status", "cache-control", "cookie", "edge cache", "note"],
+        [
+            [
+                str(row["verdict"]).upper(),
+                str(row["path"]),
+                str(row.get("status") or ""),
+                str(row.get("cacheControl") or "-"),
+                "yes" if row.get("setCookie") else "",
+                str(row.get("cache") or ""),
+                str(row.get("reason") or ""),
+            ]
+            for row in rows
+        ],
+    )
+    if dangerous:
+        print("DANGER rows can show one visitor's data to another: fix them before enabling the CDN")
+    return 1 if dangerous else 0
+
+
 def cmd_cdn(args: argparse.Namespace) -> int:
     endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
     client = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
     text = _output_format(args) == "text"
+    if args.cdn_command == "check" and args.domain:
+        return _cdn_audit(args, client, text)
     if args.cdn_command == "check":
         result = client.cdn_check()
         if not text:

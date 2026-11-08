@@ -33,6 +33,8 @@ class FakeEsa:
         self.sites = dict(sites or {})
         self.records = dict(records or {})
         self.global_configs = set()
+        self.rules = {"CacheRule": [], "OriginRule": []}
+        self.next_config = 100
         self.cert_polls = 0
         self.cert_after_polls = cert_after_polls
         self.cert_applied = False
@@ -52,11 +54,22 @@ class FakeEsa:
             for site in self.sites.values():
                 site["Status"] = "active"
             return {"Passed": True}
-        if action in {"ListOriginRules", "ListCompressionRules"}:
-            return {"Configs": [{"ConfigId": 1, "OriginScheme": "follow"}] if action in self.global_configs else []}
-        if action == "CreateOriginRule":
-            self.global_configs.add("ListOriginRules")
-            return {"ConfigId": 1}
+        if action == "ListCompressionRules":
+            return {"Configs": [{"ConfigId": 1}] if action in self.global_configs else []}
+        for kind, configs in self.rules.items():
+            if action == f"List{kind}s":
+                return {"Configs": [dict(item) for item in configs]}
+            if action == f"Create{kind}":
+                self.next_config += 1
+                configs.append({**{k: v for k, v in params.items() if k != "SiteId"}, "ConfigId": self.next_config})
+                return {"ConfigId": self.next_config}
+            if action == f"Update{kind}":
+                item = next(c for c in configs if c["ConfigId"] == params["ConfigId"])
+                item.update({k: v for k, v in params.items() if k not in {"SiteId", "ConfigId"}})
+                return {}
+            if action == f"Delete{kind}":
+                configs[:] = [c for c in configs if c["ConfigId"] != params["ConfigId"]]
+                return {}
         if action == "CreateCompressionRule":
             self.global_configs.add("ListCompressionRules")
             return {"ConfigId": 2}
@@ -223,20 +236,62 @@ class EsaOperationTests(unittest.TestCase):
         self.assertEqual(ensure_certificate(client, site_id=77, domain="app.example.com", sleep=lambda _s: None), "certificate issued (Let's Encrypt)")
 
 
-class SiteDefaultsTests(unittest.TestCase):
-    def test_existing_http_origin_rule_is_switched_to_follow(self):
-        from luma.cdn import configure_site
+class DomainRuleTests(unittest.TestCase):
+    def test_rules_honour_origin_everywhere_and_cache_listed_paths(self):
+        from luma.cdn import domain_rules
 
-        client = MagicMock()
-        client.esa.side_effect = lambda action, **params: {
-            "ListOriginRules": {"Configs": [{"ConfigId": 5, "OriginScheme": "http"}]},
-            "ListCompressionRules": {"Configs": [{"ConfigId": 6}]},
-        }.get(action, {})
-        applied = configure_site(client, 77)
-        self.assertIn("origin follow (was http)", applied)
-        calls = [(call.args[0], call.kwargs) for call in client.esa.call_args_list]
-        self.assertIn(("UpdateOriginRule", {"SiteId": 77, "ConfigId": 5, "OriginScheme": "follow"}), calls)
-        self.assertNotIn("CreateCompressionRule", [name for name, _ in calls])
+        spec = parse_cdn_block({"provider": "esa", "cache": [{"path": "/blog/*", "ttl": 300}, {"path": "/robots.txt", "ttl": 86400}]})
+        rules = domain_rules("www.example.com", spec.cache)
+        main, blog, robots = rules["CacheRule"]
+        self.assertEqual(main["RuleName"], "luma_www-example-com_main")
+        self.assertEqual(main["EdgeCacheMode"], "follow_origin")
+        self.assertEqual(
+            main["Rule"],
+            '(http.host eq "www.example.com" and not starts_with(http.request.uri.path, "/blog/") and not http.request.uri.path eq "/robots.txt")',
+        )
+        self.assertEqual((blog["Rule"], blog["EdgeCacheMode"], blog["EdgeCacheTtl"]), ('(http.host eq "www.example.com" and starts_with(http.request.uri.path, "/blog/"))', "follow_origin_override", "300"))
+        self.assertEqual(robots["Rule"], '(http.host eq "www.example.com" and http.request.uri.path eq "/robots.txt")')
+        origin = rules["OriginRule"][0]
+        self.assertEqual((origin["OriginScheme"], origin["OriginHost"], origin["OriginSni"]), ("follow", "www.example.com", "www.example.com"))
+
+    def test_reconcile_creates_updates_deletes_only_own_rules(self):
+        from luma.cdn import CachePath, reconcile_domain_rules
+
+        client = FakeEsa()
+        client.rules["CacheRule"].append({"ConfigId": 1, "RuleName": "luma_www-example-com-cn_main", "Rule": "x"})
+        reconcile_domain_rules(client, site_id=77, domain="www.example.com", cache=[CachePath("/blog/*", 300)])
+        self.assertEqual(sorted(c["RuleName"] for c in client.rules["CacheRule"]), ["luma_www-example-com-cn_main", "luma_www-example-com_cache1", "luma_www-example-com_main"])
+        self.assertEqual(reconcile_domain_rules(client, site_id=77, domain="www.example.com", cache=[CachePath("/blog/*", 300)]), [])
+        changes = reconcile_domain_rules(client, site_id=77, domain="www.example.com", cache=[])
+        self.assertEqual(changes, ["luma_www-example-com_main updated", "luma_www-example-com_cache1 deleted"])
+        self.assertIn("luma_www-example-com-cn_main", [c["RuleName"] for c in client.rules["CacheRule"]])
+
+    def test_cache_paths_are_validated(self):
+        for raw, message in [
+            ([{"path": "blog/*", "ttl": 1}], "must start with /"),
+            ([{"path": "/a*/b", "ttl": 1}], "may only end with"),
+            ([{"path": "/a", "ttl": 0}], "ttl must be seconds"),
+            ([{"path": "/a", "ttl": 1, "vary": "x"}], "unsupported cdn.cache"),
+            ([{"path": "/blog/*", "ttl": 1}, {"path": "/blog/a", "ttl": 2}], "overlap"),
+            ([{"path": f"/p{i}", "ttl": 1} for i in range(9)], "at most 8"),
+        ]:
+            with self.subTest(raw=raw), self.assertRaisesRegex(LumaError, message):
+                parse_cdn_block({"provider": "esa", "cache": raw})
+
+
+class RetryTests(unittest.TestCase):
+    def test_writes_are_not_retried_after_a_network_error(self):
+        from luma.cdn import AliyunClient
+
+        client = AliyunClient("id", "secret", sleep=lambda _s: None)
+        with patch("luma.cdn.urllib.request.urlopen", side_effect=urllib.error.URLError("timed out")) as urlopen:
+            with self.assertRaisesRegex(LumaError, "next deploy reconciles"):
+                client.esa("CreateRecord", SiteId=1)
+        self.assertEqual(urlopen.call_count, 1)
+        with patch("luma.cdn.urllib.request.urlopen", side_effect=urllib.error.URLError("timed out")) as urlopen:
+            with self.assertRaisesRegex(LumaError, "unavailable after 4 attempts"):
+                client.esa("ListRecords", SiteId=1)
+        self.assertEqual(urlopen.call_count, 4)
 
 
 class CdnDnsTests(unittest.TestCase):
@@ -359,8 +414,8 @@ class CdnDeploymentFlowTests(unittest.TestCase):
         self.assertIn("whole hostname", second["cdn"]["purge"])
         self.assertEqual(fake.actions().count("CreateSite"), 1)
         self.assertEqual(fake.actions().count("CreateOriginRule"), 1)
-        origin = next(params for action, params in fake.calls if action == "CreateOriginRule")
-        self.assertEqual(origin["OriginScheme"], "follow")
+        self.assertEqual(fake.actions().count("CreateCacheRule"), 1)
+        self.assertEqual(fake.rules["OriginRule"][0]["OriginSni"], "web.example.com")
         purge = next(params for action, params in fake.calls if action == "PurgeCaches")
         self.assertEqual((purge["SiteId"], purge["Type"], purge["Content"]), (77, "hostname", {"Hostnames": ["web.example.com"]}))
         record = load_state()["cdnDomains"]["web.example.com"]
@@ -376,6 +431,24 @@ class CdnDeploymentFlowTests(unittest.TestCase):
         self.assertEqual(steps["Delete CDN domain"]["message"], "ESA record web.example.com deleted")
         self.assertNotIn("web.example.com", load_state().get("cdnDomains") or {})
         self.assertEqual(fake.records, {})
+        self.assertEqual(fake.rules, {"CacheRule": [], "OriginRule": []})
+
+    def test_certificate_delay_is_a_warning_and_the_rollout_continues(self):
+        self._add_secrets()
+        manifest = yaml.safe_dump({"name": "web", "image": "nginx:alpine", "region": "cn", "exposure": "cn-edge", "domain": "web.example.com", "port": 80, "cdn": "esa"})
+        fake = FakeEsa()
+        probe_error = urllib.error.HTTPError("https://web.example.com/", 404, "not found", {}, None)
+        with patch("luma.control.cdn.AliyunClient", return_value=fake), patch(
+            "luma.control.cdn.upsert_txt_record", return_value="_esaauth.example.com"
+        ), patch("luma.control.server.issue_service_certificate", side_effect=LumaError("ESA certificate for web.example.com is still being issued")), patch(
+            "luma.control.server.ensure_image_pull_egress_proxy", return_value="ok"
+        ), patch("luma.control.server.sync_dns", return_value="DNS updated"), patch(
+            "luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"
+        ) as deploy, patch("luma.control.server.urllib.request.urlopen", side_effect=probe_error):
+            result = handle_deployment(self.state["deployToken"], {"manifest": manifest, "sourceName": "web.yaml"})
+        steps = {step["name"]: step for step in result["steps"]}
+        self.assertEqual(steps["ESA certificate"]["status"], "warning")
+        deploy.assert_called_once()
 
     def test_cli_deploy_is_blocked_without_esa_keys(self):
         manifest = yaml.safe_dump({"name": "web", "image": "nginx", "region": "cn", "exposure": "cn-edge", "domain": "web.example.com", "port": 80, "cdn": "esa"})
@@ -394,3 +467,42 @@ class CdnRenderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CdnCheckTests(unittest.TestCase):
+    def _fetcher(self, pages):
+        def fetch(url):
+            path = url.split("example.com", 1)[1]
+            status, headers, body = pages.get(path, (404, {}, b""))
+            return status, {k.lower(): v for k, v in headers.items()}, body
+        return fetch
+
+    def test_audit_samples_assets_and_classifies(self):
+        from luma.cdn_check import audit_domain
+
+        html = b'<html><script src="/app.3f2a.js"></script><link rel="stylesheet" href="/a.css"><img src="https://cdn.other.com/x.png"></html>'
+        pages = {
+            "/": (200, {"Content-Type": "text/html", "Set-Cookie": "sid=1"}, html),
+            "/app.3f2a.js": (200, {"Content-Type": "application/javascript", "Cache-Control": "public, max-age=31536000, immutable", "Content-Encoding": "gzip"}, b"x"),
+            "/a.css": (200, {"Content-Type": "text/css"}, b"x" * 2048),
+            "/account/me": (200, {"Content-Type": "application/json", "Cache-Control": "public, s-maxage=60"}, b"{}"),
+            "/blog/": (200, {"Content-Type": "text/html", "Cache-Control": "public, s-maxage=60", "Age": "12"}, b"<html></html>"),
+        }
+        rows = audit_domain("www.example.com", purge=None, cache=[{"path": "/blog/*", "ttl": 300}], extra=["/account/me"], fetch=self._fetcher(pages))
+        by_path = {row["path"]: row for row in rows}
+        self.assertEqual(rows[0]["verdict"], "danger")
+        self.assertIn("account-like", by_path["/account/me"]["reason"])
+        self.assertEqual(by_path["/"]["verdict"], "improve")
+        self.assertIn("cdn.cache", by_path["/"]["reason"])
+        self.assertIn("uncompressed", by_path["/a.css"]["reason"])
+        self.assertEqual(by_path["/app.3f2a.js"]["verdict"], "ok")
+        self.assertEqual(by_path["/blog/"]["reason"], "cacheable (cache hit)")
+        self.assertNotIn("/x.png", by_path)
+        self.assertEqual(by_path["/sitemap.xml"]["reason"], "HTTP 404")
+
+    def test_cacheable_response_with_cookie_is_dangerous(self):
+        from luma.cdn_check import classify
+
+        verdict, reason = classify("/", 200, {"cache-control": "public, s-maxage=60", "set-cookie": "a=b", "content-type": "text/html"}, 10, {})
+        self.assertEqual(verdict, "danger")
+        self.assertEqual(classify("/", 200, {"cache-control": "private, no-store", "set-cookie": "a=b", "content-type": "text/html"}, 10, {})[0], "ok")

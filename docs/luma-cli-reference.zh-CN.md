@@ -2370,7 +2370,7 @@ arguments:
 
 arguments:
   <command>
-    check     Verify credentials, the ESA plan, the DNS zone and the ESA site
+    check     Without a domain: verify the ESA setup. With a domain: audit how its pages are cached
     status    List ESA records with CNAME and last refresh
     purge     Refresh the cache now
     remove    Delete an ESA record that DNS no longer points at
@@ -2379,12 +2379,16 @@ arguments:
 ## `luma cdn check`
 
 ```text
-usage: luma cdn check [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+usage: luma cdn check [-h] [--path EXTRA_PATHS] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] [domain]
 
-Verify credentials, the ESA plan, the DNS zone and the ESA site
+Without a domain: verify the ESA setup. With a domain: audit how its pages are cached
+
+arguments:
+  domain                      Public domain to audit, for example www.example.com (read-only)
 
 arguments:
   -h, --help                  show this help message and exit
+  --path EXTRA_PATHS          Extra URL path to audit; repeatable
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
