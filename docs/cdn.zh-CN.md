@@ -105,11 +105,11 @@ cdn:
 
 - **回源**：始终用 HTTPS 回源，使用请求里的 `Host`，并校验 Traefik 的证书。HTTP 请求由 ESA 在边缘跳转到 HTTPS。
 - **缓存**：用一条站点级规则让所有路径都可缓存，并遵循应用返回的缓存头，HTML 也一样；没有缓存头的响应不缓存。只靠 ESA 的全局缓存配置只能覆盖静态文件扩展名，HTML 仍然不会被缓存。
-- Gzip 和 Brotli 压缩，以及带真实客户端地址的 `ali-real-client-ip` 头。
+- Gzip、Brotli 和 Zstd 压缩，面向访客的 HTTP/2 和 HTTP/3，HTTP/2 回源，WebSocket，以及带真实客户端地址的 `ali-real-client-ip` 头。
 
 每个 `cache` 路径为它的域名建一条规则：遵循应用的缓存头，没有缓存头时缓存 `ttl` 秒。路径规则在站点级规则之后执行，所以以它的 TTL 为准；`cache` 路径之间不能重叠。缓存规则按站点计配额，根域名下所有应用共用：Free 5 条、Basic 10 条、Standard 50 条。站点级规则占 1 条。超出时部署会在 Prepare CDN 这一步失败并说明原因。
 
-其余由 ESA 默认提供：HTTP/2 和 HTTP/3、关闭 TLS 1.0、基础 DDoS 防护和托管 WAF 规则。
+其余由 ESA 默认提供：关闭 TLS 1.0、基础 DDoS 防护和托管 WAF 规则。智能路由等收费功能 Luma 不会开启。
 
 ## 尽可能多缓存 {#cache-as-much-as-possible}
 

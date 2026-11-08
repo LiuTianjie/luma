@@ -15,7 +15,9 @@ CDN, when `cdn:` appears in a manifest, or when a deploy fails or warns at
   `RecordCname`. Never suggest turning on the Cloudflare proxy for these names.
 - Site-wide settings: origin always HTTPS with certificate verification, edge
   force-HTTPS, one cache rule (`cache_all` + `follow_origin_bypass`) honouring
-  app headers on every path, Gzip/Brotli, and the `ali-real-client-ip` header.
+  app headers on every path, Gzip/Brotli/Zstd, HTTP/2+HTTP/3, HTTP/2 to origin,
+  WebSocket, and the `ali-real-client-ip` header. Paid features (smart
+  routing) stay off.
 - Prepare CDN writes `_acme-challenge.<domain>` CNAME (DCV delegation) and waits
   for the free certificate before DNS moves, so there is no HTTPS gap. Keep that
   record; renewals use it.
