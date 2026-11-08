@@ -38,6 +38,21 @@ class DashboardIssueTests(unittest.TestCase):
     def test_successful_redeploy_clears_the_issue(self):
         self.assertEqual(server._dashboard_issues([], [self.service(deploymentStatus="active")]), [])
 
+    def test_failed_restart_is_history_once_the_application_runs_again(self):
+        service = self.service(deploymentStatus="active", lastError="", lastRestartError="requested node lab is unavailable")
+        self.assertEqual(server._dashboard_issues([], [service]), [])
+
+    def test_failed_restart_is_reported_while_the_application_is_down(self):
+        service = self.service(
+            deploymentStatus="active", lastError="", running=0, lastRestartError="requested node lab is unavailable",
+        )
+        issues = server._dashboard_issues([], [service])
+        restart = [item for item in issues if item["kind"] == "restart"]
+        self.assertEqual(len(restart), 1)
+        self.assertEqual(restart[0]["severity"], "critical")
+        self.assertIn("last restart failed (requested node lab is unavailable)", restart[0]["message"])
+        self.assertNotIn("deployment", [item["kind"] for item in issues])
+
 
 if __name__ == "__main__":
     unittest.main()

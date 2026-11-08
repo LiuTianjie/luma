@@ -256,9 +256,10 @@ services:
     network_mode: host
     restart: unless-stopped
     environment:
-      # Replace the empty value with a scoped secret reference when enabling
-      # a role; see docs/observe-applications.md. Existing installs stay closed.
-      LUMA_OBSERVE_READ_TOKEN: ""
+      # The reader role is enabled: set it with
+      # `luma secret set LUMA_OBSERVE_READ_TOKEN --scope luma-observe`.
+      # Roles left as "" stay closed; see docs/observe-applications.md.
+      LUMA_OBSERVE_READ_TOKEN: ${LUMA_OBSERVE_READ_TOKEN}
       LUMA_OBSERVE_INGEST_TOKEN: ""
       LUMA_OBSERVE_SCOPED_READERS: ""
       GOMEMLIMIT: 48MiB

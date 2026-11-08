@@ -7869,10 +7869,10 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
         )
     except Exception as exc:
         if mode == "recreate":
-            _mark_application_restart_outcome(stack, status="failed_partial", error=str(exc))
+            _mark_application_restart_outcome(stack, succeeded=False, error=str(exc))
         raise
     if mode == "recreate":
-        _mark_application_restart_outcome(stack, status="active")
+        _mark_application_restart_outcome(stack, succeeded=True)
     return result
 
 
@@ -7895,7 +7895,23 @@ def _nomad_job_desired_allocation_count(job: Dict[str, Any] | None, *, service_n
     return max(1, sum(max(0, int(group.get("Count") or 1)) for group in groups))
 
 
-def _mark_application_restart_outcome(stack: str, *, status: str, error: str = "") -> None:
+def _last_restart_error(record: Dict[str, Any]) -> str:
+    restart = record.get("lastRestart")
+    if not isinstance(restart, dict) or str(restart.get("status") or "") != "failed":
+        return ""
+    return str(restart.get("error") or "").strip() or "restart failed"
+
+
+def _mark_application_restart_outcome(stack: str, *, succeeded: bool, error: str = "") -> None:
+    """Record a recreate restart without rewriting the rollout status.
+
+    A failed restart does not change which manifest is deployed, so it must not
+    mark the deployment failed: nothing clears that once Nomad places the
+    allocation again, and route checks skip non-active deployments. The failure
+    is kept separately and only reported while the application is unhealthy. A
+    successful recreate still clears an earlier failure because it proves the
+    submitted job is running.
+    """
     slug = slugify(stack)
 
     def mutate(state: Dict[str, Any]) -> None:
@@ -7903,9 +7919,16 @@ def _mark_application_restart_outcome(stack: str, *, status: str, error: str = "
         record = deployments["services"].get(slug) or deployments["compose"].get(slug)
         if not isinstance(record, dict):
             return
-        record["status"] = status
-        record["lastError"] = error
-        record["updatedAt"] = int(time.time())
+        now = int(time.time())
+        record["lastRestart"] = {
+            "status": "succeeded" if succeeded else "failed",
+            "error": "" if succeeded else error,
+            "at": now,
+        }
+        if succeeded:
+            record["status"] = "active"
+            record["lastError"] = ""
+        record["updatedAt"] = now
 
     mutate_state(mutate)
 
@@ -12834,6 +12857,11 @@ def _dashboard_issues(nodes: list[Dict[str, Any]], services: list[Dict[str, Any]
                 })
             else:
                 issues.append({"severity": "critical", "kind": "deployment", "target": full_name, "message": f"Service {full_name}: {message}"})
+        restart_error = str(service.get("lastRestartError") or "").strip()
+        healthy = desired > 0 and running >= desired and failed == 0 and pending == 0
+        if restart_error and not healthy:
+            # A failed restart is history once Nomad runs the application again.
+            issues.append({"severity": "critical", "kind": "restart", "target": full_name, "message": f"Service {full_name}: last restart failed ({restart_error})"})
         if pending > 0:
             issues.append({"severity": "warning", "kind": "service-pending", "target": full_name, "message": f"Service {full_name} has {pending} pending task(s)"})
         memory_percent = float(actual.get("memoryPercent") or 0)
@@ -13084,6 +13112,7 @@ def _dashboard_service_from_nomad_job(
         "status": str(svc.get("status") or ""),
         "deploymentStatus": str(config.get("deploymentStatus") or ""),
         "lastError": str(config.get("lastError") or ""),
+        "lastRestartError": str(config.get("lastRestartError") or ""),
         "region": str(config.get("region") or svc.get("region") or ""),
         "exposure": exposure,
         "domain": domain,
@@ -13166,6 +13195,7 @@ def _dashboard_service_from_nomad_task(
         "status": str(task.get("status") or job.get("status") or ""),
         "deploymentStatus": str(config.get("deploymentStatus") or ""),
         "lastError": str(config.get("lastError") or ""),
+        "lastRestartError": str(config.get("lastRestartError") or ""),
         "region": str(config.get("region") or task.get("region") or job.get("region") or ""),
         "node": str(config.get("node") or ""),
         "exposure": exposure,
@@ -13217,6 +13247,7 @@ def _dashboard_deployment_service_index(state: Dict[str, Any]) -> tuple[dict[str
             "routeId": name,
             "deploymentStatus": str(record.get("status") or ""),
             "lastError": str(record.get("lastError") or ""),
+            "lastRestartError": _last_restart_error(record),
         }
         _put_dashboard_deployment_entry(index, entry)
     for raw_slug, record in (deployments.get("compose") if isinstance(deployments.get("compose"), dict) else {}).items():
@@ -13247,6 +13278,7 @@ def _dashboard_deployment_service_index(state: Dict[str, Any]) -> tuple[dict[str
                 "routeId": route_id,
                 "deploymentStatus": str(record.get("status") or ""),
                 "lastError": str(record.get("lastError") or ""),
+                "lastRestartError": _last_restart_error(record),
             }
             _put_dashboard_deployment_entry(index, entry)
     return index, compose_stacks
