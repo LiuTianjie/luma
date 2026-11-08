@@ -171,7 +171,7 @@ class RepoManifestTests(unittest.TestCase):
         logs = next(task for task in job["TaskGroups"][0]["Tasks"] if task["Name"] == "victoria-logs")
         self.assertEqual(logs["Config"]["mount"][0]["source"], "/srv/luma/data/luma-observe/victorialogs")
         access = next(task for task in job["TaskGroups"][0]["Tasks"] if task["Name"] == "observe-access")
-        self.assertEqual(access["Env"]["LUMA_OBSERVE_READ_TOKEN"], "")
+        self.assertEqual(access["Env"]["LUMA_OBSERVE_READ_TOKEN"], "${LUMA_OBSERVE_READ_TOKEN}")
         self.assertEqual(access["Env"]["LUMA_OBSERVE_INGEST_TOKEN"], "")
         for name in ("grafana", "vmalert"):
             task = next(task for task in job["TaskGroups"][0]["Tasks"] if task["Name"] == name)
