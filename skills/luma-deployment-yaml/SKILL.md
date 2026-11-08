@@ -1,6 +1,6 @@
 ---
 name: luma-deployment-yaml
-description: Generate, review, validate, or fix Luma deployment manifests and Compose sidecars; preserve recorded build/deploy workflows and handle workflow-change confirmation. Use for Luma YAML, local build/upload/deploy, GitHub or Gitea imports, Builder Registry, Docker/buildx/proxy issues, region/exposure choices, storage, private images, CI deployment, and Nomad deployment errors.
+description: Generate, review, validate, or fix Luma deployment manifests and Compose sidecars; preserve recorded build/deploy workflows and handle workflow-change confirmation. Use for Luma YAML, local build/upload/deploy, GitHub or Gitea imports, Builder Registry, Docker/buildx/proxy issues, region/exposure choices, CDN/ESA acceleration and caching, storage, private images, CI deployment, and Nomad deployment errors.
 ---
 
 # Luma Deployment YAML
@@ -30,6 +30,8 @@ Compose files stay standard for local development. Put Luma-specific deployment 
 For complete field tables and examples, read `references/manifest-reference.md`.
 
 For local build/upload/deploy, repository import, builder registry setup, or registry pull/proxy failures, read the "Builder Registry And Repository Import" section in `references/manifest-reference.md`.
+
+For CDN, acceleration, caching, `cdn:` manifests, `luma cdn` commands, or failures at `Prepare CDN` / `ESA certificate` / `Purge CDN`, read [CDN (Alibaba Cloud ESA)](references/cdn.md).
 
 For actual deployments, recorded commands, or workflow-change prompts, read [Deployment Workflow Records](references/deployment-workflow.md). For persistent placement, NFS migration, or storage retirement, read [Local Storage and Migration](references/local-storage.md).
 
@@ -99,6 +101,7 @@ luma build local . --platform linux/amd64
 - Valid regions: built-in `cn`, `global`, `home`, or a custom region created with `luma region create` / Dashboard → Infrastructure → Regions. Custom regions default to `none`; query `luma region list` for their live capabilities and enable relay with `luma region update NAME --exposure tailscale-relay`.
 - Valid exposures: `none`, `cn-edge`, `external-edge`, `tailscale-relay`, `cloudflare-tunnel`, `tcp-relay`.
 - Public exposures require `domain` and integer `port`.
+- `cdn: esa` (optional) puts a `cn-edge`, `external-edge` or `tailscale-relay` service behind Alibaba Cloud ESA. Run `luma cdn check DOMAIN` first and fix any DANGER row; list only visitor-independent paths in `cdn.cache`. Details and failure table: [CDN](references/cdn.md).
 - `cn-edge` requires `region: cn`; `external-edge` requires `region: global`; `tailscale-relay` requires `home` or a custom region that has enabled it.
 - `tcp-relay` derives its entrypoint from `publishPort` or `port`. It is port-exclusive; ordinary MySQL should not be modeled as same-port SNI multiplexing.
 - `port` is the container's internal listening port, not a cloud firewall or host port. For `tcp-relay`, `publishPort` is the task node host port that Traefik forwards to.

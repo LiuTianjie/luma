@@ -58,10 +58,12 @@ class FakeEsa:
             return {"Configs": [{"ConfigId": 1}] if action in self.global_configs else []}
         for kind, configs in self.rules.items():
             if action == f"List{kind}s":
-                return {"Configs": [dict(item) for item in configs]}
+                wanted = params.get("ConfigType")
+                return {"Configs": [dict(item) for item in configs if not wanted or item["ConfigType"] == wanted]}
             if action == f"Create{kind}":
                 self.next_config += 1
-                configs.append({**{k: v for k, v in params.items() if k != "SiteId"}, "ConfigId": self.next_config})
+                config_type = "rule" if "Rule" in params else "global"
+                configs.append({**{k: v for k, v in params.items() if k != "SiteId"}, "ConfigId": self.next_config, "ConfigType": config_type})
                 return {"ConfigId": self.next_config}
             if action == f"Update{kind}":
                 item = next(c for c in configs if c["ConfigId"] == params["ConfigId"])
@@ -237,34 +239,61 @@ class EsaOperationTests(unittest.TestCase):
 
 
 class DomainRuleTests(unittest.TestCase):
-    def test_rules_honour_origin_everywhere_and_cache_listed_paths(self):
+    def test_only_cache_paths_need_rules(self):
         from luma.cdn import domain_rules
 
         spec = parse_cdn_block({"provider": "esa", "cache": [{"path": "/blog/*", "ttl": 300}, {"path": "/robots.txt", "ttl": 86400}]})
         rules = domain_rules("www.example.com", spec.cache)
-        main, blog, robots = rules["CacheRule"]
-        self.assertEqual(main["RuleName"], "luma_www-example-com_main")
-        self.assertEqual(main["EdgeCacheMode"], "follow_origin")
-        self.assertEqual(
-            main["Rule"],
-            '(http.host eq "www.example.com" and not starts_with(http.request.uri.path, "/blog/") and not http.request.uri.path eq "/robots.txt")',
-        )
+        blog, robots = rules["CacheRule"]
+        self.assertEqual(blog["RuleName"], "luma_www-example-com_cache1")
         self.assertEqual((blog["Rule"], blog["EdgeCacheMode"], blog["EdgeCacheTtl"]), ('(http.host eq "www.example.com" and starts_with(http.request.uri.path, "/blog/"))', "follow_origin_override", "300"))
         self.assertEqual(robots["Rule"], '(http.host eq "www.example.com" and http.request.uri.path eq "/robots.txt")')
-        origin = rules["OriginRule"][0]
-        self.assertEqual((origin["OriginScheme"], origin["OriginHost"], origin["OriginSni"], origin["OriginVerify"]), ("follow", "www.example.com", "www.example.com", "on"))
+        self.assertEqual(rules["OriginRule"], [])
+        self.assertEqual(domain_rules("www.example.com", ()), {"CacheRule": [], "OriginRule": []})
+
+    def test_site_defaults_use_global_configs_and_correct_existing_ones(self):
+        from luma.cdn import configure_site
+
+        client = FakeEsa()
+        client.rules["OriginRule"].append({"ConfigId": 1, "ConfigType": "global", "OriginScheme": "http"})
+        applied = configure_site(client, 77)
+        self.assertIn("CacheRule global created", applied)
+        self.assertIn("OriginRule global updated", applied)
+        self.assertEqual(client.rules["OriginRule"], [{"ConfigId": 1, "ConfigType": "global", "OriginScheme": "follow", "OriginVerify": "on"}])
+        self.assertEqual(client.rules["CacheRule"][0]["EdgeCacheMode"], "follow_origin")
+        self.assertNotIn("Rule", client.rules["CacheRule"][0])
+        self.assertEqual(configure_site(client, 77), ["real client IP header"])
+
+    def test_rule_quota_error_explains_the_shared_limit(self):
+        from luma.cdn import CachePath, reconcile_domain_rules
+
+        client = FakeEsa()
+        original = client.esa
+
+        def esa(action, **params):
+            if action == "CreateCacheRule":
+                raise AliyunApiError(action, 400, "ConfExceedLimit", "limit")
+            return original(action, **params)
+
+        client.esa = esa
+        with self.assertRaisesRegex(LumaError, "shares it .*Basic 10"):
+            reconcile_domain_rules(client, site_id=77, domain="www.example.com", cache=[CachePath("/blog/*", 300)])
 
     def test_reconcile_creates_updates_deletes_only_own_rules(self):
         from luma.cdn import CachePath, reconcile_domain_rules
 
         client = FakeEsa()
-        client.rules["CacheRule"].append({"ConfigId": 1, "RuleName": "luma_www-example-com-cn_main", "Rule": "x"})
+        client.rules["CacheRule"].append({"ConfigId": 1, "ConfigType": "rule", "RuleName": "luma_www-example-com-cn_cache1", "Rule": "x"})
+        client.rules["OriginRule"].append({"ConfigId": 2, "ConfigType": "rule", "RuleName": "luma_www-example-com_origin", "Rule": "x"})
         reconcile_domain_rules(client, site_id=77, domain="www.example.com", cache=[CachePath("/blog/*", 300)])
-        self.assertEqual(sorted(c["RuleName"] for c in client.rules["CacheRule"]), ["luma_www-example-com-cn_main", "luma_www-example-com_cache1", "luma_www-example-com_main"])
+        self.assertEqual(sorted(c["RuleName"] for c in client.rules["CacheRule"]), ["luma_www-example-com-cn_cache1", "luma_www-example-com_cache1"])
+        self.assertEqual(client.rules["OriginRule"], [])
         self.assertEqual(reconcile_domain_rules(client, site_id=77, domain="www.example.com", cache=[CachePath("/blog/*", 300)]), [])
+        changes = reconcile_domain_rules(client, site_id=77, domain="www.example.com", cache=[CachePath("/blog/*", 600)])
+        self.assertEqual(changes, ["luma_www-example-com_cache1 updated"])
         changes = reconcile_domain_rules(client, site_id=77, domain="www.example.com", cache=[])
-        self.assertEqual(changes, ["luma_www-example-com_main updated", "luma_www-example-com_cache1 deleted"])
-        self.assertIn("luma_www-example-com-cn_main", [c["RuleName"] for c in client.rules["CacheRule"]])
+        self.assertEqual(changes, ["luma_www-example-com_cache1 deleted"])
+        self.assertIn("luma_www-example-com-cn_cache1", [c["RuleName"] for c in client.rules["CacheRule"]])
 
     def test_cache_paths_are_validated(self):
         for raw, message in [
@@ -415,7 +444,7 @@ class CdnDeploymentFlowTests(unittest.TestCase):
         self.assertEqual(fake.actions().count("CreateSite"), 1)
         self.assertEqual(fake.actions().count("CreateOriginRule"), 1)
         self.assertEqual(fake.actions().count("CreateCacheRule"), 1)
-        self.assertEqual(fake.rules["OriginRule"][0]["OriginSni"], "web.example.com")
+        self.assertEqual([c["ConfigType"] for c in fake.rules["OriginRule"] + fake.rules["CacheRule"]], ["global", "global"])
         purge = next(params for action, params in fake.calls if action == "PurgeCaches")
         self.assertEqual((purge["SiteId"], purge["Type"], purge["Content"]), (77, "hostname", {"Hostnames": ["web.example.com"]}))
         record = load_state()["cdnDomains"]["web.example.com"]
@@ -431,7 +460,7 @@ class CdnDeploymentFlowTests(unittest.TestCase):
         self.assertEqual(steps["Delete CDN domain"]["message"], "ESA record web.example.com deleted")
         self.assertNotIn("web.example.com", load_state().get("cdnDomains") or {})
         self.assertEqual(fake.records, {})
-        self.assertEqual(fake.rules, {"CacheRule": [], "OriginRule": []})
+        self.assertEqual([c["ConfigType"] for c in fake.rules["CacheRule"]], ["global"])
 
     def test_certificate_delay_is_a_warning_and_the_rollout_continues(self):
         self._add_secrets()

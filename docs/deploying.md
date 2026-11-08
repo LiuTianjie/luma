@@ -56,7 +56,7 @@ Control performs these steps and prints each one:
 
 The default wait is 3000 seconds (`--timeout`). If a step fails after earlier ones changed the cluster, the deployment is recorded as `failed_partial` so `luma app remove` can still clean it up.
 
-Every field is described in the [manifest reference](deployment-yaml.md); placement and ingress are explained in [Concepts](concepts.md) and the [exposure model](exposure-model.md).
+Every field is described in the [manifest reference](deployment-yaml.md); placement and ingress are explained in [Concepts](concepts.md) and the [exposure model](exposure-model.md). To serve a public service through Alibaba Cloud ESA, add `cdn: esa`; see [CDN](cdn.md).
 
 ## Secrets
 

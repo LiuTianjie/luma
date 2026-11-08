@@ -56,7 +56,7 @@ Control 按以下步骤执行并逐步输出：
 
 默认等待 3000 秒（`--timeout`）。如果某一步在前面步骤已经修改集群后失败，部署会记录为 `failed_partial`，之后仍可用 `luma app remove` 清理。
 
-所有字段见 [部署 YAML 参考](deployment-yaml.zh-CN.md)；调度与入口的含义见[核心概念](concepts.zh-CN.md)和[暴露模型](exposure-model.zh-CN.md)。
+所有字段见 [部署 YAML 参考](deployment-yaml.zh-CN.md)；调度与入口的含义见[核心概念](concepts.zh-CN.md)和[暴露模型](exposure-model.zh-CN.md)。要通过阿里云 ESA 提供公网服务，加上 `cdn: esa`，见 [CDN](cdn.zh-CN.md)。
 
 ## 密钥 {#secrets}
 

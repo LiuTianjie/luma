@@ -3,9 +3,9 @@
 A Luma zone is one ESA site joined by CNAME. For each service with ``cdn: esa``
 Luma creates a proxied ESA record pointing at the edge, points the Cloudflare
 DNS record at the ESA CNAME, lets ESA issue its free certificate and refreshes
-the cache after each rollout. Per-domain rules make ESA honour the
+the cache after each rollout. Site-wide configs make ESA honour the
 application's ``Cache-Control`` headers on every path (ESA alone ignores them
-for HTML) and cache the manifest's ``cdn.cache`` paths.
+for HTML); per-domain rules cache the manifest's ``cdn.cache`` paths.
 
 Requests are signed with ACS3-HMAC-SHA256 using the standard library, so the
 package keeps no Alibaba Cloud SDK dependency.
@@ -34,8 +34,8 @@ CDN_SCOPES = frozenset({"global", "domestic", "overseas"})
 CDN_EXPOSURES = frozenset({"cn-edge", "external-edge", "tailscale-relay"})
 CDN_FIELDS = frozenset({"provider", "scope", "purge", "cache"})
 CACHE_FIELDS = frozenset({"path", "ttl"})
-# A rule may hold at most 10 sub-conditions on Free/Basic plans; the host-wide
-# rule spends one on the host and one per excluded cache path.
+# Cache rules count against a per-site quota shared by every app on the root
+# domain (Free 5, Basic 10, Standard 50); keep one app from taking it all.
 MAX_CACHE_PATHS = 8
 MAX_CACHE_TTL = 31536000
 
@@ -412,9 +412,40 @@ def ensure_site(
     return site, notes
 
 
+SITE_DEFAULTS_VERSION = 2
+
+
+def _ensure_global(client: AliyunClient, *, site_id: Any, kind: str, settings: Dict[str, str]) -> Optional[str]:
+    """Create or correct the site's single global ``kind`` config."""
+    listing = client.esa(f"List{kind}s", SiteId=site_id, ConfigType="global")
+    current = next((item for item in listing.get("Configs") or [] if isinstance(item, dict)), None)
+    if current is None:
+        client.esa(f"Create{kind}", SiteId=site_id, **settings)
+        return f"{kind} global created"
+    if any(str(current.get(key) or "") != value for key, value in settings.items()):
+        client.esa(f"Update{kind}", SiteId=site_id, ConfigId=current["ConfigId"], **settings)
+        return f"{kind} global updated"
+    return None
+
+
 def configure_site(client: AliyunClient, site_id: Any) -> List[str]:
-    """Site-wide defaults, applied once. An existing global compression config is left alone."""
+    """Site-wide defaults shared by every Luma domain on the site.
+
+    Global configs cost no rule quota (Basic plans allow 10 cache and 10
+    origin rules per site), so only ``cdn.cache`` paths need rules.
+    """
     applied: List[str] = []
+    for kind, settings in (
+        # Honour the application's cache headers on every path, HTML included;
+        # without headers ESA's defaults apply (static extensions only).
+        ("CacheRule", {"EdgeCacheMode": "follow_origin"}),
+        # follow: HTTPS fetches over HTTPS, plain HTTP gets Traefik's redirect.
+        # Host follows the request; Traefik's ACME certificate is verified.
+        ("OriginRule", {"OriginScheme": "follow", "OriginVerify": "on"}),
+    ):
+        change = _ensure_global(client, site_id=site_id, kind=kind, settings=settings)
+        if change:
+            applied.append(change)
     compression = client.esa("ListCompressionRules", SiteId=site_id, ConfigType="global")
     if not compression.get("Configs"):
         client.esa("CreateCompressionRule", SiteId=site_id, Gzip="on", Brotli="on")
@@ -441,39 +472,23 @@ def _rule_prefix(domain: str) -> str:
 def domain_rules(domain: str, cache: Iterable[CachePath]) -> Dict[str, List[Dict[str, Any]]]:
     """Per-domain ESA rules Luma owns, keyed by rule kind.
 
-    Rules are mutually exclusive so the result never depends on rule order:
-    each cache path has its own rule, and the host-wide rule excludes them.
+    Only ``cdn.cache`` paths need rules; everything else uses the site's
+    global configs. A matching rule replaces the global setting, and the
+    listed paths cannot overlap, so rule order never matters.
     """
     prefix = _rule_prefix(domain)
     host = f"http.host eq {_q(domain)}"
-    cache = list(cache)
-    excluded = "".join(f" and not {_path_condition(item.path)}" for item in cache)
-    cache_rules: List[Dict[str, Any]] = [{
-        # Honour the application's cache headers on every path, HTML
-        # included; without headers fall back to ESA defaults (static
-        # extensions only), so nothing personalised is cached by accident.
-        "RuleName": prefix + "main",
-        "Rule": f"({host}{excluded})",
-        "EdgeCacheMode": "follow_origin",
-    }]
-    for index, item in enumerate(cache, start=1):
-        cache_rules.append({
+    cache_rules = [
+        {
             "RuleName": f"{prefix}cache{index}",
             "Rule": f"({host} and {_path_condition(item.path)})",
             "EdgeCacheMode": "follow_origin_override",
             "EdgeCacheTtl": str(item.ttl),
-        })
-    origin_rules = [{
-        # follow: HTTPS fetches over HTTPS; plain HTTP gets Traefik's redirect.
-        "RuleName": prefix + "origin",
-        "Rule": f"({host})",
-        "OriginScheme": "follow",
-        "OriginHost": domain,
-        "OriginSni": domain,
-        # Traefik serves a valid ACME certificate for every Luma domain.
-        "OriginVerify": "on",
-    }]
-    return {"CacheRule": cache_rules, "OriginRule": origin_rules}
+        }
+        for index, item in enumerate(cache, start=1)
+    ]
+    # OriginRule stays listed with no rules so earlier per-domain rules are removed.
+    return {"CacheRule": cache_rules, "OriginRule": []}
 
 
 def _reconcile_rules(client: AliyunClient, *, site_id: Any, kind: str, prefix: str, desired: List[Dict[str, Any]]) -> List[str]:
@@ -487,7 +502,15 @@ def _reconcile_rules(client: AliyunClient, *, site_id: Any, kind: str, prefix: s
     for rule in desired:
         current = existing.pop(rule["RuleName"], None)
         if current is None:
-            client.esa(f"Create{kind}", SiteId=site_id, RuleEnable="on", **rule)
+            try:
+                client.esa(f"Create{kind}", SiteId=site_id, RuleEnable="on", **rule)
+            except AliyunApiError as exc:
+                if "Exceed" in exc.code or "Quota" in exc.code:
+                    raise LumaError(
+                        f"ESA {kind} quota reached for this site ({exc.code}); every app on the root domain shares it "
+                        "(Free 5, Basic 10, Standard 50). Remove cdn.cache paths or upgrade the ESA plan"
+                    ) from exc
+                raise
             changes.append(f"{rule['RuleName']} created")
         elif str(current.get("RuleEnable") or "on") != "on" or any(str(current.get(key) or "") != str(value) for key, value in rule.items()):
             client.esa(f"Update{kind}", SiteId=site_id, ConfigId=current["ConfigId"], RuleEnable="on", **rule)

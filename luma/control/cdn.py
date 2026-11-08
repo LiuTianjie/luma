@@ -12,6 +12,7 @@ import time
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from ..cdn import (
+    SITE_DEFAULTS_VERSION,
     AliyunClient,
     configure_site,
     delete_esa_record,
@@ -138,9 +139,9 @@ def prepare_service_cdn(config: Any, state: Mapping[str, Any], service: ServiceS
         client, site_name=site_name, scope=service.cdn.scope, publish_txt=_txt_publisher(config, state)
     )
     site_id = site["SiteId"]
-    if not _site_records(state).get(site_name, {}).get("configured"):
-        notes.append("site defaults: " + ", ".join(configure_site(client, site_id)))
-        _update(SITE_STATE_KEY, site_name, {"siteId": site_id, "configured": True})
+    if int(_site_records(state).get(site_name, {}).get("defaultsVersion") or 0) < SITE_DEFAULTS_VERSION:
+        notes.append("site defaults: " + (", ".join(configure_site(client, site_id)) or "unchanged"))
+        _update(SITE_STATE_KEY, site_name, {"siteId": site_id, "defaultsVersion": SITE_DEFAULTS_VERSION})
     record, record_notes = ensure_record(client, site_id=site_id, domain=domain, origin=_origin_for(config, service))
     notes.extend(record_notes)
     notes.extend(reconcile_domain_rules(client, site_id=site_id, domain=domain, cache=service.cdn.cache))

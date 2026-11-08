@@ -72,23 +72,25 @@ cdn:
 
 ## 部署时发生什么 {#what-a-deploy-does}
 
-1. **Prepare CDN**，在改 DNS 之前执行。某个 Luma zone 第一次接入时，Luma 以 CNAME 方式创建该 zone 的 ESA 站点，在 Cloudflare 写入 `_esaauth` TXT 记录完成归属验证，并为站点开启 Gzip/Brotli 压缩和 `ali-real-client-ip` 头。之后每个服务都会创建一条指向 edge 的代理加速记录，edge 地址变化时更新这条记录，并同步这个服务的规则（见下文）。这一步失败会中止部署，此时还没有任何改动。
+1. **Prepare CDN**，在改 DNS 之前执行。某个 Luma zone 第一次接入时，Luma 以 CNAME 方式创建该 zone 的 ESA 站点，在 Cloudflare 写入 `_esaauth` TXT 记录完成归属验证，并写入下面的站点级配置。之后每个服务都会创建一条指向 edge 的代理加速记录，edge 地址变化时更新这条记录，并同步它的 `cache` 路径规则。这一步失败会中止部署，此时还没有任何改动。
 2. **Sync DNS** 把域名指向 ESA 的 CNAME。A 记录和 CNAME 之间切换时原地替换记录。
 3. **ESA certificate** 申请 ESA 的免费证书并等待签发，最多等 10 分钟。ESA 通过 HTTP 验证证书，所以只能在 DNS 指向 ESA 之后进行；首次切换的域名可能有几分钟没有 HTTPS 证书。超过 10 分钟时这一步只给警告，发布继续进行。证书由 ESA 自动续期。
 4. Nomad 发布和公网路由探测照常进行。
 5. **Purge CDN** 在新版本上线后刷新缓存：默认刷新整个主机名，或只刷新 `purge` 里的路径。刷新失败只给警告，不会让部署失败，可以用 `luma cdn purge` 重试。新建的记录还没有缓存，不刷新。
 
-Luma 为每个域名维护的规则。规则之间互不重叠，所以顺序不影响结果：
+站点级配置，由 ESA 站点下所有 Luma 域名共用。它们是全局配置，不占规则配额：
 
-- **回源**：跟随客户端协议，带原始 `Host` 和 SNI，并校验 Traefik 的证书。HTTP 请求由 Traefik 跳转到 HTTPS。
-- **所有路径**：遵循应用返回的缓存头，HTML 也一样。没有缓存头时使用 ESA 默认规则：常见静态文件（js、css、图片、字体等）会缓存，其他不缓存。
-- **每个 `cache` 路径**：遵循应用的缓存头；没有缓存头时缓存 `ttl` 秒。
+- **回源**：跟随客户端协议，使用请求里的 `Host`，并校验 Traefik 的证书。HTTP 请求由 Traefik 跳转到 HTTPS。
+- **缓存**：在所有路径上遵循应用返回的缓存头，HTML 也一样。没有缓存头时使用 ESA 默认规则：常见静态文件（js、css、图片、字体等）会缓存，其他不缓存。
+- Gzip 和 Brotli 压缩，以及带真实客户端地址的 `ali-real-client-ip` 头。
+
+每个 `cache` 路径为它的域名建一条规则：遵循应用的缓存头，没有缓存头时缓存 `ttl` 秒。命中规则时以规则为准，`cache` 路径之间不能重叠，所以规则顺序不影响结果。规则按站点计配额，根域名下所有应用共用：Free 5 条、Basic 10 条、Standard 50 条。超出时部署会在 Prepare CDN 这一步失败并说明原因。
 
 其余由 ESA 默认提供：HTTP/2 和 HTTP/3、关闭 TLS 1.0、基础 DDoS 防护和托管 WAF 规则。
 
 ## 尽可能多缓存 {#cache-as-much-as-possible}
 
-没有自定义规则时，ESA 只缓存静态文件：HTML 和没有扩展名的路径无论应用返回什么都不缓存。Luma 的规则让应用的缓存头在所有路径上都生效，所以要多缓存，有两个办法：
+没有自定义配置时，ESA 只缓存静态文件：HTML 和没有扩展名的路径无论应用返回什么都不缓存。Luma 的站点级缓存配置让应用的缓存头在所有路径上都生效，所以要多缓存，有两个办法：
 
 - 让应用返回缓存头：
 
@@ -124,6 +126,6 @@ luma cdn remove www.example.com
 
 - `status` 列出每个域名的站点、CNAME、最近一次刷新和最近的错误。
 - `purge` 刷新整个主机名，或只刷新给出的路径。
-- `remove` 在 DNS 不再指向 ESA 之后删除 ESA 记录和它的规则。
+- `remove` 在 DNS 不再指向 ESA 之后删除 ESA 记录和它的 `cache` 规则。
 
 要为某个服务关闭 ESA，从 manifest 删掉 `cdn` 再部署。DNS 会改回指向 edge，ESA 记录保留，DNS 缓存还没过期的客户端仍能访问；之后再用 `luma cdn remove` 删除。删除应用时会一并删除它的 ESA 记录和规则，ESA 站点保留。
