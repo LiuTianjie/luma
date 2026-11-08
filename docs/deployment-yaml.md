@@ -57,7 +57,7 @@ luma deploy status.yaml
 | `tcp` | tcp-relay 可选 | map | TCP relay 高级上游覆盖。正常情况不需要填写；入口由 `publishPort` / `port` 自动派生。 |
 | `tunnel` | cloudflare-tunnel 可用 | map | Cloudflare Tunnel token env 等设置。 |
 | `dns.servers` | 否 | IP 或 IP 数组 | 容器使用的 DNS 解析服务器；省略时继承原有默认设置。 |
-| `cdn` | 否 | string 或 map | 开启阿里云 CDN：`cdn: aliyun`，或写 `provider`、`scope`（`global` / `domestic` / `overseas`）、`purge`（部署后刷新的路径，默认 `["/"]`）。仅支持 `cn-edge`、`external-edge`、`tailscale-relay`。见 [CDN](cdn.md)。 |
+| `cdn` | 否 | string 或 map | 开启阿里云 ESA：`cdn: esa`，或写 `provider`、`scope`（`global` / `domestic` / `overseas`）、`purge`（部署后刷新的路径；省略时刷新整个主机名，`[]` 不刷新）。仅支持 `cn-edge`、`external-edge`、`tailscale-relay`。见 [CDN](cdn.md)。 |
 | `stackPath` | 否 | string | 覆盖生成 jobspec 路径。通常不用。 |
 | `routePath` | 否 | string | 覆盖 tailscale route 文件路径。通常不用。 |
 

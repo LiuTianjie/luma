@@ -16,7 +16,7 @@ New to Luma? Read the first two pages in order, then pick guides as you need the
 | [Compose and storage](compose-storage.md) | Multi-service applications and persistent volumes |
 | [Secrets](secrets.md) | Tokens, application secrets and registry credentials |
 | [Exposure model](exposure-model.md) | Every ingress mode with requirements and examples |
-| [CDN](cdn.md) | Alibaba Cloud CDN setup, cache headers and refresh after deploy |
+| [CDN](cdn.md) | Alibaba Cloud ESA setup, cache headers and refresh after deploy |
 | [Custom-region public ingress](region-public-ingress.md) | Upgrade, enable render relay, Mac Compose networking and rollback |
 | [Egress gateway](egress-gateway.md) | Outbound proxy for image pulls and `proxy: true` services |
 | [Observability](observability.md) | Metrics, alerts and the optional observe stack |

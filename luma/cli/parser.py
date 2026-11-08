@@ -50,7 +50,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("storage", "Manage NFS storage classes"),
         ("registry", "Manage registry credentials and the managed registry"),
         ("git-provider", "Manage saved GitHub and Gitea credentials"),
-        ("cdn", "Check, refresh and clean up Alibaba Cloud CDN domains"),
+        ("cdn", "Check, refresh and clean up Alibaba Cloud ESA records"),
         ("passkey", "Enroll dashboard passkeys and manage browser sign-in"),
         ("manager", "Repair manager networking, DNS and IP changes"),
     )),
@@ -701,26 +701,26 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
         sub,
         "cdn",
         description=(
-            "Manage Alibaba Cloud CDN domains. A service enables the CDN with `cdn: aliyun` in its manifest; "
-            "deploys then create the domain, install the edge certificate, point DNS at the CDN and refresh "
-            "entry URLs. Store the RAM user key first with `luma secret set ALIBABA_CLOUD_ACCESS_KEY_ID` and "
-            "`luma secret set ALIBABA_CLOUD_ACCESS_KEY_SECRET`."
+            "Manage Alibaba Cloud ESA (edge acceleration) for services. A service enables it with `cdn: esa` "
+            "in its manifest; deploys then create the ESA site and record, point DNS at ESA, wait for the free "
+            "certificate and refresh the cache. Store the RAM user key first with "
+            "`luma secret set LUMA_ALIBABA_CLOUD_ACCESS_KEY_ID` and `luma secret set LUMA_ALIBABA_CLOUD_ACCESS_KEY_SECRET`."
         ),
     )
     cdn_sub = _commands(cdn, "cdn_command")
-    cdn_check = _command(cdn_sub, "check", "Verify credentials, API access, the certificate store and the DNS zone")
+    cdn_check = _command(cdn_sub, "check", "Verify credentials, the ESA plan, the DNS zone and the ESA site")
     _add_control_arguments(cdn_check)
     _add_output_arguments(cdn_check)
-    cdn_status = _command(cdn_sub, "status", "List CDN domains with CNAME, certificate expiry and last refresh")
+    cdn_status = _command(cdn_sub, "status", "List ESA records with CNAME and last refresh")
     _add_control_arguments(cdn_status)
     _add_output_arguments(cdn_status)
-    cdn_purge = _command(cdn_sub, "purge", "Refresh cached URLs now")
-    cdn_purge.add_argument("domain", help="CDN domain, for example app.example.com")
-    cdn_purge.add_argument("paths", nargs="*", help="URL paths (default /); a trailing /* refreshes a directory")
+    cdn_purge = _command(cdn_sub, "purge", "Refresh the cache now")
+    cdn_purge.add_argument("domain", help="Domain, for example app.example.com")
+    cdn_purge.add_argument("paths", nargs="*", help="URL paths; a trailing /* refreshes a directory (default: the whole hostname)")
     _add_control_arguments(cdn_purge)
     _add_output_arguments(cdn_purge)
-    cdn_remove = _command(cdn_sub, "remove", "Delete a CDN domain that DNS no longer points at")
-    cdn_remove.add_argument("domain", help="CDN domain, for example app.example.com")
+    cdn_remove = _command(cdn_sub, "remove", "Delete an ESA record that DNS no longer points at")
+    cdn_remove.add_argument("domain", help="Domain, for example app.example.com")
     _add_control_arguments(cdn_remove)
     _add_output_arguments(cdn_remove)
 

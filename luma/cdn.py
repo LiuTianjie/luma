@@ -1,22 +1,19 @@
-"""Alibaba Cloud CDN integration for Luma services.
+"""Alibaba Cloud ESA (Edge Security Acceleration) integration for Luma services.
 
-Luma owns the whole lifecycle of a service's CDN domain: it creates the
-accelerated domain (proving ownership through the Cloudflare zone Luma already
-manages), installs the Traefik-issued certificate, points DNS at the CDN CNAME
-and refreshes entry URLs after each rollout.  Caching policy itself is left to
-the application's own ``Cache-Control`` headers; Luma only configures the
-origin and HTTPS and adds no cache rules, so the origin headers decide.
+A Luma zone is one ESA site joined by CNAME. For each service with ``cdn: esa``
+Luma creates a proxied ESA record pointing at the edge, points the Cloudflare
+DNS record at the ESA CNAME, lets ESA issue its free certificate and refreshes
+the cache after each rollout. Caching policy is left to the application's own
+``Cache-Control`` headers.
 
-The client signs requests with ACS3-HMAC-SHA256 using the standard library so
-the package keeps no Alibaba Cloud SDK dependency.
+Requests are signed with ACS3-HMAC-SHA256 using the standard library, so the
+package keeps no Alibaba Cloud SDK dependency.
 """
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
-import ipaddress
 import json
 import os
 import secrets as secrets_module
@@ -27,36 +24,30 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .errors import LumaError
 
-CDN_PROVIDERS = frozenset({"aliyun"})
+CDN_PROVIDERS = frozenset({"esa"})
 CDN_SCOPES = frozenset({"global", "domestic", "overseas"})
 CDN_EXPOSURES = frozenset({"cn-edge", "external-edge", "tailscale-relay"})
 CDN_FIELDS = frozenset({"provider", "scope", "purge"})
-DEFAULT_PURGE_PATHS: Tuple[str, ...] = ("/",)
 
-ALIYUN_KEY_ID_ENV = "ALIBABA_CLOUD_ACCESS_KEY_ID"
-ALIYUN_KEY_SECRET_ENV = "ALIBABA_CLOUD_ACCESS_KEY_SECRET"
-ALIYUN_SECRET_NAMES = (ALIYUN_KEY_ID_ENV, ALIYUN_KEY_SECRET_ENV)
+# Prefixed so they never collide with an application's own Alibaba Cloud keys.
+ESA_KEY_ID_ENV = "LUMA_ALIBABA_CLOUD_ACCESS_KEY_ID"
+ESA_KEY_SECRET_ENV = "LUMA_ALIBABA_CLOUD_ACCESS_KEY_SECRET"
+ESA_SECRET_NAMES = (ESA_KEY_ID_ENV, ESA_KEY_SECRET_ENV)
 
-CDN_ENDPOINT = "cdn.aliyuncs.com"
-CDN_VERSION = "2018-05-10"
-CAS_ENDPOINT = "cas.aliyuncs.com"
-CAS_VERSION = "2020-04-07"
-
-TRAEFIK_ACME_FILE_ENV = "LUMA_TRAEFIK_ACME_FILE"
-DEFAULT_TRAEFIK_ACME_FILE = "/run/luma/traefik-acme/acme.json"
+ESA_ENDPOINT = "esa.cn-hangzhou.aliyuncs.com"
+ESA_VERSION = "2024-09-10"
 
 API_ATTEMPTS = 4
 API_TIMEOUT_SECONDS = 20
-ONLINE_TIMEOUT_SECONDS = 600
-ONLINE_POLL_SECONDS = 10.0
 VERIFY_TIMEOUT_SECONDS = 180
 VERIFY_POLL_SECONDS = 10.0
-RETRYABLE_CODE_PREFIXES = ("Throttling", "ServiceUnavailable", "InternalError", "TooManyRequests")
+CERTIFICATE_TIMEOUT_SECONDS = 600
+CERTIFICATE_POLL_SECONDS = 15.0
+RETRYABLE_CODE_PREFIXES = ("Throttling", "ServiceUnavailable", "InternalError", "InternalException", "TooManyRequests", "Site.ServiceBusy", "Record.ServiceBusy", "Record.Reserved")
 
 
 # ---------------------------------------------------------------------------
@@ -66,13 +57,14 @@ RETRYABLE_CODE_PREFIXES = ("Throttling", "ServiceUnavailable", "InternalError", 
 
 @dataclass(frozen=True)
 class CdnSpec:
-    provider: str = "aliyun"
+    provider: str = "esa"
     scope: str = "global"
-    purge: Tuple[str, ...] = DEFAULT_PURGE_PATHS
+    # None refreshes the whole hostname after each deploy; () disables refresh.
+    purge: Optional[Tuple[str, ...]] = None
 
 
 def parse_cdn_block(raw: Any, *, label: str = "cdn") -> Optional[CdnSpec]:
-    """Parse ``cdn: aliyun`` or the mapping form; ``None``/``false`` disable it."""
+    """Parse ``cdn: esa`` or the mapping form; ``None``/``false`` disable it."""
     if raw is None or raw is False:
         return None
     if isinstance(raw, str):
@@ -88,7 +80,9 @@ def parse_cdn_block(raw: Any, *, label: str = "cdn") -> Optional[CdnSpec]:
     scope = str(raw.get("scope") or "global").strip()
     if scope not in CDN_SCOPES:
         raise LumaError(f"{label}.scope must be one of {sorted(CDN_SCOPES)}")
-    purge_raw = raw.get("purge", list(DEFAULT_PURGE_PATHS))
+    if raw.get("purge") is None:
+        return CdnSpec(provider=provider, scope=scope, purge=None)
+    purge_raw = raw.get("purge")
     if not isinstance(purge_raw, list) or any(not isinstance(item, str) for item in purge_raw):
         raise LumaError(f"{label}.purge must be a list of URL paths")
     purge: List[str] = []
@@ -108,8 +102,10 @@ def validate_cdn_exposure(cdn: Optional[CdnSpec], exposure: str, *, label: str =
         raise LumaError(f"{label} requires exposure {', '.join(sorted(CDN_EXPOSURES))}; got {exposure}")
 
 
-def purge_targets(domain: str, paths: Iterable[str]) -> Dict[str, List[str]]:
-    """Split manifest purge paths into Aliyun File and Directory objects."""
+def purge_requests(domain: str, paths: Optional[Iterable[str]]) -> List[Dict[str, Any]]:
+    """Translate manifest purge paths into ESA PurgeCaches requests."""
+    if paths is None:
+        return [{"Type": "hostname", "Content": {"Hostnames": [domain]}, "Force": False}]
     files: List[str] = []
     directories: List[str] = []
     for path in paths:
@@ -117,12 +113,12 @@ def purge_targets(domain: str, paths: Iterable[str]) -> Dict[str, List[str]]:
             directories.append(f"https://{domain}{path[:-1]}")
         else:
             files.append(f"https://{domain}{path}")
-    result: Dict[str, List[str]] = {}
+    requests: List[Dict[str, Any]] = []
     if files:
-        result["File"] = files
+        requests.append({"Type": "file", "Content": {"Files": files}})
     if directories:
-        result["Directory"] = directories
-    return result
+        requests.append({"Type": "directory", "Content": {"Directories": directories}, "Force": False})
+    return requests
 
 
 # ---------------------------------------------------------------------------
@@ -130,13 +126,13 @@ def purge_targets(domain: str, paths: Iterable[str]) -> Dict[str, List[str]]:
 # ---------------------------------------------------------------------------
 
 
-def aliyun_credentials(state: Mapping[str, Any]) -> Tuple[str, str]:
+def esa_credentials(state: Mapping[str, Any]) -> Tuple[str, str]:
     stored = state.get("secrets") if isinstance(state.get("secrets"), Mapping) else {}
-    key_id = str(stored.get(ALIYUN_KEY_ID_ENV) or os.environ.get(ALIYUN_KEY_ID_ENV) or "").strip()
-    key_secret = str(stored.get(ALIYUN_KEY_SECRET_ENV) or os.environ.get(ALIYUN_KEY_SECRET_ENV) or "").strip()
-    missing = [name for name, value in ((ALIYUN_KEY_ID_ENV, key_id), (ALIYUN_KEY_SECRET_ENV, key_secret)) if not value]
+    key_id = str(stored.get(ESA_KEY_ID_ENV) or os.environ.get(ESA_KEY_ID_ENV) or "").strip()
+    key_secret = str(stored.get(ESA_KEY_SECRET_ENV) or os.environ.get(ESA_KEY_SECRET_ENV) or "").strip()
+    missing = [name for name, value in ((ESA_KEY_ID_ENV, key_id), (ESA_KEY_SECRET_ENV, key_secret)) if not value]
     if missing:
-        raise LumaError(f"missing Alibaba Cloud CDN credential(s): {', '.join(missing)}; set them with luma secret set")
+        raise LumaError(f"missing Alibaba Cloud ESA credential(s): {', '.join(missing)}; set them with luma secret set")
     return key_id, key_secret
 
 
@@ -200,14 +196,12 @@ class AliyunClient:
         self.key_secret = key_secret
         self._sleep = sleep
 
-    def cdn(self, action: str, **params: Any) -> Dict[str, Any]:
-        return self.call(CDN_ENDPOINT, CDN_VERSION, action, params)
-
-    def cas(self, action: str, **params: Any) -> Dict[str, Any]:
-        return self.call(CAS_ENDPOINT, CAS_VERSION, action, params)
+    def esa(self, action: str, **params: Any) -> Dict[str, Any]:
+        """Call an ESA action; dict/list parameters are sent as JSON strings."""
+        return self.call(ESA_ENDPOINT, ESA_VERSION, action, params)
 
     def call(self, host: str, version: str, action: str, params: Mapping[str, Any]) -> Dict[str, Any]:
-        clean = {key: (str(value).lower() if isinstance(value, bool) else str(value)) for key, value in params.items() if value is not None}
+        clean = {key: _param_value(value) for key, value in params.items() if value is not None}
         body = _encode_params(clean).encode("utf-8")
         last_error: Exception | None = None
         for attempt in range(API_ATTEMPTS):
@@ -248,6 +242,14 @@ class AliyunClient:
         raise LumaError(f"Alibaba Cloud {action} unavailable after {API_ATTEMPTS} attempts: {last_error}")
 
 
+def _param_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    return str(value)
+
+
 def _decode_json(raw: bytes, action: str) -> Dict[str, Any]:
     try:
         payload = json.loads(raw.decode("utf-8") or "{}")
@@ -267,130 +269,8 @@ def _decode_error(exc: urllib.error.HTTPError) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Traefik certificate
+# ESA operations
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class EdgeCertificate:
-    cert_pem: str
-    key_pem: str
-    sha256: str
-    not_after: int
-    names: Tuple[str, ...]
-
-
-def _name_covers(name: str, domain: str) -> bool:
-    name = name.lower().rstrip(".")
-    domain = domain.lower().rstrip(".")
-    if name == domain:
-        return True
-    if name.startswith("*."):
-        suffix = name[1:]
-        return domain.endswith(suffix) and "." not in domain[: -len(suffix)]
-    return False
-
-
-def load_edge_certificate(domain: str, *, resolver: str, path: Optional[Path] = None) -> EdgeCertificate:
-    """Find the newest Traefik ACME certificate covering ``domain``."""
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes
-
-    acme_path = Path(path or os.environ.get(TRAEFIK_ACME_FILE_ENV) or DEFAULT_TRAEFIK_ACME_FILE)
-    try:
-        data = json.loads(acme_path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise LumaError(
-            f"Traefik certificate store not found at {acme_path}; CDN HTTPS needs Luma Control on the ingress node "
-            "with the Traefik letsencrypt volume mounted (run luma update)"
-        ) from exc
-    except (OSError, json.JSONDecodeError) as exc:
-        raise LumaError(f"cannot read Traefik certificate store {acme_path}: {exc}") from exc
-    resolver_data = data.get(resolver) if isinstance(data, dict) else None
-    entries = resolver_data.get("Certificates") if isinstance(resolver_data, dict) else None
-    best: Optional[EdgeCertificate] = None
-    for entry in entries or []:
-        if not isinstance(entry, dict):
-            continue
-        info = entry.get("domain") if isinstance(entry.get("domain"), dict) else {}
-        names = tuple(str(item) for item in [info.get("main"), *(info.get("sans") or [])] if item)
-        if not any(_name_covers(name, domain) for name in names):
-            continue
-        try:
-            cert_pem = base64.b64decode(str(entry.get("certificate") or "")).decode("utf-8")
-            key_pem = base64.b64decode(str(entry.get("key") or "")).decode("utf-8")
-            leaf = x509.load_pem_x509_certificate(cert_pem.encode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            continue
-        not_after = getattr(leaf, "not_valid_after_utc", None) or leaf.not_valid_after.replace(tzinfo=timezone.utc)
-        candidate = EdgeCertificate(
-            cert_pem=cert_pem,
-            key_pem=key_pem,
-            sha256=leaf.fingerprint(hashes.SHA256()).hex(),
-            not_after=int(not_after.timestamp()),
-            names=names,
-        )
-        if best is None or candidate.not_after > best.not_after:
-            best = candidate
-    if best is None:
-        raise LumaError(f"no Traefik certificate covers {domain} in resolver {resolver}")
-    if best.not_after <= int(time.time()):
-        raise LumaError(f"Traefik certificate for {domain} expired; check Traefik ACME renewal")
-    return best
-
-
-# ---------------------------------------------------------------------------
-# Aliyun CDN operations
-# ---------------------------------------------------------------------------
-
-
-def _domain_record(client: AliyunClient, domain: str) -> Optional[Dict[str, Any]]:
-    result = client.cdn("DescribeUserDomains", DomainName=domain, DomainSearchType="full_match", CheckDomainShow=True)
-    pages = result.get("Domains") if isinstance(result.get("Domains"), dict) else {}
-    for item in pages.get("PageData") or []:
-        if isinstance(item, dict) and str(item.get("DomainName") or "").lower() == domain.lower():
-            return item
-    return None
-
-
-def _origin_source(origin: str) -> str:
-    try:
-        ipaddress.ip_address(origin)
-        kind = "ipaddr"
-    except ValueError:
-        kind = "domain"
-    return json.dumps([{"content": origin, "type": kind, "port": 443, "priority": "20", "weight": "10"}])
-
-
-def baseline_functions(domain: str) -> List[Dict[str, Any]]:
-    """Origin and HTTPS settings Luma owns on every CDN domain."""
-    def fn(name: str, **args: Any) -> Dict[str, Any]:
-        return {"functionName": name, "functionArgs": [{"argName": key, "argValue": str(value)} for key, value in args.items()]}
-
-    return [
-        fn("set_req_host_header", domain_name=domain),
-        fn("forward_scheme", enable="on", scheme_origin="https", scheme_origin_port="443"),
-        fn("https_origin_sni", enabled="on", https_origin_sni=domain),
-        fn("https_force", enable="on", https_rewrite="301"),
-    ]
-    # No cache rules: with none configured, Alibaba Cloud follows the origin's
-    # cache headers and does not cache responses that send none.
-
-
-def _configure_baseline(client: AliyunClient, domain: str) -> List[str]:
-    existing = client.cdn("DescribeCdnDomainConfigs", DomainName=domain)
-    configs = existing.get("DomainConfigs") if isinstance(existing.get("DomainConfigs"), dict) else {}
-    present = {str(item.get("FunctionName")) for item in configs.get("DomainConfig") or [] if isinstance(item, dict)}
-    missing = [function for function in baseline_functions(domain) if function["functionName"] not in present]
-    if not missing:
-        return []
-    # One call: each config change puts the domain into "configuring" again.
-    try:
-        client.cdn("BatchSetCdnDomainConfig", DomainNames=domain, Functions=json.dumps(missing))
-    except AliyunApiError as exc:
-        if exc.code != "ConfigDuplicate":
-            raise
-    return [function["functionName"] for function in missing]
 
 
 def _wait_until(
@@ -411,147 +291,179 @@ def _wait_until(
         sleep(interval)
 
 
-def _verify_ownership(
-    client: AliyunClient,
-    domain: str,
-    publish_txt: Callable[[str, str], str],
-    *,
-    sleep: Callable[[float], None],
-    clock: Callable[[], float],
-) -> str:
-    content = str(client.cdn("DescribeVerifyContent", DomainName=domain).get("Content") or "").strip()
-    if not content:
-        raise LumaError(f"Alibaba Cloud returned no ownership verification content for {domain}")
-    record = publish_txt("verification", content)
-    last: Optional[AliyunApiError] = None
-
-    def attempt() -> Optional[Dict[str, Any]]:
-        nonlocal last
-        try:
-            client.cdn("VerifyDomainOwner", DomainName=domain, VerifyType="dnsCheck")
-            return {"verified": True}
-        except AliyunApiError as exc:
-            if exc.code != "DomainOwnerVerifyFail":
-                raise
-            last = exc
-            return None
-
-    if _wait_until(attempt, timeout=VERIFY_TIMEOUT_SECONDS, interval=VERIFY_POLL_SECONDS, sleep=sleep, clock=clock) is None:
-        raise last or LumaError(f"Alibaba Cloud ownership verification did not pass for {domain}")
-    return record
+def find_site(client: AliyunClient, site_name: str) -> Optional[Dict[str, Any]]:
+    result = client.esa("ListSites", SiteName=site_name, SiteSearchType="exact", PageSize=10)
+    for item in result.get("Sites") or []:
+        if isinstance(item, dict) and str(item.get("SiteName") or "").lower() == site_name.lower():
+            return item
+    return None
 
 
-def _ensure_certificate(
-    client: AliyunClient,
-    domain: str,
-    certificate: EdgeCertificate,
-    known: Mapping[str, Any],
-) -> Tuple[int, bool]:
-    """Install ``certificate`` on ``domain``; return ``(cert id, changed)``."""
-    if str(known.get("certSha256") or "") == certificate.sha256 and known.get("certId"):
-        return int(known["certId"]), False
-    name = f"luma-{certificate.sha256[:20]}"
-    cert_id: Optional[int] = None
-    common_name = certificate.names[0].lstrip("*.") if certificate.names else domain
-    listing = client.cas("ListUserCertificateOrder", OrderType="UPLOAD", Keyword=common_name, ShowSize=100)
-    for item in listing.get("CertificateOrderList") or []:
+def _plan_instance(client: AliyunClient, scope: str) -> str:
+    result = client.esa("ListUserRatePlanInstances", CheckRemainingSiteQuota="true", Status="online", PageSize=100)
+    for item in result.get("InstanceInfo") or []:
         if not isinstance(item, dict):
             continue
-        if str(item.get("Name") or "") == name or str(item.get("Sha2") or "").lower() == certificate.sha256:
-            cert_id = int(item.get("CertificateId"))
-            break
-    if cert_id is None:
-        uploaded = client.cas("UploadUserCertificate", Name=name, Cert=certificate.cert_pem, Key=certificate.key_pem)
-        cert_id = int(uploaded.get("CertId"))
-    client.cdn("SetCdnDomainSSLCertificate", DomainName=domain, SSLProtocol="on", CertType="cas", CertId=cert_id)
-    return cert_id, True
+        coverages = {value.strip() for value in str(item.get("Coverages") or "").split(",") if value.strip()}
+        if not coverages or scope in coverages:
+            return str(item["InstanceId"])
+    raise LumaError(
+        f"no ESA plan with a free site slot covering {scope}; buy a plan in the ESA console (one plan serves one root domain)"
+    )
 
 
-def prepare_aliyun_domain(
+def ensure_site(
     client: AliyunClient,
     *,
-    domain: str,
+    site_name: str,
     scope: str,
-    origin: str,
-    certificate: EdgeCertificate,
-    known: Mapping[str, Any],
     publish_txt: Callable[[str, str], str],
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
-) -> Dict[str, Any]:
-    """Create or reconcile an accelerated domain; return the new state record."""
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Return an active CNAME-access ESA site for the zone, creating it once."""
     notes: List[str] = []
-    detail = _domain_record(client, domain)
-    created = False
-    if detail is None:
-        params = dict(DomainName=domain, CdnType="web", Scope=scope, Sources=_origin_source(origin))
+    site = find_site(client, site_name)
+    if site is None:
+        created = client.esa(
+            "CreateSite",
+            SiteName=site_name,
+            Coverage=scope,
+            AccessType="CNAME",
+            InstanceId=_plan_instance(client, scope),
+        )
+        site = {"SiteId": created["SiteId"], "SiteName": site_name, "Status": "pending", "VerifyCode": created.get("VerifyCode"), "Coverage": scope, "AccessType": "CNAME"}
+        notes.append(f"site {site_name} created ({scope})")
+    if str(site.get("AccessType") or "CNAME").upper() != "CNAME":
+        raise LumaError(f"ESA site {site_name} uses {site.get('AccessType')} access; Luma manages CNAME-access sites only")
+    status = str(site.get("Status") or "")
+    if status == "offline":
+        raise LumaError(f"ESA site {site_name} is offline ({site.get('OfflineReason') or 'see the ESA console'})")
+    if status != "active":
+        code = str(site.get("VerifyCode") or "").strip()
+        if not code:
+            raise LumaError(f"ESA site {site_name} is {status} and returned no verification code")
+        record = publish_txt(f"_esaauth.{site_name}", code)
+
+        def verified() -> Optional[Dict[str, Any]]:
+            return {"ok": True} if client.esa("VerifySite", SiteId=site["SiteId"]).get("Passed") else None
+
+        if _wait_until(verified, timeout=VERIFY_TIMEOUT_SECONDS, interval=VERIFY_POLL_SECONDS, sleep=sleep, clock=clock) is None:
+            raise LumaError(f"ESA site {site_name} ownership check did not pass; TXT {record} must hold {code}")
+        notes.append(f"site verified via TXT {record}")
+        site = {**site, "Status": "active"}
+    if str(site.get("Coverage") or scope) != scope:
+        notes.append(f"site coverage is {site.get('Coverage')}; manifest asks {scope} (not changed)")
+    return site, notes
+
+
+def configure_site(client: AliyunClient, site_id: Any) -> List[str]:
+    """Site-wide defaults, applied once. Existing global configs are left alone."""
+    applied: List[str] = []
+    # follow: HTTPS requests fetch over HTTPS, plain HTTP gets Traefik's redirect.
+    # An http origin would loop against Traefik's HTTP->HTTPS redirect, so an
+    # existing global rule is corrected rather than left alone.
+    origin = [item for item in client.esa("ListOriginRules", SiteId=site_id, ConfigType="global").get("Configs") or [] if isinstance(item, dict)]
+    if not origin:
+        client.esa("CreateOriginRule", SiteId=site_id, OriginScheme="follow")
+        applied.append("origin follow")
+    elif str(origin[0].get("OriginScheme") or "") not in {"follow", "https"}:
+        client.esa("UpdateOriginRule", SiteId=site_id, ConfigId=origin[0]["ConfigId"], OriginScheme="follow")
+        applied.append("origin follow (was http)")
+    compression = client.esa("ListCompressionRules", SiteId=site_id, ConfigType="global")
+    if not compression.get("Configs"):
+        client.esa("CreateCompressionRule", SiteId=site_id, Gzip="on", Brotli="on")
+        applied.append("gzip+brotli")
+    client.esa("UpdateManagedTransform", SiteId=site_id, AddRealClientIpHeader="on")
+    applied.append("real client IP header")
+    return applied
+
+
+def find_record(client: AliyunClient, site_id: Any, name: str) -> Optional[Dict[str, Any]]:
+    result = client.esa("ListRecords", SiteId=site_id, RecordName=name, RecordMatchType="exact", PageSize=50)
+    for item in result.get("Records") or []:
+        if isinstance(item, dict) and str(item.get("RecordName") or "").lower() == name.lower():
+            return item
+    return None
+
+
+def _record_value(record: Mapping[str, Any]) -> str:
+    data = record.get("Data") if isinstance(record.get("Data"), Mapping) else {}
+    return str(data.get("Value") or data.get("value") or "")
+
+
+def ensure_record(client: AliyunClient, *, site_id: Any, domain: str, origin: str) -> Tuple[Dict[str, Any], List[str]]:
+    """Make ``domain`` a proxied ESA record pointing at the edge; return it with notes."""
+    notes: List[str] = []
+    record = find_record(client, site_id, domain)
+    data = {"value": origin}
+    if record is None:
+        client.esa("CreateRecord", SiteId=site_id, RecordName=domain, Type="A/AAAA", Proxied=True, BizName="web", Ttl=1, Data=data)
+        notes.append(f"record created -> {origin}")
+    elif str(record.get("RecordType") or "").upper() not in {"A/AAAA", "A", "AAAA"}:
+        raise LumaError(f"ESA record {domain} is {record.get('RecordType')}; delete it in the ESA console so Luma can manage it")
+    elif _record_value(record) != origin or not record.get("Proxied"):
+        client.esa("UpdateRecord", RecordId=record["RecordId"], Type="A/AAAA", Proxied=True, BizName="web", Ttl=1, Data=data)
+        notes.append(f"record updated -> {origin}")
+    record = find_record(client, site_id, domain)
+    if record is None or not record.get("RecordCname"):
+        raise LumaError(f"ESA returned no CNAME for {domain}")
+    return record, notes
+
+
+def certificate_status(client: AliyunClient, *, site_id: Any, domain: str) -> Tuple[str, int]:
+    """Return ``(status, valid certificate count)`` for the record."""
+    result = client.esa("ListCertificatesByRecord", SiteId=site_id, RecordName=domain, ValidOnly=True)
+    for item in result.get("Result") or []:
+        if isinstance(item, dict):
+            return str(item.get("Status") or "none"), len(item.get("Certificates") or [])
+    return "none", 0
+
+
+def ensure_certificate(
+    client: AliyunClient,
+    *,
+    site_id: Any,
+    domain: str,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> str:
+    """Request ESA's free certificate once DNS points at ESA, and wait for it."""
+    status, count = certificate_status(client, site_id=site_id, domain=domain)
+    if count:
+        return "certificate ready"
+    if status != "applying":
         try:
-            client.cdn("AddCdnDomain", **params)
+            client.esa("ApplyCertificate", SiteId=site_id, Domains=domain, Type="lets_encrypt")
         except AliyunApiError as exc:
-            if exc.code != "DomainOwnerVerifyFail":
+            if exc.code != "InvalidParameter.Domains":  # already applied
                 raise
-            notes.append(f"ownership verified via TXT {_verify_ownership(client, domain, publish_txt, sleep=sleep, clock=clock)}")
-            client.cdn("AddCdnDomain", **params)
-        created = True
-        notes.append(f"created ({scope})")
-    elif str(detail.get("Coverage") or scope) != scope:
-        notes.append(f"scope is {detail.get('Coverage')} in Alibaba Cloud; manifest asks {scope} (not changed)")
 
-    def online() -> Optional[Dict[str, Any]]:
-        current = _domain_record(client, domain)
-        status = str((current or {}).get("DomainStatus") or "")
-        if status in {"configure_failed", "check_failed", "offline"}:
-            raise LumaError(f"Alibaba Cloud CDN domain {domain} is {status}; check it in the CDN console")
-        return current if status == "online" and current.get("Cname") else None
+    def issued() -> Optional[Dict[str, Any]]:
+        current, valid = certificate_status(client, site_id=site_id, domain=domain)
+        if valid:
+            return {"ok": True}
+        if current == "failed":
+            raise LumaError(f"ESA could not issue a certificate for {domain}; check that DNS points at ESA")
+        return None
 
-    def wait_online() -> Dict[str, Any]:
-        current = _wait_until(online, timeout=ONLINE_TIMEOUT_SECONDS, interval=ONLINE_POLL_SECONDS, sleep=sleep, clock=clock)
-        if current is None:
-            raise LumaError(f"Alibaba Cloud CDN domain {domain} did not come online within {ONLINE_TIMEOUT_SECONDS // 60} minutes")
-        return current
-
-    # Certificate first: forcing HTTPS needs it, and Alibaba Cloud only accepts
-    # changes while the domain is online, so wait again after each change.
-    detail = wait_online()
-    cert_id, cert_changed = _ensure_certificate(client, domain, certificate, known)
-    if cert_changed:
-        notes.append(f"certificate {certificate.sha256[:12]} installed")
-    if created or not known.get("configured"):
-        if cert_changed:
-            detail = wait_online()
-        applied = _configure_baseline(client, domain)
-        if applied:
-            notes.append("configured " + ", ".join(applied))
-    return {
-        "provider": "aliyun",
-        "cname": str(detail["Cname"]),
-        "scope": str(detail.get("Coverage") or scope),
-        "origin": origin,
-        "configured": True,
-        "certId": cert_id,
-        "certSha256": certificate.sha256,
-        "certNotAfter": certificate.not_after,
-        "created": created,
-        "notes": notes,
-    }
+    if _wait_until(issued, timeout=CERTIFICATE_TIMEOUT_SECONDS, interval=CERTIFICATE_POLL_SECONDS, sleep=sleep, clock=clock) is None:
+        raise LumaError(f"ESA certificate for {domain} is still being issued after {CERTIFICATE_TIMEOUT_SECONDS // 60} minutes")
+    return "certificate issued (Let's Encrypt)"
 
 
-def sync_aliyun_certificate(
-    client: AliyunClient, *, domain: str, certificate: EdgeCertificate, known: Mapping[str, Any]
-) -> Tuple[int, bool]:
-    return _ensure_certificate(client, domain, certificate, known)
-
-
-def purge_aliyun(client: AliyunClient, *, domain: str, paths: Iterable[str]) -> List[str]:
+def purge_esa(client: AliyunClient, *, site_id: Any, domain: str, paths: Optional[Iterable[str]]) -> List[str]:
     task_ids: List[str] = []
-    for object_type, urls in purge_targets(domain, paths).items():
-        result = client.cdn("RefreshObjectCaches", ObjectPath="\n".join(urls), ObjectType=object_type)
-        task_ids.extend(item for item in str(result.get("RefreshTaskId") or "").split(",") if item)
+    for request in purge_requests(domain, paths):
+        result = client.esa("PurgeCaches", SiteId=site_id, **request)
+        if result.get("TaskId"):
+            task_ids.append(str(result["TaskId"]))
     return task_ids
 
 
-def delete_aliyun_domain(client: AliyunClient, *, domain: str) -> bool:
-    if _domain_record(client, domain) is None:
+def delete_esa_record(client: AliyunClient, *, site_id: Any, domain: str) -> bool:
+    record = find_record(client, site_id, domain)
+    if record is None:
         return False
-    client.cdn("DeleteCdnDomain", DomainName=domain)
+    client.esa("DeleteRecord", RecordId=record["RecordId"])
     return True

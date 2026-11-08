@@ -1,6 +1,3 @@
-import base64
-import datetime
-import json
 import os
 import tempfile
 import unittest
@@ -12,12 +9,13 @@ import yaml
 
 from luma.cdn import (
     AliyunApiError,
-    EdgeCertificate,
+    _param_value,
     acs3_signature,
-    load_edge_certificate,
+    ensure_certificate,
+    ensure_record,
+    ensure_site,
     parse_cdn_block,
-    prepare_aliyun_domain,
-    purge_targets,
+    purge_requests,
 )
 from luma.cloudflare import sync_dns
 from luma.config import LumaConfig
@@ -28,66 +26,67 @@ from luma.service import ServiceSpec, load_service
 from tests.support import _restore_env, _set_env
 
 
-CERT = EdgeCertificate(
-    cert_pem="-----BEGIN CERTIFICATE-----\nnew\n-----END CERTIFICATE-----\n",
-    key_pem="-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----\n",
-    sha256="a" * 64,
-    not_after=4102444800,
-    names=("*.example.com", "example.com"),
-)
+class FakeEsa:
+    """In-memory Alibaba Cloud ESA account with one plan."""
 
-
-class FakeAliyun:
-    """In-memory Alibaba Cloud CDN/CAS account."""
-
-    def __init__(self, *, verified=True, domains=None, uploads=None):
-        self.verified = verified
-        self.domains = dict(domains or {})
-        self.uploads = list(uploads or [])
-        self.configs = {}
+    def __init__(self, *, sites=None, records=None, cert_after_polls=1):
+        self.sites = dict(sites or {})
+        self.records = dict(records or {})
+        self.global_configs = set()
+        self.cert_polls = 0
+        self.cert_after_polls = cert_after_polls
+        self.cert_applied = False
         self.calls = []
 
-    def cdn(self, action, **params):
+    def esa(self, action, **params):
         self.calls.append((action, params))
-        domain = params.get("DomainName")
-        if action == "DescribeUserDomains":
-            if domain is None:
-                return {"TotalCount": len(self.domains)}
-            item = self.domains.get(domain)
-            return {"Domains": {"PageData": [item] if item else []}}
-        if action == "AddCdnDomain":
-            if not self.verified:
-                raise AliyunApiError(action, 400, "DomainOwnerVerifyFail", "Owner verification of the root domain failed.")
-            self.domains[domain] = {"DomainName": domain, "DomainStatus": "online", "Cname": f"{domain}.w.kunlunsl.com", "Coverage": params["Scope"]}
+        if action == "ListUserRatePlanInstances":
+            return {"InstanceInfo": [{"InstanceId": "sp-1", "PlanName": "basic", "Coverages": "domestic,overseas,global", "Sites": []}]}
+        if action == "ListSites":
+            site = self.sites.get(params["SiteName"])
+            return {"Sites": [site] if site else []}
+        if action == "CreateSite":
+            self.sites[params["SiteName"]] = {"SiteId": 77, "SiteName": params["SiteName"], "Status": "pending", "AccessType": "CNAME", "Coverage": params["Coverage"], "VerifyCode": "verify_abc"}
+            return {"SiteId": 77, "VerifyCode": "verify_abc"}
+        if action == "VerifySite":
+            for site in self.sites.values():
+                site["Status"] = "active"
+            return {"Passed": True}
+        if action in {"ListOriginRules", "ListCompressionRules"}:
+            return {"Configs": [{"ConfigId": 1, "OriginScheme": "follow"}] if action in self.global_configs else []}
+        if action == "CreateOriginRule":
+            self.global_configs.add("ListOriginRules")
+            return {"ConfigId": 1}
+        if action == "CreateCompressionRule":
+            self.global_configs.add("ListCompressionRules")
+            return {"ConfigId": 2}
+        if action == "UpdateManagedTransform":
             return {}
-        if action == "DescribeVerifyContent":
-            return {"Content": "verify_123"}
-        if action == "VerifyDomainOwner":
-            self.verified = True
+        if action == "ListRecords":
+            record = self.records.get(params["RecordName"])
+            return {"Records": [record] if record else []}
+        if action in {"CreateRecord", "UpdateRecord"}:
+            name = params.get("RecordName") or next(n for n, r in self.records.items() if r["RecordId"] == params["RecordId"])
+            self.records[name] = {
+                "RecordId": 501, "RecordName": name, "RecordType": "A/AAAA", "Proxied": params["Proxied"],
+                "Data": {"Value": params["Data"]["value"]}, "RecordCname": f"{name}.cnamezone.com",
+            }
+            return {"RecordId": 501}
+        if action == "DeleteRecord":
+            self.records = {name: r for name, r in self.records.items() if r["RecordId"] != params["RecordId"]}
             return {}
-        if action == "DescribeCdnDomainConfigs":
-            return {"DomainConfigs": {"DomainConfig": [{"FunctionName": name} for name in self.configs.get(domain, [])]}}
-        if action == "BatchSetCdnDomainConfig":
-            for function in json.loads(params["Functions"]):
-                self.configs.setdefault(params["DomainNames"], []).append(function["functionName"])
-            return {}
-        if action in {"SetCdnDomainSSLCertificate", "DeleteCdnDomain"}:
-            if action == "DeleteCdnDomain":
-                self.domains.pop(domain, None)
-            return {}
-        if action == "RefreshObjectCaches":
-            return {"RefreshTaskId": "7001"}
-        raise AssertionError(f"unexpected CDN action {action}")
-
-    def cas(self, action, **params):
-        self.calls.append((action, params))
-        if action == "ListUserCertificateOrder":
-            return {"CertificateOrderList": list(self.uploads)}
-        if action == "UploadUserCertificate":
-            cert_id = 900 + len(self.uploads)
-            self.uploads.append({"CertificateId": cert_id, "Name": params["Name"]})
-            return {"CertId": cert_id}
-        raise AssertionError(f"unexpected CAS action {action}")
+        if action == "ListCertificatesByRecord":
+            if self.cert_applied:
+                self.cert_polls += 1
+            ready = self.cert_applied and self.cert_polls >= self.cert_after_polls
+            status = "configured" if ready else ("applying" if self.cert_applied else "none")
+            return {"Result": [{"RecordName": params["RecordName"], "Status": status, "Certificates": [{"Type": "free"}] if ready else []}]}
+        if action == "ApplyCertificate":
+            self.cert_applied = True
+            return {"Result": [{"Domain": params["Domains"], "Status": "Applying"}]}
+        if action == "PurgeCaches":
+            return {"TaskId": "9001"}
+        raise AssertionError(f"unexpected ESA action {action}")
 
     def actions(self):
         return [action for action, _params in self.calls]
@@ -95,32 +94,39 @@ class FakeAliyun:
 
 class CdnManifestTests(unittest.TestCase):
     def test_short_and_full_forms(self):
-        self.assertEqual(parse_cdn_block("aliyun").purge, ("/",))
-        spec = parse_cdn_block({"provider": "aliyun", "scope": "overseas", "purge": ["/", "/blog/*", "/"]})
+        self.assertIsNone(parse_cdn_block("esa").purge)
+        spec = parse_cdn_block({"provider": "esa", "scope": "overseas", "purge": ["/", "/blog/*", "/"]})
         self.assertEqual((spec.scope, spec.purge), ("overseas", ("/", "/blog/*")))
+        self.assertEqual(parse_cdn_block({"provider": "esa", "purge": []}).purge, ())
         self.assertIsNone(parse_cdn_block(None))
         self.assertIsNone(parse_cdn_block(False))
 
     def test_invalid_blocks_are_rejected(self):
         for raw, message in [
-            ("cloudflare", "provider must be one of"),
-            ({"provider": "aliyun", "scope": "mars"}, "scope must be one of"),
-            ({"provider": "aliyun", "purge": "/"}, "purge must be a list"),
-            ({"provider": "aliyun", "purge": ["index.html"]}, "must be URL paths"),
-            ({"provider": "aliyun", "purge": ["/a*b"]}, "trailing /\\* directory"),
-            ({"provider": "aliyun", "ttl": 1}, "unsupported cdn field"),
+            ("aliyun", "provider must be one of"),
+            ({"provider": "esa", "scope": "mars"}, "scope must be one of"),
+            ({"provider": "esa", "purge": "/"}, "purge must be a list"),
+            ({"provider": "esa", "purge": ["index.html"]}, "must be URL paths"),
+            ({"provider": "esa", "purge": ["/a*b"]}, "trailing /\\* directory"),
+            ({"provider": "esa", "ttl": 1}, "unsupported cdn field"),
         ]:
             with self.subTest(raw=raw), self.assertRaisesRegex(LumaError, message):
                 parse_cdn_block(raw)
 
-    def test_purge_targets_split_files_and_directories(self):
+    def test_purge_requests(self):
+        self.assertEqual(purge_requests("a.example.com", None), [{"Type": "hostname", "Content": {"Hostnames": ["a.example.com"]}, "Force": False}])
         self.assertEqual(
-            purge_targets("a.example.com", ["/", "/sitemap.xml", "/*", "/blog/*"]),
-            {
-                "File": ["https://a.example.com/", "https://a.example.com/sitemap.xml"],
-                "Directory": ["https://a.example.com/", "https://a.example.com/blog/"],
-            },
+            purge_requests("a.example.com", ["/", "/sitemap.xml", "/blog/*"]),
+            [
+                {"Type": "file", "Content": {"Files": ["https://a.example.com/", "https://a.example.com/sitemap.xml"]}},
+                {"Type": "directory", "Content": {"Directories": ["https://a.example.com/blog/"]}, "Force": False},
+            ],
         )
+        self.assertEqual(purge_requests("a.example.com", ()), [])
+
+    def test_object_parameters_are_sent_as_json_strings(self):
+        self.assertEqual(_param_value({"Hostnames": ["a.example.com"]}), '{"Hostnames":["a.example.com"]}')
+        self.assertEqual(_param_value(True), "true")
 
     def _load(self, data):
         with tempfile.TemporaryDirectory() as tmp:
@@ -129,15 +135,15 @@ class CdnManifestTests(unittest.TestCase):
             return load_service(path)
 
     def test_service_manifest_accepts_cdn_on_traefik_exposures_only(self):
-        base = {"name": "web", "image": "nginx", "region": "cn", "domain": "web.example.com", "port": 80, "cdn": "aliyun"}
-        self.assertEqual(self._load({**base, "exposure": "cn-edge"}).cdn.provider, "aliyun")
+        base = {"name": "web", "image": "nginx", "region": "cn", "domain": "web.example.com", "port": 80, "cdn": "esa"}
+        self.assertEqual(self._load({**base, "exposure": "cn-edge"}).cdn.provider, "esa")
         with self.assertRaisesRegex(LumaError, "cdn requires exposure"):
             self._load({**base, "exposure": "tcp-relay"})
 
     def test_compose_sidecar_cdn(self):
         from luma.compose import _load_compose_services
 
-        services = _load_compose_services({"web": {"exposure": "cn-edge", "domain": "w.example.com", "port": 80, "cdn": {"provider": "aliyun", "purge": ["/"]}}})
+        services = _load_compose_services({"web": {"exposure": "cn-edge", "domain": "w.example.com", "port": 80, "cdn": {"provider": "esa", "purge": ["/"]}}})
         self.assertEqual(services["web"].cdn.purge, ("/",))
         with self.assertRaisesRegex(LumaError, "services.web.cdn.provider"):
             _load_compose_services({"web": {"cdn": "other"}})
@@ -165,104 +171,72 @@ class AcsSignatureTests(unittest.TestCase):
         self.assertTrue(authorization.startswith("ACS3-HMAC-SHA256 Credential=YourAccessKeyId,SignedHeaders=host;x-acs-action;"))
 
 
-class PrepareDomainTests(unittest.TestCase):
-    def prepare(self, client, known=None, published=None):
-        return prepare_aliyun_domain(
-            client,
-            domain="app.example.com",
-            scope="global",
-            origin="203.0.113.10",
-            certificate=CERT,
-            known=known or {},
-            publish_txt=lambda host, content: (published.append((host, content)) if published is not None else None) or f"{host}.example.com",
-            sleep=lambda _seconds: None,
-        )
-
-    def test_first_time_verifies_ownership_configures_and_installs_certificate(self):
-        client = FakeAliyun(verified=False)
+class EsaOperationTests(unittest.TestCase):
+    def test_new_site_is_created_on_the_plan_and_verified_by_txt(self):
+        client = FakeEsa()
         published = []
-        record = self.prepare(client, published=published)
-        self.assertEqual(published, [("verification", "verify_123")])
-        self.assertTrue(record["created"])
-        self.assertEqual(record["cname"], "app.example.com.w.kunlunsl.com")
-        self.assertEqual(client.actions().count("AddCdnDomain"), 2)
-        add = next(params for action, params in client.calls if action == "AddCdnDomain")
-        self.assertEqual(json.loads(add["Sources"])[0], {"content": "203.0.113.10", "type": "ipaddr", "port": 443, "priority": "20", "weight": "10"})
-        self.assertEqual(
-            client.configs["app.example.com"],
-            ["set_req_host_header", "forward_scheme", "https_origin_sni", "https_force"],
+        site, notes = ensure_site(
+            client, site_name="example.com", scope="global",
+            publish_txt=lambda name, value: published.append((name, value)) or name, sleep=lambda _s: None,
         )
-        actions = client.actions()
-        self.assertLess(actions.index("SetCdnDomainSSLCertificate"), actions.index("BatchSetCdnDomainConfig"))
-        self.assertEqual(actions.count("BatchSetCdnDomainConfig"), 1)
-        self.assertIn("UploadUserCertificate", actions)
-        cert_call = next(params for action, params in client.calls if action == "SetCdnDomainSSLCertificate")
-        self.assertEqual((cert_call["CertType"], cert_call["CertId"]), ("cas", 900))
+        self.assertEqual(site["Status"], "active")
+        create = next(params for action, params in client.calls if action == "CreateSite")
+        self.assertEqual((create["AccessType"], create["Coverage"], create["InstanceId"]), ("CNAME", "global", "sp-1"))
+        self.assertEqual(published, [("_esaauth.example.com", "verify_abc")])
+        self.assertIn("site example.com created (global)", notes)
 
-    def test_existing_domain_with_same_certificate_makes_no_changes(self):
-        client = FakeAliyun(domains={"app.example.com": {"DomainName": "app.example.com", "DomainStatus": "online", "Cname": "x.w.kunlunsl.com", "Coverage": "global"}})
-        record = self.prepare(client, known={"configured": True, "certSha256": CERT.sha256, "certId": 5})
-        self.assertFalse(record["created"])
-        self.assertEqual(record["notes"], [])
-        self.assertEqual(client.actions(), ["DescribeUserDomains", "DescribeUserDomains"])
+    def test_ns_access_sites_are_refused(self):
+        client = FakeEsa(sites={"example.com": {"SiteId": 1, "SiteName": "example.com", "Status": "active", "AccessType": "NS"}})
+        with self.assertRaisesRegex(LumaError, "CNAME-access sites only"):
+            ensure_site(client, site_name="example.com", scope="global", publish_txt=lambda *_: "", sleep=lambda _s: None)
 
-    def test_renewed_certificate_reuses_an_already_uploaded_copy(self):
-        name = f"luma-{CERT.sha256[:20]}"
-        client = FakeAliyun(
-            domains={"app.example.com": {"DomainName": "app.example.com", "DomainStatus": "online", "Cname": "x", "Coverage": "global"}},
-            uploads=[{"CertificateId": 42, "Name": name}],
-        )
-        record = self.prepare(client, known={"configured": True, "certSha256": "old", "certId": 5})
-        self.assertEqual(record["certId"], 42)
-        self.assertNotIn("UploadUserCertificate", client.actions())
+    def test_record_is_created_proxied_and_updated_when_the_edge_moves(self):
+        client = FakeEsa()
+        record, notes = ensure_record(client, site_id=77, domain="app.example.com", origin="203.0.113.10")
+        self.assertEqual(record["RecordCname"], "app.example.com.cnamezone.com")
+        create = next(params for action, params in client.calls if action == "CreateRecord")
+        self.assertEqual((create["Type"], create["Proxied"], create["BizName"], create["Data"]), ("A/AAAA", True, "web", {"value": "203.0.113.10"}))
+        _record, notes = ensure_record(client, site_id=77, domain="app.example.com", origin="203.0.113.10")
+        self.assertEqual(notes, [])
+        _record, notes = ensure_record(client, site_id=77, domain="app.example.com", origin="198.51.100.7")
+        self.assertEqual(notes, ["record updated -> 198.51.100.7"])
 
-    def test_failed_domain_status_is_reported(self):
-        client = FakeAliyun(domains={"app.example.com": {"DomainName": "app.example.com", "DomainStatus": "check_failed", "Cname": "x"}})
-        with self.assertRaisesRegex(LumaError, "is check_failed"):
-            self.prepare(client)
+    def test_certificate_is_applied_once_and_awaited(self):
+        client = FakeEsa(cert_after_polls=2)
+        message = ensure_certificate(client, site_id=77, domain="app.example.com", sleep=lambda _s: None)
+        self.assertEqual(message, "certificate issued (Let's Encrypt)")
+        self.assertEqual(client.actions().count("ApplyCertificate"), 1)
+        self.assertEqual(ensure_certificate(client, site_id=77, domain="app.example.com", sleep=lambda _s: None), "certificate ready")
+        self.assertEqual(client.actions().count("ApplyCertificate"), 1)
+
+    def test_duplicate_certificate_application_is_tolerated(self):
+        client = FakeEsa()
+        original = client.esa
+
+        def esa(action, **params):
+            if action == "ApplyCertificate":
+                client.cert_applied = True
+                raise AliyunApiError(action, 400, "InvalidParameter.Domains", "already submitted")
+            return original(action, **params)
+
+        client.esa = esa
+        self.assertEqual(ensure_certificate(client, site_id=77, domain="app.example.com", sleep=lambda _s: None), "certificate issued (Let's Encrypt)")
 
 
-class EdgeCertificateTests(unittest.TestCase):
-    def _acme(self, root: Path, names):
-        from cryptography import x509
-        from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import ec
-        from cryptography.x509.oid import NameOID
+class SiteDefaultsTests(unittest.TestCase):
+    def test_existing_http_origin_rule_is_switched_to_follow(self):
+        from luma.cdn import configure_site
 
-        key = ec.generate_private_key(ec.SECP256R1())
-        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, names[0])])
-        now = datetime.datetime.now(datetime.timezone.utc)
-        cert = (
-            x509.CertificateBuilder().subject_name(subject).issuer_name(subject).public_key(key.public_key())
-            .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(days=1))
-            .not_valid_after(now + datetime.timedelta(days=60)).sign(key, hashes.SHA256())
-        )
-        cert_pem = cert.public_bytes(serialization.Encoding.PEM)
-        key_pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
-        data = {"letsencrypt": {"Certificates": [{
-            "domain": {"main": names[0], "sans": list(names[1:])},
-            "certificate": base64.b64encode(cert_pem).decode(),
-            "key": base64.b64encode(key_pem).decode(),
-        }]}}
-        path = root / "acme.json"
-        path.write_text(json.dumps(data), encoding="utf-8")
-        return path, cert
-
-    def test_wildcard_covers_one_label_and_apex(self):
-        from cryptography.hazmat.primitives import hashes
-
-        with tempfile.TemporaryDirectory() as tmp:
-            path, cert = self._acme(Path(tmp), ["*.example.com", "example.com"])
-            found = load_edge_certificate("app.example.com", resolver="letsencrypt", path=path)
-            self.assertEqual(found.sha256, cert.fingerprint(hashes.SHA256()).hex())
-            self.assertIn("BEGIN PRIVATE KEY", found.key_pem)
-            load_edge_certificate("example.com", resolver="letsencrypt", path=path)
-            with self.assertRaisesRegex(LumaError, "no Traefik certificate covers"):
-                load_edge_certificate("a.b.example.com", resolver="letsencrypt", path=path)
-
-    def test_missing_store_explains_the_mount(self):
-        with self.assertRaisesRegex(LumaError, "luma update"):
-            load_edge_certificate("app.example.com", resolver="letsencrypt", path=Path("/nonexistent/acme.json"))
+        client = MagicMock()
+        client.esa.side_effect = lambda action, **params: {
+            "ListOriginRules": {"Configs": [{"ConfigId": 5, "OriginScheme": "http"}]},
+            "ListCompressionRules": {"Configs": [{"ConfigId": 6}]},
+        }.get(action, {})
+        applied = configure_site(client, 77)
+        self.assertIn("origin follow (was http)", applied)
+        calls = [(call.args[0], call.kwargs) for call in client.esa.call_args_list]
+        self.assertIn(("UpdateOriginRule", {"SiteId": 77, "ConfigId": 5, "OriginScheme": "follow"}), calls)
+        self.assertNotIn("CreateCompressionRule", [name for name, _ in calls])
 
 
 class CdnDnsTests(unittest.TestCase):
@@ -272,23 +246,23 @@ class CdnDnsTests(unittest.TestCase):
     def _config(self):
         return LumaConfig(path=None, raw={"providers": {"dns": {"type": "cloudflare", "zone": "example.com", "zoneId": "z1", "edgeTarget": "203.0.113.10"}}})
 
-    def test_switching_to_cdn_replaces_the_a_record_in_place(self):
+    def test_switching_to_esa_replaces_the_a_record_in_place(self):
         client = MagicMock()
         client.request.side_effect = lambda method, path, body=None: (
             {"result": [{"id": "r1", "type": "A", "content": "203.0.113.10"}, {"id": "t1", "type": "TXT", "content": "x"}]} if method == "GET" else {"result": {}}
         )
         with patch("luma.cloudflare.CloudflareClient", return_value=client):
-            message = sync_dns(self._config(), self._service(), secrets={"CLOUDFLARE_API_TOKEN": "t"}, override={"target": "web.example.com.w.kunlunsl.com", "type": "CNAME", "proxied": False})
-        self.assertEqual(message, "DNS updated: web.example.com -> web.example.com.w.kunlunsl.com")
+            message = sync_dns(self._config(), self._service(), secrets={"CLOUDFLARE_API_TOKEN": "t"}, override={"target": "web.example.com.cnamezone.com", "type": "CNAME", "proxied": False})
+        self.assertEqual(message, "DNS updated: web.example.com -> web.example.com.cnamezone.com")
         writes = [call.args for call in client.request.call_args_list if call.args[0] != "GET"]
         self.assertEqual(len(writes), 1)
         self.assertEqual(writes[0][:2], ("PUT", "/zones/z1/dns_records/r1"))
         self.assertEqual((writes[0][2]["type"], writes[0][2]["proxied"]), ("CNAME", False))
 
-    def test_disabling_cdn_turns_the_cname_back_into_an_a_record(self):
+    def test_disabling_esa_turns_the_cname_back_into_an_a_record(self):
         client = MagicMock()
         client.request.side_effect = lambda method, path, body=None: (
-            {"result": [{"id": "c1", "type": "CNAME", "content": "x.w.kunlunsl.com"}]} if method == "GET" else {"result": {}}
+            {"result": [{"id": "c1", "type": "CNAME", "content": "x.cnamezone.com"}]} if method == "GET" else {"result": {}}
         )
         with patch("luma.cloudflare.CloudflareClient", return_value=client):
             sync_dns(self._config(), self._service(), secrets={"CLOUDFLARE_API_TOKEN": "t"})
@@ -298,11 +272,11 @@ class CdnDnsTests(unittest.TestCase):
 
 class PurgeStepTests(unittest.TestCase):
     def _service(self):
-        return ServiceSpec(source=Path("a.yaml"), name="web", image="nginx", region="cn", public=True, exposure="cn-edge", domain="web.example.com", port=80, cdn=parse_cdn_block("aliyun"))
+        return ServiceSpec(source=Path("a.yaml"), name="web", image="nginx", region="cn", public=True, exposure="cn-edge", domain="web.example.com", port=80, cdn=parse_cdn_block("esa"))
 
     def test_provider_failure_is_a_warning(self):
         steps = []
-        with patch("luma.control.server.purge_service_cdn", side_effect=LumaError("QuotaExceeded.Refresh")):
+        with patch("luma.control.server.purge_service_cdn", side_effect=LumaError("QuotaExceeded")):
             message = _purge_cdn_step(steps, None, {}, self._service(), prepared={}, skip_orchestrator=False)
         self.assertEqual(steps[-1]["status"], "warning")
         self.assertIn("deployment kept", message)
@@ -314,7 +288,7 @@ class PurgeStepTests(unittest.TestCase):
                 _purge_cdn_step(steps, None, {}, self._service(), prepared={}, skip_orchestrator=False)
         self.assertEqual(steps[-1]["status"], "fail")
 
-    def test_new_domain_is_not_purged(self):
+    def test_new_record_is_not_purged(self):
         steps = []
         with patch("luma.control.server.purge_service_cdn") as purge:
             _purge_cdn_step(steps, None, {}, self._service(), prepared={"created": True}, skip_orchestrator=False)
@@ -323,108 +297,100 @@ class PurgeStepTests(unittest.TestCase):
 
 
 class CdnDeploymentFlowTests(unittest.TestCase):
-    def test_deploy_prepares_points_dns_purges_and_remove_deletes(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
-            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
-            # handle_deployment copies global secrets into os.environ; restore them.
-            secret_names = ("CLOUDFLARE_API_TOKEN", "ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABA_CLOUD_ACCESS_KEY_SECRET")
-            old_secrets = {name: os.environ.get(name) for name in secret_names}
-            try:
-                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+    SECRETS = ("CLOUDFLARE_API_TOKEN", "LUMA_ALIBABA_CLOUD_ACCESS_KEY_ID", "LUMA_ALIBABA_CLOUD_ACCESS_KEY_SECRET")
 
-                def add_secrets(current):
-                    current.setdefault("secrets", {}).update({
-                        "CLOUDFLARE_API_TOKEN": "cf",
-                        "ALIBABA_CLOUD_ACCESS_KEY_ID": "LTAIexample",
-                        "ALIBABA_CLOUD_ACCESS_KEY_SECRET": "secret",
-                    })
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        # handle_deployment copies global secrets into os.environ; restore them.
+        self.old_env = {name: os.environ.get(name) for name in (*self.SECRETS, "LUMA_CONTROL_STATE_DIR", "LUMA_CONTROL_CONFIG")}
+        _set_env("LUMA_CONTROL_STATE_DIR", str(self.root / "state"))
+        _set_env("LUMA_CONTROL_CONFIG", str(self.root / "luma.yaml"))
+        self.state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+        (self.root / "luma.yaml").write_text(yaml.safe_dump({
+            "providers": {"dns": {"type": "cloudflare", "zone": "example.com", "zoneId": "z1"}},
+            "defaults": {"stackRoot": str(self.root / "stacks")},
+            "nodes": {"edge": {"host": "edge", "publicIp": "203.0.113.10", "region": "cn", "roles": ["edge"]}},
+        }), encoding="utf-8")
 
-                mutate_state(add_secrets)
-                (root / "luma.yaml").write_text(yaml.safe_dump({
-                    "providers": {"dns": {"type": "cloudflare", "zone": "example.com", "zoneId": "z1"}},
-                    "defaults": {"stackRoot": str(root / "stacks")},
-                    "nodes": {"edge": {"host": "edge", "publicIp": "203.0.113.10", "region": "cn", "roles": ["edge"]}},
-                }), encoding="utf-8")
-                manifest = yaml.safe_dump({
-                    "name": "web", "image": "nginx:alpine", "region": "cn", "exposure": "cn-edge",
-                    "domain": "web.example.com", "port": 80, "cdn": {"provider": "aliyun", "purge": ["/", "/sitemap.xml"]},
-                })
-                fake = FakeAliyun()
-                sync = MagicMock(return_value="DNS updated")
-                probe_error = urllib.error.HTTPError("https://web.example.com/", 404, "not found", {}, None)
-                with patch("luma.control.cdn.AliyunClient", return_value=fake), patch(
-                    "luma.control.cdn.load_edge_certificate", return_value=CERT
-                ), patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="ok"), patch(
-                    "luma.control.server.sync_dns", sync
-                ), patch("luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"), patch(
-                    "luma.control.server.urllib.request.urlopen", side_effect=probe_error
-                ):
-                    first = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "web.yaml"})
-                    second = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "web.yaml"})
+    def tearDown(self):
+        for name, value in self.old_env.items():
+            _restore_env(name, value)
+        self.tmp.cleanup()
 
-                names = [step["name"] for step in first["steps"]]
-                self.assertLess(names.index("Prepare CDN"), names.index("Sync DNS"))
-                self.assertLess(names.index("Probe public route"), names.index("Purge CDN"))
-                self.assertEqual(sync.call_args.kwargs["override"], {"target": "web.example.com.w.kunlunsl.com", "type": "CNAME", "proxied": False})
-                self.assertIn("no cache yet", first["cdn"]["purge"])
-                self.assertIn("/, /sitemap.xml", second["cdn"]["purge"])
-                refresh = next(params for action, params in fake.calls if action == "RefreshObjectCaches")
-                self.assertEqual(refresh["ObjectPath"], "https://web.example.com/\nhttps://web.example.com/sitemap.xml")
-                record = load_state()["cdnDomains"]["web.example.com"]
-                self.assertEqual((record["service"], record["certSha256"]), ("web", CERT.sha256))
-                self.assertEqual(record["lastPurge"]["taskIds"], ["7001"])
+    def _add_secrets(self):
+        def add(current):
+            current.setdefault("secrets", {}).update({
+                "CLOUDFLARE_API_TOKEN": "cf",
+                "LUMA_ALIBABA_CLOUD_ACCESS_KEY_ID": "LTAIexample",
+                "LUMA_ALIBABA_CLOUD_ACCESS_KEY_SECRET": "secret",
+            })
 
-                delete = MagicMock(return_value="DNS deleted")
-                with patch("luma.control.cdn.AliyunClient", return_value=fake), patch(
-                    "luma.control.server.delete_dns", delete
-                ), patch("luma.control.server.remove_from_nomad", return_value="removed"):
-                    removed = handle_service_remove(state["deployToken"], {"name": "web"})
-                self.assertEqual(delete.call_args.kwargs["override"]["type"], "CNAME")
-                steps = {step["name"]: step for step in removed["steps"]}
-                self.assertEqual(steps["Delete CDN domain"]["message"], "CDN domain web.example.com deleted")
-                self.assertNotIn("web.example.com", load_state().get("cdnDomains") or {})
-            finally:
-                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
-                _restore_env("LUMA_CONTROL_CONFIG", old_config)
-                for name, value in old_secrets.items():
-                    _restore_env(name, value)
+        mutate_state(add)
 
-    def test_cli_deploy_is_blocked_without_alibaba_cloud_keys(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
-            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
-            try:
-                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                (root / "luma.yaml").write_text(yaml.safe_dump({"providers": {"dns": {"type": "cloudflare", "zone": "example.com"}}, "defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
-                manifest = yaml.safe_dump({"name": "web", "image": "nginx", "region": "cn", "exposure": "cn-edge", "domain": "web.example.com", "port": 80, "cdn": "aliyun"})
-                with self.assertRaisesRegex(LumaError, "cdn: .*ALIBABA_CLOUD_ACCESS_KEY_ID|cdn: Alibaba Cloud CDN credentials"):
-                    handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "web.yaml"})
-            finally:
-                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
-                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+    def test_deploy_prepares_points_dns_issues_certificate_purges_and_remove_deletes(self):
+        self._add_secrets()
+        manifest = yaml.safe_dump({
+            "name": "web", "image": "nginx:alpine", "region": "cn", "exposure": "cn-edge",
+            "domain": "web.example.com", "port": 80, "cdn": "esa",
+        })
+        fake = FakeEsa()
+        sync = MagicMock(return_value="DNS updated")
+        txt = MagicMock(side_effect=lambda config, name, content, secrets=None: name)
+        probe_error = urllib.error.HTTPError("https://web.example.com/", 404, "not found", {}, None)
+        with patch("luma.control.cdn.AliyunClient", return_value=fake), patch(
+            "luma.control.cdn.upsert_txt_record", txt
+        ), patch("luma.cdn.time.sleep"), patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="ok"), patch(
+            "luma.control.server.sync_dns", sync
+        ), patch("luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"), patch(
+            "luma.control.server.urllib.request.urlopen", side_effect=probe_error
+        ):
+            first = handle_deployment(self.state["deployToken"], {"manifest": manifest, "sourceName": "web.yaml"})
+            second = handle_deployment(self.state["deployToken"], {"manifest": manifest, "sourceName": "web.yaml"})
 
+        names = [step["name"] for step in first["steps"]]
+        self.assertLess(names.index("Prepare CDN"), names.index("Sync DNS"))
+        self.assertLess(names.index("Sync DNS"), names.index("ESA certificate"))
+        self.assertLess(names.index("ESA certificate"), names.index("Deploy Nomad job"))
+        self.assertLess(names.index("Probe public route"), names.index("Purge CDN"))
+        self.assertEqual(txt.call_args.args[1:3], ("_esaauth.example.com", "verify_abc"))
+        self.assertEqual(sync.call_args.kwargs["override"], {"target": "web.example.com.cnamezone.com", "type": "CNAME", "proxied": False})
+        self.assertIn("no cache yet", first["cdn"]["purge"])
+        self.assertIn("whole hostname", second["cdn"]["purge"])
+        self.assertEqual(fake.actions().count("CreateSite"), 1)
+        self.assertEqual(fake.actions().count("CreateOriginRule"), 1)
+        origin = next(params for action, params in fake.calls if action == "CreateOriginRule")
+        self.assertEqual(origin["OriginScheme"], "follow")
+        purge = next(params for action, params in fake.calls if action == "PurgeCaches")
+        self.assertEqual((purge["SiteId"], purge["Type"], purge["Content"]), (77, "hostname", {"Hostnames": ["web.example.com"]}))
+        record = load_state()["cdnDomains"]["web.example.com"]
+        self.assertEqual((record["service"], record["siteId"], record["lastPurge"]["taskIds"]), ("web", 77, ["9001"]))
 
-if __name__ == "__main__":
-    unittest.main()
+        delete = MagicMock(return_value="DNS deleted")
+        with patch("luma.control.cdn.AliyunClient", return_value=fake), patch(
+            "luma.control.server.delete_dns", delete
+        ), patch("luma.control.server.remove_from_nomad", return_value="removed"):
+            removed = handle_service_remove(self.state["deployToken"], {"name": "web"})
+        self.assertEqual(delete.call_args.kwargs["override"]["type"], "CNAME")
+        steps = {step["name"]: step for step in removed["steps"]}
+        self.assertEqual(steps["Delete CDN domain"]["message"], "ESA record web.example.com deleted")
+        self.assertNotIn("web.example.com", load_state().get("cdnDomains") or {})
+        self.assertEqual(fake.records, {})
+
+    def test_cli_deploy_is_blocked_without_esa_keys(self):
+        manifest = yaml.safe_dump({"name": "web", "image": "nginx", "region": "cn", "exposure": "cn-edge", "domain": "web.example.com", "port": 80, "cdn": "esa"})
+        with self.assertRaisesRegex(LumaError, "cdn: Alibaba Cloud ESA credentials"):
+            handle_deployment(self.state["deployToken"], {"manifest": manifest, "sourceName": "web.yaml"})
 
 
 class CdnRenderTests(unittest.TestCase):
-    def test_control_job_mounts_traefik_certificates_read_only(self):
-        from luma.nomad_render import TRAEFIK_LETSENCRYPT_VOLUME, render_control_job
-
-        job = render_control_job(image="ghcr.io/x/luma-control:v1", node_name="manager", as_json=False)
-        mounts = (job.get("Job") or job)["TaskGroups"][0]["Tasks"][0]["Config"]["mount"]
-        self.assertIn(
-            {"type": "volume", "target": "/run/luma/traefik-acme", "source": TRAEFIK_LETSENCRYPT_VOLUME, "readonly": True},
-            mounts,
-        )
-
-    def test_traefik_access_log_keeps_the_cdn_client_address(self):
+    def test_traefik_access_log_keeps_the_esa_client_address(self):
         from luma.nomad_render import render_traefik_job
 
         job = render_traefik_job(image="traefik:v3", acme_email="ops@example.com", as_json=False)
         task = (job.get("Job") or job)["TaskGroups"][0]["Tasks"][0]
-        self.assertIn("--accesslog.fields.headers.names.Ali-Cdn-Real-Ip=keep", task["Config"]["args"])
+        self.assertIn("--accesslog.fields.headers.names.Ali-Real-Client-Ip=keep", task["Config"]["args"])
+
+
+if __name__ == "__main__":
+    unittest.main()

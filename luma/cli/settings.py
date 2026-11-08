@@ -268,7 +268,7 @@ def cmd_cdn(args: argparse.Namespace) -> int:
             return 0 if result.get("ready") else 1
         for item in result.get("checks") or []:
             print(f"{'ok  ' if item.get('ok') else 'FAIL'} {item.get('name')}: {item.get('detail')}")
-        print("CDN ready" if result.get("ready") else "CDN not ready: fix the FAIL items above")
+        print("ESA ready" if result.get("ready") else "ESA not ready: fix the FAIL items above")
         return 0 if result.get("ready") else 1
     if args.cdn_command == "status":
         result = client.cdn_status()
@@ -277,38 +277,34 @@ def cmd_cdn(args: argparse.Namespace) -> int:
             _print_success(args, {"domains": domains})
             return 0
         if not domains:
-            print("No CDN domains. Add `cdn: aliyun` to a service manifest and deploy it.")
+            print("No ESA records. Add `cdn: esa` to a service manifest and deploy it.")
             return 0
         rows = []
         for item in domains:
             purge = item.get("lastPurge") if isinstance(item.get("lastPurge"), dict) else {}
-            expiry = _format_epoch(item.get("certNotAfter"))
-            if item.get("certExpiresSoon"):
-                expiry += " (soon)"
             rows.append([
                 str(item.get("domain") or ""),
                 str(item.get("service") or ""),
                 str(item.get("scope") or ""),
                 str(item.get("cname") or ""),
-                expiry,
                 _format_epoch(purge.get("at")),
                 str(item.get("lastError") or ""),
             ])
-        _print_table(["domain", "service", "scope", "cname", "cert expires", "last refresh", "error"], rows)
+        _print_table(["domain", "service", "scope", "cname", "last refresh", "error"], rows)
         return 0
     if args.cdn_command == "purge":
         result = client.cdn_purge(args.domain, list(args.paths or []))
         if not text:
             _print_success(args, result)
             return 0
-        print(f"Refresh submitted for {args.domain}: {', '.join(result.get('paths') or [])} (task {', '.join(result.get('taskIds') or []) or 'n/a'})")
+        print(f"Refresh submitted for {args.domain}: {result.get('paths')} (task {', '.join(result.get('taskIds') or []) or 'n/a'})")
         return 0
     if args.cdn_command == "remove":
         result = client.cdn_remove(args.domain)
         if not text:
             _print_success(args, result)
             return 0
-        print(str(result.get("message") or f"CDN domain {args.domain} removed"))
+        print(str(result.get("message") or f"ESA record {args.domain} removed"))
         return 0
     raise LumaError(f"unknown cdn command: {args.cdn_command}")
 

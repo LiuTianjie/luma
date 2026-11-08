@@ -139,6 +139,7 @@ from .cdn import (
     check_setup as check_cdn_setup,
     disabled_cdn_notice,
     dns_override as cdn_dns_override,
+    issue_service_certificate,
     owned_domains as cdn_owned_domains,
     prepare_service_cdn,
     purge_domain as purge_cdn_domain,
@@ -7314,6 +7315,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         written = [str(target)]
         cdn_prepared = _prepare_cdn_step(steps, progress, config, state, service)
         dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service, override=cdn_prepared.get("override")), progress=progress)
+        _cdn_certificate_step(steps, progress, state, service, cdn_prepared, skip_dns=bool(body.get("skipDns")))
         orchestrator_result = _deploy_step(
             steps,
             "Deploy Nomad job",
@@ -9676,6 +9678,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                     progress=progress,
                 )
             )
+            _cdn_certificate_step(steps, progress, state, service_spec, cdn_prepared, skip_dns=bool(body.get("skipDns")), label=service.name)
 
         orchestrator_result = _deploy_step(
             steps,
@@ -12302,6 +12305,29 @@ def _prepare_cdn_step(
     return _deploy_step(steps, f"Prepare CDN{suffix}", lambda: prepare_service_cdn(config, state, service), progress=progress)
 
 
+def _cdn_certificate_step(
+    steps: list[dict[str, str]],
+    progress: Callable[[dict[str, str]], None] | None,
+    state: Dict[str, Any],
+    service: ServiceSpec,
+    prepared: Mapping[str, Any],
+    *,
+    skip_dns: bool,
+    label: str = "",
+) -> str | None:
+    """ESA issues its free certificate over HTTP, so this runs right after DNS."""
+    if service.cdn is None:
+        return None
+    name = f"ESA certificate{f' {label}' if label else ''}"
+    if skip_dns:
+        message = "ESA certificate skipped: DNS not managed (--skip-dns)"
+        step = {"name": name, "status": "ok", "message": message}
+        steps.append(step)
+        _emit_progress(progress, step)
+        return message
+    return _deploy_step(steps, name, lambda: issue_service_certificate(state, service, prepared), progress=progress)
+
+
 def _purge_cdn_step(
     steps: list[dict[str, str]],
     progress: Callable[[dict[str, str]], None] | None,
@@ -12322,7 +12348,7 @@ def _purge_cdn_step(
         return None
     name = f"Purge CDN{f' {label}' if label else ''}"
     if skip_orchestrator or prepared.get("created"):
-        reason = "orchestrator deploy skipped" if skip_orchestrator else "new CDN domain has no cache yet"
+        reason = "orchestrator deploy skipped" if skip_orchestrator else "new ESA record has no cache yet"
         message = f"CDN purge skipped: {reason}"
         step = {"name": name, "status": "ok", "message": message}
         steps.append(step)

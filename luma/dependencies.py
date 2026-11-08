@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
-from .cdn import ALIYUN_SECRET_NAMES
+from .cdn import ESA_SECRET_NAMES
 from .registry import DOCKER_HUB_HOSTS, registry_host_from_image
 from .errors import LumaError
 
@@ -122,10 +122,10 @@ def service_requirements(
     add("cloudflare", needs_cloudflare, cloudflare_ready, "Cloudflare DNS provider and token available" if not require_verified or verified_cloudflare else "Cloudflare configuration is not verified", missing=cloudflare_missing, explicit="cloudflare" in explicit_capabilities or cdn is not None)
 
     if cdn is not None:
-        cdn_missing = [name for name in ALIYUN_SECRET_NAMES if not str(secrets.get(name) or "").strip()]
+        cdn_missing = [name for name in ESA_SECRET_NAMES if not str(secrets.get(name) or "").strip()]
         # A manifest that declares cdn asked for it explicitly, so CLI deploys
         # enforce this check as well as dashboard ones.
-        add("cdn", True, not cdn_missing, "Alibaba Cloud CDN credentials available", missing=cdn_missing, explicit=True)
+        add("cdn", True, not cdn_missing, "Alibaba Cloud ESA credentials available", missing=cdn_missing, explicit=True)
 
     needs_tailnet = exposure == "tailscale-relay" or region == "home" or "tailscale" in explicit_capabilities
     tailnet_ready = any(bool(record.get("tailscaleIP") or record.get("tailscaleName")) for record in region_nodes)

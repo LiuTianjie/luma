@@ -45,7 +45,7 @@ Cluster administration:
   storage       Manage NFS storage classes
   registry      Manage registry credentials and the managed registry
   git-provider  Manage saved GitHub and Gitea credentials
-  cdn           Check, refresh and clean up Alibaba Cloud CDN domains
+  cdn           Check, refresh and clean up Alibaba Cloud ESA records
   passkey       Enroll dashboard passkeys and manage browser sign-in
   manager       Repair manager networking, DNS and IP changes
 
@@ -2361,20 +2361,20 @@ arguments:
 ```text
 usage: luma cdn [-h] <command> ...
 
-Manage Alibaba Cloud CDN domains. A service enables the CDN with `cdn: aliyun` in its manifest;
-deploys then create the domain, install the edge certificate, point DNS at the CDN and refresh entry
-URLs. Store the RAM user key first with `luma secret set ALIBABA_CLOUD_ACCESS_KEY_ID` and `luma
-secret set ALIBABA_CLOUD_ACCESS_KEY_SECRET`.
+Manage Alibaba Cloud ESA (edge acceleration) for services. A service enables it with `cdn: esa` in
+its manifest; deploys then create the ESA site and record, point DNS at ESA, wait for the free
+certificate and refresh the cache. Store the RAM user key first with `luma secret set
+LUMA_ALIBABA_CLOUD_ACCESS_KEY_ID` and `luma secret set LUMA_ALIBABA_CLOUD_ACCESS_KEY_SECRET`.
 
 arguments:
   -h, --help  show this help message and exit
 
 arguments:
   <command>
-    check     Verify credentials, API access, the certificate store and the DNS zone
-    status    List CDN domains with CNAME, certificate expiry and last refresh
-    purge     Refresh cached URLs now
-    remove    Delete a CDN domain that DNS no longer points at
+    check     Verify credentials, the ESA plan, the DNS zone and the ESA site
+    status    List ESA records with CNAME and last refresh
+    purge     Refresh the cache now
+    remove    Delete an ESA record that DNS no longer points at
 ```
 
 ## `luma cdn check`
@@ -2382,7 +2382,7 @@ arguments:
 ```text
 usage: luma cdn check [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
 
-Verify credentials, API access, the certificate store and the DNS zone
+Verify credentials, the ESA plan, the DNS zone and the ESA site
 
 arguments:
   -h, --help                  show this help message and exit
@@ -2404,7 +2404,7 @@ arguments:
 ```text
 usage: luma cdn status [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
 
-List CDN domains with CNAME, certificate expiry and last refresh
+List ESA records with CNAME and last refresh
 
 arguments:
   -h, --help                  show this help message and exit
@@ -2426,11 +2426,12 @@ arguments:
 ```text
 usage: luma cdn purge [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] domain [paths ...]
 
-Refresh cached URLs now
+Refresh the cache now
 
 arguments:
-  domain                      CDN domain, for example app.example.com
-  paths                       URL paths (default /); a trailing /* refreshes a directory
+  domain                      Domain, for example app.example.com
+  paths                       URL paths; a trailing /* refreshes a directory (default: the whole
+                              hostname)
 
 arguments:
   -h, --help                  show this help message and exit
@@ -2452,10 +2453,10 @@ arguments:
 ```text
 usage: luma cdn remove [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] domain
 
-Delete a CDN domain that DNS no longer points at
+Delete an ESA record that DNS no longer points at
 
 arguments:
-  domain                      CDN domain, for example app.example.com
+  domain                      Domain, for example app.example.com
 
 arguments:
   -h, --help                  show this help message and exit

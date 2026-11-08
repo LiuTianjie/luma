@@ -1,22 +1,21 @@
 # CDN
 
-Luma can put a service behind Alibaba Cloud CDN. One line in the manifest enables it; Luma then manages the CDN domain for the life of the service.
+Luma can put a service behind Alibaba Cloud ESA (Edge Security Acceleration). One line in the manifest enables it; Luma then manages the ESA record for the life of the service. Services without `cdn` are unchanged and never touch Alibaba Cloud.
 
 ```text
-User -> Alibaba Cloud CDN node -> (cache miss) -> CN Traefik -> service
+User -> Alibaba Cloud ESA node -> (cache miss) -> CN Traefik -> service
 ```
 
-## When to use the CDN
+## When to use it
 
 - Public HTTP services on `cn-edge`, `external-edge` or `tailscale-relay`. Other exposures are rejected.
-- Domains with an ICP filing use `scope: global`: one CNAME serves users in mainland China and abroad.
-- Domains without an ICP filing, or overseas-only services, use `scope: overseas`, which needs no filing.
-- Do not turn on the Cloudflare proxy (orange cloud) for these domains. DNS stays in Cloudflare as a DNS-only CNAME.
+- Domains with an ICP filing use `scope: global`: one CNAME serves users in mainland China and abroad. `scope: overseas` needs no filing.
+- DNS stays in Cloudflare. Luma writes a DNS-only CNAME to ESA; do not turn on the Cloudflare proxy for these names.
 
 ## One-time setup
 
-1. Activate the CDN service in the Alibaba Cloud console. Do not add domains there; Luma adds them.
-2. Create a RAM user with programmatic access only and attach this custom policy:
+1. Buy an ESA plan in the Alibaba Cloud console. One plan serves one root domain (one ESA site). Luma never buys plans.
+2. Create a RAM user with programmatic access only and attach this policy, which grants ESA and nothing else:
 
 ```json
 {
@@ -24,25 +23,7 @@ User -> Alibaba Cloud CDN node -> (cache miss) -> CN Traefik -> service
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": [
-        "cdn:AddCdnDomain",
-        "cdn:DeleteCdnDomain",
-        "cdn:DescribeUserDomains",
-        "cdn:DescribeCdnDomainConfigs",
-        "cdn:BatchSetCdnDomainConfig",
-        "cdn:SetCdnDomainSSLCertificate",
-        "cdn:RefreshObjectCaches",
-        "cdn:DescribeVerifyContent",
-        "cdn:VerifyDomainOwner"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "yundun-cert:UploadUserCertificate",
-        "yundun-cert:ListUserCertificateOrder"
-      ],
+      "Action": "esa:*",
       "Resource": "*"
     }
   ]
@@ -52,16 +33,16 @@ User -> Alibaba Cloud CDN node -> (cache miss) -> CN Traefik -> service
 3. Store the RAM user's AccessKey in Luma Control and check the setup:
 
 ```bash
-luma secret set ALIBABA_CLOUD_ACCESS_KEY_ID
-luma secret set ALIBABA_CLOUD_ACCESS_KEY_SECRET
+luma secret set LUMA_ALIBABA_CLOUD_ACCESS_KEY_ID
+luma secret set LUMA_ALIBABA_CLOUD_ACCESS_KEY_SECRET
 luma cdn check
 ```
 
-`luma cdn check` verifies the key, the CDN and certificate APIs, the Traefik certificate store and the Cloudflare zone. The certificate store check needs a manager running this Luma version or later (`luma update`), because Control reads the Traefik certificate volume read-only.
+The variable names carry a `LUMA_` prefix so they never clash with Alibaba Cloud keys your applications use. `luma cdn check` verifies the key, the ESA plan, the Cloudflare zone and the ESA site.
 
-## Enable the CDN for a service
+## Enable it for a service
 
-Add `cdn: aliyun` and deploy as usual:
+Add `cdn: esa` and deploy as usual:
 
 ```yaml
 name: web
@@ -70,35 +51,33 @@ region: cn
 exposure: cn-edge
 domain: www.example.com
 port: 3000
-cdn: aliyun
+cdn: esa
 ```
 
 All fields:
 
 ```yaml
 cdn:
-  provider: aliyun              # only aliyun today
+  provider: esa                 # only esa today
   scope: global                 # global (default) | domestic | overseas
-  purge: ["/", "/sitemap.xml"]  # refreshed after each deploy; default ["/"]; "/blog/*" refreshes a directory
+  purge: ["/", "/sitemap.xml"]  # omit: refresh the whole hostname; []: no refresh; "/blog/*": a directory
 ```
-
-The first deploy with `cdn` takes 3 to 10 extra minutes while Alibaba Cloud brings the domain online. Later deploys add a few seconds.
 
 ## What a deploy does
 
-1. **Prepare CDN**, before DNS changes. Luma creates the accelerated domain with the edge as HTTPS origin. On the first domain of a root zone it proves ownership by writing the `verification` TXT record in Cloudflare. It installs the Traefik wildcard certificate (uploaded once per renewal and shared by every domain) and applies the baseline settings below. A failure here stops the deploy before anything has changed.
-2. **Sync DNS** points the domain at the CDN CNAME. Switching between A and CNAME replaces the record in place.
-3. The Nomad rollout and the public route probe run as before.
-4. **Purge CDN** refreshes the `purge` paths after the new version is live. A refresh failure is a warning, never a failed deploy; run `luma cdn purge` to retry. A newly created domain is not refreshed because it has no cache yet.
+1. **Prepare CDN**, before DNS changes. The first time for a Luma zone, Luma creates the ESA site for the zone with CNAME access, proves ownership with the `_esaauth` TXT record in Cloudflare and applies the site defaults below. For each service it creates a proxied ESA record pointing at the edge, or updates it when the edge address changed. A failure here stops the deploy before anything has changed.
+2. **Sync DNS** points the domain at the ESA CNAME. Switching between A and CNAME replaces the record in place.
+3. **ESA certificate** requests ESA's free certificate and waits for it, up to 10 minutes. ESA validates the certificate over HTTP, so this can only happen after DNS points at ESA; a domain switching for the first time may have no HTTPS certificate for a few minutes. ESA renews it automatically.
+4. The Nomad rollout and the public route probe run as before.
+5. **Purge CDN** refreshes the cache after the new version is live: the whole hostname by default, or the `purge` paths. A refresh failure is a warning, never a failed deploy; run `luma cdn purge` to retry. A newly created record is not refreshed because it has no cache yet.
 
-Baseline settings Luma applies to every CDN domain:
+Site defaults Luma applies once per ESA site. An existing global setting of the same kind is left as it is.
 
-- HTTPS to the origin, with SNI and the original `Host` header.
-- HTTP requests are redirected to HTTPS.
-- The application's cache headers decide caching. Responses without cache headers are not cached.
-- Alibaba Cloud does not cache 404 and 5xx responses by default, so short errors during a rollout are not kept.
+- Back-to-origin protocol follows the client: HTTPS requests fetch over HTTPS, and plain HTTP gets Traefik's redirect to HTTPS.
+- Gzip and Brotli compression.
+- The `ali-real-client-ip` request header with the real client address. Traefik access logs keep it.
 
-Control checks the Traefik certificate every hour and installs a renewed one on every CDN domain.
+ESA defaults cover the rest: HTTP/2 and HTTP/3, TLS 1.0 off, basic DDoS protection and the managed WAF rules.
 
 ## Cache headers
 
@@ -110,28 +89,27 @@ HTML pages                              Cache-Control: public, max-age=0, s-maxa
 API, signed-in pages                    Cache-Control: private, no-store
 ```
 
-Files with a content hash in the name never need a refresh: a new version has a new URL. Refresh only fixed URLs such as `/` or `/sitemap.xml`. A directory refresh (`/*`) counts against a quota of 100 per account per day, shared by all applications; URL refreshes allow 10,000 per day.
+Files with a content hash in the name never need a refresh: a new version has a new URL. Give every personalized or signed-in response `Cache-Control: private, no-store`.
 
-Give every personalized or signed-in response `Cache-Control: private, no-store`. Do not rely on the absence of headers: an `ETag` or `Last-Modified` header alone lets the CDN cache a response briefly.
+The default refresh after a deploy covers the whole hostname and only fetches changed resources again. ESA limits hostname and directory refreshes to about 100 per day per plan; URL refreshes allow far more. Applications that deploy many times a day should list fixed URLs in `purge`.
 
-Check a response through the CDN:
+Check a response through ESA:
 
 ```bash
-curl -sI https://www.example.com/ | grep -iE 'cache-control|x-cache|via'
+curl -sI https://www.example.com/ | grep -iE 'cache-control|x-site-cache-status|via'
 ```
 
 ## Operations
 
 ```bash
 luma cdn status
+luma cdn purge www.example.com
 luma cdn purge www.example.com / /pricing
 luma cdn remove www.example.com
 ```
 
-- `status` lists each domain with its CNAME, certificate expiry, last refresh and last error.
-- `purge` refreshes paths now; without paths it refreshes `/`.
-- `remove` deletes a CDN domain once DNS no longer points at it.
+- `status` lists each domain with its site, CNAME, last refresh and last error.
+- `purge` refreshes the whole hostname, or the given paths.
+- `remove` deletes an ESA record once DNS no longer points at it.
 
-To turn the CDN off, remove `cdn` from the manifest and deploy. DNS points at the edge again and the Alibaba Cloud domain stays, so clients with a cached DNS answer keep working; delete it later with `luma cdn remove`. Removing the application deletes its CDN domain.
-
-Traefik access logs keep the `Ali-Cdn-Real-Ip` header, which holds the real client address. Applications that need the client IP should read that header.
+To turn ESA off for a service, remove `cdn` from the manifest and deploy. DNS points at the edge again and the ESA record stays, so clients with a cached DNS answer keep working; delete it later with `luma cdn remove`. Removing the application deletes its ESA record. The ESA site stays.

@@ -37,7 +37,7 @@
 | `dns.type` | no | string | Optional DNS record type override. |
 | `dns.proxied` | no | boolean | Optional Cloudflare proxied flag. |
 | `dns.servers` | no | IP string or list | Runtime container DNS servers; IPv4/IPv6. Omit to inherit the existing resolver defaults. |
-| `cdn` | no | string or mapping | Alibaba Cloud CDN: `cdn: aliyun`, or `provider`, `scope` (`global`/`domestic`/`overseas`), `purge` (paths refreshed after deploy, default `["/"]`, trailing `/*` = directory). Only `cn-edge`, `external-edge`, `tailscale-relay`. Needs `ALIBABA_CLOUD_ACCESS_KEY_ID`/`_SECRET` Control secrets. App must send correct `Cache-Control`. |
+| `cdn` | no | string or mapping | Alibaba Cloud ESA: `cdn: esa`, or `provider`, `scope` (`global`/`domestic`/`overseas`), `purge` (paths refreshed after deploy; omitted = whole hostname, `[]` = none, trailing `/*` = directory). Only `cn-edge`, `external-edge`, `tailscale-relay`. Needs `LUMA_ALIBABA_CLOUD_ACCESS_KEY_ID`/`_SECRET` Control secrets and an ESA plan. App must send correct `Cache-Control`. |
 | `stackPath` | no | string | Override generated stack path. Rare. |
 | `routePath` | no | string | Override generated tailscale route path. Rare. |
 

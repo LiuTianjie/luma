@@ -54,7 +54,6 @@ class OperationsWorker:
         self.thread: threading.Thread | None = None
         self.delivery_thread: threading.Thread | None = None
         self.last_inventory_at = 0.0
-        self.last_cdn_cert_sync_at = 0.0
 
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
@@ -87,26 +86,6 @@ class OperationsWorker:
             from .storage_governance import storage_inventory
             storage_inventory()
             self.last_inventory_at = time.monotonic()
-        from .cdn import CERT_SYNC_INTERVAL_SECONDS
-        if time.monotonic() - self.last_cdn_cert_sync_at >= CERT_SYNC_INTERVAL_SECONDS:
-            self.last_cdn_cert_sync_at = time.monotonic()
-            self.sync_cdn_certificates()
-
-    def sync_cdn_certificates(self) -> None:
-        # Traefik renews certificates 30 days before expiry; push the renewed
-        # certificate to every CDN domain within the hour.
-        import os
-        from pathlib import Path
-
-        from ..config import load_config
-        from .cdn import cdn_records, sync_cdn_certificates
-
-        state = load_auth_state()
-        if not cdn_records(state):
-            return
-        config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
-        for message in sync_cdn_certificates(config, state=state):
-            LOG.warning("CDN certificate sync: %s", message)
 
     def run_deliveries(self) -> None:
         from . import alerting

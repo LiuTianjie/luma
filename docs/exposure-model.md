@@ -9,7 +9,7 @@ Luma separates the control plane from the data plane.
 - Tailscale: management network and explicit relay path for `home` or enabled custom-region services.
 - Luma Control: deployment control plane, driving the Nomad HTTP API.
 - Nomad / Docker: runtime execution layer.
-- Alibaba Cloud CDN: optional cache in front of Traefik for public HTTP services; see [CDN](cdn.md).
+- Alibaba Cloud ESA: optional CDN in front of Traefik for public HTTP services; see [CDN](cdn.md).
 
 Tailscale is not the default business data plane. It only carries data traffic when a service explicitly chooses `exposure: tailscale-relay`.
 

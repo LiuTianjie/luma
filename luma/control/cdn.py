@@ -1,9 +1,9 @@
-"""Control-side CDN lifecycle: state records, deploy steps and certificate sync.
+"""Control-side ESA lifecycle: state records and deployment steps.
 
-``luma.cdn`` talks to Alibaba Cloud; this module binds it to Control state
-(``cdnDomains`` in control_config), the Cloudflare zone and the Traefik
-certificate store.  Provider errors surface as ``LumaError`` so deployment
-steps can decide whether they are fatal (prepare) or advisory (purge).
+``luma.cdn`` talks to Alibaba Cloud ESA; this module binds it to Control state
+(``cdnDomains`` and ``cdnSites`` in control_config) and the Cloudflare zone.
+Provider errors surface as ``LumaError`` so deployment steps decide whether
+they are fatal (prepare, certificate) or advisory (purge).
 """
 
 from __future__ import annotations
@@ -13,21 +13,22 @@ from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from ..cdn import (
     AliyunClient,
-    aliyun_credentials,
-    delete_aliyun_domain,
-    load_edge_certificate,
-    prepare_aliyun_domain,
-    purge_aliyun,
-    sync_aliyun_certificate,
+    configure_site,
+    delete_esa_record,
+    ensure_certificate,
+    ensure_record,
+    ensure_site,
+    esa_credentials,
+    find_site,
+    purge_esa,
 )
 from ..cloudflare import dns_records, upsert_txt_record
 from ..errors import LumaError
 from ..service import ServiceSpec
-from .state import load_auth_state, mutate_state
+from .state import mutate_state
 
 CDN_STATE_KEY = "cdnDomains"
-CERT_SYNC_INTERVAL_SECONDS = 3600
-CERT_EXPIRY_WARNING_SECONDS = 14 * 86400
+SITE_STATE_KEY = "cdnSites"
 
 
 def cdn_records(state: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -37,29 +38,58 @@ def cdn_records(state: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
     return {str(domain): dict(record) for domain, record in records.items() if isinstance(record, Mapping)}
 
 
-def _mutable_records(state: Dict[str, Any]) -> Dict[str, Any]:
-    records = state.get(CDN_STATE_KEY)
-    if not isinstance(records, dict):
-        records = {}
-        state[CDN_STATE_KEY] = records
-    return records
+def _site_records(state: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
+    sites = state.get(SITE_STATE_KEY)
+    if not isinstance(sites, Mapping):
+        return {}
+    return {str(name): dict(record) for name, record in sites.items() if isinstance(record, Mapping)}
 
 
-def _update_record(domain: str, changes: Mapping[str, Any]) -> Dict[str, Any]:
+def _update(key: str, name: str, changes: Mapping[str, Any]) -> Dict[str, Any]:
     def mutate(state: Dict[str, Any]) -> Dict[str, Any]:
-        records = _mutable_records(state)
-        record = dict(records.get(domain) or {})
+        records = state.get(key)
+        if not isinstance(records, dict):
+            records = {}
+            state[key] = records
+        record = dict(records.get(name) or {})
         record.update(changes)
         record["updatedAt"] = int(time.time())
-        records[domain] = record
+        records[name] = record
         return record
 
     return mutate_state(mutate)
 
 
+def _forget(name: str) -> None:
+    def mutate(state: Dict[str, Any]) -> None:
+        records = state.get(CDN_STATE_KEY)
+        if isinstance(records, dict):
+            records.pop(name, None)
+
+    mutate_state(mutate)
+
+
 def _client(state: Mapping[str, Any]) -> AliyunClient:
-    key_id, key_secret = aliyun_credentials(state)
+    key_id, key_secret = esa_credentials(state)
     return AliyunClient(key_id, key_secret)
+
+
+def _secrets(state: Mapping[str, Any]) -> Mapping[str, Any]:
+    return state.get("secrets") if isinstance(state.get("secrets"), Mapping) else {}
+
+
+def _zone(config: Any) -> str:
+    zone = str(config.dns.get("zone") or "").strip().rstrip(".").lower()
+    if config.dns.get("provider") != "cloudflare" or not zone:
+        raise LumaError("ESA needs the Luma Cloudflare zone (luma manager cloudflare --zone)")
+    return zone
+
+
+def _site_name(config: Any, domain: str) -> str:
+    zone = _zone(config)
+    if not (domain.lower() == zone or domain.lower().endswith("." + zone)):
+        raise LumaError(f"{domain} is outside the Luma zone {zone}; ESA sites are created per Luma zone")
+    return zone
 
 
 def _origin_for(config: Any, service: ServiceSpec) -> str:
@@ -67,21 +97,13 @@ def _origin_for(config: Any, service: ServiceSpec) -> str:
         exposure=service.exposure, region=service.region
     )
     if not target:
-        raise LumaError("missing CDN origin: configure an edge node publicIp or set service dns.target")
+        raise LumaError("missing ESA origin: configure an edge node publicIp or set service dns.target")
     return str(target)
 
 
-def _txt_publisher(config: Any, state: Mapping[str, Any], domain: str) -> Callable[[str, str], str]:
-    zone = str(config.dns.get("zone") or "").strip().rstrip(".").lower()
-    if not zone or not (domain.lower() == zone or domain.lower().endswith("." + zone)):
-        raise LumaError(
-            f"Alibaba Cloud ownership verification for {domain} needs its root domain in the Luma Cloudflare zone; "
-            "add the TXT record shown in the CDN console manually and redeploy"
-        )
-    secrets = state.get("secrets") if isinstance(state.get("secrets"), Mapping) else {}
-
-    def publish(host: str, content: str) -> str:
-        return upsert_txt_record(config, f"{host}.{zone}", content, secrets=secrets)
+def _txt_publisher(config: Any, state: Mapping[str, Any]) -> Callable[[str, str], str]:
+    def publish(name: str, content: str) -> str:
+        return upsert_txt_record(config, name, content, secrets=_secrets(state))
 
     return publish
 
@@ -93,138 +115,87 @@ def dns_override(record: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Any]
 
 
 def service_dns_override(state: Mapping[str, Any], service: ServiceSpec) -> Optional[Dict[str, Any]]:
-    """DNS target for a service whose CDN was prepared by an earlier deploy."""
+    """DNS target for a service whose ESA record was prepared by an earlier deploy."""
     if service.cdn is None or not service.domain:
         return None
     override = dns_override(cdn_records(state).get(service.domain))
     if override is None:
-        raise LumaError(f"CDN for {service.domain} has not been prepared yet; redeploy the service")
+        raise LumaError(f"ESA for {service.domain} has not been prepared yet; redeploy the service")
     return override
 
 
 def prepare_service_cdn(config: Any, state: Mapping[str, Any], service: ServiceSpec) -> Dict[str, Any]:
-    """Create or reconcile the service's CDN domain. Fatal on failure."""
+    """Make sure the site and the proxied record exist. Runs before DNS changes."""
     if service.cdn is None or not service.domain:
         return {"message": "CDN not enabled", "override": None, "created": False}
     domain = service.domain
     known = cdn_records(state).get(domain) or {}
     owner = str(known.get("service") or "")
     if owner and owner != service.name:
-        raise LumaError(f"CDN domain {domain} is already managed for {owner}")
-    certificate = load_edge_certificate(domain, resolver=config.cert_resolver)
-    record = prepare_aliyun_domain(
-        _client(state),
-        domain=domain,
-        scope=service.cdn.scope,
-        origin=_origin_for(config, service),
-        certificate=certificate,
-        known=known,
-        publish_txt=_txt_publisher(config, state, domain),
+        raise LumaError(f"ESA record {domain} is already managed for {owner}")
+    client = _client(state)
+    site_name = _site_name(config, domain)
+    site, notes = ensure_site(
+        client, site_name=site_name, scope=service.cdn.scope, publish_txt=_txt_publisher(config, state)
     )
-    notes = record.pop("notes", [])
-    created = bool(record.pop("created", False))
-    _update_record(domain, {**record, "service": service.name, "lastError": ""})
-    summary = "; ".join(notes) if notes else "unchanged"
-    return {
-        "message": f"{domain} -> {record['cname']} ({summary})",
-        "override": dns_override(record),
-        "created": created,
+    site_id = site["SiteId"]
+    if not _site_records(state).get(site_name, {}).get("configured"):
+        notes.append("site defaults: " + ", ".join(configure_site(client, site_id)))
+        _update(SITE_STATE_KEY, site_name, {"siteId": site_id, "configured": True})
+    record, record_notes = ensure_record(client, site_id=site_id, domain=domain, origin=_origin_for(config, service))
+    notes.extend(record_notes)
+    saved = {
+        "provider": "esa",
+        "service": service.name,
+        "site": site_name,
+        "siteId": site_id,
+        "recordId": record.get("RecordId"),
+        "cname": str(record["RecordCname"]),
+        "scope": str(site.get("Coverage") or service.cdn.scope),
+        "lastError": "",
     }
+    _update(CDN_STATE_KEY, domain, saved)
+    return {
+        "message": f"{domain} -> {saved['cname']} ({'; '.join(notes) or 'unchanged'})",
+        "override": dns_override(saved),
+        "created": not known,
+        "siteId": site_id,
+    }
+
+
+def issue_service_certificate(state: Mapping[str, Any], service: ServiceSpec, prepared: Mapping[str, Any]) -> str:
+    """Wait for ESA's free certificate. ESA validates over HTTP, so DNS must already point at it."""
+    if service.cdn is None or not service.domain:
+        return "CDN not enabled"
+    site_id = prepared.get("siteId") or (cdn_records(state).get(service.domain) or {}).get("siteId")
+    return ensure_certificate(_client(state), site_id=site_id, domain=service.domain)
+
+
+def _purge(state: Mapping[str, Any], domain: str, paths: Optional[tuple]) -> Dict[str, Any]:
+    record = cdn_records(state).get(domain) or {}
+    task_ids = purge_esa(_client(state), site_id=record.get("siteId"), domain=domain, paths=paths)
+    described = "whole hostname" if paths is None else ", ".join(paths)
+    _update(CDN_STATE_KEY, domain, {"lastPurge": {"at": int(time.time()), "paths": described, "taskIds": task_ids}})
+    return {"domain": domain, "paths": described, "taskIds": task_ids}
 
 
 def purge_service_cdn(state: Mapping[str, Any], service: ServiceSpec) -> str:
     if service.cdn is None or not service.domain:
         return "CDN purge skipped: CDN not enabled"
-    task_ids = purge_aliyun(_client(state), domain=service.domain, paths=service.cdn.purge)
-    _update_record(
-        service.domain,
-        {"lastPurge": {"at": int(time.time()), "paths": list(service.cdn.purge), "taskIds": task_ids}},
-    )
-    return f"refresh submitted for {', '.join(service.cdn.purge)} (task {', '.join(task_ids) or 'n/a'})"
+    if service.cdn.purge == ():
+        return "CDN purge skipped: purge is empty"
+    result = _purge(state, service.domain, service.cdn.purge)
+    return f"refresh submitted for {result['paths']} (task {', '.join(result['taskIds']) or 'n/a'})"
 
 
 def purge_domain(state: Mapping[str, Any], domain: str, paths: List[str]) -> Dict[str, Any]:
     from ..cdn import parse_cdn_block
 
     if domain not in cdn_records(state):
-        raise LumaError(f"no Luma-managed CDN domain: {domain}")
-    spec = parse_cdn_block({"provider": "aliyun", "purge": paths or ["/"]}, label="purge")
+        raise LumaError(f"no Luma-managed ESA domain: {domain}")
+    spec = parse_cdn_block({"provider": "esa", "purge": paths or None}, label="purge")
     assert spec is not None
-    task_ids = purge_aliyun(_client(state), domain=domain, paths=spec.purge)
-    _update_record(domain, {"lastPurge": {"at": int(time.time()), "paths": list(spec.purge), "taskIds": task_ids}})
-    return {"domain": domain, "paths": list(spec.purge), "taskIds": task_ids}
-
-
-def remove_unused_domain(config: Any, state: Mapping[str, Any], domain: str) -> Dict[str, Any]:
-    """Delete a CDN domain only once DNS no longer points at it."""
-    record = cdn_records(state).get(domain)
-    if record is None:
-        raise LumaError(f"no Luma-managed CDN domain: {domain}")
-    cname = str(record.get("cname") or "").rstrip(".").lower()
-    secrets = state.get("secrets") if isinstance(state.get("secrets"), Mapping) else {}
-    for item in dns_records(config, domain, secrets=secrets):
-        if str(item.get("type") or "").upper() == "CNAME" and str(item.get("content") or "").rstrip(".").lower() == cname:
-            raise LumaError(
-                f"DNS for {domain} still points at the CDN ({cname}); remove cdn from the manifest and redeploy first"
-            )
-    return {"domain": domain, "message": remove_cdn_domain(state, domain)}
-
-
-def check_setup(config: Any, state: Mapping[str, Any]) -> List[Dict[str, Any]]:
-    """Read-only checks for each prerequisite, for the guided setup."""
-    from ..cdn import DEFAULT_TRAEFIK_ACME_FILE, TRAEFIK_ACME_FILE_ENV
-    import json
-    import os
-    from pathlib import Path
-
-    checks: List[Dict[str, Any]] = []
-
-    def run(name: str, action: Callable[[], str]) -> None:
-        try:
-            checks.append({"name": name, "ok": True, "detail": action()})
-        except LumaError as exc:
-            checks.append({"name": name, "ok": False, "detail": str(exc)})
-
-    def credentials() -> str:
-        key_id, _ = aliyun_credentials(state)
-        return f"AccessKey {key_id[:6]}… configured"
-
-    def cdn_api() -> str:
-        result = _client(state).cdn("DescribeUserDomains", PageSize=1)
-        return f"CDN API reachable; {int(result.get('TotalCount') or 0)} domain(s) in the account"
-
-    def cas_api() -> str:
-        _client(state).cas("ListUserCertificateOrder", OrderType="UPLOAD", ShowSize=1)
-        return "Certificate (CAS) API reachable"
-
-    def acme_store() -> str:
-        path = Path(os.environ.get(TRAEFIK_ACME_FILE_ENV) or DEFAULT_TRAEFIK_ACME_FILE)
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError as exc:
-            raise LumaError(f"{path} not found; update the manager (luma update) so Control mounts the Traefik certificate volume") from exc
-        except (OSError, ValueError) as exc:
-            raise LumaError(f"cannot read {path}: {exc}") from exc
-        resolver = data.get(config.cert_resolver) if isinstance(data, dict) else None
-        certificates = resolver.get("Certificates") if isinstance(resolver, dict) else None
-        if not certificates:
-            raise LumaError(f"no certificates for resolver {config.cert_resolver} in {path}")
-        names = sorted({str((item.get("domain") or {}).get("main") or "") for item in certificates if isinstance(item, dict)} - {""})
-        return f"{len(certificates)} certificate(s): {', '.join(names[:5])}"
-
-    def zone() -> str:
-        value = str(config.dns.get("zone") or "").strip()
-        if config.dns.get("provider") != "cloudflare" or not value:
-            raise LumaError("Cloudflare DNS zone is not configured (luma manager cloudflare --zone)")
-        return f"Cloudflare zone {value}"
-
-    run("credentials", credentials)
-    if checks[-1]["ok"]:
-        run("cdn-api", cdn_api)
-        run("cas-api", cas_api)
-    run("certificate-store", acme_store)
-    run("dns-zone", zone)
-    return checks
+    return _purge(state, domain, spec.purge)
 
 
 def owned_domains(state: Mapping[str, Any], service_name: str) -> List[str]:
@@ -232,41 +203,47 @@ def owned_domains(state: Mapping[str, Any], service_name: str) -> List[str]:
 
 
 def remove_cdn_domain(state: Mapping[str, Any], domain: str) -> str:
-    deleted = delete_aliyun_domain(_client(state), domain=domain)
+    record = cdn_records(state).get(domain) or {}
+    deleted = delete_esa_record(_client(state), site_id=record.get("siteId"), domain=domain)
+    _forget(domain)
+    return f"ESA record {domain} deleted" if deleted else f"ESA record {domain} not found; Luma record removed"
 
-    def mutate(current: Dict[str, Any]) -> None:
-        _mutable_records(current).pop(domain, None)
 
-    mutate_state(mutate)
-    return f"CDN domain {domain} deleted" if deleted else f"CDN domain {domain} not found in Alibaba Cloud; record removed"
+def remove_unused_domain(config: Any, state: Mapping[str, Any], domain: str) -> Dict[str, Any]:
+    """Delete an ESA record only once DNS no longer points at it."""
+    record = cdn_records(state).get(domain)
+    if record is None:
+        raise LumaError(f"no Luma-managed ESA domain: {domain}")
+    cname = str(record.get("cname") or "").rstrip(".").lower()
+    for item in dns_records(config, domain, secrets=_secrets(state)):
+        if str(item.get("type") or "").upper() == "CNAME" and str(item.get("content") or "").rstrip(".").lower() == cname:
+            raise LumaError(f"DNS for {domain} still points at ESA ({cname}); remove cdn from the manifest and redeploy first")
+    return {"domain": domain, "message": remove_cdn_domain(state, domain)}
 
 
 def disabled_cdn_notice(state: Mapping[str, Any], service: ServiceSpec) -> Optional[str]:
-    """A CDN domain kept after ``cdn`` was removed from the manifest."""
+    """An ESA record kept after ``cdn`` was removed from the manifest."""
     if service.cdn is not None or not service.domain:
         return None
     record = cdn_records(state).get(service.domain)
     if not record or record.get("service") != service.name:
         return None
     return (
-        f"CDN disabled for {service.domain}; DNS points at the edge again. The Alibaba Cloud domain is kept so "
-        f"cached DNS answers keep working; delete it later with: luma cdn remove {service.domain}"
+        f"CDN disabled for {service.domain}; DNS points at the edge again. The ESA record is kept so cached "
+        f"DNS answers keep working; delete it later with: luma cdn remove {service.domain}"
     )
 
 
-def cdn_status(state: Mapping[str, Any], *, now: Optional[int] = None) -> List[Dict[str, Any]]:
-    now = int(now or time.time())
+def cdn_status(state: Mapping[str, Any]) -> List[Dict[str, Any]]:
     rows = []
     for domain, record in sorted(cdn_records(state).items()):
-        not_after = int(record.get("certNotAfter") or 0)
         rows.append({
             "domain": domain,
             "service": record.get("service") or "",
-            "provider": record.get("provider") or "aliyun",
+            "provider": record.get("provider") or "esa",
+            "site": record.get("site") or "",
             "scope": record.get("scope") or "",
             "cname": record.get("cname") or "",
-            "certNotAfter": not_after,
-            "certExpiresSoon": bool(not_after and not_after - now < CERT_EXPIRY_WARNING_SECONDS),
             "lastPurge": record.get("lastPurge") or {},
             "lastError": record.get("lastError") or "",
             "updatedAt": record.get("updatedAt") or 0,
@@ -274,30 +251,46 @@ def cdn_status(state: Mapping[str, Any], *, now: Optional[int] = None) -> List[D
     return rows
 
 
-def sync_cdn_certificates(config: Any, *, state: Optional[Mapping[str, Any]] = None) -> List[str]:
-    """Push renewed Traefik certificates to every CDN domain; never raises LumaError."""
-    state = state if state is not None else load_auth_state()
-    records = cdn_records(state)
-    if not records:
-        return []
-    messages: List[str] = []
-    try:
-        client = _client(state)
-    except LumaError as exc:
-        return [f"CDN certificate sync skipped: {exc}"]
-    for domain, record in records.items():
+def check_setup(config: Any, state: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """Read-only checks for each prerequisite, for the guided setup."""
+    checks: List[Dict[str, Any]] = []
+
+    def run(name: str, action: Callable[[], str]) -> bool:
         try:
-            certificate = load_edge_certificate(domain, resolver=config.cert_resolver)
-            cert_id, changed = sync_aliyun_certificate(client, domain=domain, certificate=certificate, known=record)
-            if changed:
-                _update_record(domain, {
-                    "certId": cert_id,
-                    "certSha256": certificate.sha256,
-                    "certNotAfter": certificate.not_after,
-                    "lastError": "",
-                })
-                messages.append(f"{domain}: certificate {certificate.sha256[:12]} installed")
+            checks.append({"name": name, "ok": True, "detail": action()})
+            return True
         except LumaError as exc:
-            _update_record(domain, {"lastError": f"certificate sync: {exc}"})
-            messages.append(f"{domain}: {exc}")
-    return messages
+            checks.append({"name": name, "ok": False, "detail": str(exc)})
+            return False
+
+    def credentials() -> str:
+        key_id, _ = esa_credentials(state)
+        return f"AccessKey {key_id[:6]}… configured"
+
+    def zone() -> str:
+        return f"Cloudflare zone {_zone(config)}"
+
+    def plan() -> str:
+        result = _client(state).esa("ListUserRatePlanInstances", Status="online", PageSize=100)
+        plans = [item for item in result.get("InstanceInfo") or [] if isinstance(item, dict)]
+        if not plans:
+            raise LumaError("no online ESA plan; buy one in the ESA console")
+        described = []
+        for item in plans:
+            sites = ", ".join(str(site.get("SiteName")) for site in item.get("Sites") or [] if isinstance(site, dict)) or "no site yet"
+            described.append(f"{item.get('PlanName')} {item.get('InstanceId')} ({item.get('Coverages')}; {sites})")
+        return "; ".join(described)
+
+    def site() -> str:
+        name = _zone(config)
+        current = find_site(_client(state), name)
+        if current is None:
+            return f"site {name} not created yet; the first deploy with cdn creates and verifies it"
+        return f"site {name} is {current.get('Status')} ({current.get('AccessType')}, {current.get('Coverage')})"
+
+    has_credentials = run("credentials", credentials)
+    if has_credentials:
+        run("esa-plan", plan)
+    if run("dns-zone", zone) and has_credentials:
+        run("esa-site", site)
+    return checks
