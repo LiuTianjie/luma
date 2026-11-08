@@ -161,7 +161,7 @@ def prepare_service_cdn(config: Any, state: Mapping[str, Any], service: ServiceS
     # certificate here, so DNS only moves to ESA once HTTPS already works.
     dcv_name, dcv_target = dcv_delegation_target(client, site_id=site_id, domain=domain)
     upsert_record(config, dcv_name, "CNAME", dcv_target, secrets=_secrets(state))
-    notes.append(ensure_certificate(client, site_id=site_id, domain=domain))
+    notes.append(ensure_certificate(client, site_id=site_id, domain=domain, cname=str(record["RecordCname"])))
     saved = {
         "provider": "esa",
         "service": service.name,

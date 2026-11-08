@@ -94,7 +94,10 @@ class FakeEsa:
                 self.cert_polls += 1
             ready = self.cert_applied and self.cert_polls >= self.cert_after_polls
             status = "configured" if ready else ("applying" if self.cert_applied else "none")
-            return {"Result": [{"RecordName": params["RecordName"], "Status": status, "Certificates": [{"Type": "free"}] if ready else []}]}
+            certs = [{"Type": "free", "Status": "OK", "SAN": params["RecordName"]}] if ready else []
+            # ESA also lists other site certificates (seen: www's for linkshell).
+            certs.append({"Type": "free", "Status": "OK", "SAN": "www.unrelated.example"})
+            return {"Result": [{"RecordName": params["RecordName"], "Status": status, "Count": len(certs), "Certificates": certs}]}
         if action == "ApplyCertificate":
             self.cert_applied = True
             return {"Result": [{"Domain": params["Domains"], "Status": "Applying"}]}
@@ -438,7 +441,7 @@ class CdnDeploymentFlowTests(unittest.TestCase):
         records = MagicMock(side_effect=lambda config, name, record_type, content, secrets=None: name)
         with patch("luma.control.cdn.AliyunClient", return_value=fake), patch(
             "luma.control.cdn.upsert_txt_record", txt
-        ), patch("luma.control.cdn.upsert_record", records), patch("luma.cdn.time.sleep"), patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="ok"), patch(
+        ), patch("luma.control.cdn.upsert_record", records), patch("luma.cdn.edge_serves_certificate", return_value=None), patch("luma.cdn.time.sleep"), patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="ok"), patch(
             "luma.control.server.sync_dns", sync
         ), patch("luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"), patch(
             "luma.control.server.urllib.request.urlopen", side_effect=probe_error
@@ -488,7 +491,7 @@ class CdnDeploymentFlowTests(unittest.TestCase):
         clock = iter(range(0, 10**7, 100))
         with patch("luma.control.cdn.AliyunClient", return_value=fake), patch(
             "luma.control.cdn.upsert_txt_record", return_value="_esaauth.example.com"
-        ), patch("luma.control.cdn.upsert_record", return_value="x"), patch("luma.cdn.time.sleep"), patch(
+        ), patch("luma.control.cdn.upsert_record", return_value="x"), patch("luma.cdn.edge_serves_certificate", return_value="no certificate"), patch("luma.cdn.time.sleep"), patch(
             "luma.cdn.time.monotonic", side_effect=lambda: next(clock)
         ), patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="ok"), patch(
             "luma.control.server.sync_dns", sync
@@ -734,3 +737,21 @@ class ReviewFixTests(unittest.TestCase):
         self.assertEqual(factory.call_args.args[:2], ("203.0.113.10", "www.example.com"))
         self.assertEqual(connection.request.call_args.kwargs["headers"]["Host"], "www.example.com")
         self.assertIn("edge 203.0.113.10", message)
+
+
+class CertificateCoverageTests(unittest.TestCase):
+    def test_another_domains_certificate_does_not_count(self):
+        from luma.cdn import _san_covers, certificate_status
+
+        client = FakeEsa()
+        self.assertEqual(certificate_status(client, site_id=77, domain="app.example.com")[1], 0)
+        self.assertTrue(_san_covers("www.example.com,*.example.com", "app.example.com"))
+        self.assertFalse(_san_covers("*.example.com", "a.b.example.com"))
+        self.assertFalse(_san_covers("www.example.com", "linkshell.example.com"))
+
+    def test_dns_waits_for_a_successful_edge_handshake(self):
+        client = FakeEsa()
+        handshakes = iter(["certificate verify failed", "certificate verify failed", None])
+        with patch("luma.cdn.edge_serves_certificate", side_effect=lambda cname, domain: next(handshakes)):
+            message = ensure_certificate(client, site_id=77, domain="app.example.com", cname="app.example.com.cnamezone.com", sleep=lambda _s: None)
+        self.assertEqual(message, "certificate issued (Let's Encrypt)")

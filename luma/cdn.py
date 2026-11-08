@@ -20,6 +20,7 @@ import json
 import os
 import secrets as secrets_module
 import socket
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -630,18 +631,48 @@ def dcv_delegation_target(client: AliyunClient, *, site_id: Any, domain: str) ->
     return f"_acme-challenge.{domain}", f"{domain}.{delegation}"
 
 
+def _san_covers(san: str, domain: str) -> bool:
+    domain = domain.lower().rstrip(".")
+    for name in (part.strip().lower().rstrip(".") for part in str(san or "").split(",")):
+        if name == domain:
+            return True
+        if name.startswith("*.") and domain.endswith(name[1:]) and "." not in domain[: -len(name[1:])]:
+            return True
+    return False
+
+
 def certificate_status(client: AliyunClient, *, site_id: Any, domain: str) -> Tuple[str, int]:
-    """Return ``(status, valid certificate count)`` for the record."""
-    # Without Detail the Certificates list stays empty; Count is always set.
+    """Return ``(status, certificates covering domain)`` for the record.
+
+    ESA counted www.itool.tech's certificate for linkshell.itool.tech, so a
+    certificate only counts when its SAN covers the domain and it is usable.
+    """
     result = client.esa("ListCertificatesByRecord", SiteId=site_id, RecordName=domain, ValidOnly=True, Detail=True)
     for item in result.get("Result") or []:
-        if isinstance(item, dict):
-            try:
-                count = int(item.get("Count") or 0)
-            except (TypeError, ValueError):
-                count = 0
-            return str(item.get("Status") or "none"), max(count, len(item.get("Certificates") or []))
+        if not isinstance(item, dict):
+            continue
+        covering = 0
+        for cert in item.get("Certificates") or []:
+            if not isinstance(cert, dict):
+                continue
+            state = str(cert.get("Status") or "").lower()
+            if any(word in state for word in ("apply", "fail", "expire", "revoke")):
+                continue
+            if _san_covers(str(cert.get("SAN") or cert.get("CommonName") or ""), domain):
+                covering += 1
+        return str(item.get("Status") or "none"), covering
     return "none", 0
+
+
+def edge_serves_certificate(cname: str, domain: str, *, timeout: float = 10.0) -> Optional[str]:
+    """Handshake with ESA's edge for ``domain``; return an error, or None when valid."""
+    context = ssl.create_default_context()
+    try:
+        with socket.create_connection((cname, 443), timeout=timeout) as sock:
+            with context.wrap_socket(sock, server_hostname=domain):
+                return None
+    except (OSError, ssl.SSLError) as exc:
+        return str(exc)
 
 
 def ensure_certificate(
@@ -649,12 +680,21 @@ def ensure_certificate(
     *,
     site_id: Any,
     domain: str,
+    cname: str = "",
     sleep: Optional[Callable[[float], None]] = None,
     clock: Optional[Callable[[], float]] = None,
 ) -> str:
-    """Request ESA's free certificate once DNS points at ESA, and wait for it."""
+    """Request ESA's free certificate and wait until the edge really serves it.
+
+    With ``cname`` the edge is also checked with a TLS handshake for
+    ``domain`` before this returns, so DNS never moves to a certificate gap.
+    """
+    def usable() -> bool:
+        _status, covering = certificate_status(client, site_id=site_id, domain=domain)
+        return bool(covering) and (not cname or edge_serves_certificate(cname, domain) is None)
+
     status, count = certificate_status(client, site_id=site_id, domain=domain)
-    if count:
+    if count and (not cname or edge_serves_certificate(cname, domain) is None):
         return "certificate ready"
     if status != "applying":
         try:
@@ -664,15 +704,20 @@ def ensure_certificate(
                 raise
 
     def issued() -> Optional[Dict[str, Any]]:
-        current, valid = certificate_status(client, site_id=site_id, domain=domain)
-        if valid:
+        current, _valid = certificate_status(client, site_id=site_id, domain=domain)
+        if usable():
             return {"ok": True}
         if current == "failed":
             raise LumaError(f"ESA could not issue a certificate for {domain}; check that DNS points at ESA")
         return None
 
     if _wait_until(issued, timeout=CERTIFICATE_TIMEOUT_SECONDS, interval=CERTIFICATE_POLL_SECONDS, sleep=sleep, clock=clock) is None:
-        raise LumaError(f"ESA certificate for {domain} is still being issued after {CERTIFICATE_TIMEOUT_SECONDS // 60} minutes")
+        detail = edge_serves_certificate(cname, domain) if cname else None
+        raise LumaError(
+            f"ESA certificate for {domain} is still being issued after {CERTIFICATE_TIMEOUT_SECONDS // 60} minutes"
+            + (f" (edge handshake: {detail})" if detail else "")
+            + "; DNS was not changed"
+        )
     return "certificate issued (Let's Encrypt)"
 
 
