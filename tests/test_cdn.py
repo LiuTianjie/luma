@@ -84,7 +84,7 @@ class FakeEsa:
             name = params.get("RecordName") or next(n for n, r in self.records.items() if r["RecordId"] == params["RecordId"])
             self.records[name] = {
                 "RecordId": 501, "RecordName": name, "RecordType": "A/AAAA", "Proxied": params["Proxied"],
-                "Data": {"Value": params["Data"]["value"]}, "RecordCname": f"{name}.cnamezone.com",
+                "Data": {"Value": params["Data"]["Value"]}, "RecordCname": f"{name}.cnamezone.com",
             }
             return {"RecordId": 501}
         if action == "DeleteRecord":
@@ -210,7 +210,7 @@ class EsaOperationTests(unittest.TestCase):
         record, notes = ensure_record(client, site_id=77, domain="app.example.com", origin="203.0.113.10")
         self.assertEqual(record["RecordCname"], "app.example.com.cnamezone.com")
         create = next(params for action, params in client.calls if action == "CreateRecord")
-        self.assertEqual((create["Type"], create["Proxied"], create["BizName"], create["Data"]), ("A/AAAA", True, "web", {"value": "203.0.113.10"}))
+        self.assertEqual((create["Type"], create["Proxied"], create["BizName"], create["Data"]), ("A/AAAA", True, "web", {"Value": "203.0.113.10"}))
         _record, notes = ensure_record(client, site_id=77, domain="app.example.com", origin="203.0.113.10")
         self.assertEqual(notes, [])
         _record, notes = ensure_record(client, site_id=77, domain="app.example.com", origin="198.51.100.7")
