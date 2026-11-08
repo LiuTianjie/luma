@@ -11,7 +11,7 @@ from .errors import LumaError
 from .dependencies import validate_requirement_block
 from .io import dump_yaml, load_yaml
 from .regions import parse_region_name, validate_region_exposure_syntax
-from .service import VALID_EXPOSURES, slugify, tcp_entrypoint_name
+from .service import VALID_EXPOSURES, parse_redirect_from, slugify, tcp_entrypoint_name
 
 
 VALID_STORAGE_PROVIDERS = {"nfs"}
@@ -71,6 +71,7 @@ class ComposeServiceSpec:
     tcp: Dict[str, Any] = field(default_factory=dict)
     requirements: Dict[str, Any] = field(default_factory=dict)
     cdn: Optional[CdnSpec] = None
+    redirect_from: List[str] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -560,6 +561,12 @@ def _load_compose_services(raw: Any) -> Dict[str, ComposeServiceSpec]:
             tcp=dict(tcp),
             requirements=requirements,
             cdn=parse_cdn_block(value.get("cdn"), label=f"services.{name}.cdn"),
+            redirect_from=parse_redirect_from(
+                value.get("redirectFrom"),
+                domain=value.get("domain"),
+                exposure=str(value.get("exposure") or "none"),
+                label=f"services.{name}.redirectFrom",
+            ),
             raw=dict(value),
         )
     return result

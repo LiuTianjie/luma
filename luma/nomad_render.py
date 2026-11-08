@@ -622,6 +622,9 @@ def render_compose_job(
             service_block["Tags"].extend(
                 _router_tls_domain_tags(config, service_id, str(override.domain))
             )
+            service_block["Tags"].extend(
+                redirect_router_tags(config, service_id, str(override.domain), override.redirect_from, service=service_id)
+            )
             if health_check is not None:
                 service_block["Checks"] = [health_check]
             _set_edge_service_address(service_block, service_address)
@@ -1070,6 +1073,7 @@ def _service_block(config: LumaConfig, service: ServiceSpec, port_label: str | N
         f"traefik.http.routers.{name}.tls.certresolver={config.cert_resolver}",
     ]
     tags.extend(_router_tls_domain_tags(config, name, str(service.domain)))
+    tags.extend(redirect_router_tags(config, name, str(service.domain), service.redirect_from, service=name))
     tags.extend(str(t) for t in service.labels)
     block: Dict[str, Any] = {
         "Name": name,
@@ -1082,6 +1086,72 @@ def _service_block(config: LumaConfig, service: ServiceSpec, port_label: str | N
     if check is not None:
         block["Checks"] = [check]
     return block
+
+
+def _hosts_rule(hosts: List[str]) -> str:
+    return " || ".join(f"Host(`{host}`)" for host in hosts)
+
+
+def redirect_routes(name: str, primary: str, hosts: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Traefik routers/middleware for ``redirectFrom`` hosts.
+
+    GET and HEAD get a permanent redirect to the primary domain with path and
+    query kept. Every other method (payment callbacks, webhooks, form posts
+    already in flight) reaches the service unchanged, because most senders do
+    not follow redirects for POST.
+    """
+    if not hosts:
+        return {}
+    hosts_rule = _hosts_rule(hosts)
+    return {
+        "routers": {
+            f"{name}-redirect": {
+                "rule": f"({hosts_rule}) && (Method(`GET`) || Method(`HEAD`))",
+                "priority": 200,
+                "middlewares": [f"{name}-to-primary"],
+            },
+            f"{name}-alias": {"rule": hosts_rule, "priority": 100},
+        },
+        "middlewares": {
+            f"{name}-to-primary": {
+                "redirectRegex": {
+                    "regex": "^https?://[^/]+(.*)$",
+                    "replacement": f"https://{primary}$1",
+                    "permanent": True,
+                }
+            }
+        },
+    }
+
+
+def redirect_router_tags(
+    config: LumaConfig, name: str, primary: str, hosts: List[str], *, service: str
+) -> List[str]:
+    routes = redirect_routes(name, primary, hosts)
+    if not routes:
+        return []
+    tags: List[str] = []
+    for router, spec in routes["routers"].items():
+        prefix = f"traefik.http.routers.{router}"
+        tags.extend([
+            f"{prefix}.rule={spec['rule']}",
+            f"{prefix}.priority={spec['priority']}",
+            f"{prefix}.entrypoints={config.entrypoint}",
+            f"{prefix}.tls.certresolver={config.cert_resolver}",
+            f"{prefix}.service={service}",
+        ])
+        if spec.get("middlewares"):
+            tags.append(f"{prefix}.middlewares={','.join(spec['middlewares'])}")
+        tags.extend(_router_tls_domain_tags(config, router, hosts[0]))
+    for middleware, spec in routes["middlewares"].items():
+        prefix = f"traefik.http.middlewares.{middleware}.redirectregex"
+        regex = spec["redirectRegex"]
+        tags.extend([
+            f"{prefix}.regex={regex['regex']}",
+            f"{prefix}.replacement={regex['replacement']}",
+            f"{prefix}.permanent=true",
+        ])
+    return tags
 
 
 def _router_tls_domain_tags(

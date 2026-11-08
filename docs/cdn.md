@@ -12,6 +12,26 @@ User -> Alibaba Cloud ESA node -> (cache miss) -> CN Traefik -> service
 - Domains with an ICP filing use `scope: global`: one CNAME serves users in mainland China and abroad. `scope: overseas` needs no filing.
 - DNS stays in Cloudflare. Luma writes a DNS-only CNAME to ESA; do not turn on the Cloudflare proxy for these names.
 
+## Root domains (apex) {#root-domains-apex}
+
+Serve the CDN on `www` and let the root domain redirect to it:
+
+```yaml
+name: web
+image: ghcr.io/example/web:1.4.0
+region: cn
+exposure: cn-edge
+domain: www.example.com
+redirectFrom: [example.com]
+port: 3000
+cdn: esa
+```
+
+- A root domain cannot be a CNAME, so Cloudflare must "flatten" it: Cloudflare resolves ESA itself and returns IP addresses. ESA then schedules every visitor by Cloudflare's location instead of the visitor's. Measured on itool.tech: a visitor in mainland China was served from US nodes and a page took 10 seconds. Luma therefore refuses `cdn` on the zone apex and explains this fix.
+- `www.example.com` is a plain CNAME, so each visitor's own DNS resolver asks ESA and gets a nearby node.
+- `example.com` stays a direct A record to the edge. GET and HEAD get a permanent redirect to `https://www.example.com` with the path and query kept; browsers cache it. Other methods reach the application unchanged, so payment callbacks and webhooks sent to the old address keep working.
+- Point the application's canonical URL, sitemap and OAuth callbacks at `www`. Passkeys keep working when the WebAuthn RP ID stays the root domain.
+
 ## One-time setup
 
 1. Buy an ESA plan in the Alibaba Cloud console. One plan serves one root domain (one ESA site). Luma never buys plans.
@@ -78,19 +98,19 @@ List under `cache` only paths whose response never depends on who is signed in. 
 4. The Nomad rollout and the public route probe run as before.
 5. **Purge CDN** refreshes the cache after the new version is live: the whole hostname by default, or the `purge` paths. A refresh failure is a warning, never a failed deploy; run `luma cdn purge` to retry. A newly created record is not refreshed because it has no cache yet.
 
-Site-wide settings, shared by every Luma domain on the ESA site. They are global configs, which cost no rule quota:
+Site-wide settings, shared by every Luma domain on the ESA site:
 
 - **Origin**: fetch with the client's protocol and the request's `Host`, and verify Traefik's certificate. Plain HTTP gets Traefik's redirect to HTTPS.
-- **Cache**: honour the application's cache headers on every path, HTML included. Without headers, ESA's defaults apply: common static files (js, css, images, fonts and similar) are cached, everything else is not.
+- **Cache**: one site-wide rule honours the application's cache headers on every path, HTML included. ESA's global cache setting alone only covers static file extensions, so HTML would stay uncached. Without headers, ESA's defaults apply: common static files (js, css, images, fonts and similar) are cached, everything else is not.
 - Gzip and Brotli compression, and the `ali-real-client-ip` header with the real client address.
 
-Each `cache` path gets one rule for its domain: honour the application's headers, and without them cache for `ttl` seconds. A matching rule replaces the global setting, and `cache` paths cannot overlap, so rule order never matters. Rules count against a per-site quota shared by every application on the root domain: 5 on Free, 10 on Basic, 50 on Standard. A deploy that would exceed it fails at Prepare CDN with that explanation.
+Each `cache` path gets one rule for its domain: honour the application's headers, and without them cache for `ttl` seconds. A matching rule replaces the global setting, and `cache` paths cannot overlap, so rule order never matters. Cache rules count against a per-site quota shared by every application on the root domain: 5 on Free, 10 on Basic, 50 on Standard. The site-wide rule takes one. A deploy that would exceed it fails at Prepare CDN with that explanation.
 
 ESA defaults cover the rest: HTTP/2 and HTTP/3, TLS 1.0 off, basic DDoS protection and the managed WAF rules.
 
 ## Cache as much as possible
 
-Without its own configuration ESA caches only static files: HTML and paths without an extension are never cached, whatever the application returns. Luma's site-wide cache setting makes the application's headers count on every path, so caching more comes down to two levers:
+Without its own configuration ESA caches only static files: HTML and paths without an extension are never cached, whatever the application returns. Luma's site-wide cache rule makes the application's headers count on every path, so caching more comes down to two levers:
 
 - Return cache headers from the application:
 
