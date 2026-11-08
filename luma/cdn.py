@@ -470,6 +470,8 @@ def domain_rules(domain: str, cache: Iterable[CachePath]) -> Dict[str, List[Dict
         "OriginScheme": "follow",
         "OriginHost": domain,
         "OriginSni": domain,
+        # Traefik serves a valid ACME certificate for every Luma domain.
+        "OriginVerify": "on",
     }]
     return {"CacheRule": cache_rules, "OriginRule": origin_rules}
 

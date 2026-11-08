@@ -80,7 +80,7 @@ List under `cache` only paths whose response never depends on who is signed in. 
 
 Rules Luma keeps for each domain. They do not overlap, so their order never matters:
 
-- **Origin**: fetch with the client's protocol, the original `Host` and SNI. Plain HTTP gets Traefik's redirect to HTTPS.
+- **Origin**: fetch with the client's protocol, the original `Host` and SNI, and verify Traefik's certificate. Plain HTTP gets Traefik's redirect to HTTPS.
 - **Every path**: honour the application's cache headers, HTML included. Without headers, ESA's defaults apply: common static files (js, css, images, fonts and similar) are cached, everything else is not.
 - **Each `cache` path**: honour the application's headers; without them, cache for `ttl` seconds.
 

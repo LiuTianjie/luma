@@ -252,7 +252,7 @@ class DomainRuleTests(unittest.TestCase):
         self.assertEqual((blog["Rule"], blog["EdgeCacheMode"], blog["EdgeCacheTtl"]), ('(http.host eq "www.example.com" and starts_with(http.request.uri.path, "/blog/"))', "follow_origin_override", "300"))
         self.assertEqual(robots["Rule"], '(http.host eq "www.example.com" and http.request.uri.path eq "/robots.txt")')
         origin = rules["OriginRule"][0]
-        self.assertEqual((origin["OriginScheme"], origin["OriginHost"], origin["OriginSni"]), ("follow", "www.example.com", "www.example.com"))
+        self.assertEqual((origin["OriginScheme"], origin["OriginHost"], origin["OriginSni"], origin["OriginVerify"]), ("follow", "www.example.com", "www.example.com", "on"))
 
     def test_reconcile_creates_updates_deletes_only_own_rules(self):
         from luma.cdn import CachePath, reconcile_domain_rules
