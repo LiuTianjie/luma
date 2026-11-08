@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import secrets as secrets_module
@@ -51,7 +52,7 @@ API_ATTEMPTS = 4
 API_TIMEOUT_SECONDS = 20
 VERIFY_TIMEOUT_SECONDS = 180
 VERIFY_POLL_SECONDS = 10.0
-CERTIFICATE_TIMEOUT_SECONDS = 600
+CERTIFICATE_TIMEOUT_SECONDS = 900
 CERTIFICATE_POLL_SECONDS = 15.0
 # Rejections that guarantee nothing was applied: safe to retry any action.
 THROTTLE_CODE_PREFIXES = ("Throttling", "TooManyRequests", "Site.ServiceBusy", "Record.ServiceBusy", "Record.Reserved")
@@ -417,7 +418,8 @@ def ensure_site(
     return site, notes
 
 
-SITE_DEFAULTS_VERSION = 3
+SITE_DEFAULTS_VERSION = 5
+DOMAIN_RULE_SEQUENCE = 100
 SITE_RULE_PREFIX = "luma_site_"
 
 
@@ -442,11 +444,16 @@ def configure_site(client: AliyunClient, site_id: Any) -> List[str]:
     (Basic plans allow 10 cache rules per site).
     """
     applied: List[str] = []
-    # follow: HTTPS fetches over HTTPS, plain HTTP gets Traefik's redirect.
-    # Host follows the request; Traefik's ACME certificate is verified.
-    change = _ensure_global(client, site_id=site_id, kind="OriginRule", settings={"OriginScheme": "follow", "OriginVerify": "on"})
-    if change:
-        applied.append(change)
+    # Always fetch the origin over HTTPS and verify Traefik's certificate; ESA
+    # itself redirects plain HTTP. With "follow", Traefik's HTTP->HTTPS 301
+    # could be cached under a key shared with HTTPS and loop.
+    for kind, settings in (
+        ("OriginRule", {"OriginScheme": "https", "OriginVerify": "on"}),
+        ("HttpsApplicationConfiguration", {"HttpsForce": "on", "HttpsForceCode": "301"}),
+    ):
+        change = _ensure_global(client, site_id=site_id, kind=kind, settings=settings)
+        if change:
+            applied.append(change)
     # A global cache config only applies to ESA's default static extensions
     # (measured: HTML stayed DYNAMIC), so honouring the application's cache
     # headers on every path, HTML included, takes one site-wide rule.
@@ -455,7 +462,16 @@ def configure_site(client: AliyunClient, site_id: Any) -> List[str]:
         site_id=site_id,
         kind="CacheRule",
         prefix=SITE_RULE_PREFIX,
-        desired=[{"RuleName": SITE_RULE_PREFIX + "origin_headers", "Rule": "true", "EdgeCacheMode": "follow_origin"}],
+        # cache_all makes HTML eligible at all (without it ESA reports DYNAMIC);
+        # follow_origin_bypass then caches only what the application marks
+        # cacheable and never guesses from ETag/Last-Modified.
+        desired=[{
+            "RuleName": SITE_RULE_PREFIX + "origin_headers",
+            "Rule": "true",
+            "BypassCache": "cache_all",
+            "EdgeCacheMode": "follow_origin_bypass",
+            "Sequence": "1",
+        }],
     ))
     compression = client.esa("ListCompressionRules", SiteId=site_id, ConfigType="global")
     if not compression.get("Configs"):
@@ -477,15 +493,18 @@ def _path_condition(path: str) -> str:
 
 
 def _rule_prefix(domain: str) -> str:
-    return "luma_" + "".join(ch if ch.isalnum() else "-" for ch in domain.lower()) + "_"
+    # The digest keeps a.b.example.com and a-b.example.com apart.
+    readable = "".join(ch if ch.isalnum() else "-" for ch in domain.lower())
+    digest = hashlib.sha256(domain.lower().encode("utf-8")).hexdigest()[:8]
+    return f"luma_{readable}_{digest}_"
 
 
 def domain_rules(domain: str, cache: Iterable[CachePath]) -> Dict[str, List[Dict[str, Any]]]:
     """Per-domain ESA rules Luma owns, keyed by rule kind.
 
-    Only ``cdn.cache`` paths need rules; everything else uses the site's
-    global configs. A matching rule replaces the global setting, and the
-    listed paths cannot overlap, so rule order never matters.
+    Only ``cdn.cache`` paths need rules; everything else uses the site-wide
+    rule. Listed paths cannot overlap, and each path rule carries a Sequence
+    after the site-wide rule.
     """
     prefix = _rule_prefix(domain)
     host = f"http.host eq {_q(domain)}"
@@ -493,8 +512,12 @@ def domain_rules(domain: str, cache: Iterable[CachePath]) -> Dict[str, List[Dict
         {
             "RuleName": f"{prefix}cache{index}",
             "Rule": f"({host} and {_path_condition(item.path)})",
+            "BypassCache": "cache_all",
             "EdgeCacheMode": "follow_origin_override",
             "EdgeCacheTtl": str(item.ttl),
+            # Rules apply top to bottom; path rules run after the site-wide
+            # rule (Sequence 1) so their TTL is the one that sticks.
+            "Sequence": str(DOMAIN_RULE_SEQUENCE + index),
         }
         for index, item in enumerate(cache, start=1)
     ]
@@ -561,18 +584,31 @@ def _record_value(record: Mapping[str, Any]) -> str:
     return str(data.get("Value") or data.get("value") or "")
 
 
+def _record_params(origin: str) -> Dict[str, Any]:
+    try:
+        ipaddress.ip_address(origin)
+        return {"Type": "A/AAAA"}
+    except ValueError:
+        # A hostname origin: keep the visitor's Host so Traefik routes it.
+        return {"Type": "CNAME", "SourceType": "Domain", "HostPolicy": "follow_hostname"}
+
+
 def ensure_record(client: AliyunClient, *, site_id: Any, domain: str, origin: str) -> Tuple[Dict[str, Any], List[str]]:
     """Make ``domain`` a proxied ESA record pointing at the edge; return it with notes."""
     notes: List[str] = []
     record = find_record(client, site_id, domain)
     data = {"Value": origin}
+    params = _record_params(origin)
     if record is None:
-        client.esa("CreateRecord", SiteId=site_id, RecordName=domain, Type="A/AAAA", Proxied=True, BizName="web", Ttl=1, Data=data)
+        client.esa("CreateRecord", SiteId=site_id, RecordName=domain, Proxied=True, BizName="web", Ttl=1, Data=data, **params)
         notes.append(f"record created -> {origin}")
-    elif str(record.get("RecordType") or "").upper() not in {"A/AAAA", "A", "AAAA"}:
-        raise LumaError(f"ESA record {domain} is {record.get('RecordType')}; delete it in the ESA console so Luma can manage it")
+    elif str(record.get("RecordType") or "").upper() != params["Type"].upper():
+        raise LumaError(
+            f"ESA record {domain} is {record.get('RecordType')} but the origin needs {params['Type']}; "
+            "delete it in the ESA console so Luma can recreate it"
+        )
     elif _record_value(record) != origin or not record.get("Proxied"):
-        client.esa("UpdateRecord", RecordId=record["RecordId"], Type="A/AAAA", Proxied=True, BizName="web", Ttl=1, Data=data)
+        client.esa("UpdateRecord", RecordId=record["RecordId"], Proxied=True, BizName="web", Ttl=1, Data=data, **params)
         notes.append(f"record updated -> {origin}")
     record = find_record(client, site_id, domain)
     if record is None or not record.get("RecordCname"):
@@ -580,12 +616,29 @@ def ensure_record(client: AliyunClient, *, site_id: Any, domain: str, origin: st
     return record, notes
 
 
+def dcv_delegation_target(client: AliyunClient, *, site_id: Any, domain: str) -> Tuple[str, str]:
+    """Return ``(record name, CNAME target)`` delegating Let's Encrypt DCV to ESA.
+
+    With the delegation in place ESA validates over DNS, so the certificate
+    is issued before visitors are switched and renewals keep working.
+    """
+    delegation = str(client.esa("GetDcvDelegation", SiteId=site_id).get("DelegationDomain") or "").strip().rstrip(".")
+    if not delegation:
+        raise LumaError("ESA returned no DCV delegation domain for the site")
+    return f"_acme-challenge.{domain}", f"{domain}.{delegation}"
+
+
 def certificate_status(client: AliyunClient, *, site_id: Any, domain: str) -> Tuple[str, int]:
     """Return ``(status, valid certificate count)`` for the record."""
-    result = client.esa("ListCertificatesByRecord", SiteId=site_id, RecordName=domain, ValidOnly=True)
+    # Without Detail the Certificates list stays empty; Count is always set.
+    result = client.esa("ListCertificatesByRecord", SiteId=site_id, RecordName=domain, ValidOnly=True, Detail=True)
     for item in result.get("Result") or []:
         if isinstance(item, dict):
-            return str(item.get("Status") or "none"), len(item.get("Certificates") or [])
+            try:
+                count = int(item.get("Count") or 0)
+            except (TypeError, ValueError):
+                count = 0
+            return str(item.get("Status") or "none"), max(count, len(item.get("Certificates") or []))
     return "none", 0
 
 

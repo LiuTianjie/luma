@@ -2,7 +2,7 @@
 
 Use this when a user wants a Luma service accelerated, cached, or put behind a
 CDN, when `cdn:` appears in a manifest, or when a deploy fails or warns at
-`Prepare CDN`, `ESA certificate` or `Purge CDN`. Product documentation:
+`Prepare CDN` or `Purge CDN`. Product documentation:
 `docs/cdn.md`.
 
 ## Model
@@ -13,9 +13,12 @@ CDN, when `cdn:` appears in a manifest, or when a deploy fails or warns at
   serves one site. Luma never buys plans; the user buys one in the console.
 - DNS stays in Cloudflare: Luma writes a DNS-only CNAME to the ESA record's
   `RecordCname`. Never suggest turning on the Cloudflare proxy for these names.
-- Site-wide settings: global origin `follow` with certificate verification,
-  one cache rule honouring app headers on every path, Gzip/Brotli, and the
-  `ali-real-client-ip` header.
+- Site-wide settings: origin always HTTPS with certificate verification, edge
+  force-HTTPS, one cache rule (`cache_all` + `follow_origin_bypass`) honouring
+  app headers on every path, Gzip/Brotli, and the `ali-real-client-ip` header.
+- Prepare CDN writes `_acme-challenge.<domain>` CNAME (DCV delegation) and waits
+  for the free certificate before DNS moves, so there is no HTTPS gap. Keep that
+  record; renewals use it.
 - Each `cdn.cache` path is one cache rule on the site. The per-site quota is
   shared by every app on the root domain: Free 5, Basic 10, Standard 50.
 - Only `cn-edge`, `external-edge` and `tailscale-relay` accept `cdn`.
@@ -28,8 +31,8 @@ CDN, when `cdn:` appears in a manifest, or when a deploy fails or warns at
   clients drop that header on cross-host redirects. App side: canonical/sitemap/OAuth on www,
   keep the WebAuthn RP ID at the root domain so passkeys survive.
 - One site-wide cache rule (`luma_site_origin_headers`, `Rule: true`,
-  `follow_origin`) makes HTML honour app headers; ESA's global cache config
-  alone only covers static extensions (HTML stays `DYNAMIC`).
+  `BypassCache: cache_all`, `follow_origin_bypass`, Sequence 1) makes HTML
+  honour app headers; without `cache_all` ESA reports HTML as `DYNAMIC`.
 
 ## Manifest
 
@@ -69,8 +72,9 @@ luma secret set LUMA_ALIBABA_CLOUD_ACCESS_KEY_SECRET
 luma cdn check
 ```
 
-4. First enable `cdn: esa` on a test subdomain, deploy, and measure how long
-   `ESA certificate` takes before switching a production domain.
+4. Run `luma cdn check DOMAIN` and fix any DANGER row, then add `cdn: esa`
+   and deploy. The first deploy for a domain waits in Prepare CDN until the
+   certificate is issued (usually a few minutes); traffic switches only after.
 
 ## Before enabling on a real app: audit caching
 
@@ -112,7 +116,7 @@ API, signed-in pages                    Cache-Control: private, no-store
 | `Prepare CDN` | `uses NS access` | Luma only manages CNAME-access sites. |
 | `Prepare CDN` | `cannot serve the zone apex` | Move to `domain: www.<zone>` + `redirectFrom: [<zone>]`. |
 | `x-site-cache-status: DYNAMIC` on HTML | site rule missing or app sends no-store | Redeploy (recreates the site rule); check app headers with `luma cdn check DOMAIN`. |
-| `ESA certificate` (warning) | still issuing after 10 min | DNS already points at ESA; wait, then `luma cdn status`. Rollout continued. |
+| `Prepare CDN` | `certificate ... still being issued` | DNS was not changed. Check `_acme-challenge.<domain>` CNAME in Cloudflare, wait a few minutes, deploy again. |
 | `Purge CDN` (warning) | quota or API error | Deploy is fine; `luma cdn purge DOMAIN` to retry. |
 
 Nothing in `Prepare CDN` changes DNS, so a failure there leaves the service as

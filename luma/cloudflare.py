@@ -149,25 +149,46 @@ def dns_records(config: LumaConfig, name: str, *, secrets: Mapping[str, object] 
     return _records_by_name(client, zone_id, name)
 
 
-def upsert_txt_record(
+def upsert_record(
     config: LumaConfig,
     name: str,
+    record_type: str,
     content: str,
     *,
     secrets: Mapping[str, object] | None = None,
 ) -> str:
-    """Create or update one TXT record (used for CDN ownership verification)."""
+    """Create or update one DNS-only record (CDN verification and DCV delegation)."""
     if config.dns.get("provider") != "cloudflare":
-        raise LumaError("TXT record publishing requires providers.dns.provider: cloudflare")
+        raise LumaError(f"{record_type} record publishing requires providers.dns.provider: cloudflare")
     client, zone_id = _zone_client(config, secrets)
-    query = urllib.parse.urlencode({"type": "TXT", "name": name})
+    query = urllib.parse.urlencode({"type": record_type, "name": name})
     existing = client.request("GET", f"/zones/{zone_id}/dns_records?{query}")["result"]
-    body = {"type": "TXT", "name": name, "content": content, "ttl": 1, "comment": "managed by Luma"}
+    body = {"type": record_type, "name": name, "content": content, "ttl": 1, "proxied": False, "comment": "managed by Luma"}
+    if record_type == "TXT":
+        body.pop("proxied")
     if existing:
-        client.request("PUT", f"/zones/{zone_id}/dns_records/{existing[0]['id']}", body)
+        if str(existing[0].get("content") or "").rstrip(".") != content.rstrip("."):
+            client.request("PUT", f"/zones/{zone_id}/dns_records/{existing[0]['id']}", body)
     else:
         client.request("POST", f"/zones/{zone_id}/dns_records", body)
     return name
+
+
+def upsert_txt_record(config: LumaConfig, name: str, content: str, *, secrets: Mapping[str, object] | None = None) -> str:
+    return upsert_record(config, name, "TXT", content, secrets=secrets)
+
+
+def delete_record(config: LumaConfig, name: str, record_type: str, *, secrets: Mapping[str, object] | None = None) -> int:
+    if config.dns.get("provider") != "cloudflare":
+        return 0
+    client, zone_id = _zone_client(config, secrets)
+    query = urllib.parse.urlencode({"type": record_type, "name": name})
+    deleted = 0
+    for record in client.request("GET", f"/zones/{zone_id}/dns_records?{query}")["result"]:
+        if record.get("id"):
+            client.request("DELETE", f"/zones/{zone_id}/dns_records/{record['id']}")
+            deleted += 1
+    return deleted
 
 
 def delete_dns(

@@ -31,7 +31,7 @@ For complete field tables and examples, read `references/manifest-reference.md`.
 
 For local build/upload/deploy, repository import, builder registry setup, or registry pull/proxy failures, read the "Builder Registry And Repository Import" section in `references/manifest-reference.md`.
 
-For CDN, acceleration, caching, `cdn:` manifests, `luma cdn` commands, or failures at `Prepare CDN` / `ESA certificate` / `Purge CDN`, read [CDN (Alibaba Cloud ESA)](references/cdn.md).
+For CDN, acceleration, caching, `cdn:` manifests, `luma cdn` commands, or failures at `Prepare CDN` / `Purge CDN`, read [CDN (Alibaba Cloud ESA)](references/cdn.md).
 
 For actual deployments, recorded commands, or workflow-change prompts, read [Deployment Workflow Records](references/deployment-workflow.md). For persistent placement, NFS migration, or storage retirement, read [Local Storage and Migration](references/local-storage.md).
 
@@ -298,7 +298,7 @@ Direct `compose render` with local paths requires an explicit node. Control dry-
 For generic CI, install a published PyPI version; verify publication before using the version example below. A source version bump or a successful Control rollout does not prove PyPI availability. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.2.49"
+python -m pip install "luma-infra==0.2.50"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:
