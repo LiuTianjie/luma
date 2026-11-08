@@ -139,7 +139,6 @@ from .cdn import (
     check_setup as check_cdn_setup,
     disabled_cdn_notice,
     dns_override as cdn_dns_override,
-    issue_service_certificate,
     owned_domains as cdn_owned_domains,
     prepare_service_cdn,
     purge_domain as purge_cdn_domain,
@@ -7313,10 +7312,9 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
             )
         _deploy_step(steps, "Write Nomad job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
         written = [str(target)]
+        _require_redirect_hosts_free(state, service)
         cdn_prepared = _prepare_cdn_step(steps, progress, config, state, service)
         dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service, override=cdn_prepared.get("override")), progress=progress)
-        _sync_redirect_dns_steps(steps, progress, config, service, skip=bool(body.get("skipDns")))
-        _cdn_certificate_step(steps, progress, state, service, cdn_prepared, skip_dns=bool(body.get("skipDns")))
         orchestrator_result = _deploy_step(
             steps,
             "Deploy Nomad job",
@@ -7325,6 +7323,9 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
             else deploy_to_nomad(config, stack_text, state, slug=service.slug),
             progress=progress,
         )
+        # The redirect routers ship with the new job, so the redirect hosts
+        # only move to the edge once that job is live.
+        _sync_redirect_dns_steps(steps, progress, config, state, service, skip=bool(body.get("skipDns")))
         cni_hostports = (
             {}
             if _skip_orchestrator(body)
@@ -7580,8 +7581,8 @@ def _remove_service_deployment(
         else (_planned_delete_dns_message(service) if dry_run else delete_dns(config, service, override=_cdn_delete_override(state, service))),
         progress=progress,
     )
-    _remove_cdn_steps(steps, progress, state, service, dry_run=dry_run)
-    _delete_redirect_dns_steps(steps, progress, config, service, dry_run=dry_run, skip=bool(body.get("skipDns")))
+    _remove_cdn_steps(steps, progress, state, service, dry_run=dry_run, skip_dns=bool(body.get("skipDns")), config=config)
+    _delete_redirect_dns_steps(steps, progress, config, state, service, dry_run=dry_run, skip=bool(body.get("skipDns")))
     orchestrator_result = _deploy_step(
         steps,
         "Remove Nomad job",
@@ -7666,8 +7667,8 @@ def _remove_compose_deployment(
                 progress=progress,
             )
         )
-        _remove_cdn_steps(steps, progress, state, service_spec, dry_run=dry_run, label=service.name)
-        _delete_redirect_dns_steps(steps, progress, config, service_spec, dry_run=dry_run, skip=bool(body.get("skipDns")), label=service.name)
+        _remove_cdn_steps(steps, progress, state, service_spec, dry_run=dry_run, skip_dns=bool(body.get("skipDns")), config=config, label=service.name)
+        _delete_redirect_dns_steps(steps, progress, config, state, service_spec, dry_run=dry_run, skip=bool(body.get("skipDns")), label=service.name)
     orchestrator_result = _deploy_step(
         steps,
         "Remove Nomad job",
@@ -9695,6 +9696,8 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         dns_results: list[str] = []
         cdn_prepared_by_service: dict[str, dict[str, Any]] = {}
         for service in compose_public_services(deployment):
+            _require_redirect_hosts_free(state, _compose_service_as_service_spec(deployment, service))
+        for service in compose_public_services(deployment):
             service_spec = _compose_service_as_service_spec(deployment, service)
             cdn_prepared = _prepare_cdn_step(steps, progress, config, state, service_spec, label=service.name)
             cdn_prepared_by_service[service.name] = cdn_prepared
@@ -9706,8 +9709,6 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                     progress=progress,
                 )
             )
-            _sync_redirect_dns_steps(steps, progress, config, service_spec, skip=bool(body.get("skipDns")), label=service.name)
-            _cdn_certificate_step(steps, progress, state, service_spec, cdn_prepared, skip_dns=bool(body.get("skipDns")), label=service.name)
 
         orchestrator_result = _deploy_step(
             steps,
@@ -9717,6 +9718,11 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
             else deploy_to_nomad(config, stack_text, state, slug=deployment.slug),
             progress=progress,
         )
+        for service in compose_public_services(deployment):
+            _sync_redirect_dns_steps(
+                steps, progress, config, state, _compose_service_as_service_spec(deployment, service),
+                skip=bool(body.get("skipDns")), label=service.name,
+            )
         cni_hostports = (
             {}
             if _skip_orchestrator(body) or uses_macos_compose_network(deployment, _state_nodes(state))
@@ -11947,6 +11953,8 @@ def _probe_public_route(service: ServiceSpec) -> str:
     if not service.domain:
         return "Public route probe skipped: service has no domain"
     url = f"https://{service.domain}/"
+    if service.cdn is not None:
+        return _probe_origin_route(service, url)
     req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "luma-control-route-probe"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -11959,6 +11967,40 @@ def _probe_public_route(service: ServiceSpec) -> str:
         return _probe_status_message(url, int(exc.code), headers=headers, body_sample=body_sample)
     except (urllib.error.URLError, TimeoutError, socket.timeout, ssl.SSLError) as exc:
         return f"Public route probe inconclusive: {url} ({exc})"
+
+
+class _OriginHTTPSConnection(http.client.HTTPSConnection):
+    """Connect to ``origin`` but present ``server_hostname`` for SNI and certificate checks."""
+
+    def __init__(self, origin: str, server_hostname: str, **kwargs: Any) -> None:
+        super().__init__(origin, 443, **kwargs)
+        self._server_hostname = server_hostname
+
+    def connect(self) -> None:
+        sock = socket.create_connection((self.host, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self._server_hostname)
+
+
+def _probe_origin_route(service: ServiceSpec, url: str) -> str:
+    """Probe a CDN service at the edge itself, not through the CDN.
+
+    Through ESA, CDN errors would trigger recovery of a healthy application
+    and a rewritten Server header would hide a missing Traefik router.
+    """
+    config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
+    origin = service.dns.get("target") or config.dns.get("edgeTarget") or config.dns_target_for(exposure=service.exposure, region=service.region)
+    if not origin:
+        return f"Public route probe inconclusive: {url} (no edge address to probe)"
+    connection = _OriginHTTPSConnection(str(origin), str(service.domain), timeout=15, context=ssl.create_default_context())
+    try:
+        connection.request("GET", "/", headers={"Host": str(service.domain), "User-Agent": "luma-control-route-probe", "Range": "bytes=0-512"})
+        response = connection.getresponse()
+        body = response.read(1024)
+        return _probe_status_message(url, int(response.status), headers=response.headers, body_sample=body).replace(url, f"{url} (edge {origin})", 1)
+    except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+        return f"Public route probe inconclusive: {url} via edge {origin} ({exc})"
+    finally:
+        connection.close()
 
 
 def _deployment_health_result(service: ServiceSpec, probe: str | None = None) -> Dict[str, Any]:
@@ -12336,38 +12378,96 @@ def _prepare_cdn_step(
     return _deploy_step(steps, f"Prepare CDN{suffix}", lambda: prepare_service_cdn(config, state, service), progress=progress)
 
 
+REDIRECT_HOSTS_KEY = "redirectHosts"
+
+
+def _redirect_owners(state: Mapping[str, Any]) -> Dict[str, str]:
+    owners = state.get(REDIRECT_HOSTS_KEY)
+    return {str(host): str(owner) for host, owner in owners.items()} if isinstance(owners, Mapping) else {}
+
+
+def _require_redirect_hosts_free(state: Mapping[str, Any], service: ServiceSpec) -> None:
+    """Refuse redirect hosts another service redirects or serves, before any change."""
+    owners = _redirect_owners(state)
+    for host in service.redirect_from:
+        owner = owners.get(host)
+        if owner and owner != service.name:
+            raise LumaError(f"redirectFrom host {host} is already redirected by {owner}")
+        for record in (_deployments_state(state).get("services") or {}).values():
+            if not isinstance(record, Mapping) or record.get("name") == service.name:
+                continue
+            try:
+                other = yaml.safe_load(str(record.get("manifest") or "")) or {}
+            except yaml.YAMLError:
+                continue
+            if isinstance(other, Mapping) and str(other.get("domain") or "").strip().lower().rstrip(".") == host:
+                raise LumaError(f"redirectFrom host {host} is the domain of {record.get('name')}; remove it there first")
+
+
+def _redirect_alias(service: ServiceSpec, host: str) -> ServiceSpec:
+    return replace(service, domain=host, cdn=None, redirect_from=[], redirect_except=[])
+
+
 def _sync_redirect_dns_steps(
     steps: list[dict[str, str]],
     progress: Callable[[dict[str, str]], None] | None,
     config: Any,
+    state: Mapping[str, Any],
     service: ServiceSpec,
     *,
     skip: bool,
     label: str = "",
 ) -> None:
-    """redirectFrom hosts always point straight at the edge, never at a CDN."""
-    for host in service.redirect_from:
-        alias = replace(service, domain=host, cdn=None, redirect_from=[])
-        _deploy_step(
-            steps,
-            f"Sync DNS {label + ' ' if label else ''}{host} (redirect)",
-            lambda alias=alias: "DNS skipped: --skip-dns" if skip else sync_dns(config, alias),
-            progress=progress,
-        )
+    """Point redirect hosts at the edge and release hosts no longer listed.
+
+    Runs after the rollout. A DNS failure here is a warning: the new
+    version already serves the primary domain.
+    """
+    prefix = f"{label} " if label else ""
+    owned = sorted(host for host, owner in _redirect_owners(state).items() if owner == service.name)
+    for host in [*service.redirect_from, *[h for h in owned if h not in service.redirect_from]]:
+        listed = host in service.redirect_from
+        name = f"Sync DNS {prefix}{host} (redirect)" if listed else f"Delete DNS {prefix}{host} (redirect removed)"
+        if skip:
+            message, status = "DNS skipped: --skip-dns", "ok"
+        else:
+            try:
+                alias = _redirect_alias(service, host)
+                message = sync_dns(config, alias) if listed else delete_dns(config, alias)
+                status = "ok"
+            except LumaError as exc:
+                message, status = f"{exc}; the primary domain is unaffected, redeploy to retry", "warning"
+        step = {"name": name, "status": status, "message": message}
+        steps.append(step)
+        _emit_progress(progress, step)
+        if status == "ok" and not skip:
+            def mutate(current: Dict[str, Any], host: str = host, listed: bool = listed) -> None:
+                owners = current.get(REDIRECT_HOSTS_KEY)
+                if not isinstance(owners, dict):
+                    owners = {}
+                    current[REDIRECT_HOSTS_KEY] = owners
+                if listed:
+                    owners[host] = service.name
+                else:
+                    owners.pop(host, None)
+
+            mutate_state(mutate)
 
 
 def _delete_redirect_dns_steps(
     steps: list[dict[str, str]],
     progress: Callable[[dict[str, str]], None] | None,
     config: Any,
+    state: Mapping[str, Any],
     service: ServiceSpec,
     *,
     dry_run: bool,
     skip: bool,
     label: str = "",
 ) -> None:
-    for host in service.redirect_from:
-        alias = replace(service, domain=host, cdn=None, redirect_from=[])
+    owned = [host for host, owner in _redirect_owners(state).items() if owner == service.name]
+    for host in sorted({*service.redirect_from, *owned}):
+        alias = _redirect_alias(service, host)
         _deploy_step(
             steps,
             f"Delete DNS {label + ' ' if label else ''}{host} (redirect)",
@@ -12376,46 +12476,13 @@ def _delete_redirect_dns_steps(
             else (_planned_delete_dns_message(alias) if dry_run else delete_dns(config, alias)),
             progress=progress,
         )
+        if not dry_run and not skip:
+            def mutate(current: Dict[str, Any], host: str = host) -> None:
+                owners = current.get(REDIRECT_HOSTS_KEY)
+                if isinstance(owners, dict):
+                    owners.pop(host, None)
 
-
-def _cdn_certificate_step(
-    steps: list[dict[str, str]],
-    progress: Callable[[dict[str, str]], None] | None,
-    state: Dict[str, Any],
-    service: ServiceSpec,
-    prepared: Mapping[str, Any],
-    *,
-    skip_dns: bool,
-    label: str = "",
-) -> str | None:
-    """ESA issues its free certificate over HTTP, so this runs right after DNS."""
-    if service.cdn is None:
-        return None
-    name = f"ESA certificate{f' {label}' if label else ''}"
-    if skip_dns:
-        message = "ESA certificate skipped: DNS not managed (--skip-dns)"
-        step = {"name": name, "status": "ok", "message": message}
-        steps.append(step)
-        _emit_progress(progress, step)
-        return message
-    _emit_progress(progress, {"name": name, "status": "start", "message": ""})
-    try:
-        message = issue_service_certificate(state, service, prepared)
-        status = "ok"
-    except LumaError as exc:
-        # DNS already points at ESA, so aborting would only skip the rollout
-        # and leave HTTPS broken anyway: report it and keep going.
-        message = f"{exc}; ESA keeps issuing it, check again with luma cdn status"
-        status = "warning"
-    except Exception as exc:
-        step = {"name": name, "status": "fail", "message": f"{type(exc).__name__}: {exc}"}
-        steps.append(step)
-        _emit_progress(progress, step)
-        raise
-    step = {"name": name, "status": status, "message": message}
-    steps.append(step)
-    _emit_progress(progress, step)
-    return message
+            mutate_state(mutate)
 
 
 def _purge_cdn_step(
@@ -12477,15 +12544,20 @@ def _remove_cdn_steps(
     service: ServiceSpec,
     *,
     dry_run: bool,
+    skip_dns: bool = False,
+    config: Any = None,
     label: str = "",
 ) -> None:
     name = f"Delete CDN domain{f' {label}' if label else ''}"
     for domain in cdn_owned_domains(state, service.name):
-        if dry_run:
+        if skip_dns:
+            # DNS may still point at ESA; deleting the record would break the domain.
+            step = {"name": name, "status": "warning", "message": f"ESA record {domain} kept (--skip-dns); remove it with luma cdn remove {domain}"}
+        elif dry_run:
             step = {"name": name, "status": "ok", "message": f"CDN domain {domain} would be deleted"}
         else:
             try:
-                step = {"name": name, "status": "ok", "message": remove_cdn_domain(state, domain)}
+                step = {"name": name, "status": "ok", "message": remove_cdn_domain(state, domain, config=config)}
             except LumaError as exc:
                 step = {"name": name, "status": "warning", "message": f"CDN domain {domain} was not deleted: {exc}; run luma cdn remove {domain}"}
         steps.append(step)

@@ -34,7 +34,7 @@ class FakeEsa:
         self.sites = dict(sites or {})
         self.records = dict(records or {})
         self.global_configs = set()
-        self.rules = {"CacheRule": [], "OriginRule": []}
+        self.rules = {"CacheRule": [], "OriginRule": [], "HttpsApplicationConfiguration": []}
         self.next_config = 100
         self.cert_polls = 0
         self.cert_after_polls = cert_after_polls
@@ -58,7 +58,7 @@ class FakeEsa:
         if action == "ListCompressionRules":
             return {"Configs": [{"ConfigId": 1}] if action in self.global_configs else []}
         for kind, configs in self.rules.items():
-            if action == f"List{kind}s":
+            if action == f"List{kind}s" or (kind == "HttpsApplicationConfiguration" and action == "ListHttpsApplicationConfigurations"):
                 wanted = params.get("ConfigType")
                 return {"Configs": [dict(item) for item in configs if not wanted or item["ConfigType"] == wanted]}
             if action == f"Create{kind}":
@@ -78,6 +78,8 @@ class FakeEsa:
             return {"ConfigId": 2}
         if action == "UpdateManagedTransform":
             return {}
+        if action == "GetDcvDelegation":
+            return {"DelegationDomain": f"{params['SiteId']}.dcv.aliyun-esa.com"}
         if action == "ListRecords":
             record = self.records.get(params["RecordName"])
             return {"Records": [record] if record else []}
@@ -92,6 +94,7 @@ class FakeEsa:
             self.records = {name: r for name, r in self.records.items() if r["RecordId"] != params["RecordId"]}
             return {}
         if action == "ListCertificatesByRecord":
+            assert params.get("Detail") is True, "Certificates are only listed with Detail=true"
             if self.cert_applied:
                 self.cert_polls += 1
             ready = self.cert_applied and self.cert_polls >= self.cert_after_polls
@@ -246,7 +249,11 @@ class DomainRuleTests(unittest.TestCase):
         spec = parse_cdn_block({"provider": "esa", "cache": [{"path": "/blog/*", "ttl": 300}, {"path": "/robots.txt", "ttl": 86400}]})
         rules = domain_rules("www.example.com", spec.cache)
         blog, robots = rules["CacheRule"]
-        self.assertEqual(blog["RuleName"], "luma_www-example-com_cache1")
+        from luma.cdn import _rule_prefix
+
+        self.assertEqual(blog["RuleName"], _rule_prefix("www.example.com") + "cache1")
+        self.assertEqual(blog["Sequence"], "101")
+        self.assertNotEqual(_rule_prefix("a-b.example.com"), _rule_prefix("a.b.example.com"))
         self.assertEqual((blog["Rule"], blog["EdgeCacheMode"], blog["EdgeCacheTtl"]), ('(http.host eq "www.example.com" and starts_with(http.request.uri.path, "/blog/"))', "follow_origin_override", "300"))
         self.assertEqual(robots["Rule"], '(http.host eq "www.example.com" and http.request.uri.path eq "/robots.txt")')
         self.assertEqual(rules["OriginRule"], [])
@@ -260,10 +267,14 @@ class DomainRuleTests(unittest.TestCase):
         applied = configure_site(client, 77)
         self.assertIn("luma_site_origin_headers created", applied)
         self.assertIn("OriginRule global updated", applied)
-        self.assertEqual(client.rules["OriginRule"], [{"ConfigId": 1, "ConfigType": "global", "OriginScheme": "follow", "OriginVerify": "on"}])
+        self.assertEqual(client.rules["OriginRule"], [{"ConfigId": 1, "ConfigType": "global", "OriginScheme": "https", "OriginVerify": "on"}])
+        self.assertEqual(client.rules["HttpsApplicationConfiguration"][0]["HttpsForce"], "on")
         # HTML is only cached through a rule; a global cache config covers static extensions only.
         site_rule = client.rules["CacheRule"][0]
-        self.assertEqual((site_rule["ConfigType"], site_rule["Rule"], site_rule["EdgeCacheMode"]), ("rule", "true", "follow_origin"))
+        self.assertEqual(
+            (site_rule["ConfigType"], site_rule["Rule"], site_rule["BypassCache"], site_rule["EdgeCacheMode"], site_rule["Sequence"]),
+            ("rule", "true", "cache_all", "follow_origin_bypass", "1"),
+        )
         self.assertEqual(configure_site(client, 77), ["real client IP header"])
 
     def test_rule_quota_error_explains_the_shared_limit(self):
@@ -282,20 +293,22 @@ class DomainRuleTests(unittest.TestCase):
             reconcile_domain_rules(client, site_id=77, domain="www.example.com", cache=[CachePath("/blog/*", 300)])
 
     def test_reconcile_creates_updates_deletes_only_own_rules(self):
-        from luma.cdn import CachePath, reconcile_domain_rules
+        from luma.cdn import CachePath, _rule_prefix, reconcile_domain_rules
 
+        mine = _rule_prefix("www.example.com")
+        other = _rule_prefix("www.example.com.cn") + "cache1"
         client = FakeEsa()
-        client.rules["CacheRule"].append({"ConfigId": 1, "ConfigType": "rule", "RuleName": "luma_www-example-com-cn_cache1", "Rule": "x"})
-        client.rules["OriginRule"].append({"ConfigId": 2, "ConfigType": "rule", "RuleName": "luma_www-example-com_origin", "Rule": "x"})
+        client.rules["CacheRule"].append({"ConfigId": 1, "ConfigType": "rule", "RuleName": other, "Rule": "x"})
+        client.rules["OriginRule"].append({"ConfigId": 2, "ConfigType": "rule", "RuleName": mine + "origin", "Rule": "x"})
         reconcile_domain_rules(client, site_id=77, domain="www.example.com", cache=[CachePath("/blog/*", 300)])
-        self.assertEqual(sorted(c["RuleName"] for c in client.rules["CacheRule"]), ["luma_www-example-com-cn_cache1", "luma_www-example-com_cache1"])
+        self.assertEqual(sorted(c["RuleName"] for c in client.rules["CacheRule"]), sorted([other, mine + "cache1"]))
         self.assertEqual(client.rules["OriginRule"], [])
         self.assertEqual(reconcile_domain_rules(client, site_id=77, domain="www.example.com", cache=[CachePath("/blog/*", 300)]), [])
         changes = reconcile_domain_rules(client, site_id=77, domain="www.example.com", cache=[CachePath("/blog/*", 600)])
-        self.assertEqual(changes, ["luma_www-example-com_cache1 updated"])
+        self.assertEqual(changes, [mine + "cache1 updated"])
         changes = reconcile_domain_rules(client, site_id=77, domain="www.example.com", cache=[])
-        self.assertEqual(changes, ["luma_www-example-com_cache1 deleted"])
-        self.assertIn("luma_www-example-com-cn_cache1", [c["RuleName"] for c in client.rules["CacheRule"]])
+        self.assertEqual(changes, [mine + "cache1 deleted"])
+        self.assertIn(other, [c["RuleName"] for c in client.rules["CacheRule"]])
 
     def test_cache_paths_are_validated(self):
         for raw, message in [
@@ -424,9 +437,10 @@ class CdnDeploymentFlowTests(unittest.TestCase):
         sync = MagicMock(return_value="DNS updated")
         txt = MagicMock(side_effect=lambda config, name, content, secrets=None: name)
         probe_error = urllib.error.HTTPError("https://web.example.com/", 404, "not found", {}, None)
+        records = MagicMock(side_effect=lambda config, name, record_type, content, secrets=None: name)
         with patch("luma.control.cdn.AliyunClient", return_value=fake), patch(
             "luma.control.cdn.upsert_txt_record", txt
-        ), patch("luma.cdn.time.sleep"), patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="ok"), patch(
+        ), patch("luma.control.cdn.upsert_record", records), patch("luma.cdn.time.sleep"), patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="ok"), patch(
             "luma.control.server.sync_dns", sync
         ), patch("luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"), patch(
             "luma.control.server.urllib.request.urlopen", side_effect=probe_error
@@ -436,8 +450,10 @@ class CdnDeploymentFlowTests(unittest.TestCase):
 
         names = [step["name"] for step in first["steps"]]
         self.assertLess(names.index("Prepare CDN"), names.index("Sync DNS"))
-        self.assertLess(names.index("Sync DNS"), names.index("ESA certificate"))
-        self.assertLess(names.index("ESA certificate"), names.index("Deploy Nomad job"))
+        self.assertNotIn("ESA certificate", names)
+        # The certificate is issued through DCV delegation before DNS moves.
+        self.assertEqual(records.call_args_list[0].args[1:4], ("_acme-challenge.web.example.com", "CNAME", "web.example.com.77.dcv.aliyun-esa.com"))
+        self.assertIn("certificate issued", next(step["message"] for step in first["steps"] if step["name"] == "Prepare CDN"))
         self.assertLess(names.index("Probe public route"), names.index("Purge CDN"))
         self.assertEqual(txt.call_args.args[1:3], ("_esaauth.example.com", "verify_abc"))
         self.assertEqual(sync.call_args.kwargs["override"], {"target": "web.example.com.cnamezone.com", "type": "CNAME", "proxied": False})
@@ -453,33 +469,36 @@ class CdnDeploymentFlowTests(unittest.TestCase):
         self.assertEqual((record["service"], record["siteId"], record["lastPurge"]["taskIds"]), ("web", 77, ["9001"]))
 
         delete = MagicMock(return_value="DNS deleted")
+        delete_record = MagicMock(return_value=1)
         with patch("luma.control.cdn.AliyunClient", return_value=fake), patch(
             "luma.control.server.delete_dns", delete
-        ), patch("luma.control.server.remove_from_nomad", return_value="removed"):
+        ), patch("luma.control.cdn.delete_record", delete_record), patch("luma.control.server.remove_from_nomad", return_value="removed"):
             removed = handle_service_remove(self.state["deployToken"], {"name": "web"})
         self.assertEqual(delete.call_args.kwargs["override"]["type"], "CNAME")
         steps = {step["name"]: step for step in removed["steps"]}
         self.assertEqual(steps["Delete CDN domain"]["message"], "ESA record web.example.com deleted")
+        self.assertEqual(delete_record.call_args.args[1:3], ("_acme-challenge.web.example.com", "CNAME"))
         self.assertNotIn("web.example.com", load_state().get("cdnDomains") or {})
         self.assertEqual(fake.records, {})
         self.assertEqual([c["RuleName"] for c in fake.rules["CacheRule"]], ["luma_site_origin_headers"])
 
-    def test_certificate_delay_is_a_warning_and_the_rollout_continues(self):
+    def test_certificate_delay_fails_before_dns_changes(self):
         self._add_secrets()
         manifest = yaml.safe_dump({"name": "web", "image": "nginx:alpine", "region": "cn", "exposure": "cn-edge", "domain": "web.example.com", "port": 80, "cdn": "esa"})
-        fake = FakeEsa()
-        probe_error = urllib.error.HTTPError("https://web.example.com/", 404, "not found", {}, None)
+        fake = FakeEsa(cert_after_polls=10**6)
+        sync = MagicMock(return_value="DNS updated")
+        clock = iter(range(0, 10**7, 100))
         with patch("luma.control.cdn.AliyunClient", return_value=fake), patch(
             "luma.control.cdn.upsert_txt_record", return_value="_esaauth.example.com"
-        ), patch("luma.control.server.issue_service_certificate", side_effect=LumaError("ESA certificate for web.example.com is still being issued")), patch(
-            "luma.control.server.ensure_image_pull_egress_proxy", return_value="ok"
-        ), patch("luma.control.server.sync_dns", return_value="DNS updated"), patch(
-            "luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"
-        ) as deploy, patch("luma.control.server.urllib.request.urlopen", side_effect=probe_error):
-            result = handle_deployment(self.state["deployToken"], {"manifest": manifest, "sourceName": "web.yaml"})
-        steps = {step["name"]: step for step in result["steps"]}
-        self.assertEqual(steps["ESA certificate"]["status"], "warning")
-        deploy.assert_called_once()
+        ), patch("luma.control.cdn.upsert_record", return_value="x"), patch("luma.cdn.time.sleep"), patch(
+            "luma.cdn.time.monotonic", side_effect=lambda: next(clock)
+        ), patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="ok"), patch(
+            "luma.control.server.sync_dns", sync
+        ), patch("luma.control.server.deploy_to_nomad") as deploy:
+            with self.assertRaisesRegex(LumaError, "still being issued"):
+                handle_deployment(self.state["deployToken"], {"manifest": manifest, "sourceName": "web.yaml"})
+        sync.assert_not_called()
+        deploy.assert_not_called()
 
     def test_cli_deploy_is_blocked_without_esa_keys(self):
         manifest = yaml.safe_dump({"name": "web", "image": "nginx", "region": "cn", "exposure": "cn-edge", "domain": "web.example.com", "port": 80, "cdn": "esa"})
@@ -613,8 +632,11 @@ class ApexAndRedirectTests(unittest.TestCase):
         service = ServiceSpec(source=Path("a.yaml"), name="web", image="nginx", region="cn", public=True, exposure="cn-edge", domain="www.example.com", port=80, cdn=parse_cdn_block("esa"), redirect_from=["example.com"])
         steps = []
         sync = MagicMock(return_value="DNS updated: example.com -> 203.0.113.10")
-        with patch("luma.control.server.sync_dns", sync):
-            _sync_redirect_dns_steps(steps, None, object(), service, skip=False)
+        with patch("luma.control.server.sync_dns", sync), patch("luma.control.server.mutate_state") as mutate:
+            _sync_redirect_dns_steps(steps, None, object(), {}, service, skip=False)
+        owners = {}
+        mutate.call_args.args[0](owners)
+        self.assertEqual(owners["redirectHosts"], {"example.com": "web"})
         alias = sync.call_args.args[1]
         self.assertEqual((alias.domain, alias.cdn, sync.call_args.kwargs), ("example.com", None, {}))
         self.assertEqual(steps[-1]["name"], "Sync DNS example.com (redirect)")
@@ -637,3 +659,80 @@ class StreamHeartbeatTests(unittest.TestCase):
         first, second = asyncio.run(run())
         self.assertIs(first, server._STREAM_HEARTBEAT)
         self.assertEqual(second, {"status": "ok"})
+
+
+class ReviewFixTests(unittest.TestCase):
+    def test_hostname_origin_uses_a_cname_record(self):
+        client = FakeEsa()
+        original = client.esa
+        seen = {}
+
+        def esa(action, **params):
+            if action == "CreateRecord":
+                seen.update(params)
+                params = {**params, "Type": "A/AAAA"}
+            return original(action, **params)
+
+        client.esa = esa
+        try:
+            ensure_record(client, site_id=77, domain="app.example.com", origin="edge.example.net")
+        except LumaError:
+            pass
+        self.assertEqual((seen["Type"], seen["SourceType"], seen["HostPolicy"]), ("CNAME", "Domain", "follow_hostname"))
+
+    def test_redirect_host_owned_by_another_service_is_refused(self):
+        from luma.control.server import _require_redirect_hosts_free
+
+        service = ServiceSpec(source=Path("a.yaml"), name="web", image="x", region="cn", public=True, exposure="cn-edge", domain="www.example.com", port=80, redirect_from=["example.com"])
+        with self.assertRaisesRegex(LumaError, "already redirected by blog"):
+            _require_redirect_hosts_free({"redirectHosts": {"example.com": "blog"}}, service)
+        state = {"deployments": {"services": {"old": {"name": "old", "manifest": "domain: example.com\n"}}, "compose": {}}}
+        with self.assertRaisesRegex(LumaError, "domain of old"):
+            _require_redirect_hosts_free(state, service)
+        _require_redirect_hosts_free({"redirectHosts": {"example.com": "web"}}, service)
+
+    def test_dropped_redirect_host_is_released(self):
+        from luma.control.server import _sync_redirect_dns_steps
+
+        service = ServiceSpec(source=Path("a.yaml"), name="web", image="x", region="cn", public=True, exposure="cn-edge", domain="www.example.com", port=80, redirect_from=[])
+        steps = []
+        delete = MagicMock(return_value="DNS deleted: example.com")
+        with patch("luma.control.server.delete_dns", delete), patch("luma.control.server.mutate_state"):
+            _sync_redirect_dns_steps(steps, None, object(), {"redirectHosts": {"example.com": "web"}}, service, skip=False)
+        self.assertEqual(delete.call_args.args[1].domain, "example.com")
+        self.assertEqual(steps[-1]["name"], "Delete DNS example.com (redirect removed)")
+
+    def test_redirect_dns_failure_is_a_warning(self):
+        from luma.control.server import _sync_redirect_dns_steps
+
+        service = ServiceSpec(source=Path("a.yaml"), name="web", image="x", region="cn", public=True, exposure="cn-edge", domain="www.example.com", port=80, redirect_from=["example.com"])
+        steps = []
+        with patch("luma.control.server.sync_dns", side_effect=LumaError("Cloudflare API error")), patch("luma.control.server.mutate_state") as mutate:
+            _sync_redirect_dns_steps(steps, None, object(), {}, service, skip=False)
+        self.assertEqual(steps[-1]["status"], "warning")
+        mutate.assert_not_called()
+
+    def test_remove_with_skip_dns_keeps_the_esa_record(self):
+        from luma.control.server import _remove_cdn_steps
+
+        service = ServiceSpec(source=Path("a.yaml"), name="web", image="x", region="cn", public=True, exposure="cn-edge", domain="www.example.com", port=80, cdn=parse_cdn_block("esa"))
+        steps = []
+        state = {"cdnDomains": {"www.example.com": {"service": "web", "siteId": 77}}}
+        with patch("luma.control.server.remove_cdn_domain") as remove:
+            _remove_cdn_steps(steps, None, state, service, dry_run=False, skip_dns=True)
+        remove.assert_not_called()
+        self.assertEqual(steps[-1]["status"], "warning")
+
+    def test_cdn_probe_goes_to_the_edge_with_the_domain_as_sni(self):
+        from luma.control import server
+
+        service = ServiceSpec(source=Path("a.yaml"), name="web", image="x", region="cn", public=True, exposure="cn-edge", domain="www.example.com", port=80, cdn=parse_cdn_block("esa"), dns={"target": "203.0.113.10"})
+        response = MagicMock(status=200, headers={"Server": "traefik"})
+        response.read.return_value = b"ok"
+        connection = MagicMock()
+        connection.getresponse.return_value = response
+        with patch.object(server, "_OriginHTTPSConnection", return_value=connection) as factory, patch.object(server, "load_config"):
+            message = server._probe_public_route(service)
+        self.assertEqual(factory.call_args.args[:2], ("203.0.113.10", "www.example.com"))
+        self.assertEqual(connection.request.call_args.kwargs["headers"]["Host"], "www.example.com")
+        self.assertIn("edge 203.0.113.10", message)

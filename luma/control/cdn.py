@@ -15,6 +15,7 @@ from ..cdn import (
     SITE_DEFAULTS_VERSION,
     AliyunClient,
     configure_site,
+    dcv_delegation_target,
     delete_esa_record,
     ensure_certificate,
     ensure_record,
@@ -24,7 +25,7 @@ from ..cdn import (
     purge_esa,
     reconcile_domain_rules,
 )
-from ..cloudflare import dns_records, upsert_txt_record
+from ..cloudflare import delete_record, dns_records, upsert_record, upsert_txt_record
 from ..errors import LumaError
 from ..service import ServiceSpec
 from .state import mutate_state
@@ -148,12 +149,19 @@ def prepare_service_cdn(config: Any, state: Mapping[str, Any], service: ServiceS
         client, site_name=site_name, scope=service.cdn.scope, publish_txt=_txt_publisher(config, state)
     )
     site_id = site["SiteId"]
-    if int(_site_records(state).get(site_name, {}).get("defaultsVersion") or 0) < SITE_DEFAULTS_VERSION:
+    known_site = _site_records(state).get(site_name, {})
+    # A recreated site has a new SiteId and none of the defaults.
+    if int(known_site.get("defaultsVersion") or 0) < SITE_DEFAULTS_VERSION or str(known_site.get("siteId")) != str(site_id):
         notes.append("site defaults: " + (", ".join(configure_site(client, site_id)) or "unchanged"))
         _update(SITE_STATE_KEY, site_name, {"siteId": site_id, "defaultsVersion": SITE_DEFAULTS_VERSION})
     record, record_notes = ensure_record(client, site_id=site_id, domain=domain, origin=_origin_for(config, service))
     notes.extend(record_notes)
     notes.extend(reconcile_domain_rules(client, site_id=site_id, domain=domain, cache=service.cdn.cache))
+    # Delegate certificate validation to ESA over DNS and wait for the
+    # certificate here, so DNS only moves to ESA once HTTPS already works.
+    dcv_name, dcv_target = dcv_delegation_target(client, site_id=site_id, domain=domain)
+    upsert_record(config, dcv_name, "CNAME", dcv_target, secrets=_secrets(state))
+    notes.append(ensure_certificate(client, site_id=site_id, domain=domain))
     saved = {
         "provider": "esa",
         "service": service.name,
@@ -173,14 +181,6 @@ def prepare_service_cdn(config: Any, state: Mapping[str, Any], service: ServiceS
         "created": not known,
         "siteId": site_id,
     }
-
-
-def issue_service_certificate(state: Mapping[str, Any], service: ServiceSpec, prepared: Mapping[str, Any]) -> str:
-    """Wait for ESA's free certificate. ESA validates over HTTP, so DNS must already point at it."""
-    if service.cdn is None or not service.domain:
-        return "CDN not enabled"
-    site_id = prepared.get("siteId") or (cdn_records(state).get(service.domain) or {}).get("siteId")
-    return ensure_certificate(_client(state), site_id=site_id, domain=service.domain)
 
 
 def _purge(state: Mapping[str, Any], domain: str, paths: Optional[tuple]) -> Dict[str, Any]:
@@ -214,9 +214,11 @@ def owned_domains(state: Mapping[str, Any], service_name: str) -> List[str]:
     return sorted(domain for domain, record in cdn_records(state).items() if record.get("service") == service_name)
 
 
-def remove_cdn_domain(state: Mapping[str, Any], domain: str) -> str:
+def remove_cdn_domain(state: Mapping[str, Any], domain: str, *, config: Any = None) -> str:
     record = cdn_records(state).get(domain) or {}
     deleted = delete_esa_record(_client(state), site_id=record.get("siteId"), domain=domain)
+    if config is not None:
+        delete_record(config, f"_acme-challenge.{domain}", "CNAME", secrets=_secrets(state))
     _forget(domain)
     return f"ESA record {domain} deleted" if deleted else f"ESA record {domain} not found; Luma record removed"
 
@@ -230,7 +232,7 @@ def remove_unused_domain(config: Any, state: Mapping[str, Any], domain: str) -> 
     for item in dns_records(config, domain, secrets=_secrets(state)):
         if str(item.get("type") or "").upper() == "CNAME" and str(item.get("content") or "").rstrip(".").lower() == cname:
             raise LumaError(f"DNS for {domain} still points at ESA ({cname}); remove cdn from the manifest and redeploy first")
-    return {"domain": domain, "message": remove_cdn_domain(state, domain)}
+    return {"domain": domain, "message": remove_cdn_domain(state, domain, config=config)}
 
 
 def disabled_cdn_notice(state: Mapping[str, Any], service: ServiceSpec) -> Optional[str]:

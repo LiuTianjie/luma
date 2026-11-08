@@ -95,19 +95,19 @@ cdn:
 
 ## 部署时发生什么 {#what-a-deploy-does}
 
-1. **Prepare CDN**，在改 DNS 之前执行。某个 Luma zone 第一次接入时，Luma 以 CNAME 方式创建该 zone 的 ESA 站点，在 Cloudflare 写入 `_esaauth` TXT 记录完成归属验证，并写入下面的站点级配置。之后每个服务都会创建一条指向 edge 的代理加速记录，edge 地址变化时更新这条记录，并同步它的 `cache` 路径规则。这一步失败会中止部署，此时还没有任何改动。
-2. **Sync DNS** 把域名指向 ESA 的 CNAME。A 记录和 CNAME 之间切换时原地替换记录。
-3. **ESA certificate** 申请 ESA 的免费证书并等待签发，最多等 10 分钟。ESA 通过 HTTP 验证证书，所以只能在 DNS 指向 ESA 之后进行；首次切换的域名可能有几分钟没有 HTTPS 证书。超过 10 分钟时这一步只给警告，发布继续进行。证书由 ESA 自动续期。
-4. Nomad 发布和公网路由探测照常进行。
+1. **Prepare CDN**，在改 DNS 之前执行。某个 Luma zone 第一次接入时，Luma 以 CNAME 方式创建该 zone 的 ESA 站点，在 Cloudflare 写入 `_esaauth` TXT 记录完成归属验证，并写入下面的站点级配置。之后每个服务都会创建一条指向 edge 的代理加速记录，edge 地址变化时更新这条记录，并同步它的 `cache` 路径规则。接着写入 `_acme-challenge` CNAME，把证书验证委托给 ESA，并等待 ESA 签发免费证书，最多 15 分钟。这一步任何失败（包括证书还在签发中）都会在改 DNS 之前中止部署，稍后重新部署即可。ESA 会通过同一条委托记录自动续期证书。
+2. **Sync DNS** 把域名指向 ESA 的 CNAME，此时 ESA 已经能提供 HTTPS。A 记录和 CNAME 之间切换时原地替换记录。
+3. Nomad 发布照常进行。发布完成、跳转路由生效之后，`redirectFrom` 里的主机才切到 edge；这些主机的 DNS 失败只记警告。从 `redirectFrom` 删掉的主机，其 DNS 记录会被删除。
+4. 公网路由探测直接连 edge，并以域名作为 SNI，这样 CDN 的报错不会触发对健康应用的恢复操作。
 5. **Purge CDN** 在新版本上线后刷新缓存：默认刷新整个主机名，或只刷新 `purge` 里的路径。刷新失败只给警告，不会让部署失败，可以用 `luma cdn purge` 重试。新建的记录还没有缓存，不刷新。
 
 站点级配置，由 ESA 站点下所有 Luma 域名共用：
 
-- **回源**：跟随客户端协议，使用请求里的 `Host`，并校验 Traefik 的证书。HTTP 请求由 Traefik 跳转到 HTTPS。
-- **缓存**：用一条站点级规则，在所有路径上遵循应用返回的缓存头，HTML 也一样。只靠 ESA 的全局缓存配置只能覆盖静态文件扩展名，HTML 仍然不会被缓存。没有缓存头时使用 ESA 默认规则：常见静态文件（js、css、图片、字体等）会缓存，其他不缓存。
+- **回源**：始终用 HTTPS 回源，使用请求里的 `Host`，并校验 Traefik 的证书。HTTP 请求由 ESA 在边缘跳转到 HTTPS。
+- **缓存**：用一条站点级规则让所有路径都可缓存，并遵循应用返回的缓存头，HTML 也一样；没有缓存头的响应不缓存。只靠 ESA 的全局缓存配置只能覆盖静态文件扩展名，HTML 仍然不会被缓存。
 - Gzip 和 Brotli 压缩，以及带真实客户端地址的 `ali-real-client-ip` 头。
 
-每个 `cache` 路径为它的域名建一条规则：遵循应用的缓存头，没有缓存头时缓存 `ttl` 秒。命中规则时以规则为准，`cache` 路径之间不能重叠，所以规则顺序不影响结果。缓存规则按站点计配额，根域名下所有应用共用：Free 5 条、Basic 10 条、Standard 50 条。站点级规则占 1 条。超出时部署会在 Prepare CDN 这一步失败并说明原因。
+每个 `cache` 路径为它的域名建一条规则：遵循应用的缓存头，没有缓存头时缓存 `ttl` 秒。路径规则在站点级规则之后执行，所以以它的 TTL 为准；`cache` 路径之间不能重叠。缓存规则按站点计配额，根域名下所有应用共用：Free 5 条、Basic 10 条、Standard 50 条。站点级规则占 1 条。超出时部署会在 Prepare CDN 这一步失败并说明原因。
 
 其余由 ESA 默认提供：HTTP/2 和 HTTP/3、关闭 TLS 1.0、基础 DDoS 防护和托管 WAF 规则。
 

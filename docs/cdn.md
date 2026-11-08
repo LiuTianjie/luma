@@ -95,19 +95,19 @@ List under `cache` only paths whose response never depends on who is signed in. 
 
 ## What a deploy does
 
-1. **Prepare CDN**, before DNS changes. The first time for a Luma zone, Luma creates the ESA site for the zone with CNAME access, proves ownership with the `_esaauth` TXT record in Cloudflare and applies the site-wide settings below. For each service it creates a proxied ESA record pointing at the edge, updates it when the edge address changed, and reconciles the rules for its `cache` paths. A failure here stops the deploy before anything has changed.
-2. **Sync DNS** points the domain at the ESA CNAME. Switching between A and CNAME replaces the record in place.
-3. **ESA certificate** requests ESA's free certificate and waits for it, up to 10 minutes. ESA validates the certificate over HTTP, so this can only happen after DNS points at ESA; a domain switching for the first time may have no HTTPS certificate for a few minutes. If it takes longer, the step is a warning and the rollout continues. ESA renews the certificate automatically.
-4. The Nomad rollout and the public route probe run as before.
+1. **Prepare CDN**, before DNS changes. The first time for a Luma zone, Luma creates the ESA site for the zone with CNAME access, proves ownership with the `_esaauth` TXT record in Cloudflare and applies the site-wide settings below. For each service it creates a proxied ESA record pointing at the edge, updates it when the edge address changed, and reconciles the rules for its `cache` paths. It then writes the `_acme-challenge` CNAME that delegates certificate validation to ESA and waits, up to 15 minutes, until ESA has issued the free certificate. A failure here, including a certificate that is still pending, stops the deploy before DNS changes; deploy again later. ESA renews the certificate through the same delegation.
+2. **Sync DNS** points the domain at the ESA CNAME, which already serves HTTPS. Switching between A and CNAME replaces the record in place.
+3. The Nomad rollout runs as before. `redirectFrom` hosts move to the edge right after it, once their redirect routes are live; a DNS failure for them is a warning. Hosts dropped from `redirectFrom` get their DNS record removed.
+4. The public route probe connects to the edge directly with the domain as SNI, so a CDN error cannot trigger a recovery of a healthy application.
 5. **Purge CDN** refreshes the cache after the new version is live: the whole hostname by default, or the `purge` paths. A refresh failure is a warning, never a failed deploy; run `luma cdn purge` to retry. A newly created record is not refreshed because it has no cache yet.
 
 Site-wide settings, shared by every Luma domain on the ESA site:
 
-- **Origin**: fetch with the client's protocol and the request's `Host`, and verify Traefik's certificate. Plain HTTP gets Traefik's redirect to HTTPS.
-- **Cache**: one site-wide rule honours the application's cache headers on every path, HTML included. ESA's global cache setting alone only covers static file extensions, so HTML would stay uncached. Without headers, ESA's defaults apply: common static files (js, css, images, fonts and similar) are cached, everything else is not.
+- **Origin**: always fetch over HTTPS with the request's `Host`, and verify Traefik's certificate. ESA redirects plain HTTP to HTTPS at the edge.
+- **Cache**: one site-wide rule makes every path eligible for caching and honours the application's cache headers, HTML included; a response without cache headers is not cached. ESA's global cache setting alone only covers static file extensions, so HTML would stay uncached.
 - Gzip and Brotli compression, and the `ali-real-client-ip` header with the real client address.
 
-Each `cache` path gets one rule for its domain: honour the application's headers, and without them cache for `ttl` seconds. A matching rule replaces the global setting, and `cache` paths cannot overlap, so rule order never matters. Cache rules count against a per-site quota shared by every application on the root domain: 5 on Free, 10 on Basic, 50 on Standard. The site-wide rule takes one. A deploy that would exceed it fails at Prepare CDN with that explanation.
+Each `cache` path gets one rule for its domain: honour the application's headers, and without them cache for `ttl` seconds. Path rules run after the site-wide rule, so their TTL applies, and `cache` paths cannot overlap. Cache rules count against a per-site quota shared by every application on the root domain: 5 on Free, 10 on Basic, 50 on Standard. The site-wide rule takes one. A deploy that would exceed it fails at Prepare CDN with that explanation.
 
 ESA defaults cover the rest: HTTP/2 and HTTP/3, TLS 1.0 off, basic DDoS protection and the managed WAF rules.
 
