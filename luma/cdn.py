@@ -417,7 +417,8 @@ def ensure_site(
     return site, notes
 
 
-SITE_DEFAULTS_VERSION = 2
+SITE_DEFAULTS_VERSION = 3
+SITE_RULE_PREFIX = "luma_site_"
 
 
 def _ensure_global(client: AliyunClient, *, site_id: Any, kind: str, settings: Dict[str, str]) -> Optional[str]:
@@ -436,21 +437,26 @@ def _ensure_global(client: AliyunClient, *, site_id: Any, kind: str, settings: D
 def configure_site(client: AliyunClient, site_id: Any) -> List[str]:
     """Site-wide defaults shared by every Luma domain on the site.
 
-    Global configs cost no rule quota (Basic plans allow 10 cache and 10
-    origin rules per site), so only ``cdn.cache`` paths need rules.
+    The origin setting is a global config; honouring cache headers on HTML
+    needs one site-wide cache rule. Each ``cdn.cache`` path adds one more
+    (Basic plans allow 10 cache rules per site).
     """
     applied: List[str] = []
-    for kind, settings in (
-        # Honour the application's cache headers on every path, HTML included;
-        # without headers ESA's defaults apply (static extensions only).
-        ("CacheRule", {"EdgeCacheMode": "follow_origin"}),
-        # follow: HTTPS fetches over HTTPS, plain HTTP gets Traefik's redirect.
-        # Host follows the request; Traefik's ACME certificate is verified.
-        ("OriginRule", {"OriginScheme": "follow", "OriginVerify": "on"}),
-    ):
-        change = _ensure_global(client, site_id=site_id, kind=kind, settings=settings)
-        if change:
-            applied.append(change)
+    # follow: HTTPS fetches over HTTPS, plain HTTP gets Traefik's redirect.
+    # Host follows the request; Traefik's ACME certificate is verified.
+    change = _ensure_global(client, site_id=site_id, kind="OriginRule", settings={"OriginScheme": "follow", "OriginVerify": "on"})
+    if change:
+        applied.append(change)
+    # A global cache config only applies to ESA's default static extensions
+    # (measured: HTML stayed DYNAMIC), so honouring the application's cache
+    # headers on every path, HTML included, takes one site-wide rule.
+    applied.extend(_reconcile_rules(
+        client,
+        site_id=site_id,
+        kind="CacheRule",
+        prefix=SITE_RULE_PREFIX,
+        desired=[{"RuleName": SITE_RULE_PREFIX + "origin_headers", "Rule": "true", "EdgeCacheMode": "follow_origin"}],
+    ))
     compression = client.esa("ListCompressionRules", SiteId=site_id, ConfigType="global")
     if not compression.get("Configs"):
         client.esa("CreateCompressionRule", SiteId=site_id, Gzip="on", Brotli="on")

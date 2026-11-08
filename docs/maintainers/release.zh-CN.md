@@ -148,7 +148,7 @@ export LUMA_CONTROL_IMAGE="$PREVIOUS_CONTROL_IMAGE"
 5. 创建标签，发布带版本的镜像、GitHub 归档和 PyPI 包：
 
 ```bash
-git tag v0.2.47
+git tag v0.2.48
 git push origin main --tags
 ```
 
@@ -157,13 +157,13 @@ git push origin main --tags
 6. CI 用户使用以下方式安装：
 
 ```bash
-python -m pip install "luma-infra==0.2.47"
+python -m pip install "luma-infra==0.2.48"
 ```
 
 交互式使用仍可采用：
 
 ```bash
-export LUMA_INSTALL_REF=v0.2.47
+export LUMA_INSTALL_REF=v0.2.48
 curl -fsSL "https://raw.githubusercontent.com/LiuTianjie/luma/$LUMA_INSTALL_REF/scripts/install-luma.sh" -o /tmp/install-luma.sh && sh /tmp/install-luma.sh
 ```
 
@@ -201,7 +201,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninst
 ```yaml
 defaults:
   images:
-    lumaControl: ghcr.io/liutianjie/luma-control:v0.2.47
+    lumaControl: ghcr.io/liutianjie/luma-control:v0.2.48
 ```
 
 ## 最新版本渠道 {#latest-channel}
@@ -217,7 +217,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 CI 应优先使用固定版本的 PyPI 包：
 
 ```bash
-python -m pip install "luma-infra==0.2.47"
+python -m pip install "luma-infra==0.2.48"
 ```
 
 ## 自定义托管地址或派生仓库 {#custom-host-or-fork}
@@ -227,7 +227,7 @@ python -m pip install "luma-infra==0.2.47"
 ```bash
 curl -fsSL https://example.com/install-luma.sh | \
   LUMA_REPO_URL=https://github.com/acme/luma \
-  LUMA_INSTALL_REF=v0.2.47 \
+  LUMA_INSTALL_REF=v0.2.48 \
   sh
 ```
 

@@ -7315,6 +7315,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         written = [str(target)]
         cdn_prepared = _prepare_cdn_step(steps, progress, config, state, service)
         dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service, override=cdn_prepared.get("override")), progress=progress)
+        _sync_redirect_dns_steps(steps, progress, config, service, skip=bool(body.get("skipDns")))
         _cdn_certificate_step(steps, progress, state, service, cdn_prepared, skip_dns=bool(body.get("skipDns")))
         orchestrator_result = _deploy_step(
             steps,
@@ -7580,6 +7581,7 @@ def _remove_service_deployment(
         progress=progress,
     )
     _remove_cdn_steps(steps, progress, state, service, dry_run=dry_run)
+    _delete_redirect_dns_steps(steps, progress, config, service, dry_run=dry_run, skip=bool(body.get("skipDns")))
     orchestrator_result = _deploy_step(
         steps,
         "Remove Nomad job",
@@ -7665,6 +7667,7 @@ def _remove_compose_deployment(
             )
         )
         _remove_cdn_steps(steps, progress, state, service_spec, dry_run=dry_run, label=service.name)
+        _delete_redirect_dns_steps(steps, progress, config, service_spec, dry_run=dry_run, skip=bool(body.get("skipDns")), label=service.name)
     orchestrator_result = _deploy_step(
         steps,
         "Remove Nomad job",
@@ -8069,6 +8072,8 @@ def _reconcile_application_delivery(
             route_target.parent.mkdir(parents=True, exist_ok=True)
             route_results.append(_write_route_file(route_target, route_text, routes_root=routes_root))
         dns_results.append(sync_dns(config, route_service, override=cdn_service_dns_override(state, route_service)))
+        for host in route_service.redirect_from:
+            dns_results.append(sync_dns(config, replace(route_service, domain=host, cdn=None)))
         if route_service.exposure in {"cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel"} and route_service.domain:
             probe_results.append(_wait_for_public_route(route_service))
 
@@ -9701,6 +9706,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                     progress=progress,
                 )
             )
+            _sync_redirect_dns_steps(steps, progress, config, service_spec, skip=bool(body.get("skipDns")), label=service.name)
             _cdn_certificate_step(steps, progress, state, service_spec, cdn_prepared, skip_dns=bool(body.get("skipDns")), label=service.name)
 
         orchestrator_result = _deploy_step(
@@ -10877,6 +10883,7 @@ def _compose_service_as_service_spec(deployment: ComposeDeploymentSpec, service:
         proxy=service.proxy,
         requirements=service.requirements,
         cdn=service.cdn,
+        redirect_from=service.redirect_from,
     )
 
 
@@ -12326,6 +12333,48 @@ def _prepare_cdn_step(
             _emit_progress(progress, step)
         return {}
     return _deploy_step(steps, f"Prepare CDN{suffix}", lambda: prepare_service_cdn(config, state, service), progress=progress)
+
+
+def _sync_redirect_dns_steps(
+    steps: list[dict[str, str]],
+    progress: Callable[[dict[str, str]], None] | None,
+    config: Any,
+    service: ServiceSpec,
+    *,
+    skip: bool,
+    label: str = "",
+) -> None:
+    """redirectFrom hosts always point straight at the edge, never at a CDN."""
+    for host in service.redirect_from:
+        alias = replace(service, domain=host, cdn=None, redirect_from=[])
+        _deploy_step(
+            steps,
+            f"Sync DNS {label + ' ' if label else ''}{host} (redirect)",
+            lambda alias=alias: "DNS skipped: --skip-dns" if skip else sync_dns(config, alias),
+            progress=progress,
+        )
+
+
+def _delete_redirect_dns_steps(
+    steps: list[dict[str, str]],
+    progress: Callable[[dict[str, str]], None] | None,
+    config: Any,
+    service: ServiceSpec,
+    *,
+    dry_run: bool,
+    skip: bool,
+    label: str = "",
+) -> None:
+    for host in service.redirect_from:
+        alias = replace(service, domain=host, cdn=None, redirect_from=[])
+        _deploy_step(
+            steps,
+            f"Delete DNS {label + ' ' if label else ''}{host} (redirect)",
+            lambda alias=alias: "DNS skipped: --skip-dns"
+            if skip
+            else (_planned_delete_dns_message(alias) if dry_run else delete_dns(config, alias)),
+            progress=progress,
+        )
 
 
 def _cdn_certificate_step(
@@ -15928,6 +15977,17 @@ async def _asgi_authenticated_post(request: Request) -> Response:
         return _asgi_error(500, exc, code="internal_error")
 
 
+STREAM_HEARTBEAT_SECONDS = 15.0
+_STREAM_HEARTBEAT: Any = object()
+
+
+async def _next_stream_event(queue: "asyncio.Queue[Any]") -> Any:
+    try:
+        return await asyncio.wait_for(queue.get(), timeout=STREAM_HEARTBEAT_SECONDS)
+    except asyncio.TimeoutError:
+        return _STREAM_HEARTBEAT
+
+
 def _asgi_stream_deployment(token: str, body: Dict[str, Any], *, compose: bool) -> StreamingResponse:
     async def generate() -> AsyncIterator[bytes]:
         queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue()
@@ -15956,7 +16016,12 @@ def _asgi_stream_deployment(token: str, body: Dict[str, Any], *, compose: bool) 
 
         threading.Thread(target=run, daemon=True).start()
         while True:
-            event = await queue.get()
+            event = await _next_stream_event(queue)
+            if event is _STREAM_HEARTBEAT:
+                # Long silent steps (ESA certificate, image copies) must not let
+                # proxies drop the stream as idle; clients skip blank lines.
+                yield b"\n"
+                continue
             if event is None:
                 break
             yield json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n"
@@ -15987,7 +16052,12 @@ def _asgi_stream_build_deploy(token: str, body: Dict[str, Any]) -> StreamingResp
 
         threading.Thread(target=run, daemon=True).start()
         while True:
-            event = await queue.get()
+            event = await _next_stream_event(queue)
+            if event is _STREAM_HEARTBEAT:
+                # Long silent steps (ESA certificate, image copies) must not let
+                # proxies drop the stream as idle; clients skip blank lines.
+                yield b"\n"
+                continue
             if event is None:
                 break
             yield json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n"
@@ -16018,7 +16088,12 @@ def _asgi_stream_build_run_retry(token: str, build_id: str, body: Dict[str, Any]
 
         threading.Thread(target=run, daemon=True).start()
         while True:
-            event = await queue.get()
+            event = await _next_stream_event(queue)
+            if event is _STREAM_HEARTBEAT:
+                # Long silent steps (ESA certificate, image copies) must not let
+                # proxies drop the stream as idle; clients skip blank lines.
+                yield b"\n"
+                continue
             if event is None:
                 break
             yield json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n"
@@ -16049,7 +16124,12 @@ def _asgi_stream_application_update(token: str, body: Dict[str, Any]) -> Streami
 
         threading.Thread(target=run, daemon=True).start()
         while True:
-            event = await queue.get()
+            event = await _next_stream_event(queue)
+            if event is _STREAM_HEARTBEAT:
+                # Long silent steps (ESA certificate, image copies) must not let
+                # proxies drop the stream as idle; clients skip blank lines.
+                yield b"\n"
+                continue
             if event is None:
                 break
             yield json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n"
@@ -16080,7 +16160,12 @@ def _asgi_stream_registry_serve(token: str, body: Dict[str, Any]) -> StreamingRe
 
         threading.Thread(target=run, daemon=True).start()
         while True:
-            event = await queue.get()
+            event = await _next_stream_event(queue)
+            if event is _STREAM_HEARTBEAT:
+                # Long silent steps (ESA certificate, image copies) must not let
+                # proxies drop the stream as idle; clients skip blank lines.
+                yield b"\n"
+                continue
             if event is None:
                 break
             yield json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n"

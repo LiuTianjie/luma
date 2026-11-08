@@ -37,6 +37,7 @@ SERVICE_FIELDS = {
     "proxy",
     "public",
     "publishPort",
+    "redirectFrom",
     "region",
     "relay",
     "replicas",
@@ -114,6 +115,9 @@ class ServiceSpec:
     engine: str = ""
     requirements: Dict[str, Any] = field(default_factory=dict)
     cdn: Optional[CdnSpec] = None
+    # Extra hostnames that redirect GET/HEAD to ``domain`` and pass every other
+    # method straight to the service (webhooks keep working). Never on the CDN.
+    redirect_from: List[str] = field(default_factory=list)
 
     @property
     def slug(self) -> str:
@@ -200,6 +204,7 @@ def load_service(path: Path) -> ServiceSpec:
     validate_region_exposure_syntax(region, exposure)
     cdn = parse_cdn_block(raw.get("cdn"))
     validate_cdn_exposure(cdn, exposure)
+    redirect_from = parse_redirect_from(raw.get("redirectFrom"), domain=domain, exposure=exposure)
 
     relay = raw.get("relay") or {}
     if not isinstance(relay, dict):
@@ -288,7 +293,33 @@ def load_service(path: Path) -> ServiceSpec:
         engine=engine,
         requirements=requirements,
         cdn=cdn,
+        redirect_from=redirect_from,
     )
+
+
+REDIRECT_EXPOSURES = frozenset({"cn-edge", "external-edge", "tailscale-relay"})
+_HOSTNAME = re.compile(r"^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
+
+
+def parse_redirect_from(raw: Any, *, domain: Any, exposure: str, label: str = "redirectFrom") -> List[str]:
+    """Hostnames that permanently redirect to ``domain``."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+        raise LumaError(f"{label} must be a list of hostnames")
+    if exposure not in REDIRECT_EXPOSURES:
+        raise LumaError(f"{label} requires exposure {', '.join(sorted(REDIRECT_EXPOSURES))}; got {exposure}")
+    primary = str(domain or "").strip().lower().rstrip(".")
+    result: List[str] = []
+    for item in raw:
+        host = item.strip().lower().rstrip(".")
+        if not _HOSTNAME.match(host):
+            raise LumaError(f"{label} entries must be hostnames: {item!r}")
+        if host == primary:
+            raise LumaError(f"{label} must not repeat domain {primary}")
+        if host not in result:
+            result.append(host)
+    return result
 
 
 def _load_service_build(raw: Any, slug: str) -> Optional["ServiceBuildSpec"]:

@@ -12,6 +12,26 @@ User -> Alibaba Cloud ESA node -> (cache miss) -> CN Traefik -> service
 - 有 ICP 备案的域名用 `scope: global`，一个 CNAME 同时服务国内和海外用户；`scope: overseas` 不需要备案。
 - DNS 继续放在 Cloudflare。Luma 写入指向 ESA 的仅 DNS CNAME；这些域名不要开启 Cloudflare 代理。
 
+## 根域名 {#root-domains-apex}
+
+CDN 放在 `www` 上，根域名跳转过去：
+
+```yaml
+name: web
+image: ghcr.io/example/web:1.4.0
+region: cn
+exposure: cn-edge
+domain: www.example.com
+redirectFrom: [example.com]
+port: 3000
+cdn: esa
+```
+
+- 根域名不能写成 CNAME，Cloudflare 只能"展平"：由 Cloudflare 自己去解析 ESA，再把 IP 返回给访客。这样 ESA 是按 Cloudflare 的位置给访客分配节点，而不是按访客自己的位置。itool.tech 上实测：国内访客被分到美国节点，一个页面要 10 秒。所以 Luma 拒绝在根域名上开 `cdn`，并在报错里给出下面的改法。
+- `www.example.com` 是普通 CNAME，访客自己的 DNS 会直接去问 ESA，拿到就近的节点。
+- `example.com` 保持直连 edge 的 A 记录。GET 和 HEAD 永久跳转到 `https://www.example.com`，保留路径和查询参数，浏览器会缓存这个跳转。其他方法直接转给应用，所以发到旧地址的支付回调和 webhook 仍然有效。
+- 应用的 canonical 地址、sitemap 和 OAuth 回调都要改成 `www`。WebAuthn 的 RP ID 保持根域名，passkey 就继续有效。
+
 ## 一次性准备 {#one-time-setup}
 
 1. 在阿里云控制台购买 ESA 套餐。一个套餐对应一个根域名（一个 ESA 站点）。Luma 不会替你下单。
@@ -78,19 +98,19 @@ cdn:
 4. Nomad 发布和公网路由探测照常进行。
 5. **Purge CDN** 在新版本上线后刷新缓存：默认刷新整个主机名，或只刷新 `purge` 里的路径。刷新失败只给警告，不会让部署失败，可以用 `luma cdn purge` 重试。新建的记录还没有缓存，不刷新。
 
-站点级配置，由 ESA 站点下所有 Luma 域名共用。它们是全局配置，不占规则配额：
+站点级配置，由 ESA 站点下所有 Luma 域名共用：
 
 - **回源**：跟随客户端协议，使用请求里的 `Host`，并校验 Traefik 的证书。HTTP 请求由 Traefik 跳转到 HTTPS。
-- **缓存**：在所有路径上遵循应用返回的缓存头，HTML 也一样。没有缓存头时使用 ESA 默认规则：常见静态文件（js、css、图片、字体等）会缓存，其他不缓存。
+- **缓存**：用一条站点级规则，在所有路径上遵循应用返回的缓存头，HTML 也一样。只靠 ESA 的全局缓存配置只能覆盖静态文件扩展名，HTML 仍然不会被缓存。没有缓存头时使用 ESA 默认规则：常见静态文件（js、css、图片、字体等）会缓存，其他不缓存。
 - Gzip 和 Brotli 压缩，以及带真实客户端地址的 `ali-real-client-ip` 头。
 
-每个 `cache` 路径为它的域名建一条规则：遵循应用的缓存头，没有缓存头时缓存 `ttl` 秒。命中规则时以规则为准，`cache` 路径之间不能重叠，所以规则顺序不影响结果。规则按站点计配额，根域名下所有应用共用：Free 5 条、Basic 10 条、Standard 50 条。超出时部署会在 Prepare CDN 这一步失败并说明原因。
+每个 `cache` 路径为它的域名建一条规则：遵循应用的缓存头，没有缓存头时缓存 `ttl` 秒。命中规则时以规则为准，`cache` 路径之间不能重叠，所以规则顺序不影响结果。缓存规则按站点计配额，根域名下所有应用共用：Free 5 条、Basic 10 条、Standard 50 条。站点级规则占 1 条。超出时部署会在 Prepare CDN 这一步失败并说明原因。
 
 其余由 ESA 默认提供：HTTP/2 和 HTTP/3、关闭 TLS 1.0、基础 DDoS 防护和托管 WAF 规则。
 
 ## 尽可能多缓存 {#cache-as-much-as-possible}
 
-没有自定义配置时，ESA 只缓存静态文件：HTML 和没有扩展名的路径无论应用返回什么都不缓存。Luma 的站点级缓存配置让应用的缓存头在所有路径上都生效，所以要多缓存，有两个办法：
+没有自定义配置时，ESA 只缓存静态文件：HTML 和没有扩展名的路径无论应用返回什么都不缓存。Luma 的站点级缓存规则让应用的缓存头在所有路径上都生效，所以要多缓存，有两个办法：
 
 - 让应用返回缓存头：
 

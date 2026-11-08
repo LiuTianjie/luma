@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -257,11 +258,12 @@ class DomainRuleTests(unittest.TestCase):
         client = FakeEsa()
         client.rules["OriginRule"].append({"ConfigId": 1, "ConfigType": "global", "OriginScheme": "http"})
         applied = configure_site(client, 77)
-        self.assertIn("CacheRule global created", applied)
+        self.assertIn("luma_site_origin_headers created", applied)
         self.assertIn("OriginRule global updated", applied)
         self.assertEqual(client.rules["OriginRule"], [{"ConfigId": 1, "ConfigType": "global", "OriginScheme": "follow", "OriginVerify": "on"}])
-        self.assertEqual(client.rules["CacheRule"][0]["EdgeCacheMode"], "follow_origin")
-        self.assertNotIn("Rule", client.rules["CacheRule"][0])
+        # HTML is only cached through a rule; a global cache config covers static extensions only.
+        site_rule = client.rules["CacheRule"][0]
+        self.assertEqual((site_rule["ConfigType"], site_rule["Rule"], site_rule["EdgeCacheMode"]), ("rule", "true", "follow_origin"))
         self.assertEqual(configure_site(client, 77), ["real client IP header"])
 
     def test_rule_quota_error_explains_the_shared_limit(self):
@@ -444,7 +446,7 @@ class CdnDeploymentFlowTests(unittest.TestCase):
         self.assertEqual(fake.actions().count("CreateSite"), 1)
         self.assertEqual(fake.actions().count("CreateOriginRule"), 1)
         self.assertEqual(fake.actions().count("CreateCacheRule"), 1)
-        self.assertEqual([c["ConfigType"] for c in fake.rules["OriginRule"] + fake.rules["CacheRule"]], ["global", "global"])
+        self.assertEqual([c["ConfigType"] for c in fake.rules["OriginRule"] + fake.rules["CacheRule"]], ["global", "rule"])
         purge = next(params for action, params in fake.calls if action == "PurgeCaches")
         self.assertEqual((purge["SiteId"], purge["Type"], purge["Content"]), (77, "hostname", {"Hostnames": ["web.example.com"]}))
         record = load_state()["cdnDomains"]["web.example.com"]
@@ -460,7 +462,7 @@ class CdnDeploymentFlowTests(unittest.TestCase):
         self.assertEqual(steps["Delete CDN domain"]["message"], "ESA record web.example.com deleted")
         self.assertNotIn("web.example.com", load_state().get("cdnDomains") or {})
         self.assertEqual(fake.records, {})
-        self.assertEqual([c["ConfigType"] for c in fake.rules["CacheRule"]], ["global"])
+        self.assertEqual([c["RuleName"] for c in fake.rules["CacheRule"]], ["luma_site_origin_headers"])
 
     def test_certificate_delay_is_a_warning_and_the_rollout_continues(self):
         self._add_secrets()
@@ -535,3 +537,92 @@ class CdnCheckTests(unittest.TestCase):
         verdict, reason = classify("/", 200, {"cache-control": "public, s-maxage=60", "set-cookie": "a=b", "content-type": "text/html"}, 10, {})
         self.assertEqual(verdict, "danger")
         self.assertEqual(classify("/", 200, {"cache-control": "private, no-store", "set-cookie": "a=b", "content-type": "text/html"}, 10, {})[0], "ok")
+
+
+class ApexAndRedirectTests(unittest.TestCase):
+    def test_cdn_on_the_zone_apex_is_refused_with_the_www_fix(self):
+        from luma.control.cdn import _site_name
+
+        config = LumaConfig(path=None, raw={"providers": {"dns": {"type": "cloudflare", "zone": "example.com"}}})
+        with self.assertRaisesRegex(LumaError, "domain: www.example.com with redirectFrom: \\[example.com\\]"):
+            _site_name(config, "example.com")
+        self.assertEqual(_site_name(config, "www.example.com"), "example.com")
+
+    def test_redirect_from_is_validated(self):
+        from luma.service import parse_redirect_from
+
+        self.assertEqual(parse_redirect_from(["Example.com.", "example.com"], domain="www.example.com", exposure="cn-edge"), ["example.com"])
+        for raw, exposure, message in [
+            ("example.com", "cn-edge", "must be a list"),
+            (["www.example.com"], "cn-edge", "must not repeat domain"),
+            (["not a host"], "cn-edge", "must be hostnames"),
+            (["example.com"], "tcp-relay", "requires exposure"),
+        ]:
+            with self.subTest(raw=raw), self.assertRaisesRegex(LumaError, message):
+                parse_redirect_from(raw, domain="www.example.com", exposure=exposure)
+
+    def test_edge_tags_redirect_get_and_pass_other_methods(self):
+        from luma.nomad_render import redirect_router_tags
+
+        config = LumaConfig(path=None, raw={"providers": {"dns": {"type": "cloudflare", "zone": "example.com"}}, "defaults": {"acmeDomains": ["example.com"]}})
+        tags = redirect_router_tags(config, "web", "www.example.com", ["example.com"], service="web")
+        self.assertIn("traefik.http.routers.web-redirect.rule=(Host(`example.com`)) && (Method(`GET`) || Method(`HEAD`))", tags)
+        self.assertIn("traefik.http.routers.web-redirect.middlewares=web-to-primary", tags)
+        self.assertIn("traefik.http.routers.web-alias.rule=Host(`example.com`)", tags)
+        self.assertIn("traefik.http.routers.web-alias.service=web", tags)
+        self.assertNotIn("traefik.http.routers.web-alias.middlewares=web-to-primary", tags)
+        self.assertIn("traefik.http.middlewares.web-to-primary.redirectregex.replacement=https://www.example.com$1", tags)
+        self.assertIn("traefik.http.middlewares.web-to-primary.redirectregex.permanent=true", tags)
+        self.assertIn("traefik.http.routers.web-redirect.tls.domains[0].sans=example.com", tags)
+        # Nomad interpolates ${...}; the replacement must not use it.
+        self.assertFalse(any("${" in tag for tag in tags))
+
+    def test_rendered_service_and_relay_route_carry_redirects(self):
+        from luma.nomad_render import render_nomad_job
+        from luma.render import render_tailscale_route
+
+        config = LumaConfig(path=None, raw={"providers": {"dns": {"type": "cloudflare", "zone": "example.com"}}, "nodes": {"edge": {"host": "edge", "publicIp": "203.0.113.10", "region": "cn", "roles": ["edge"]}}})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "web.yaml"
+            path.write_text(yaml.safe_dump({"name": "web", "image": "nginx:alpine", "region": "cn", "exposure": "cn-edge", "domain": "www.example.com", "redirectFrom": ["example.com"], "port": 80}), encoding="utf-8")
+            service = load_service(path)
+        job = json.loads(render_nomad_job(config, service))
+        tags = [tag for group in job["Job"]["TaskGroups"] for svc in group.get("Services") or [] for tag in svc.get("Tags") or []]
+        self.assertIn("traefik.http.routers.web.rule=Host(`www.example.com`)", tags)
+        self.assertIn("traefik.http.routers.web-redirect.priority=200", tags)
+        relay = ServiceSpec(source=Path("p.yaml"), name="panel", image="x", region="home", public=True, exposure="tailscale-relay", domain="www.example.com", port=80, redirect_from=["example.com"], relay={"url": "http://100.64.0.2:80"})
+        route = yaml.safe_load(render_tailscale_route(config, relay))
+        self.assertEqual(route["http"]["routers"]["panel-alias"]["service"], "panel")
+        self.assertEqual(route["http"]["routers"]["panel-redirect"]["middlewares"], ["panel-to-primary"])
+        self.assertEqual(route["http"]["middlewares"]["panel-to-primary"]["redirectRegex"]["replacement"], "https://www.example.com$1")
+
+    def test_deploy_points_redirect_hosts_at_the_edge(self):
+        from luma.control.server import _sync_redirect_dns_steps
+
+        service = ServiceSpec(source=Path("a.yaml"), name="web", image="nginx", region="cn", public=True, exposure="cn-edge", domain="www.example.com", port=80, cdn=parse_cdn_block("esa"), redirect_from=["example.com"])
+        steps = []
+        sync = MagicMock(return_value="DNS updated: example.com -> 203.0.113.10")
+        with patch("luma.control.server.sync_dns", sync):
+            _sync_redirect_dns_steps(steps, None, object(), service, skip=False)
+        alias = sync.call_args.args[1]
+        self.assertEqual((alias.domain, alias.cdn, sync.call_args.kwargs), ("example.com", None, {}))
+        self.assertEqual(steps[-1]["name"], "Sync DNS example.com (redirect)")
+
+
+class StreamHeartbeatTests(unittest.TestCase):
+    def test_idle_stream_yields_a_heartbeat_instead_of_going_silent(self):
+        import asyncio
+
+        from luma.control import server
+
+        async def run():
+            queue = asyncio.Queue()
+            with patch.object(server, "STREAM_HEARTBEAT_SECONDS", 0.01):
+                first = await server._next_stream_event(queue)
+                queue.put_nowait({"status": "ok"})
+                second = await server._next_stream_event(queue)
+            return first, second
+
+        first, second = asyncio.run(run())
+        self.assertIs(first, server._STREAM_HEARTBEAT)
+        self.assertEqual(second, {"status": "ok"})

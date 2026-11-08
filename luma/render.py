@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 
 from .config import LumaConfig
 from .io import dump_yaml
+from .nomad_render import redirect_routes
 from .service import ServiceSpec, tcp_entrypoint_name, tcp_relay_publish_port
 
 
@@ -68,6 +69,16 @@ def render_tailscale_route(config: LumaConfig, service: ServiceSpec) -> str:
             },
         }
     }
+    extra = redirect_routes(service_name, str(service.domain), list(service.redirect_from))
+    for router, spec in extra.get("routers", {}).items():
+        route["http"]["routers"][router] = {
+            **spec,
+            "entryPoints": [config.entrypoint],
+            "tls": {"certResolver": config.cert_resolver},
+            "service": service_name,
+        }
+    if extra.get("middlewares"):
+        route["http"]["middlewares"] = extra["middlewares"]
     return dump_yaml(route)
 
 

@@ -13,12 +13,21 @@ CDN, when `cdn:` appears in a manifest, or when a deploy fails or warns at
   serves one site. Luma never buys plans; the user buys one in the console.
 - DNS stays in Cloudflare: Luma writes a DNS-only CNAME to the ESA record's
   `RecordCname`. Never suggest turning on the Cloudflare proxy for these names.
-- Site-wide global configs (no rule quota): origin protocol `follow` with
-  certificate verification, cache `follow_origin` (honour app headers on every
-  path, HTML included), Gzip/Brotli, and the `ali-real-client-ip` header.
+- Site-wide settings: global origin `follow` with certificate verification,
+  one cache rule honouring app headers on every path, Gzip/Brotli, and the
+  `ali-real-client-ip` header.
 - Each `cdn.cache` path is one cache rule on the site. The per-site quota is
   shared by every app on the root domain: Free 5, Basic 10, Standard 50.
 - Only `cn-edge`, `external-edge` and `tailscale-relay` accept `cdn`.
+- Never put `cdn` on the zone apex (Luma refuses it): Cloudflare flattens apex
+  CNAMEs, so ESA schedules visitors by Cloudflare's location (China visitors got
+  US nodes, 10 s pages). Use `domain: www.<zone>` plus `redirectFrom: [<zone>]`;
+  the apex stays a direct A record, GET/HEAD 301 to www, other methods pass
+  through (webhooks keep working). App side: canonical/sitemap/OAuth on www,
+  keep the WebAuthn RP ID at the root domain so passkeys survive.
+- One site-wide cache rule (`luma_site_origin_headers`, `Rule: true`,
+  `follow_origin`) makes HTML honour app headers; ESA's global cache config
+  alone only covers static extensions (HTML stays `DYNAMIC`).
 
 ## Manifest
 
@@ -99,6 +108,8 @@ API, signed-in pages                    Cache-Control: private, no-store
 | `Prepare CDN` | `ownership check did not pass` | Confirm `_esaauth.<zone>` TXT in Cloudflare holds the verify code; redeploy. |
 | `Prepare CDN` | `quota reached for this site` | Remove `cdn.cache` paths across apps or upgrade the plan. |
 | `Prepare CDN` | `uses NS access` | Luma only manages CNAME-access sites. |
+| `Prepare CDN` | `cannot serve the zone apex` | Move to `domain: www.<zone>` + `redirectFrom: [<zone>]`. |
+| `x-site-cache-status: DYNAMIC` on HTML | site rule missing or app sends no-store | Redeploy (recreates the site rule); check app headers with `luma cdn check DOMAIN`. |
 | `ESA certificate` (warning) | still issuing after 10 min | DNS already points at ESA; wait, then `luma cdn status`. Rollout continued. |
 | `Purge CDN` (warning) | quota or API error | Deploy is fine; `luma cdn purge DOMAIN` to retry. |
 

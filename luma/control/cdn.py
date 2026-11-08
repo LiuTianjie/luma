@@ -89,7 +89,16 @@ def _zone(config: Any) -> str:
 
 def _site_name(config: Any, domain: str) -> str:
     zone = _zone(config)
-    if not (domain.lower() == zone or domain.lower().endswith("." + zone)):
+    if domain.lower() == zone:
+        # The apex cannot be a CNAME, so Cloudflare flattens it and resolves ESA
+        # from its own servers: ESA then schedules every visitor by Cloudflare's
+        # location (measured: China visitors served from US nodes, 10 s pages).
+        raise LumaError(
+            f"cdn cannot serve the zone apex {zone}: Cloudflare must flatten an apex CNAME, so ESA would schedule "
+            f"visitors by Cloudflare's resolvers instead of their own location. Use domain: www.{zone} with "
+            f"redirectFrom: [{zone}]; the apex then redirects to www and stays a direct A record"
+        )
+    if not domain.lower().endswith("." + zone):
         raise LumaError(f"{domain} is outside the Luma zone {zone}; ESA sites are created per Luma zone")
     return zone
 
