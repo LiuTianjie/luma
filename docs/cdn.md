@@ -105,11 +105,11 @@ Site-wide settings, shared by every Luma domain on the ESA site:
 
 - **Origin**: always fetch over HTTPS with the request's `Host`, and verify Traefik's certificate. ESA redirects plain HTTP to HTTPS at the edge.
 - **Cache**: one site-wide rule makes every path eligible for caching and honours the application's cache headers, HTML included; a response without cache headers is not cached. ESA's global cache setting alone only covers static file extensions, so HTML would stay uncached.
-- Gzip and Brotli compression, and the `ali-real-client-ip` header with the real client address.
+- Gzip, Brotli and Zstd compression, HTTP/2 and HTTP/3 to visitors, HTTP/2 to the origin, WebSocket, and the `ali-real-client-ip` header with the real client address.
 
 Each `cache` path gets one rule for its domain: honour the application's headers, and without them cache for `ttl` seconds. Path rules run after the site-wide rule, so their TTL applies, and `cache` paths cannot overlap. Cache rules count against a per-site quota shared by every application on the root domain: 5 on Free, 10 on Basic, 50 on Standard. The site-wide rule takes one. A deploy that would exceed it fails at Prepare CDN with that explanation.
 
-ESA defaults cover the rest: HTTP/2 and HTTP/3, TLS 1.0 off, basic DDoS protection and the managed WAF rules.
+ESA defaults cover the rest: TLS 1.0 off, basic DDoS protection and the managed WAF rules. Luma leaves paid options such as smart routing off.
 
 ## Cache as much as possible
 

@@ -34,7 +34,7 @@ class FakeEsa:
         self.sites = dict(sites or {})
         self.records = dict(records or {})
         self.global_configs = set()
-        self.rules = {"CacheRule": [], "OriginRule": [], "HttpsApplicationConfiguration": []}
+        self.rules = {"CacheRule": [], "OriginRule": [], "HttpsApplicationConfiguration": [], "HttpsBasicConfiguration": [], "NetworkOptimization": [], "CompressionRule": []}
         self.next_config = 100
         self.cert_polls = 0
         self.cert_after_polls = cert_after_polls
@@ -55,10 +55,8 @@ class FakeEsa:
             for site in self.sites.values():
                 site["Status"] = "active"
             return {"Passed": True}
-        if action == "ListCompressionRules":
-            return {"Configs": [{"ConfigId": 1}] if action in self.global_configs else []}
         for kind, configs in self.rules.items():
-            if action == f"List{kind}s" or (kind == "HttpsApplicationConfiguration" and action == "ListHttpsApplicationConfigurations"):
+            if action == f"List{kind}s":
                 wanted = params.get("ConfigType")
                 return {"Configs": [dict(item) for item in configs if not wanted or item["ConfigType"] == wanted]}
             if action == f"Create{kind}":
@@ -73,9 +71,6 @@ class FakeEsa:
             if action == f"Delete{kind}":
                 configs[:] = [c for c in configs if c["ConfigId"] != params["ConfigId"]]
                 return {}
-        if action == "CreateCompressionRule":
-            self.global_configs.add("ListCompressionRules")
-            return {"ConfigId": 2}
         if action == "UpdateManagedTransform":
             return {}
         if action == "GetDcvDelegation":
@@ -275,6 +270,9 @@ class DomainRuleTests(unittest.TestCase):
             (site_rule["ConfigType"], site_rule["Rule"], site_rule["BypassCache"], site_rule["EdgeCacheMode"], site_rule["Sequence"]),
             ("rule", "true", "cache_all", "follow_origin_bypass", "1"),
         )
+        self.assertEqual(client.rules["HttpsBasicConfiguration"][0]["Http2"], "on")
+        self.assertEqual(client.rules["NetworkOptimization"][0]["Http2Origin"], "on")
+        self.assertEqual(client.rules["CompressionRule"][0]["Zstd"], "on")
         self.assertEqual(configure_site(client, 77), ["real client IP header"])
 
     def test_rule_quota_error_explains_the_shared_limit(self):

@@ -418,7 +418,7 @@ def ensure_site(
     return site, notes
 
 
-SITE_DEFAULTS_VERSION = 5
+SITE_DEFAULTS_VERSION = 6
 DOMAIN_RULE_SEQUENCE = 100
 SITE_RULE_PREFIX = "luma_site_"
 
@@ -450,6 +450,12 @@ def configure_site(client: AliyunClient, site_id: Any) -> List[str]:
     for kind, settings in (
         ("OriginRule", {"OriginScheme": "https", "OriginVerify": "on"}),
         ("HttpsApplicationConfiguration", {"HttpsForce": "on", "HttpsForceCode": "301"}),
+        # HTTP/2 and HTTP/3 to visitors; ESA's console showed HTTP/2 off.
+        ("HttpsBasicConfiguration", {"Http2": "on", "Http3": "on"}),
+        # Traefik speaks HTTP/2 over TLS; WebSocket stays on for apps that use it.
+        ("NetworkOptimization", {"Http2Origin": "on", "Websocket": "on"}),
+        # Each encoding is only used when the visitor's browser accepts it.
+        ("CompressionRule", {"Gzip": "on", "Brotli": "on", "Zstd": "on"}),
     ):
         change = _ensure_global(client, site_id=site_id, kind=kind, settings=settings)
         if change:
@@ -473,10 +479,6 @@ def configure_site(client: AliyunClient, site_id: Any) -> List[str]:
             "Sequence": "1",
         }],
     ))
-    compression = client.esa("ListCompressionRules", SiteId=site_id, ConfigType="global")
-    if not compression.get("Configs"):
-        client.esa("CreateCompressionRule", SiteId=site_id, Gzip="on", Brotli="on")
-        applied.append("gzip+brotli")
     client.esa("UpdateManagedTransform", SiteId=site_id, AddRealClientIpHeader="on")
     applied.append("real client IP header")
     return applied
