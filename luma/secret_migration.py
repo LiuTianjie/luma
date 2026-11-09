@@ -258,8 +258,16 @@ def migrate(journal: dict[str, Any], state: Mapping[str, Any]) -> dict[str, Any]
     if not progress.get("backup"):
         _private_backup(journal, client)
     if not progress.get("databaseEncrypted"):
-        database.migrate_encryption()
+        try:
+            database.migrate_encryption()
+        except database.EncryptionCleanupPending as exc:
+            started = progress.setdefault("databaseCleanupStartedAt", int(time.time()))
+            _save(journal)
+            if time.time() - started >= 600:
+                raise LumaError("SQLite cleanup was blocked for 10 minutes; encrypted data was retained") from exc
+            _pending(str(exc))
         progress["databaseEncrypted"] = True
+        progress.pop("databaseCleanupStartedAt", None)
         _save(journal)
     for item in journal["jobs"]:
         if not item.get("secretsMigrated"):

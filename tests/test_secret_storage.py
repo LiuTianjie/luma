@@ -5,6 +5,8 @@ import io
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -139,6 +141,61 @@ class EncryptedPersistence(KeyFixture):
         self.assertEqual(state.load_state(), original)
         for path in (self.root / "control").glob("control.sqlite3*"):
             self.assertNotIn(b"nonproduction-key", path.read_bytes())
+
+    def test_encryption_cleanup_keeps_late_writers_out_until_journals_are_cleared(self):
+        original = self.data()
+        state.save_state(original)
+        self.enable()
+        connect = database.connect
+        probes = []
+        class ConcurrentWriter:
+            def __init__(self, connection):
+                self.connection = connection
+            def __getattr__(self, name):
+                return getattr(self.connection, name)
+            def execute(self, sql, *args):
+                if sql == "VACUUM":
+                    script = ("import sqlite3,sys; c=sqlite3.connect(sys.argv[1],timeout=0); "
+                              "c.execute(\"INSERT INTO database_meta VALUES('late-writer','unexpected')\"); c.commit()")
+                    probes.append(subprocess.run([sys.executable, "-c", script, str(database.database_path())], capture_output=True, text=True, timeout=10))
+                return self.connection.execute(sql, *args)
+        with mock.patch.object(database, "connect", side_effect=lambda *args, **kwargs: ConcurrentWriter(connect(*args, **kwargs))):
+            self.assertTrue(database.migrate_encryption()["encrypted"])
+        self.assertEqual(len(probes), 1)
+        self.assertNotEqual(probes[0].returncode, 0)
+        self.assertIn("locked", probes[0].stderr)
+        self.assertEqual(state.load_state(), original)
+
+    def test_old_reader_keeps_cleanup_pending_without_undoing_encryption(self):
+        original = self.data()
+        state.save_state(original)
+        reader = sqlite3.connect(database.database_path(), isolation_level=None)
+        reader.execute("BEGIN")
+        reader.execute("SELECT payload FROM control_config").fetchall()
+        self.enable()
+        connect = database.connect
+        try:
+            with mock.patch.object(database, "connect", side_effect=lambda *args, **kwargs: connect(*args, **{**kwargs, "timeout": 0})):
+                with self.assertRaises(database.EncryptionCleanupPending):
+                    database.migrate_encryption()
+            self.assertEqual(state.load_state(), original)
+        finally:
+            reader.close()
+        self.assertTrue(database.migrate_encryption()["encrypted"])
+        for path in (self.root / "control").glob("control.sqlite3*"):
+            self.assertNotIn(b"nonproduction-key", path.read_bytes())
+
+    def test_pending_sqlite_cleanup_keeps_the_migration_unverified(self):
+        self.enable()
+        journal = {"secretMigration": {"policiesApplied": True, "backup": "fixture"}, "jobs": []}
+        with mock.patch.object(secret_migration, "_save"), mock.patch.object(secret_migration, "_client"), mock.patch.object(database, "migrate_encryption", side_effect=database.EncryptionCleanupPending("readers still active")):
+            with self.assertRaises(nomad_upgrade.Pending):
+                secret_migration.migrate(journal, {})
+            self.assertFalse(journal["secretMigration"].get("databaseEncrypted"))
+            journal["secretMigration"]["databaseCleanupStartedAt"] = time.time() - 601
+            with self.assertRaisesRegex(LumaError, "10 minutes"):
+                secret_migration.migrate(journal, {})
+            self.assertFalse(journal["secretMigration"].get("databaseEncrypted"))
 
     def test_tampering_record_swaps_and_missing_keys_fail_closed(self):
         self.enable()

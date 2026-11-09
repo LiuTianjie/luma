@@ -450,6 +450,10 @@ def prepare_job(job: dict[str, Any], *, enforce: bool | None = None) -> None:
                     cfg["args"] = arguments
                 else:
                     script = "/app/nomad_exporter.py" if role == "exporter" else "/app/log_shipper.py"
+                    # Nomad's command replaces Docker Cmd, not ENTRYPOINT.
+                    # The Observe image already starts python3; use a neutral
+                    # entrypoint so the credential adapter runs exactly once.
+                    cfg["entrypoint"] = ["/usr/bin/env"]
                     cfg["command"] = "python3"
                     cfg["args"] = [target + "/client.py", script]
             if role == "traefik" and env.get("LUMA_NOMAD_CREDENTIAL_WRAPPER") != "1":

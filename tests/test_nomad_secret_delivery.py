@@ -186,6 +186,47 @@ class NomadSecretDelivery(SecurityFixture):
         with self.admin_api._opener().open(request, timeout=30) as response:
             return json.load(response)
 
+    def test_existing_observe_entrypoint_runs_authenticated_consumers(self):
+        source = Path(__file__).resolve().parents[1] / "observe"
+        context = self.root / "observe-image"
+        context.mkdir()
+        for filename in ("Dockerfile", "nomad_exporter.py", "feishu_webhook.py", "host_gateway.py", "log_shipper.py", "nomad_auth.py"):
+            shutil.copy2(source / filename, context / filename)
+        tag = "luma-observe-security-test:" + self.root.name
+        subprocess.run(["docker", "build", "-t", tag, str(context)], check=True, capture_output=True, timeout=120)
+        self.addCleanup(lambda: subprocess.run(["docker", "image", "rm", tag], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20))
+        for task_name, metric in (("nomad-exporter", "luma_observe_nomad_up"), ("log-shipper", "luma_observe_log_shipper_nomad_up")):
+            with self.subTest(task=task_name):
+                job = {"ID": "luma-observe", "TaskGroups": [{"Name": "observe", "Tasks": [{"Name": task_name, "Config": {"image": tag}, "Env": {}}]}]}
+                nomad_security.prepare_job(job)
+                task = job["TaskGroups"][0]["Tasks"][0]
+                config = task["Config"]
+                port = nomad_test_ports()[0]
+                task["Env"].update(NOMAD_ADDR=self.address, LUMA_OBSERVE_PORT=str(port), LUMA_OBSERVE_BIND="127.0.0.1")
+                command = ["docker", "run", "-d", "--network", "host", "--name", self.root.name + "-" + task_name]
+                for key, value in task["Env"].items():
+                    command += ["-e", key + "=" + value]
+                for mount in config["mount"]:
+                    command += ["--mount", "type=bind,src=" + mount["source"] + ",dst=" + mount["target"] + ",readonly"]
+                # Docker Cmd is the same command/args pair Nomad sends. Keep
+                # the image's inherited ENTRYPOINT unless rendering overrides it.
+                if config.get("entrypoint"):
+                    command += ["--entrypoint", config["entrypoint"][0]]
+                command += [tag, config["command"], *config["args"]]
+                container = subprocess.check_output(command, text=True, timeout=20).strip()
+                self.addCleanup(lambda cid=container: subprocess.run(["docker", "rm", "-f", cid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20))
+                def ready():
+                    running = subprocess.check_output(["docker", "inspect", "--format", "{{.State.Running}}", container], text=True, timeout=5).strip()
+                    if running != "true":
+                        logs = subprocess.run(["docker", "logs", container], capture_output=True, text=True, timeout=5)
+                        self.fail(task_name + " exited: " + (logs.stdout + logs.stderr)[-2000:])
+                    try:
+                        with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=2) as response:
+                            return metric + " 1" in response.read().decode().splitlines()
+                    except OSError:
+                        return False
+                self.wait_for(ready, task_name + " authenticated Nomad read", timeout=40)
+
     def test_fresh_encryption_real_delivery_and_cross_application_denial(self):
         secret_storage.provision()
         values = ['new-key-a-雪-"quoted"\\\n${secret.luma.literal}\n$(never-execute)\t', "new-key-b-only"]

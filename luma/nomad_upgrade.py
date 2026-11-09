@@ -531,6 +531,28 @@ class Pending(Exception):
     pass
 
 
+def _repair_observe_startup(journal: dict[str, Any]) -> None:
+    """Allow the saved consumer rollout to repair its known legacy command."""
+    for item in journal.get("jobs") or []:
+        if item["Job"].get("ID") != "luma-observe" or not item.get("consumerModifyIndex"):
+            continue
+        legacy = any(
+            task.get("Name") in {"nomad-exporter", "log-shipper"}
+            and (task.get("Config") or {}).get("command") == "python3"
+            and not (task.get("Config") or {}).get("entrypoint")
+            and (task.get("Config") or {}).get("args") == ["/run/luma-nomad-credential/client.py",
+                "/app/nomad_exporter.py" if task.get("Name") == "nomad-exporter" else "/app/log_shipper.py"]
+            for group in item["Job"].get("TaskGroups") or [] for task in group.get("Tasks") or []
+        )
+        if legacy:
+            _, unhealthy = _workload_health(journal)
+            if not any(not message.startswith("luma-observe:") for message in unhealthy):
+                # The existing consumer intent still validates the exact prior
+                # job and persists its target before submitting any correction.
+                _consumers(journal)
+        return
+
+
 def _workload_health(journal: Mapping[str, Any]) -> tuple[str, list[str]]:
     """Read current service health without modifying jobs or exposing check output."""
     jobs = [item["Job"] for item in journal.get("jobs") or []
@@ -792,6 +814,8 @@ def _reconcile_locked() -> dict[str, Any]:
         if completed is not None and completed.get("position") != position:
             raise LumaError("saved Nomad step result does not match the migration position")
         if kind in WORKLOAD_STEPS and completed is None and "taskPayload" not in journal:
+            if kind == "consumers":
+                _repair_observe_startup(journal)
             _wait_for_workloads(journal, after=False)
         if completed is not None:
             result = completed["result"]
