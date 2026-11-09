@@ -444,6 +444,12 @@ if ! validate_luma_runtime; then
 fi
 
 if [ "$LOCAL_CHECKOUT" -eq 0 ]; then
+  # A root-owned system command must also be executable by ordinary users.
+  # Only share the public package directory; lifecycle records and credentials
+  # keep their private permissions. Per-user installations stay private.
+  if [ "$(id -u)" -eq 0 ] && [ "$BIN_DIR" = "/usr/local/bin" ]; then
+    chmod 755 "$CANDIDATE_DIR"
+  fi
   # Persist the final intended owner, including root preparing an operator's runtime.
   if [ -n "$OWNER_SPEC" ]; then
     chown -R "$OWNER_SPEC" "$CANDIDATE_DIR"
