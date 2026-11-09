@@ -97,6 +97,32 @@ def render_pf(policy: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _pf_locked(command: str) -> str:
+    # Both the installer and five-second reconciliation job mutate PF. Keep
+    # their transactions separate, including when a parent is interrupted.
+    runner = f'''import fcntl, os, subprocess, sys, time
+fd = os.open({str(SECURITY_ROOT / 'firewall.lock')!r}, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+deadline = time.monotonic() + 10
+while True:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except BlockingIOError:
+        if time.monotonic() >= deadline:
+            sys.exit("Nomad PF update lock remained busy; existing rules retained")
+        time.sleep(0.1)
+for attempt in range(4):
+    result = subprocess.run(["/bin/sh", "-c", sys.argv[1]], capture_output=True, text=True, pass_fds=(fd,))
+    busy = "pfctl: DIOCADDRULE: Resource busy" in result.stderr
+    if result.returncode == 0 or not busy or attempt == 3:
+        sys.stdout.write(result.stdout)
+        sys.stderr.write(result.stderr)
+        sys.exit(result.returncode)
+    time.sleep(0.2 * (2 ** attempt))
+'''
+    return "/usr/bin/python3 -c " + shlex.quote(runner) + " " + shlex.quote(command)
+
+
 def render_guard_script(os_name: str, policy: Mapping[str, Any] | None = None) -> str:
     if os_name == "linux":
         apply = 'command -v nft >/dev/null\nnft --check --file "$work/rules"\nnft --file "$work/rules"\nsha256sum "$work/rules" | cut -d \' \' -f 1'
@@ -124,7 +150,7 @@ def render_guard_script(os_name: str, policy: Mapping[str, Any] | None = None) -
         )
     else:
         raise LumaError("unsupported firewall platform")
-    return (
+    script = (
         "#!/bin/sh\nset -eu\numask 077\n"
         f"test -f {RULES} && test ! -L {RULES}\n"
         f"work=$(mktemp -d {SECURITY_ROOT}/.guard.XXXXXX)\n"
@@ -134,6 +160,7 @@ def render_guard_script(os_name: str, policy: Mapping[str, Any] | None = None) -
         'apply_rules > "$work/applied"\n'
         f'mv "$work/applied" {APPLIED}\n'
     )
+    return "#!/bin/sh\nexec " + _pf_locked(script) + "\n" if os_name == "darwin" else script
 
 
 def guard_service() -> str:
@@ -202,7 +229,8 @@ if 'anchor "luma-nomad"' not in s:
     p.write_text(''.join(lines))
 '''
         encoded = base64.b64encode(installer.encode()).decode()
-        remote.sudo(f"set -eu; printf %s {shlex.quote(encoded)} | base64 -d | python3; /sbin/pfctl -nf /etc/pf.conf; /sbin/pfctl -f /etc/pf.conf; {GUARD}")
+        reload_root = f"set -eu; printf %s {shlex.quote(encoded)} | base64 -d | python3; /sbin/pfctl -nf /etc/pf.conf; /sbin/pfctl -f /etc/pf.conf"
+        remote.sudo(f"set -eu; {_pf_locked(reload_root)}; {GUARD}")
         plist = f'''<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>Label</key><string>io.luma.nomad-guard</string>
