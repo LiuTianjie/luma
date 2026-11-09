@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .errors import LumaError
+from .launchd import restart_service
 from .nomad_security import SECURITY_ROOT, mesh_ip, private_write, read_private_json, security_root
 
 GUARD = "/opt/luma/security/bin/nomad-guard"
@@ -211,7 +212,7 @@ if 'anchor "luma-nomad"' not in s:
 </dict></plist>
 '''
         remote.write_secret(plist, "/Library/LaunchDaemons/io.luma.nomad-guard.plist", mode="644")
-        remote.sudo("launchctl bootout system/io.luma.nomad-guard >/dev/null 2>&1 || true; launchctl bootstrap system /Library/LaunchDaemons/io.luma.nomad-guard.plist")
+        restart_service(remote, label="io.luma.nomad-guard", plist="/Library/LaunchDaemons/io.luma.nomad-guard.plist")
     return "Nomad network boundary installed and applied"
 
 

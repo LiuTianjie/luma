@@ -1927,10 +1927,8 @@ def install_nomad_node(
                 "(systemctl reset-failed nomad || true) && systemctl restart nomad"
             )
         else:
-            remote.sudo(
-                "launchctl unload /Library/LaunchDaemons/io.luma.nomad.plist 2>/dev/null || true; "
-                "launchctl load /Library/LaunchDaemons/io.luma.nomad.plist"
-            )
+            from .launchd import restart_service
+            restart_service(remote, label="io.luma.nomad", plist="/Library/LaunchDaemons/io.luma.nomad.plist")
         return "Nomad agent started"
 
     _step(

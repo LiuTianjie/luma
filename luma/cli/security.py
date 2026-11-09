@@ -259,7 +259,8 @@ def apply_node(path: Path, expected: str) -> dict[str, Any]:
         remote.run("systemctl daemon-reload && systemctl restart nomad")
     else:
         private_write(Path("/Library/LaunchDaemons/io.luma.nomad.plist"), unit["service_unit"], mode=0o644)
-        remote.run("launchctl bootout system/io.luma.nomad >/dev/null 2>&1 || true; launchctl bootstrap system /Library/LaunchDaemons/io.luma.nomad.plist")
+        from ..launchd import restart_service
+        restart_service(remote, label="io.luma.nomad", plist="/Library/LaunchDaemons/io.luma.nomad.plist")
     private_write(security_root() / "node.json", json.dumps({**{k: bundle[k] for k in ("schema", "node", "role", "nomadVersion", "aclRequired", "trustedHost", "tls")}, "configSHA256": hashlib.sha256(bundle["config"].encode()).hexdigest()}, indent=2) + "\n")
     return {"node": bundle["node"], "applied": True, "backup": str(backup), "verificationRequired": "verify-acl and remote/network probes; a restart return code is not fleet acceptance"}
 

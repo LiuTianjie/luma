@@ -227,14 +227,12 @@ def switch_operation(
 
 def restart_agent(record: dict[str, Any]) -> None:
     if sys.platform == "darwin":
+        from .launchd import restart_service
+        from .local import LocalExecutor
         label = DARWIN_LABEL
         plist = "/Library/LaunchDaemons/io.luma.node-agent.plist"
-        command = (
-            f"launchctl bootout system/{label} >/dev/null 2>&1 || true; "
-            f"launchctl bootstrap system {plist}; "
-            f"launchctl kickstart -k system/{label}"
-        )
-        completed = _run_privileged(["sh", "-c", command])
+        restart_service(LocalExecutor(), label=label, plist=plist)
+        completed = _run_privileged(["launchctl", "kickstart", "-k", "system/" + label])
     else:
         completed = _run_privileged([
             "sh", "-c",
