@@ -2,6 +2,8 @@
 
 `luma bootstrap` and `luma node join` provision ACLs, mutual TLS, introduction identities and persistent network rules on first use. The installer checks the running configuration before reporting success. No separate sequence of security commands is required.
 
+This release hardens Nomad and node access; it does not complete business-secret remediation. Business secrets in SQLite remain unencrypted, and secret scopes select configuration rather than authorize delivery by application identity. Authorized Nomad job readers can still read job Env. Short-lived tokens currently cover node introduction; short-lived business credentials, deduplication by actual credential and batch rotation remain unimplemented.
+
 For existing clusters, update the manager with `luma update manager` (or Dashboard **Update Control**), then update all node agents with the normal fleet or local update command. Watch **Cluster security upgrade** in the system update page. Package versions and security migration have separate results; only **All checks passed** confirms migration completion.
 
 The manager installs an independent root service, `luma-nomad-security.service`. It waits for authenticated upgraded agents, checks recorded deployments and real storage sources, persists each step, and survives Control replacement and Nomad restarts. Offline nodes remain explicitly pending. Unknown live jobs, conflicting identities or unsafe configurations stop migration with a reason. Fix the cause and rerun the ordinary manager update to inspect and resume.

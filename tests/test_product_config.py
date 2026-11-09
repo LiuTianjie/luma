@@ -1437,8 +1437,8 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("4646, 4647, 4648, 7890", rules)
         commands = "\n".join(call.args[0] for call in remote.sudo.call_args_list)
         self.assertIn("systemctl restart luma-nomad-guard.service", commands)
-        self.assertIn("ufw insert 1 allow in on tailscale0 to any port 7890", commands)
-        self.assertIn("ufw insert 1 allow in on docker0 to any port 7890", commands)
+        self.assertIn("ufw prepend allow in on tailscale0 to any port 7890", commands)
+        self.assertIn("ufw prepend allow in on docker0 to any port 7890", commands)
 
     def test_configure_firewall_restricts_nomad_public_when_tailscale_is_present(self):
         remote = Mock()

@@ -43,6 +43,11 @@ class CliTests(unittest.TestCase):
             patcher = patch("luma.cli.manager." + name)
             patcher.start()
             self.addCleanup(patcher.stop)
+        # Enrollment now connects Tailscale before registering. Keep that host
+        # operation isolated too; setup_tailscale is tested with a mock executor.
+        patcher = patch("luma.cli.nodes.setup_tailscale", return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_last_command_value_preserves_digest_colon_after_sudo_prompt(self):
         output = '[sudo] password for tao: ["ghcr.io/liutianjie/luma-control@sha256:abc123"]\n'
@@ -2083,7 +2088,7 @@ class CliTests(unittest.TestCase):
                     "luma.cli.nodes.install_docker", return_value="Docker available"
                 ), patch("luma.cli.common.ControlClient", return_value=client), patch(
                     "luma.cli.nodes.install_nomad_node", side_effect=LumaError("nomad join failed")
-                ), patch("builtins.print") as printed:
+                ), patch("luma.cli.nodes._local_tailscale_ip", return_value="100.64.0.10"), patch("builtins.print") as printed:
                     code = main(
                         [
                             "node",

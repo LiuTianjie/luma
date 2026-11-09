@@ -2,6 +2,8 @@
 
 首次执行 `luma bootstrap` 和 `luma node join` 就会配置 ACL、双向 TLS、节点引入凭据和持久网络规则。安装程序验证实际运行配置后才报告节点成功。用户不需要另外执行一组 `luma security` 命令。
 
+本版覆盖 Nomad 与节点入口加固，尚未完成业务密钥体系整改：SQLite 中的业务秘密仍未加密，现有 secret scope 只是配置范围，尚无按应用身份授权的独立秘密分发。具有 Nomad 作业读取权限的身份仍能读取作业 Env。短期令牌目前用于节点引入，业务长期凭据短期化、按实际凭据去重与批量轮换仍未实现。
+
 已有集群按正常方式升级即可：
 
 1. 在管理节点执行 `luma update manager`，或使用 Dashboard 的「升级 Control」。

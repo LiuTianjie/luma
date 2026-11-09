@@ -109,7 +109,7 @@ class NomadPacketBoundary(unittest.TestCase):
         self.assertTrue(self.probe("container", "100.64.0.2", 4646))
         # Parse the UFW interface exceptions without modifying host rules.
         for interface in ("tailscale0", "docker0", "br+", "nomad"):
-            self.run_command("ufw", "--dry-run", "insert", "1", "allow", "in", "on", interface, "to", "any", "port", "7890", "proto", "tcp")
+            self.run_command("ufw", "--dry-run", "prepend", "allow", "in", "on", interface, "to", "any", "port", "7890", "proto", "tcp")
         # Model UFW after the guard: its interface exceptions must preserve
         # legitimate RPC/proxy traffic, while later accepts cannot undo drops.
         accepts = '''add table inet docker_test

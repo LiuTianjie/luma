@@ -179,7 +179,8 @@ def install_guard(remote: Any, policy: Mapping[str, Any]) -> str:
             rule = f"allow in on {interface} to any port {port} proto {protocol}"
             # Move our interface exceptions before any existing catch-all deny
             # (older releases already installed a deny for the proxy port).
-            ufw += [f"ufw --force delete {rule} >/dev/null 2>&1 || true", f"ufw insert 1 {rule}"]
+            # Unlike insert 1, prepend also accepts a fresh, empty ruleset.
+            ufw += [f"ufw --force delete {rule} >/dev/null 2>&1 || true", f"ufw prepend {rule}"]
         remote.sudo("set -eu; if command -v ufw >/dev/null; then " + "; ".join(ufw) + "; fi")
     else:
         # Preserve unrelated PF configuration; load only our anchor thereafter.
