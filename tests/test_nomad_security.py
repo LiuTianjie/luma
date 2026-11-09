@@ -408,6 +408,30 @@ disable_update_check = true
         if not api.request("GET", "/v1/status/leader"):
             self.fail("isolated Nomad server did not become leader: " + (self.root / "nomad.log").read_text()[-1500:])
 
+    def test_registered_job_matches_saved_spec_after_nomad_adds_constraints(self):
+        from luma.nomad_upgrade import _matches_expected_job
+
+        self.prepare()
+        nomad_acl.activate_acl(address=self.address, admin_root=self.admin, service_root=self.runtime)
+        api = NomadApi(self.address, token=nomad_security.private_read(nomad_security.service_token_path(self.runtime, "control")).strip())
+        expected = workload(name="implicit-constraints")
+        group = expected["TaskGroups"][0]
+        group["Count"] = 0
+        group["Networks"] = [{"Mode": "bridge", "DynamicPorts": [{"Label": "http", "To": 8080}]}]
+        group["Services"] = [{"Name": "implicit-constraints", "Provider": "nomad", "PortLabel": "http",
+                              "Checks": [{"Name": "health", "Type": "http", "Path": "/", "Interval": 10_000_000_000, "Timeout": 2_000_000_000}]}]
+        group["Tasks"][0]["Secrets"] = [{"Name": "luma", "Provider": "nomad", "Path": "nomad/jobs/implicit-constraints/app/app", "Config": {"namespace": "default"}}]
+        # Nomad applies the secret-provider constraint to every group, including
+        # groups without a secret, network or service of their own.
+        other = workload(network="host")["TaskGroups"][0]
+        other.update(Name="worker", Count=0)
+        expected["TaskGroups"].append(other)
+        api.request("POST", "/v1/jobs", {"Job": expected})
+        live = api.request("GET", "/v1/job/implicit-constraints")
+        self.assertEqual(len(live["TaskGroups"][0]["Constraints"]), 8)
+        self.assertEqual(len(live["TaskGroups"][1]["Constraints"]), 1)
+        self.assertTrue(_matches_expected_job(live, expected))
+
     def test_acl_bootstrap_scopes_rotation_and_restart_recovery(self):
         self.prepare()
         result = nomad_acl.activate_acl(address=self.address, admin_root=self.admin, service_root=self.runtime)
