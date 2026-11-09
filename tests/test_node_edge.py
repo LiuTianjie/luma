@@ -75,9 +75,11 @@ class NodeEdgeRenderTests(unittest.TestCase):
         job = render_nomad_job(_config(), _load(MANIFEST), as_json=False)["Job"]
         block = job["TaskGroups"][0]["Services"][0]
         self.assertIn(f"{NODE_EDGE_TAG}=tx-sh-1", block["Tags"])
-        self.assertIn("traefik.http.routers.api.tls.certresolver=letsencrypt-http", block["Tags"])
+        self.assertIn("lumaedge.http.routers.api.tls.certresolver=letsencrypt-http", block["Tags"])
         # Redirect routers are served by the same node Traefik.
-        self.assertIn("traefik.http.routers.api-redirect.tls.certresolver=letsencrypt-http", block["Tags"])
+        self.assertIn("lumaedge.http.routers.api-redirect.tls.certresolver=letsencrypt-http", block["Tags"])
+        # The Manager Traefik reads only traefik.* tags and must see none of them.
+        self.assertFalse([tag for tag in block["Tags"] if tag.startswith("traefik.")])
         # No wildcard binding: the node's Traefik cannot run DNS-01.
         self.assertFalse([tag for tag in block["Tags"] if ".tls.domains[" in tag])
         self.assertEqual(block["AddressMode"], "host")
@@ -105,6 +107,8 @@ class NodeEdgeRenderTests(unittest.TestCase):
             job = render_compose_job(_config(), deployment, as_json=False)["Job"]
         block = job["TaskGroups"][0]["Services"][0]
         self.assertIn(f"{NODE_EDGE_TAG}=tx-sh-1", block["Tags"])
+        self.assertIn("lumaedge.enable=true", block["Tags"])
+        self.assertFalse([tag for tag in block["Tags"] if tag.startswith("traefik.")])
         self.assertEqual(block["AddressMode"], "host")
 
     def test_manager_traefik_ignores_node_edge_services_and_adds_http_resolver(self):
@@ -112,9 +116,23 @@ class NodeEdgeRenderTests(unittest.TestCase):
             image="traefik:v3", acme_email="ops@acme.dev", acme_dns_provider="cloudflare",
             acme_dns_token_file="/run/token", http_cert_resolver="letsencrypt-http", as_json=False,
         )["Job"]["TaskGroups"][0]["Tasks"][0]["Config"]["args"]
-        self.assertIn("--providers.nomad.constraints=!TagRegex(`^luma\\.edge=.+$`)", args)
+        # node-edge routers use another tag prefix, so the Manager job needs no
+        # extra constraint and is unchanged for clusters without node-edge.
+        self.assertFalse([arg for arg in args if arg.startswith(("--providers.nomad.constraints", "--providers.nomad.prefix"))])
         self.assertIn("--certificatesresolvers.letsencrypt-http.acme.httpchallenge=true", args)
         self.assertIn("--certificatesresolvers.letsencrypt.acme.dnschallenge=true", args)
+
+    def test_manager_adds_http_resolver_only_for_non_cloudflare_zones(self):
+        from luma.bootstrap import _manager_http_cert_resolver
+
+        config = _config()
+        # No zones, or Cloudflare-only zones: the Manager job is unchanged.
+        self.assertEqual(_manager_http_cert_resolver(config, None), "")
+        self.assertEqual(_manager_http_cert_resolver(config, {"dnsZones": {"acme.dev": {"provider": "cloudflare"}}}), "")
+        self.assertEqual(
+            _manager_http_cert_resolver(config, {"dnsZones": {"acme.dev": {"provider": "cloudflare"}, "acme.cn": {"provider": "alidns"}}}),
+            config.http_cert_resolver,
+        )
 
     def test_node_traefik_job(self):
         job = render_node_traefik_job(node="tx-sh-1", image="traefik:v3", acme_email="ops@acme.dev", cert_resolver="letsencrypt-http", as_json=False)["Job"]
@@ -122,6 +140,7 @@ class NodeEdgeRenderTests(unittest.TestCase):
         self.assertEqual(job["Constraints"], [{"LTarget": "${meta.luma_node_name}", "RTarget": "tx-sh-1", "Operand": "="}])
         task = job["TaskGroups"][0]["Tasks"][0]
         self.assertIn("--providers.nomad.constraints=Tag(`luma.edge=tx-sh-1`)", task["Config"]["args"])
+        self.assertIn("--providers.nomad.prefix=lumaedge", task["Config"]["args"])
         self.assertIn("--certificatesresolvers.letsencrypt-http.acme.httpchallenge.entrypoint=web", task["Config"]["args"])
         self.assertFalse([arg for arg in task["Config"]["args"] if "dnschallenge" in arg or "/dynamic" in arg])
         ports = {item["Label"]: item["Value"] for item in job["TaskGroups"][0]["Networks"][0]["ReservedPorts"]}

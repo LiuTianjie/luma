@@ -111,6 +111,22 @@ def _traefik_ports(config: LumaConfig) -> tuple[int, int]:
     return http_port, https_port
 
 
+def _manager_http_cert_resolver(config: LumaConfig, state: Mapping[str, object] | None) -> str:
+    """The extra HTTP-01 resolver for the Manager edge, only once it is needed.
+
+    Clusters without an Alibaba Cloud DNS or DNSPod zone render the same
+    Traefik job as before, so a Manager update does not restart ingress.
+    """
+    zones = state.get("dnsZones") if isinstance(state, Mapping) else None
+    if not isinstance(zones, Mapping):
+        return ""
+    needed = any(
+        isinstance(record, Mapping) and str(record.get("provider") or "") not in {"", "cloudflare"}
+        for record in zones.values()
+    )
+    return config.http_cert_resolver if needed else ""
+
+
 def _acme_email(config: LumaConfig) -> str:
     dns = config.dns
     zone = str(dns.get("zone") or "").strip()
@@ -1362,7 +1378,7 @@ def _bootstrap_node_nomad(
                 nomad_addr="http://127.0.0.1:4646",
                 acme_email=_acme_email(config),
                 cert_resolver=config.cert_resolver,
-                http_cert_resolver=config.http_cert_resolver,
+                http_cert_resolver=_manager_http_cert_resolver(config, None),
                 acme_dns_provider=config.acme_dns_provider,
                 acme_dns_token_file=TRAEFIK_DNS_TOKEN_FILE if config.acme_dns_provider == "cloudflare" else "",
                 acme_domains=config.acme_domains,
@@ -1653,7 +1669,7 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
                 nomad_addr=str(state.get("nomadAddr") or config.defaults.get("nomadAddr") or "http://127.0.0.1:4646"),
                 acme_email=_acme_email(config),
                 cert_resolver=config.cert_resolver,
-                http_cert_resolver=config.http_cert_resolver,
+                http_cert_resolver=_manager_http_cert_resolver(config, state),
                 acme_dns_provider=config.acme_dns_provider,
                 acme_dns_token_file=TRAEFIK_DNS_TOKEN_FILE if config.acme_dns_provider == "cloudflare" else "",
                 acme_domains=config.acme_domains,
