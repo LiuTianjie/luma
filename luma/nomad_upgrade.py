@@ -262,6 +262,16 @@ def _system_job(job: Mapping[str, Any]) -> bool:
         from .nomad_render import render_egress_job
         config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "/opt/luma/luma.yaml"))
         expected = json.loads(render_egress_job(image=_egress_image(config)))["Job"]
+        if _matches_expected_job(job, expected):
+            return True
+        # Existing egress installations may use Docker's volume shorthand for
+        # this same fixed config bind. Reconstruct that exact profile from the
+        # installed renderer, never from an untrusted live path or argument.
+        legacy = copy.deepcopy(expected)
+        cfg = legacy["TaskGroups"][0]["Tasks"][0]["Config"]
+        mount = cfg.pop("mount")[0]
+        cfg["volumes"] = [mount["source"] + ":" + mount["target"]]
+        return _matches_expected_job(job, legacy)
     return bool(expected) and _matches_expected_job(job, expected)
 
 

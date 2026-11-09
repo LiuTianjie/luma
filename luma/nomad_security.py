@@ -252,7 +252,8 @@ def authority_shape(job: Mapping[str, Any]) -> dict[str, Any]:
     """
     def constraints(value, implicit=()):
         keys = ("LTarget", "RTarget", "Operand")
-        return sorted(({key: c.get(key) for key in keys} for c in value or []
+        # Nomad returns an empty string for the omitted target of unary tests.
+        return sorted(({key: (c.get(key) or "") if key == "RTarget" else c.get(key) for key in keys} for c in value or []
                        if tuple(c.get(key) or "" for key in keys) not in implicit), key=lambda c: json.dumps(c, sort_keys=True))
 
     groups = []

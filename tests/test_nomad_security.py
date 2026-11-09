@@ -415,6 +415,7 @@ disable_update_check = true
         nomad_acl.activate_acl(address=self.address, admin_root=self.admin, service_root=self.runtime)
         api = NomadApi(self.address, token=nomad_security.private_read(nomad_security.service_token_path(self.runtime, "control")).strip())
         expected = workload(name="implicit-constraints")
+        expected["Constraints"] = [{"LTarget": "${meta.luma_region}", "Operand": "is_set"}]
         group = expected["TaskGroups"][0]
         group["Count"] = 0
         group["Networks"] = [{"Mode": "bridge", "DynamicPorts": [{"Label": "http", "To": 8080}]}]

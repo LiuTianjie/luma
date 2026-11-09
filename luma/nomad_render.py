@@ -257,7 +257,7 @@ def render_egress_job(
                 "Config": {
                     "image": image,
                     "ports": ["proxy"],
-                    "args": ["-d", config_dir],
+                    "args": ["-d", "/root/.config/mihomo"],
                     "mount": [{"type": "bind", "target": "/root/.config/mihomo", "source": config_dir}],
                 },
                 "Resources": {"CPU": 200, "MemoryMB": 256},

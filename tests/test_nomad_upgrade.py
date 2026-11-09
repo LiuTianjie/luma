@@ -79,6 +79,33 @@ class AuthorityAndPKI(SecurityFixture):
             with self.subTest(constraint=constraint):
                 self.assertFalse(upgrade._matches_expected_job(changed, expected))
 
+    def test_unary_constraint_empty_target_is_a_nomad_default(self):
+        expected = workload()
+        expected["Constraints"] = [{"LTarget": "${meta.luma_region}", "Operand": "is_set"}]
+        live = copy.deepcopy(expected)
+        live["Constraints"][0]["RTarget"] = ""
+        self.assertTrue(upgrade._matches_expected_job(live, expected))
+        live["Constraints"][0]["Operand"] = "is_not_set"
+        self.assertFalse(upgrade._matches_expected_job(live, expected))
+
+    def test_egress_legacy_bind_is_verified_against_installed_configuration(self):
+        from luma.nomad_render import render_egress_job
+
+        expected = render_egress_job(image="example/mihomo:1", as_json=False)["Job"]
+        legacy = copy.deepcopy(expected)
+        cfg = legacy["TaskGroups"][0]["Tasks"][0]["Config"]
+        cfg.pop("mount")
+        cfg["volumes"] = ["/opt/luma/egress-gateway:/root/.config/mihomo"]
+        config = mock.Mock(defaults={"images": {"egressGateway": "example/mihomo:1"}})
+        with mock.patch.object(upgrade, "ADMIN_ROOT", self.admin), mock.patch("luma.config.load_config", return_value=config):
+            self.assertTrue(upgrade._system_job(expected))
+            self.assertTrue(upgrade._system_job(legacy))
+            for key, value in (("volumes", ["/:/host"]), ("image", "unreviewed/mihomo"), ("args", ["sh", "-c", "sleep infinity"])):
+                changed = copy.deepcopy(legacy)
+                changed["TaskGroups"][0]["Tasks"][0]["Config"][key] = value
+                with self.subTest(field=key):
+                    self.assertFalse(upgrade._system_job(changed))
+
     def test_application_updates_preserve_authority_but_cannot_gain_host_root(self):
         self.enforce()
         job = workload(network="host", mounts=[{"type": "bind", "source": "/srv/luma/data/app", "target": "/data"}])
