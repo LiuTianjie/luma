@@ -276,7 +276,10 @@ def _system_job(job: Mapping[str, Any]) -> bool:
 
 
 def _require_single_server() -> None:
-    client = NomadApi("http://127.0.0.1:4646", token=nomad_token())
+    # Raft inspection belongs to the host administrator. The Control token
+    # deliberately has no operator access once ACLs have been activated.
+    token = private_read(ADMIN_ROOT / "management.token", optional=True).strip() or nomad_token()
+    client = NomadApi("http://127.0.0.1:4646", token=token)
     configuration = client.request("GET", "/v1/operator/raft/configuration")
     servers = configuration.get("Servers") if isinstance(configuration, dict) else None
     if not isinstance(servers, list) or len(servers) != 1 or servers[0].get("Leader") is not True or servers[0].get("Voter") is not True:
@@ -344,7 +347,7 @@ def _raft_snapshot(label: str) -> None:
     _require_single_server()
     path = ADMIN_ROOT / "backups" / label / "raft.snap"
     if path.exists() and path.stat().st_size:
-        LocalExecutor().run(shlex.join(["/usr/local/bin/nomad", "snapshot", "inspect", str(path)]), timeout=30)
+        LocalExecutor().run(shlex.join(["/usr/local/bin/nomad", "operator", "snapshot", "inspect", str(path)]), timeout=30)
         return
     tls = client_tls()
     handlers: list[Any] = [urllib.request.ProxyHandler({}), _NoRedirect()]
@@ -369,7 +372,7 @@ def _raft_snapshot(label: str) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
-    LocalExecutor().run(shlex.join(["/usr/local/bin/nomad", "snapshot", "inspect", str(path)]), timeout=30)
+    LocalExecutor().run(shlex.join(["/usr/local/bin/nomad", "operator", "snapshot", "inspect", str(path)]), timeout=30)
 
 
 def _payload(journal: dict[str, Any], step: dict[str, Any]) -> dict[str, Any]:
