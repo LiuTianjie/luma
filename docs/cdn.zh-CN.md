@@ -132,7 +132,7 @@ luma cdn check www.example.com
 luma cdn check www.example.com --path /pricing --format json
 ```
 
-- **DANGER**：可缓存的响应设置了 cookie，或者看起来像账号页面的路径标成了 public。必须先修，命令会以非零状态退出。
+- **DANGER**：可缓存的响应设置了 cookie，或者看起来像账号页面的路径标成了 public。必须先修，命令会以非零状态退出。`acw_tc`、`cdn_sec_tc`、`acw_sc__v2` 是 ESA 边缘给每个响应加的 cookie，每次的值都不同，也不会进缓存，所以不计入。
 - **IMPROVE**：页面没有缓存头、页面每次都回源校验、静态文件没有缓存头，或者大文本没有压缩。
 - **OK**：可缓存（第二次请求命中时说明已从边缘返回），或者明确标了不缓存。
 

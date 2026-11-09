@@ -132,7 +132,7 @@ luma cdn check www.example.com
 luma cdn check www.example.com --path /pricing --format json
 ```
 
-- **DANGER**: a cacheable response that sets a cookie, or an account-like path marked public. Fix these first; the command exits non-zero.
+- **DANGER**: a cacheable response that sets a cookie, or an account-like path marked public. Fix these first; the command exits non-zero. The `acw_tc`, `cdn_sec_tc` and `acw_sc__v2` cookies are added by the ESA edge with a new value on every response and are never cached, so they are not counted.
 - **IMPROVE**: a page without cache headers, a page revalidated on every request, a static file without cache headers, or large text sent uncompressed.
 - **OK**: cacheable (and served from the edge when the second request hit), or explicitly not cached.
 
