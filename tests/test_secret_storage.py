@@ -4,6 +4,7 @@ import copy
 import io
 import json
 import os
+import runpy
 import sqlite3
 import subprocess
 import sys
@@ -197,6 +198,11 @@ class EncryptedPersistence(KeyFixture):
                 secret_migration.migrate(journal, {})
             self.assertFalse(journal["secretMigration"].get("databaseEncrypted"))
 
+    def test_secret_wait_is_caught_when_the_supervisor_uses_another_module_name(self):
+        entry = runpy.run_path(str(Path(nomad_upgrade.__file__)), run_name="luma.migration_entry_test")
+        with self.assertRaises(entry["Pending"]):
+            secret_migration._pending("allocation is still starting")
+
     def test_tampering_record_swaps_and_missing_keys_fail_closed(self):
         self.enable()
         purpose = secret_storage.context("control_config", "secrets")
@@ -329,6 +335,8 @@ class SecretUpgradeRecovery(KeyFixture):
         self.submitted = 0
         self.lost = True
         self.healthy = True
+        self.history = [copy.deepcopy(self.current)]
+        self.disruptive_plan = False
         self.variables = self.fake.request
         self.fake.request = self.request
         for patch in (mock.patch.object(nomad_upgrade, "JOURNAL", self.path), mock.patch.object(secret_migration, "_grant"),
@@ -341,17 +349,23 @@ class SecretUpgradeRecovery(KeyFixture):
             return self.variables(method, route, body)
         if route == "/v1/job/app":
             return copy.deepcopy(self.current)
+        if route == "/v1/job/app/versions":
+            return {"Versions": copy.deepcopy(self.history)}
+        if route == "/v1/job/app/plan":
+            kind = "DestructiveUpdate" if self.disruptive_plan else "InPlaceUpdate"
+            return {"Annotations": {"DesiredTGUpdates": {"app": {kind: 1}}}}
         if route == "/v1/job/app/allocations":
             return [{"JobVersion": self.current["Version"], "TaskGroup": "app", "ClientStatus": "running",
                      "TaskStates": {"web": {"State": "running", "Failed": False}}}] if self.healthy else []
         if method == "POST" and route == "/v1/jobs":
             self.assertEqual(body["JobModifyIndex"], self.current["JobModifyIndex"])
             self.submitted += 1
-            self.current = {**copy.deepcopy(body["Job"]), "Version": 3, "JobModifyIndex": 11}
+            self.current = {**copy.deepcopy(body["Job"]), "Version": self.current["Version"] + 1, "JobModifyIndex": self.current["JobModifyIndex"] + 1}
+            self.history.insert(0, copy.deepcopy(self.current))
             if self.lost:
                 self.lost = False
                 raise LumaError("response lost after commit")
-            return {"JobModifyIndex": 11}
+            return {"JobModifyIndex": self.current["JobModifyIndex"]}
         raise AssertionError(route)
 
     def test_response_loss_resumes_the_encrypted_intent_without_restarting_again(self):
@@ -374,6 +388,47 @@ class SecretUpgradeRecovery(KeyFixture):
         self.current["TaskGroups"][0]["Tasks"][0]["Config"]["auth"] = {"password": "unexpected"}
         with self.assertRaisesRegex(LumaError, "outside its saved"):
             secret_migration._upgrade_job(saved, saved["jobs"][0], {}, self.fake)
+        self.assertEqual(self.submitted, 1)
+
+
+    def test_evicted_history_recovery_resumes_after_a_lost_registration_reply(self):
+        self.lost = False
+        secret_migration._upgrade_job(self.journal, self.item, {}, self.fake)
+        # An older migration could leave the live protected job absent from
+        # the historical table while retaining its plaintext stable parent.
+        self.history = []
+        self.lost = True
+        with self.assertRaisesRegex(LumaError, "response lost"):
+            secret_migration._restore_history(self.journal, self.item, self.fake)
+        saved = nomad_upgrade._read_journal()
+        self.assertIn("secretHistoryIntent", saved["jobs"][0])
+        self.healthy = False
+        with self.assertRaises(nomad_upgrade.Pending):
+            secret_migration._restore_history(saved, saved["jobs"][0], self.fake)
+        self.healthy = True
+        secret_migration._restore_history(saved, saved["jobs"][0], self.fake)
+        self.assertEqual(self.submitted, 2)
+        self.assertEqual(saved["jobs"][0]["Job"]["Version"], 4)
+        self.assertNotIn("secretHistoryIntent", nomad_upgrade._read_journal()["jobs"][0])
+        # A crash while removing the temporary tag must also resume; only
+        # history metadata changed, not the recorded task definition.
+        self.current.pop("VersionTag", None)
+        secret_migration._restore_history(saved, saved["jobs"][0], self.fake)
+        self.assertEqual(self.submitted, 2)
+
+    def test_evicted_history_recovery_refuses_replacement_or_external_edits(self):
+        self.lost = False
+        secret_migration._upgrade_job(self.journal, self.item, {}, self.fake)
+        self.history = []
+        self.disruptive_plan = True
+        with self.assertRaisesRegex(LumaError, "disrupt allocations"):
+            secret_migration._restore_history(self.journal, self.item, self.fake)
+        self.assertEqual(self.submitted, 1)
+        saved = nomad_upgrade._read_journal()
+        self.disruptive_plan = False
+        self.current["Priority"] = 80
+        with self.assertRaisesRegex(LumaError, "outside its saved"):
+            secret_migration._restore_history(saved, saved["jobs"][0], self.fake)
         self.assertEqual(self.submitted, 1)
 
 

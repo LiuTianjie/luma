@@ -27,7 +27,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from .errors import LumaError
+from .errors import LumaError, NomadUpgradePending as Pending
 from .local import LocalExecutor
 from .nomad_acl import activate_acl, prepare_acl, verify_acl
 from .nomad_api import NomadApi, _allocation_health, _desired_group_counts_from_job
@@ -525,10 +525,6 @@ def _consumers(journal: dict[str, Any], *, consumers_only: bool = False) -> None
                             raise Pending("Waiting for authenticated Nomad reads from " + task["Name"])
                     except (OSError, urllib.error.URLError):
                         raise Pending("Waiting for " + task["Name"] + " readiness") from None
-
-
-class Pending(Exception):
-    pass
 
 
 def _repair_observe_startup(journal: dict[str, Any]) -> None:
