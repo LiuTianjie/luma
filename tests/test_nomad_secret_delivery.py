@@ -50,9 +50,11 @@ class NomadSecretDelivery(SecurityFixture):
         self.admin_api = self.factory(self.address, nomad_security.private_read(self.admin / "management.token").strip())
         self.control = self.factory(self.address, nomad_security.private_read(nomad_security.service_token_path(self.runtime, "control")).strip())
         self.reader = self.factory(self.address, nomad_security.private_read(nomad_security.service_token_path(self.runtime, "agent")).strip())
-        introduction = self.control.request("PUT", "/v1/acl/identity/client-introduction-token", {
+        # Leader election precedes asynchronous signing-key initialization.
+        # Exercise real signing readiness before starting the Docker client.
+        introduction = self.wait_for(lambda: self.control.request("PUT", "/v1/acl/identity/client-introduction-token", {
             "NodeName": "secret-fixture", "NodePool": "default", "TTL": 600_000_000_000,
-        })
+        }), "Nomad node introduction signing key")
         nomad_security.private_write(self.root / "data" / "client" / "intro_token.jwt", introduction["JWT"])
         self.stop()
         self.start(client=True)
