@@ -354,6 +354,7 @@ class UpgradeWorkflow(SecurityFixture):
         self.journal = self.admin / "upgrade.json"
         self.calls = []
         self.tasks = {}
+        self.jobs = []
         self.lost_once = False
         self.fail_node = ""
         self.original_inventory = upgrade.inventory
@@ -364,7 +365,7 @@ class UpgradeWorkflow(SecurityFixture):
             mock.patch.object(upgrade, "_require_single_server"), mock.patch.object(upgrade, "resume_operation", return_value=None),
             mock.patch.object(upgrade, "_state", side_effect=lambda: copy.deepcopy(self.state)),
             mock.patch.object(upgrade, "snapshot", side_effect=lambda: copy.deepcopy(self.models["manager"])),
-            mock.patch.object(upgrade, "inventory", side_effect=lambda _state, nodes: ([], {name: {"mounts": [], "systemMounts": [], "trustedHost": name == "manager"} for name in nodes})),
+            mock.patch.object(upgrade, "inventory", side_effect=lambda _state, nodes: (copy.deepcopy(self.jobs), {name: {"mounts": [], "systemMounts": [], "trustedHost": name == "manager"} for name in nodes})),
             mock.patch.object(upgrade, "execute", side_effect=lambda payload, **kwargs: self.execute("manager", payload)),
             mock.patch.object(upgrade, "control_task", side_effect=self.task),
             mock.patch.object(upgrade, "sign_csr", return_value={"ca": "public-ca", "cert": "public-cert"}),
@@ -477,6 +478,143 @@ class UpgradeWorkflow(SecurityFixture):
                 self.original_inventory(self.state, self.models)
         with self.assertRaises(LumaError):
             host.version_path("2.2.0")
+
+
+    def service_health(self):
+        job = workload(name="database")
+        job.update(Version=0, JobModifyIndex=1)
+        self.jobs = [{"Job": job, "system": False, "authoritySHA256": security.authority_digest(job)}]
+        allocation = {"ID": "database-old", "NodeID": "node-2", "TaskGroup": "app", "JobVersion": 0,
+                      "DesiredStatus": "run", "ClientStatus": "running", "DeploymentStatus": {"Healthy": True},
+                      "TaskStates": {"app": {"State": "running", "Restarts": 0, "StartedAt": "2026-01-01T00:00:00Z"}}}
+        client = mock.Mock()
+        client.request.side_effect = lambda method, path, **kwargs: [allocation] if path.endswith("/allocations") else job
+        patches = [mock.patch.object(upgrade, "NomadApi", return_value=client),
+                   mock.patch.object(upgrade, "nomad_token", return_value="reader")]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        return job, allocation
+
+    def test_ready_node_with_lost_database_stops_rollout_without_restarting_again(self):
+        _, allocation = self.service_health()
+
+        def restart(payload, **kwargs):
+            result = self.execute("manager", payload)
+            if payload["op"] == "version":
+                allocation.update(ClientStatus="lost", DesiredStatus="stop")
+            return result
+
+        with mock.patch.object(upgrade, "execute", side_effect=restart), mock.patch.object(upgrade.time, "time", return_value=time.time()) as clock:
+            for _ in range(20):
+                status = upgrade.reconcile_once()
+                if "Waiting for healthy workloads" in status["message"]:
+                    break
+            self.assertIn("database", status["message"])
+            self.assertEqual(status["phase"], "version")
+            position = status["completedSteps"]
+            saved = upgrade._read_journal()
+            self.assertEqual(saved["stepResult"]["position"], position)
+            payload = saved["taskPayload"]
+            calls = copy.deepcopy(self.calls)
+            for _ in range(3):
+                clock.return_value += 5
+                self.assertEqual(upgrade.reconcile_once()["completedSteps"], position)
+                self.assertEqual(upgrade._read_journal()["taskPayload"], payload)
+            self.assertEqual(self.calls, calls)
+            allocation.update(ID="database-replacement", ClientStatus="running", DesiredStatus="run")
+            status = upgrade.reconcile_once()
+            self.assertIn("Waiting for stable workloads", status["message"])
+            clock.return_value += 29
+            self.assertEqual(upgrade.reconcile_once()["completedSteps"], position)
+            clock.return_value += 2
+            self.assertEqual(upgrade.reconcile_once()["completedSteps"], position + 1)
+            self.assertEqual(self.calls, calls)
+            self.assertNotIn("taskPayload", upgrade._read_journal())
+            self.assertNotIn("stepResult", upgrade._read_journal())
+
+    def test_existing_inflight_worker_step_recovers_then_only_polls_workloads(self):
+        _, allocation = self.service_health()
+        journal = upgrade._read_journal()
+        journal.update(nodes=copy.deepcopy(self.models), jobs=self.jobs,
+                       steps=[{"kind": "version", "node": "linux", "version": "1.10.5"}])
+        payload = journal["taskPayload"] = upgrade._payload(journal, journal["steps"][0])
+        self.tasks["nomad-security-test:0:0"] = {"payload": payload, "status": "succeeded", "result": self.execute("linux", payload)}
+        upgrade._write_journal(journal)
+        allocation["ClientStatus"] = "lost"
+        self.assertIn("database", upgrade.reconcile_once()["message"])
+        self.assertEqual(upgrade._read_journal()["next"], 0)
+        with mock.patch.object(upgrade, "control_task", side_effect=AssertionError("completed host operation replayed")):
+            self.assertIn("database", upgrade.reconcile_once()["message"])
+            self.assertEqual(upgrade._read_journal()["next"], 0)
+
+    def test_unhealthy_service_prevents_first_restart(self):
+        _, allocation = self.service_health()
+        allocation["ClientStatus"] = "lost"
+        for _ in range(20):
+            status = upgrade.reconcile_once()
+            if "Waiting for healthy workloads" in status["message"]:
+                break
+        self.assertIn("database", status["message"])
+        self.assertFalse(any(len(call) == 4 and call[1] in {"version", "configure"} for call in self.calls))
+        self.assertNotIn("taskPayload", upgrade._read_journal())
+
+    def test_restart_between_healthy_polls_resets_stability_and_timeout_preserves_completion(self):
+        _, allocation = self.service_health()
+        journal = {"jobs": self.jobs, "next": 16, "stepResult": {"position": 16, "result": {"nodeStatus": "ready"}},
+                   "taskPayload": {"op": "version", "version": "1.10.5"}}
+        now = time.time()
+        with mock.patch.object(upgrade.time, "time", return_value=now) as clock:
+            with self.assertRaises(upgrade.Pending):
+                upgrade._wait_for_workloads(journal, after=True)
+            clock.return_value += 20
+            allocation["TaskStates"]["app"].update(Restarts=1, StartedAt="2026-01-01T00:00:20Z")
+            with self.assertRaises(upgrade.Pending):
+                upgrade._wait_for_workloads(journal, after=True)
+            clock.return_value += 20
+            with self.assertRaises(upgrade.Pending):
+                upgrade._wait_for_workloads(journal, after=True)
+            clock.return_value += 61
+            with self.assertRaises(upgrade.Pending):
+                upgrade._wait_for_workloads(journal, after=True)
+            self.assertEqual(journal["workloadHealth"]["healthySince"], clock.return_value)
+            clock.return_value = now + 601
+            allocation["ClientStatus"] = "lost"
+            with self.assertRaisesRegex(LumaError, "further node changes stopped"):
+                upgrade._wait_for_workloads(journal, after=True)
+        self.assertEqual(journal["next"], 16)
+        self.assertEqual(journal["stepResult"]["position"], 16)
+        self.assertEqual(journal["taskPayload"]["version"], "1.10.5")
+
+    def test_current_checks_override_stale_deployment_health_without_exposing_output(self):
+        job, allocation = self.service_health()
+        job["TaskGroups"][0]["Services"] = [{"Provider": "nomad", "Checks": [{"Type": "tcp", "Interval": 10_000_000_000}]}]
+        now = time.time()
+        client = upgrade.NomadApi.return_value
+        for results in ({}, {"db": {"Status": "failure", "Timestamp": now, "Output": "secret-value"}},
+                        {"db": {"Status": "success", "Timestamp": now - 60}}):
+            client.request.side_effect = lambda method, path, **kwargs: results if path.endswith("/checks") else [allocation] if path.endswith("/allocations") else job
+            with self.subTest(results=results):
+                _, unhealthy = upgrade._workload_health({"jobs": self.jobs})
+                self.assertTrue(unhealthy)
+                self.assertIn("Nomad service checks", unhealthy[0])
+                self.assertNotIn("secret-value", str(unhealthy))
+        results = {"db": {"Status": "success", "Timestamp": now}}
+        self.assertFalse(upgrade._workload_health({"jobs": self.jobs})[1])
+
+    def test_final_security_success_still_requires_healthy_services(self):
+        result = self.complete()
+        self.assertEqual(result["status"], "completed")
+        _, allocation = self.service_health()
+        allocation["ClientStatus"] = "lost"
+        journal = upgrade._read_journal()
+        journal.update(status="running", jobs=self.jobs)
+        journal.pop("verifiedAt", None)
+        upgrade._write_journal(journal)
+        status = upgrade.reconcile_once()
+        self.assertNotEqual(status["status"], "completed")
+        self.assertNotIn("verifiedAt", status)
+        self.assertIn("database", status["message"])
 
 
 class ConsumerRecovery(SecurityFixture):
