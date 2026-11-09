@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import shlex
 import socket
 import subprocess
 import tempfile
@@ -407,6 +408,50 @@ disable_update_check = true
             time.sleep(0.2)
         if not api.request("GET", "/v1/status/leader"):
             self.fail("isolated Nomad server did not become leader: " + (self.root / "nomad.log").read_text()[-1500:])
+
+    def test_upgrade_snapshot_download_reuse_and_corruption_use_real_nomad(self):
+        from luma import nomad_upgrade as upgrade
+
+        self.prepare()
+        nomad_acl.activate_acl(address=self.address, admin_root=self.admin, service_root=self.runtime)
+        commands = []
+
+        def inspect_snapshot(command, *, timeout):
+            # Substitute only the fixture's executable, keeping the production
+            # command arguments and real snapshot bytes intact.
+            args = shlex.split(command)
+            self.assertEqual(args[0], "/usr/local/bin/nomad")
+            commands.append(args[1:])
+            result = subprocess.run([os.environ["LUMA_TEST_NOMAD_BINARY"], *args[1:]], capture_output=True, text=True, timeout=timeout)
+            if result.returncode:
+                raise LumaError("Nomad rejected snapshot inspection: " + result.stderr)
+            return result.stdout
+
+        client = NomadApi(self.address, token=nomad_security.private_read(nomad_security.service_token_path(self.runtime, "control")).strip())
+        with self.assertRaisesRegex(LumaError, "403"):
+            client.request("GET", "/v1/operator/raft/configuration")
+        with mock.patch.object(upgrade, "ADMIN_ROOT", self.admin), mock.patch.object(
+            upgrade, "NomadApi", side_effect=lambda _address, **kwargs: NomadApi(self.address, **kwargs)
+        ), mock.patch.object(
+            upgrade, "endpoint", return_value=self.address
+        ), mock.patch.object(upgrade, "LocalExecutor") as executor:
+            executor.return_value.run.side_effect = inspect_snapshot
+            upgrade._raft_snapshot("before-upgrade")
+            path = self.admin / "backups/before-upgrade/raft.snap"
+            content = path.read_bytes()
+            self.assertTrue(content)
+            self.assertFalse(path.stat().st_mode & 0o077)
+            # The download above exercised the real Raft permission check.
+            # Recovery must verify the saved snapshot without replacing it.
+            with mock.patch.object(upgrade, "_require_single_server"), mock.patch.object(
+                upgrade.urllib.request, "build_opener", side_effect=AssertionError("saved snapshot must not be downloaded again")
+            ):
+                upgrade._raft_snapshot("before-upgrade")
+            self.assertEqual(path.read_bytes(), content)
+            path.write_bytes(b"invalid snapshot")
+            with self.assertRaisesRegex(LumaError, "Nomad rejected snapshot inspection"):
+                upgrade._raft_snapshot("before-upgrade")
+            self.assertEqual(len(commands), 3)
 
     def test_registered_job_matches_saved_spec_after_nomad_adds_constraints(self):
         from luma.nomad_upgrade import _matches_expected_job
