@@ -12,7 +12,7 @@ from .dependencies import validate_requirement_block
 from .io import load_yaml
 from .regions import parse_region_name, validate_region_exposure_syntax
 
-VALID_EXPOSURES = {"none", "cn-edge", "tailscale-relay", "cloudflare-tunnel", "external-edge", "tcp-relay"}
+VALID_EXPOSURES = {"none", "cn-edge", "tailscale-relay", "cloudflare-tunnel", "external-edge", "tcp-relay", "node-edge"}
 VALID_ACCESS_MODES = {"ReadWriteOnce", "ReadWriteMany"}
 VALID_ENGINES = {"nomad"}
 TCP_RELAY_RESERVED_PORTS = {80, 443}
@@ -137,6 +137,8 @@ class ServiceSpec:
             return "cloudflare-tunnel-service"
         if self.exposure == "tcp-relay":
             return "tcp-relay-service"
+        if self.exposure == "node-edge":
+            return "node-edge-service"
         if self.region == "global":
             return "global-internal-service"
         if self.region == "home":
@@ -204,6 +206,8 @@ def load_service(path: Path) -> ServiceSpec:
         if not isinstance(port, int):
             raise LumaError("public service requires integer field: port")
     validate_region_exposure_syntax(region, exposure)
+    if exposure == "node-edge" and not node:
+        raise LumaError("exposure=node-edge requires node: the node whose public address serves the domain")
     cdn = parse_cdn_block(raw.get("cdn"))
     validate_cdn_exposure(cdn, exposure)
     redirect_from, redirect_except = parse_redirect_from(raw.get("redirectFrom"), domain=domain, exposure=exposure)
@@ -259,6 +263,8 @@ def load_service(path: Path) -> ServiceSpec:
     dns = raw.get("dns") or {}
     if not isinstance(dns, dict):
         raise LumaError("dns must be a mapping")
+    if exposure == "node-edge" and dns.get("target"):
+        raise LumaError("dns.target is not allowed with exposure=node-edge; the record always points at the node's public ingress address")
     if "servers" in dns:
         dns = {**dns, "servers": parse_dns_servers(dns["servers"], field_name="dns.servers")}
     return ServiceSpec(
@@ -300,7 +306,7 @@ def load_service(path: Path) -> ServiceSpec:
     )
 
 
-REDIRECT_EXPOSURES = frozenset({"cn-edge", "external-edge", "tailscale-relay"})
+REDIRECT_EXPOSURES = frozenset({"cn-edge", "external-edge", "tailscale-relay", "node-edge"})
 _HOSTNAME = re.compile(r"^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
 
 

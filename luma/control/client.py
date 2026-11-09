@@ -389,6 +389,30 @@ class ControlClient:
     def remove_region(self, *, name: str) -> Dict[str, Any]:
         return self.request("POST", "/v1/regions/remove", {"name": name})
 
+    def set_node_public_ingress(self, *, node: str, enabled: bool, public_ip: str = "") -> Dict[str, Any]:
+        body: Dict[str, Any] = {"node": node, "enabled": enabled}
+        if public_ip:
+            body["publicIp"] = public_ip
+        # Enabling waits for the node's Traefik rollout to become healthy.
+        return self.request("POST", "/v1/nodes/public-ingress", body, timeout=900)
+
+    def list_dns_zones(self) -> Dict[str, Any]:
+        return self.request("GET", "/v1/dns/zones")
+
+    def add_dns_zone(self, *, name: str, provider: str, credentials: Dict[str, str] | None = None, same_as: str = "", update: bool = False) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"name": name, "provider": provider, "update": update}
+        if same_as:
+            body["sameAs"] = same_as
+        if credentials:
+            body["credentials"] = credentials
+        return self.request("POST", "/v1/dns/zones", body, timeout=60)
+
+    def check_dns_zone(self, *, name: str) -> Dict[str, Any]:
+        return self.request("POST", "/v1/dns/zones/check", {"name": name}, timeout=60)
+
+    def remove_dns_zone(self, *, name: str) -> Dict[str, Any]:
+        return self.request("POST", "/v1/dns/zones/remove", {"name": name})
+
     def register_node(self, *, node_name: str, region: str) -> Dict[str, Any]:
         return self.request(
             "POST",

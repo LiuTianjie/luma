@@ -36,6 +36,8 @@ def cmd_node(args: argparse.Namespace) -> int:
         for line in setup_tailscale(_local_node("single-node"), executor=LocalExecutor()):
             log(f"[ok] {line}")
         return 0
+    if args.node_command == "ingress":
+        return cmd_node_ingress(args)
     if args.node_command == "nomad-join":
         endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
         result = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).join_nomad_node(
@@ -380,6 +382,40 @@ def _local_tailscale_ip() -> str:
 def _last_output_line(output: str) -> str:
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     return lines[-1] if lines else ""
+
+
+def cmd_node_ingress(args: argparse.Namespace) -> int:
+    enabled = args.node_ingress_command == "enable"
+    if args.node_ingress_command not in {"enable", "disable"}:
+        raise LumaError(f"unknown node ingress command: {args.node_ingress_command}")
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    client = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    if enabled and _output_format(args) == "text":
+        log(f"[start] Deploy Traefik on {args.name} and check ports 80/443")
+    if enabled:
+        result = _run_with_wait_heartbeat(
+            lambda: client.set_node_public_ingress(node=args.name, enabled=True, public_ip=str(getattr(args, "public_ip", "") or "")),
+            timeout=900,
+            emit=_output_format(args) == "text",
+        )
+    else:
+        result = client.set_node_public_ingress(node=args.name, enabled=False)
+    if _output_format(args) != "text":
+        _print_success(args, result)
+        return 0
+    ingress = result.get("publicIngress") if isinstance(result.get("publicIngress"), dict) else {}
+    node = result.get("node") or args.name
+    if not enabled:
+        print(f"Public ingress disabled on {node}")
+        return 0
+    status = str(ingress.get("status") or "")
+    print(f"Public ingress {'ready' if status == 'ready' else 'enabled, not reachable yet'} on {node}: {ingress.get('publicIp')}")
+    if ingress.get("detail"):
+        print(f"  {ingress['detail']}")
+    for line in result.get("dns") or []:
+        print(f"  DNS: {line}")
+    print("  Deploy with: exposure: node-edge, node: " + str(node))
+    return 0 if status == "ready" else 1
 
 
 def cmd_region(args: argparse.Namespace) -> int:

@@ -33,7 +33,7 @@ from .errors import LumaError
 
 CDN_PROVIDERS = frozenset({"esa"})
 CDN_SCOPES = frozenset({"global", "domestic", "overseas"})
-CDN_EXPOSURES = frozenset({"cn-edge", "external-edge", "tailscale-relay"})
+CDN_EXPOSURES = frozenset({"cn-edge", "external-edge", "tailscale-relay", "node-edge"})
 CDN_FIELDS = frozenset({"provider", "scope", "purge", "cache"})
 CACHE_FIELDS = frozenset({"path", "ttl"})
 # Cache rules count against a per-site quota shared by every app on the root

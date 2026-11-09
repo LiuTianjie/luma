@@ -72,6 +72,12 @@ def _zone_client(config: LumaConfig, secrets: Mapping[str, object] | None) -> tu
     return CloudflareClient(token), str(zone_id)
 
 
+def _missing_target_message(service: ServiceSpec) -> str:
+    if service.exposure == "node-edge":
+        return f"missing DNS target: node {service.node or '?'} has no public ingress address; run luma node ingress enable {service.node or 'NODE'}"
+    return "missing DNS target: configure an edge node publicIp or set service dns.target"
+
+
 def _conflicting_types(record_type: str) -> set[str]:
     # A CNAME cannot coexist with address records of the same name, so a
     # switch between them (CDN on/off) must replace, not add, the record.
@@ -106,11 +112,11 @@ def sync_dns(
 
     client, zone_id = _zone_client(config, secrets)
     override = override or {}
-    target = override.get("target") or service.dns.get("target") or dns_config.get("edgeTarget")
+    target = override.get("target") or config.service_dns_target(
+        exposure=service.exposure, region=service.region, node=service.node, explicit=service.dns.get("target"),
+    )
     if not target:
-        target = config.dns_target_for(exposure=service.exposure, region=service.region)
-    if not target:
-        raise LumaError("missing DNS target: configure an edge node publicIp or set service dns.target")
+        raise LumaError(_missing_target_message(service))
 
     record_type = str(override.get("type") or service.dns.get("type") or dns_config.get("recordType", "A")).upper()
     if "proxied" in override:

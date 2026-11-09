@@ -39,6 +39,7 @@ export function RegionPanel({
   const [name, setName] = useState("");
   const [egress, setEgress] = useState<"proxy" | "direct">("proxy");
   const [relay, setRelay] = useState(false);
+  const [nodeEdge, setNodeEdge] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
 
@@ -71,9 +72,10 @@ export function RegionPanel({
     setBusy("create");
     setError("");
     try {
-      await createRegion({ token, name: trimmed, egress, exposures: relay ? ["none", "tailscale-relay"] : ["none"] });
+      await createRegion({ token, name: trimmed, egress, exposures: ["none", ...(relay ? ["tailscale-relay"] : []), ...(nodeEdge ? ["node-edge"] : [])] });
       setName("");
       setRelay(false);
+      setNodeEdge(false);
       await onRefresh();
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : String(exc));
@@ -82,13 +84,13 @@ export function RegionPanel({
     }
   };
 
-  const toggleRelay = async (region: DashboardRegion) => {
-    setBusy(`update:${region.name}`);
+  const toggleExposure = async (region: DashboardRegion, exposure: "tailscale-relay" | "node-edge") => {
+    setBusy(`update:${region.name}:${exposure}`);
     setError("");
     const current = region.exposures || ["none"];
-    const exposures = current.includes("tailscale-relay")
-      ? current.filter((value) => value !== "tailscale-relay")
-      : [...current, "tailscale-relay"];
+    const exposures = current.includes(exposure)
+      ? current.filter((value) => value !== exposure)
+      : [...current, exposure];
     try {
       await updateRegion({ token, name: region.name, exposures });
       await onRefresh();
@@ -168,6 +170,10 @@ export function RegionPanel({
                 <Switch id="region-relay" checked={relay} onCheckedChange={setRelay} disabled={Boolean(busy)} />
                 <FieldLabel htmlFor="region-relay">{zh ? "允许通过公网网关接入 HTTP 服务" : "Allow HTTP services through the public gateway"}</FieldLabel>
               </Field>
+              <Field orientation="horizontal">
+                <Switch id="region-node-edge" checked={nodeEdge} onCheckedChange={setNodeEdge} disabled={Boolean(busy)} />
+                <FieldLabel htmlFor="region-node-edge">{zh ? "允许节点直连公网（node-edge，流量不经过 Manager）" : "Allow node-edge (nodes serve public traffic, bypassing the Manager)"}</FieldLabel>
+              </Field>
             </FieldGroup>
           </CardContent>
           <CardFooter>
@@ -212,9 +218,13 @@ export function RegionPanel({
               <TableCell>
                 {region.builtin ? null : (
                   <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" size="sm" disabled={Boolean(busy)} aria-label={`${region.name} HTTP Relay`} onClick={() => void toggleRelay(region)}>
-                    {busy === `update:${region.name}` ? <Spinner aria-hidden="true" data-icon="inline-start" /> : null}
+                  <Button variant="outline" size="sm" disabled={Boolean(busy)} aria-label={`${region.name} HTTP Relay`} onClick={() => void toggleExposure(region, "tailscale-relay")}>
+                    {busy === `update:${region.name}:tailscale-relay` ? <Spinner aria-hidden="true" data-icon="inline-start" /> : null}
                     {region.exposures?.includes("tailscale-relay") ? (zh ? "关闭 HTTP Relay" : "Disable HTTP Relay") : (zh ? "启用 HTTP Relay" : "Enable HTTP Relay")}
+                  </Button>
+                  <Button variant="outline" size="sm" disabled={Boolean(busy)} aria-label={`${region.name} node-edge`} onClick={() => void toggleExposure(region, "node-edge")}>
+                    {busy === `update:${region.name}:node-edge` ? <Spinner aria-hidden="true" data-icon="inline-start" /> : null}
+                    {region.exposures?.includes("node-edge") ? (zh ? "关闭节点直连" : "Disable node-edge") : (zh ? "启用节点直连" : "Enable node-edge")}
                   </Button>
                   <Button variant="destructive" size="sm" disabled={Boolean(busy)} aria-label={zh ? `删除区域 ${region.name}` : `Remove region ${region.name}`} onClick={() => void remove(region)}>
                     {busy === `remove:${region.name}` ? <Spinner aria-hidden="true" data-icon="inline-start" /> : <Trash2 data-icon="inline-start" />}

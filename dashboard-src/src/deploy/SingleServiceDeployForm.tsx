@@ -4,7 +4,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/u
 import { FieldGroup, FieldLegend, FieldSet } from "@/components/ui/field";
 import type { DashboardNode, DashboardRegion, DashboardStorageClass, Lang } from "../types";
 import type { Exposure, Region, ServiceManifestDraft, ServiceVolumeDraft } from "./types";
-import { clearNodeIfIncompatible, EXPOSURES, exposureAllowedInRegion, exposureOptionLabel, hasReadyNodeInRegion, nodesForRegion, regionChoices, requiredRegionForExposure, regionOptionLabel } from "./options";
+import { EXPOSURES, exposureAllowedInRegion, exposureOptionLabel, hasReadyNodeInRegion, nodeChoicesForExposure, nodeForExposure, publicIngressNodes, regionChoices, requiredRegionForExposure, regionOptionLabel } from "./options";
 import { serviceExposureRegion } from "./yaml";
 import { DeployCheckboxField, DeployEnvironmentFields, DeployFormSection, DeploySelectField, DeployTextareaField, DeployTextField } from "./DeployFormFields";
 
@@ -29,14 +29,15 @@ export function SingleServiceDeployForm({
   const patch = (next: Partial<ServiceManifestDraft>) => onChange({ ...draft, ...next });
   const volumeMounts = draft.volumeMounts || [];
   const regionOptions = regions && regions.length ? regions : regionChoices([], nodes);
-  const nodeOptions = nodesForRegion(nodes, draft.region);
+  const nodeEdge = draft.exposure === "node-edge";
+  const nodeOptions = nodeChoicesForExposure(nodes, draft.region, draft.exposure);
   const selectedNodeMissing = draft.node && !nodeOptions.some((node) => node.name === draft.node);
   const patchRegion = (region: Region) => {
-    patch({ region, node: clearNodeIfIncompatible(nodes, draft.node, region) });
+    patch({ region, node: nodeForExposure(nodes, draft.node, region, draft.exposure) });
   };
   const patchExposure = (exposure: Exposure) => {
     const region = serviceExposureRegion(exposure, draft.region);
-    patch({ exposure, region, node: clearNodeIfIncompatible(nodes, draft.node, region) });
+    patch({ exposure, region, node: nodeForExposure(nodes, draft.node, region, exposure) });
   };
   const updateVolumeMount = (id: string, next: Partial<ServiceVolumeDraft>) => {
     patch({ volumeMounts: volumeMounts.map((volume) => volume.id === id ? { ...volume, ...next } : volume) });
@@ -64,10 +65,12 @@ export function SingleServiceDeployForm({
           <DeployTextField label={zh ? "镜像" : "Image"} value={draft.image} onChange={(event) => patch({ image: event.target.value })} error={!draft.image.trim() ? (zh ? "请输入镜像" : "Enter an image") : undefined} />
           <DeploySelectField label={zh ? "区域" : "Region"} value={draft.region} onChange={(value) => patchRegion(value as Region)} options={regionOptions.map((region) => ({ value: region, label: regionOptionLabel(nodes, region, lang), disabled: nodes.length > 0 && !hasReadyNodeInRegion(nodes, region) }))} />
           <DeploySelectField label={zh ? "节点" : "Node"} value={draft.node} onChange={(value) => patch({ node: value })} options={[
-            { value: "", label: zh ? `自动调度到 ${draft.region} ready 节点` : `Auto-schedule to a ready ${draft.region} node` },
+            ...(nodeEdge ? [] : [{ value: "", label: zh ? `自动调度到 ${draft.region} ready 节点` : `Auto-schedule to a ready ${draft.region} node` }]),
             ...(selectedNodeMissing ? [{ value: draft.node, label: `${draft.node} (${zh ? "当前不可用" : "currently unavailable"})`, disabled: true }] : []),
-            ...nodeOptions.map((node) => ({ value: node.name || "", label: node.name })),
-          ]} description={zh ? "有持久化卷时，首次部署后自动固定节点，更新与重启继续使用原数据。" : "Persistent volumes pin the first deployment node. Updates and restarts reuse its data."} />
+            ...nodeOptions.map((node) => ({ value: node.name || "", label: nodeEdge ? `${node.name} · ${node.publicIngress?.publicIp}` : node.name })),
+          ]} description={nodeEdge
+            ? (zh ? "node-edge 的流量直接进入这个节点，域名解析到它的公网 IP，不经过 Manager。" : "node-edge traffic enters this node directly; DNS points at its public IP and bypasses the Manager.")
+            : (zh ? "有持久化卷时，首次部署后自动固定节点，更新与重启继续使用原数据。" : "Persistent volumes pin the first deployment node. Updates and restarts reuse its data.")} />
           <DeployTextField label={zh ? "副本" : "Replicas"} type="number" min={1} value={draft.replicas} onChange={(event) => patch({ replicas: Number(event.target.value || 1) })} error={!Number.isInteger(draft.replicas) || draft.replicas < 1 ? (zh ? "副本数必须为正整数" : "Replicas must be a positive integer") : undefined} />
           <DeployCheckboxField label={zh ? "启用出网代理" : "Enable egress proxy"} checked={draft.proxy} onCheckedChange={(checked) => patch({ proxy: checked })} />
         </FieldGroup>
@@ -76,7 +79,8 @@ export function SingleServiceDeployForm({
         <FieldGroup className="grid grid-cols-1 items-start gap-4 @md:grid-cols-2">
           <DeploySelectField label={zh ? "入口类型" : "Exposure"} value={draft.exposure} onChange={(value) => patchExposure(value as Exposure)} options={EXPOSURES.map((exposure) => {
             const requiredRegion = requiredRegionForExposure(exposure);
-            return { value: exposure, label: exposureOptionLabel(nodes, exposure, lang), disabled: !exposureAllowedInRegion(exposure, draft.region, regionCatalog) || Boolean(requiredRegion && nodes.length > 0 && !hasReadyNodeInRegion(nodes, requiredRegion)) };
+            const noIngressNode = exposure === "node-edge" && nodes.length > 0 && !publicIngressNodes(nodes, draft.region).length;
+            return { value: exposure, label: exposureOptionLabel(nodes, exposure, lang, draft.region), disabled: !exposureAllowedInRegion(exposure, draft.region, regionCatalog) || noIngressNode || Boolean(requiredRegion && nodes.length > 0 && !hasReadyNodeInRegion(nodes, requiredRegion)) };
           })} />
           <DeployTextField label={zh ? "域名" : "Domain"} value={draft.domain} disabled={draft.exposure === "none"} onChange={(event) => patch({ domain: event.target.value })} error={draft.exposure !== "none" && !draft.domain.trim() ? (zh ? "请输入域名" : "Enter a domain") : undefined} />
           <DeployTextField label={zh ? "容器端口" : "Container port"} value={draft.port} inputMode="numeric" disabled={draft.exposure === "none"} onChange={(event) => patch({ port: event.target.value })} error={draft.exposure !== "none" && (!Number.isInteger(Number(draft.port)) || Number(draft.port) < 1) ? (zh ? "请输入有效的正整数端口" : "Enter a positive integer port") : undefined} />

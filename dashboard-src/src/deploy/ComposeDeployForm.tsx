@@ -4,7 +4,7 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "
 import { Field, FieldDescription, FieldGroup, FieldLegend, FieldSet, FieldTitle } from "@/components/ui/field";
 import type { DashboardNode, DashboardRegion, DashboardStorageClass, Lang } from "../types";
 import type { ComposeDeploymentDraft, ComposeServiceDraft, ComposeVolumeDraft, Exposure, Region } from "./types";
-import { clearNodeIfIncompatible, EXPOSURES, exposureAllowedInRegion, exposureOptionLabel, hasReadyNodeInRegion, nodesForRegion, regionChoices, requiredRegionForExposure, regionOptionLabel } from "./options";
+import { EXPOSURES, exposureAllowedInRegion, exposureOptionLabel, hasReadyNodeInRegion, nodeChoicesForExposure, nodeForExposure, publicIngressNodes, regionChoices, requiredRegionForExposure, regionOptionLabel } from "./options";
 import { defaultLocalVolumePath, updateComposeServiceExposure } from "./yaml";
 import { DeployCheckboxField, DeployEnvironmentFields, DeployFormSection, DeploySelectField, DeployTextField } from "./DeployFormFields";
 
@@ -38,18 +38,18 @@ export function ComposeDeployForm({
       region,
       services: draft.services.map((service) => {
         if (service.region) return service;
-        return { ...service, node: clearNodeIfIncompatible(nodes, service.node, region) };
+        return { ...service, node: nodeForExposure(nodes, service.node, region, service.exposure) };
       }),
     });
   };
   const updateServiceRegion = (service: ComposeServiceDraft, region: Region | "") => {
     const effectiveRegion = region || draft.region;
-    updateService(service.name, { region, node: clearNodeIfIncompatible(nodes, service.node, effectiveRegion) });
+    updateService(service.name, { region, node: nodeForExposure(nodes, service.node, effectiveRegion, service.exposure) });
   };
   const updateServiceExposureSafe = (service: ComposeServiceDraft, exposure: Exposure) => {
     const next = updateComposeServiceExposure(service, exposure);
     const effectiveRegion = next.region || draft.region;
-    updateService(service.name, { ...next, node: clearNodeIfIncompatible(nodes, service.node, effectiveRegion) });
+    updateService(service.name, { ...next, node: nodeForExposure(nodes, service.node, effectiveRegion, next.exposure) });
   };
   const updateVolume = (name: string, next: Partial<ComposeVolumeDraft>) => {
     patch({ volumes: draft.volumes.map((volume) => volume.name === name ? { ...volume, ...next } : volume) });
@@ -71,23 +71,25 @@ export function ComposeDeployForm({
       <DeployFormSection id="compose-services" title={zh ? "02 服务入口" : "02 Service ingress"}>
         {draft.services.length ? draft.services.map((service) => {
           const effectiveRegion = service.region || draft.region;
-          const nodeOptions = nodesForRegion(nodes, effectiveRegion);
+          const nodeEdge = service.exposure === "node-edge";
+          const nodeOptions = nodeChoicesForExposure(nodes, effectiveRegion, service.exposure);
           const selectedNodeMissing = service.node && !nodeOptions.some((node) => node.name === service.node);
           return <FieldSet key={service.name}>
             <FieldLegend>{service.name}</FieldLegend>
             <FieldGroup className="grid grid-cols-1 items-start gap-4 @md:grid-cols-2">
               <DeploySelectField label={zh ? "入口" : "Exposure"} value={service.exposure} onChange={(value) => updateServiceExposureSafe(service, value as Exposure)} options={EXPOSURES.map((exposure) => {
                 const requiredRegion = requiredRegionForExposure(exposure);
-                return { value: exposure, label: exposureOptionLabel(nodes, exposure, lang), disabled: !exposureAllowedInRegion(exposure, effectiveRegion, regionCatalog) || Boolean(requiredRegion && nodes.length > 0 && !hasReadyNodeInRegion(nodes, requiredRegion)) };
+                const noIngressNode = exposure === "node-edge" && nodes.length > 0 && !publicIngressNodes(nodes, effectiveRegion).length;
+                return { value: exposure, label: exposureOptionLabel(nodes, exposure, lang, effectiveRegion), disabled: !exposureAllowedInRegion(exposure, effectiveRegion, regionCatalog) || noIngressNode || Boolean(requiredRegion && nodes.length > 0 && !hasReadyNodeInRegion(nodes, requiredRegion)) };
               })} />
               <DeploySelectField label={zh ? "区域" : "Region"} value={service.region} onChange={(value) => updateServiceRegion(service, value as Region | "")} options={[
                 { value: "", label: zh ? `默认 (${draft.region})` : `Default (${draft.region})` },
                 ...regionOptions.map((region) => ({ value: region, label: regionOptionLabel(nodes, region, lang), disabled: nodes.length > 0 && !hasReadyNodeInRegion(nodes, region) })),
               ]} />
               <DeploySelectField label={zh ? "节点" : "Node"} value={service.node} onChange={(value) => updateService(service.name, { node: value })} options={[
-                { value: "", label: zh ? `自动调度到 ${effectiveRegion} ready 节点` : `Auto-schedule to a ready ${effectiveRegion} node` },
+                ...(nodeEdge ? [] : [{ value: "", label: zh ? `自动调度到 ${effectiveRegion} ready 节点` : `Auto-schedule to a ready ${effectiveRegion} node` }]),
                 ...(selectedNodeMissing ? [{ value: service.node, label: `${service.node} (${zh ? "当前不可用" : "currently unavailable"})`, disabled: true }] : []),
-                ...nodeOptions.map((node) => ({ value: node.name || "", label: node.name })),
+                ...nodeOptions.map((node) => ({ value: node.name || "", label: nodeEdge ? `${node.name} · ${node.publicIngress?.publicIp}` : node.name })),
               ]} />
               <DeployTextField label={zh ? "域名" : "Domain"} value={service.domain} disabled={service.exposure === "none"} onChange={(event) => updateService(service.name, { domain: event.target.value })} error={service.exposure !== "none" && !service.domain.trim() ? (zh ? "请输入域名" : "Enter a domain") : undefined} />
               <DeployTextField label={zh ? "容器端口" : "Container port"} value={service.port} inputMode="numeric" disabled={service.exposure === "none"} onChange={(event) => updateService(service.name, { port: event.target.value })} error={service.exposure !== "none" && (!Number.isInteger(Number(service.port)) || Number(service.port) < 1) ? (zh ? "请输入有效的正整数端口" : "Enter a positive integer port") : undefined} />
