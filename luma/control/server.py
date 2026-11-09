@@ -3765,12 +3765,20 @@ def handle_node_public_ingress(token: str, body: Dict[str, Any]) -> Dict[str, An
     key, record = entry
     node_name = node_ingress.canonical_node_name(key, record)
     aliases = _node_record_names(key, record) | {node_name}
-    config = _control_config()
-    api = NomadApi(nomad_addr(config, state), token=nomad_token(state))
-    job_id = node_traefik_job_id(node_name)
     enabled = body.get("enabled", True)
     if not isinstance(enabled, bool):
         raise LumaError("enabled must be true or false")
+    if enabled and _nomad_security_staged():
+        # The node Traefik has no Nomad credential or client certificate under
+        # ACL/mTLS, and the security migration refuses live jobs it cannot
+        # match to a saved deployment. Never let enabling it stall either one.
+        raise LumaError(
+            "node public ingress is not available on a Nomad cluster with the security profile yet; "
+            "keep this domain on cn-edge or external-edge for now"
+        )
+    config = _control_config()
+    api = NomadApi(nomad_addr(config, state), token=nomad_token(state))
+    job_id = node_traefik_job_id(node_name)
 
     if not enabled:
         users = node_ingress.node_edge_users(state, aliases)
@@ -3843,6 +3851,13 @@ def handle_node_public_ingress(token: str, body: Dict[str, Any]) -> Dict[str, An
         "traefik": deploy_message,
         "dns": dns_moves,
     }
+
+
+def _nomad_security_staged() -> bool:
+    """True once the Nomad security profile, policy or migration exists."""
+    from ..nomad_security import read_private_json, security_root
+    root = security_root()
+    return any(read_private_json(root / name, optional=True) for name in ("cluster.json", "workloads.json", "upgrade-status.json"))
 
 
 def _move_node_edge_dns(state: Dict[str, Any], aliases: set[str]) -> list[str]:

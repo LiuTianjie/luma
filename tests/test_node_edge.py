@@ -1,5 +1,6 @@
 """node-edge exposure: manifests, rendering, DNS targets and node ingress lifecycle."""
 
+import json
 import os
 import tempfile
 import unittest
@@ -196,7 +197,11 @@ class NodeIngressHelperTests(unittest.TestCase):
 class NodeIngressHandlerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.env = patch.dict(os.environ, {"LUMA_CONTROL_STATE_DIR": self.tmp.name, "TRAEFIK_ACME_EMAIL": "ops@acme.dev"})
+        self.security = Path(self.tmp.name, "security")
+        self.env = patch.dict(os.environ, {
+            "LUMA_CONTROL_STATE_DIR": self.tmp.name, "TRAEFIK_ACME_EMAIL": "ops@acme.dev",
+            "LUMA_NOMAD_SECURITY_DIR": str(self.security),
+        })
         self.env.start()
         state = init_state(domain="luma.acme.dev", cluster_id="test", overwrite=True)
         self.token = state["deployToken"]
@@ -240,6 +245,23 @@ class NodeIngressHandlerTests(unittest.TestCase):
             self._enable({"node": "manager", "publicIp": "47.100.1.20"})
         with self.assertRaisesRegex(LumaError, "not a public address"):
             self._enable({"node": "tx-sh-1", "publicIp": "10.0.0.5"})
+
+    def test_enable_is_refused_once_the_nomad_security_profile_exists(self):
+        # Under ACL/mTLS the node Traefik could not read Nomad, and the
+        # security migration refuses live jobs it cannot match.
+        for name, document in (("workloads.json", {"schema": 1, "mode": "audit", "grants": {}}),
+                               ("upgrade-status.json", {"status": "running"}),
+                               ("cluster.json", {"schema": 1, "aclRequired": True})):
+            with self.subTest(name=name):
+                self.security.mkdir(mode=0o700, exist_ok=True)
+                for existing in self.security.iterdir():
+                    existing.unlink()
+                path = self.security / name
+                path.write_text(json.dumps(document), encoding="utf-8")
+                path.chmod(0o600)
+                with self.assertRaisesRegex(LumaError, "security profile"):
+                    self._enable({"node": "tx-sh-1", "publicIp": "47.100.1.20"})
+        self.assertNotIn("publicIngress", load_state()["nodes"]["tx-sh-1"])
 
     def test_disable_refuses_while_a_deployment_uses_the_node(self):
         self._enable({"node": "tx-sh-1", "publicIp": "47.100.1.20"})
