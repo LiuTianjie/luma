@@ -5,6 +5,7 @@ owns the configuration; version downloads are restricted to pinned releases.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -28,6 +29,7 @@ from .nomad_pki import create_csr, expires_soon, install_certificate, tls_paths
 from .nomad_security import ADMIN_ROOT, NOMAD_RELEASES, NOMAD_VERSION, deny_host_root, mesh_ip, nomad_token, private_read, private_write, read_private_json, security_root
 
 CAPABILITY = "nomad-security-upgrade-v1"
+DOWNLOAD_CAPABILITY = "nomad-download-cache-v1"
 CONFIG = Path("/etc/nomad.d/nomad.hcl")
 BINARY = Path("/usr/local/bin/nomad")
 
@@ -157,7 +159,8 @@ def _network(payload: Mapping[str, Any], facts: Mapping[str, Any]) -> dict[str, 
                           interface=_mac_mesh_interface(LocalExecutor(), facts["address"], peer=manager) if facts["os"] == "darwin" else "")
 
 
-def _download(version: str, destination: Path, *, proxy: str = "") -> Path:
+def _download_archive(version: str, *, proxy: str = "") -> Path:
+    """Cache verified release archives without changing the running Nomad agent."""
     platform = detect_os() + "_" + _nomad_arch(os.uname().machine)
     digest = NOMAD_RELEASES.get(version, {}).get(platform)
     if not digest:
@@ -167,18 +170,44 @@ def _download(version: str, destination: Path, *, proxy: str = "") -> Path:
         parsed = urlsplit(proxy)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
             raise LumaError("invalid Nomad download proxy")
-    archive = destination / "nomad.zip"
-    for attempt in ([proxy, ""] if proxy else [""]):
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"https": attempt} if attempt else {}))
-        try:
-            with opener.open(f"https://releases.hashicorp.com/nomad/{version}/nomad_{version}_{platform}.zip", timeout=60) as response, archive.open("wb") as out:
-                shutil.copyfileobj(response, out)
-            break
-        except OSError:
-            if not attempt:
-                raise LumaError("Nomad download failed; the installed binary was retained") from None
-    if hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
-        raise LumaError("Nomad binary checksum mismatch; the running binary was retained")
+    root = ADMIN_ROOT / "downloads" / version
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    archive = root / (platform + ".zip")
+    pending = archive.with_suffix(".pending")
+    fd = os.open(root / (platform + ".lock"), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        if archive.is_symlink() or pending.is_symlink():
+            raise LumaError("Nomad download cache must not contain symlinks")
+        if archive.is_file() and hashlib.sha256(archive.read_bytes()).hexdigest() == digest:
+            return archive
+        # A canceled transfer never becomes a reusable cache entry. Recheck
+        # the official digest on every reuse, including after process restarts.
+        for attempt in ([proxy, ""] if proxy else [""]):
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({"https": attempt} if attempt else {}))
+            try:
+                with opener.open(f"https://releases.hashicorp.com/nomad/{version}/nomad_{version}_{platform}.zip", timeout=60) as response, pending.open("wb") as out:
+                    os.fchmod(out.fileno(), 0o600)
+                    shutil.copyfileobj(response, out)
+                    out.flush()
+                    os.fsync(out.fileno())
+                if hashlib.sha256(pending.read_bytes()).hexdigest() != digest:
+                    if attempt:
+                        continue
+                    raise LumaError("Nomad binary checksum mismatch; the running binary was retained")
+                break
+            except OSError:
+                if not attempt:
+                    raise LumaError("Nomad download failed; the installed binary was retained") from None
+        os.replace(pending, archive)
+        return archive
+    finally:
+        pending.unlink(missing_ok=True)
+        os.close(fd)
+
+
+def _download(version: str, destination: Path, *, proxy: str = "") -> Path:
+    archive = _download_archive(version, proxy=proxy)
     with zipfile.ZipFile(archive) as bundle:
         binary = destination / "nomad"
         with bundle.open("nomad") as source, binary.open("wb") as out:
@@ -279,6 +308,21 @@ def execute(payload: Mapping[str, Any], *, allow_server: bool = False) -> dict[s
     if payload.get("schema") != 1 or payload.get("op") not in {"inspect", "preflight", "version", "configure", "verify", "certificate-request", "renew", "storage"}:
         raise LumaError("unsupported Nomad security upgrade step")
     operation = str(payload["op"])
+    if operation == "preflight" and payload.get("downloadVersion"):
+        # Existing Controls accept preflight's typed optional preparation.
+        # Do not resume a pending restart/configuration from this download-only
+        # path, even if an operation record already exists on the host.
+        facts = snapshot(with_csr=False)
+        if payload.get("nodeId") != facts["nodeId"] or payload.get("address") != facts["address"]:
+            raise LumaError("Nomad download does not match this host's registered identity")
+        if facts["role"] == "server" and not allow_server:
+            raise LumaError("Nomad server preparation belongs to its independent host supervisor")
+        target = str(payload["downloadVersion"])
+        if target != facts["version"]:
+            if target not in version_path(facts["version"]):
+                raise LumaError("Nomad download is outside the supported upgrade path")
+            _download_archive(target, proxy=str(payload.get("proxy") or ""))
+        return {"nodeId": facts["nodeId"], "downloadedVersion": target}
     if operation in {"certificate-request", "renew"}:
         # Renewal must work after a long-offline node's Nomad certificate has
         # expired. Trust the protected, previously verified local identity and

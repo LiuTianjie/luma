@@ -31,7 +31,7 @@ from .errors import LumaError
 from .local import LocalExecutor
 from .nomad_acl import activate_acl, prepare_acl, verify_acl
 from .nomad_api import NomadApi, _allocation_health, _desired_group_counts_from_job
-from .nomad_migration_node import CAPABILITY, execute, resume_operation, snapshot, version_path
+from .nomad_migration_node import CAPABILITY, DOWNLOAD_CAPABILITY, execute, resume_operation, snapshot, version_path
 from .nomad_pki import client_tls, endpoint, expires_soon, prepare_manager, sign_csr, sign_enrollments
 from .nomad_security import ADMIN_ROOT, NOMAD_RELEASES, NOMAD_VERSION, ROLES, authority_digest, job_digest, nomad_token, prepare_job, private_read, private_write, read_private_json, security_root, validate_application, workload_policy_lock
 
@@ -39,6 +39,7 @@ JOURNAL = ADMIN_ROOT / "upgrade.json"
 WORKLOAD_STABLE_SECONDS = 30
 WORKLOAD_RECOVERY_SECONDS = 600
 WORKLOAD_STEPS = {"version", "rpc", "activate", "secure", "privacy", "history", "consumers", "secrets"}
+DOWNLOAD_PREFETCH_NODES = 3
 
 
 def _read_journal(*, optional: bool = False) -> dict[str, Any]:
@@ -87,6 +88,7 @@ def _save(journal: dict[str, Any], *, status: str, phase: str, message: str, wai
     secrets = journal.get("secretMigration") or {}
     public["secrets"] = {"encryptedStorage": bool(secrets.get("databaseEncrypted")),
                          "taskIdentitiesVerified": bool(secrets.get("verifiedAt")), "verifiedAt": secrets.get("verifiedAt")}
+    public["downloads"] = journal.get("downloads") or []
     private_write(security_root() / "upgrade-status.json", json.dumps(public))
 
 
@@ -404,6 +406,35 @@ def _payload(journal: dict[str, Any], step: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _prefetch_downloads(journal: dict[str, Any], state: Mapping[str, Any]) -> None:
+    """Prepare a bounded window of clients; activation remains server-first and serial."""
+    selected: set[str] = set()
+    downloads = []
+    for step in journal["steps"][int(journal.get("next") or 0):]:
+        name = step["node"]
+        if step["kind"] != "version" or name == journal["manager"] or name in selected:
+            continue
+        agent = ((state.get("nodes") or {}).get(name) or {}).get("agent") or {}
+        if DOWNLOAD_CAPABILITY not in (agent.get("capabilities") or []):
+            continue
+        selected.add(name)
+        node = journal["nodes"][name]
+        payload = {"schema": 1, "op": "preflight", "nodeId": node["nodeId"], "address": node["address"],
+                   "downloadVersion": step["version"], "proxy": journal.get("downloadProxy") or ""}
+        key = f"{journal['id']}:download:{name}:{step['version']}:{journal['attempt']}"
+        try:
+            response = control_task(state, name, key, payload)
+            status = str(response.get("status") or "queued")
+        except LumaError:
+            # Optional preparation cannot complete or replay a node upgrade.
+            # The version step still verifies/downloads its own pinned archive.
+            status = "unavailable"
+        downloads.append({"node": name, "version": step["version"], "status": status})
+        if len(selected) == DOWNLOAD_PREFETCH_NODES:
+            break
+    journal["downloads"] = downloads
+
+
 def _consumers(journal: dict[str, Any], *, consumers_only: bool = False) -> None:
     client = NomadApi("http://127.0.0.1:4646", token=nomad_token())
     with workload_policy_lock():
@@ -715,6 +746,10 @@ def _reconcile_locked() -> dict[str, Any]:
             return public_status()
         step = journal["steps"][position]
         kind, name = step["kind"], step["node"]
+        if kind == "version":
+            _prefetch_downloads(journal, state)
+        else:
+            journal.pop("downloads", None)
         _save(journal, status="running", phase=kind, message=f"{kind}: {name}" + (" → " + step["version"] if step.get("version") else ""))
         completed = journal.get("stepResult")
         if completed is not None and completed.get("position") != position:

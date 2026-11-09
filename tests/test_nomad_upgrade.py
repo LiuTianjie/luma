@@ -1,11 +1,13 @@
 """Fresh-install, rolling-upgrade and credential-boundary regression coverage."""
 import copy
 import hashlib
+import io
 import json
 import os
 import subprocess
 import time
 import unittest
+import zipfile
 from unittest import mock
 
 from luma import agent, nomad_acl, nomad_enrollment, nomad_migration_node as host, nomad_node, nomad_pki as pki, nomad_security as security, nomad_upgrade as upgrade, secret_migration
@@ -259,6 +261,53 @@ class SimulatedCrash(BaseException):
     pass
 
 
+class NomadDownloadCache(SecurityFixture):
+    def setUp(self):
+        super().setUp()
+        bundle = io.BytesIO()
+        with zipfile.ZipFile(bundle, "w") as archive:
+            archive.writestr("nomad", b"verified-next-nomad")
+        self.content = bundle.getvalue()
+        self.opener = mock.Mock()
+        self.opener.open.side_effect = lambda *args, **kwargs: io.BytesIO(self.content)
+        for patch in (mock.patch.object(host, "ADMIN_ROOT", self.admin),
+                      mock.patch.object(host, "detect_os", return_value="linux"),
+                      mock.patch.object(host, "_nomad_arch", return_value="amd64"),
+                      mock.patch.object(host, "NOMAD_RELEASES", {"1.10.5": {"linux_amd64": hashlib.sha256(self.content).hexdigest()}}),
+                      mock.patch.object(host.urllib.request, "build_opener", return_value=self.opener)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_prefetch_is_reused_and_corrupt_cache_is_reverified_before_install(self):
+        archive = host._download_archive("1.10.5")
+        destination = self.root / "extract"
+        destination.mkdir()
+        self.assertEqual(host._download("1.10.5", destination).read_bytes(), b"verified-next-nomad")
+        self.assertEqual(self.opener.open.call_count, 1)
+        archive.write_bytes(b"corrupt cache")
+        self.assertEqual(host._download("1.10.5", destination).read_bytes(), b"verified-next-nomad")
+        self.assertEqual(self.opener.open.call_count, 2)
+
+    def test_invalid_proxy_download_falls_back_to_a_verified_direct_download(self):
+        self.opener.open.side_effect = [io.BytesIO(b"truncated proxy response"), io.BytesIO(self.content)]
+        archive = host._download_archive("1.10.5", proxy="http://127.0.0.1:7890")
+        self.assertEqual(archive.read_bytes(), self.content)
+        self.assertEqual(self.opener.open.call_count, 2)
+
+    def test_invalid_or_interrupted_transfer_never_becomes_a_cache_entry(self):
+        class Interrupted(io.BytesIO):
+            def read(self, *args):
+                raise OSError("connection reset")
+
+        for stream, message in ((io.BytesIO(b"wrong release"), "checksum mismatch"),
+                                (Interrupted(), "download failed")):
+            self.opener.open.side_effect = lambda *args, **kwargs: stream
+            with self.subTest(message=message), self.assertRaisesRegex(LumaError, message):
+                host._download_archive("1.10.5")
+            self.assertFalse(list(self.admin.glob("downloads/**/*.zip")))
+            self.assertFalse(list(self.admin.glob("downloads/**/*.pending")))
+
+
 class HostOperationRecovery(SecurityFixture):
     def setUp(self):
         super().setUp()
@@ -339,6 +388,25 @@ class HostOperationRecovery(SecurityFixture):
             fetch.assert_called_once()
 
 
+    def test_download_preflight_never_resumes_or_mutates_a_pending_host_operation(self):
+        self.facts["version"] = "1.9.7"
+        security.private_write(self.admin / "operation.json", '{"phase":"prepared"}')
+        original = (self.admin / "operation.json").read_bytes()
+        payload = {"schema": 1, "op": "preflight", "nodeId": self.facts["nodeId"], "address": self.facts["address"], "downloadVersion": "1.11.3"}
+        with mock.patch.object(host, "resume_operation", side_effect=AssertionError("download resumed a restart")), mock.patch.object(host, "_download_archive") as fetch:
+            self.assertEqual(host.execute(payload)["downloadedVersion"], "1.11.3")
+            fetch.assert_called_once_with("1.11.3", proxy="")
+            with self.assertRaisesRegex(LumaError, "registered identity"):
+                host.execute({**payload, "nodeId": "another-node"})
+            with self.assertRaisesRegex(LumaError, "supported upgrade path"):
+                host.execute({**payload, "downloadVersion": "2.2.0"})
+        self.assertEqual((self.admin / "operation.json").read_bytes(), original)
+        self.assertEqual(self.binary.read_bytes(), b"old-verified-binary")
+        self.mocks["_restart"].assert_not_called()
+        self.mocks["install_guard"].assert_not_called()
+        self.mocks["install_certificate"].assert_not_called()
+
+
 class UpgradeWorkflow(SecurityFixture):
     def setUp(self):
         super().setUp()
@@ -390,6 +458,8 @@ class UpgradeWorkflow(SecurityFixture):
         operation = payload["op"]
         node = self.models[name]
         self.calls.append((name, operation, payload.get("version"), payload.get("acl")))
+        if operation == "preflight" and payload.get("downloadVersion"):
+            return {"nodeId": node["nodeId"], "downloadedVersion": payload["downloadVersion"]}
         if operation == "version":
             self.assertEqual(host.version_path(node["version"])[0], payload["version"])
             node["version"] = payload["version"]
@@ -446,6 +516,40 @@ class UpgradeWorkflow(SecurityFixture):
         self.assertTrue(all(node["verified"] for node in result["nodes"]))
         self.assertTrue(result["secrets"]["taskIdentitiesVerified"])
         self.assertEqual(self.models["manager"]["jobTrackedVersions"], 6)
+
+    def test_prefetch_overlaps_node_preparation_without_changing_activation_order(self):
+        for record in self.state["nodes"].values():
+            record["agent"]["capabilities"].append(host.DOWNLOAD_CAPABILITY)
+        result = self.complete()
+        self.assertEqual(result["status"], "completed", result.get("message"))
+        for version in security.NOMAD_RELEASES:
+            migrated = [call[0] for call in self.calls if len(call) == 4 and call[1:3] == ("version", version)]
+            self.assertEqual(migrated, ["manager", "linux", "mac"])
+        prepared = [task for task in self.tasks.values() if task["payload"].get("downloadVersion")]
+        self.assertTrue(prepared)
+        self.assertTrue(all(task["payload"]["op"] == "preflight" for task in prepared))
+
+    def test_prefetch_window_is_bounded_and_older_agents_keep_the_serial_path(self):
+        journal = {"id": "prefetch", "manager": "manager", "attempt": 0, "next": 0, "nodes": {}, "steps": []}
+        state = {"nodes": {}}
+        for index in range(6):
+            name = "worker-" + str(index)
+            journal["nodes"][name] = {"nodeId": name, "address": "100.64.0." + str(index + 10)}
+            journal["steps"].append({"kind": "version", "node": name, "version": "1.10.5"})
+            state["nodes"][name] = {"agent": {"capabilities": [host.CAPABILITY, host.DOWNLOAD_CAPABILITY]}}
+        with mock.patch.object(upgrade, "control_task", return_value={"status": "queued"}) as tasks:
+            upgrade._prefetch_downloads(journal, state)
+            self.assertEqual(tasks.call_count, 3)
+            self.assertEqual({call.args[1] for call in tasks.call_args_list}, {"worker-0", "worker-1", "worker-2"})
+            for call in tasks.call_args_list:
+                self.assertEqual(call.args[3]["op"], "preflight")
+            tasks.reset_mock()
+            for record in state["nodes"].values():
+                record["agent"]["capabilities"] = [host.CAPABILITY]
+            upgrade._prefetch_downloads(journal, state)
+            tasks.assert_not_called()
+            self.assertEqual(journal["downloads"], [])
+        self.assertEqual(journal["next"], 0)
 
     def test_old_or_offline_agent_keeps_upgrade_pending_without_changing_nomad(self):
         self.state["nodes"]["mac"]["agent"]["capabilities"] = []
