@@ -1,4 +1,4 @@
-# Nomad 安全默认值与自动升级
+# Nomad 安全默认值与自动升级 {#nomad-security-defaults-and-automatic-upgrades}
 
 首次执行 `luma bootstrap` 和 `luma node join` 就会配置 ACL、双向 TLS、节点引入凭据和持久网络规则。安装程序验证实际运行配置后才报告节点成功。用户不需要另外执行一组 `luma security` 命令。
 
@@ -12,7 +12,7 @@
 
 管理节点安装独立的 `luma-nomad-security.service`。它等待已注册节点的新版 Agent 就绪，收集配置和身份，检查应用权限与现有存储，再执行持久化的迁移步骤。Control 替换、Nomad 重启和进程中断不会丢失已记录的步骤。离线节点会明确列出；未知作业、身份冲突或不安全配置会阻断并保留原因。修复原因后重新执行普通管理节点更新即可重新检查、继续迁移。
 
-## 升级过程中会发生什么
+## 升级过程中会发生什么 {#upgrade-behavior}
 
 - 自动路径覆盖 Luma 管理的单服务端集群：Linux 管理节点、Linux/macOS 客户端、Nomad `global` 区域、`dc1` 数据中心、`/opt/nomad/data` 数据目录。
 - 从 1.9.x 起逐个次版本升级：**1.10.5 → 1.11.3 → 2.0.7 → 2.1.1**，跳过已完成的版本。每一轮先服务端、再全部客户端，验证身份和健康后进入下一轮。四个平台的官方压缩包 SHA-256 固定在源码中。
@@ -26,7 +26,7 @@
 
 迁移正在应用配置时，Control 暂停新的作业变更，避免部署与权限清单交叉。自定义额外 HCL/JSON 片段、外部 ACL/CA、非默认命名空间等情况会明确阻断；程序不会静默覆盖这些配置。
 
-## 凭据、网络与验收
+## 凭据、网络与验收 {#boundaries-and-verification}
 
 | 内容 | 位置与边界 |
 | --- | --- |
@@ -48,7 +48,7 @@ Control 仍是受信任的基础设施管理组件：它保留既有 Docker 管�
 
 仅回滚作业不能恢复缺少当前凭据挂载或存储节点限制的旧版本。需要回到旧镜像时，通过正常 Luma 部署流程重新部署，以保留现有防护。
 
-## 中断与回滚
+## 中断与回滚 {#recovery-and-rollback}
 
 先查看系统更新页面的失败步骤，及宿主上的 `journalctl -u luma-nomad-security`。私有 `/etc/luma/nomad/upgrade.json` 保存执行位置；不要把这个目录、Raft 快照或完整作业制品贴到公共工单。
 
@@ -62,7 +62,7 @@ Nomad 不支持原地二进制降级。确需恢复旧集群时，在独立、�
 
 这些防护不会让已经暴露的凭据失效。确认迁移完成、接收新密钥的宿主可信后，仍需轮换旧凭据。
 
-## 密钥加密与应用身份
+## 密钥加密与应用身份 {#encrypted-storage-and-application-identities}
 
 Control SQLite schema 2 使用 AES-256-GCM 加密配置、部署记录、队列请求和历史 payload，告警与回调凭据也使用同一套认证加密。密文绑定具体记录；缺少密钥或校验失败时停止读写，不回退明文。存量迁移先原子提交密文，再 checkpoint、VACUUM，清理旧 SQLite 页和 WAL。普通配置与历史接口隐藏已保存的值；编辑同一个应用配置时，保留的 `<redacted>` 字段会继续使用原值。
 

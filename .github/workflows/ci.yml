@@ -117,6 +117,12 @@ jobs:
       - name: Validate sources
         run: bash scripts/check-luma.sh
 
+      - name: Validate documentation links and translated heading anchors
+        run: |
+          python -m pip install Markdown==3.8.2
+          python scripts/build-site.py --output "$RUNNER_TEMP/site-check"
+          python scripts/check-site.py "$RUNNER_TEMP/site-check"
+
       - name: Verify CLI distribution and assistant skill delivery
         run: |
           python -m pip install build
