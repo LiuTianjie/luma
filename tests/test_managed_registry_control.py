@@ -323,6 +323,7 @@ class ManagedRegistryDeploymentTests(unittest.TestCase):
 
     def test_fresh_remote_join_installs_runtime_before_registry_probe_and_nomad_start(self):
         from luma.agent import execute_agent_task
+        from luma.nomad_security import NOMAD_VERSION
 
         state = load_state()
         state['nodes']['air1']['agent']['os'] = 'linux'
@@ -363,9 +364,15 @@ class ManagedRegistryDeploymentTests(unittest.TestCase):
 
         def run_agent(_state, _node, action, payload, **kwargs):
             actions.append(action)
+            # Production hydrates this private bundle only after the lease
+            # commits; this fixture calls the agent implementation directly.
+            payload = {**payload, 'nomadSecurity': {'schema': 1, 'aclRequired': True, 'nomadVersion': NOMAD_VERSION,
+                       'agentToken': '00000000-0000-4000-8000-000000000001', 'introToken': 'test-introduction',
+                       'tlsBundle': {'ca': 'test-ca', 'cert': 'test-cert', 'key': 'test-key'}}}
             return execute_agent_task({'action': action, 'payload': payload})
 
         executor.sudo.side_effect = sudo
+        executor.sudo_result.return_value = Mock(code=1, output='')
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.object(server, '_run_node_agent_task', side_effect=run_agent))
             stack.enter_context(patch('luma.agent.LocalExecutor', return_value=executor))

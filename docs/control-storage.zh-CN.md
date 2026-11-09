@@ -6,6 +6,8 @@ Luma Control 在单个 Manager 使用本地 SQLite，作为 Control 状态及索
 
 默认数据库为 `/opt/luma/control/control.sqlite3`。可在 Control 进程环境设置 `LUMA_CONTROL_STATE_DIR` 更改目录。`control.sqlite3-wal`、`control.sqlite3-shm` 是 SQLite 运行时辅助文件，不能独立备份。
 
+Luma 0.2.55 使用 schema 2 认证加密保存私有 payload、告警和回调凭据。新安装默认启用，现有集群在全部节点升级后的自动 Nomad 安全迁移中完成加密。`/etc/luma/secrets/control-data.key` 恢复键和 `/opt/luma/security/nomad/secrets.json` profile 必须与数据库独立私密备份；检查或打开加密备份前先恢复二者。旧 Control 无法读取 schema 2。详见[密钥分发与恢复](nomad-security.zh-CN.md)。
+
 ## 写锁竞争与任务回执 {#writer-contention-and-task-receipts}
 
 Control 的本地写入按先来后到排队，与 SQLite 共用 30 秒的取锁预算；读快照不进入写队列。

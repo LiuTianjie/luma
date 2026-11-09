@@ -20,8 +20,13 @@ def _access_environment(text: str) -> dict[str, Any]:
     """Read the gateway environment from a generated Nomad job."""
     try:
         job = json.loads(text)["Job"]
-        return next((task.get("Env") or {} for group in job["TaskGroups"]
-                     for task in group["Tasks"] if task["Name"] == "observe-access"), {})
+        for group in job["TaskGroups"]:
+            for task in group["Tasks"]:
+                if task["Name"] == "observe-access":
+                    from ..nomad_secrets import task_environment
+                    from ..secret_storage import _client
+                    return task_environment(_client(), job, group, task)
+        return {}
     except (ValueError, KeyError, TypeError, AttributeError):
         raise LumaError("cannot verify Observe access credentials in the generated job") from None
 

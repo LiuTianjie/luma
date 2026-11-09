@@ -228,6 +228,8 @@ def session_credential(method: str, headers: Mapping[str, str], session_id: str,
     token = str(state.get("deployToken") or "")
     if not token:
         raise AuthError("unauthorized")
+    from ..security_audit import session_actor
+    session_actor(str(row["public_id"]), str(row["passkey_id"]))
     return token
 
 

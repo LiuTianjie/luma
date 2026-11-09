@@ -255,15 +255,20 @@ class LogReaderTests(unittest.TestCase):
             thread.join(timeout=2)
 
     def test_raw_reads_have_limit_timeout_and_close(self):
+        from luma.nomad_api import NomadApi
         reader = self.reader()
         del reader._read_bytes
+        reader.client = NomadApi("http://nomad.test", token="nomad-secret")
         response = Mock()
         response.read.return_value = b'foo'
         context = Mock()
         context.__enter__ = Mock(return_value=response)
         context.__exit__ = Mock(return_value=False)
-        with patch('luma.control.logs.urllib.request.urlopen', return_value=context) as opened:
+        opener = Mock()
+        opener.open.return_value = context
+        with patch('luma.nomad_api.urllib.request.build_opener', return_value=opener):
             reader._read_bytes({'allocationId': 'a1'}, 'alloc/logs/web.stdout.0', 7, 20)
+        opened = opener.open
         self.assertEqual(parse_qs(urlparse(opened.call_args.args[0].full_url).query), {'path': ['alloc/logs/web.stdout.0'], 'offset': ['7'], 'limit': ['20']})
         self.assertEqual(opened.call_args.kwargs['timeout'], 3)
         response.read.assert_called_once_with(20)

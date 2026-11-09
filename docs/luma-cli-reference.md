@@ -49,6 +49,7 @@ Cluster administration:
   cdn           Check, refresh and clean up Alibaba Cloud ESA records
   passkey       Enroll dashboard passkeys and manage browser sign-in
   manager       Repair manager networking, DNS and IP changes
+  security      Prepare and apply reviewed Nomad security migrations
 
 arguments:
   -h, --help           show this help message and exit
@@ -1511,7 +1512,7 @@ arguments:
 
 Examples:
   luma update
-  luma update --install-ref v0.2.54
+  luma update --install-ref v0.2.58
   luma update fleet
 ```
 
@@ -3030,4 +3031,175 @@ arguments:
   --new NEW_IP     New public IPv4 address
   --domain DOMAIN  Control hostname, without scheme
   --dry-run        Show the recovery plan without changing anything
+```
+
+## `luma security`
+
+```text
+usage: luma security [-h] {plan,review-job,prepare-acl,activate-acl,verify-acl,rotate,revoke,prepare-node,apply-node} ...
+
+arguments:
+  {plan,review-job,prepare-acl,activate-acl,verify-acl,rotate,revoke,prepare-node,apply-node}
+    plan                Read Nomad versions, ACL state, peers and host-access requirements
+    review-job          Create a grant for one exact, reviewed Nomad job specification
+    prepare-acl         Create private credentials and policies offline; does not enable ACL
+    activate-acl        Bootstrap/apply the prepared policies after servers enable ACL
+    verify-acl          Verify anonymous denial and each installed service credential
+    rotate              Publish a replacement role credential, retaining the old token
+    revoke              Revoke a recorded retired service accessor after consumer verification
+    prepare-node        Write a reviewable node config/firewall bundle without changing the host
+    apply-node          Apply a reviewed node bundle, preserving backups and restarting only this
+                        node
+
+arguments:
+  -h, --help            show this help message and exit
+```
+
+## `luma security plan`
+
+```text
+usage: luma security plan [-h] --output OUTPUT [--nomad-addr NOMAD_ADDR]
+
+arguments:
+  -h, --help            show this help message and exit
+  --output OUTPUT       Private JSON file for the observed cluster plan
+  --nomad-addr NOMAD_ADDR
+                        Local Nomad origin; managed HTTPS is selected automatically
+```
+
+## `luma security review-job`
+
+```text
+usage: luma security review-job [-h] --job JOB --policy POLICY --reason REASON [--enforce]
+
+arguments:
+  -h, --help       show this help message and exit
+  --job JOB        Private file containing the complete reviewed job
+  --policy POLICY  Private workload policy file to update
+  --reason REASON  Record why this exact job requires host access
+  --enforce        Enable enforcement in the output policy
+```
+
+## `luma security prepare-acl`
+
+```text
+usage: luma security prepare-acl [-h] [--namespace NAMESPACES] [--enforce-workloads] [--nomad-addr NOMAD_ADDR] [--admin-dir ADMIN_DIR] [--service-dir SERVICE_DIR]
+
+arguments:
+  -h, --help            show this help message and exit
+  --namespace NAMESPACES
+                        Exact permitted namespace; repeat for multiple namespaces
+  --enforce-workloads   Enable job admission when creating a new workload policy
+  --nomad-addr NOMAD_ADDR
+                        Local Nomad origin; managed HTTPS is selected automatically
+  --admin-dir ADMIN_DIR
+                        Host-only administrator credential directory outside Control's mount
+  --service-dir SERVICE_DIR
+                        Private service-role credential directory
+```
+
+## `luma security activate-acl`
+
+```text
+usage: luma security activate-acl [-h] [--nomad-addr NOMAD_ADDR] [--admin-dir ADMIN_DIR] [--service-dir SERVICE_DIR]
+
+arguments:
+  -h, --help            show this help message and exit
+  --nomad-addr NOMAD_ADDR
+                        Local Nomad origin; managed HTTPS is selected automatically
+  --admin-dir ADMIN_DIR
+                        Host-only administrator credential directory outside Control's mount
+  --service-dir SERVICE_DIR
+                        Private service-role credential directory
+```
+
+## `luma security verify-acl`
+
+```text
+usage: luma security verify-acl [-h] [--nomad-addr NOMAD_ADDR] [--service-dir SERVICE_DIR]
+
+arguments:
+  -h, --help            show this help message and exit
+  --nomad-addr NOMAD_ADDR
+                        Local Nomad origin; managed HTTPS is selected automatically
+  --service-dir SERVICE_DIR
+                        Private service-role credential directory
+```
+
+## `luma security rotate`
+
+```text
+usage: luma security rotate [-h] --role {control,traefik,exporter,logs,agent} [--nomad-addr NOMAD_ADDR] [--admin-dir ADMIN_DIR] [--service-dir SERVICE_DIR]
+
+arguments:
+  -h, --help            show this help message and exit
+  --role {control,traefik,exporter,logs,agent}
+                        Service role whose credential will be replaced
+  --nomad-addr NOMAD_ADDR
+                        Local Nomad origin; managed HTTPS is selected automatically
+  --admin-dir ADMIN_DIR
+                        Host-only administrator credential directory outside Control's mount
+  --service-dir SERVICE_DIR
+                        Private service-role credential directory
+```
+
+## `luma security revoke`
+
+```text
+usage: luma security revoke [-h] --accessor ACCESSOR [--nomad-addr NOMAD_ADDR] [--admin-dir ADMIN_DIR]
+
+arguments:
+  -h, --help            show this help message and exit
+  --accessor ACCESSOR   Previously retired accessor ID to revoke after all consumers update
+  --nomad-addr NOMAD_ADDR
+                        Local Nomad origin; managed HTTPS is selected automatically
+  --admin-dir ADMIN_DIR
+                        Host-only administrator credential directory outside Control's mount
+```
+
+## `luma security prepare-node`
+
+```text
+usage: luma security prepare-node [-h] --output OUTPUT --name NAME --region REGION --role {server,client} --mesh-ip MESH_IP [--server SERVER] [--rpc-peer RPC_PEER] [--http-peer HTTP_PEER] [--serf-peer SERF_PEER] [--os {linux,darwin}] [--mesh-interface MESH_INTERFACE] [--host-access {isolated,trusted}] [--version {1.9.7,2.1.1}] [--stage-acl] [--replace-config] [--base-config BASE_CONFIG] [--tls-ca TLS_CA] [--tls-cert TLS_CERT] [--tls-key TLS_KEY]
+
+arguments:
+  -h, --help            show this help message and exit
+  --output OUTPUT       Private file in which to save the reviewable node bundle
+  --name NAME           Registered Luma node name
+  --region REGION       Existing Luma scheduling region
+  --role {server,client}
+                        Nomad role of this host
+  --mesh-ip MESH_IP     This host's literal Tailscale address
+  --server SERVER       Enrolled server RPC address; repeat for each server
+  --rpc-peer RPC_PEER   Exact mesh peer allowed to reach RPC; repeat as needed
+  --http-peer HTTP_PEER
+                        Exact control-plane mesh peer allowed to reach the HTTP API
+  --serf-peer SERF_PEER
+                        Exact server mesh peer allowed to reach Serf
+  --os {linux,darwin}   Operating system of the target host
+  --mesh-interface MESH_INTERFACE
+                        Verified macOS Tailscale utun interface
+  --host-access {isolated,trusted}
+                        Whether this reviewed host may run jobs with persistent host volumes
+  --version {1.9.7,2.1.1}
+                        1.9.7 is for temporary ACL/network containment only; it is not installed
+  --stage-acl           Stage network/config only, leaving ACL disabled on a legacy node
+  --replace-config      Acknowledge replacing the reviewed existing nomad.hcl
+  --base-config BASE_CONFIG
+                        Existing config whose digest must match when applying
+  --tls-ca TLS_CA       Path to the enrolled CA certificate on the target host
+  --tls-cert TLS_CERT   Path to this node's TLS certificate
+  --tls-key TLS_KEY     Path to this node's private TLS key; never pass key contents
+```
+
+## `luma security apply-node`
+
+```text
+usage: luma security apply-node [-h] --bundle BUNDLE --expected-sha256 EXPECTED_SHA256
+
+arguments:
+  -h, --help            show this help message and exit
+  --bundle BUNDLE       Reviewed private node bundle to apply
+  --expected-sha256 EXPECTED_SHA256
+                        SHA-256 of the exact reviewed bundle
 ```

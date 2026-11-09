@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import secrets
 from pathlib import Path
@@ -30,7 +29,8 @@ def _load_json_state(path: Path) -> Dict[str, Any]:
     except OSError as exc:
         raise LumaError(f"cannot read control state {path}: {exc}") from exc
     try:
-        data = json.loads(raw)
+        from ..secret_storage import context, loads
+        data = loads(raw, context("control-json"))
     except ValueError as exc:
         raise LumaError(
             f"control state {path} is corrupt (invalid JSON): {exc}"
@@ -42,7 +42,8 @@ def _load_json_state(path: Path) -> Dict[str, Any]:
 
 def _save_json_state(data: Dict[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(data, indent=2, sort_keys=True) + "\n"
+    from ..secret_storage import context, dumps
+    payload = dumps(data, context("control-json")) + "\n"
     tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     try:
         fd = os.open(tmp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -245,13 +246,13 @@ def load_dashboard_state() -> Dict[str, Any]:
 
 def load_metrics_state() -> Dict[str, Any]:
     """Metrics need node samples and active task metadata, never event history."""
-    from .database import ensure_initialized, read_state, transaction
+    from .database import decode_payload, ensure_initialized, read_state, transaction
     ensure_initialized()
     with transaction(immediate=False) as conn:
         state = read_state(conn, kinds={"nodes"})
         for kind in ("agentTasks", "builderTasks", "buildRuns"):
             state[kind] = {
-                row[0]: json.loads(row[1]) for row in conn.execute(
+                row[0]: decode_payload(conn, row[1], "control_entities", kind, row[0]) for row in conn.execute(
                     "SELECT id,payload FROM control_entities WHERE kind=? AND status IN ('queued','running')",
                     (kind,),
                 )
@@ -272,12 +273,12 @@ def load_entity(kind: str, identifier: str) -> Dict[str, Any] | None:
 
 def load_auth_state() -> Dict[str, Any]:
     """Read authentication/config keys without hydrating task/build history."""
-    from .database import database_path, ensure_initialized, transaction
+    from .database import database_path, ensure_initialized, read_state, transaction
     if not is_initialized():
         raise LumaError(f"control state not initialized: {database_path()}; run luma bootstrap")
     ensure_initialized()
     with transaction(immediate=False) as conn:
-        return {row[0]: json.loads(row[1]) for row in conn.execute("SELECT key,payload FROM control_config")}
+        return read_state(conn, kinds=set())
 
 
 def save_state(data: Dict[str, Any], path: Path | None = None) -> None:
@@ -361,3 +362,5 @@ def require_token(state: Dict[str, Any], token: str, *, token_type: str) -> None
     expected = str(state.get(key) or "")
     if not expected or not secrets.compare_digest(expected, token):
         raise LumaError("unauthorized")
+    from ..security_audit import authenticated, credential_id
+    authenticated(token_type, credential_id(token))

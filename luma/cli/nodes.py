@@ -68,7 +68,11 @@ def cmd_node(args: argparse.Namespace) -> int:
         log("[start] Install Docker")
         log(f"[ok] {install_docker(LocalExecutor())}")
         client = common.ControlClient(args.endpoint, args.token, insecure=args.insecure, resolve_ip=args.resolve_ip)
-        result = client.register_node(node_name=args.name, region=args.region)
+        if not args.endpoint.startswith("https://") or args.insecure:
+            raise LumaError("secure node enrollment requires a verified HTTPS Control endpoint")
+        for line in setup_tailscale(_local_node_for_region(args.region, name=args.name), executor=LocalExecutor()):
+            log(f"[ok] {line}")
+        result = client.register_node(node_name=args.name, region=args.region, tailscale_ip=_local_tailscale_ip())
         print(f"Node registered: {result['nodeName']} ({result['region']})")
         registered_node_name = str(result.get("nodeName") or args.name)
         node = _local_node_for_region(args.region, name=args.name)
@@ -94,11 +98,12 @@ def cmd_node(args: argparse.Namespace) -> int:
                 emit=log,
                 install_docker_first=False,
                 insecure_registries=result.get("insecureRegistries") or [],
+                security=result.get("nomadSecurity"),
             )
         except LumaError as exc:
             log(f"[start] Roll back node registration: {registered_node_name}")
             try:
-                client.unregister_node(node_name=registered_node_name)
+                client.unregister_node(node_name=registered_node_name, enrollment_token=str(result.get("enrollmentToken") or ""))
             except LumaError:
                 raise LumaError(
                     f"{exc}. Node registration cleanup also failed; run `luma node remove "
@@ -113,6 +118,7 @@ def cmd_node(args: argparse.Namespace) -> int:
             registered_name=args.name,
             node_id=actual_node_id,
             tailscale_ip=_local_tailscale_ip(),
+            enrollment_token=str(result.get("enrollmentToken") or ""),
         )
         print(label_result.get("message", f"Node labels applied: {actual_node_name}"))
         agent_token = str(label_result.get("agentToken") or "")

@@ -22,7 +22,7 @@ from .database_errors import is_database_busy
 from .write_gate import WriterGate
 
 DATABASE_FILE = "control.sqlite3"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ENTITY_KINDS = frozenset({"nodes", "agentTasks", "builderTasks", "builderTaskIdempotency", "builderSourceSnapshots", "buildRuns", "deploymentEvents"})
 EVENT_STREAMS = ("events", "progress", "steps")
 LOG = logging.getLogger(__name__)
@@ -47,6 +47,51 @@ def database_path() -> Path:
 
 def _json(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True, ensure_ascii=False)
+
+
+class ControlConnection(sqlite3.Connection):
+    encrypted = False
+
+
+def _encrypted(conn: sqlite3.Connection) -> bool:
+    if isinstance(conn, ControlConnection):
+        return conn.encrypted
+    return conn.execute("SELECT 1 FROM database_meta WHERE key='payload_cipher' AND value='aes256gcm-v1'").fetchone() is not None
+
+
+def encode_payload(conn: sqlite3.Connection, value: Any, table: str, *identity: object, previous: str | None = None) -> str:
+    from ..secret_storage import context, dumps
+    return dumps(value, context(table, *identity), previous=previous, required=_encrypted(conn))
+
+
+def decode_payload(conn: sqlite3.Connection, raw: str, table: str, *identity: object) -> Any:
+    from ..secret_storage import context, loads
+    return loads(raw, context(table, *identity), required=_encrypted(conn))
+
+
+def encode_secret(conn: sqlite3.Connection, value: str, table: str, *identity: object) -> str:
+    from ..secret_storage import enabled
+    if not value or (not enabled() and not _encrypted(conn)):
+        return value
+    return encode_payload(conn, value, table, *identity)
+
+
+def decode_secret(conn: sqlite3.Connection, value: str, table: str, *identity: object) -> str:
+    from ..secret_storage import sealed
+    if not value:
+        return value
+    try:
+        encrypted = sealed(json.loads(value))
+    except (ValueError, TypeError):
+        encrypted = False
+    if encrypted:
+        result = decode_payload(conn, value, table, *identity)
+        if not isinstance(result, str):
+            raise LumaError("invalid encrypted credential")
+        return result
+    if _encrypted(conn):
+        raise LumaError("unencrypted credential found in encrypted storage")
+    return value
 
 
 def _private(path: Path) -> None:
@@ -116,13 +161,15 @@ def connect(path: Path | None = None, *, timeout: float = 30) -> sqlite3.Connect
     _private(path)
     conn = None
     try:
-        conn = sqlite3.connect(path, timeout=timeout, isolation_level=None)
+        conn = sqlite3.connect(path, timeout=timeout, isolation_level=None, factory=ControlConnection)
         conn.row_factory = sqlite3.Row
         conn.execute(f"PRAGMA busy_timeout={max(0, int(timeout * 1000))}")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=FULL")
+        conn.execute("PRAGMA secure_delete=ON")
         ensure_schema(conn)
+        conn.encrypted = conn.execute("SELECT 1 FROM database_meta WHERE key='payload_cipher' AND value='aes256gcm-v1'").fetchone() is not None
         for suffix in ("-wal", "-shm"):
             _private(Path(str(path) + suffix))
         return conn
@@ -227,6 +274,14 @@ def initialized(conn: sqlite3.Connection) -> bool:
     return conn.execute("SELECT 1 FROM database_meta WHERE key='state_initialized'").fetchone() is not None
 
 
+def _mark_initial_encryption(conn: sqlite3.Connection) -> None:
+    from ..secret_storage import enabled
+    if enabled():
+        conn.execute("INSERT INTO database_meta(key,value) VALUES('payload_cipher','aes256gcm-v1') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        if isinstance(conn, ControlConnection):
+            conn.encrypted = True
+
+
 def _fsync_directory(path: Path) -> None:
     fd = os.open(path, os.O_RDONLY)
     try:
@@ -291,6 +346,7 @@ def ensure_initialized(conn: sqlite3.Connection | None = None, *, initial_state:
         write_state(conn, initial_state)
         conn.execute("INSERT INTO database_meta(key,value) VALUES('database_id',?)", (secrets.token_hex(16),))
         conn.execute("INSERT INTO database_meta(key,value) VALUES('state_initialized','1')")
+        _mark_initial_encryption(conn)
         return
     try:
         raw = source.read_bytes()
@@ -318,6 +374,7 @@ def ensure_initialized(conn: sqlite3.Connection | None = None, *, initial_state:
     conn.execute("INSERT INTO database_meta(key,value) VALUES('legacy_import',?)", (_json(manifest),))
     conn.execute("INSERT INTO database_meta(key,value) VALUES('database_id',?)", (secrets.token_hex(16),))
     conn.execute("INSERT INTO database_meta(key,value) VALUES('state_initialized','1')")
+    _mark_initial_encryption(conn)
 
 
 def _integer(value: Any) -> int:
@@ -346,13 +403,15 @@ def _write_entity(conn: sqlite3.Connection, kind: str, identifier: str, value: A
             if isinstance(payload.get(stream), list):
                 streams[stream] = payload.pop(stream)
     status, app, created, updated = _entity_fields(value)
+    old = conn.execute("SELECT payload FROM control_entities WHERE kind=? AND id=?", (kind, identifier)).fetchone()
+    encoded_payload = encode_payload(conn, payload, "control_entities", kind, identifier, previous=old[0] if old else None)
     conn.execute("""INSERT INTO control_entities(kind,id,payload,status,app,created_at,updated_at,ordinal)
         VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET
         payload=excluded.payload,status=excluded.status,app=excluded.app,
         updated_at=excluded.updated_at,ordinal=excluded.ordinal
         WHERE payload<>excluded.payload OR status<>excluded.status OR app<>excluded.app
         OR updated_at<>excluded.updated_at OR ordinal<>excluded.ordinal""",
-        (kind, identifier, _json(payload), status, app, created, updated, ordinal))
+        (kind, identifier, encoded_payload, status, app, created, updated, ordinal))
     previous_streams = {row[0] for row in conn.execute(
         "SELECT stream FROM control_event_streams WHERE kind=? AND entity_id=?", (kind, identifier))}
     for stream in set(streams) - previous_streams:
@@ -366,7 +425,7 @@ def _write_entity(conn: sqlite3.Connection, kind: str, identifier: str, value: A
         for position, entry in enumerate(entries):
             key = (stream, position)
             keep.add(key)
-            encoded = _json(entry)
+            encoded = encode_payload(conn, entry, "control_events", kind, identifier, stream, position, previous=existing.get(key))
             if existing.get(key) != encoded:
                 conn.execute("INSERT INTO control_events VALUES(?,?,?,?,?) ON CONFLICT(kind,entity_id,stream,position) DO UPDATE SET payload=excluded.payload", (kind, identifier, stream, position, encoded))
     for stream, position in existing.keys() - keep:
@@ -378,7 +437,7 @@ def read_entity_metadata(conn: sqlite3.Connection, kind: str, identifier: str) -
     row = conn.execute("SELECT payload FROM control_entities WHERE kind=? AND id=?", (kind, identifier)).fetchone()
     if row is None:
         raise KeyError(identifier)
-    return json.loads(row[0])
+    return decode_payload(conn, row[0], "control_entities", kind, identifier)
 
 
 def update_entity_metadata(conn: sqlite3.Connection, kind: str, identifier: str, value: dict[str, Any]) -> None:
@@ -390,9 +449,10 @@ def update_entity_metadata(conn: sqlite3.Connection, kind: str, identifier: str,
     if any(key in value for key in EVENT_STREAMS):
         raise ValueError("entity metadata must not contain event streams")
     status, app, _, updated = _entity_fields(value)
+    previous = conn.execute("SELECT payload FROM control_entities WHERE kind=? AND id=?", (kind, identifier)).fetchone()
     result = conn.execute(
         "UPDATE control_entities SET payload=?,status=?,app=?,updated_at=? WHERE kind=? AND id=?",
-        (_json(value), status, app, updated, kind, identifier),
+        (encode_payload(conn, value, "control_entities", kind, identifier, previous=previous[0] if previous else None), status, app, updated, kind, identifier),
     )
     if result.rowcount != 1:
         raise KeyError(identifier)
@@ -423,7 +483,7 @@ def append_entity_events(
     start = int(tail[0]) + 1 if tail is not None else 0
     conn.executemany(
         "INSERT INTO control_events(kind,entity_id,stream,position,payload) VALUES(?,?,?,?,?)",
-        ((kind, identifier, stream, start + index, _json(entry)) for index, entry in enumerate(entries)),
+        ((kind, identifier, stream, start + index, encode_payload(conn, entry, "control_events", kind, identifier, stream, start + index)) for index, entry in enumerate(entries)),
     )
     return len(entries)
 
@@ -432,26 +492,26 @@ def read_entity(conn: sqlite3.Connection, kind: str, identifier: str) -> Any:
     row = conn.execute("SELECT payload FROM control_entities WHERE kind=? AND id=?", (kind, identifier)).fetchone()
     if row is None:
         raise KeyError(identifier)
-    value = json.loads(row[0])
+    value = decode_payload(conn, row[0], "control_entities", kind, identifier)
     if isinstance(value, dict):
         for row in conn.execute("SELECT stream FROM control_event_streams WHERE kind=? AND entity_id=?", (kind, identifier)):
             value[row[0]] = []
-        for event in conn.execute("SELECT stream,payload FROM control_events WHERE kind=? AND entity_id=? ORDER BY stream,position", (kind, identifier)):
-            value.setdefault(event[0], []).append(json.loads(event[1]))
+        for event in conn.execute("SELECT stream,position,payload FROM control_events WHERE kind=? AND entity_id=? ORDER BY stream,position", (kind, identifier)):
+            value.setdefault(event[0], []).append(decode_payload(conn, event[2], "control_events", kind, identifier, event[0], event[1]))
     return value
 
 
 def read_entities(conn: sqlite3.Connection, kind: str) -> dict[str, Any]:
     """Bulk form of read_entity for a whole collection: three queries, not 3 per row."""
-    values = {row[0]: json.loads(row[1]) for row in conn.execute("SELECT id,payload FROM control_entities WHERE kind=?", (kind,))}
+    values = {row[0]: decode_payload(conn, row[1], "control_entities", kind, row[0]) for row in conn.execute("SELECT id,payload FROM control_entities WHERE kind=?", (kind,))}
     for entity_id, stream in conn.execute("SELECT entity_id,stream FROM control_event_streams WHERE kind=?", (kind,)):
         if isinstance(values.get(entity_id), dict):
             values[entity_id][stream] = []
-    for entity_id, stream, payload in conn.execute(
-        "SELECT entity_id,stream,payload FROM control_events WHERE kind=? ORDER BY entity_id,stream,position", (kind,),
+    for entity_id, stream, position, payload in conn.execute(
+        "SELECT entity_id,stream,position,payload FROM control_events WHERE kind=? ORDER BY entity_id,stream,position", (kind,),
     ):
         if isinstance(values.get(entity_id), dict):
-            values[entity_id].setdefault(stream, []).append(json.loads(payload))
+            values[entity_id].setdefault(stream, []).append(decode_payload(conn, payload, "control_events", kind, entity_id, stream, position))
     return values
 
 
@@ -722,7 +782,7 @@ class EntityList(list):
 
 def read_state(conn: sqlite3.Connection, *, lazy: bool = False, kinds: set[str] | None = None,
                metadata_kinds: set[str] | None = None, include_config: bool = True) -> dict[str, Any]:
-    state = {row[0]: json.loads(row[1]) for row in conn.execute("SELECT key,payload FROM control_config")} if include_config else {}
+    state = {row[0]: decode_payload(conn, row[1], "control_config", row[0]) for row in conn.execute("SELECT key,payload FROM control_config")} if include_config else {}
     for kind, shape in conn.execute("SELECT kind,shape FROM control_collections"):
         if kinds is not None and kind not in kinds:
             continue
@@ -737,6 +797,7 @@ def read_state(conn: sqlite3.Connection, *, lazy: bool = False, kinds: set[str] 
 
 def write_state(conn: sqlite3.Connection, state: dict[str, Any]) -> None:
     config_keys, collection_keys = set(), set()
+    previous_config = dict(conn.execute("SELECT key,payload FROM control_config"))
     for key, value in state.items():
         if key in ENTITY_KINDS and isinstance(value, (dict, list)):
             shape = "list" if isinstance(value, list) else "dict"
@@ -761,7 +822,7 @@ def write_state(conn: sqlite3.Connection, state: dict[str, Any]) -> None:
                     conn.execute("DELETE FROM control_entities WHERE kind=? AND id=?", (key, row[0]))
         else:
             config_keys.add(key)
-            conn.execute("INSERT INTO control_config VALUES(?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload WHERE payload<>excluded.payload", (key, _json(value)))
+            conn.execute("INSERT INTO control_config VALUES(?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload WHERE payload<>excluded.payload", (key, encode_payload(conn, value, "control_config", key, previous=previous_config.get(key))))
     for row in conn.execute("SELECT key FROM control_config").fetchall():
         if row[0] not in config_keys:
             conn.execute("DELETE FROM control_config WHERE key=?", (row[0],))
@@ -770,23 +831,82 @@ def write_state(conn: sqlite3.Connection, state: dict[str, Any]) -> None:
             conn.execute("DELETE FROM control_collections WHERE kind=?", (row[0],))
 
 
+def migrate_encryption() -> dict[str, Any]:
+    """Encrypt existing state in one transaction, then remove old SQLite pages."""
+    from ..secret_storage import enabled
+    if not enabled():
+        raise LumaError("provision the private storage key before migrating Control data")
+    changed = 0
+    with transaction(owner="security.encrypt-control") as conn:
+        ensure_initialized(conn)
+        for table, identities in (("control_config", ("key",)), ("control_entities", ("kind", "id")),
+                                  ("control_events", ("kind", "entity_id", "stream", "position"))):
+            for row in conn.execute("SELECT " + ",".join(identities) + ",payload FROM " + table).fetchall():
+                identity = tuple(row[name] for name in identities)
+                value = decode_payload(conn, row["payload"], table, *identity)
+                encoded = encode_payload(conn, value, table, *identity, previous=row["payload"])
+                if encoded != row["payload"]:
+                    conn.execute("UPDATE " + table + " SET payload=? WHERE " + " AND ".join(name + "=?" for name in identities), (encoded, *identity))
+                    changed += 1
+        # Alert integration credentials live in dedicated tables instead of
+        # control_config. Include both active and legacy credential columns.
+        for table, identity, columns in (("alert_channels", "id", ("app_secret", "webhook", "secret")),
+                                         ("alert_feishu_callbacks", "app_id", ("verification_token", "encrypt_key"))):
+            available = {row[1] for row in conn.execute("PRAGMA table_info(" + table + ")")}
+            for column in set(columns) & available:
+                for row in conn.execute(f"SELECT {identity},{column} FROM {table}").fetchall():
+                    raw = row[column]
+                    if not raw:
+                        continue
+                    from ..secret_storage import context, dumps, loads, sealed
+                    try:
+                        encrypted = sealed(json.loads(raw))
+                    except (ValueError, TypeError):
+                        encrypted = False
+                    purpose = context(table, row[identity], column)
+                    clear = loads(raw, purpose, required=True) if encrypted else raw
+                    encoded = dumps(clear, purpose, previous=raw if encrypted else None, required=True)
+                    if encoded != raw:
+                        conn.execute(f"UPDATE {table} SET {column}=? WHERE {identity}=?", (encoded, row[identity]))
+                        changed += 1
+        conn.execute("INSERT INTO database_meta(key,value) VALUES('payload_cipher','aes256gcm-v1') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+    conn = connect()
+    try:
+        # A reader retaining a pre-migration WAL page means cleanup is pending;
+        # never report completion while that plaintext journal remains live.
+        if conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]:
+            raise LumaError("encrypted data committed; waiting for old Control readers before clearing SQLite journals")
+        conn.execute("VACUUM")
+        if conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]:
+            raise LumaError("encrypted data committed; SQLite journal cleanup remains pending")
+    finally:
+        conn.close()
+    return {"encrypted": True, "changedRows": changed}
+
+
 def check_database(path: Path | None = None) -> dict[str, Any]:
     path = Path(path or database_path())
     if not path.is_file():
         raise LumaError(f"control database does not exist: {path}")
-    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, factory=ControlConnection)
     try:
         integrity = [row[0] for row in conn.execute("PRAGMA integrity_check")]
         foreign_keys = conn.execute("PRAGMA foreign_key_check").fetchall()
         meta = dict(conn.execute("SELECT key,value FROM database_meta"))
+        conn.encrypted = meta.get("payload_cipher") == "aes256gcm-v1"
         invalid_json = sum(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE NOT json_valid(payload)").fetchone()[0]
             for table in ("control_config", "control_entities", "control_events"))
         initialized_state = meta.get("state_initialized") == "1" and bool(meta.get("database_id"))
+        if not invalid_json:
+            for table, identities in (("control_config", ("key",)), ("control_entities", ("kind", "id")),
+                                      ("control_events", ("kind", "entity_id", "stream", "position"))):
+                for row in conn.execute("SELECT " + ",".join(identities) + ",payload FROM " + table):
+                    decode_payload(conn, row[-1], table, *row[:-1])
         return {"ok": integrity == ["ok"] and not foreign_keys and not invalid_json and initialized_state,
             "integrity": integrity, "foreignKeyViolations": len(foreign_keys),
             "invalidJsonRows": invalid_json, "initialized": initialized_state,
             "databaseId": meta.get("database_id"), "counts": _counts(conn),
-            "schemaVersion": int(meta["schema_version"])}
+            "schemaVersion": int(meta["schema_version"]), "encrypted": conn.encrypted}
     except sqlite3.Error as exc:
         raise LumaError(f"control database check failed: {exc}") from exc
     finally:

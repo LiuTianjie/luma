@@ -20,6 +20,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
 
+try:
+    from nomad_auth import open_nomad
+except ModuleNotFoundError:
+    from observe.nomad_auth import open_nomad
+
+
 ROUTES_DIR = Path(os.environ.get("LUMA_ROUTES_DIR", "/opt/luma/routes"))
 
 
@@ -44,7 +50,7 @@ def fetch_json(addr: str, path: str, token: str, timeout: float = 4.0) -> Any:
     if token:
         headers["X-Nomad-Token"] = token
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with open_nomad(request, token=token, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

@@ -31,14 +31,14 @@ class BuildEventTests(unittest.TestCase):
     def test_append_work_depends_on_new_batch_not_historical_log_size(self):
         self.seed(10_000)
         encoded_events = []
-        encode = database._json
+        encode = database.encode_payload
 
-        def counted(value):
+        def counted(conn, value, *identity, **kwargs):
             if isinstance(value, dict) and "message" in value and "id" not in value:
                 encoded_events.append(value["message"])
-            return encode(value)
+            return encode(conn, value, *identity, **kwargs)
 
-        with patch.object(database, "_json", side_effect=counted), patch.object(
+        with patch.object(database, "encode_payload", side_effect=counted), patch.object(
             database, "read_entity", side_effect=AssertionError("must not materialize event history")
         ):
             build_events.append_build_run_events("build", [{"message": f"new-{i}"} for i in range(20)])

@@ -24,6 +24,7 @@ from .parser import build_parser
 from .session import cmd_context, cmd_doctor, cmd_init, cmd_login, cmd_status, cmd_version
 from .settings import cmd_cdn, cmd_git_provider, cmd_passkey, cmd_registry, cmd_secret
 from .skills import cmd_skills
+from .security import cmd_security
 from ..skills import auto_sync
 
 ISSUES_URL = "https://github.com/LiuTianjie/luma/issues"
@@ -56,6 +57,7 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "git-provider": cmd_git_provider,
     "passkey": cmd_passkey,
     "manager": cmd_manager,
+    "security": cmd_security,
 }
 
 

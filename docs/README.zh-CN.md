@@ -13,6 +13,7 @@
 | --- | --- |
 | [部署应用](deploying.zh-CN.md) | 镜像部署、本地构建、仓库导入、Compose、部署方式记录与 CI |
 | [日常运维](operations.zh-CN.md) | 日志、历史、回滚、重启、删除、升级与节点维护 |
+| [Nomad 安全升级](nomad-security.zh-CN.md) | 首次安装安全默认值、集群自动迁移、验证与恢复 |
 | [Compose 与存储](compose-storage.zh-CN.md) | 多服务应用与持久卷 |
 | [密钥与凭据](secrets.zh-CN.md) | 令牌、应用密钥与镜像仓库凭据 |
 | [暴露模型](exposure-model.zh-CN.md) | 每种入口方式的要求与示例 |

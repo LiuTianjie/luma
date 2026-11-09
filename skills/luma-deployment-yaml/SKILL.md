@@ -332,7 +332,7 @@ Direct `compose render` with local paths requires an explicit node. Control dry-
 For generic CI, install a published PyPI version; verify publication before using the version example below. A source version bump or a successful Control rollout does not prove PyPI availability. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.2.54"
+python -m pip install "luma-infra==0.2.58"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:
@@ -367,6 +367,6 @@ luma storage check luma.compose.yml --format json
 - `region` controls workload scheduling via a node-meta constraint; the deploy itself is issued by Luma Control through the Nomad API on the manager.
 - A service stays running on its node even if that node briefly disconnects from the manager (Nomad keeps the local allocation alive and reconnects), so transient node-down blips should not be diagnosed as manifest region errors.
 - Required platform ports are separate from manifest `port`: public `80/tcp` and `443/tcp`, `tcp-relay` published ports such as `3306/tcp`, and the Nomad cluster ports `4646/tcp` (HTTP API), `4647/tcp` (RPC), `4648/tcp`+`4648/udp` (Serf). These cluster ports are kept private to the Tailscale interface.
-- `luma update` on a manager refreshes Luma Control only and never touches running service allocations. Use `luma bootstrap --domain <control-domain>` for first install or explicit ingress/egress/bootstrap repair.
+- `luma update` on a manager refreshes Control and starts its independent Nomad security supervisor. After every registered node agent is upgraded, it automatically migrates and verifies ACLs, mTLS, network guards and host permissions. Package-version success is not security-migration success: check **Cluster security upgrade** in the system update page. The migration preserves business application data/workflows and refreshes infrastructure consumers. See [Nomad security](https://github.com/LiuTianjie/luma/blob/main/docs/nomad-security.md) for supported layouts and recovery.
 - `luma update fleet` updates ready non-manager node agents from a logged-in client. It skips the manager so the active control plane is not updated through a remote fleet task. Update the manager separately with `luma update manager` from the manager host.
 - Bootstrap/update installs Tailscale watchdogs on supported manager and node hosts. When diagnosing a node-down heartbeat failure, first separate Docker/container health from Tailscale peer TCP reachability on the Nomad RPC/Serf ports `4647`/`4648`.

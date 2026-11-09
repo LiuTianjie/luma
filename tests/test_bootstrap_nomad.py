@@ -24,6 +24,11 @@ from luma.errors import LumaError
 
 
 class NomadBootstrapTests(unittest.TestCase):
+    def setUp(self):
+        for patcher in (patch("luma.bootstrap.LocalExecutor.sudo", return_value=""), patch("luma.bootstrap.LocalExecutor.sudo_result", return_value=Mock(code=1, output="")), patch("luma.bootstrap.LocalExecutor.run_result", return_value=Mock(code=1, output="")), patch("luma.bootstrap._write_control_route", return_value="route")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_manager_config_merge_preserves_operator_providers_and_nested_defaults(self):
         existing = {
             "providers": {
@@ -123,10 +128,7 @@ class NomadBootstrapTests(unittest.TestCase):
             written["rules"],
             ["DOMAIN,registry.example.net,DIRECT", "MATCH,EGRESS"],
         )
-        remote.run.assert_called_once_with(
-            "nomad job restart -yes -on-error=fail egress",
-            timeout=180,
-        )
+        self.assertTrue(any("luma.nomad_admin exec -- job restart -yes -on-error=fail egress" in call.args[0] for call in remote.sudo.call_args_list))
 
     def test_control_image_pulls_published_image_during_bootstrap(self):
         remote = Mock()
@@ -168,6 +170,7 @@ class NomadBootstrapTests(unittest.TestCase):
     def test_control_latest_image_resolves_to_pulled_repo_digest(self):
         remote = Mock()
         remote.run_result.return_value = Mock(code=0, output="Status = running\n")
+        remote.sudo_result.return_value = Mock(code=0, output="Status = running\n")
 
         def sudo(command):
             if "docker info --format" in command:
@@ -189,6 +192,7 @@ class NomadBootstrapTests(unittest.TestCase):
     def test_control_pinned_image_does_not_require_repo_digest_lookup(self):
         remote = Mock()
         remote.run_result.return_value = Mock(code=0, output="Status = running\n")
+        remote.sudo_result.return_value = Mock(code=0, output="Status = running\n")
 
         def sudo(command):
             if "docker info --format" in command:
@@ -208,6 +212,7 @@ class NomadBootstrapTests(unittest.TestCase):
     def test_control_image_pull_configures_docker_daemon_egress_proxy(self):
         remote = Mock()
         remote.run_result.return_value = Mock(code=0, output="Status = running\n")
+        remote.sudo_result.return_value = Mock(code=0, output="Status = running\n")
         info_calls = 0
 
         def sudo(command):
@@ -226,25 +231,26 @@ class NomadBootstrapTests(unittest.TestCase):
         result = _ensure_control_image_pull_egress(remote, "ghcr.io/liutianjie/luma-control:latest")
 
         self.assertEqual(result, "Control image pull egress configured for ghcr.io: Docker daemon proxy http://127.0.0.1:7890")
-        self.assertTrue(any("nomad job status -short egress" in call.args[0] for call in remote.run_result.call_args_list))
+        self.assertTrue(any("luma.nomad_admin exec -- job status -short egress" in call.args[0] for call in remote.sudo_result.call_args_list))
         docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
         self.assertTrue(any("HTTP_PROXY=http://127.0.0.1:7890" in cmd for cmd in docker_commands))
         self.assertTrue(any("NO_PROXY=localhost,127.0.0.1" in cmd for cmd in docker_commands))
 
     def test_control_image_pull_requires_running_egress_gateway(self):
         remote = Mock()
-        remote.run_result.return_value = Mock(code=1, output="")
+        remote.sudo_result.return_value = Mock(code=1, output="")
 
         with self.assertRaisesRegex(LumaError, "control image pull egress requires a running Nomad egress job"):
             _ensure_control_image_pull_egress(remote, "ghcr.io/liutianjie/luma-control:latest")
 
-        self.assertIn("nomad job status -short egress", remote.run_result.call_args.args[0])
+        self.assertIn("luma.nomad_admin exec -- job status -short egress", remote.sudo_result.call_args.args[0])
         remote.sudo.assert_not_called()
 
     def test_control_stack_deploy_uses_resolved_digest_image(self):
         digest_image = "ghcr.io/liutianjie/luma-control@sha256:abc123"
         remote = Mock()
         remote.run_result.return_value = Mock(code=0, output="Status = running\n")
+        remote.sudo_result.return_value = Mock(code=0, output="Status = running\n")
         remote.sudo.return_value = ""
         submitted = {}
         progress = []
@@ -288,6 +294,7 @@ class NomadBootstrapTests(unittest.TestCase):
         digest_image = "ghcr.io/liutianjie/luma-control@sha256:abc123"
         remote = Mock()
         remote.run_result.return_value = Mock(code=0, output="Status = running\n")
+        remote.sudo_result.return_value = Mock(code=0, output="Status = running\n")
         remote.sudo.return_value = ""
         submitted = {}
         progress = []
@@ -581,14 +588,14 @@ class NomadBootstrapTests(unittest.TestCase):
 
     def test_verify_nomad_node_accepts_tailscale_http_address(self):
         remote = Mock()
-        remote.run_result.return_value = Mock(code=0, output="ready\n")
+        remote.sudo_result.return_value = Mock(code=0, output="ready\n")
 
         result = verify_local_nomad_node(remote, http_addrs=["100.69.154.50"])
 
         self.assertEqual(result, "Nomad agent ready")
-        command = remote.run_result.call_args.args[0]
-        self.assertIn("http://127.0.0.1:4646/v1/agent/self", command)
-        self.assertIn("http://100.69.154.50:4646/v1/agent/self", command)
+        command = remote.sudo_result.call_args.args[0]
+        self.assertIn("luma.nomad_admin local-info --address http://127.0.0.1:4646", command)
+        self.assertIn("luma.nomad_admin local-info --address http://100.69.154.50:4646", command)
 
     def test_install_docker_repairs_known_bad_apt_mirror(self):
         remote = Mock()

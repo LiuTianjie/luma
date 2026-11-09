@@ -13,6 +13,7 @@ New to Luma? Read the first two pages in order, then pick guides as you need the
 | --- | --- |
 | [Deploying applications](deploying.md) | Images, local builds, repository imports, Compose, recorded workflows and CI |
 | [Operations](operations.md) | Logs, history, rollback, restart, removal, updates and node maintenance |
+| [Nomad security](nomad-security.md) | Secure first install, automatic fleet migration, verification and recovery |
 | [Compose and storage](compose-storage.md) | Multi-service applications and persistent volumes |
 | [Secrets](secrets.md) | Tokens, application secrets and registry credentials |
 | [Exposure model](exposure-model.md) | Every ingress mode with requirements and examples |

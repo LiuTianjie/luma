@@ -562,7 +562,8 @@ port: 3000
         service = job["TaskGroups"][0]["Services"][0]
         self.assertEqual(service["Provider"], "nomad")
         self.assertEqual(service["PortLabel"], "http")
-        self.assertEqual(service["AddressMode"], "host")
+        self.assertEqual(service["AddressMode"], "auto")
+        self.assertEqual(service["Address"], "127.0.0.1")
         self.assertEqual(
             service["Checks"],
             [{
@@ -667,7 +668,7 @@ port: 3000
         self.assertEqual(net["ReservedPorts"][0]["Value"], 7890)
         task = job["TaskGroups"][0]["Tasks"][0]
         self.assertEqual(task["Config"]["mount"][0]["source"], "/opt/luma/egress-gateway")
-        self.assertEqual(task["Config"]["args"], ["-d", "/opt/luma/egress-gateway"])
+        self.assertEqual(task["Config"]["args"], ["-d", "/root/.config/mihomo"])
 
     def test_traefik_job_pins_to_ingress_meta(self):
         job = render_traefik_job(image="traefik:v3.6", as_json=False)["Job"]

@@ -21,6 +21,12 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Callable
 
+try:
+    from nomad_auth import open_nomad
+except ModuleNotFoundError:
+    from observe.nomad_auth import open_nomad
+
+
 MAX_SOURCES = 64
 MAX_LINE = 32768
 READ_LIMIT = 512 * 1024
@@ -65,7 +71,7 @@ def fetch_json(addr: str, path: str, token: str, timeout: float = REQUEST_TIMEOU
     if token:
         headers["X-Nomad-Token"] = token
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with open_nomad(request, token=token, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -75,7 +81,7 @@ def fetch_bytes(addr: str, path: str, token: str, limit: int, timeout: float = R
     if token:
         headers["X-Nomad-Token"] = token
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with open_nomad(request, token=token, timeout=timeout) as response:
         return response.read(limit)
 
 

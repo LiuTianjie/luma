@@ -257,7 +257,8 @@ Luma 生成：
 
 - 云安全组和主机防火墙放行入站 TCP 80 和 443；
 - 节点在中国大陆时，域名需要在该节点所在云厂商完成备案接入，否则端口会被拦截；
-- 仍有 `node-edge` 部署使用该节点时，`luma node ingress disable` 会被拒绝。
+- 仍有 `node-edge` 部署使用该节点时，`luma node ingress disable` 会被拒绝；
+- 集群启用 Nomad 安全配置（ACL 与 mTLS）后暂不可用：`luma node ingress enable` 会被拒绝，这类域名请继续用 `cn-edge` 或 `external-edge`。
 
 ### `none` {#none}
 

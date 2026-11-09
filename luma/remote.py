@@ -100,6 +100,22 @@ class RemoteExecutor:
             remote_command = f"sudo -n bash -lc {quoted}"
         return self.run_result(remote_command)
 
+    def sudo_input(self, command: str, content: str, *, timeout: int = DEFAULT_REMOTE_TIMEOUT) -> str:
+        from .local import _private_input_error, _sudo_stdin_command
+        password = os.environ.get("LUMA_SUDO_PASSWORD") or ""
+        target = _sudo_stdin_command(command, password=bool(password))
+        try:
+            result = subprocess.run([*(arg for arg in _ssh_base_args() if arg != "-n"), self.node.host,
+                                     "bash -lc " + shlex.quote(target)],
+                                    input=(password + "\n" if password else "") + content, text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, check=False)
+        except subprocess.TimeoutExpired:
+            raise LumaError("private remote installer timed out; verify its saved state before retrying") from None
+        if result.returncode:
+            output = result.stdout.replace(password, "<redacted>") if password else result.stdout
+            raise _private_input_error(output, content, result.returncode)
+        return result.stdout
+
     def upload(self, local: Path, remote_path: str, *, timeout: int | None = DEFAULT_REMOTE_TIMEOUT) -> str:
         local = local.resolve()
         try:

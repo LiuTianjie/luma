@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, AsyncIterator, Mapping
 
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
@@ -80,6 +81,9 @@ from ..local_storage import (
     service_persistent_mounts,
     storage_owner_from_job,
 )
+from ..nomad_security import nomad_token
+from ..nomad_enrollment import agent_credential as nomad_agent_credential
+from ..security_audit import SecurityAuditMiddleware, authenticated as audit_authenticated
 from ..nomad_api import NomadApi, deploy_to_nomad, remove_from_nomad, revert_job, job_versions, nomad_addr, nomad_status_summary, nomad_services_summary, nomad_service_directory
 from ..nomad_render import EDGE_EXPOSURES, node_traefik_job_id, render_node_traefik_job, render_nomad_job, render_compose_job, resource_policy_warnings
 from ..observe_instrument import OBSERVE_STACK, manager_tailscale_ip, mint_otlp_token, otlp_mesh_endpoint
@@ -416,6 +420,7 @@ def _require_node_agent_token_entry(state: Dict[str, Any], token: str, node_name
     expected = str(agent.get("tokenHash") or "")
     if not expected or not secrets.compare_digest(expected, _hash_agent_token(token)):
         raise LumaError("unauthorized")
+    audit_authenticated("node-agent", canonical_name)
     return canonical_name, record
 
 
@@ -458,6 +463,9 @@ def _update_agent_heartbeat(
             # Waiting for the database must not turn an older idle request
             # into fresh proof that a subsequently timed-out child exited.
             agent["activeTaskObservedAt"] = int(observed_at if observed_at is not None else time.time())
+    accessor = str(body.get("nomadCredentialAccessor") or "")
+    if re.fullmatch(r"[0-9a-fA-F-]{36}", accessor):
+        agent["nomadCredentialAccessor"] = accessor
     if isinstance(metrics, dict):
         agent["metrics"] = _agent_metrics(metrics)
         agent["metricsCollectedAt"] = int(time.time())
@@ -593,7 +601,7 @@ def _normalize_container_stats_for_engine(
 
 def _nomad_allocation_service_index(config: Any, state: Dict[str, Any], *, job_id: str = "") -> dict[str, Dict[str, str]]:
     try:
-        client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+        client = NomadApi(nomad_addr(config, state), token=nomad_token(state))
         client.READ_TIMEOUT = 5
         path = f"/v1/job/{urllib.parse.quote(job_id, safe='')}/allocations" if job_id else "/v1/allocations"
         allocations = client.request("GET", path)
@@ -1517,15 +1525,14 @@ def handle_node_agent_token(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
     def mutate(state: Dict[str, Any]) -> tuple[str, str]:
         is_deploy_token = _token_has_type(state, token, "deploy")
-        if not is_deploy_token:
-            require_token(state, token, token_type="join")
         nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
         if is_deploy_token:
             entry = _node_record_entry_for_name_or_id(nodes, node_name, node_id)
         else:
-            if not node_id:
-                raise LumaError("nodeId is required when refreshing node agent credentials with a node join token")
-            entry = _node_record_entry_for_name_or_id(nodes, "", node_id)
+            # Node IDs are public identifiers, not proof of node ownership.
+            # A shared join token must not replace another host's credential.
+            canonical, record = _require_node_agent_token_entry(state, token, node_name, node_id=node_id)
+            entry = (canonical, record)
         if entry is None:
             raise LumaError("nodeName or nodeId must match a registered node")
         matched_name, _record = entry
@@ -1539,6 +1546,56 @@ def handle_node_agent_token(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "agentToken": agent_token,
         "endpoint": state.get("domain", ""),
     }
+
+
+def handle_nomad_security_status(token: str) -> Dict[str, Any]:
+    require_token(load_state(), token, token_type="deploy")
+    from ..nomad_upgrade import public_status
+    return public_status()
+
+
+def handle_nomad_security_task(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Idempotent typed tasks used by the independent host supervisor."""
+    from ..nomad_migration_node import CAPABILITY
+    name = str(body.get("nodeName") or "")
+    operation = str(body.get("operationKey") or "")
+    payload = body.get("payload")
+    if not operation or len(operation) > 250 or not isinstance(payload, dict) or payload.get("schema") != 1 or payload.get("op") not in {"inspect", "preflight", "version", "configure", "verify", "certificate-request", "renew"}:
+        raise LumaError("invalid Nomad security task")
+    # This route must never become a durable secret-distribution channel.
+    if any(key in json.dumps(payload).lower() for key in ('"key"', '"token"', 'private key')):
+        raise LumaError("Nomad security tasks cannot persist private keys or tokens")
+    identity = hashlib.sha256((name + "\0" + operation).encode()).hexdigest()
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    task_id = "security-" + identity
+
+    def mutate(state: Dict[str, Any]) -> Dict[str, Any]:
+        require_token(state, token, token_type="deploy")
+        tasks = _agent_tasks(state)
+        existing = tasks.get(task_id)
+        if isinstance(existing, dict):
+            if existing.get("payloadSHA256") != digest:
+                raise LumaError("security operation key was reused with a different payload")
+            if existing.get("status") in {"interrupted", "timeout"} and int(existing.get("resumeAttempts") or 0) < 3:
+                # These typed operations retain a host-owned intent before
+                # mutation. Requeue a lost agent process with the same payload.
+                existing.update(status="queued", resumeAttempts=int(existing.get("resumeAttempts") or 0) + 1,
+                                updatedAt=int(time.time()), result={}, message="Resuming the saved node security operation")
+                for key in ("leasedAt", "completedAt", "cancelRequestedAt"):
+                    existing.pop(key, None)
+            return {k: existing.get(k) for k in ("id", "status", "result", "message")}
+        record = _node_record_for_name(state.get("nodes") or {}, name)
+        if record is None or not _node_agent_is_ready(record, required_capability=CAPABILITY):
+            raise LumaError("node must finish its normal Luma update before the security migration")
+        if _node_record_is_manager(record):
+            raise LumaError("Nomad manager security is owned by its independent host supervisor")
+        now = int(time.time())
+        task = {"id": task_id, "nodeName": name, "action": "nomad-security", "payload": payload,
+                "payloadSHA256": digest, "requiredCapability": CAPABILITY, "status": "queued", "progress": [],
+                "createdAt": now, "updatedAt": now}
+        tasks[task_id] = task
+        return {"id": task_id, "status": "queued"}
+    return _mutate_control_state(mutate)
 
 
 def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -1658,7 +1715,23 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_runtime_state()
     entry = _node_record_entry_for_name_or_id(state.get("nodes") if isinstance(state.get("nodes"), dict) else {}, node_name, node_id)
     _record_metrics_history(entry[0] if entry else node_name, body, config=config, state=state)
-    return {"task": leased}
+    from ..nomad_enrollment import agent_credential, join_settings
+    if leased and leased.get("action") == "join-nomad":
+        # Network/API work must happen after the lease transaction commits.
+        # Never wait for a firewall or Nomad while holding SQLite's writer.
+        record = entry[1] if entry else {}
+        try:
+            leased["payload"]["nomadSecurity"] = join_settings(node_name=node_name, tailscale_ip=str(record.get("tailscaleIP") or ""), state=state)
+        except Exception:
+            def release_pending(current: Dict[str, Any]) -> None:
+                pending = _agent_tasks(current).get(leased["id"])
+                if isinstance(pending, dict) and pending.get("status") == "running":
+                    pending["status"] = "queued"
+                    pending.pop("leasedAt", None)
+            _mutate_control_state(release_pending)
+            raise
+    credential = agent_credential(capabilities=body.get("capabilities"))
+    return {"task": leased, **({"nomadCredential": credential} if credential else {})}
 
 
 def handle_node_agent_readiness(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -1721,6 +1794,7 @@ def handle_node_agent_heartbeat(token: str, body: Dict[str, Any]) -> Dict[str, A
         "status": _node_agent_status(record),
         "activeTaskId": active_task_id,
         "cancelRequested": cancel_requested,
+        **({"nomadCredential": credential} if (credential := nomad_agent_credential(capabilities=body.get("capabilities"))) else {}),
     }
 
 
@@ -2645,7 +2719,7 @@ def _dashboard_log_reader(token: str, service_name: str, *, tail: int = 120, sin
     config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
     _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
     job, task = _nomad_log_target_from_state(state, service)
-    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    client = NomadApi(nomad_addr(config, state), token=nomad_token(state, role="logs"), credential_role="logs", refresh_token=True)
     return LogReader(client, job, task, service, tail=tail, allocation=allocation,
                      previous=previous, cursor=cursor)
 
@@ -2676,7 +2750,7 @@ def handle_dashboard_runtime_events(token: str, service_name: str) -> Dict[str, 
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
     _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
-    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    client = NomadApi(nomad_addr(config, state), token=nomad_token(state))
     job_id, task_filter = _nomad_log_target_from_state(state, service)
     job, allocations, job_id, task_filter = _runtime_job_and_allocations(client, job_id, task_filter, service)
     image, task_name = _nomad_job_task_image(job, task_filter or job_id)
@@ -2726,17 +2800,20 @@ def _require_history_token(token: str) -> None:
 
 def handle_history_list(token: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
     _require_history_token(token)
-    return control_history.list_history(query)
+    from ..secret_redaction import redact_document
+    return redact_document(control_history.list_history(query))
 
 
 def handle_history_get(token: str, kind: str, record_id: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
     _require_history_token(token)
-    return control_history.get_history(kind, record_id, query)
+    from ..secret_redaction import redact_document
+    return redact_document(control_history.get_history(kind, record_id, query))
 
 
 def handle_build_run_list(token: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
     _require_history_token(token)
-    return control_history.list_builds(query)
+    from ..secret_redaction import redact_document
+    return redact_document(control_history.list_builds(query))
 
 
 def handle_build_run_get(token: str, build_id: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -2745,7 +2822,8 @@ def handle_build_run_get(token: str, build_id: str, query: Dict[str, Any] | None
     if result.get("run", {}).get("status") == "queued":
         from .build_queue import position
         result["run"].update(position(build_id))
-    return result
+    from ..secret_redaction import redact_document
+    return redact_document(result)
 
 
 def _build_run_agent_task(
@@ -2890,7 +2968,8 @@ def handle_deployment_history(token: str, query: Dict[str, Any] | None = None) -
 
 def handle_deployment_history_get(token: str, event_id: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
     _require_history_token(token)
-    return control_history.get_deployment(event_id, query)
+    from ..secret_redaction import redact_document
+    return redact_document(control_history.get_deployment(event_id, query))
 
 
 def _build_run_retry_overrides(body: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -3331,11 +3410,20 @@ def handle_node_register(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     region = str(body.get("region") or "").strip()
     if not node_name or not region:
         raise LumaError("nodeName and region are required")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", node_name):
+        raise LumaError("invalid nodeName")
     region = parse_region_name(region)
+    from ..nomad_security import mesh_ip
+    tailscale_ip = mesh_ip(str(body.get("tailscaleIP") or "")) if body.get("tailscaleIP") else ""
+    enrollment_token = secrets.token_urlsafe(32)
     def mutate(state: Dict[str, Any]) -> Dict[str, Any]:
         require_control_node_token(state, token)
+        existing = _node_record_for_name(state.get("nodes") or {}, node_name)
+        if existing and (_node_record_identity_ids(existing) or _node_agent_record(existing).get("tokenHash")):
+            require_token(state, token, token_type="deploy")
         record = require_registered_region(state, region)
-        _remember_node(state, node_name, region=record["name"], status="registered")
+        _remember_node(state, node_name, region=record["name"], status="registered", tailscaleIP=tailscale_ip,
+                       pendingEnrollment={"hash": _hash_agent_token(enrollment_token), "expiresAt": int(time.time()) + 1800, "tailscaleIP": tailscale_ip})
         return record
 
     record = mutate_state(mutate)
@@ -3343,6 +3431,8 @@ def handle_node_register(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     config = load_config(_control_config_path())
     nomad_rpc_addr = _nomad_rpc_addr_for_join(config, state)
     egress_proxy = _nomad_join_egress_proxy(record["name"], nomad_rpc_addr, state)
+    from ..nomad_enrollment import join_settings
+    security = join_settings(node_name=node_name, tailscale_ip=tailscale_ip, state=state)
     return {
         "clusterId": state["clusterId"],
         "nodeName": node_name,
@@ -3352,6 +3442,8 @@ def handle_node_register(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "insecureRegistries": join_insecure_registries(state),
         "nomadRpcAddr": nomad_rpc_addr,
         "nomadServerAddr": nomad_rpc_addr,
+        "nomadSecurity": security,
+        "enrollmentToken": enrollment_token,
     }
 
 
@@ -3492,6 +3584,16 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         raise LumaError("nodeId is required; update the Luma CLI on this node and rerun luma node join")
     region = parse_region_name(region)
     luma_name = registered_name or node_name
+    from ..nomad_security import read_private_json, security_root
+    secured = read_private_json(security_root() / "cluster.json", optional=True).get("aclRequired") is True
+    if secured:
+        current = load_state()
+        require_control_node_token(current, token)
+        config = load_config(_control_config_path())
+        identity = NomadApi(nomad_addr(config, current), token=nomad_token(current)).request("GET", "/v1/node/" + urllib.parse.quote(node_id, safe=""))
+        metadata = identity.get("Meta") or {}
+        if identity.get("Name") != luma_name or metadata.get("luma_node_name") != luma_name or metadata.get("luma_tailscale_ip") != tailscale_ip:
+            raise LumaError("Nomad node identity does not match this enrollment")
     labels = labels_for_node(region, luma_name=luma_name, node_id=node_id)
     values: Dict[str, Any] = {
         "region": region,
@@ -3511,9 +3613,20 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         require_control_node_token(state, token)
         require_registered_region(state, region)
         previous = _node_record_for_name(state.get("nodes") if isinstance(state.get("nodes"), dict) else {}, luma_name)
+        management = _token_has_type(state, token, "deploy")
+        if previous and (_node_record_identity_ids(previous) or _node_agent_record(previous).get("tokenHash")) and not management:
+            raise LumaError("replacing a registered node requires management authorization")
+        if secured and not management:
+            pending = (previous or {}).get("pendingEnrollment") or {}
+            supplied = _hash_agent_token(str(body.get("enrollmentToken") or ""))
+            if pending.get("expiresAt", 0) < time.time() or pending.get("tailscaleIP") != tailscale_ip or not secrets.compare_digest(str(pending.get("hash") or ""), supplied):
+                raise LumaError("node enrollment proof is missing, expired or does not match")
         previous_labels = previous.get("labels") if isinstance(previous, dict) and isinstance(previous.get("labels"), dict) else {}
         previous_node_id = str((previous or {}).get("nodeId") or (previous or {}).get("nomadNodeId") or previous_labels.get("luma.node.id") or "").strip() if isinstance(previous, dict) else ""
         _remember_node(state, luma_name, **values)
+        saved = _node_record_for_name(state.get("nodes") or {}, luma_name)
+        if saved:
+            saved.pop("pendingEnrollment", None)
         agent_token = _issue_node_agent_token(state, luma_name, node_id=node_id)
         return {"agentToken": agent_token, "previousNodeId": previous_node_id}
 
@@ -3580,7 +3693,7 @@ def handle_node_nomad_join(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "join-nomad",
         payload,
         timeout=timeout,
-        required_capability="managed-registry-access-v2" if registries else "nomad-join",
+        required_capability="nomad-security-v1",
     )
     actual_node_name = str(result.get("nodeName") or node_name).strip()
     nomad_node_id = str(result.get("nodeId") or result.get("nomadNodeId") or "").strip()
@@ -3652,12 +3765,20 @@ def handle_node_public_ingress(token: str, body: Dict[str, Any]) -> Dict[str, An
     key, record = entry
     node_name = node_ingress.canonical_node_name(key, record)
     aliases = _node_record_names(key, record) | {node_name}
-    config = _control_config()
-    api = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
-    job_id = node_traefik_job_id(node_name)
     enabled = body.get("enabled", True)
     if not isinstance(enabled, bool):
         raise LumaError("enabled must be true or false")
+    if enabled and _nomad_security_staged():
+        # The node Traefik has no Nomad credential or client certificate under
+        # ACL/mTLS, and the security migration refuses live jobs it cannot
+        # match to a saved deployment. Never let enabling it stall either one.
+        raise LumaError(
+            "node public ingress is not available on a Nomad cluster with the security profile yet; "
+            "keep this domain on cn-edge or external-edge for now"
+        )
+    config = _control_config()
+    api = NomadApi(nomad_addr(config, state), token=nomad_token(state))
+    job_id = node_traefik_job_id(node_name)
 
     if not enabled:
         users = node_ingress.node_edge_users(state, aliases)
@@ -3732,6 +3853,13 @@ def handle_node_public_ingress(token: str, body: Dict[str, Any]) -> Dict[str, An
     }
 
 
+def _nomad_security_staged() -> bool:
+    """True once the Nomad security profile, policy or migration exists."""
+    from ..nomad_security import read_private_json, security_root
+    root = security_root()
+    return any(read_private_json(root / name, optional=True) for name in ("cluster.json", "workloads.json", "upgrade-status.json"))
+
+
 def _move_node_edge_dns(state: Dict[str, Any], aliases: set[str]) -> list[str]:
     """Repoint native node-edge services after the node's address changed."""
     config = _dns_config(_control_config(), state)
@@ -3754,7 +3882,6 @@ def _move_node_edge_dns(state: Dict[str, Any], aliases: set[str]) -> list[str]:
 
 def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
-    require_control_node_token(state, token)
     node_name = str(body.get("nodeName") or "").strip()
     if not node_name:
         raise LumaError("nodeName is required")
@@ -3767,6 +3894,17 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                 removed = value
                 removed_key = str(key)
                 break
+    pending_only = _authorize_node_removal(state, token, removed_key or node_name, removed, body)
+    if pending_only:
+        # A one-time join proof authorizes deleting only its unfinished Luma
+        # registration. It cannot drain a Nomad node discovered by public name.
+        def remove_pending(current: Dict[str, Any]) -> None:
+            item = (current.get("nodes") or {}).get(removed_key or node_name)
+            if not _authorize_node_removal(current, token, removed_key or node_name, item, body):
+                raise LumaError("node enrollment changed before registration cleanup")
+            current["nodes"].pop(removed_key or node_name, None)
+        mutate_state(remove_pending)
+        return {"clusterId": state["clusterId"], "nodeName": node_name, "removed": True, "registeredRemoved": True, "nomadDrained": False, "nomadNodeId": "", "nomadDrainSkipped": "pending_enrollment_only", "message": f"Unfinished node registration removed: {node_name}"}
     config = load_config(_control_config_path())
     nomad_node_id = _node_record_nomad_node_id(removed) if isinstance(removed, dict) else ""
     shared_manager_identity = bool(
@@ -3805,7 +3943,7 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         else:
             nomad_drained = True
     def mutate(state: Dict[str, Any]) -> None:
-        require_control_node_token(state, token)
+        _authorize_node_removal(state, token, removed_key or node_name, (state.get("nodes") or {}).get(removed_key or node_name), body)
         nodes = state.get("nodes")
         if not isinstance(nodes, dict):
             nodes = {}
@@ -3831,6 +3969,20 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _authorize_node_removal(state: Dict[str, Any], token: str, node_name: str, record: Any, body: Dict[str, Any]) -> bool:
+    if _token_has_type(state, token, "deploy"):
+        return False
+    if _token_has_type(state, token, "join"):
+        pending = (record or {}).get("pendingEnrollment") or {}
+        if (not record or _node_record_identity_ids(record) or (record.get("agent") or {}).get("tokenHash")
+                or pending.get("expiresAt", 0) < time.time()
+                or not secrets.compare_digest(str(pending.get("hash") or ""), _hash_agent_token(str(body.get("enrollmentToken") or "")))):
+            raise LumaError("removing an existing node requires management authorization or its own node-agent credential")
+        return True
+    _require_node_agent_token_entry(state, token, node_name, node_id=_node_record_nomad_node_id(record or {}))
+    return False
+
+
 def _node_record_nomad_node_id(record: Dict[str, Any]) -> str:
     labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
     return str(record.get("nomadNodeId") or record.get("nodeId") or labels.get("luma.node.id") or "").strip()
@@ -3853,7 +4005,7 @@ def _node_identity_is_owned_by_other_manager(
 
 
 def _find_nomad_node_id_for_unregister(config: Any, state: Dict[str, Any], *, node_name: str) -> str:
-    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    client = NomadApi(nomad_addr(config, state), token=nomad_token(state))
     try:
         nodes = client.request("GET", "/v1/nodes")
     except LumaError:
@@ -3898,7 +4050,7 @@ def _nomad_node_not_found_error(exc: BaseException) -> bool:
 
 
 def _drain_nomad_node_for_unregister(config: Any, state: Dict[str, Any], *, node_name: str, node_id: str) -> str:
-    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    client = NomadApi(nomad_addr(config, state), token=nomad_token(state))
     encoded_id = urllib.parse.quote(node_id, safe="")
     try:
         client.request(
@@ -4899,7 +5051,7 @@ def _reconcile_allocations_after_docker_restart(
         }
 
     config = load_config(_control_config_path())
-    api = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    api = NomadApi(nomad_addr(config, state), token=nomad_token(state))
     validated: Dict[str, Dict[str, Any]] = {}
     skipped: list[str] = []
     host_ports: set[int] = set()
@@ -5072,7 +5224,7 @@ def _ensure_job_managed_registry_access(
     if not groups:
         return {"nodes": [], "message": "No managed HTTP registry images require node configuration"}
     state = {**state, "nodes": load_runtime_state().get("nodes") or {}}
-    api = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    api = NomadApi(nomad_addr(config, state), token=nomad_token(state))
     inventory = api.request("GET", "/v1/nodes")
     if not isinstance(inventory, list):
         raise LumaError("cannot verify managed registry access: Nomad node inventory is unavailable")
@@ -5108,6 +5260,81 @@ def _ensure_job_managed_registry_access(
                 )
             node_registries.setdefault(entry[0], set()).update(group["registries"])
     return _ensure_nodes_managed_registry_access(state, node_registries, progress=progress)
+
+
+def _protect_nomad_secrets(config: Any, state: Dict[str, Any], job_json: str) -> str:
+    from ..secret_storage import enabled as encrypted_storage
+    if not encrypted_storage():
+        return job_json
+    from ..nomad_security import prepare_job
+    from ..nomad_secrets import protect_job
+    document = json.loads(job_json)
+    job = document["Job"]
+    prepare_job(job)
+    protect_job(job, NomadApi(nomad_addr(config, state), token=nomad_token(state)))
+    return json.dumps(document, indent=2)
+
+
+def _restore_write_only_configuration(state: Dict[str, Any], body: Dict[str, Any], *, compose: bool = False) -> Dict[str, Any]:
+    manifest = body.get("manifest")
+    if not isinstance(manifest, str) or not any("<redacted>" in str(body.get(field) or "") for field in ("manifest", "composeContent")):
+        return body
+    from ..secret_redaction import restore_configuration
+    try:
+        raw = yaml.safe_load(manifest)
+    except yaml.YAMLError:
+        raise LumaError("invalid deployment configuration") from None
+    name = str(raw.get("name") or "") if isinstance(raw, dict) else ""
+    record = (_compose_deployment_record if compose else _service_deployment_record)(state, name) or {}
+    if not record:
+        raise LumaError("write-only values can only be reused for their original application; supply values for the new application")
+    result = dict(body)
+    for field in ("manifest", "composeContent"):
+        if isinstance(body.get(field), str):
+            result[field] = restore_configuration(body[field], str(record.get(field) or ""))
+    return result
+
+
+def _prepare_nomad_workload_security(config: Any, state: Dict[str, Any], job_json: str) -> str:
+    from ..nomad_security import authorize_application, needs_host_volumes, read_private_json, security_root, validate_application
+    from ..nomad_migration_node import CAPABILITY
+    job_json = _protect_nomad_secrets(config, state, job_json)
+    policy = read_private_json(security_root() / "workloads.json", optional=True)
+    if policy.get("mode") != "enforce":
+        return job_json
+    document = json.loads(job_json)
+    job = document["Job"]
+    validate_application(job)
+    if needs_host_volumes(job):
+        from .registry_targets import registry_candidate_nodes
+        api = NomadApi(nomad_addr(config, state), token=nomad_token(state))
+        detailed = [api.request("GET", "/v1/node/" + urllib.parse.quote(str(n["ID"]), safe="")) for n in api.request("GET", "/v1/nodes") or [] if n.get("Status") == "ready"]
+        registered = load_runtime_state().get("nodes") or {}
+        targets: dict[str, tuple[Dict[str, Any], list[Dict[str, Any]]]] = {}
+        for group in job.get("TaskGroups") or []:
+            mounts = [m for t in group.get("Tasks") or [] for m in (t.get("Config") or {}).get("mount") or []]
+            if not mounts:
+                continue
+            placement = {"name": group["Name"], "constraints": [*(job.get("Constraints") or []), *(group.get("Constraints") or []), *(c for t in group.get("Tasks") or [] for c in t.get("Constraints") or [])],
+                         "datacenters": job.get("Datacenters") or ["*"], "nodePool": job.get("NodePool") or "default", "drivers": ["docker"]}
+            candidates = registry_candidate_nodes(placement, detailed)
+            if len(candidates) != 1:
+                raise LumaError("persistent application storage requires one verified owner node before enabling host mounts")
+            candidate = candidates[0]
+            meta = candidate.get("Meta") or {}
+            entry = _node_record_entry_for_name_or_id(registered, str(meta.get("luma_node_name") or ""), str(candidate["ID"]))
+            if entry is None or not _node_agent_is_ready(entry[1], required_capability=CAPABILITY):
+                raise LumaError("storage owner must finish its normal Luma node upgrade")
+            name = entry[0]
+            if name not in targets:
+                targets[name] = (candidate, [])
+            targets[name][1].extend(mounts)
+        for name, (node, mounts) in targets.items():
+            result = _run_node_agent_task(state, name, "nomad-security", {"schema": 1, "op": "storage", "nodeId": node["ID"], "address": (node.get("Meta") or {}).get("luma_tailscale_ip"), "mounts": mounts}, required_capability=CAPABILITY, timeout=180)
+            if result.get("verified") is not True or result.get("nodeId") != node["ID"]:
+                raise LumaError("storage owner did not verify the application mount permissions")
+    authorize_application(job)
+    return json.dumps(document, indent=2)
 
 
 def _require_registry_node(state: Dict[str, Any], node_name: str) -> Dict[str, Any]:
@@ -5225,6 +5452,21 @@ def _verify_authenticated_registry(
     )
 
 
+def _preload_registry_runtime_image(state: Dict[str, Any], service: ServiceSpec, registry_auth: Dict[str, str] | None) -> str:
+    if not service.node:
+        raise LumaError("Registry runtime image must be loaded on its pinned node before deployment")
+    payload: Dict[str, Any] = {"image": service.image, "forcePull": False, "platform": str(service.node_platform or "")}
+    if registry_auth:
+        payload["registryAuth"] = registry_auth
+    # The Registry may serve its own resolved image. Load that exact reference
+    # while its old allocation is still running; failure must precede job write
+    # and submission. This fixed task never reconfigures the Docker daemon.
+    result = _run_node_agent_task(state, service.node, "resolve-docker-image", payload, timeout=600, required_capability="docker-image")
+    if result.get("image") != service.image:
+        raise LumaError("Registry node did not confirm the requested runtime image")
+    return f"Registry runtime image is available on {service.node}"
+
+
 def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -5316,7 +5558,7 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
     _emit_progress(progress, registry_transport_step)
 
     deploy_body = {"manifest": manifest_text, "sourceName": f"{name} (luma registry serve)"}
-    deploy_result = handle_deployment(token, deploy_body, progress=progress)
+    deploy_result = handle_deployment(token, deploy_body, progress=progress, registry_runtime=True)
     if isinstance(deploy_result, dict):
         steps.extend(s for s in (deploy_result.get("steps") or []) if isinstance(s, dict))
 
@@ -5580,7 +5822,7 @@ def _images_from_nomad_job(job: Any) -> list[str]:
 
 def _registry_nomad_references(state: Dict[str, Any], spec: Dict[str, Any]) -> tuple[list[Dict[str, str]], bool, str]:
     config = load_config(_control_config_path())
-    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    client = NomadApi(nomad_addr(config, state), token=nomad_token(state))
     references: list[Dict[str, str]] = []
     try:
         jobs = client.request("GET", "/v1/jobs")
@@ -6202,7 +6444,7 @@ def _registry_recover_pending_maintenance() -> Dict[str, Any] | None:
         return None
     try:
         config = load_config(_control_config_path())
-        nomad = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+        nomad = NomadApi(nomad_addr(config, state), token=nomad_token(state))
         spec = _managed_registry_spec(state)
         restored_job = _registry_restorable_nomad_job(marker["job"])
         nomad.request("POST", "/v1/jobs", {"Job": restored_job})
@@ -6249,7 +6491,7 @@ def _run_registry_offline_task(
     if not steps:
         raise LumaError("registry maintenance requires at least one operation")
     config = load_config(_control_config_path())
-    nomad = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    nomad = NomadApi(nomad_addr(config, state), token=nomad_token(state))
     job_id = str(spec["jobId"])
     job = nomad.request("GET", f"/v1/job/{urllib.parse.quote(job_id, safe='')}")
     if not isinstance(job, dict):
@@ -7132,7 +7374,7 @@ def _local_storage_previous_node(
         saved = next(iter(old_nodes))
     if not inspect_runtime:
         return saved
-    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    client = NomadApi(nomad_addr(config, state), token=nomad_token(state))
     path = f"/v1/job/{urllib.parse.quote(slug, safe='')}"
     try:
         job = client.request("GET", path)
@@ -7266,7 +7508,8 @@ def handle_deployment_config(token: str, name: str) -> Dict[str, Any]:
     record = _service_deployment_record(state, wanted) or _compose_deployment_record(state, wanted)
     if not record:
         raise LumaError(f"deployment not found: {wanted}")
-    return {
+    from ..secret_redaction import redact_document
+    return redact_document({
         "kind": str(record.get("kind") or ""),
         "name": str(record.get("name") or wanted),
         "slug": str(record.get("slug") or slugify(wanted)),
@@ -7276,7 +7519,7 @@ def handle_deployment_config(token: str, name: str) -> Dict[str, Any]:
         "composeContent": str(record.get("composeContent") or ""),
         "gitSource": record.get("gitSource") if isinstance(record.get("gitSource"), dict) else None,
         "localStorage": record.get("localStorage") if isinstance(record.get("localStorage"), dict) else None,
-    }
+    })
 
 
 def _remove_request_name(body: Dict[str, Any]) -> str:
@@ -7315,10 +7558,11 @@ def _forget_compose_deployment(state: Dict[str, Any], deployment: ComposeDeploym
 
 
 @_serialize_deploy
-def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
+def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None, registry_runtime: bool = False) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
     _reject_control_maintenance(state)
+    body = _restore_write_only_configuration(state, body)
     _apply_state_secrets(state)
     steps: list[dict[str, str]] = []
     manifest = body.get("manifest")
@@ -7459,6 +7703,16 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
                 lambda: _ensure_job_managed_registry_access(config, state, stack_text, progress=progress),
                 progress=progress,
             )
+            if registry_runtime:
+                _deploy_step(
+                    steps, "Load Registry runtime image on target",
+                    lambda: _preload_registry_runtime_image(state, service, registry_auth),
+                    progress=progress,
+                )
+        if not _skip_orchestrator(body):
+            stack_text = _prepare_nomad_workload_security(config, state, stack_text)
+        else:
+            stack_text = _protect_nomad_secrets(config, state, stack_text)
         _deploy_step(steps, "Write Nomad job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
         written = [str(target)]
         _require_redirect_hosts_free(state, service)
@@ -7882,7 +8136,7 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
     if _is_system_stack(stack):
         raise LumaError(f"system stack cannot be restarted from application management: {stack}")
     config = load_config(_control_config_path())
-    api = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    api = NomadApi(nomad_addr(config, state), token=nomad_token(state))
     job_path = f"/v1/job/{urllib.parse.quote(stack, safe='')}"
     try:
         allocations = api.request("GET", f"{job_path}/allocations")
@@ -8338,7 +8592,7 @@ def _refresh_nomad_cni_hostports_for_job(
     lookup_error = ""
     if job_id:
         try:
-            allocations = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or "")).request(
+            allocations = NomadApi(nomad_addr(config, state), token=nomad_token(state)).request(
                 "GET",
                 f"/v1/job/{urllib.parse.quote(job_id, safe='')}/allocations",
             )
@@ -8629,6 +8883,7 @@ def handle_fleet_update(
     succeeded = sum(1 for item in results if item.get("status") == "succeeded")
     failed = sum(1 for item in results if item.get("status") == "failed")
     skipped = sum(1 for item in results if item.get("status") == "skipped")
+    from ..nomad_upgrade import public_status
     return {
         "clusterId": str(state.get("clusterId") or ""),
         "installRef": install_ref,
@@ -8637,6 +8892,7 @@ def handle_fleet_update(
         "failed": failed,
         "skipped": skipped,
         "results": results,
+        "nomadSecurity": public_status(),
     }
 
 
@@ -9249,6 +9505,10 @@ def _control_maintenance(state: Dict[str, Any]) -> Dict[str, Any] | None:
 
 
 def _reject_control_maintenance(state: Dict[str, Any]) -> None:
+    from ..nomad_security import read_private_json, security_root
+    migration = read_private_json(security_root() / "upgrade-status.json", optional=True)
+    if migration.get("status") == "running":
+        raise LumaError("Nomad security migration is applying and verifying node changes; retry after it completes")
     current = _control_maintenance(state)
     if current:
         kind = str(current.get("kind") or "update")
@@ -9695,6 +9955,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     state = load_state()
     require_token(state, token, token_type="deploy")
     _reject_control_maintenance(state)
+    body = _restore_write_only_configuration(state, body, compose=True)
     _apply_state_secrets(state)
     steps: list[dict[str, str]] = []
     source_name = str(body.get("sourceName") or "luma.compose.yml")
@@ -9839,6 +10100,10 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
             lambda: _prepare_compose_managed_storage(deployment, state),
             progress=progress,
         )
+        if not _skip_orchestrator(body):
+            stack_text = _prepare_nomad_workload_security(config, state, stack_text)
+        else:
+            stack_text = _protect_nomad_secrets(config, state, stack_text)
         _deploy_step(steps, "Write compose job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
         written = [str(target)]
 
@@ -12042,7 +12307,7 @@ def _running_egress_gateway_node_name(state: Dict[str, Any]) -> str:
         config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
         config = load_config(config_path)
         _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
-        allocations = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or "")).request("GET", "/v1/job/egress/allocations")
+        allocations = NomadApi(nomad_addr(config, state), token=nomad_token(state)).request("GET", "/v1/job/egress/allocations")
     except LumaError as exc:
         raise LumaError("image pull egress requires a running Nomad egress job; run `luma manager egress` on the manager") from exc
     if not isinstance(allocations, list):
@@ -12429,7 +12694,7 @@ def _nomad_blocked_evaluation_message(job_id: str, evaluation: Dict[str, Any]) -
 def _recover_traefik_ingress(job_id: str = "traefik") -> str:
     state = load_state()
     config = load_config(_control_config_path())
-    api = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    api = NomadApi(nomad_addr(config, state), token=nomad_token(state))
     allocations = api.request("GET", f"/v1/job/{urllib.parse.quote(job_id, safe='')}/allocations")
     if not isinstance(allocations, list):
         raise LumaError("Nomad returned invalid allocations for Traefik")
@@ -12459,7 +12724,7 @@ def _recover_public_route_allocation(token: str, stack: str) -> str:
         raise LumaError(f"application allocation recreate returned no allocation ids: {stack}")
     state = load_state()
     config = load_config(_control_config_path())
-    api = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    api = NomadApi(nomad_addr(config, state), token=nomad_token(state))
     replacements = _wait_for_nomad_job_replacement(api, stack, allocation_ids, min_running=1)
     return f"allocation recreate completed ({len(allocation_ids)} replaced by {len(replacements)} running allocation(s))"
 
@@ -14097,7 +14362,7 @@ def _dedupe_runtime_events(events: list[Dict[str, Any]]) -> list[Dict[str, Any]]
 
 
 def _nomad_pull_diagnostic_target(config: Any, state: Dict[str, Any], service: str) -> Dict[str, str]:
-    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    client = NomadApi(nomad_addr(config, state), token=nomad_token(state))
     job_id, task_filter = _nomad_log_target_from_state(state, service)
     if not job_id:
         raise LumaError("service is required")
@@ -14258,7 +14523,7 @@ def _nomad_log_lines(
     bound_job_id: str = "",
     bound_task_name: str = "",
 ) -> list[str]:
-    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    client = NomadApi(nomad_addr(config, state), token=nomad_token(state))
     # Callers may pass an already resolved target explicitly; otherwise the
     # job and task are looked up from Control state.
     if bound_job_id:
@@ -15234,7 +15499,7 @@ def _resolve_application_terminal_target(state: Dict[str, Any], service: str) ->
         raise LumaError(f"system stack cannot be opened from application terminal: {job_id}")
     config = load_config(_control_config_path())
     _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
-    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    client = NomadApi(nomad_addr(config, state), token=nomad_token(state))
     job, allocations, job_id, task_filter = _runtime_job_and_allocations(client, job_id, task_filter, service)
     _image, task_name = _nomad_job_task_image(job, task_filter or job_id)
     if not task_name and not task_filter:
@@ -15701,7 +15966,7 @@ async def _asgi_metrics(request: Request) -> Response:
         auth = request.headers.get("Authorization") or ""
         if auth:
             body = await run_in_threadpool(handle_prometheus_metrics, bearer_token(request.headers))
-        elif peer_is_loopback(request.client.host if request.client else ""):
+        elif peer_is_loopback(request.client.host if request.client else "") and not any(request.headers.get(k) for k in ("x-forwarded-for", "forwarded", "x-real-ip")):
             body = await run_in_threadpool(functools.partial(handle_prometheus_metrics, None, allow_unauthenticated=True))
         else:
             raise LumaError("missing bearer token")
@@ -15720,6 +15985,8 @@ async def _asgi_health(_: Request) -> JSONResponse:
             "nodeJoinModel": "region-first",
             "capabilities": [
                 "node-region",
+                "nomad-security-v1",
+                "nomad-security-upgrade-v1",
                 "region-exposures-v1",
                 "node-edge-v1",
                 "dns-zones-v1",
@@ -15986,6 +16253,8 @@ async def _asgi_authenticated_get(request: Request) -> Response:
                     urllib.parse.unquote(fleet_update_match.group(1)),
                 ),
             )
+        if parsed_path == "/v1/security/nomad":
+            return _json_response(200, await run_in_threadpool(handle_nomad_security_status, token))
         if parsed_path == "/v1/dashboard/updates/fleet":
             return _json_response(200, await run_in_threadpool(handle_fleet_update_operation_get, token))
         control_image_match = re.fullmatch(r"/v1/dashboard/updates/control-image/([^/]+)", parsed_path)
@@ -16144,6 +16413,7 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/node-agent/heartbeat": handle_node_agent_heartbeat,
             "/v1/node-agent/tasks/complete": handle_node_agent_complete,
             "/v1/node-agent/tasks/progress": handle_node_agent_progress,
+            "/v1/security/nomad/tasks": handle_nomad_security_task,
             "/v1/nodes/unregister": handle_node_unregister,
             "/v1/nodes/public-ingress": handle_node_public_ingress,
             "/v1/workflows": handle_workflow_record,
@@ -16541,6 +16811,7 @@ def create_app() -> Starlette:
     _reconcile_orphaned_build_runs_after_control_restart()
     return Starlette(
         lifespan=_operations_lifespan,
+        middleware=[Middleware(SecurityAuditMiddleware)],
         routes=[
             Route("/dashboard", _asgi_dashboard_asset, methods=["GET"]),
             Route("/dashboard/{path:path}", _asgi_dashboard_asset, methods=["GET"]),
@@ -16562,7 +16833,7 @@ def serve(host: str, port: int) -> None:
 
     _start_registry_automation()
     _ensure_observe_grafana_route()
-    uvicorn.run(create_app(), host=host, port=port, log_level=os.environ.get("LUMA_CONTROL_LOG_LEVEL", "info"))
+    uvicorn.run(create_app(), host=host, port=port, proxy_headers=False, log_level=os.environ.get("LUMA_CONTROL_LOG_LEVEL", "info"))
 
 
 def _ensure_observe_grafana_route() -> None:
@@ -16587,7 +16858,7 @@ def main(argv: list[str] | None = None) -> int:
     init.add_argument("--cluster-id")
     init.add_argument("--overwrite", action="store_true")
     serve_cmd = sub.add_parser("serve")
-    serve_cmd.add_argument("--host", default="0.0.0.0")
+    serve_cmd.add_argument("--host", default="127.0.0.1")
     serve_cmd.add_argument("--port", type=int, default=int(os.environ.get("LUMA_CONTROL_PORT", "8080")))
     args = parser.parse_args(argv)
     if args.command == "init":

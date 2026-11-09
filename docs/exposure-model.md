@@ -257,7 +257,8 @@ Operational requirements:
 
 - the cloud security group and host firewall allow inbound TCP 80 and 443;
 - in mainland China the domain needs ICP filing at the node's cloud provider, or the provider blocks the ports;
-- `luma node ingress disable` is refused while any `node-edge` deployment still uses the node.
+- `luma node ingress disable` is refused while any `node-edge` deployment still uses the node;
+- not yet available once the cluster has the Nomad security profile (ACL and mTLS): `luma node ingress enable` is refused there, so keep those domains on `cn-edge` or `external-edge`.
 
 ### `none`
 

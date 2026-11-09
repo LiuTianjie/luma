@@ -13,8 +13,11 @@ its own.
 
 import copy
 import hashlib
+import http.client
 import json
+import os
 import socket
+import ssl
 import threading
 import time
 import urllib.error
@@ -26,6 +29,8 @@ from typing import Any, Dict, List, Mapping
 
 from .config import LumaConfig
 from .errors import LumaError
+from .nomad_security import admit_job, job_digest, nomad_token, prepare_job, read_private_json, security_root
+from . import security_audit
 
 
 # Application jobs allow a 30-minute cold-pull health window and a 40-minute
@@ -224,6 +229,11 @@ def deploy_to_nomad(
         timeout_seconds=timeout_seconds,
     )
 
+    from .secret_storage import enabled as encrypted_storage
+    if encrypted_storage():
+        from .nomad_secrets import prune_job_variables
+        prune_job_variables(client, target_job)
+
     if not eval_id:
         suffix = f", deployment {deployment_id}" if deployment_id else ""
         return (
@@ -264,6 +274,9 @@ def _ensure_memory_oversubscription(
         )
     if scheduler.get("MemoryOversubscriptionEnabled") is True:
         return
+
+    if read_private_json(security_root() / "cluster.json", optional=True).get("aclRequired"):
+        raise LumaError("Nomad memory oversubscription must be configured by the host administrator with luma security activate-acl; Control has operator:read only")
 
     updated = dict(scheduler)
     updated["MemoryOversubscriptionEnabled"] = True
@@ -851,7 +864,12 @@ def _wait_for_healthy_allocations(
 
 def remove_from_nomad(config: LumaConfig, state: Dict[str, Any], *, slug: str) -> str:
     client = NomadApi(nomad_addr(config, state), token=_token(state))
+    started = time.time_ns()
     client.request("DELETE", f"/v1/job/{_q(slug)}?purge=true")
+    from .secret_storage import enabled as encrypted_storage
+    if encrypted_storage():
+        from .nomad_secrets import remove_job_variables
+        remove_job_variables(client, slug, before=started)
     return f"Nomad job removed: {slug}"
 
 
@@ -1445,11 +1463,43 @@ def _first_image(version_job: Dict[str, Any]) -> str:
 
 
 def _token(state: Dict[str, Any]) -> str:
-    return str(state.get("nomadToken") or "")
+    return nomad_token(state)
 
 
 def _q(value: str) -> str:
     return urllib.parse.quote(str(value), safe="")
+
+
+class _NoNomadRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # urllib otherwise forwards X-Nomad-Token to a different origin. A
+        # client node or proxy must never receive Control's scheduler token.
+        return None
+
+
+def _safe_nomad_error(detail: str, body: Any, token: str) -> str:
+    secrets = {token} if token else set()
+
+    def collect(value: Any, sensitive: bool = False) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                collect(item, sensitive or str(key).lower() in {"secretid", "bootstrapsecret", "token", "authtoken", "password", "env", "auth", "registryauth", "items"})
+        elif isinstance(value, list):
+            for item in value:
+                collect(item, sensitive)
+        elif sensitive and isinstance(value, str) and value:
+            secrets.add(value)
+            try:
+                decoded = json.loads(value)
+                if isinstance(decoded, str) and decoded:
+                    secrets.add(decoded)
+            except ValueError:
+                pass
+
+    collect(body)
+    for value in sorted(secrets, key=len, reverse=True):
+        detail = detail.replace(value, "<redacted>").replace(json.dumps(value)[1:-1], "<redacted>")
+    return detail[:4096]
 
 
 class NomadApi:
@@ -1459,9 +1509,46 @@ class NomadApi:
     READ_TIMEOUT = 30
     WRITE_TIMEOUT = 120
 
-    def __init__(self, api_url: str, *, token: str = ""):
+    def __init__(self, api_url: str, *, token: str = "", tls: Mapping[str, str] | None = None, credential_role: str = "control", managed_transport: bool = True, refresh_token: bool = False):
+        from .nomad_pki import client_tls, endpoint
+        if managed_transport:
+            api_url = endpoint(api_url)
+        parsed = urllib.parse.urlsplit(api_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
+            raise LumaError("Nomad API URL must be an HTTP(S) origin without credentials")
         self.api_url = api_url.rstrip("/")
         self.token = token
+        self.tls = dict(tls) if tls is not None else client_tls(credential_role)
+        self.refresh_role = credential_role if refresh_token else ""
+
+    def _opener(self):
+        handlers: list[Any] = [urllib.request.ProxyHandler({}), _NoNomadRedirect()]
+        if self.api_url.startswith("https://"):
+            settings = self.tls or {}
+            context = ssl.create_default_context(cafile=settings.get("ca_file") or None)
+            cert, key = settings.get("cert_file"), settings.get("key_file")
+            if bool(cert) != bool(key):
+                raise LumaError("Nomad TLS client certificate and key must be configured together")
+            if cert and key:
+                context.load_cert_chain(cert, key)
+            handlers.append(urllib.request.HTTPSHandler(context=context))
+        return urllib.request.build_opener(*handlers)
+
+    def request_bytes(self, path: str, *, limit: int, timeout: float | None = None) -> bytes:
+        if not path.startswith("/v1/") or limit < 0 or limit > 16 * 1024 * 1024:
+            raise LumaError("invalid bounded Nomad read")
+        token = nomad_token(role=self.refresh_role) if self.refresh_role else self.token
+        headers = {"X-Nomad-Token": token} if token else {}
+        request = urllib.request.Request(self.api_url + path, headers=headers)
+        try:
+            with self._opener().open(request, timeout=timeout or self.READ_TIMEOUT) as response:
+                return response.read(limit)
+        except urllib.error.HTTPError as exc:
+            code = exc.code
+            exc.close()
+            raise LumaError(f"Nomad file is temporarily unavailable (HTTP {code})") from exc
+        except (OSError, urllib.error.URLError) as exc:
+            raise LumaError("Nomad file is temporarily unavailable") from exc
 
     def request(
         self,
@@ -1492,29 +1579,91 @@ class NomadApi:
         *,
         timeout: float | None = None,
     ) -> str:
+        if not path.startswith("/v1/") or path.startswith("//"):
+            raise LumaError("invalid Nomad API path")
+        mutation = method.upper() not in {"GET", "HEAD", "OPTIONS"}
+        if mutation and (path.startswith("/v1/jobs") or path.startswith("/v1/job/")) and os.environ.get("LUMA_NOMAD_UPGRADE_OWNER") != "1":
+            migration = read_private_json(security_root() / "upgrade-status.json", optional=True)
+            if migration.get("status") == "running":
+                raise LumaError("Nomad security migration is in progress; retry the recorded deployment after verification completes")
+        audit: Dict[str, Any] = {"method": method, "path": path}
+        if mutation and isinstance(body, dict) and isinstance(body.get("Job"), dict):
+            job = body["Job"]
+            prepare_job(job)
+            from .secret_storage import enabled as encrypted_storage
+            if encrypted_storage():
+                from .nomad_secrets import assert_protected_job, verify_bindings
+                assert_protected_job(job)
+                verify_bindings(self, job)
+            admit_job(job)
+            audit.update(job=str(job.get("ID") or ""), namespace=str(job.get("Namespace") or "default"), sha256=job_digest(job))
+        if mutation and path.split("?", 1)[0].endswith("/revert") and body and read_private_json(security_root() / "workloads.json", optional=True).get("mode") == "enforce":
+            # Reverts register a previous spec too; do not make them an
+            # admission bypass around the current security policy.
+            versions = self.request("GET", path.split("?", 1)[0].removesuffix("/revert") + "/versions")
+            candidate = next((j for j in (versions or {}).get("Versions", []) if j.get("Version") == body.get("JobVersion")), None)
+            if candidate is None:
+                raise LumaError("Nomad rollback version could not be inspected for security")
+            prepared = copy.deepcopy(candidate)
+            prepare_job(prepared)
+            if job_digest(prepared) != job_digest(candidate):
+                raise LumaError("Nomad rollback version predates the current security requirements; redeploy that version through the normal Luma deployment workflow")
+            admit_job(candidate)
+            from .secret_storage import enabled as encrypted_storage
+            if encrypted_storage():
+                from .nomad_secrets import assert_protected_job, verify_bindings
+                assert_protected_job(candidate)
+                verify_bindings(self, candidate)
+            audit["sha256"] = job_digest(candidate)
+        if mutation:
+            security_audit.record("nomad.begin", **audit)
         data = json.dumps(body).encode("utf-8") if body is not None else None
         headers = {"Accept": "application/json"}
         if body is not None:
             headers["Content-Type"] = "application/json"
-        if self.token:
-            headers["X-Nomad-Token"] = self.token
+        request_token = nomad_token(role=self.refresh_role) if self.refresh_role else self.token
+        if request_token:
+            headers["X-Nomad-Token"] = request_token
         req = urllib.request.Request(self.api_url + path, data=data, method=method, headers=headers)
         effective_timeout = timeout if timeout is not None else self._default_timeout(method)
+        opener = self._opener()
         try:
-            with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
+            with opener.open(req, timeout=effective_timeout) as resp:
                 raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            # CAS conflicts may contain another writer's values, which are
+            # absent from this request and cannot be redacted by comparison.
+            detail = "encrypted variable request rejected" if path.startswith("/v1/var/") else _safe_nomad_error(detail, body, request_token)
+            if mutation:
+                security_audit.record("nomad.end", **audit, status=exc.code, outcome="rejected")
             raise LumaError(f"Nomad API error {exc.code}: {detail}") from exc
         except (TimeoutError, socket.timeout) as exc:
+            if mutation:
+                security_audit.record("nomad.end", **audit, outcome="unknown", failure="timeout")
             raise LumaError(
                 f"Nomad API {method} {path} timed out after {effective_timeout:g}s "
                 f"at {self.api_url}. Check that the Nomad agent is responsive."
             ) from exc
         except urllib.error.URLError as exc:
+            if mutation:
+                security_audit.record("nomad.end", **audit, outcome="unknown", failure="transport")
             raise LumaError(
                 f"Nomad API unavailable at {self.api_url}: {exc.reason}. "
                 "Check that the Nomad agent is running and nomadAddr is reachable "
                 "from the luma-control container."
             ) from exc
+        except (ssl.SSLError, http.client.HTTPException, OSError) as exc:
+            if mutation:
+                security_audit.record("nomad.end", **audit, outcome="unknown", failure="transport")
+            raise LumaError("Nomad authenticated connection failed; verify its TLS identity and service readiness") from exc
+        if mutation:
+            result: Dict[str, Any] = {}
+            try:
+                payload = json.loads(raw)
+                if isinstance(payload, dict):
+                    result = {"modifyIndex": payload.get("JobModifyIndex"), "evaluation": str(payload.get("EvalID") or "")}
+            except ValueError:
+                pass
+            security_audit.record("nomad.end", **audit, **result, outcome="accepted")
         return raw
