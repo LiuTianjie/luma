@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -91,7 +92,10 @@ def main() -> None:
     def start(name: str, *, enabled: bool = False) -> None:
         service = compose["services"][name]
         resources = _resource_values(service["deploy"]["resources"])
-        environment = dict(service.get("environment", {}))
+        # Secret references such as ${LUMA_OBSERVE_READ_TOKEN} are rendered by
+        # Luma Control in production; here they start unset, like a closed install.
+        environment = {key: "" if re.fullmatch(r"\$\{[A-Z0-9_]+\}", str(value)) else value
+                       for key, value in service.get("environment", {}).items()}
         if name == "collector":
             environment.update(LUMA_OTLP_MESH_BIND="127.0.0.1", LUMA_OTLP_TOKEN=MESH)
         if name == "observe-access" and enabled:
