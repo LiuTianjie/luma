@@ -130,6 +130,7 @@ class ControlCutoverTests(unittest.TestCase):
             patch.object(bootstrap, "_traefik_ports", return_value=(80, 443)),
             patch.object(bootstrap, "configure_firewall", return_value="firewall"),
             patch.object(bootstrap, "install_control_config", return_value="config"),
+            patch.object(bootstrap, "_write_control_route", return_value="route"),
             patch.object(bootstrap, "install_control_state", side_effect=lambda *a, **k: order.append("cutover") or "Control SQLite state installed (legacy cutover pending)"),
             patch.object(bootstrap, "deploy_control_stack", return_value=["healthy"]),
         ]

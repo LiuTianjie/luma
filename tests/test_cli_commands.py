@@ -36,6 +36,19 @@ from tests.support import _restore_env, _set_env
 
 
 class CliTests(unittest.TestCase):
+    def setUp(self):
+        # These CLI tests mock host deployment. Its new supervisor/agent
+        # lifecycle hooks must never invoke real sudo or systemd either.
+        for name in ("_try_refresh_manager_agent", "_start_manager_security"):
+            patcher = patch("luma.cli.manager." + name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        # Enrollment now connects Tailscale before registering. Keep that host
+        # operation isolated too; setup_tailscale is tested with a mock executor.
+        patcher = patch("luma.cli.nodes.setup_tailscale", return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_last_command_value_preserves_digest_colon_after_sudo_prompt(self):
         output = '[sudo] password for tao: ["ghcr.io/liutianjie/luma-control@sha256:abc123"]\n'
 
@@ -1191,7 +1204,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Manager control-plane refresh required", printed_text)
         self.assertIn("local manager control state found", printed_text)
 
-    def test_update_joined_node_skips_agent_refresh_when_control_is_too_old(self):
+    def test_update_joined_node_fails_clearly_when_control_is_too_old(self):
         with patch("luma.cli.manager._run_luma_installer") as installer, patch("luma.cli.manager._reexec_after_luma_update"), patch(
             "luma.cli.manager._manager_refresh_decision", return_value=(False, "no local manager control state found")
         ), patch("luma.cli.manager._local_agent_config", return_value=None), patch("luma.cli.manager._safe_local_nomad_node_id", return_value="node-1"), patch(
@@ -1203,14 +1216,14 @@ class CliTests(unittest.TestCase):
         ), patch("builtins.print") as printed:
             code = main(["update"])
 
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         installer.assert_called_once_with(install_ref=None, skip_node_agent_refresh=False)
         printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
         self.assertIn("[info] Role: joined node", printed_text)
-        self.assertIn("[skip] Luma node agent skipped", printed_text)
-        self.assertIn("[ok] Joined node update complete", printed_text)
+        self.assertNotIn("[skip] Luma node agent skipped", printed_text)
+        self.assertNotIn("[ok] Node agent updated", printed_text)
 
-    def test_update_joined_node_skips_agent_refresh_when_node_is_unregistered(self):
+    def test_update_joined_node_fails_clearly_when_node_is_unregistered(self):
         with patch("luma.cli.manager._run_luma_installer") as installer, patch("luma.cli.manager._reexec_after_luma_update"), patch(
             "luma.cli.manager._manager_refresh_decision", return_value=(False, "no local manager control state found")
         ), patch("luma.cli.manager._local_agent_config", return_value=None), patch("luma.cli.manager._safe_local_nomad_node_id", return_value="stale-node-id"), patch(
@@ -1222,13 +1235,13 @@ class CliTests(unittest.TestCase):
         ), patch("builtins.print") as printed:
             code = main(["update"])
 
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         installer.assert_called_once_with(install_ref=None, skip_node_agent_refresh=False)
         printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
         self.assertIn("[info] Role: joined node", printed_text)
-        self.assertIn("[skip] Luma node agent skipped", printed_text)
+        self.assertNotIn("[skip] Luma node agent skipped", printed_text)
         self.assertIn("nodeName or nodeId must match a registered node", printed_text)
-        self.assertIn("[ok] Joined node update complete", printed_text)
+        self.assertNotIn("[ok] Node agent updated", printed_text)
 
     def test_update_joined_node_prefers_explicit_control_token_over_local_agent_config(self):
         with patch("luma.cli.manager._run_luma_installer"), patch("luma.cli.manager._reexec_after_luma_update"), patch(
@@ -1274,7 +1287,7 @@ class CliTests(unittest.TestCase):
         refresh.assert_called_once()
         printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
         self.assertIn("[skip] Luma CLI already updated in this run", printed_text)
-        self.assertIn("[ok] Manager update complete", printed_text)
+        self.assertIn("[ok] Manager package update complete", printed_text)
 
     def test_update_without_manager_state_updates_cli_only(self):
         with patch("luma.cli.manager._existing_control_state", return_value=None), patch(
@@ -1844,13 +1857,14 @@ class CliTests(unittest.TestCase):
                         ]
                     )
                 self.assertEqual(code, 1)  # Missing agent credentials must not report a completed join.
-                client.register_node.assert_called_once_with(node_name="global-sg-1", region="global")
+                client.register_node.assert_called_once_with(node_name="global-sg-1", region="global", tailscale_ip="100.64.0.10")
                 client.label_node.assert_called_once_with(
                     node_name="worker-1",
                     region="global",
                     registered_name="global-sg-1",
                     node_id="node-id-1",
                     tailscale_ip="100.64.0.10",
+                    enrollment_token="",
                 )
                 self.assertIn("TAILSCALE_AUTHKEY", configured_keys(config_path))
                 self.assertNotIn("LUMA_SUDO_PASSWORD", configured_keys(config_path))
@@ -1932,13 +1946,14 @@ class CliTests(unittest.TestCase):
                         ]
                     )
                 self.assertEqual(code, 1)  # Missing agent credentials must not report a completed join.
-                client.register_node.assert_called_once_with(node_name="home-mac-mini", region="home")
+                client.register_node.assert_called_once_with(node_name="home-mac-mini", region="home", tailscale_ip="100.64.0.20")
                 client.label_node.assert_called_once_with(
                     node_name="docker-home",
                     region="home",
                     registered_name="home-mac-mini",
                     node_id="home-id-1",
                     tailscale_ip="100.64.0.20",
+                    enrollment_token="",
                 )
                 self.assertIn("TAILSCALE_AUTHKEY", configured_keys(config_path))
             finally:
@@ -1995,7 +2010,7 @@ class CliTests(unittest.TestCase):
 
                 self.assertEqual(code, 0)
                 verify.assert_called_once_with(client, node_name="bot", node_id="nomad-node-id")
-                client.register_node.assert_called_once_with(node_name="bot", region="global")
+                client.register_node.assert_called_once_with(node_name="bot", region="global", tailscale_ip="100.80.0.20")
                 install_nomad.assert_called_once()
                 install_kwargs = install_nomad.call_args.kwargs
                 self.assertEqual(install_kwargs["server_addrs"], ["100.64.0.125:4647"])
@@ -2006,6 +2021,7 @@ class CliTests(unittest.TestCase):
                     registered_name="bot",
                     node_id="nomad-node-id",
                     tailscale_ip="100.80.0.20",
+                    enrollment_token="",
                 )
                 install_agent.assert_called_once()
                 self.assertEqual(install_agent.call_args.kwargs["agent_token"], "agent-token")
@@ -2072,7 +2088,7 @@ class CliTests(unittest.TestCase):
                     "luma.cli.nodes.install_docker", return_value="Docker available"
                 ), patch("luma.cli.common.ControlClient", return_value=client), patch(
                     "luma.cli.nodes.install_nomad_node", side_effect=LumaError("nomad join failed")
-                ), patch("builtins.print") as printed:
+                ), patch("luma.cli.nodes._local_tailscale_ip", return_value="100.64.0.10"), patch("builtins.print") as printed:
                     code = main(
                         [
                             "node",
@@ -2088,7 +2104,7 @@ class CliTests(unittest.TestCase):
                     )
 
                 self.assertEqual(code, 1)
-                client.unregister_node.assert_called_once_with(node_name="global-sg-1")
+                client.unregister_node.assert_called_once_with(node_name="global-sg-1", enrollment_token="")
                 output = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
                 self.assertIn("[ok] Rolled back node registration: global-sg-1", output)
             finally:
@@ -2174,17 +2190,15 @@ class CliTests(unittest.TestCase):
         self.assertIn("curl -fsSL https://tailscale.com/install.sh | sh", command)
 
     def test_install_nomad_node_skips_binary_download_when_pinned_version_exists(self):
+        from luma.nomad_security import NOMAD_VERSION
         node = LumaConfig({"nodes": {"worker": {"host": "localhost", "region": "cn"}}}, None).get_node("worker")
         remote = Mock()
-        remote.sudo.side_effect = [
-            "luma_nomad_binary_present\n",
-            "",
-            "",
-            "",
-        ]
+        remote.sudo.side_effect = lambda command: "luma_nomad_binary_present\n" if "nomad version" in command else ""
+        remote.sudo_result.return_value = Mock(code=1, output="")
         uname = Mock(machine="x86_64")
         with patch("luma.bootstrap.LocalExecutor", return_value=remote), patch(
             "luma.bootstrap.setup_tailscale", return_value=["Tailscale already logged in"]
+        ), patch("luma.nomad_firewall.install_guard", return_value="guard applied"
         ), patch("luma.bootstrap._tailscale_ip", return_value="100.80.0.20"), patch(
             "luma.nomad_node.detect_os", return_value="linux"
         ), patch("luma.nomad_node.detect_cpu_total_compute", return_value=None), patch(
@@ -2199,6 +2213,7 @@ class CliTests(unittest.TestCase):
                 node_name="worker",
                 server_addrs=["100.64.0.125:4647"],
                 install_docker_first=False,
+                security={"schema": 1, "aclRequired": True, "nomadVersion": NOMAD_VERSION, "agentToken": "00000000-0000-4000-8000-000000000001", "introToken": "introduction", "tlsBundle": {"ca": "ca", "cert": "cert", "key": "key"}},
             )
 
         self.assertIn("Nomad binary already installed", results)
@@ -2207,7 +2222,7 @@ class CliTests(unittest.TestCase):
         binary_command = remote.sudo.call_args_list[0].args[0]
         self.assertIn("nomad version", binary_command)
         self.assertIn("grep -Eq", binary_command)
-        self.assertLess(binary_command.index("nomad version"), binary_command.index("curl -fsSL"))
+        self.assertLess(binary_command.index("nomad version"), binary_command.index("curl --proto"))
 
     def test_noninteractive_config_skips_missing_optional_values(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2325,7 +2340,7 @@ class CliTests(unittest.TestCase):
             {},
             io.BytesIO(b'{"error": "nodeName, profile, and region are required"}'),
         )
-        with patch("urllib.request.urlopen", side_effect=error), self.assertRaises(LumaError) as raised:
+        with patch("urllib.request.OpenerDirector.open", side_effect=error), self.assertRaises(LumaError) as raised:
             client.register_node(node_name="m3max", region="home")
 
         self.assertIn("control API error 400", str(raised.exception))
@@ -2338,7 +2353,7 @@ class CliTests(unittest.TestCase):
         response.read.return_value = gzip.compress(b'{"summary":{"repositoryCount":12}}')
         response.read1.side_effect = [response.read.return_value, b""]
         response.__enter__.return_value = response
-        with patch("urllib.request.urlopen", return_value=response) as urlopen:
+        with patch("urllib.request.OpenerDirector.open", return_value=response) as urlopen:
             payload = client.registry_inventory()
 
         self.assertEqual(payload["summary"]["repositoryCount"], 12)
@@ -2354,7 +2369,7 @@ class CliTests(unittest.TestCase):
             {},
             io.BytesIO(b'{"error": "storage class cn-nfs endpoint is required for nfs"}'),
         )
-        with patch("urllib.request.urlopen", side_effect=error), self.assertRaises(LumaError) as raised:
+        with patch("urllib.request.OpenerDirector.open", side_effect=error), self.assertRaises(LumaError) as raised:
             client.set_storage(name="cn-nfs", provider="nfs", node="cn-node", path="/srv/luma")
 
         self.assertIn("control API error 400", str(raised.exception))
@@ -2384,7 +2399,7 @@ class CliTests(unittest.TestCase):
             {},
             io.BytesIO(b'{"error": "not found"}'),
         )
-        with patch("urllib.request.urlopen", side_effect=error), self.assertRaises(LumaError) as raised:
+        with patch("urllib.request.OpenerDirector.open", side_effect=error), self.assertRaises(LumaError) as raised:
             client.issue_agent_token(node_name="home-mac-mini", node_id="node-1")
 
         self.assertIn("does not support node-agent credentials", str(raised.exception))
@@ -2392,7 +2407,7 @@ class CliTests(unittest.TestCase):
 
     def test_control_client_reports_timeout_without_traceback(self):
         client = ControlClient("https://luma.example.com", "secret")
-        with patch("urllib.request.urlopen", side_effect=TimeoutError("read timed out")), self.assertRaises(LumaError) as raised:
+        with patch("urllib.request.OpenerDirector.open", side_effect=TimeoutError("read timed out")), self.assertRaises(LumaError) as raised:
             client.deploy(manifest="name: api\nimage: nginx\nregion: cn\nexposure: none\n", source_name="service.yaml", timeout=42)
 
         self.assertIn("control API timed out after", str(raised.exception))
@@ -2405,7 +2420,7 @@ class CliTests(unittest.TestCase):
         response.read.return_value = b'{"ok": true}'
         response.read1.side_effect = [response.read.return_value, b"", response.read.return_value, b""]
         response.__enter__.return_value = response
-        with patch("urllib.request.urlopen", return_value=response) as urlopen, patch.object(client, "health", return_value={"capabilities": ["required-build-capability-v1"]}):
+        with patch("urllib.request.OpenerDirector.open", return_value=response) as urlopen, patch.object(client, "health", return_value={"capabilities": ["required-build-capability-v1"]}):
             client.build_deploy(
                 provider_id="gitea:lin",
                 repository="acme/app",
@@ -2430,7 +2445,7 @@ class CliTests(unittest.TestCase):
         response.read.return_value = b'{"run":{"id":"build-1","status":"canceling"}}'
         response.read1.side_effect = [response.read.return_value, b""]
         response.__enter__.return_value = response
-        with patch("urllib.request.urlopen", return_value=response) as urlopen:
+        with patch("urllib.request.OpenerDirector.open", return_value=response) as urlopen:
             result = client.cancel_build("build-1")
 
         request = urlopen.call_args.args[0]
@@ -2449,7 +2464,7 @@ class CliTests(unittest.TestCase):
         build_response.read1.side_effect = [build_response.read.return_value, b""]
         build_response.__enter__.return_value = build_response
 
-        with patch("urllib.request.urlopen", side_effect=[health_response, build_response]) as urlopen:
+        with patch("urllib.request.OpenerDirector.open", side_effect=[health_response, build_response]) as urlopen:
             client.build_deploy(repo_url="https://github.com/acme/app", proxy_mode="direct")
 
         request = urlopen.call_args_list[1].args[0]
@@ -2464,7 +2479,7 @@ class CliTests(unittest.TestCase):
         response.read.return_value = b'{"capabilities":[]}'
         response.read1.side_effect = [response.read.return_value, b""]
         response.__enter__.return_value = response
-        with patch("urllib.request.urlopen", return_value=response), self.assertRaisesRegex(
+        with patch("urllib.request.OpenerDirector.open", return_value=response), self.assertRaisesRegex(
             LumaError, "update the manager"
         ):
             client.build_deploy(repo_url="https://github.com/acme/app", proxy_mode="direct")
@@ -2475,7 +2490,7 @@ class CliTests(unittest.TestCase):
         response.read.return_value = b'{"ok": true}'
         response.read1.side_effect = [response.read.return_value, b""]
         response.__enter__.return_value = response
-        with patch("urllib.request.urlopen", return_value=response) as urlopen:
+        with patch("urllib.request.OpenerDirector.open", return_value=response) as urlopen:
             client.label_node(node_name="orbstack", region="home", registered_name="mac-mini-home", node_id="node-id")
 
         timeout = urlopen.call_args.kwargs["timeout"]

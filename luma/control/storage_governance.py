@@ -112,6 +112,7 @@ def storage_inventory(state: dict[str, Any] | None = None, *, now: float | None 
 
 
 def _references(conn) -> set[str]:
+    from .database import decode_payload
     values: set[str] = set()
     def visit(item):
         if isinstance(item, str):
@@ -122,15 +123,15 @@ def _references(conn) -> set[str]:
         elif isinstance(item, list):
             for child in item:
                 visit(child)
-    for row in conn.execute("SELECT kind,status,payload FROM control_entities WHERE kind NOT IN ('buildRuns','deploymentEvents')"):
+    for row in conn.execute("SELECT kind,id,status,payload FROM control_entities WHERE kind NOT IN ('buildRuns','deploymentEvents')"):
         if row["kind"] == "agentTasks" and row["status"] in TERMINAL:
             continue
-        visit(json.loads(row["payload"]))
-    for row in conn.execute("SELECT payload FROM control_config WHERE key IN ('deployments','build')"):
-        visit(json.loads(row[0]))
+        visit(decode_payload(conn, row["payload"], "control_entities", row["kind"], row["id"]))
+    for row in conn.execute("SELECT key,payload FROM control_config WHERE key IN ('deployments','build')"):
+        visit(decode_payload(conn, row[1], "control_config", row[0]))
     # Active history items can retain IDs of predecessors that they retry.
-    for row in conn.execute("SELECT payload FROM control_entities WHERE kind IN ('buildRuns','deploymentEvents') AND status NOT IN (" + ",".join("?" for _ in TERMINAL) + ")", tuple(TERMINAL)):
-        visit(json.loads(row[0]))
+    for row in conn.execute("SELECT kind,id,payload FROM control_entities WHERE kind IN ('buildRuns','deploymentEvents') AND status NOT IN (" + ",".join("?" for _ in TERMINAL) + ")", tuple(TERMINAL)):
+        visit(decode_payload(conn, row[2], "control_entities", row[0], row[1]))
     return values
 
 
@@ -233,11 +234,12 @@ def apply_history(body: dict[str, Any], *, now: float | None = None) -> dict[str
                 conn.execute("DELETE FROM control_entities WHERE kind=? AND id=?", (candidate["kind"], candidate["id"]))
             else:
                 conn.execute("DELETE FROM control_events WHERE kind=? AND entity_id=?", (candidate["kind"], candidate["id"]))
-                summary = json.loads(row["payload"])
+                from .database import decode_payload, encode_payload
+                summary = decode_payload(conn, row["payload"], "control_entities", candidate["kind"], candidate["id"])
                 if isinstance(summary, dict):
                     summary["detailsExpiredAt"] = int(now)
                     summary["detailsRetentionDays"] = json.loads(plan["policy"])["detailDays"]
-                    conn.execute("UPDATE control_entities SET payload=? WHERE kind=? AND id=?", (json.dumps(summary, separators=(",", ":"), sort_keys=True), candidate["kind"], candidate["id"]))
+                    conn.execute("UPDATE control_entities SET payload=? WHERE kind=? AND id=?", (encode_payload(conn, summary, "control_entities", candidate["kind"], candidate["id"]), candidate["kind"], candidate["id"]))
             removed += 1
             estimated += candidate["estimatedBytes"]
         from .alerting import prune

@@ -11,9 +11,7 @@ import codecs
 import json
 import re
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from typing import Any
 
 from ..errors import LumaError
@@ -205,16 +203,9 @@ class LogReader:
     def _read_bytes(self, source: dict[str, str], file: str, offset: int, limit: int) -> bytes:
         query = urllib.parse.urlencode({"path": file, "offset": offset, "limit": limit})
         path = f"/v1/client/fs/readat/{urllib.parse.quote(source['allocationId'], safe='')}?{query}"
-        headers = {"X-Nomad-Token": self.client.token} if self.client.token else {}
-        request = urllib.request.Request(self.client.api_url + path, headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
-                return response.read(limit)
-        except urllib.error.HTTPError as exc:
-            code = exc.code
-            exc.close()
-            raise LumaError(f"Nomad log file is temporarily unavailable (HTTP {code})") from exc
-        except (OSError, urllib.error.URLError) as exc:
+            return self.client.request_bytes(path, limit=limit, timeout=REQUEST_TIMEOUT)
+        except LumaError as exc:
             raise LumaError("Nomad log file is temporarily unavailable") from exc
 
     def _follow(self, source: dict[str, str]) -> list[dict[str, Any]]:

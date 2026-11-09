@@ -27,12 +27,12 @@ class ControlRetryTests(unittest.TestCase):
 
     def test_read_and_workflow_check_retry_remote_disconnect(self):
         for method, path in [('GET', '/v1/health'), ('POST', '/v1/workflows/check')]:
-            with self.subTest(path=path), patch('urllib.request.urlopen', side_effect=[http.client.RemoteDisconnected(), response()]) as opened, patch('luma.control.client.time.sleep'):
+            with self.subTest(path=path), patch('urllib.request.OpenerDirector.open', side_effect=[http.client.RemoteDisconnected(), response()]) as opened, patch('luma.control.client.time.sleep'):
                 self.assertEqual(self.client.request(method, path), {'ok': True})
                 self.assertEqual(opened.call_count, 2)
 
     def test_build_submission_is_never_replayed(self):
-        with patch('urllib.request.urlopen', side_effect=http.client.RemoteDisconnected()) as opened:
+        with patch('urllib.request.OpenerDirector.open', side_effect=http.client.RemoteDisconnected()) as opened:
             with self.assertRaisesRegex(ControlRequestError, 'POST /v1/builds; attempts=1'):
                 self.client.request('POST', '/v1/builds', {})
             self.assertEqual(opened.call_count, 1)
@@ -42,16 +42,16 @@ class ControlRetryTests(unittest.TestCase):
         broken.__enter__ = Mock(return_value=broken)
         broken.__exit__ = Mock(return_value=False)
         broken.read1.side_effect = http.client.IncompleteRead(b'partial')
-        with patch('urllib.request.urlopen', side_effect=[broken, response()]), patch('luma.control.client.time.sleep'):
+        with patch('urllib.request.OpenerDirector.open', side_effect=[broken, response()]), patch('luma.control.client.time.sleep'):
             self.assertEqual(self.client.health()['ok'], True)
-        with patch('urllib.request.urlopen', return_value=response(b'no json')) as opened:
+        with patch('urllib.request.OpenerDirector.open', return_value=response(b'no json')) as opened:
             with self.assertRaisesRegex(LumaError, 'non-JSON'):
                 self.client.health()
             self.assertEqual(opened.call_count, 1)
 
     def test_permanent_http_and_tls_errors_are_not_retried(self):
         for error in [urllib.error.HTTPError('https://control.example.com', 401, 'Unauthorized', {}, io.BytesIO()), urllib.error.URLError(ssl.SSLCertVerificationError('bad certificate'))]:
-            with self.subTest(error=error), patch('urllib.request.urlopen', side_effect=error) as opened:
+            with self.subTest(error=error), patch('urllib.request.OpenerDirector.open', side_effect=error) as opened:
                 with self.assertRaises(LumaError):
                     self.client.health()
                 self.assertEqual(opened.call_count, 1)
@@ -59,17 +59,17 @@ class ControlRetryTests(unittest.TestCase):
     def test_transient_http_has_bounded_attempts(self):
         def unavailable(*args, **kwargs):
             raise urllib.error.HTTPError('https://control.example.com', 503, 'Unavailable', {}, io.BytesIO())
-        with patch('urllib.request.urlopen', side_effect=unavailable) as opened, patch('luma.control.client.time.sleep'):
+        with patch('urllib.request.OpenerDirector.open', side_effect=unavailable) as opened, patch('luma.control.client.time.sleep'):
             with self.assertRaisesRegex(ControlRequestError, 'attempts=3'):
                 self.client.health()
             self.assertEqual(opened.call_count, 3)
 
     def test_tls_eof_retries_but_protocol_error_does_not(self):
         for error in [ssl.SSLEOFError("unexpected EOF"), urllib.error.URLError(ssl.SSLEOFError("unexpected EOF"))]:
-            with self.subTest(error=error), patch('urllib.request.urlopen', side_effect=[error, response()]) as opened, patch('luma.control.client.time.sleep'):
+            with self.subTest(error=error), patch('urllib.request.OpenerDirector.open', side_effect=[error, response()]) as opened, patch('luma.control.client.time.sleep'):
                 self.assertTrue(self.client.health()['ok'])
                 self.assertEqual(opened.call_count, 2)
-        with patch('urllib.request.urlopen', side_effect=urllib.error.URLError(ssl.SSLError("wrong version number"))) as opened:
+        with patch('urllib.request.OpenerDirector.open', side_effect=urllib.error.URLError(ssl.SSLError("wrong version number"))) as opened:
             with self.assertRaises(LumaError) as caught:
                 self.client.health()
             self.assertNotIsInstance(caught.exception, ControlRequestError)
@@ -79,7 +79,7 @@ class ControlRetryTests(unittest.TestCase):
         for data in [b'not gzip', gzip.compress(b'{}')[:-4], b'\x1f\x8b\x08\x00' + b'\x00' * 6 + b'\x07']:
             value = response(data)
             value.headers['Content-Encoding'] = 'gzip'
-            with self.subTest(data=data), patch('urllib.request.urlopen', return_value=value) as opened:
+            with self.subTest(data=data), patch('urllib.request.OpenerDirector.open', return_value=value) as opened:
                 with self.assertRaisesRegex(LumaError, 'invalid gzip') as caught:
                     self.client.health()
                 self.assertNotIsInstance(caught.exception, ControlRequestError)
@@ -154,7 +154,7 @@ class ControlRetryTests(unittest.TestCase):
     def test_premature_content_length_eof_is_retried(self):
         broken = response(b'{"ok":true}')
         broken.length = 10
-        with patch('urllib.request.urlopen', side_effect=[broken, response()]) as opened, patch('luma.control.client.time.sleep'):
+        with patch('urllib.request.OpenerDirector.open', side_effect=[broken, response()]) as opened, patch('luma.control.client.time.sleep'):
             self.assertTrue(self.client.health()['ok'])
             self.assertEqual(opened.call_count, 2)
 

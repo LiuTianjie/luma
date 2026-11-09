@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import json
 import signal
 import shlex
 import shutil
 import subprocess
 import tempfile
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,17 +20,51 @@ class LocalResult:
     output: str
 
 
+def _sudo_stdin_command(command: str, *, password: bool) -> str:
+    target = "sudo -n bash -lc " + shlex.quote(command)
+    if not password:
+        return target
+    # Validate and execute with the same parent shell (sudo commonly keys its
+    # timestamp by parent PID). Read exactly one line ourselves even when sudo
+    # is passwordless/cached, keeping the installer's remaining stdin intact.
+    return ("IFS= read -r luma_private_sudo_password || exit 1; "
+            "printf '%s\\n' \"$luma_private_sudo_password\" | sudo -S -p '' -v || exit 1; "
+            "unset luma_private_sudo_password; " + target + "; luma_private_status=$?; exit \"$luma_private_status\"")
+
+
+def _private_input_error(output: str, content: str, code: int) -> LumaError:
+    values = {content, content.strip()}
+    def collect(value):
+        if isinstance(value, dict):
+            for item in value.values():
+                collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+        elif isinstance(value, str) and value:
+            values.add(value)
+    try:
+        collect(json.loads(content))
+    except ValueError:
+        pass
+    detail = output
+    for value in sorted((value for value in values if value), key=len, reverse=True):
+        detail = detail.replace(value, "<redacted>").replace(json.dumps(value)[1:-1], "<redacted>")
+    return LumaError(f"private installer input failed (exit {code}):\n{detail[:4096].strip()}")
+
+
 class LocalExecutor:
-    def run_result(self, command: str, *, timeout: int | None = None) -> LocalResult:
+    def run_result(self, command: str, *, timeout: int | None = None, input_data: str | None = None) -> LocalResult:
         process = subprocess.Popen(
             ["bash", "-lc", command],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE if input_data is not None else None,
             start_new_session=True,
         )
         try:
-            stdout, _ = process.communicate(timeout=timeout)
+            stdout, _ = process.communicate(input=input_data, timeout=timeout) if input_data is not None else process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -67,15 +103,20 @@ class LocalExecutor:
         if os.geteuid() == 0:
             return self.run_result(command, timeout=timeout)
         password = os.environ.get("LUMA_SUDO_PASSWORD")
-        quoted = shlex.quote(command)
         if password:
-            # Keep the sudo prompt empty so it cannot leak into stdout when
-            # callers capture command output (for example base64-encoded files).
-            return self.run_result(
-                f"printf '%s\\n' {shlex.quote(password)} | sudo -S -p '' bash -lc {quoted}",
-                timeout=timeout,
-            )
-        return self.run_result(f"sudo -n bash -lc {quoted}", timeout=timeout)
+            return self.run_result(_sudo_stdin_command(command, password=True), timeout=timeout, input_data=password + "\n")
+        return self.run_result(_sudo_stdin_command(command, password=False), timeout=timeout)
+
+    def sudo_input(self, command: str, content: str, *, timeout: int = 120) -> str:
+        """Send a private installer payload over stdin, never a file or argv."""
+        password = ""
+        if os.geteuid() != 0:
+            password = os.environ.get("LUMA_SUDO_PASSWORD") or ""
+            command = _sudo_stdin_command(command, password=bool(password))
+        result = self.run_result(command, timeout=timeout, input_data=(password + "\n" if password else "") + content)
+        if result.code:
+            raise _private_input_error(result.output.replace(password, "<redacted>") if password else result.output, content, result.code)
+        return result.output
 
     def upload(self, local: Path, remote_path: str) -> str:
         source = local.resolve()
@@ -95,13 +136,24 @@ class LocalExecutor:
         try:
             with fh:
                 fh.write(content)
-            tmp_path = f"/tmp/luma-secret-{os.getpid()}"
-            self.upload(local, tmp_path)
-            self.sudo(
-                "set -euo pipefail; "
-                f"install -D -m {shlex.quote(mode)} {shlex.quote(tmp_path)} {shlex.quote(remote_path)}; "
-                f"rm -f {shlex.quote(tmp_path)}"
+            # The source is already local and private. Do not copy credentials
+            # through a predictable /tmp name, and do not depend on GNU
+            # install -D (which is unavailable on macOS).
+            script = (
+                "import os,pathlib,sys,tempfile\n"
+                "source=pathlib.Path(sys.argv[1]); target=pathlib.Path(sys.argv[2])\n"
+                "mode=int(sys.argv[3],8); target.parent.mkdir(parents=True,exist_ok=True,mode=0o700)\n"
+                "if target.is_symlink() or target.parent.is_symlink(): raise OSError('unsafe secret path')\n"
+                "fd,name=tempfile.mkstemp(prefix='.luma-secret-',dir=target.parent)\n"
+                "try:\n"
+                " with os.fdopen(fd,'wb') as handle:\n"
+                "  os.fchmod(handle.fileno(),mode); handle.write(source.read_bytes())\n"
+                "  handle.flush(); os.fsync(handle.fileno())\n"
+                " os.replace(name,target)\n"
+                "finally:\n"
+                " pathlib.Path(name).unlink(missing_ok=True)\n"
             )
+            self.sudo(shlex.join([sys.executable, "-c", script, str(local), remote_path, mode]))
         finally:
             local.unlink(missing_ok=True)
         return f"Secret written: {remote_path}"

@@ -564,6 +564,8 @@ def render_compose_job(
                     },
                 }
             docker_config["mount"] = mounts
+            from .nomad_security import deny_host_root
+            deny_host_root({"TaskGroups": [{"Tasks": [{"Config": docker_config}]}]})
 
         env: Dict[str, str] = {}
         raw_env = body.get("environment")
@@ -718,6 +720,7 @@ def render_control_job(
         "DOCKER_API_VERSION": "1.44",
         "LUMA_CONTROL_CONFIG": "/opt/luma/luma.yaml",
         "LUMA_CONTROL_STATE_DIR": "/opt/luma/control",
+        "LUMA_SECURITY_AUDIT_FILE": "/opt/luma/control/security-audit.jsonl",
     }
     environment.setdefault("LUMA_OBSERVE_URL", "http://127.0.0.1:8428")
     job = {
@@ -741,7 +744,8 @@ def render_control_job(
                 "Name": "luma-control",
                 "PortLabel": "http",
                 "Provider": "nomad",
-                "AddressMode": "host",
+                "AddressMode": "auto",
+                "Address": "127.0.0.1",
                 "Checks": [{
                     "Name": "luma-control-health",
                     "Type": "http",
@@ -1342,6 +1346,8 @@ def _app_task(
     if service.command is not None:
         docker_config["args"] = _as_args(service.command)
     _apply_volume_mounts(docker_config, service)
+    from .nomad_security import deny_host_root
+    deny_host_root({"TaskGroups": [{"Tasks": [{"Config": docker_config}]}]})
 
     env = {str(k): _resolve_env_value(v, secrets=secrets, resolve_secrets=resolve_secrets) for k, v in service.environment.items()}
     if service.proxy and egress_proxy_url:

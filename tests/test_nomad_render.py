@@ -562,7 +562,8 @@ port: 3000
         service = job["TaskGroups"][0]["Services"][0]
         self.assertEqual(service["Provider"], "nomad")
         self.assertEqual(service["PortLabel"], "http")
-        self.assertEqual(service["AddressMode"], "host")
+        self.assertEqual(service["AddressMode"], "auto")
+        self.assertEqual(service["Address"], "127.0.0.1")
         self.assertEqual(
             service["Checks"],
             [{

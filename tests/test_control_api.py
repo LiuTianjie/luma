@@ -805,7 +805,7 @@ class ControlApiTests(unittest.TestCase):
                 )
                 with patch("luma.control.server.docker_request") as docker:
                     result = handle_node_label(
-                        state["joinToken"],
+                        state["deployToken"],
                         {
                             "nodeName": "m4-host",
                             "nodeId": "new-node-id",
@@ -858,7 +858,7 @@ class ControlApiTests(unittest.TestCase):
                     self.assertEqual(action, "join-nomad")
                     self.assertEqual(payload["serverAddr"], "100.64.0.125:4647")
                     self.assertNotIn("egressProxy", payload)
-                    self.assertEqual(kwargs["required_capability"], "nomad-join")
+                    self.assertEqual(kwargs["required_capability"], "nomad-security-v1")
                     return {
                         "taskId": "task-join",
                         "nodeName": "bot-host",
@@ -6632,9 +6632,11 @@ class ControlApiTests(unittest.TestCase):
                     }
                 }
                 save_state(state)
-                with self.assertRaisesRegex(LumaError, "nodeId is required"):
+                with self.assertRaisesRegex(LumaError, "unauthorized"):
                     handle_node_agent_token(state["joinToken"], {"nodeName": "worker-storage"})
-                issued = handle_node_agent_token(state["joinToken"], {"nodeName": "anything", "nodeId": "worker-node-id"})
+                with self.assertRaisesRegex(LumaError, "unauthorized"):
+                    handle_node_agent_token(state["joinToken"], {"nodeName": "anything", "nodeId": "worker-node-id"})
+                issued = handle_node_agent_token(state["deployToken"], {"nodeName": "anything", "nodeId": "worker-node-id"})
                 self.assertEqual(issued["nodeName"], "worker-storage")
                 self.assertTrue(issued["agentToken"])
             finally:

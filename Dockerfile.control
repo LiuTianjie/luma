@@ -26,4 +26,4 @@ RUN pip install --no-cache-dir '.[control]'
 
 EXPOSE 8080
 
-CMD ["python", "-m", "luma.control.server", "serve", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "-m", "luma.control.server", "serve", "--host", "127.0.0.1", "--port", "8080"]

@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any, Mapping
 
 from ..errors import LumaError
-from .database import ensure_initialized, transaction
+from .database import decode_payload, ensure_initialized, transaction
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 100
@@ -98,9 +98,9 @@ def _integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 9223372036854775807
 
 
-def _payload(row: Any) -> dict[str, Any]:
+def _payload(row: Any, conn: Any, *, event: tuple | None = None) -> dict[str, Any]:
     try:
-        value = json.loads(row["payload"])
+        value = decode_payload(conn, row["payload"], "control_events", *event) if event is not None else decode_payload(conn, row["payload"], "control_entities", row["kind"], row["id"])
     except (ValueError, TypeError) as exc:
         raise LumaError("stored history record is invalid") from exc
     if not isinstance(value, dict):
@@ -128,8 +128,8 @@ def _build_summary(run: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _summary(row: Any) -> dict[str, Any]:
-    data = _payload(row)
+def _summary(row: Any, conn: Any) -> dict[str, Any]:
+    data = _payload(row, conn)
     build = row["kind"] == "buildRuns"
     request = data.get("request") if isinstance(data.get("request"), dict) else {}
     git = data.get("gitSource") if isinstance(data.get("gitSource"), dict) else {}
@@ -199,10 +199,10 @@ def _list(query: Mapping[str, Any], *, fixed_kind: str = "", legacy: str = "") -
         next_cursor = _encode_cursor({"v": 1, "scope": scope, "watermark": watermark, "key": key})
     page = {"limit": limit, "nextCursor": next_cursor, "hasMore": has_more}
     if legacy == "runs":
-        return {"runs": [_build_summary(_payload(row)) for row in rows], "page": page}
+        return {"runs": [_build_summary(_payload(row, conn)) for row in rows], "page": page}
     if legacy == "events":
-        return {"events": [{key: value for key, value in _payload(row).items() if key != "steps"} for row in rows], "page": page}
-    return {"items": [_summary(row) for row in rows], "page": page}
+        return {"events": [{key: value for key, value in _payload(row, conn).items() if key != "steps"} for row in rows], "page": page}
+    return {"items": [_summary(row, conn) for row in rows], "page": page}
 
 
 def list_history(query: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -249,7 +249,7 @@ def get_history(kind: str, record_id: str, query: Mapping[str, Any] | None = Non
     has_more = len(steps) > limit
     steps = steps[:limit]
     next_cursor = _encode_cursor({"v": 1, "scope": scope, "after": steps[-1]["position"], "through": through}) if has_more else None
-    data = _payload(row)
+    data = _payload(row, conn)
     if kind == "build":
         record = _build_summary(data)
         record["message"] = str(data.get("message") or "")[:4000]
@@ -257,7 +257,7 @@ def get_history(kind: str, record_id: str, query: Mapping[str, Any] | None = Non
         record["result"] = data.get("result") if isinstance(data.get("result"), dict) else {}
     else:
         record = {key: value for key, value in data.items() if key != "steps"}
-    return {"item": _summary(row), "record": record, "events": [_payload(step) for step in steps],
+    return {"item": _summary(row, conn), "record": record, "events": [_payload(step, conn, event=(internal_kind, record_id, stream, step["position"])) for step in steps],
             "page": {"limit": limit, "nextCursor": next_cursor, "hasMore": has_more,
                      "resumeAfter": steps[-1]["position"] if steps else after}}
 

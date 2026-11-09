@@ -29,7 +29,6 @@ import threading
 import time
 import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -481,11 +480,8 @@ def collect_container_refs(docker: str, *, runner: Runner = subprocess.run) -> s
 
 
 def _nomad_get(addr: str, path: str, *, timeout: int, token: str) -> Any:
-    request = urllib.request.Request(f"{addr.rstrip('/')}{path}")
-    if token:
-        request.add_header("X-Nomad-Token", token)
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - local Nomad agent
-        return json.loads(response.read().decode("utf-8"))
+    from .nomad_api import NomadApi
+    return NomadApi(addr, token=token, credential_role="agent").request("GET", path, timeout=timeout)
 
 
 _TERMINAL_CLIENT_STATUSES = {"complete", "failed", "lost"}
@@ -521,7 +517,8 @@ def nomad_allocation_image_refs(allocations: Iterable[Mapping[str, Any]]) -> set
 def collect_nomad_refs(addr: str = "", *, timeout: int = 10, token: str | None = None) -> set[str]:
     """Images referenced by this node's Nomad allocations (local client API)."""
     address = addr or os.environ.get("NOMAD_ADDR") or "http://127.0.0.1:4646"
-    nomad_token = os.environ.get("NOMAD_TOKEN", "") if token is None else token
+    from .nomad_security import nomad_token as read_nomad_token
+    nomad_token = read_nomad_token(role="agent") if token is None else token
     agent = _nomad_get(address, "/v1/agent/self", timeout=timeout, token=nomad_token)
     stats = agent.get("stats") if isinstance(agent, Mapping) else {}
     client = stats.get("client") if isinstance(stats, Mapping) else {}

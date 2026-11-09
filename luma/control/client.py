@@ -22,6 +22,13 @@ class _InvalidControlResponse(LumaError):
     """The response arrived, but its representation is invalid."""
 
 
+class _NoControlRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Redirecting an authenticated request can disclose management/agent
+        # credentials or replace the source of privileged agent tasks.
+        return None
+
+
 class ControlClient:
     def __init__(self, endpoint: str, token: str, *, insecure: bool = False, resolve_ip: str | None = None):
         parsed = urllib.parse.urlparse(endpoint)
@@ -242,10 +249,10 @@ class ControlClient:
             headers=request_headers,
         )
         try:
-            kwargs: Dict[str, Any] = {"timeout": timeout}
+            handlers: list[Any] = [_NoControlRedirect()]
             if self.insecure:
-                kwargs["context"] = ssl._create_unverified_context()
-            return urllib.request.urlopen(req, **kwargs)
+                handlers.append(urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
+            return urllib.request.build_opener(*handlers).open(req, timeout=timeout)
         except urllib.error.HTTPError as exc:
             with exc:
                 detail = self._read_response(exc, deadline).decode("utf-8", errors="replace")
@@ -389,11 +396,11 @@ class ControlClient:
     def remove_region(self, *, name: str) -> Dict[str, Any]:
         return self.request("POST", "/v1/regions/remove", {"name": name})
 
-    def register_node(self, *, node_name: str, region: str) -> Dict[str, Any]:
+    def register_node(self, *, node_name: str, region: str, tailscale_ip: str = "") -> Dict[str, Any]:
         return self.request(
             "POST",
             "/v1/nodes/register",
-            {"nodeName": node_name, "region": region},
+            {"nodeName": node_name, "region": region, **({"tailscaleIP": tailscale_ip} if tailscale_ip else {})},
         )
 
     def label_node(
@@ -405,6 +412,7 @@ class ControlClient:
         node_id: str | None = None,
         tailscale_ip: str | None = None,
         tailscale_name: str | None = None,
+        enrollment_token: str = "",
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {"nodeName": node_name, "region": region}
         if registered_name and registered_name != node_name:
@@ -415,10 +423,12 @@ class ControlClient:
             body["tailscaleIP"] = tailscale_ip
         if tailscale_name:
             body["tailscaleName"] = tailscale_name
+        if enrollment_token:
+            body["enrollmentToken"] = enrollment_token
         return self.request("POST", "/v1/nodes/label", body, timeout=120)
 
-    def unregister_node(self, *, node_name: str) -> Dict[str, Any]:
-        return self.request("POST", "/v1/nodes/unregister", {"nodeName": node_name})
+    def unregister_node(self, *, node_name: str, enrollment_token: str = "") -> Dict[str, Any]:
+        return self.request("POST", "/v1/nodes/unregister", {"nodeName": node_name, **({"enrollmentToken": enrollment_token} if enrollment_token else {})})
 
     def join_nomad_node(
         self,
@@ -454,6 +464,7 @@ class ControlClient:
         container_stats: list[Dict[str, Any]] | None = None,
         diagnostics: Dict[str, Any] | None = None,
         timeout: int = 30,
+        nomad_credential_accessor: str = "",
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {
             "nodeName": node_name,
@@ -473,6 +484,8 @@ class ControlClient:
             body["containerStats"] = container_stats
         if diagnostics is not None:
             body["diagnostics"] = diagnostics
+        if nomad_credential_accessor:
+            body["nomadCredentialAccessor"] = nomad_credential_accessor
         return self.request(
             "POST",
             "/v1/node-agent/lease",
@@ -494,6 +507,7 @@ class ControlClient:
         container_stats: list[Dict[str, Any]] | None = None,
         diagnostics: Dict[str, Any] | None = None,
         timeout: int = 15,
+        nomad_credential_accessor: str = "",
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {
             "nodeName": node_name,
@@ -511,6 +525,8 @@ class ControlClient:
             body["containerStats"] = container_stats
         if diagnostics is not None:
             body["diagnostics"] = diagnostics
+        if nomad_credential_accessor:
+            body["nomadCredentialAccessor"] = nomad_credential_accessor
         return self.request(
             "POST",
             "/v1/node-agent/heartbeat",

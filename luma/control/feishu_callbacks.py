@@ -43,10 +43,10 @@ def save_config(conn, app_id, body):
     previous = conn.execute('SELECT * FROM alert_feishu_callbacks WHERE app_id=?', (app_id,)).fetchone()
     values = []
     for field, column in (('callbackVerificationToken', 'verification_token'), ('callbackEncryptKey', 'encrypt_key')):
-        value = body.get(field) or (previous[column] if previous else '')
+        value = body.get(field) or (database.decode_secret(conn, previous[column], 'alert_feishu_callbacks', app_id, column) if previous else '')
         if not isinstance(value, str) or not 1 <= len(value) <= 512 or any(c.isspace() for c in value):
             raise LumaError(field + ' is required for Feishu card callbacks')
-        values.append(value)
+        values.append(database.encode_secret(conn, value, 'alert_feishu_callbacks', app_id, column))
     conn.execute('''INSERT INTO alert_feishu_callbacks VALUES(?,?,?) ON CONFLICT(app_id)
         DO UPDATE SET verification_token=excluded.verification_token,encrypt_key=excluded.encrypt_key''', (app_id, *values))
 
@@ -146,6 +146,9 @@ def handle(app_id, raw, headers, *, now=None):
         config = conn.execute('SELECT * FROM alert_feishu_callbacks WHERE app_id=?', (app_id,)).fetchone()
         if config is None:
             raise CallbackDenied()
+        config = dict(config)
+        for column in ('verification_token', 'encrypt_key'):
+            config[column] = database.decode_secret(conn, config[column], 'alert_feishu_callbacks', app_id, column)
         payload = decode_callback(raw, headers, config, now)
         if payload.get('type') == 'url_verification':
             return {'challenge': payload['challenge']}

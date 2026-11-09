@@ -34,15 +34,14 @@ class DetectTests(unittest.TestCase):
 
 
 class RenderConfigTests(unittest.TestCase):
-    def test_server_config_has_server_block_and_bind_all(self):
+    def test_server_config_has_private_and_loopback_listeners(self):
         cfg = nn.render_agent_config(
             os_name="linux", role="server", tailscale_ip="100.64.0.125",
             region="cn", node_name="manager-1",
             extra_meta={"ingress": "true", "egress": "true"},
         )
-        # bind 0.0.0.0 so Control's localhost client reaches the API (a real bug
-        # we hit binding only the Tailscale IP).
-        self.assertIn('bind_addr = "0.0.0.0"', cfg)
+        self.assertIn('bind_addr = "100.64.0.125"', cfg)
+        self.assertIn('http = "127.0.0.1 100.64.0.125"', cfg)
         self.assertIn("bootstrap_expect = 1", cfg)
         self.assertIn('http = "100.64.0.125"', cfg)
         self.assertIn('region         = "cn"', cfg)
@@ -101,7 +100,8 @@ class InstallCommandTests(unittest.TestCase):
         out = nn.install_nomad_commands(os_name="linux", arch="x86_64", config_hcl="x")
         self.assertEqual(out["service_kind"], "systemd")
         self.assertIn(f"nomad_{nn.NOMAD_VERSION}_linux_amd64.zip", out["download_url"])
-        self.assertIn("ExecStart=/usr/local/bin/nomad agent", out["service_unit"])
+        self.assertIn("ExecStart=/usr/bin/env -i ", out["service_unit"])
+        self.assertIn(" /usr/local/bin/nomad agent", out["service_unit"])
 
     def test_linux_systemd_unit_survives_reboot_races(self):
         unit = nn.install_nomad_commands(os_name="linux", arch="x86_64", config_hcl="x")["service_unit"]
@@ -116,10 +116,10 @@ class InstallCommandTests(unittest.TestCase):
         config = nn.render_agent_config(
             os_name="linux",
             role="client",
-            tailscale_ip="100.1.1.1",
+            tailscale_ip="100.64.1.1",
             region="home",
             node_name="home-2",
-            server_addrs=["100.2.2.2:4647"],
+            server_addrs=["100.64.2.2:4647"],
         )
 
         self.assertIn('plugin "docker"', config)
@@ -143,8 +143,8 @@ class InstallCommandTests(unittest.TestCase):
         self.assertIn("cni-plugins-linux-arm64-v", nn.cni_plugins_url("aarch64"))
 
     def test_version_is_pinned_stable(self):
-        # Must not be a brand-new major (the 2.0.x checkpoint trap).
-        self.assertEqual(nn.NOMAD_VERSION, "1.9.7")
+        # Existing nodes traverse the checked intermediate releases first.
+        self.assertEqual(nn.NOMAD_VERSION, "2.1.1")
 
 
 if __name__ == "__main__":

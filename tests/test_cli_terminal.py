@@ -341,7 +341,7 @@ raise SystemExit(main(['node', 'exec', 'worker', '--', 'true']))
                                           "terminalRelay": {"resolveIp": "203.0.113.8"},
                                           "terminalDirect": {"enabled": False}}))
             connect_mock = AsyncMock(side_effect=[OSError("origin unavailable"), asyncio.CancelledError()])
-            with patch("luma.agent._terminal_ws_connect", connect_mock), contextlib.redirect_stderr(io.StringIO()):
+            with patch("luma.agent._terminal_ws_connect", connect_mock), patch("luma.control.client.ControlClient.health", return_value={}), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(asyncio.CancelledError):
                     await _run_terminal_supervisor(config)
             self.assertEqual([call.kwargs["resolve_ip"] for call in connect_mock.call_args_list], ["203.0.113.8", None])

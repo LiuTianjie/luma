@@ -17,6 +17,15 @@ The default database is `/opt/luma/control/control.sqlite3`; set
 state directory. The `control.sqlite3-wal` and `control.sqlite3-shm` files are
 SQLite runtime sidecars, not independent backup artifacts.
 
+Luma 0.2.55 introduces schema 2 authenticated encryption for private payloads,
+alert credentials and callback keys. Fresh bootstrap enables it by default;
+existing clusters finish encryption during the automatic Nomad security
+migration after all nodes are upgraded. The independent recovery key at
+`/etc/luma/secrets/control-data.key` and profile at
+`/opt/luma/security/nomad/secrets.json` must be backed up separately from the
+database. Restore both before checking or opening an encrypted backup. Old
+Control binaries cannot read schema 2. See [secret delivery and recovery](nomad-security.md).
+
 ## Writer contention and task receipts
 
 Control admits local writers in FIFO order with one 30-second acquisition

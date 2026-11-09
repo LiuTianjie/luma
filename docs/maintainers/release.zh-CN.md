@@ -70,6 +70,8 @@ docker buildx imagetools inspect "$CONTROL_IMAGE"
 
 ## 候选 Manager 升级与回滚 {#candidate-manager-upgrade-and-rollback}
 
+0.2.55 发布前除了统一源码门禁，还必须通过 `nomad-security` CI：实际验证 ACL/mTLS、两个 Docker 应用使用加密 Variables、跨应用访问被拒绝、旧作业/source/allocation 清理和网络包边界。这是隔离协议验证，不代表现网已升级。发布匹配的 CLI 和 Control 镜像后，升级控制面与全部节点 Agent，等待独立安全结果确认加密存储和任务身份完成。单副本应用可能有短暂重启窗口；使用加密备份前独立备份恢复键，禁止回退 schema 1 Control。详见 [Nomad 安全升级](../nomad-security.zh-CN.md)。
+
 ### 首次从 JSON 升级到 SQLite {#first-json-to-sqlite-upgrade}
 
 首次使用 SQLite 的版本需要一个短暂的 Control 维护窗口。开始更新前，暂停新的部署和构建请求，等待正在运行的构建结束。记录当前 Control 任务定义与镜像、CLI 安装引用、入口基线，并对 `/opt/luma/control`、`/opt/luma/luma.yaml` 及[Control 存储](../control-storage.zh-CN.md)中说明的外部配置进行私密备份。
@@ -83,6 +85,8 @@ docker buildx imagetools inspect "$CONTROL_IMAGE"
 **下方仅回滚任务的命令只适用于状态格式相同的版本之间。切换到 SQLite 后，绝不能直接回退到写入 JSON 的 Control。** 旧版本会读取已经冻结的 JSON，丢失后续状态变更。要恢复到 SQLite 之前的版本，先停止新 Control，单独保留其 SQLite 目录，再将检查点中的旧 `control` 目录及配套配置恢复到新目录。确认没有新写入进程运行后，让旧任务指向恢复后的状态（或替换已停止 Manager 的状态目录），安装已记录的旧 CLI，并运行保存的旧任务定义。这会恢复到检查点时刻，舍弃之后的 Control 变更；恢复客户端前，需要核对检查点之后发生的应用操作。如果必须保留后续变更，应优先使用修复后的 SQLite 兼容版本。
 
 ### 兼容版本升级 {#compatible-release-upgrades}
+
+ACL/mTLS 启用是独立的兼容性边界。[Nomad 安全迁移](../nomad-security.zh-CN.md) 激活后，必须使用支持 ACL/mTLS 的 Control 和 CLI，旧匿名访问版本不能作为仅回滚任务的目标。宿主上的 Nomad CLI 操作通过 `sudo python -m luma.nomad_admin exec --` 加载限定角色凭据和 TLS 文件，避免把 token 放进命令参数。
 
 CLI 源码归档和绑定提交的 Control 镜像应使用同一完整提交。`install-luma.sh` 的 `LUMA_INSTALL_REF` 支持完整的 40 位 Git 提交，因此 Manager 和集群更新无需依赖可变的分支名。修改 Manager 之前，在变更记录中保存当前 Nomad 任务版本和镜像：
 
@@ -108,7 +112,7 @@ curl --fail --silent --show-error https://luma.example.net/v1/health
 nomad job status luma-control
 ```
 
-当前 Manager 更新流程保留 Control 状态和用户任务，但会协调防火墙 TCP 中继端口、带 `edge` 角色 Manager 上的 Traefik、watchdog、已安装配置与状态，以及 `luma-control` Nomad 任务。它不会重启 Docker 或 Nomad、执行出口设置，或重新部署用户应用。应将其视为控制面维护变更，在更新后检查通过之前，保留上述变更前记录。
+当前 Manager 更新流程保留 Control 状态和用户任务，但会协调防火墙 TCP 中继端口、带 `edge` 角色 Manager 上的 Traefik、watchdog、已安装配置与状态，以及 `luma-control` Nomad 任务。它还会安装独立的安全升级服务，等待新版节点 Agent 就绪后升级并重启 Nomad，验证 ACL/mTLS；Docker 和业务应用保留既有配置。应将其视为控制面维护变更，在更新后检查通过之前，保留上述变更前记录。
 
 兼容升级使用 Nomad `AutoRevert`，但运维人员仍须验证公共健康端点和实际运行镜像。如果新 Control 实例不健康，立即恢复之前的 Nomad 任务：
 
@@ -148,7 +152,7 @@ export LUMA_CONTROL_IMAGE="$PREVIOUS_CONTROL_IMAGE"
 5. 创建标签，发布带版本的镜像、GitHub 归档和 PyPI 包：
 
 ```bash
-git tag v0.2.54
+git tag v0.2.55
 git push origin main --tags
 ```
 
@@ -157,13 +161,13 @@ git push origin main --tags
 6. CI 用户使用以下方式安装：
 
 ```bash
-python -m pip install "luma-infra==0.2.54"
+python -m pip install "luma-infra==0.2.55"
 ```
 
 交互式使用仍可采用：
 
 ```bash
-export LUMA_INSTALL_REF=v0.2.54
+export LUMA_INSTALL_REF=v0.2.55
 curl -fsSL "https://raw.githubusercontent.com/LiuTianjie/luma/$LUMA_INSTALL_REF/scripts/install-luma.sh" -o /tmp/install-luma.sh && sh /tmp/install-luma.sh
 ```
 
@@ -181,6 +185,8 @@ curl -fsSL "https://raw.githubusercontent.com/LiuTianjie/luma/$LUMA_INSTALL_REF/
 6. 在同一页面重试失败或中断的镜像、Manager 或节点操作。
 
 Control 持久化镜像准备和集群操作。镜像准备使用 Builder 的 `control-image-mirror-v1` 能力及配置的 `registryHost` / `pushHost`，代理不会暴露给浏览器。Manager 更新运行于独立的临时 systemd 单元，因此刷新 Manager 节点 agent 不会终止由它启动的更新。只有安装器执行完毕，且新心跳报告目标发布版本后，集群节点才被视为更新成功。CLI 更新命令保留用于应急和首次接入；常规发布无需使用。
+
+还需等待「集群安全升级 → 全部验证通过」。软件版本对齐不代表 Nomad 安全迁移已经完成。
 
 用户可以卸载本地 CLI：
 
@@ -201,7 +207,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninst
 ```yaml
 defaults:
   images:
-    lumaControl: ghcr.io/liutianjie/luma-control:v0.2.54
+    lumaControl: ghcr.io/liutianjie/luma-control:v0.2.55
 ```
 
 ## 最新版本渠道 {#latest-channel}
@@ -217,7 +223,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 CI 应优先使用固定版本的 PyPI 包：
 
 ```bash
-python -m pip install "luma-infra==0.2.54"
+python -m pip install "luma-infra==0.2.55"
 ```
 
 ## 自定义托管地址或派生仓库 {#custom-host-or-fork}
@@ -227,7 +233,7 @@ python -m pip install "luma-infra==0.2.54"
 ```bash
 curl -fsSL https://example.com/install-luma.sh | \
   LUMA_REPO_URL=https://github.com/acme/luma \
-  LUMA_INSTALL_REF=v0.2.54 \
+  LUMA_INSTALL_REF=v0.2.55 \
   sh
 ```
 

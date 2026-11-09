@@ -30,6 +30,7 @@ from .local import LocalExecutor
 from .profiles import Profile
 from .registry import image_uses_mutable_latest_tag, registry_host_from_image
 from .remote import RemoteExecutor
+from .nomad_security import nomad_token
 
 
 ROOT = "/opt/luma"
@@ -139,7 +140,7 @@ def _install_traefik_dns_secret(
     token = str(os.environ.get(token_env) or persisted_token or "").strip()
     if not token:
         raise LumaError(f"missing Cloudflare API token env var for Traefik DNS-01: {token_env}")
-    remote.write_secret(token + "\n", TRAEFIK_DNS_TOKEN_FILE, mode="600")
+    remote.sudo_input(shlex.join([sys.executable, "-m", "luma.secret_storage", "store-credential", TRAEFIK_DNS_TOKEN_FILE]), token + "\n")
     return "Traefik Cloudflare DNS-01 secret installed"
 
 
@@ -214,19 +215,10 @@ def deploy_control_stack(
 def _deploy_nomad_job(remote: Executor, job_json: str, job_id: str) -> str:
     """Submit a rendered Nomad job (JSON) via the local Nomad agent.
 
-    Uses base64 to avoid any shell-quoting hazard with the JSON payload.
+    Uses stdin so a secret-bearing bootstrap document never enters argv/disk.
     """
-    import base64
-
-    b64 = base64.b64encode(job_json.encode("utf-8")).decode("ascii")
     try:
-        remote.run(
-            "set -e; "
-            "tmp=$(mktemp /tmp/luma-nomad-job.XXXXXX.json); "
-            "trap 'rm -f \"$tmp\"' EXIT; "
-            f"printf %s {shlex.quote(b64)} | base64 -d > \"$tmp\"; "
-            "nomad job run -json \"$tmp\""
-        )
+        remote.sudo_input(shlex.join([sys.executable, "-m", "luma.nomad_admin", "submit-system"]), job_json)
     except LumaError as exc:
         _raise_nomad_tmpfs_error(exc)
     return f"Nomad job deployed: {job_id}"
@@ -301,8 +293,8 @@ def _wait_nomad_job(remote: Executor, job_id: str, *, timeout: int = 120) -> str
     """Poll until the Nomad job reports a running allocation."""
     deadline = time.monotonic() + timeout
     while True:
-        result = remote.run_result(
-            f"nomad job status -short {shlex.quote(job_id)} 2>/dev/null | grep -iE 'Status' | head -1"
+        result = remote.sudo_result(
+            f"{shlex.quote(sys.executable)} -m luma.nomad_admin exec -- job status -short {shlex.quote(job_id)} 2>/dev/null | grep -iE 'Status' | head -1"
         )
         if "running" in result.output.lower():
             return f"Nomad job running: {job_id}"
@@ -466,7 +458,7 @@ def _ensure_control_registry_direct_route(remote: Executor, image: str) -> str:
     if not changed:
         return f"Internal registry already bypasses external egress: {registry}"
     remote.write_secret(updated, config_path)
-    remote.run("nomad job restart -yes -on-error=fail egress", timeout=180)
+    remote.sudo(shlex.join([sys.executable, "-m", "luma.nomad_admin", "exec", "--", "job", "restart", "-yes", "-on-error=fail", "egress"]))
     _wait_nomad_job(remote, "egress", timeout=120)
     return f"Internal registry now bypasses external egress: {registry}"
 
@@ -514,9 +506,9 @@ def _egress_pull_registries() -> set[str]:
 
 
 def _require_egress_gateway_running(remote: Executor) -> None:
-    result = remote.run_result(
+    result = remote.sudo_result(
         "command -v nomad >/dev/null 2>&1 && "
-        "nomad job status -short egress 2>/dev/null | grep -qiE 'Status[[:space:]]*=[[:space:]]*running|Status[[:space:]]+running'"
+        f"{shlex.quote(sys.executable)} -m luma.nomad_admin exec -- job status -short egress 2>/dev/null | grep -qiE 'Status[[:space:]]*=[[:space:]]*running|Status[[:space:]]+running'"
     )
     if result.code != 0:
         raise LumaError("control image pull egress requires a running Nomad egress job; run `luma manager egress` on the manager")
@@ -656,7 +648,7 @@ def _merge_manager_state(current: dict[str, object], incoming: dict[str, object]
 def _stop_legacy_control_writer(legacy: dict[str, Any], *, timeout: float = 120) -> dict[str, Any] | None:
     """Stop only Control and fail closed until Nomad confirms task termination."""
     from .nomad_api import NomadApi
-    client = NomadApi(str(legacy.get("nomadAddr") or "http://127.0.0.1:4646"), token=str(legacy.get("nomadToken") or ""))
+    client = NomadApi(str(legacy.get("nomadAddr") or "http://127.0.0.1:4646"), token=nomad_token(legacy))
     jobs = client.request("GET", "/v1/jobs?prefix=luma-control", timeout=10)
     if not isinstance(jobs, list) or any(not isinstance(job, dict) for job in jobs):
         raise LumaError("cannot verify legacy Control job; SQLite import refused")
@@ -725,8 +717,11 @@ def _checkpoint_legacy_control(root: Path, previous_job: dict[str, Any] | None) 
 
 def _install_control_state_file(payload: Path, *, overwrite: bool) -> bool:
     """Privileged local installer entry point; payload and errors never echo keys."""
+    return _install_control_state_request(json.loads(payload.read_text(encoding="utf-8")), overwrite=overwrite)
+
+
+def _install_control_state_request(request: dict[str, Any], *, overwrite: bool) -> bool:
     from .control import database
-    request = json.loads(payload.read_text(encoding="utf-8"))
     incoming = request["state"]
     if not isinstance(incoming, dict):
         raise LumaError("invalid Control installation state")
@@ -760,6 +755,9 @@ def _install_control_state_file(payload: Path, *, overwrite: bool) -> bool:
             current = database.read_state(conn, lazy=True)
             _merge_manager_state(current, incoming, secret_names=request["secretNames"])
             database.write_state(conn, current)
+    from .secret_storage import enabled as encrypted_storage
+    if encrypted_storage():
+        database.migrate_encryption()
     return pending.is_file()
 
 
@@ -767,18 +765,13 @@ def install_control_state(remote: Executor, state: dict[str, object], *, overwri
     # Both manager bootstrap/update callers run locally from the installed CLI.
     # Use its interpreter so sudo cannot select a system Python with old Luma.
     directory = str(os.environ.get("LUMA_CONTROL_STATE_DIR") or f"{ROOT}/control")
-    payload = str(Path(directory) / f".control-install-{secrets.token_hex(8)}.tmp")
     content = json.dumps({"state": state, "secretNames": secret_names or ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ZONE_ID"]}) + "\n"
-    remote.write_secret(content, payload, mode="600")
     script = (
-        "from pathlib import Path; import sys; "
-        "from luma.bootstrap import _install_control_state_file; "
-        "print('legacy-cutover-pending' if _install_control_state_file(Path(sys.argv[1]), overwrite=sys.argv[2] == '1') else 'sqlite-ready')"
+        "import json, sys; "
+        "from luma.bootstrap import _install_control_state_request; "
+        "print('legacy-cutover-pending' if _install_control_state_request(json.load(sys.stdin), overwrite=sys.argv[1] == '1') else 'sqlite-ready')"
     )
-    try:
-        output = remote.sudo(f"LUMA_CONTROL_STATE_DIR={shlex.quote(directory)} {shlex.quote(sys.executable)} -c {shlex.quote(script)} {shlex.quote(payload)} {'1' if overwrite else '0'}")
-    finally:
-        remote.sudo(f"rm -f -- {shlex.quote(payload)}", check=False)
+    output = remote.sudo_input(f"LUMA_CONTROL_STATE_DIR={shlex.quote(directory)} {shlex.quote(sys.executable)} -c {shlex.quote(script)} {'1' if overwrite else '0'}", content)
     return "Control SQLite state installed" + (" (legacy cutover pending)" if "legacy-cutover-pending" in str(output).splitlines() else "")
 
 
@@ -959,119 +952,71 @@ def _redact_tailscale_authkey(output: str, authkey: str) -> str:
     return output.replace(authkey, "<redacted>")
 
 
-def configure_firewall(remote: Executor, *, http_port: int = 80, https_port: int = 443, tcp_ports: list[int] | None = None, engine: str = "nomad") -> str:
-    if _is_darwin(remote):
-        return "Firewall configuration skipped on macOS"
+def configure_firewall(remote: Executor, *, http_port: int = 80, https_port: int = 443, tcp_ports: list[int] | None = None, engine: str = "nomad", nomad_peers: list[str] | None = None) -> str:
     if engine != "nomad":
         raise LumaError("Nomad is the only supported deployment engine")
-    restrict_nomad_public = _tailscale_ip(remote) is not None
+    # Establish the control-plane boundary before enabling/changing UFW. The
+    # nft/PF rules also cover Docker and IPv6 and survive service restarts.
+    configure_public_port_guards(remote, engine=engine, nomad_peers=nomad_peers)
+    if _is_darwin(remote):
+        return "macOS Nomad PF boundary configured"
     commands = [
-        "ufw --force enable",
         "ufw allow OpenSSH",
         f"ufw allow {int(http_port)}/tcp",
         f"ufw allow {int(https_port)}/tcp",
-        "ufw allow 4646/tcp",
-        "ufw allow 4647/tcp",
-        "ufw allow 4648/tcp",
-        "ufw allow 4648/udp",
+        "ufw deny 7890/tcp", "ufw deny 7890/udp",
     ]
-    commands += [
-        "ufw deny 7890/tcp",
-        "ufw deny 7890/udp",
-    ]
-    for port in sorted({int(port) for port in (tcp_ports or [])}):
-        commands.append(f"ufw allow {port}/tcp")
+    # Retire the old Anywhere exceptions. Absence is harmless: the independent
+    # guard has already succeeded and remains authoritative.
+    for port in ("4646/tcp", "4647/tcp", "4648/tcp", "4648/udp"):
+        commands.append(f"ufw --force delete allow {port} >/dev/null 2>&1 || true")
+    commands.extend(f"ufw allow {port}/tcp" for port in sorted({int(port) for port in (tcp_ports or [])}))
+    commands.append("ufw --force enable")
     remote.sudo("set -euo pipefail; " + "; ".join(commands))
-    configure_public_port_guards(remote, restrict_nomad_public=restrict_nomad_public, engine=engine)
-    return "Firewall configured"
+    return "Firewall configured; Nomad ports restricted to enrolled mesh peers"
 
 
-def configure_public_port_guards(remote: Executor, *, restrict_nomad_public: bool = False, engine: str = "nomad") -> str:
-    if _is_darwin(remote):
-        return "Public port guards skipped on macOS"
+def configure_public_port_guards(remote: Executor, *, restrict_nomad_public: bool = False, engine: str = "nomad", nomad_peers: list[str] | None = None) -> str:
+    from .nomad_firewall import install_guard, network_policy
+    from .nomad_security import SECURITY_ROOT
     if engine != "nomad":
         raise LumaError("Nomad is the only supported deployment engine")
-    nomad_guard = "yes" if restrict_nomad_public else "no"
-    remote.sudo(
-        "set -euo pipefail; "
-        f"install -d -m 755 {ROOT}/firewall; "
-        f"cat > {ROOT}/firewall/public-port-guards.sh <<'EOF'\n"
-        "#!/bin/sh\n"
-        "set -eu\n"
-        f"restrict_nomad_public={nomad_guard}\n"
-        "iface=$(ip route show default 2>/dev/null | awk '{print $5; exit}')\n"
-        "[ -n \"${iface:-}\" ] || exit 0\n"
-        "add_rule() {\n"
-        "  table_cmd=\"$1\"\n"
-        "  chain=\"$2\"\n"
-        "  shift 2\n"
-        "  if command -v \"$table_cmd\" >/dev/null 2>&1; then\n"
-        "    \"$table_cmd\" -C \"$chain\" \"$@\" 2>/dev/null || \"$table_cmd\" -I \"$chain\" 1 \"$@\"\n"
-        "  fi\n"
-        "}\n"
-        "add_input_drop() {\n"
-        "  proto=\"$1\"\n"
-        "  port=\"$2\"\n"
-        "  add_rule iptables INPUT -i \"$iface\" -p \"$proto\" --dport \"$port\" -j DROP\n"
-        "  add_rule ip6tables INPUT -i \"$iface\" -p \"$proto\" --dport \"$port\" -j DROP\n"
-        "}\n"
-        "add_prerouting_drop() {\n"
-        "  proto=\"$1\"\n"
-        "  port=\"$2\"\n"
-        "  if command -v iptables >/dev/null 2>&1; then\n"
-        "    iptables -t raw -C PREROUTING -i \"$iface\" -p \"$proto\" --dport \"$port\" -j DROP 2>/dev/null || "
-        "iptables -t raw -I PREROUTING 1 -i \"$iface\" -p \"$proto\" --dport \"$port\" -j DROP\n"
-        "  fi\n"
-        "  if command -v ip6tables >/dev/null 2>&1; then\n"
-        "    ip6tables -t raw -C PREROUTING -i \"$iface\" -p \"$proto\" --dport \"$port\" -j DROP 2>/dev/null || "
-        "ip6tables -t raw -I PREROUTING 1 -i \"$iface\" -p \"$proto\" --dport \"$port\" -j DROP\n"
-        "  fi\n"
-        "}\n"
-        "add_docker_drop() {\n"
-        "  proto=\"$1\"\n"
-        "  port=\"$2\"\n"
-        "  if command -v iptables >/dev/null 2>&1; then\n"
-        "    iptables -N DOCKER-USER 2>/dev/null || true\n"
-        "  fi\n"
-        "  if command -v ip6tables >/dev/null 2>&1; then\n"
-        "    ip6tables -N DOCKER-USER 2>/dev/null || true\n"
-        "  fi\n"
-        "  add_rule iptables DOCKER-USER -i \"$iface\" -p \"$proto\" --dport \"$port\" -j DROP\n"
-        "  add_rule ip6tables DOCKER-USER -i \"$iface\" -p \"$proto\" --dport \"$port\" -j DROP\n"
-        "}\n"
-        "add_input_drop tcp 7890\n"
-        "add_input_drop udp 7890\n"
-        "add_prerouting_drop tcp 7890\n"
-        "add_prerouting_drop udp 7890\n"
-        "add_docker_drop tcp 7890\n"
-        "add_docker_drop udp 7890\n"
-        "if [ \"$restrict_nomad_public\" = \"yes\" ]; then\n"
-        "  add_input_drop tcp 4646\n"
-        "  add_input_drop tcp 4647\n"
-        "  add_input_drop tcp 4648\n"
-        "  add_input_drop udp 4648\n"
-        "fi\n"
-        "EOF\n"
-        f"chmod 755 {ROOT}/firewall/public-port-guards.sh; "
-        "cat > /etc/systemd/system/luma-public-port-guards.service <<'EOF'\n"
-        "[Unit]\n"
-        "Description=Luma public port guards\n"
-        "After=network-online.target docker.service ufw.service\n"
-        "Wants=network-online.target docker.service\n"
-        "\n"
-        "[Service]\n"
-        "Type=oneshot\n"
-        f"ExecStart={ROOT}/firewall/public-port-guards.sh\n"
-        "RemainAfterExit=yes\n"
-        "\n"
-        "[Install]\n"
-        "WantedBy=multi-user.target\n"
-        "EOF\n"
-        "systemctl daemon-reload; "
-        "systemctl enable luma-public-port-guards.service >/dev/null; "
-        "systemctl restart luma-public-port-guards.service"
-    )
-    return "Public port guards installed"
+    existing = remote.sudo_result(f"test -f {SECURITY_ROOT}/network.json && cat {SECURITY_ROOT}/network.json")
+    if existing.code == 0 and existing.output.strip():
+        try:
+            policy = json.loads(existing.output)
+        except ValueError:
+            raise LumaError("invalid saved Nomad network policy") from None
+        if nomad_peers is not None:
+            policy["rpcPeers"] = nomad_peers
+        return install_guard(remote, policy)
+    if nomad_peers is None:
+        raise LumaError("Nomad network boundary is not prepared; use luma security prepare-node/apply-node with the enrolled peers before starting Nomad")
+    address = _tailscale_ip(remote)
+    if not address:
+        raise LumaError("Tailscale address unavailable; refusing to configure an exposed Nomad control plane")
+    os_name = "darwin" if _is_darwin(remote) else "linux"
+    policy = network_policy(os_name=os_name, address=address, rpc_peers=nomad_peers, http_peers=[], interface=_mac_mesh_interface(remote, address) if os_name == "darwin" else "")
+    return install_guard(remote, policy)
+
+
+def _mac_mesh_interface(remote: Executor, address: str, *, peer: str = "") -> str:
+    current = ""
+    for line in remote.run("/sbin/ifconfig").splitlines():
+        header = re.match(r"^(utun[0-9]+|tailscale[0-9]+):", line)
+        if header:
+            current = header.group(1)
+        elif line and not line[0].isspace():
+            current = ""
+        if current and re.search(r"\binet6?\s+" + re.escape(address) + r"(?:\s|%|$)", line):
+            return current
+    if peer:
+        from .nomad_security import mesh_ip
+        route = remote.run("/sbin/route -n get " + shlex.quote(mesh_ip(peer)))
+        match = re.search(r"interface:\s+(utun[0-9]+|tailscale[0-9]+)\b", route)
+        if match:
+            return match.group(1)
+    raise LumaError("cannot identify the Tailscale utun interface; Nomad was not started")
 
 
 def configure_tailscale_watchdog(
@@ -1151,8 +1096,10 @@ def configure_tailscale_watchdog(
         "  exit 0\n"
         "fi\n"
         "if [ -z \"$peers\" ] && command -v python3 >/dev/null 2>&1; then\n"
-        "  peers=$(python3 - \"$control_state\" <<'PY'\n"
+        f"  peers=$({shlex.quote(sys.executable)} - \"$control_state\" <<'PY'\n"
         "import ipaddress, json, pathlib, sqlite3, sys, time\n"
+        "from luma.control.database import decode_payload\n"
+        "from luma.errors import LumaError\n"
         "try:\n"
         "    source = pathlib.Path(sys.argv[1])\n"
         "    database = source.with_name('control.sqlite3')\n"
@@ -1172,7 +1119,7 @@ def configure_tailscale_watchdog(
         "                if not isinstance(saved, dict) or not identity or saved.get('databaseId') != identity[0]:\n"
         "                    raise ValueError('database identity does not match authority')\n"
         "            records = connection.execute(\"SELECT id,payload FROM control_entities WHERE kind='nodes'\").fetchall()\n"
-        "            state = {'nodes': {key: json.loads(payload) for key, payload in records}}\n"
+        "            state = {'nodes': {key: decode_payload(connection, payload, 'control_entities', 'nodes', key) for key, payload in records}}\n"
         "        finally:\n"
         "            connection.close()\n"
         "    elif marker.exists() or authority.exists():\n"
@@ -1180,7 +1127,7 @@ def configure_tailscale_watchdog(
         "    else:\n"
         "        with source.open(encoding='utf-8') as handle:\n"
         "            state = json.load(handle)\n"
-        "except (OSError, ValueError, sqlite3.Error):\n"
+        "except (OSError, ValueError, sqlite3.Error, LumaError):\n"
         "    raise SystemExit(0)\n"
         "now = int(time.time())\n"
         "values = set()\n"
@@ -1496,7 +1443,8 @@ def _write_control_route(remote: Executor, config: LumaConfig, domain: str, node
     """
     import base64
 
-    target = _tailscale_ip(remote) or node.public_ip or "127.0.0.1"
+    # Traefik and Control share the manager host; keep the raw HTTP API local.
+    target = "127.0.0.1"
     entrypoint = config.entrypoint
     cert_resolver = config.cert_resolver
     route_yaml = (
@@ -1559,6 +1507,10 @@ def sync_nomad_tailscale_service_metadata(
     reconciliation migrates already joined nodes immediately, without an SSH
     restart of every Nomad client, and is safe to repeat on each manager update.
     """
+    from .nomad_security import SECURITY_ROOT
+    profile = remote.sudo_result(f"test -f {SECURITY_ROOT}/cluster.json && cat {SECURITY_ROOT}/cluster.json")
+    if profile.code == 0 and profile.output.strip() and json.loads(profile.output).get("aclRequired"):
+        return "Static Nomad mesh metadata is managed by reviewed node configurations"
     result = remote.run_result("nomad node status -json", timeout=30)
     if result.code != 0:
         raise LumaError(f"unable to list Nomad nodes for Tailscale metadata sync: {result.output.strip()}")
@@ -1623,6 +1575,7 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
         lambda: _prefetch_control_image_for_manager_refresh(remote, config, state=state),
     )
     _step(results, emit, "Install Tailscale watchdog", lambda: configure_tailscale_watchdog(remote))
+    _step(results, emit, "Prepare automatic Nomad security migration", lambda: remote.sudo(shlex.join([sys.executable, "-m", "luma.nomad_upgrade", "prepare"])))
     _step(results, emit, "Limit journald disk use", lambda: configure_journald_limit(remote))
     _step(
         results,
@@ -1635,7 +1588,7 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
         results,
         emit,
         "Refresh firewall TCP relay ports",
-        lambda: configure_firewall(remote, http_port=http_port, https_port=https_port, tcp_ports=tcp_ports, engine="nomad"),
+        lambda: configure_firewall(remote, http_port=http_port, https_port=https_port, tcp_ports=tcp_ports, engine="nomad", nomad_peers=sorted({str(n.get("tailscaleIP")) for n in (state.get("nodes") or {}).values() if isinstance(n, dict) and n.get("tailscaleIP")})),
     )
     if "edge" in node.roles:
         _step(
@@ -1668,6 +1621,7 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
         return result
     _step(results, emit, "Install control state", install_state)
     _step(results, emit, "Install control config", lambda: install_control_config(remote, config, node))
+    _step(results, emit, "Refresh local Control route", lambda: _write_control_route(remote, config, domain, node))
     _step(
         results,
         emit,
@@ -1764,6 +1718,7 @@ def install_nomad_node(
     egress_proxy: str | None = None,
     tailscale_authkey: str | None = None,
     insecure_registries: list[str] | None = None,
+    security: dict[str, Any] | None = None,
 ) -> list[str]:
     """Install and start a Nomad agent on the local node.
 
@@ -1777,9 +1732,24 @@ def install_nomad_node(
     import base64
 
     from . import nomad_node
+    from .nomad_security import ADMIN_ROOT, SECURITY_ROOT, rpc_host
+    from .nomad_firewall import install_guard, network_policy
 
     remote = LocalExecutor()
     results: list[str] = []
+    if role == "client" and (not security or security.get("schema") != 1 or not security.get("aclRequired")):
+        raise LumaError("secure node join requires a prepared Control with nomad-security-v1 and ACL enabled; finish the manager migration first")
+    security = dict(security or {"schema": 1, "aclRequired": True, "nomadVersion": nomad_node.NOMAD_VERSION, "trustedHost": role == "server"})
+    if security.get("nomadVersion") != nomad_node.NOMAD_VERSION:
+        raise LumaError("new node joins require the reviewed Nomad release; use the security migration plan for legacy nodes")
+    old = remote.sudo_result(f"test -f /etc/nomad.d/nomad.hcl && test ! -f {SECURITY_ROOT}/node.json && echo unmanaged-config")
+    if "unmanaged-config" in old.output:
+        raise LumaError("existing Nomad config has not been migrated; bootstrap/join will not replace its ACL, TLS or storage settings; use luma security prepare-node/apply-node")
+    previous = remote.sudo_result(f"test -f {SECURITY_ROOT}/node.json && cat {SECURITY_ROOT}/node.json")
+    previous_profile = json.loads(previous.output) if previous.code == 0 and previous.output.strip() else {}
+    fresh_manager = role == "server" and not previous_profile
+    if previous_profile and previous_profile.get("trustedHost") != bool(security.get("trustedHost")):
+        raise LumaError("rejoin would change this node's host-access or TLS profile; prepare a reviewed node bundle instead")
     if install_docker_first:
         _step(
             results,
@@ -1811,6 +1781,30 @@ def install_nomad_node(
             "could not detect this node's Tailscale IPv4; run `luma node tailscale` then rerun"
         )
     cpu_override = nomad_node.detect_cpu_total_compute(os_name, run=_subprocess_capture)
+    server_peers = [rpc_host(a) for a in (server_addrs or [])]
+    policy = network_policy(
+        os_name=os_name, address=tailscale_ip, rpc_peers=server_peers, http_peers=server_peers,
+        interface=_mac_mesh_interface(remote, tailscale_ip, peer=server_peers[0] if server_peers else "") if os_name == "darwin" else "",
+    )
+    if previous_profile:
+        saved_network = remote.sudo_result(f"test -f {SECURITY_ROOT}/network.json && cat {SECURITY_ROOT}/network.json")
+        if saved_network.code != 0:
+            raise LumaError("existing secure node has no network policy; repair it with a reviewed bundle")
+        policy = json.loads(saved_network.output)
+        if policy.get("address") != tailscale_ip:
+            raise LumaError("this node's mesh address changed; prepare a reviewed network migration")
+    _step(results, emit, "Establish Nomad network boundary", lambda: install_guard(remote, policy))
+    from .nomad_pki import tls_paths
+    tls = tls_paths(ADMIN_ROOT / "tls")
+    if role == "server":
+        _step(results, emit, "Provision Nomad TLS identities", lambda: remote.sudo(shlex.join([sys.executable, "-m", "luma.nomad_admin", "prepare-pki", "--address", tailscale_ip])))
+    else:
+        bundle = security.get("tlsBundle") or {}
+        if not all(bundle.get(key) for key in ("ca", "cert", "key")):
+            raise LumaError("Control did not provide the node's authenticated Nomad TLS identity")
+        for name in ("ca", "cert", "key"):
+            remote.write_secret(str(bundle[name]), str(ADMIN_ROOT / "tls" / (name + ".pem")))
+    remote.write_secret(json.dumps({"http": True, "address": tailscale_ip}), str(SECURITY_ROOT / "transport.json"))
     config_hcl = nomad_node.render_agent_config(
         os_name=os_name,
         role=role,
@@ -1820,6 +1814,9 @@ def install_nomad_node(
         server_addrs=server_addrs,
         cpu_total_compute=cpu_override,
         extra_meta=extra_meta,
+        trusted_host=bool(security.get("trustedHost")),
+        client_enabled=not fresh_manager,
+        tls=tls,
     )
     install = nomad_node.install_nomad_commands(os_name=os_name, arch=arch, config_hcl=config_hcl)
 
@@ -1836,10 +1833,16 @@ def install_nomad_node(
             "if command -v nomad >/dev/null 2>&1 "
             f"&& nomad version 2>/dev/null | head -n 1 | grep -Eq {shlex.quote(version_regex)}; then "
             "echo luma_nomad_binary_present; "
+            "elif command -v nomad >/dev/null 2>&1; then "
+            "echo 'Nomad binary differs from the reviewed release; use an explicit migration, never an implicit downgrade' >&2; exit 1; "
             "else "
-            f"cd /tmp; {proxy}curl -fsSL {shlex.quote(url)} -o nomad.zip; "
-            "command -v unzip >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq unzip) || true; "
-            "unzip -o nomad.zip -d /usr/local/bin/ >/dev/null; "
+            "work=$(mktemp -d /tmp/luma-nomad-install.XXXXXX); trap 'rm -rf \"$work\"' EXIT; "
+            f"{proxy}curl --proto '=https' --tlsv1.2 -fsSL {shlex.quote(url)} -o \"$work/nomad.zip\"; "
+            "if command -v sha256sum >/dev/null 2>&1; then actual=$(sha256sum \"$work/nomad.zip\" | cut -d ' ' -f 1); "
+            "else actual=$(shasum -a 256 \"$work/nomad.zip\" | cut -d ' ' -f 1); fi; "
+            f"test \"$actual\" = {shlex.quote(install['sha256'])} || {{ echo 'Nomad checksum mismatch' >&2; exit 1; }}; "
+            "command -v unzip >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq unzip); "
+            "unzip -q \"$work/nomad.zip\" nomad -d \"$work\"; install -m 755 \"$work/nomad\" /usr/local/bin/nomad; "
             "echo luma_nomad_binary_installed; "
             "fi"
         )
@@ -1858,7 +1861,7 @@ def install_nomad_node(
     def _write_config() -> str:
         cfg_b64 = base64.b64encode(install["config"].encode("utf-8")).decode("ascii")
         unit_b64 = base64.b64encode(install["service_unit"].encode("utf-8")).decode("ascii")
-        cmds = "set -e; mkdir -p /etc/nomad.d /opt/nomad/data; "
+        cmds = "set -e; umask 077; install -d -m 700 /etc/nomad.d /opt/nomad/data; "
         cmds += f"echo {cfg_b64} | base64 -d > /etc/nomad.d/nomad.hcl; "
         if install["service_kind"] == "systemd":
             cmds += (
@@ -1871,6 +1874,7 @@ def install_nomad_node(
         else:
             cmds += f"echo {unit_b64} | base64 -d > /Library/LaunchDaemons/io.luma.nomad.plist"
         remote.sudo(cmds)
+        remote.sudo("nomad config validate /etc/nomad.d")
         return "Nomad config written"
 
     _step(results, emit, "Write Nomad config", _write_config)
@@ -1880,14 +1884,32 @@ def install_nomad_node(
             # Bridge mode (Linux) requires CNI plugins + bridge netfilter.
             cni_url = nomad_node.cni_plugins_url(arch)
             remote.sudo(
-                "set -e; if [ ! -f /opt/cni/bin/bridge ]; then mkdir -p /opt/cni/bin; cd /tmp; "
-                f"{proxy}curl -fsSL {shlex.quote(cni_url)} -o cni.tgz; tar -C /opt/cni/bin -xzf cni.tgz; fi; "
-                "modprobe bridge br_netfilter 2>/dev/null || true; "
-                "sysctl -w net.bridge.bridge-nf-call-iptables=1 >/dev/null 2>&1 || true"
+                "set -e; if [ ! -f /opt/cni/bin/bridge ]; then mkdir -p /opt/cni/bin; "
+                "work=$(mktemp -d /tmp/luma-cni-install.XXXXXX); trap 'rm -rf \"$work\"' EXIT; "
+                f"{proxy}curl --proto '=https' --tlsv1.2 -fsSL {shlex.quote(cni_url)} -o \"$work/cni.tgz\"; tar -C /opt/cni/bin -xzf \"$work/cni.tgz\"; fi; "
+                "modprobe bridge; modprobe br_netfilter; "
+                "printf '%s\\n' bridge br_netfilter > /etc/modules-load.d/luma-nomad-cni.conf; "
+                "printf '%s\\n' 'net.bridge.bridge-nf-call-iptables=1' 'net.bridge.bridge-nf-call-ip6tables=1' > /etc/sysctl.d/99-luma-nomad-cni.conf; "
+                "sysctl -p /etc/sysctl.d/99-luma-nomad-cni.conf >/dev/null"
             )
             return "CNI plugins installed"
 
         _step(results, emit, "Install CNI plugins", _install_cni)
+
+    if role == "client":
+        import uuid
+        reader = str(security.get("agentToken") or "")
+        try:
+            uuid.UUID(reader)
+        except ValueError:
+            raise LumaError("Control did not return a valid scoped Nomad agent credential") from None
+        introduction = str(security.get("introToken") or "")
+        if not introduction:
+            raise LumaError("Control did not return a node introduction identity")
+        remote.sudo(f"install -d -m 700 {ADMIN_ROOT}")
+        remote.write_secret(reader + "\n", str(ADMIN_ROOT / "agent.token"))
+        remote.write_secret(introduction + "\n", "/opt/nomad/data/client/intro_token.jwt")
+        remote.write_secret(json.dumps({"schema": 1, "aclRequired": True, "tlsRequired": True, "nomadVersion": nomad_node.NOMAD_VERSION}) + "\n", str(SECURITY_ROOT / "cluster.json"))
 
     def _start_service() -> str:
         if install["service_kind"] == "systemd":
@@ -1918,6 +1940,23 @@ def install_nomad_node(
         _start_service,
         fix="Inspect `journalctl -u nomad` (or launchd on macOS), then rerun bootstrap/`luma node join`.",
     )
+    if fresh_manager:
+        # No client starts before ACL bootstrap. Strict introduction therefore
+        # has no first-node exemption and no unauthenticated enrollment window.
+        deadline = time.monotonic() + 60
+        while True:
+            initialized = remote.sudo_result(shlex.join([sys.executable, "-m", "luma.nomad_admin", "bootstrap-manager", "--node", node_name]))
+            if initialized.code == 0:
+                break
+            if time.monotonic() >= deadline:
+                raise LumaError("Nomad ACL initialization did not complete; administrator credentials were preserved on this host for recovery")
+            time.sleep(2)
+        config_hcl = nomad_node.render_agent_config(os_name=os_name, role=role, tailscale_ip=tailscale_ip, region=region, node_name=node_name, server_addrs=server_addrs, cpu_total_compute=cpu_override, extra_meta=extra_meta, trusted_host=True, tls=tls)
+        install["config"] = config_hcl
+        _write_config()
+        _start_service()
+    import hashlib
+    remote.write_secret(json.dumps({"schema": 1, "node": node_name, "role": role, "aclRequired": True, "nomadVersion": nomad_node.NOMAD_VERSION, "trustedHost": bool(security.get("trustedHost")), "tls": tls, "configSHA256": hashlib.sha256(install["config"].encode()).hexdigest()}) + "\n", str(SECURITY_ROOT / "node.json"))
     _step(
         results,
         emit,
@@ -1925,6 +1964,7 @@ def install_nomad_node(
         lambda: verify_local_nomad_node(remote, http_addrs=[tailscale_ip]),
         fix="Wait for Nomad to listen on the Tailscale IP, then rerun the same command. `luma doctor` reports node readiness.",
     )
+    _step(results, emit, "Verify Nomad security defaults", lambda: remote.sudo(shlex.join([sys.executable, "-m", "luma.nomad_admin", "verify-node"])))
     return results
 
 
@@ -1936,12 +1976,12 @@ def verify_local_nomad_node(remote: Executor | None = None, *, http_addrs: list[
         if value and value not in candidates:
             candidates.append(value)
     probes = " || ".join(
-        f"curl -fsS --connect-timeout 4 http://{shlex.quote(addr)}:4646/v1/agent/self >/dev/null 2>&1"
+        shlex.join([sys.executable, "-m", "luma.nomad_admin", "local-info", "--address", f"http://{addr}:4646"]) + " >/dev/null 2>&1"
         for addr in candidates
     )
     deadline = time.monotonic() + 30
     while True:
-        result = remote.run_result(f"({probes}) && echo ready || echo waiting")
+        result = remote.sudo_result(f"({probes}) && echo ready || echo waiting")
         if "ready" in result.output:
             return "Nomad agent ready"
         if time.monotonic() >= deadline:
@@ -2002,14 +2042,7 @@ def local_host_name(remote: Executor | None = None) -> str:
 
 def local_nomad_node_info(remote: Executor | None = None) -> tuple[str, str]:
     remote = remote or LocalExecutor()
-    result = remote.run_result(
-        "if command -v nomad >/dev/null 2>&1; then nomad_bin=$(command -v nomad); "
-        "elif test -x /usr/local/bin/nomad; then nomad_bin=/usr/local/bin/nomad; "
-        "elif test -x /opt/homebrew/bin/nomad; then nomad_bin=/opt/homebrew/bin/nomad; "
-        "elif test -x /usr/bin/nomad; then nomad_bin=/usr/bin/nomad; "
-        "else nomad_bin=; fi; "
-        "test -n \"$nomad_bin\" && \"$nomad_bin\" node status -self -json 2>/dev/null"
-    )
+    result = remote.sudo_result(shlex.join([sys.executable, "-m", "luma.nomad_admin", "local-info"]))
     if result.code != 0 or not result.output.strip():
         return local_host_name(remote), ""
     try:
@@ -2134,10 +2167,10 @@ def _refresh_core_services(remote: Executor) -> str:
     # Restart each running core job but don't abort the whole refresh if one
     # fails; instead print the failed job names so the caller can surface them
     # rather than silently reporting success on a failed restart.
-    output = remote.run(
+    output = remote.sudo(
         "for job in traefik egress luma-control; do "
-        "nomad job status \"$job\" >/dev/null 2>&1 || continue; "
-        "nomad job restart -yes \"$job\" >/dev/null 2>&1 || echo \"$job\"; "
+        f"{shlex.quote(sys.executable)} -m luma.nomad_admin exec -- job status \"$job\" >/dev/null 2>&1 || continue; "
+        f"{shlex.quote(sys.executable)} -m luma.nomad_admin exec -- job restart -yes \"$job\" >/dev/null 2>&1 || echo \"$job\"; "
         "done"
     )
     failed = [line.strip() for line in output.splitlines() if line.strip()]

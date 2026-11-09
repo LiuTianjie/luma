@@ -142,6 +142,8 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "manager-update-v1",
             "nomad-join",
             "nomad-join-registry-v1",
+            "nomad-security-v1",
+            "nomad-security-upgrade-v1",
             "managed-registry-access-v1",
             "managed-registry-access-v2",
             "nomad-cni-repair",
@@ -160,6 +162,8 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "luma-update-egress-fallback-v1",
             "nomad-join",
             "nomad-join-registry-v1",
+            "nomad-security-v1",
+            "nomad-security-upgrade-v1",
             "managed-registry-access-v1",
             "managed-registry-access-v2",
             "terminal",
@@ -984,17 +988,10 @@ def install_node_agent(
             config["terminalRelay"] = previous["terminalRelay"]
     except (OSError, ValueError):
         pass
+    _verified_agent_control_client(config)
     executor = LocalExecutor()
-    escaped_config = shlex.quote(json.dumps(config, separators=(",", ":")))
-    escaped_config_path = shlex.quote(str(config_path))
-    command = (
-        "set -euo pipefail; "
-        f"install -d -m 700 {shlex.quote(str(config_path.parent))}; "
-        f"printf '%s' {escaped_config} > {escaped_config_path}; "
-        f"chmod 600 {escaped_config_path}; "
-        f"{_agent_install_command(config_path)}"
-    )
-    executor.sudo(command)
+    executor.write_secret(json.dumps(config, separators=(",", ":")), str(config_path))
+    executor.sudo(_agent_install_command(config_path))
 
 
 def _agent_install_command(config_path: Path, *, executable: str | None = None) -> str:
@@ -1411,8 +1408,23 @@ def _xml_escape(value: str) -> str:
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = False, poll_interval: int | None = None) -> int:
+def _verified_agent_control_client(config: Dict[str, Any], config_path: Path | None = None) -> Any:
+    """Retire bootstrap TLS bypasses before accepting privileged agent tasks."""
     from .control.client import ControlClient
+    client = ControlClient(str(config.get("endpoint") or ""), str(config.get("token") or ""), insecure=False, resolve_ip=None)
+    if config.get("insecure") or config.get("resolveIp"):
+        try:
+            client.health()
+        except (LumaError, OSError):
+            raise LumaError("node agent requires verified Control HTTPS; repair the Control DNS/certificate and rerun the normal node update") from None
+        config.update(insecure=False, resolveIp="")
+        if config_path is not None:
+            from .nomad_security import private_write
+            private_write(config_path, json.dumps(config, separators=(",", ":")) + "\n")
+    return client
+
+
+def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = False, poll_interval: int | None = None) -> int:
 
     config = json.loads(config_path.read_text(encoding="utf-8"))
     endpoint = str(config.get("endpoint") or "")
@@ -1426,12 +1438,7 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
         note_agent_started()
     except Exception:
         pass
-    client = ControlClient(
-        endpoint,
-        token,
-        insecure=bool(config.get("insecure")),
-        resolve_ip=str(config.get("resolveIp") or "") or None,
-    )
+    client = _verified_agent_control_client(config, config_path)
     interval = int(poll_interval or config.get("pollIntervalSeconds") or 5)
     stats_interval = int(
         os.environ.get("LUMA_NODE_AGENT_STATS_INTERVAL_SECONDS")
@@ -1479,7 +1486,8 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
                 diagnostics["diskHygiene"] = _disk_hygiene_heartbeat(config_path)
                 diagnostics_at = now
             try:
-                task = client.lease_agent_task(
+                from .nomad_enrollment import install_reader_update, reader_accessor
+                lease = client.lease_agent_task(
                     node_name=node_name,
                     node_id=node_id,
                     os_name=node_agent_os(),
@@ -1489,11 +1497,15 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
                     metrics=node_agent_metrics(),
                     container_stats=container_stats,
                     diagnostics=diagnostics,
+                    nomad_credential_accessor=reader_accessor(),
                     # Control caps idle long polling at 30 seconds. Leave room
                     # for writer contention and telemetry after the lease is
                     # committed, so a slow response does not lose the task.
                     timeout=max(interval + 5, 60),
-                ).get("task")
+                )
+                if lease.get("nomadCredential"):
+                    install_reader_update(LocalExecutor(), lease["nomadCredential"])
+                task = lease.get("task")
             except Exception as exc:
                 if once:
                     raise
@@ -1750,6 +1762,7 @@ def _start_agent_task_heartbeat(
     def loop() -> None:
         while not stop.is_set():
             try:
+                from .nomad_enrollment import install_reader_update, reader_accessor
                 response = client.heartbeat_agent(
                     node_name=node_name,
                     node_id=node_id,
@@ -1759,8 +1772,11 @@ def _start_agent_task_heartbeat(
                     version=__version__,
                     capabilities=node_agent_capabilities(),
                     metrics=node_agent_metrics(),
+                    nomad_credential_accessor=reader_accessor(),
                     timeout=_agent_task_heartbeat_timeout(interval),
                 )
+                if response.get("nomadCredential"):
+                    install_reader_update(LocalExecutor(), response["nomadCredential"])
                 if isinstance(response, dict) and bool(response.get("cancelRequested")):
                     cancel_event.set()
             except Exception as exc:
@@ -1937,6 +1953,7 @@ async def _run_terminal_supervisor(config_path: Path) -> None:
     from .terminal_direct import DirectTerminals
 
     config = json.loads(config_path.read_text(encoding="utf-8"))
+    await asyncio.to_thread(_verified_agent_control_client, config, config_path)
     endpoint = str(config.get("endpoint") or "")
     token = str(config.get("token") or "")
     node_name = str(config.get("nodeName") or "")
@@ -1989,7 +2006,7 @@ async def _run_terminal_supervisor(config_path: Path) -> None:
                     token=token,
                     node_name=node_name,
                     node_id=node_id,
-                    insecure=False if preferred_relay_ip else bool(config.get("insecure")),
+                    insecure=False,
                     resolve_ip=preferred_relay_ip if use_preferred_relay else normal_relay_ip,
                 ) as websocket:
                     backoff = 1.0  # connection established; reset reconnect backoff
@@ -2552,7 +2569,11 @@ def _execute_agent_task_impl(
             tailscale_authkey=str(payload.get("tailscaleAuthKey") or ""),
             egress_proxy=str(payload.get("egressProxy") or ""),
             insecure_registries=payload.get("insecureRegistries") or [],
+            security=payload.get("nomadSecurity"),
         )
+    if action == "nomad-security":
+        from .nomad_migration_node import execute
+        return execute(payload)
     if action == "repair-nomad-cni-hostports":
         return repair_nomad_cni_hostports(ports=payload.get("ports"))
     if action == disk_hygiene.DISK_HYGIENE_ACTION:
@@ -2998,6 +3019,7 @@ def join_nomad_node(
     tailscale_authkey: str = "",
     egress_proxy: str = "",
     insecure_registries: list[str] | None = None,
+    security: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     from .bootstrap import _tailscale_ip, install_nomad_node, local_nomad_node_info
     from .config import NodeConfig
@@ -3029,6 +3051,7 @@ def join_nomad_node(
         egress_proxy=egress_proxy or None,
         tailscale_authkey=tailscale_authkey or None,
         insecure_registries=insecure_registries or [],
+        security=security,
     )
     actual_node_name, nomad_node_id = local_nomad_node_info()
     tailscale_ip = _tailscale_ip(LocalExecutor()) or ""

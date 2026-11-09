@@ -238,14 +238,14 @@ def save_channel(body, *, now=None):
         if body.get('type','feishu') != 'feishu':
             raise LumaError('only Feishu notification channels are supported')
         app_id = body.get('appId',old['app_id'] if old else '')
-        app_secret = body.get('appSecret',old['app_secret'] if old else '')
+        app_secret = body.get('appSecret',database.decode_secret(conn, old['app_secret'], 'alert_channels', identifier, 'app_secret') if old else '')
         chat_id = body.get('chatId',old['chat_id'] if old else '')
         validate_credentials(app_id,app_secret,chat_id)
         enabled = body.get('enabled',bool(old['enabled']) if old else True)
         if not isinstance(enabled,bool):
             raise LumaError('enabled must be a boolean')
         columns=['id','name','type','app_id','app_secret','chat_id','enabled','created_at','updated_at']
-        values=[identifier,name,'feishu',app_id,app_secret,chat_id,int(enabled),old['created_at'] if old else now,now]
+        values=[identifier,name,'feishu',app_id,database.encode_secret(conn, app_secret, 'alert_channels', identifier, 'app_secret'),chat_id,int(enabled),old['created_at'] if old else now,now]
         legacy={r[1] for r in conn.execute('PRAGMA table_info(alert_channels)')}
         if 'webhook' in legacy:
             columns.extend(['webhook','secret']);values.extend(['',''])
@@ -386,7 +386,7 @@ def _capture_build_details(conn, row, run, domain):
     if not isinstance(events,list):
         # Read a bounded tail only when the failing build changes, not all logs
         # on every evaluation. The snapshot survives history retention.
-        events = [json.loads(r[0]) for r in conn.execute("SELECT payload FROM control_events WHERE kind='buildRuns' AND entity_id=? AND stream='events' ORDER BY position DESC LIMIT 100",(run['id'],))][::-1]
+        events = [database.decode_payload(conn, r[1], 'control_events', 'buildRuns', run['id'], 'events', r[0]) for r in conn.execute("SELECT position,payload FROM control_events WHERE kind='buildRuns' AND entity_id=? AND stream='events' ORDER BY position DESC LIMIT 100",(run['id'],))][::-1]
     details = build_details(run, events[-100:], domain)
     if previous.get('buildId') == run['id']:
         details = {**previous, **details}
@@ -570,7 +570,7 @@ def deliver_pending(*, now=None, transport: Callable = send_feishu, limit=10):
                 conn.execute('UPDATE alert_outbox SET next_attempt_at=? WHERE id=?',(now+15,row['id']))
                 continue
             conn.execute("UPDATE alert_outbox SET status='sending',attempts=attempts+1,lease_until=?,lease_token=? WHERE id=?",(now+60,lease,row['id']))
-            app_id,app_secret,chat_id,text = channel['app_id'],channel['app_secret'],channel['chat_id'],row['text']
+            app_id,app_secret,chat_id,text = channel['app_id'],database.decode_secret(conn, channel['app_secret'], 'alert_channels', channel['id'], 'app_secret'),channel['chat_id'],row['text']
             namespace=_setting(conn,'notification_namespace','')
             if not namespace:
                 namespace=secrets.token_hex(16)
@@ -606,23 +606,23 @@ def load_evaluation_state(*, now=None):
     with database.transaction(immediate=False) as conn:
         database.ensure_initialized(conn)
         row = conn.execute("SELECT payload FROM control_config WHERE key='clusterId'").fetchone()
-        result = {'clusterId':json.loads(row[0]) if row else '', 'nodes':{}, 'buildRuns':{}, '_alertQueueAge':{}}
+        result = {'clusterId':database.decode_payload(conn, row[0], 'control_config', 'clusterId') if row else '', 'nodes':{}, 'buildRuns':{}, '_alertQueueAge':{}}
         row = conn.execute("SELECT payload FROM control_config WHERE key='domain'").fetchone()
-        result['domain'] = json.loads(row[0]) if row else ''
+        result['domain'] = database.decode_payload(conn, row[0], 'control_config', 'domain') if row else ''
         for row in conn.execute("SELECT id,payload FROM control_entities WHERE kind='nodes'"):
-            result['nodes'][row['id']] = json.loads(row['payload'])
+            result['nodes'][row['id']] = database.decode_payload(conn, row['payload'], 'control_entities', 'nodes', row['id'])
         for collection,kind in [('agentTasks','agent'),('builderTasks','builder'),('buildRuns','build')]:
             row = conn.execute("SELECT COUNT(*) n,MIN(CASE WHEN created_at>0 AND created_at<=? THEN created_at END) oldest FROM control_entities WHERE kind=? AND status='queued'",(now,collection)).fetchone()
             result['_alertQueueAge'][kind] = now-row['oldest'] if row['oldest'] is not None else (None if row['n'] else 0)
         # Window query returns one small summary per application. Detailed events remain separate.
         rows = conn.execute("""SELECT id,payload FROM (SELECT id,payload,ROW_NUMBER() OVER (PARTITION BY CASE WHEN app='' THEN id ELSE app END ORDER BY created_at DESC,id DESC) rank FROM control_entities WHERE kind='buildRuns') WHERE rank=1""")
         for row in rows:
-            result['buildRuns'][row['id']] = json.loads(row['payload'])
+            result['buildRuns'][row['id']] = database.decode_payload(conn, row['payload'], 'control_entities', 'buildRuns', row['id'])
         table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='alert_rules'").fetchone()
         result['_observeMetrics'] = {str(item[0]) for item in conn.execute("SELECT DISTINCT metric FROM alert_rules WHERE enabled=1")} if table else set()
         if 'app.memory' in result['_observeMetrics']:
             for row in conn.execute("SELECT key,payload FROM control_config WHERE key IN ('nomadAddr','nomadToken')"):
-                result[row['key']] = json.loads(row['payload'])
+                result[row['key']] = database.decode_payload(conn, row['payload'], 'control_config', row['key'])
         log_columns = {r[1] for r in conn.execute('PRAGMA table_info(alert_rules)')} if table else set()
         log_rules = [dict(id=r['id'], target=r['target'], logQuery=json.loads(r['log_query']))
                      for r in conn.execute("SELECT id,target,log_query FROM alert_rules WHERE enabled=1 AND metric='app.log_matches' LIMIT 20")] if 'log_query' in log_columns else []
