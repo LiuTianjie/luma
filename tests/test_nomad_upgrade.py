@@ -767,6 +767,20 @@ class UpgradeWorkflow(SecurityFixture):
 
 
 class ConsumerRecovery(SecurityFixture):
+    def test_only_a_saved_legacy_observe_rollout_can_repair_before_healthy_gate(self):
+        job = workload(name="luma-observe")
+        task = job["TaskGroups"][0]["Tasks"][0]
+        task.update(Name="nomad-exporter", Config={"command": "python3", "args": ["/run/luma-nomad-credential/client.py", "/app/nomad_exporter.py"]})
+        journal = {"jobs": [{"Job": job, "consumerModifyIndex": 123}]}
+        for unhealthy, expected in ((["luma-observe: failed task"], True), (["database: stopped"], False)):
+            with self.subTest(unhealthy=unhealthy), mock.patch.object(upgrade, "_workload_health", return_value=("", unhealthy)), mock.patch.object(upgrade, "_consumers") as repair:
+                upgrade._repair_observe_startup(journal)
+                self.assertEqual(repair.called, expected)
+        journal["jobs"][0].pop("consumerModifyIndex")
+        with mock.patch.object(upgrade, "_consumers") as repair:
+            upgrade._repair_observe_startup(journal)
+            repair.assert_not_called()
+
     def setUp(self):
         super().setUp()
         self.prepare()

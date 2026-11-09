@@ -8,3 +8,7 @@ class ControlRequestError(LumaError):
 
 class DatabaseBusyError(LumaError):
     """Control cannot acquire its database writer within the request budget."""
+
+
+class NomadUpgradePending(Exception):
+    """A saved migration step is still running and should be polled again."""

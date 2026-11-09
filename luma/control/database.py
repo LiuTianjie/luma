@@ -53,6 +53,10 @@ class ControlConnection(sqlite3.Connection):
     encrypted = False
 
 
+class EncryptionCleanupPending(LumaError):
+    """Ciphertext is committed, but an existing SQLite reader still blocks cleanup."""
+
+
 def _encrypted(conn: sqlite3.Connection) -> bool:
     if isinstance(conn, ControlConnection):
         return conn.encrypted
@@ -872,13 +876,24 @@ def migrate_encryption() -> dict[str, Any]:
         conn.execute("INSERT INTO database_meta(key,value) VALUES('payload_cipher','aes256gcm-v1') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
     conn = connect()
     try:
+        # Keep later Control readers/writers out between the first checkpoint,
+        # VACUUM and final truncation. The lock is released when this connection
+        # closes; encryption has already committed before taking it.
+        conn.execute("PRAGMA locking_mode=EXCLUSIVE")
+        # A checkpoint alone does not acquire the retained exclusive lock.
+        conn.execute("BEGIN EXCLUSIVE")
+        conn.execute("COMMIT")
         # A reader retaining a pre-migration WAL page means cleanup is pending;
         # never report completion while that plaintext journal remains live.
         if conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]:
-            raise LumaError("encrypted data committed; waiting for old Control readers before clearing SQLite journals")
+            raise EncryptionCleanupPending("encrypted data committed; waiting for old Control readers before clearing SQLite journals")
         conn.execute("VACUUM")
         if conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]:
-            raise LumaError("encrypted data committed; SQLite journal cleanup remains pending")
+            raise EncryptionCleanupPending("encrypted data committed; SQLite journal cleanup remains pending")
+    except sqlite3.Error as exc:
+        if is_database_busy(exc):
+            raise EncryptionCleanupPending("encrypted data committed; waiting for exclusive SQLite cleanup") from exc
+        raise
     finally:
         conn.close()
     return {"encrypted": True, "changedRows": changed}

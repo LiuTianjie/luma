@@ -5,6 +5,7 @@ import os
 import shlex
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -229,6 +230,46 @@ class SecurityFiles(SecurityFixture):
 
 
 class NetworkAndTransportTests(unittest.TestCase):
+    def test_pf_installer_and_periodic_guard_serialize_writes(self):
+        with tempfile.TemporaryDirectory(prefix="luma-pf-lock-test-") as temporary:
+            root = Path(temporary)
+            events = root / "events"
+            worker = ("import pathlib,sys,time; p=pathlib.Path(sys.argv[1]); "
+                      "f=p.open('a'); f.write('start\\n'); f.flush(); time.sleep(0.2); "
+                      "f.write('end\\n'); f.close()")
+            with mock.patch.object(nomad_firewall, "SECURITY_ROOT", root):
+                command = nomad_firewall._pf_locked(shlex.join([sys.executable, "-c", worker, str(events)]))
+            processes = [subprocess.Popen(["/bin/sh", "-c", command], stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(2)]
+            try:
+                for process in processes:
+                    _, error = process.communicate(timeout=20)
+                    self.assertEqual(process.returncode, 0, error.decode())
+            finally:
+                for process in processes:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=5)
+            self.assertEqual(events.read_text().splitlines(), ["start", "end", "start", "end"])
+
+    def test_pf_busy_retry_is_bounded_and_does_not_retry_other_errors(self):
+        for error, failures, expected_calls, expected_status in (
+            ("pfctl: DIOCADDRULE: Resource busy", 2, 3, 0),
+            ("pfctl: DIOCADDRULE: Resource busy", 10, 4, 1),
+            ("pfctl: Permission denied", 2, 1, 1),
+        ):
+            with self.subTest(error=error, failures=failures), tempfile.TemporaryDirectory(prefix="luma-pf-retry-test-") as temporary:
+                root = Path(temporary)
+                counter = root / "calls"
+                worker = ("import pathlib,sys; p=pathlib.Path(sys.argv[1]); n=int(p.read_text())+1 if p.exists() else 1; "
+                          "p.write_text(str(n)); failed=n<=int(sys.argv[2]); "
+                          "print(sys.argv[3],file=sys.stderr) if failed else print('applied'); sys.exit(1 if failed else 0)")
+                with mock.patch.object(nomad_firewall, "SECURITY_ROOT", root):
+                    command = nomad_firewall._pf_locked(shlex.join([sys.executable, "-c", worker, str(counter), str(failures), error]))
+                result = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, expected_status, result.stderr)
+                self.assertEqual(int(counter.read_text()), expected_calls)
+                self.assertEqual(result.stdout, "applied\n" if expected_status == 0 else "")
+
     def test_rpc_transition_is_limited_to_the_server_before_acl_and_https(self):
         settings = dict(os_name="linux", role="server", tailscale_ip="100.64.0.1", region="cn",
                         node_name="manager", acl_enabled=False, tls_http=False, rpc_upgrade_mode=True,

@@ -16,9 +16,9 @@ import urllib.request
 from pathlib import Path
 from unittest import mock
 
-from luma import nomad_acl, nomad_node, nomad_pki, nomad_secrets, nomad_security, secret_migration, secret_storage
+from luma import nomad_acl, nomad_node, nomad_pki, nomad_secrets, nomad_security, nomad_upgrade, secret_migration, secret_storage
 from luma.control import database, state
-from luma.errors import LumaError
+from luma.errors import LumaError, NomadUpgradePending
 from luma.nomad_api import NomadApi
 from tests.test_nomad_security import SecurityFixture, nomad_test_ports
 
@@ -186,6 +186,47 @@ class NomadSecretDelivery(SecurityFixture):
         with self.admin_api._opener().open(request, timeout=30) as response:
             return json.load(response)
 
+    def test_existing_observe_entrypoint_runs_authenticated_consumers(self):
+        source = Path(__file__).resolve().parents[1] / "observe"
+        context = self.root / "observe-image"
+        context.mkdir()
+        for filename in ("Dockerfile", "nomad_exporter.py", "feishu_webhook.py", "host_gateway.py", "log_shipper.py", "nomad_auth.py"):
+            shutil.copy2(source / filename, context / filename)
+        tag = "luma-observe-security-test:" + self.root.name
+        subprocess.run(["docker", "build", "-t", tag, str(context)], check=True, capture_output=True, timeout=120)
+        self.addCleanup(lambda: subprocess.run(["docker", "image", "rm", tag], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20))
+        for task_name, metric in (("nomad-exporter", "luma_observe_nomad_up"), ("log-shipper", "luma_observe_log_shipper_nomad_up")):
+            with self.subTest(task=task_name):
+                job = {"ID": "luma-observe", "TaskGroups": [{"Name": "observe", "Tasks": [{"Name": task_name, "Config": {"image": tag}, "Env": {}}]}]}
+                nomad_security.prepare_job(job)
+                task = job["TaskGroups"][0]["Tasks"][0]
+                config = task["Config"]
+                port = nomad_test_ports()[0]
+                task["Env"].update(NOMAD_ADDR=self.address, LUMA_OBSERVE_PORT=str(port), LUMA_OBSERVE_BIND="127.0.0.1")
+                command = ["docker", "run", "-d", "--network", "host", "--name", self.root.name + "-" + task_name]
+                for key, value in task["Env"].items():
+                    command += ["-e", key + "=" + value]
+                for mount in config["mount"]:
+                    command += ["--mount", "type=bind,src=" + mount["source"] + ",dst=" + mount["target"] + ",readonly"]
+                # Docker Cmd is the same command/args pair Nomad sends. Keep
+                # the image's inherited ENTRYPOINT unless rendering overrides it.
+                if config.get("entrypoint"):
+                    command += ["--entrypoint", config["entrypoint"][0]]
+                command += [tag, config["command"], *config["args"]]
+                container = subprocess.check_output(command, text=True, timeout=20).strip()
+                self.addCleanup(lambda cid=container: subprocess.run(["docker", "rm", "-f", cid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20))
+                def ready():
+                    running = subprocess.check_output(["docker", "inspect", "--format", "{{.State.Running}}", container], text=True, timeout=5).strip()
+                    if running != "true":
+                        logs = subprocess.run(["docker", "logs", container], capture_output=True, text=True, timeout=5)
+                        self.fail(task_name + " exited: " + (logs.stdout + logs.stderr)[-2000:])
+                    try:
+                        with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=2) as response:
+                            return metric + " 1" in response.read().decode().splitlines()
+                    except OSError:
+                        return False
+                self.wait_for(ready, task_name + " authenticated Nomad read", timeout=40)
+
     def test_fresh_encryption_real_delivery_and_cross_application_denial(self):
         secret_storage.provision()
         values = ['new-key-a-雪-"quoted"\\\n${secret.luma.literal}\n$(never-execute)\t', "new-key-b-only"]
@@ -255,7 +296,9 @@ class NomadSecretDelivery(SecurityFixture):
             legacy["TaskGroups"][0]["Tasks"][0]["Env"]["GENERATION"] = str(index)
             self.raw_register(legacy, {"Source": "old-key-must-leave-api", "Format": "json"})
             live = self.control.request("GET", "/v1/job/" + legacy["ID"])
-            self.control.request("PUT", "/v1/job/" + live["ID"] + "/versions/legacy-" + str(index) + "/tag", {"Version": live["Version"]})
+            self.control.request("PUT", "/v1/job/" + live["ID"] + "/stable", {"JobID": live["ID"], "JobVersion": live["Version"], "Stable": True})
+            if index == 0:
+                self.control.request("PUT", "/v1/job/" + live["ID"] + "/versions/legacy-" + str(index) + "/tag", {"Version": live["Version"]})
         old_allocation = self.allocation(live)
         secret_storage.provision()
         self.stop()
@@ -263,6 +306,7 @@ class NomadSecretDelivery(SecurityFixture):
         target = copy.deepcopy(live)
         target.pop("VersionTag", None)
         nomad_secrets.protect_job(target, self.control, preserve_runtime=True)
+        secret_migration._retain_revision(target, int(live["Version"]) + 1)
         self.control.request("POST", "/v1/jobs", {"Job": target, "Submission": {"Source": "", "Format": "json"}})
         protected = self.control.request("GET", "/v1/job/" + target["ID"])
         current_allocation = self.allocation(protected)
@@ -282,6 +326,47 @@ class NomadSecretDelivery(SecurityFixture):
             return all(a["JobVersion"] == protected["Version"] for a in allocations if a["JobID"] == protected["ID"])
         self.wait_for(collected, "legacy allocation garbage collection", timeout=60)
         self.assertEqual(self.result(current_allocation)["secret"], hashlib.sha256(b"old-key-must-leave-api").hexdigest())
+
+
+    def test_evicted_current_history_is_restored_without_restarting_the_container(self):
+        legacy = self.job("evicted", "old-secret-for-history-recovery")
+        self.raw_register(legacy)
+        live = self.control.request("GET", "/v1/job/" + legacy["ID"])
+        self.allocation(live)
+        self.control.request("PUT", "/v1/job/" + live["ID"] + "/stable", {"JobID": live["ID"], "JobVersion": live["Version"], "Stable": True})
+        secret_storage.provision()
+        self.stop()
+        self.start(client=True, migration=True)
+        target = copy.deepcopy(live)
+        nomad_secrets.protect_job(target, self.control, preserve_runtime=True)
+        # Reproduce the old untagged submission, which the retained stable
+        # parent displaces even though the current allocation keeps running.
+        self.control.request("POST", "/v1/jobs", {"Job": target})
+        protected = self.control.request("GET", "/v1/job/" + target["ID"])
+        before = self.allocation(protected)
+        before_result = self.result(before)
+        versions = self.reader.request("GET", "/v1/job/" + target["ID"] + "/versions")["Versions"]
+        self.assertNotIn(protected["Version"], [job["Version"] for job in versions])
+        item = {"Job": protected, "system": False, "secretsMigrated": True, "authoritySHA256": nomad_security.authority_digest(protected)}
+        journal = {"id": "history-recovery", "jobs": [item]}
+        with mock.patch.object(nomad_upgrade, "JOURNAL", self.root / "migration.json"):
+            def restore():
+                try:
+                    secret_migration._restore_history(journal, item, self.control)
+                    return item["Job"]
+                except NomadUpgradePending:
+                    return None
+            restored = self.wait_for(restore, "retained history revision")
+        after = self.allocation(restored)
+        self.assertEqual(after["ID"], before["ID"])
+        self.assertEqual(after["TaskStates"]["web"]["StartedAt"], before["TaskStates"]["web"]["StartedAt"])
+        self.assertEqual(restored["Priority"], protected["Priority"])
+        self.assertEqual(self.result(after), before_result)
+        secret_migration._retire_history(self.control, restored)
+        versions = self.reader.request("GET", "/v1/job/" + target["ID"] + "/versions")["Versions"]
+        self.assertEqual([job["Version"] for job in versions], [restored["Version"]])
+        self.assertIsNone(versions[0].get("VersionTag"))
+        self.assertNotIn("old-secret-for-history-recovery", json.dumps(versions))
 
 
 if __name__ == "__main__":

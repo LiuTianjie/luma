@@ -40,6 +40,8 @@ New agents retire legacy `insecure`/`resolveIp` settings after verifying Control
 
 HTTP binds to loopback and the local Tailscale IP; RPC/Serf bind to Tailscale. Linux uses an independent nftables table before Docker/CNI NAT and accept rules, including IPv6 and forwarding. macOS uses a PF anchor and rediscovers the Tailscale interface. Network guards must apply before Nomad starts. An entire tailnet CIDR is never an API/RPC allowlist.
 
+On macOS, installation and periodic firewall reconciliation share an exclusive lock. A `DIOCADDRULE: Resource busy` response receives a bounded retry; other errors still stop the operation. The guard acknowledges a policy only after its rules load successfully.
+
 Final checks cover versions, original node identity, anonymous denial for job lists, details and historical versions (including their Env), role permissions, HTTP/RPC mutual TLS, disabled compatibility mode, strict enrollment, live driver and volume settings, private listeners, configuration digests and applied network guards. Missing credentials never fall back to anonymous requests.
 
 Control remains a trusted infrastructure administrator with its existing Docker management capability. Nomad Community submit permission is not a general sandbox or admission controller. Do not share Control management, Nomad administrator or host root authority with applications.

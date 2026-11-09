@@ -15,7 +15,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from .errors import LumaError
+from .errors import LumaError, NomadUpgradePending
 from .nomad_api import NomadApi, _allocation_health, _desired_group_counts_from_job
 from .nomad_secrets import _status, assert_protected_job, protect_job, prune_job_variables, validate_workload_acl
 from .nomad_security import ADMIN_ROOT, authority_digest, job_digest, nomad_token, prepare_job, private_read, private_write, read_private_json, security_root, workload_policy_lock
@@ -33,8 +33,7 @@ def _save(journal: dict[str, Any]) -> None:
 
 
 def _pending(message: str) -> None:
-    from .nomad_upgrade import Pending
-    raise Pending(message)
+    raise NomadUpgradePending(message)
 
 
 def _protected(job: Mapping[str, Any]) -> bool:
@@ -143,6 +142,33 @@ def _write_artifacts(state: Mapping[str, Any], current: dict[str, Any], *, syste
         private_write(ADMIN_ROOT / "system-jobs" / (str(current["ID"]) + ".json"), document)
 
 
+def _retain_revision(target: dict[str, Any], version: int) -> None:
+    # With job_tracked_versions=1, Nomad can evict a new, not-yet-stable
+    # revision in favor of the previous stable one. Attach the tag in the
+    # registration itself: tagging it in a later request is already too late.
+    target["VersionTag"] = {"Name": "luma-secret-migration-" + str(version),
+                            "Description": "Retain protected job during encrypted-secret migration",
+                            "TaggedTime": time.time_ns()}
+
+
+def _untagged_digest(job: Mapping[str, Any]) -> str:
+    document = dict(job)
+    document.pop("VersionTag", None)
+    return job_digest(document)
+
+
+def _wait_for_job(current: Mapping[str, Any], client: NomadApi, submitted_at: int) -> None:
+    job_id = str(current["ID"])
+    expected = _desired_group_counts_from_job(current, slug=job_id)
+    allocations = client.request("GET", "/v1/job/" + urllib.parse.quote(job_id, safe="") + "/allocations") or []
+    lifecycles = {group["Name"]: {task["Name"]: task.get("Lifecycle") or {} for task in group.get("Tasks") or []} for group in current["TaskGroups"]}
+    healthy, _, _ = _allocation_health(allocations, target_version=current["Version"], expected_groups=expected, task_lifecycles=lifecycles)
+    if not healthy:
+        if time.time() - submitted_at > 2700:
+            raise LumaError("application did not become healthy after its secret migration: " + job_id)
+        _pending("Waiting for task-bound secrets and healthy allocations: " + job_id)
+
+
 def _upgrade_job(journal: dict[str, Any], item: dict[str, Any], state: Mapping[str, Any], client: NomadApi) -> None:
     from .nomad_upgrade import _matches_expected_job
     job_id = str(item["Job"]["ID"])
@@ -170,8 +196,10 @@ def _upgrade_job(journal: dict[str, Any], item: dict[str, Any], state: Mapping[s
     target = intent["target"]
     if not any(_matches_expected_job(current, intent[name]) for name in ("prior", "target")):
         raise LumaError("application changed outside its saved secret migration: " + job_id)
-    _grant(target, system=bool(item["system"]))
     if not _matches_expected_job(current, target):
+        _retain_revision(target, int(current["Version"]) + 1)
+        _save(journal)
+        _grant(target, system=bool(item["system"]))
         response = client.request("POST", "/v1/jobs", {"Job": target, "EnforceIndex": True, "JobModifyIndex": current["JobModifyIndex"],
                                                         "Submission": {"Source": "", "Format": "json", "Variables": "", "VariableFlags": {}}})
         if not isinstance(response, dict) or not int(response.get("JobModifyIndex") or 0):
@@ -182,18 +210,59 @@ def _upgrade_job(journal: dict[str, Any], item: dict[str, Any], state: Mapping[s
         current = client.request("GET", route)
     if not _matches_expected_job(current, target):
         raise LumaError("application does not match its submitted secret revision: " + job_id)
-    expected = _desired_group_counts_from_job(current, slug=job_id)
-    allocations = client.request("GET", route + "/allocations") or []
-    lifecycles = {group["Name"]: {task["Name"]: task.get("Lifecycle") or {} for task in group.get("Tasks") or []} for group in current["TaskGroups"]}
-    healthy, _, _ = _allocation_health(allocations, target_version=current["Version"], expected_groups=expected, task_lifecycles=lifecycles)
-    if not healthy:
-        if time.time() - int(intent.get("submittedAt") or time.time()) > 2700:
-            raise LumaError("application did not become healthy after its secret migration: " + job_id)
-        _pending("Waiting for task-bound secrets and healthy allocations: " + job_id)
+    _wait_for_job(current, client, int(intent.get("submittedAt") or time.time()))
     _write_artifacts(state, current, system=bool(item["system"]))
     _grant(current, system=bool(item["system"]))
     item.update(Job=current, authoritySHA256=authority_digest(current), secretsMigrated=True)
     item.pop("secretIntent", None)
+    _save(journal)
+
+
+def _restore_history(journal: dict[str, Any], item: dict[str, Any], client: NomadApi) -> None:
+    """Recover a protected current job evicted by an older migration version.
+
+    Registering the same spec is a Nomad no-op. A temporary VersionTag makes
+    one retained revision without changing task configuration or scheduling
+    priority. Persist its intent before submission, including for lost replies.
+    """
+    job_id = str(item["Job"]["ID"])
+    route = "/v1/job/" + urllib.parse.quote(job_id, safe="")
+    current = client.request("GET", route)
+    intent = item.get("secretHistoryIntent")
+    if not intent:
+        if current["Version"] != item["Job"]["Version"] or _untagged_digest(current) != _untagged_digest(item["Job"]):
+            raise LumaError("application changed before secret history cleanup: " + job_id)
+        versions = (client.request("GET", route + "/versions") or {}).get("Versions") or []
+        if any(job["Version"] == current["Version"] for job in versions):
+            return
+        assert_protected_job(current)
+        target = copy.deepcopy(current)
+        _retain_revision(target, int(current["Version"]) + 1)
+        intent = item["secretHistoryIntent"] = {"prior": current, "target": target, "submittedAt": int(time.time())}
+        _save(journal)
+    prior, target = intent["prior"], intent["target"]
+    if current["Version"] == prior["Version"] and job_digest(current) == job_digest(prior):
+        _grant(target, system=bool(item["system"]))
+        plan = client.request("POST", route + "/plan", {"Job": target})
+        updates = (plan.get("Annotations") or {}).get("DesiredTGUpdates")
+        if not isinstance(updates, dict) or plan.get("FailedTGAllocs") or (plan.get("Annotations") or {}).get("PreemptedAllocs") or any(
+                count for group in updates.values() for kind, count in group.items() if kind not in {"Ignore", "InPlaceUpdate"}):
+            raise LumaError("secret history recovery would disrupt allocations: " + job_id)
+        response = client.request("POST", "/v1/jobs", {"Job": target, "EnforceIndex": True, "JobModifyIndex": current["JobModifyIndex"],
+                                                        "Submission": {"Source": "", "Format": "json", "Variables": "", "VariableFlags": {}}})
+        if not isinstance(response, dict) or not int(response.get("JobModifyIndex") or 0):
+            raise LumaError("secret history recovery did not receive a verifiable job revision")
+        intent["modifyIndex"] = response["JobModifyIndex"]
+        _save(journal)
+        current = client.request("GET", route)
+    if current["Version"] != int(prior["Version"]) + 1 or job_digest(current) != job_digest(target):
+        raise LumaError("application changed outside its saved secret history recovery: " + job_id)
+    _wait_for_job(current, client, int(intent["submittedAt"]))
+    versions = (client.request("GET", route + "/versions") or {}).get("Versions") or []
+    if not any(job["Version"] == current["Version"] and _protected(job) for job in versions):
+        raise LumaError("recovered protected job is still missing from Nomad history: " + job_id)
+    item["Job"] = current
+    item.pop("secretHistoryIntent", None)
     _save(journal)
 
 
@@ -258,13 +327,33 @@ def migrate(journal: dict[str, Any], state: Mapping[str, Any]) -> dict[str, Any]
     if not progress.get("backup"):
         _private_backup(journal, client)
     if not progress.get("databaseEncrypted"):
-        database.migrate_encryption()
+        try:
+            database.migrate_encryption()
+        except database.EncryptionCleanupPending as exc:
+            started = progress.setdefault("databaseCleanupStartedAt", int(time.time()))
+            _save(journal)
+            if time.time() - started >= 600:
+                raise LumaError("SQLite cleanup was blocked for 10 minutes; encrypted data was retained") from exc
+            _pending(str(exc))
         progress["databaseEncrypted"] = True
+        progress.pop("databaseCleanupStartedAt", None)
         _save(journal)
     for item in journal["jobs"]:
         if not item.get("secretsMigrated"):
             _upgrade_job(journal, item, state, client)
-        _retire_history(client, item["Job"])
+        if not item.get("secretHistoryRetired"):
+            _restore_history(journal, item, client)
+            _retire_history(client, item["Job"])
+            # Tags change the full system grant digest too. Persist the final
+            # tag-free job so a later retry/deploy uses its actual definition.
+            current = client.request("GET", "/v1/job/" + urllib.parse.quote(str(item["Job"]["ID"]), safe=""))
+            if current["Version"] != item["Job"]["Version"] or _untagged_digest(current) != _untagged_digest(item["Job"]):
+                raise LumaError("application changed during secret history cleanup: " + str(current["ID"]))
+            assert_protected_job(current)
+            _write_artifacts(state, current, system=bool(item["system"]))
+            _grant(current, system=bool(item["system"]))
+            item.update(Job=current, secretHistoryRetired=True)
+            _save(journal)
     if not progress.get("legacyFilesArchived"):
         _archive_legacy_files(journal)
     # Nomad's GC retains running allocations. Collect retired server records

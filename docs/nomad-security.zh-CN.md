@@ -43,6 +43,8 @@
 
 Nomad HTTP 仅监听 loopback 和本机 Tailscale 地址；RPC/Serf 使用 Tailscale 地址。Linux 使用独立 nftables 表，在 Docker/CNI 的 NAT/accept 前检查，覆盖 IPv4、IPv6 和转发路径。macOS 使用 PF anchor 并重新检测 Tailscale 接口。启动前必须成功应用规则。共享 tailnet 网段不是 HTTP 或 RPC 的全量白名单。
 
+macOS 安装与定时防火墙刷新共用互斥锁，避免同时写入 PF。内核返回 `DIOCADDRULE: Resource busy` 时只做有限重试；其他错误仍立即阻止继续，应用确认只会在规则成功加载后写入。
+
 最终验证包括运行版本、原节点身份、匿名读取作业列表、详情和历史版本的 ACL 拒绝、角色权限、HTTP/RPC TLS、客户端证书验证、关闭 TLS 过渡模式、严格节点引入、实际驱动配置、卷权限、监听地址、配置摘要与已应用网络规则。作业详情和历史版本可能包含业务 Env，因此必须单独验证拒绝；缺少凭据或验证失败均不能退回匿名请求。
 
 Control 仍是受信任的基础设施管理组件：它保留既有 Docker 管理能力。Nomad Community 的 submit 权限本身也不是通用的沙箱或准入控制。不得把 Control 管理 token、宿主 root 权限或 Nomad 管理凭据交给不受信任的应用。
