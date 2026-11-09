@@ -2231,6 +2231,7 @@ class GithubImportTests(unittest.TestCase):
                     return {"message": f"{action} ok"}
 
                 def fake_deployment(_token, _body, **_kwargs):
+                    self.assertTrue(_kwargs["registry_runtime"])
                     events.append(("deploy", "luma-registry"))
                     return {"service": "luma-registry", "steps": []}
 

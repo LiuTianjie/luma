@@ -2460,6 +2460,56 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_registry_runtime_is_loaded_before_job_changes(self):
+        image = "100.64.0.70:5000/luma-cache/registry@sha256:" + "a" * 64
+        for fails in (False, True):
+            with self.subTest(load_fails=fails), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                config = root / "luma.yaml"
+                config.write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}))
+                with patch.dict(os.environ, {"LUMA_CONTROL_STATE_DIR": str(root / "state"), "LUMA_CONTROL_CONFIG": str(config)}):
+                    state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                    state["nodes"] = {"builder": {"region": "home", "nodeId": "builder-id", "labels": {"region": "home"},
+                                                  "agent": {"status": "online", "lastSeen": int(time.time()), "capabilities": ["docker-image"]}}}
+                    save_state(state)
+                    target = root / "stacks/home/luma-registry/luma-registry.nomad.json"
+                    target.parent.mkdir(parents=True)
+                    target.write_text('{"Job":{"ID":"previous"}}')
+                    prior = target.read_bytes()
+                    manifest = yaml.safe_dump({"name": "luma-registry", "image": image, "node": "builder", "region": "home", "exposure": "none"})
+                    events = []
+
+                    def load(_state, node, action, payload, **kwargs):
+                        events.append("load")
+                        self.assertEqual((node, action, payload["image"]), ("builder", "resolve-docker-image", image))
+                        self.assertEqual(kwargs["required_capability"], "docker-image")
+                        self.assertEqual(target.read_bytes(), prior)
+                        if fails:
+                            raise LumaError("target cache unavailable")
+                        return {"image": image, "deployed": image, "pulled": True}
+
+                    def submit(*args, **kwargs):
+                        events.append("submit")
+                        self.assertEqual(events, ["transport", "load", "submit"])
+                        self.assertIn(image, target.read_text())
+                        return "deployed"
+
+                    with patch("luma.control.server.resolve_service_node_pin", side_effect=lambda service, *a, **kw: service), patch(
+                        "luma.control.server.resolve_service_image", side_effect=lambda _config, service, **kw: (service, {})
+                    ), patch("luma.control.server._ensure_job_managed_registry_access", side_effect=lambda *a, **kw: events.append("transport")), patch(
+                        "luma.control.server._prepare_nomad_workload_security", side_effect=lambda _config, _state, job: job
+                    ), patch("luma.control.server._run_node_agent_task", side_effect=load), patch(
+                        "luma.control.server.deploy_to_nomad", side_effect=submit
+                    ) as deploy, patch("luma.control.server._refresh_nomad_cni_hostports_for_job", return_value={}):
+                        if fails:
+                            with self.assertRaisesRegex(LumaError, "target cache unavailable"):
+                                handle_deployment(state["deployToken"], {"manifest": manifest, "skipDns": True}, registry_runtime=True)
+                            deploy.assert_not_called()
+                            self.assertEqual(target.read_bytes(), prior)
+                        else:
+                            handle_deployment(state["deployToken"], {"manifest": manifest, "skipDns": True}, registry_runtime=True)
+                            deploy.assert_called_once()
+
     def test_pinned_deployment_renders_target_platform_manifest_digest(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
