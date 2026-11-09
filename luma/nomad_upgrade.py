@@ -549,13 +549,13 @@ def _repair_observe_startup(journal: dict[str, Any]) -> None:
         return
 
 
-def _workload_health(journal: Mapping[str, Any]) -> tuple[str, list[str]]:
+def _workload_health(journal: Mapping[str, Any], *, client: NomadApi | None = None) -> tuple[str, list[str]]:
     """Read current service health without modifying jobs or exposing check output."""
     jobs = [item["Job"] for item in journal.get("jobs") or []
             if item["Job"].get("Type") == "service" and not item["Job"].get("Stop")]
     if not jobs:
         return "", []
-    client = NomadApi("http://127.0.0.1:4646", token=nomad_token())
+    client = client or NomadApi("http://127.0.0.1:4646", token=nomad_token())
     evidence, unhealthy = [], []
     for saved in jobs:
         job_id = str(saved["ID"])
@@ -569,9 +569,18 @@ def _workload_health(journal: Mapping[str, Any]) -> tuple[str, list[str]]:
             groups = {g["Name"]: g for g in current["TaskGroups"]}
             lifecycles = {name: {t["Name"]: t.get("Lifecycle") or {} for t in g.get("Tasks") or []}
                           for name, g in groups.items()}
+            services_by_group = {name: list(g.get("Services") or []) + [s for t in g.get("Tasks") or [] for s in t.get("Services") or []]
+                                 for name, g in groups.items()}
+            # DeploymentStatus is a historical rollout verdict: a slow image
+            # pull can permanently mark it false before a task starts. For
+            # native Nomad services we verify current checks below instead.
+            # Keep Nomad's verdict when external service health is involved.
+            external_health = (any((g.get("Update") or {}).get("HealthCheck") == "manual" for g in groups.values()) or
+                               any(service.get("Provider") != "nomad" for services in services_by_group.values() for service in services))
             allocations = client.request("GET", route + "/allocations", timeout=5) or []
             healthy, _, detail = _allocation_health(allocations, target_version=current["Version"],
-                                                    expected_groups=expected, task_lifecycles=lifecycles)
+                                                    expected_groups=expected, task_lifecycles=lifecycles,
+                                                    require_deployment_health=external_health)
             if not healthy:
                 unhealthy.append(job_id + ": " + detail)
                 continue
@@ -590,7 +599,7 @@ def _workload_health(journal: Mapping[str, Any]) -> tuple[str, list[str]]:
                 evidence.append([allocation["ID"], allocation.get("NodeID"),
                                  {name: {key: task.get(key) for key in ("State", "StartedAt", "Restarts", "LastRestart")}
                                   for name, task in tasks.items()}])
-                services = list(group.get("Services") or []) + [s for t in group.get("Tasks") or [] for s in t.get("Services") or []]
+                services = services_by_group[group["Name"]]
                 checks = [check for service in services if service.get("Provider") == "nomad" for check in service.get("Checks") or []]
                 if checks:
                     results = client.request("GET", "/v1/client/allocation/" + allocation["ID"] + "/checks", timeout=5) or {}

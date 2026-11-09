@@ -724,6 +724,7 @@ def _wait_for_deployment(
 
 def _allocation_is_healthy(
     allocation: Mapping[str, Any], *, task_lifecycles: Mapping[str, Any] | None = None,
+    require_deployment_health: bool = True,
 ) -> bool:
     if str(allocation.get("DesiredStatus") or "run").strip().lower() not in {
         "run",
@@ -751,7 +752,7 @@ def _allocation_is_healthy(
     if isinstance(task_states, dict) and task_states and not tasks_are_running:
         return False
     deployment_status = allocation.get("DeploymentStatus")
-    if isinstance(deployment_status, dict) and "Healthy" in deployment_status:
+    if require_deployment_health and isinstance(deployment_status, dict) and "Healthy" in deployment_status:
         return deployment_status.get("Healthy") is True
     return tasks_are_running
 
@@ -762,6 +763,7 @@ def _allocation_health(
     target_version: int,
     expected_groups: Mapping[str, int],
     task_lifecycles: Mapping[str, Any] | None = None,
+    require_deployment_health: bool = True,
 ) -> tuple[bool, int, str]:
     active_by_group: Dict[str, List[Mapping[str, Any]]] = {
         name: [] for name in expected_groups
@@ -798,7 +800,8 @@ def _allocation_health(
         active = active_by_group.get(group, [])
         healthy = [
             allocation for allocation in active
-            if _allocation_is_healthy(allocation, task_lifecycles=(task_lifecycles or {}).get(group))
+            if _allocation_is_healthy(allocation, task_lifecycles=(task_lifecycles or {}).get(group),
+                                      require_deployment_health=require_deployment_health)
         ]
         healthy_total += len(healthy)
         if len(active) != desired or len(healthy) != desired:

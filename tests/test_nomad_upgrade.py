@@ -737,6 +737,7 @@ class UpgradeWorkflow(SecurityFixture):
 
     def test_current_checks_override_stale_deployment_health_without_exposing_output(self):
         job, allocation = self.service_health()
+        allocation["DeploymentStatus"]["Healthy"] = False
         job["TaskGroups"][0]["Services"] = [{"Provider": "nomad", "Checks": [{"Type": "tcp", "Interval": 10_000_000_000}]}]
         now = time.time()
         client = upgrade.NomadApi.return_value
@@ -750,6 +751,28 @@ class UpgradeWorkflow(SecurityFixture):
                 self.assertNotIn("secret-value", str(unhealthy))
         results = {"db": {"Status": "success", "Timestamp": now}}
         self.assertFalse(upgrade._workload_health({"jobs": self.jobs})[1])
+        secret_migration._wait_for_job(job, client, int(now))
+        allocation["TaskStates"]["app"]["Failed"] = True
+        self.assertTrue(upgrade._workload_health({"jobs": self.jobs})[1])
+        with self.assertRaises(upgrade.Pending):
+            secret_migration._wait_for_job(job, client, int(now))
+
+    def test_late_start_recovers_without_restarting_and_external_health_stays_required(self):
+        job, allocation = self.service_health()
+        allocation["DeploymentStatus"]["Healthy"] = False
+        client = upgrade.NomadApi.return_value
+        # Ordinary deploy rollout checks still honor Nomad's failure verdict.
+        self.assertFalse(upgrade._allocation_health([allocation], target_version=0, expected_groups={"app": 1})[0])
+        self.assertFalse(upgrade._workload_health({"jobs": self.jobs})[1])
+        secret_migration._wait_for_job(job, client, int(time.time()))
+        self.assertTrue(all(call.args[0] == "GET" for call in client.request.call_args_list))
+        job["TaskGroups"][0]["Services"] = [{"Provider": "consul", "Checks": [{"Type": "tcp"}]}]
+        self.assertTrue(upgrade._workload_health({"jobs": self.jobs})[1])
+        with self.assertRaises(upgrade.Pending):
+            secret_migration._wait_for_job(job, client, int(time.time()))
+        job["TaskGroups"][0]["Services"] = []
+        job["TaskGroups"][0]["Update"] = {"HealthCheck": "manual"}
+        self.assertTrue(upgrade._workload_health({"jobs": self.jobs})[1])
 
     def test_final_security_success_still_requires_healthy_services(self):
         result = self.complete()
