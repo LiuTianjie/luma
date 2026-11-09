@@ -233,7 +233,7 @@ class RegistryJoinIntegrationTests(unittest.TestCase):
             self.assertEqual(task.call_count, 1)
             self.assertEqual(task.call_args.args[2], 'join-nomad')
             self.assertEqual(task.call_args.args[3]['insecureRegistries'], [HOST])
-            self.assertEqual(task.call_args.kwargs['required_capability'], 'managed-registry-access-v2')
+            self.assertEqual(task.call_args.kwargs['required_capability'], 'nomad-security-v1')
 
     def test_agent_join_forwards_registry_policy(self):
         from luma.agent import execute_agent_task, node_agent_capabilities
@@ -248,12 +248,14 @@ class RegistryJoinIntegrationTests(unittest.TestCase):
     def test_setup_failure_prevents_nomad_install(self):
         from luma.bootstrap import install_nomad_node
         from luma.config import NodeConfig
+        from luma.nomad_security import NOMAD_VERSION
         node = NodeConfig(name='ppt', host='ppt', region='cn', roles=['cn'], raw={})
         with patch('luma.bootstrap.LocalExecutor') as executor, patch('luma.bootstrap.install_docker'), patch(
             'luma.bootstrap.setup_tailscale'), patch('luma.nomad_node.detect_os', return_value='linux'), patch(
             'luma.registry_access.configure_join_registries', side_effect=LumaError('registry unreachable')):
+            executor.return_value.sudo_result.return_value = Mock(code=1, output='')
             with self.assertRaisesRegex(LumaError, 'registry unreachable'):
-                install_nomad_node(node, role='client', region='cn', node_name='ppt', insecure_registries=[HOST])
+                install_nomad_node(node, role='client', region='cn', node_name='ppt', insecure_registries=[HOST], security={'schema': 1, 'aclRequired': True, 'nomadVersion': NOMAD_VERSION})
         executor.return_value.sudo.assert_not_called()
 
     def test_json_progress_is_flushed(self):

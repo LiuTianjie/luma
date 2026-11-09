@@ -53,6 +53,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("cdn", "Check, refresh and clean up Alibaba Cloud ESA records"),
         ("passkey", "Enroll dashboard passkeys and manage browser sign-in"),
         ("manager", "Repair manager networking, DNS and IP changes"),
+        ("security", "Prepare and apply reviewed Nomad security migrations"),
     )),
 )
 SUMMARIES = {name: summary for _group, commands in COMMAND_GROUPS for name, summary in commands}
@@ -138,6 +139,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_deploy_commands(sub)
     _add_operate_commands(sub)
     _add_cluster_commands(sub)
+    from .security import add_parser as add_security_parser
+    add_security_parser(sub)
 
     # Internal entry points used by installed node agents; never listed.
     node_agent = sub.add_parser("node-agent")
@@ -512,7 +515,7 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
             "Update the local CLI. On a manager this also refreshes Luma Control, and on a joined "
             "node it refreshes the node agent."
         ),
-        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.54\n  luma update fleet",
+        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.55\n  luma update fleet",
     )
     _add_update_arguments(update)
     _add_control_arguments(update)

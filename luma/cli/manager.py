@@ -54,6 +54,13 @@ def _find_nomad_cli() -> str:
 
 
 def local_nomad_node_info() -> tuple[str, str]:
+    from ..nomad_security import ADMIN_ROOT
+    if (ADMIN_ROOT / "agent.token").exists():
+        from ..bootstrap import local_nomad_node_info as secured_info
+        name, node_id = secured_info()
+        if not node_id:
+            raise LumaError("Nomad local node is not ready; check its scoped credential and service")
+        return name, node_id
     nomad = _find_nomad_cli()
     if not nomad:
         raise LumaError("Nomad CLI not found after install")
@@ -116,6 +123,8 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
     state = _control_state_for_bootstrap(args.domain, overwrite=args.overwrite_control_state)
     _attach_control_secrets(state, config)
     bootstrap_manager_local(config, node, profile, args.domain, state, run_egress=not args.skip_egress, emit=log, overwrite_control_state=args.overwrite_control_state)
+    _try_refresh_manager_agent(args)
+    _start_manager_security()
     control_url = _control_url(args.domain, args.https_port or _config_https_port(config))
     print("Bootstrap complete")
     print(f"Control domain: {args.domain}")
@@ -168,7 +177,8 @@ def cmd_update(args: argparse.Namespace) -> int:
         _refresh_manager_control(args)
         print("[ok] Manager control plane refreshed")
         _try_refresh_manager_agent(args)
-        print("[ok] Manager update complete")
+        _start_manager_security()
+        print("[ok] Manager package update complete; Nomad security progress is reported separately")
         return 0
 
     should_refresh, reason = _manager_refresh_decision(args)
@@ -179,13 +189,14 @@ def cmd_update(args: argparse.Namespace) -> int:
         _refresh_manager_control(args)
         print("[ok] Manager control plane refreshed")
         _try_refresh_manager_agent(args)
-        print("[ok] Manager update complete")
+        _start_manager_security()
+        print("[ok] Manager package update complete; Nomad security progress is reported separately")
         return 0
 
     if _local_agent_config() or _safe_local_nomad_node_id():
         print("[info] Role: joined node")
         _refresh_joined_node_agent(args)
-        print("[ok] Joined node update complete")
+        print("[ok] Node agent updated; automatic Nomad security migration may still be pending")
         return 0
 
     print("[info] Role: client")
@@ -207,6 +218,7 @@ def _cmd_update_fleet(args: argparse.Namespace) -> int:
         _refresh_manager_control(args)
         print("[ok] Manager control plane refreshed")
         _try_refresh_manager_agent(args)
+        _start_manager_security()
     else:
         print(f"[skip] Local manager control-plane refresh skipped: {reason}")
     endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
@@ -241,40 +253,35 @@ def _cmd_update_fleet(args: argparse.Namespace) -> int:
         f"[ok] Fleet update finished: {int(result.get('succeeded') or 0)} succeeded, "
         f"{int(result.get('failed') or 0)} failed, {int(result.get('skipped') or 0)} skipped"
     )
+    security = result.get("nomadSecurity") or {}
+    if security:
+        print(f"[{security.get('status') or 'pending'}] Nomad security: {security.get('message') or 'verification pending'}")
     return 1 if int(result.get("failed") or 0) else 0
 
 
 def _try_refresh_manager_agent(args: argparse.Namespace) -> None:
     state = _existing_control_state()
     if not state:
-        print("[skip] Manager node agent skipped: local manager control state not found")
-        return
+        raise LumaError("manager agent update requires local manager control state")
     domain = str(state.get("domain") or "").strip()
-    token = str(state.get("joinToken") or state.get("deployToken") or "").strip()
+    token = str(state.get("deployToken") or "").strip()
     if not domain or not token:
-        print("[skip] Manager node agent skipped: control domain or token is missing")
-        return
-    try:
-        endpoint = _control_url(domain, args.https_port or _config_https_port(load_config(args.config)))
-        _refresh_local_node_agent(endpoint=endpoint, token=token, insecure=bool(getattr(args, "insecure", False)), resolve_ip=getattr(args, "resolve_ip", None), allow_skip=True)
-    except LumaError as exc:
-        print(f"[skip] Manager node agent skipped: {exc}")
+        raise LumaError("manager agent update requires the control domain and management credential")
+    endpoint = _control_url(domain, args.https_port or _config_https_port(load_config(args.config)))
+    _refresh_local_node_agent(endpoint=endpoint, token=token, insecure=bool(getattr(args, "insecure", False)), resolve_ip=getattr(args, "resolve_ip", None), allow_skip=False)
+
+
+def _start_manager_security() -> None:
+    remote = LocalExecutor()
+    remote.sudo(shlex.join([sys.executable, "-m", "luma.nomad_upgrade", "prepare"]))
+    remote.sudo(shlex.join([sys.executable, "-m", "luma.nomad_upgrade", "install"]))
+    print("[pending] Nomad security migration runs automatically and waits for upgraded nodes; check the system update page for verified completion")
 
 
 def _refresh_joined_node_agent(args: argparse.Namespace) -> None:
     if getattr(args, "control_url", None) or getattr(args, "token", None):
-        try:
-            endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
-        except LumaError as exc:
-            print(f"[skip] Luma node agent skipped: joined node control context is unavailable ({exc})")
-            return
-        try:
-            _refresh_local_node_agent(endpoint=endpoint, token=token, insecure=insecure, resolve_ip=resolve_ip, allow_skip=False)
-        except LumaError as exc:
-            if _node_agent_credentials_unsupported(exc) or _node_agent_credentials_unregistered(exc):
-                print(f"[skip] Luma node agent skipped: {exc}")
-                return
-            raise
+        endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+        _refresh_local_node_agent(endpoint=endpoint, token=token, insecure=insecure, resolve_ip=resolve_ip, allow_skip=False)
         return
 
     config = _local_agent_config()
@@ -295,18 +302,8 @@ def _refresh_joined_node_agent(args: argparse.Namespace) -> None:
             )
             print("[ok] Luma node agent refreshed")
             return
-    try:
-        endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
-    except LumaError as exc:
-        print(f"[skip] Luma node agent skipped: joined node control context is unavailable ({exc})")
-        return
-    try:
-        _refresh_local_node_agent(endpoint=endpoint, token=token, insecure=insecure, resolve_ip=resolve_ip, allow_skip=False)
-    except LumaError as exc:
-        if _node_agent_credentials_unsupported(exc) or _node_agent_credentials_unregistered(exc):
-            print(f"[skip] Luma node agent skipped: {exc}")
-            return
-        raise
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    _refresh_local_node_agent(endpoint=endpoint, token=token, insecure=insecure, resolve_ip=resolve_ip, allow_skip=False)
 
 
 def _refresh_local_node_agent(
@@ -323,7 +320,7 @@ def _refresh_local_node_agent(
         if allow_skip:
             raise LumaError(message)
         raise LumaError(message + "; run this command on a joined node")
-    client = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    client = common.ControlClient(endpoint, token, insecure=False, resolve_ip=None)
     print("[start] Request node agent credentials")
     issued = client.issue_agent_token(node_name=local_name, node_id=local_id)
     node_name = str(issued.get("nodeName") or "")
@@ -338,8 +335,8 @@ def _refresh_local_node_agent(
         agent_token=agent_token,
         node_name=node_name,
         node_id=local_id,
-        insecure=insecure,
-        resolve_ip=resolve_ip,
+        insecure=False,
+        resolve_ip=None,
     )
     print("[ok] Luma node agent installed")
 

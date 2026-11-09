@@ -279,7 +279,7 @@ class ProductConfigTests(unittest.TestCase):
                 response.headers = {}
                 return response
 
-            with patch('urllib.request.urlopen', side_effect=slow_lease_response) as opened, patch(
+            with patch('urllib.request.OpenerDirector.open', side_effect=slow_lease_response) as opened, patch(
                 'luma.control.client.time.monotonic', side_effect=lambda: elapsed
             ), patch('luma.agent.node_agent_container_stats', return_value=[]), patch(
                 'luma.agent.node_agent_metrics', return_value={}
@@ -1421,24 +1421,24 @@ class ProductConfigTests(unittest.TestCase):
             installer.index('CANDIDATE_DIR="$(mktemp -d'),
         )
 
-    def test_public_port_guards_install_docker_user_proxy_guard(self):
+    def test_public_port_guards_install_independent_nomad_and_proxy_guard(self):
         remote = Mock()
-        remote.run_result.return_value = Mock(code=0, output="Linux\n")
+        remote.run_result.side_effect = lambda command: Mock(code=0, output="100.64.0.10\n" if "tailscale ip" in command else "Linux\n")
+        remote.sudo_result.return_value = Mock(code=1, output="")
         remote.sudo.return_value = ""
 
-        result = configure_public_port_guards(remote)
+        result = configure_public_port_guards(remote, nomad_peers=["100.64.0.2"])
 
-        self.assertEqual(result, "Public port guards installed")
-        command = remote.sudo.call_args.args[0]
-        self.assertIn("luma-public-port-guards.service", command)
-        self.assertIn("restrict_nomad_public=no", command)
-        self.assertIn("add_input_drop tcp 7890", command)
-        self.assertIn("add_prerouting_drop tcp 7890", command)
-        self.assertIn("add_docker_drop tcp 7890", command)
-        self.assertIn("-t raw -I PREROUTING", command)
-        self.assertIn("DOCKER-USER", command)
-        self.assertIn("systemctl enable luma-public-port-guards.service", command)
-        self.assertIn("systemctl restart luma-public-port-guards.service", command)
+        self.assertEqual(result, "Nomad network boundary installed and applied")
+        rules = next(call.args[0] for call in remote.write_secret.call_args_list if call.args[1].endswith("firewall.rules"))
+        self.assertIn("table inet luma_nomad", rules)
+        self.assertIn("hook prerouting priority -310", rules)
+        self.assertIn("hook forward priority -310", rules)
+        self.assertIn("4646, 4647, 4648, 7890", rules)
+        commands = "\n".join(call.args[0] for call in remote.sudo.call_args_list)
+        self.assertIn("systemctl restart luma-nomad-guard.service", commands)
+        self.assertIn("ufw insert 1 allow in on tailscale0 to any port 7890", commands)
+        self.assertIn("ufw insert 1 allow in on docker0 to any port 7890", commands)
 
     def test_configure_firewall_restricts_nomad_public_when_tailscale_is_present(self):
         remote = Mock()
@@ -1451,18 +1451,18 @@ class ProductConfigTests(unittest.TestCase):
             return Mock(code=1, output="")
 
         remote.run_result.side_effect = run_result
+        remote.sudo_result.return_value = Mock(code=1, output="")
         remote.sudo.return_value = ""
 
-        result = configure_firewall(remote)
+        result = configure_firewall(remote, nomad_peers=["100.64.0.2"])
 
-        self.assertEqual(result, "Firewall configured")
-        ufw_command = remote.sudo.call_args_list[0].args[0]
-        guard_command = remote.sudo.call_args_list[1].args[0]
+        self.assertIn("Nomad ports restricted", result)
+        ufw_command = next(call.args[0] for call in remote.sudo.call_args_list if "ufw allow OpenSSH" in call.args[0])
         self.assertIn("ufw deny 7890/tcp", ufw_command)
-        self.assertIn("ufw allow 4647/tcp", ufw_command)
-        self.assertIn("restrict_nomad_public=yes", guard_command)
-        self.assertIn("add_input_drop tcp 4647", guard_command)
-        self.assertIn("add_input_drop udp 4648", guard_command)
+        self.assertIn("ufw --force delete allow 4647/tcp", ufw_command)
+        self.assertNotIn("ufw allow 4647/tcp", ufw_command)
+        rules = next(call.args[0] for call in remote.write_secret.call_args_list if call.args[1].endswith("firewall.rules"))
+        self.assertIn('iifname "tailscale0" ip saddr 100.64.0.2 tcp dport 4647 return', rules)
 
     def test_configure_firewall_allows_configured_tcp_ports(self):
         remote = Mock()
@@ -1471,15 +1471,16 @@ class ProductConfigTests(unittest.TestCase):
             if command == "uname -s":
                 return Mock(code=0, output="Linux\n")
             if "tailscale ip -4" in command:
-                return Mock(code=1, output="")
+                return Mock(code=0, output="100.64.0.10\n")
             return Mock(code=1, output="")
 
         remote.run_result.side_effect = run_result
+        remote.sudo_result.return_value = Mock(code=1, output="")
         remote.sudo.return_value = ""
 
-        configure_firewall(remote, tcp_ports=[3306])
+        configure_firewall(remote, tcp_ports=[3306], nomad_peers=[])
 
-        ufw_command = remote.sudo.call_args_list[0].args[0]
+        ufw_command = next(call.args[0] for call in remote.sudo.call_args_list if "ufw allow OpenSSH" in call.args[0])
         self.assertIn("ufw allow 3306/tcp", ufw_command)
 
     def test_configure_tailscale_watchdog_installs_systemd_timer(self):
@@ -1682,33 +1683,32 @@ class ProductConfigTests(unittest.TestCase):
         ):
             self.assertEqual(_find_nomad_cli(), "/usr/local/bin/nomad")
 
-    def test_remote_nomad_detection_checks_common_install_paths(self):
+    def test_remote_nomad_detection_uses_authenticated_host_helper(self):
         from luma.bootstrap import local_nomad_node_info
 
         remote = Mock()
         remote.run_result.return_value = Mock(code=1, output="")
+        remote.sudo_result.return_value = Mock(code=1, output="")
 
         local_nomad_node_info(remote)
 
-        command = remote.run_result.call_args_list[0].args[0]
-        self.assertIn("elif test -x /usr/local/bin/nomad", command)
-        self.assertIn("elif test -x /opt/homebrew/bin/nomad", command)
-        self.assertIn('"$nomad_bin" node status -self -json', command)
+        command = remote.sudo_result.call_args.args[0]
+        self.assertIn("luma.nomad_admin local-info", command)
 
     def test_nomad_job_deploy_uses_unique_tmp_file(self):
         remote = Mock()
         result = _deploy_nomad_job(remote, '{"Job":{"ID":"traefik"}}', "traefik")
 
-        command = remote.run.call_args.args[0]
+        command = remote.sudo.call_args.args[0]
         self.assertEqual(result, "Nomad job deployed: traefik")
         self.assertIn("mktemp /tmp/luma-nomad-job.", command)
         self.assertIn("trap 'rm -f \"$tmp\"' EXIT", command)
-        self.assertIn('nomad job run -json "$tmp"', command)
+        self.assertIn('luma.nomad_admin submit-system "$tmp"', command)
         self.assertNotIn("/tmp/traefik.nomad.json", command)
 
     def test_nomad_job_deploy_explains_tmpfs_noswap_failure(self):
         remote = Mock()
-        remote.run.side_effect = LumaError(
+        remote.sudo.side_effect = LumaError(
             "local command failed:\n"
             "prestart hook \"task_dir\" failed: mount: invalid argument\n"
             "tmpfs: Unknown parameter 'noswap'"

@@ -84,6 +84,8 @@ docker buildx imagetools inspect "$CONTROL_IMAGE"
 
 ### 兼容版本升级 {#compatible-release-upgrades}
 
+ACL/mTLS 启用是独立的兼容性边界。[Nomad 安全迁移](../nomad-security.zh-CN.md) 激活后，必须使用支持 ACL/mTLS 的 Control 和 CLI，旧匿名访问版本不能作为仅回滚任务的目标。宿主上的 Nomad CLI 操作通过 `sudo python -m luma.nomad_admin exec --` 加载限定角色凭据和 TLS 文件，避免把 token 放进命令参数。
+
 CLI 源码归档和绑定提交的 Control 镜像应使用同一完整提交。`install-luma.sh` 的 `LUMA_INSTALL_REF` 支持完整的 40 位 Git 提交，因此 Manager 和集群更新无需依赖可变的分支名。修改 Manager 之前，在变更记录中保存当前 Nomad 任务版本和镜像：
 
 ```bash
@@ -108,7 +110,7 @@ curl --fail --silent --show-error https://luma.example.net/v1/health
 nomad job status luma-control
 ```
 
-当前 Manager 更新流程保留 Control 状态和用户任务，但会协调防火墙 TCP 中继端口、带 `edge` 角色 Manager 上的 Traefik、watchdog、已安装配置与状态，以及 `luma-control` Nomad 任务。它不会重启 Docker 或 Nomad、执行出口设置，或重新部署用户应用。应将其视为控制面维护变更，在更新后检查通过之前，保留上述变更前记录。
+当前 Manager 更新流程保留 Control 状态和用户任务，但会协调防火墙 TCP 中继端口、带 `edge` 角色 Manager 上的 Traefik、watchdog、已安装配置与状态，以及 `luma-control` Nomad 任务。它还会安装独立的安全升级服务，等待新版节点 Agent 就绪后升级并重启 Nomad，验证 ACL/mTLS；Docker 和业务应用保留既有配置。应将其视为控制面维护变更，在更新后检查通过之前，保留上述变更前记录。
 
 兼容升级使用 Nomad `AutoRevert`，但运维人员仍须验证公共健康端点和实际运行镜像。如果新 Control 实例不健康，立即恢复之前的 Nomad 任务：
 
@@ -148,7 +150,7 @@ export LUMA_CONTROL_IMAGE="$PREVIOUS_CONTROL_IMAGE"
 5. 创建标签，发布带版本的镜像、GitHub 归档和 PyPI 包：
 
 ```bash
-git tag v0.2.54
+git tag v0.2.55
 git push origin main --tags
 ```
 
@@ -157,13 +159,13 @@ git push origin main --tags
 6. CI 用户使用以下方式安装：
 
 ```bash
-python -m pip install "luma-infra==0.2.54"
+python -m pip install "luma-infra==0.2.55"
 ```
 
 交互式使用仍可采用：
 
 ```bash
-export LUMA_INSTALL_REF=v0.2.54
+export LUMA_INSTALL_REF=v0.2.55
 curl -fsSL "https://raw.githubusercontent.com/LiuTianjie/luma/$LUMA_INSTALL_REF/scripts/install-luma.sh" -o /tmp/install-luma.sh && sh /tmp/install-luma.sh
 ```
 
@@ -181,6 +183,8 @@ curl -fsSL "https://raw.githubusercontent.com/LiuTianjie/luma/$LUMA_INSTALL_REF/
 6. 在同一页面重试失败或中断的镜像、Manager 或节点操作。
 
 Control 持久化镜像准备和集群操作。镜像准备使用 Builder 的 `control-image-mirror-v1` 能力及配置的 `registryHost` / `pushHost`，代理不会暴露给浏览器。Manager 更新运行于独立的临时 systemd 单元，因此刷新 Manager 节点 agent 不会终止由它启动的更新。只有安装器执行完毕，且新心跳报告目标发布版本后，集群节点才被视为更新成功。CLI 更新命令保留用于应急和首次接入；常规发布无需使用。
+
+还需等待「集群安全升级 → 全部验证通过」。软件版本对齐不代表 Nomad 安全迁移已经完成。
 
 用户可以卸载本地 CLI：
 
@@ -201,7 +205,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninst
 ```yaml
 defaults:
   images:
-    lumaControl: ghcr.io/liutianjie/luma-control:v0.2.54
+    lumaControl: ghcr.io/liutianjie/luma-control:v0.2.55
 ```
 
 ## 最新版本渠道 {#latest-channel}
@@ -217,7 +221,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 CI 应优先使用固定版本的 PyPI 包：
 
 ```bash
-python -m pip install "luma-infra==0.2.54"
+python -m pip install "luma-infra==0.2.55"
 ```
 
 ## 自定义托管地址或派生仓库 {#custom-host-or-fork}
@@ -227,7 +231,7 @@ python -m pip install "luma-infra==0.2.54"
 ```bash
 curl -fsSL https://example.com/install-luma.sh | \
   LUMA_REPO_URL=https://github.com/acme/luma \
-  LUMA_INSTALL_REF=v0.2.54 \
+  LUMA_INSTALL_REF=v0.2.55 \
   sh
 ```
 

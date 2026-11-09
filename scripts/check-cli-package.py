@@ -33,10 +33,13 @@ from luma import skills
 from luma.cli import build_parser
 from luma.cli.main import main
 from luma import command_session
+from luma import nomad_upgrade, nomad_migration_node, nomad_pki, nomad_consumer
 
 assert Path(luma.__file__).is_relative_to(target), luma.__file__
 assert skills.bundle_root().is_relative_to(target), skills.bundle_root()
 assert Path(command_session.__file__).is_relative_to(target)
+for module in (nomad_upgrade, nomad_migration_node, nomad_pki, nomad_consumer):
+    assert Path(module.__file__).is_relative_to(target), module.__file__
 for args in (
     ['observe', 'status', '--format', 'json'],
     ['observe', 'app', 'example', '--since', '1h', '--service', 'worker'],

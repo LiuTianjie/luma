@@ -134,6 +134,12 @@ fixed SQLite-compatible release when those later changes must be retained.
 
 ### Compatible release upgrades
 
+ACL/mTLS activation is a separate compatibility boundary. After activating the
+[Nomad security migration](../nomad-security.md), keep an ACL/mTLS-aware Control
+and CLI; the legacy anonymous-only release cannot serve as a job-only rollback.
+Run host Nomad CLI operations through `sudo python -m luma.nomad_admin exec --`
+to load the scoped credential and TLS files without putting tokens in argv.
+
 Use the same full commit for the CLI source archive and the commit-scoped
 Control image. `install-luma.sh` accepts a full 40-character Git commit as
 `LUMA_INSTALL_REF`, so manager and fleet updates do not need a mutable branch
@@ -166,8 +172,10 @@ nomad job status luma-control
 The current manager update path preserves Control state and user jobs, but it
 does reconcile firewall TCP relay ports, Traefik when the manager has the
 `edge` role, the watchdog, installed config/state, and the `luma-control` Nomad
-job. It does not restart Docker or Nomad, run egress setup, or redeploy user
-applications. Treat it as a control-plane maintenance change and keep the
+job. It also installs the independent Nomad security supervisor, which waits
+for updated node agents before upgrading and restarting Nomad and verifying
+ACL/mTLS. Docker and business applications keep their existing configuration.
+Treat it as a control-plane maintenance change and keep the
 pre-change values above until post-update checks pass.
 
 Compatible upgrades use Nomad `AutoRevert`, but operators must still verify the
@@ -213,7 +221,7 @@ The package distribution name is `luma-infra`; the installed console command rem
 5. Create a tag to publish a versioned image, GitHub archive, and PyPI package:
 
 ```bash
-git tag v0.2.54
+git tag v0.2.55
 git push origin main --tags
 ```
 
@@ -222,13 +230,13 @@ The `Publish Python Package` workflow builds wheel and sdist, runs `twine check`
 6. CI users install with:
 
 ```bash
-python -m pip install "luma-infra==0.2.54"
+python -m pip install "luma-infra==0.2.55"
 ```
 
 Interactive users can still install with:
 
 ```bash
-export LUMA_INSTALL_REF=v0.2.54
+export LUMA_INSTALL_REF=v0.2.55
 curl -fsSL "https://raw.githubusercontent.com/LiuTianjie/luma/$LUMA_INSTALL_REF/scripts/install-luma.sh" -o /tmp/install-luma.sh && sh /tmp/install-luma.sh
 ```
 
@@ -244,6 +252,8 @@ After both package and Control-image workflows succeed, open Dashboard → Setti
 4. verify the automatic post-update route sentinel;
 5. update only non-manager nodes whose reported agent version differs from the release;
 6. retry any failed or interrupted image, manager, or node operation from the same page.
+7. wait for **Cluster security upgrade → All checks passed**; package version
+   alignment alone does not confirm that Nomad security migration finished.
 
 Control-image preparation and fleet operations are persisted by Control. The image preparation uses the Builder's `control-image-mirror-v1` capability and the configured `registryHost` / `pushHost`; its proxy is never exposed to the browser. Manager updates run in an independent transient systemd unit, so refreshing the manager node agent cannot terminate the rollout that started it. A fleet node is successful only after the installer finishes and a new heartbeat reports the target release version. CLI update commands remain break-glass and first-adoption fallbacks; they are not required for normal releases.
 
@@ -266,7 +276,7 @@ The default control image is `ghcr.io/liutianjie/luma-control:latest`. If you wa
 ```yaml
 defaults:
   images:
-    lumaControl: ghcr.io/liutianjie/luma-control:v0.2.54
+    lumaControl: ghcr.io/liutianjie/luma-control:v0.2.55
 ```
 
 ## Latest Channel
@@ -282,7 +292,7 @@ This is convenient but less reproducible than a tag. For real users, prefer a ve
 For CI, prefer the pinned PyPI package:
 
 ```bash
-python -m pip install "luma-infra==0.2.54"
+python -m pip install "luma-infra==0.2.55"
 ```
 
 ## Custom Host Or Fork
@@ -292,7 +302,7 @@ Use these environment variables when the code is hosted somewhere else:
 ```bash
 curl -fsSL https://example.com/install-luma.sh | \
   LUMA_REPO_URL=https://github.com/acme/luma \
-  LUMA_INSTALL_REF=v0.2.54 \
+  LUMA_INSTALL_REF=v0.2.55 \
   sh
 ```
 

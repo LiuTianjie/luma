@@ -11,15 +11,14 @@ explain WHY, not just WHAT.
 
 import os
 import re
+import json
 import subprocess
 from typing import Dict, List, Optional
 
 from .errors import LumaError
+from .nomad_security import NOMAD_VERSION, NOMAD_SHA256, mesh_ip, rpc_host
+from .nomad_firewall import GUARD
 
-# Pinned, battle-tested release. The checkpoint "latest" endpoint served 2.0.x
-# (days old, with a node-introduction-token enforcement that complicates join);
-# a reliability migration must not run on a brand-new major.
-NOMAD_VERSION = "1.9.7"
 CNI_PLUGINS_VERSION = "1.6.2"
 
 # Heuristic clock for Apple Silicon. Nomad's CPU fingerprint reports a garbage
@@ -81,6 +80,14 @@ def render_agent_config(
     server_addrs: Optional[List[str]] = None,
     cpu_total_compute: Optional[int] = None,
     extra_meta: Optional[Dict[str, str]] = None,
+    acl_enabled: bool = True,
+    trusted_host: bool = False,
+    client_enabled: bool = True,
+    version: str = NOMAD_VERSION,
+    tls: Optional[Dict[str, str]] = None,
+    tls_http: bool = True,
+    rpc_upgrade_mode: bool = False,
+    introduction_strict: bool = True,
 ) -> str:
     """Render a Nomad agent HCL config from detected node facts.
 
@@ -92,14 +99,23 @@ def render_agent_config(
         raise LumaError("tailscale_ip is required (Nomad advertises over the Tailscale mesh)")
     if role == "client" and not server_addrs:
         raise LumaError("client role requires server_addrs to join")
+    tailscale_ip = mesh_ip(tailscale_ip)
+    for address in server_addrs or []:
+        rpc_host(address)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", node_name):
+        raise LumaError("invalid Nomad node name")
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise LumaError("invalid Nomad version")
 
     lines: List[str] = []
     lines.append('data_dir = "/opt/nomad/data"')
-    # bind 0.0.0.0 so the HTTP API is reachable on 127.0.0.1 (Luma Control's
-    # default nomadAddr) AND on Tailscale. The host firewall (ufw, public-iface
-    # DROP) keeps 4646/4647/4648 off the public interface, so 0.0.0.0 is safe.
-    # Binding only the Tailscale IP broke Control's localhost client.
-    lines.append('bind_addr = "0.0.0.0"')
+    lines.append(f'name = {json.dumps(node_name)}')
+    lines.append(f'bind_addr = "{tailscale_ip}"')
+    # HTTP supports multiple literal addresses. Keep localhost for Control and
+    # node diagnostics, without making every public/LAN NIC a listener.
+    lines.extend(["addresses {", f'  http = "127.0.0.1 {tailscale_ip}"', f'  rpc = "{tailscale_ip}"', f'  serf = "{tailscale_ip}"', "}"])
+    lines.extend(["acl {", f"  enabled = {str(acl_enabled).lower()}", "}"])
+    lines.append("disable_update_check = true")
     lines.append("")
     lines.append("advertise {")
     lines.append(f'  http = "{tailscale_ip}"')
@@ -116,45 +132,61 @@ def render_agent_config(
         # before declaring a client lost.
         lines.append('  heartbeat_grace   = "30s"')
         lines.append('  min_heartbeat_ttl = "15s"')
+        if tuple(int(v) for v in version.split(".")) >= (2, 0, 0):
+            lines.extend(["  client_introduction {", f'    enforcement = "{"strict" if introduction_strict else "warn"}"', '    default_identity_ttl = "10m"', '    max_identity_ttl = "30m"', "  }"])
         lines.append("}")
         lines.append("")
 
     lines.append("client {")
-    lines.append("  enabled = true")
+    lines.append(f"  enabled = {str(client_enabled).lower()}")
+    lines.extend(['  options = {', '    "driver.allowlist" = "docker"', '  }'])
+    lines.extend(["  template {", "    disable_file_sandbox = false", "  }"])
     if cpu_total_compute:
         lines.append(f"  cpu_total_compute = {int(cpu_total_compute)}")
     if role == "client":
-        joins = ", ".join(f'"{a}"' for a in (server_addrs or []))
+        joins = ", ".join(json.dumps(a) for a in (server_addrs or []))
         lines.append("  server_join {")
         lines.append(f"    retry_join = [{joins}]")
         lines.append("  }")
     lines.append("  meta {")
-    lines.append(f'    region         = "{region}"')
+    lines.append(f'    region         = {json.dumps(region)}')
     lines.append(f'    luma_node_name = "{node_name}"')
     # Edge ingress runs on the manager while tenant allocations may run on any
     # Tailscale-connected client. Nomad's default host service address can be a
     # provider-private LAN address, so publish the mesh address as schedulable
     # node metadata for runtime service interpolation.
     lines.append(f'    luma_tailscale_ip = "{tailscale_ip}"')
+    lines.append(f'    luma_host_access = "{"trusted" if trusted_host else "isolated"}"')
     for k, v in (extra_meta or {}).items():
-        lines.append(f'    {k} = "{v}"')
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", k) or k in {"region", "luma_node_name", "luma_tailscale_ip", "luma_host_access"}:
+            raise LumaError("invalid or reserved Nomad node metadata key")
+        lines.append(f'    {k} = {json.dumps(str(v))}')
     lines.append("  }")
     lines.append("}")
     lines.append("")
 
-    # Host bind mounts (egress config, Control's own /opt/luma mounts, Traefik
-    # dynamic dir) require volumes enabled — Nomad's docker driver forbids host
-    # paths by default. Named volumes work without this, but core components use
-    # host paths, so always enable.
+    # Ordinary workers cannot bind arbitrary host paths. Administrators may
+    # explicitly designate a trusted system/storage node after reviewing its
+    # running jobs; Control separately enforces grants for those jobs.
     lines.append('plugin "docker" {')
     lines.append("  config {")
     lines.append('    pull_activity_timeout = "30m"')
     lines.append('    extra_labels = ["job_id", "job_name", "task_group_name", "task_name"]')
+    lines.append("    allow_privileged = false")
+    lines.append('    allow_caps = ["chown", "dac_override", "fowner", "fsetid", "kill", "net_bind_service", "setgid", "setuid", "sys_chroot"]')
+    if tuple(int(v) for v in version.split(".")) >= (2, 0, 0):
+        lines.append('    allowed_modes = { pid = [""], ipc = ["", "private"], userns = [""], uts = [""] }')
     lines.append("    volumes {")
-    lines.append("      enabled = true")
+    lines.append(f"      enabled = {str(trusted_host).lower()}")
     lines.append("    }")
     lines.append("  }")
     lines.append("}")
+    if tls:
+        if set(tls) != {"ca_file", "cert_file", "key_file"} or not all(str(p).startswith("/") for p in tls.values()):
+            raise LumaError("Nomad TLS requires absolute ca_file, cert_file and key_file paths")
+        lines.extend(["tls {", f"  http = {str(tls_http).lower()}", "  rpc = true", "  verify_https_client = true", "  verify_server_hostname = true", f"  rpc_upgrade_mode = {str(rpc_upgrade_mode).lower()}"])
+        lines.extend(f"  {key} = {json.dumps(str(value))}" for key, value in tls.items())
+        lines.append("}")
     lines.append("")
     return "\n".join(lines)
 
@@ -185,6 +217,7 @@ def install_nomad_commands(
     )
     return {
         "download_url": url,
+        "sha256": NOMAD_SHA256[plat],
         "config": config_hcl,
         "service_kind": service_kind,
         "service_unit": service_unit,
@@ -214,8 +247,11 @@ def _systemd_unit() -> str:
         "Description=Nomad\n"
         "Wants=network-online.target docker.service tailscaled.service\n"
         "After=network-online.target docker.service tailscaled.service\n"
+        "Requires=luma-nomad-guard.service\n"
+        "After=luma-nomad-guard.service\n"
         "StartLimitIntervalSec=0\n\n"
         "[Service]\n"
+        f"ExecStartPre={GUARD}\n"
         "ExecStart=/usr/local/bin/nomad agent -config /etc/nomad.d\n"
         "ExecReload=/bin/kill -HUP $MAINPID\n"
         "KillMode=process\n"
@@ -237,8 +273,8 @@ def _launchd_plist() -> str:
         '<plist version="1.0"><dict>\n'
         "  <key>Label</key><string>io.luma.nomad</string>\n"
         "  <key>ProgramArguments</key>\n"
-        "  <array><string>/usr/local/bin/nomad</string><string>agent</string>"
-        "<string>-config</string><string>/etc/nomad.d</string></array>\n"
+        "  <array><string>/bin/sh</string><string>-c</string>"
+        f"<string>{GUARD} &amp;&amp; exec /usr/local/bin/nomad agent -config /etc/nomad.d</string></array>\n"
         "  <key>RunAtLoad</key><true/>\n"
         "  <key>KeepAlive</key><true/>\n"
         "  <key>StandardErrorPath</key><string>/var/log/nomad.log</string>\n"

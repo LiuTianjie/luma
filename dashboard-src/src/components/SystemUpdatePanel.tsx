@@ -18,6 +18,7 @@ import {
   getControlImagePreparation,
   getFleetUpdate,
   getManagerUpdate,
+  getNomadSecurityUpdate,
   listFleetUpdates,
   runRouteSentinel,
   startControlImagePreparation,
@@ -26,6 +27,7 @@ import {
   type ControlImagePreparation,
   type FleetUpdateOperation,
   type ManagerUpdate,
+  type NomadSecurityUpdate,
   type RouteSentinel,
 } from "../systemUpdateApi";
 import { formatDateTime } from "../format";
@@ -103,6 +105,8 @@ export function SystemUpdatePanel({
   const [manager, setManager] = useState<ManagerUpdate | null>(null);
   const [imagePreparation, setImagePreparation] = useState<ControlImagePreparation | null>(null);
   const [fleet, setFleet] = useState<FleetUpdateOperation | null>(null);
+  const [nomadSecurity, setNomadSecurity] = useState<NomadSecurityUpdate | null>(null);
+  const [securityError, setSecurityError] = useState("");
   const [sentinel, setSentinel] = useState<RouteSentinel | null>(null);
   const [baseline, setBaseline] = useState<RouteSentinel | null>(null);
   const [busy, setBusy] = useState<"manager" | "image" | "fleet" | "sentinel" | "">("");
@@ -143,6 +147,22 @@ export function SystemUpdatePanel({
       setBusy("");
     }
   }, [token]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const refresh = () => {
+      void getNomadSecurityUpdate(token, controller.signal).then((status) => {
+        if (controller.signal.aborted) return;
+        setNomadSecurity(status);
+        setSecurityError("");
+      }).catch(() => {
+        if (!controller.signal.aborted) setSecurityError(zh ? "未能验证安全升级状态，恢复连接后会自动重试。" : "Security upgrade status could not be verified; retrying when Control reconnects.");
+      });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 5000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, [token, zh]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -329,6 +349,20 @@ export function SystemUpdatePanel({
       {error ? <Alert variant="destructive"><XCircle /><AlertTitle>{zh ? "操作失败" : "Operation failed"}</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
       {statusLoadError ? <Alert variant="destructive"><XCircle /><AlertTitle>{zh ? "未能读取升级状态" : "Could not load update status"}</AlertTitle><AlertDescription className="flex flex-col items-start gap-3"><p>{zh ? "重新读取现有任务后即可继续升级，避免重复启动正在进行的任务。" : "Reload existing operations before starting an update to avoid starting a duplicate operation."}</p><p>{statusLoadError}</p><Button type="button" variant="outline" disabled={loading} onClick={() => setLoadAttempt((attempt) => attempt + 1)}><RefreshCw data-icon="inline-start" />{zh ? "重新读取状态" : "Reload status"}</Button></AlertDescription></Alert> : null}
       {reconnecting ? <Alert role="status"><Spinner aria-hidden="true" /><AlertTitle>{zh ? "正在重连 Control" : "Reconnecting to Control"}</AlertTitle><AlertDescription>{zh ? "Control 正在切换，页面会自动恢复连接。" : "Control is switching. This page will reconnect automatically."}</AlertDescription></Alert> : null}
+
+      <Card aria-live="polite">
+        <CardHeader>
+          <CardTitle>{zh ? "集群安全升级" : "Cluster security upgrade"}</CardTitle>
+          <CardDescription>{zh ? "控制面与节点软件更新后，自动迁移并验证节点认证、加密连接、容器权限和网络防护。" : "After Control and node software updates, automatically migrate and verify node authentication, encrypted connections, container permissions and network protection."}</CardDescription>
+          <CardAction><Badge variant={securityError || nomadSecurity?.status === "failed" ? "destructive" : nomadSecurity?.status === "completed" ? "success" : "secondary"}>{securityError ? (zh ? "状态未验证" : "Unverified") : nomadSecurity?.status === "completed" ? (zh ? "全部验证通过" : "All checks passed") : statusLabel(nomadSecurity?.status || "pending", zh)}</Badge></CardAction>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <p className="break-words">{securityError || nomadSecurity?.message || (zh ? "正在读取自动迁移进度…" : "Loading automatic migration progress…")}</p>
+          {nomadSecurity?.waitingNodes?.length ? <p>{zh ? "等待节点：" : "Waiting for nodes: "}{nomadSecurity.waitingNodes.join(", ")}</p> : null}
+          {!!nomadSecurity?.totalSteps && nomadSecurity.status !== "completed" ? <Progress value={nomadSecurity.completedSteps || 0} max={nomadSecurity.totalSteps}><ProgressLabel>{zh ? "已验证步骤" : "Verified steps"}</ProgressLabel><ProgressValue>{() => `${nomadSecurity.completedSteps || 0}/${nomadSecurity.totalSteps}`}</ProgressValue></Progress> : null}
+          {nomadSecurity?.verifiedAt ? <p className="text-sm text-muted-foreground">{zh ? "验证时间：" : "Verified: "}{formatDateTime(nomadSecurity.verifiedAt, lang)}</p> : null}
+        </CardContent>
+      </Card>
 
       {!statusLoadError ? <div className="grid min-w-0 items-start gap-4 xl:grid-cols-2" aria-busy={loading}>
         <Card className="min-w-0">

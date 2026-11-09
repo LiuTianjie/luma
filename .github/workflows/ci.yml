@@ -15,6 +15,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  nomad-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install security verification dependencies
+        run: |
+          python -m pip install -e ".[test]"
+          sudo apt-get update -qq
+          sudo apt-get install -y nftables iproute2 ufw
+      - name: Fetch the pinned Nomad protocol fixture
+        run: |
+          python - <<'PY'
+          import hashlib, os, pathlib, urllib.request, zipfile
+          from luma.nomad_security import NOMAD_VERSION, NOMAD_SHA256
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "nomad-security"
+          root.mkdir()
+          archive = root / "nomad.zip"
+          urllib.request.urlretrieve(f"https://releases.hashicorp.com/nomad/{NOMAD_VERSION}/nomad_{NOMAD_VERSION}_linux_amd64.zip", archive)
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == NOMAD_SHA256["linux_amd64"]
+          with zipfile.ZipFile(archive) as bundle:
+              (root / "nomad").write_bytes(bundle.read("nomad"))
+          (root / "nomad").chmod(0o755)
+          with open(os.environ["GITHUB_ENV"], "a") as out:
+              out.write(f"LUMA_TEST_NOMAD_BINARY={root / 'nomad'}\n")
+          PY
+      - name: Verify real ACL and mutual TLS protocols and upgrade recovery
+        run: python -m unittest tests.test_nomad_security tests.test_nomad_upgrade -v
+      - name: Verify packets in disposable network namespaces
+        run: sudo env "PYTHONPATH=$PWD" LUMA_TEST_NETNS=1 "$(command -v python)" -m unittest tests.test_nomad_network_namespace -v
+
   observe-protocols:
     runs-on: ubuntu-latest
     timeout-minutes: 15

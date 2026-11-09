@@ -6,6 +6,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -95,13 +96,24 @@ class LocalExecutor:
         try:
             with fh:
                 fh.write(content)
-            tmp_path = f"/tmp/luma-secret-{os.getpid()}"
-            self.upload(local, tmp_path)
-            self.sudo(
-                "set -euo pipefail; "
-                f"install -D -m {shlex.quote(mode)} {shlex.quote(tmp_path)} {shlex.quote(remote_path)}; "
-                f"rm -f {shlex.quote(tmp_path)}"
+            # The source is already local and private. Do not copy credentials
+            # through a predictable /tmp name, and do not depend on GNU
+            # install -D (which is unavailable on macOS).
+            script = (
+                "import os,pathlib,sys,tempfile\n"
+                "source=pathlib.Path(sys.argv[1]); target=pathlib.Path(sys.argv[2])\n"
+                "mode=int(sys.argv[3],8); target.parent.mkdir(parents=True,exist_ok=True,mode=0o700)\n"
+                "if target.is_symlink() or target.parent.is_symlink(): raise OSError('unsafe secret path')\n"
+                "fd,name=tempfile.mkstemp(prefix='.luma-secret-',dir=target.parent)\n"
+                "try:\n"
+                " with os.fdopen(fd,'wb') as handle:\n"
+                "  os.fchmod(handle.fileno(),mode); handle.write(source.read_bytes())\n"
+                "  handle.flush(); os.fsync(handle.fileno())\n"
+                " os.replace(name,target)\n"
+                "finally:\n"
+                " pathlib.Path(name).unlink(missing_ok=True)\n"
             )
+            self.sudo(shlex.join([sys.executable, "-c", script, str(local), remote_path, mode]))
         finally:
             local.unlink(missing_ok=True)
         return f"Secret written: {remote_path}"

@@ -361,3 +361,5 @@ def require_token(state: Dict[str, Any], token: str, *, token_type: str) -> None
     expected = str(state.get(key) or "")
     if not expected or not secrets.compare_digest(expected, token):
         raise LumaError("unauthorized")
+    from ..security_audit import authenticated, credential_id
+    authenticated(token_type, credential_id(token))

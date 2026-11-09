@@ -1,5 +1,20 @@
 import { apiGet, apiPost } from "./apiClient";
 
+export type NomadSecurityUpdate = {
+  status: "pending" | "running" | "failed" | "completed";
+  phase?: string;
+  message?: string;
+  targetVersion?: string;
+  completedSteps?: number;
+  totalSteps?: number;
+  waitingNodes?: string[];
+  verifiedAt?: number;
+};
+
+export function getNomadSecurityUpdate(token: string, signal?: AbortSignal) {
+  return apiGet<NomadSecurityUpdate>("/v1/security/nomad", token, signal);
+}
+
 export type FleetUpdateNode = {
   nodeName?: string;
   region?: string;
