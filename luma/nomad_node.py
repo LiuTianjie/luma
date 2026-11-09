@@ -100,6 +100,8 @@ def render_agent_config(
         raise LumaError("tailscale_ip is required (Nomad advertises over the Tailscale mesh)")
     if role == "client" and not server_addrs:
         raise LumaError("client role requires server_addrs to join")
+    if rpc_upgrade_mode and (role != "server" or acl_enabled or tls_http or not tls):
+        raise LumaError("RPC transition mode is only allowed on the pre-ACL, pre-HTTPS server")
     tailscale_ip = mesh_ip(tailscale_ip)
     for address in server_addrs or []:
         rpc_host(address)
@@ -191,7 +193,10 @@ def render_agent_config(
     if tls:
         if set(tls) != {"ca_file", "cert_file", "key_file"} or not all(str(p).startswith("/") for p in tls.values()):
             raise LumaError("Nomad TLS requires absolute ca_file, cert_file and key_file paths")
-        lines.extend(["tls {", f"  http = {str(tls_http).lower()}", "  rpc = true", "  verify_https_client = true", "  verify_server_hostname = true", f"  rpc_upgrade_mode = {str(rpc_upgrade_mode).lower()}"])
+        # Nomad's RPC authenticator enforces certificate names independently
+        # of rpc_upgrade_mode. Keep its temporary plaintext-client bridge usable
+        # until all clients have TLS; the final configuration requires names.
+        lines.extend(["tls {", f"  http = {str(tls_http).lower()}", "  rpc = true", "  verify_https_client = true", f"  verify_server_hostname = {str(not rpc_upgrade_mode).lower()}", f"  rpc_upgrade_mode = {str(rpc_upgrade_mode).lower()}"])
         lines.extend(f"  {key} = {json.dumps(str(value))}" for key, value in tls.items())
         lines.append("}")
     lines.append("")

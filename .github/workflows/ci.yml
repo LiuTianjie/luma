@@ -46,10 +46,10 @@ jobs:
           PY
       - name: Verify real ACL and mutual TLS protocols and upgrade recovery
         run: python -m unittest tests.test_nomad_security tests.test_nomad_upgrade -v
-      - name: Verify encrypted secrets and workload identities with real Docker allocations
+      - name: Verify encrypted secrets and RPC migration with real clients
         run: |
           docker pull python:3.12-alpine
-          sudo env "PYTHONPATH=$PWD" LUMA_TEST_SECRET_DELIVERY=1 "LUMA_TEST_NOMAD_BINARY=$LUMA_TEST_NOMAD_BINARY" "$(command -v python)" -m unittest tests.test_nomad_secret_delivery -v
+          sudo env "PYTHONPATH=$PWD" LUMA_TEST_SECRET_DELIVERY=1 "LUMA_TEST_NOMAD_BINARY=$LUMA_TEST_NOMAD_BINARY" "$(command -v python)" -m unittest tests.test_nomad_secret_delivery tests.test_nomad_rpc_transition -v
       - name: Verify packets in disposable network namespaces
         run: sudo env "PYTHONPATH=$PWD" LUMA_TEST_NETNS=1 "$(command -v python)" -m unittest tests.test_nomad_network_namespace -v
 
