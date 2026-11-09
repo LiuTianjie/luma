@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import copy
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -29,12 +30,15 @@ import yaml
 from .errors import LumaError
 from .local import LocalExecutor
 from .nomad_acl import activate_acl, prepare_acl, verify_acl
-from .nomad_api import NomadApi
+from .nomad_api import NomadApi, _allocation_health, _desired_group_counts_from_job
 from .nomad_migration_node import CAPABILITY, execute, resume_operation, snapshot, version_path
 from .nomad_pki import client_tls, endpoint, expires_soon, prepare_manager, sign_csr, sign_enrollments
 from .nomad_security import ADMIN_ROOT, NOMAD_RELEASES, NOMAD_VERSION, ROLES, authority_digest, job_digest, nomad_token, prepare_job, private_read, private_write, read_private_json, security_root, validate_application, workload_policy_lock
 
 JOURNAL = ADMIN_ROOT / "upgrade.json"
+WORKLOAD_STABLE_SECONDS = 30
+WORKLOAD_RECOVERY_SECONDS = 600
+WORKLOAD_STEPS = {"version", "rpc", "activate", "secure", "privacy", "history", "consumers", "secrets"}
 
 
 def _read_journal(*, optional: bool = False) -> dict[str, Any]:
@@ -135,6 +139,7 @@ def _prepare_locked() -> dict[str, Any]:
         journal["next"] = min(int(journal.get("next") or 0), index)
     if journal.get("status") == "failed":
         journal["attempt"] = int(journal.get("attempt") or 0) + 1
+        journal.pop("workloadHealth", None)
         if not journal.get("steps"):
             journal.pop("taskPayload", None)
             journal.update(nodes={facts["node"]: facts}, next=0)
@@ -495,6 +500,95 @@ class Pending(Exception):
     pass
 
 
+def _workload_health(journal: Mapping[str, Any]) -> tuple[str, list[str]]:
+    """Read current service health without modifying jobs or exposing check output."""
+    jobs = [item["Job"] for item in journal.get("jobs") or []
+            if item["Job"].get("Type") == "service" and not item["Job"].get("Stop")]
+    if not jobs:
+        return "", []
+    client = NomadApi("http://127.0.0.1:4646", token=nomad_token())
+    evidence, unhealthy = [], []
+    for saved in jobs:
+        job_id = str(saved["ID"])
+        route = "/v1/job/" + urllib.parse.quote(job_id, safe="")
+        try:
+            current = client.request("GET", route, timeout=5)
+            if current.get("Stop") or current.get("Type") != "service":
+                unhealthy.append(job_id + ": service stopped or changed type")
+                continue
+            expected = _desired_group_counts_from_job(current, slug=job_id)
+            groups = {g["Name"]: g for g in current["TaskGroups"]}
+            lifecycles = {name: {t["Name"]: t.get("Lifecycle") or {} for t in g.get("Tasks") or []}
+                          for name, g in groups.items()}
+            allocations = client.request("GET", route + "/allocations", timeout=5) or []
+            healthy, _, detail = _allocation_health(allocations, target_version=current["Version"],
+                                                    expected_groups=expected, task_lifecycles=lifecycles)
+            if not healthy:
+                unhealthy.append(job_id + ": " + detail)
+                continue
+            evidence.append([job_id, current.get("JobModifyIndex"), current["Version"], expected])
+            for allocation in sorted(allocations, key=lambda a: a.get("ID", "")):
+                if (allocation.get("JobVersion") != current["Version"] or allocation.get("ClientStatus") != "running"
+                        or allocation.get("DesiredStatus", "run") not in {"run", "running"}):
+                    continue
+                group = groups[allocation["TaskGroup"]]
+                tasks = allocation.get("TaskStates") or {}
+                if not set(lifecycles[group["Name"]]).issubset(tasks):
+                    unhealthy.append(job_id + ": incomplete task health")
+                    continue
+                # Restart counters and start times prevent a crash/restart
+                # between polls from counting toward the stable interval.
+                evidence.append([allocation["ID"], allocation.get("NodeID"),
+                                 {name: {key: task.get(key) for key in ("State", "StartedAt", "Restarts", "LastRestart")}
+                                  for name, task in tasks.items()}])
+                services = list(group.get("Services") or []) + [s for t in group.get("Tasks") or [] for s in t.get("Services") or []]
+                checks = [check for service in services if service.get("Provider") == "nomad" for check in service.get("Checks") or []]
+                if checks:
+                    results = client.request("GET", "/v1/client/allocation/" + allocation["ID"] + "/checks", timeout=5) or {}
+                    max_age = max(30, *(2 * (int(c.get("Interval") or 0) + int(c.get("Timeout") or 0)) / 1e9 for c in checks))
+                    now = time.time()
+                    if (len(results) != len(checks) or any(
+                            check.get("Status") != "success" or not -5 <= now - float(check.get("Timestamp") or 0) <= max_age
+                            for check in results.values())):
+                        unhealthy.append(job_id + ": Nomad service checks are failing, missing or stale")
+        except LumaError:
+            # Check output and API bodies may contain application secrets.
+            unhealthy.append(job_id + ": health query unavailable")
+            break
+    return hashlib.sha256(json.dumps(evidence, sort_keys=True).encode()).hexdigest(), unhealthy
+
+
+def _wait_for_workloads(journal: dict[str, Any], *, after: bool) -> None:
+    position = int(journal.get("next") or 0)
+    stage = str(position) + (":after" if after else ":before")
+    now = time.time()
+    health = journal.get("workloadHealth") or {}
+    if health.get("stage") != stage:
+        health = journal["workloadHealth"] = {"stage": stage, "startedAt": now}
+    fingerprint, unhealthy = _workload_health(journal)
+    now = time.time()
+    if unhealthy:
+        health.pop("healthySince", None)
+        health.pop("fingerprint", None)
+        message = "Waiting for healthy workloads: " + "; ".join(unhealthy[:6])
+    elif not fingerprint or not after:
+        journal.pop("workloadHealth", None)
+        return
+    else:
+        if (health.get("fingerprint") != fingerprint or now < float(health.get("lastObservedAt") or 0)
+                or now - float(health.get("lastObservedAt") or 0) > 2 * WORKLOAD_STABLE_SECONDS):
+            health["healthySince"] = now
+        health.update(fingerprint=fingerprint, lastObservedAt=now)
+        elapsed = now - health["healthySince"]
+        if elapsed >= WORKLOAD_STABLE_SECONDS:
+            journal.pop("workloadHealth", None)
+            return
+        message = f"Waiting for stable workloads after node changes: {int(elapsed)}/{WORKLOAD_STABLE_SECONDS}s"
+    if now - health["startedAt"] >= WORKLOAD_RECOVERY_SECONDS:
+        raise LumaError("Workloads did not recover within 10 minutes; further node changes stopped. " + message)
+    raise Pending(message)
+
+
 def _maintain_certificates(journal: dict[str, Any], state: Mapping[str, Any]) -> None:
     now = int(time.time())
     if now - int(journal.get("certificateCheckAt") or 0) < 3600:
@@ -607,6 +701,7 @@ def _reconcile_locked() -> dict[str, Any]:
             raise LumaError("registered Nomad nodes changed during migration; rerun the manager update after reviewing membership")
         position = int(journal.get("next") or 0)
         if position == len(journal["steps"]):
+            _wait_for_workloads(journal, after=True)
             checks = verify_acl()
             if not checks["ok"]:
                 raise LumaError("final ACL role verification failed")
@@ -621,7 +716,14 @@ def _reconcile_locked() -> dict[str, Any]:
         step = journal["steps"][position]
         kind, name = step["kind"], step["node"]
         _save(journal, status="running", phase=kind, message=f"{kind}: {name}" + (" → " + step["version"] if step.get("version") else ""))
-        if kind == "consumers":
+        completed = journal.get("stepResult")
+        if completed is not None and completed.get("position") != position:
+            raise LumaError("saved Nomad step result does not match the migration position")
+        if kind in WORKLOAD_STEPS and completed is None and "taskPayload" not in journal:
+            _wait_for_workloads(journal, after=False)
+        if completed is not None:
+            result = completed["result"]
+        elif kind == "consumers":
             _consumers(journal)
             result = {}
         elif kind == "secrets":
@@ -661,11 +763,19 @@ def _reconcile_locked() -> dict[str, Any]:
                 if response.get("status") != "succeeded":
                     raise Pending("Waiting for " + kind + " on " + name)
                 result = response.get("result") or {}
+        if completed is None:
+            # Persist completion before waiting. Resuming health verification
+            # must not repeat downloads, restarts or consumer submissions.
+            journal["stepResult"] = {"position": position, "result": result}
+            _write_journal(journal)
         if kind == "verify":
             journal["nodes"][name]["verification"] = result
         elif result.get("baselineSHA256"):
             journal["nodes"][name].update(result)
+        if kind in WORKLOAD_STEPS:
+            _wait_for_workloads(journal, after=True)
         journal.pop("taskPayload", None)
+        journal.pop("stepResult", None)
         journal["next"] = position + 1
         _save(journal, status="running", phase=kind, message="Verified step: " + kind + " on " + name)
     except Pending as exc:
