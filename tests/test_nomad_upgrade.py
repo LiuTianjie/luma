@@ -465,7 +465,8 @@ class UpgradeWorkflow(SecurityFixture):
             node["version"] = payload["version"]
         if operation == "configure":
             self.assertEqual(payload["baselineSHA256"], node["baselineSHA256"])
-            node.update(acl=payload["acl"], tlsHTTP=payload["tlsHTTP"], tlsRPC=True, rpcUpgradeMode=bool(payload.get("rpcUpgradeMode")))
+            node.update(acl=payload["acl"], tlsHTTP=payload["tlsHTTP"], tlsRPC=True, rpcUpgradeMode=bool(payload.get("rpcUpgradeMode")),
+                        verifyServerHostname=not bool(payload.get("rpcUpgradeMode")))
             node.update(isolatedHostEnvironment=True, jobTrackedVersions=1 if payload.get("secretMigration") else 6)
             node["baselineSHA256"] = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
             if name == "manager":
@@ -516,6 +517,50 @@ class UpgradeWorkflow(SecurityFixture):
         self.assertTrue(all(node["verified"] for node in result["nodes"]))
         self.assertTrue(result["secrets"]["taskIdentitiesVerified"])
         self.assertEqual(self.models["manager"]["jobTrackedVersions"], 6)
+
+    def test_legacy_rpc_transition_recovery_survives_crash_and_preserves_original_payload(self):
+        node = self.models["manager"]
+        node.update(version=security.NOMAD_VERSION, tlsRPC=True, rpcUpgradeMode=True,
+                    verifyServerHostname=True, baselineSHA256="legacy-transition")
+        original = {"schema": 1, "op": "configure", "nodeId": node["nodeId"], "address": node["address"],
+                    "version": security.NOMAD_VERSION, "baselineSHA256": "initial", "acl": False,
+                    "tlsHTTP": False, "rpcUpgradeMode": True}
+        journal = upgrade._read_journal()
+        result = copy.deepcopy(node)
+        journal.update(next=65, taskPayload=original, stepResult={"position": 65, "result": result},
+                       workloadHealth={"stage": "65:after", "startedAt": 1})
+        applied = []
+        def crash_after_apply(payload, **kwargs):
+            self.assertEqual(upgrade._read_journal()["rpcTransitionRepair"]["request"], payload)
+            if not applied:
+                applied.append(self.execute("manager", payload))
+                raise SimulatedCrash()
+            return applied[0]
+        with mock.patch.object(upgrade, "execute", side_effect=crash_after_apply):
+            with self.assertRaises(SimulatedCrash):
+                upgrade._repair_rpc_transition(journal, result)
+            recovered = upgrade._read_journal()
+            self.assertEqual(recovered["taskPayload"], original)
+            fixed = upgrade._repair_rpc_transition(recovered, recovered["stepResult"]["result"])
+        self.assertEqual(len(applied), 1)
+        self.assertFalse(fixed["verifyServerHostname"])
+        self.assertTrue(fixed["tlsRPC"] and fixed["rpcUpgradeMode"])
+        saved = upgrade._read_journal()
+        self.assertEqual(saved["taskPayload"], original)
+        self.assertEqual(saved["next"], 65)
+        self.assertEqual(saved["stepResult"]["result"], fixed)
+        self.assertGreater(saved["workloadHealth"]["startedAt"], 1)
+
+    def test_rpc_recovery_rejects_configuration_drift_and_active_acl_or_https(self):
+        node = self.models["manager"]
+        node.update(tlsRPC=True, rpcUpgradeMode=True, verifyServerHostname=True)
+        baseline = copy.deepcopy(node)
+        for changed in ({"baselineSHA256": "external-change"}, {"acl": True}, {"tlsHTTP": True}):
+            with self.subTest(changed=changed):
+                self.models["manager"] = {**baseline, **changed}
+                with mock.patch.object(upgrade, "execute") as execute, self.assertRaisesRegex(LumaError, "unchanged pre-ACL"):
+                    upgrade._repair_rpc_transition({"next": 65}, baseline)
+                execute.assert_not_called()
 
     def test_prefetch_overlaps_node_preparation_without_changing_activation_order(self):
         for record in self.state["nodes"].values():

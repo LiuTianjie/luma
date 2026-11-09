@@ -620,6 +620,43 @@ def _wait_for_workloads(journal: dict[str, Any], *, after: bool) -> None:
     raise Pending(message)
 
 
+def _repair_rpc_transition(journal: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    """Resume old server transitions that enforced client certificates too early."""
+    if not result.get("rpcUpgradeMode"):
+        return result
+    position = int(journal["next"])
+    repair = journal.get("rpcTransitionRepair") or {}
+    if repair and repair.get("position") != position:
+        raise LumaError("saved RPC transition recovery does not match the migration position")
+    if repair.get("status") == "completed" or result.get("verifyServerHostname") is False:
+        return result
+    if not repair:
+        facts = snapshot()
+        if facts["baselineSHA256"] != result["baselineSHA256"]:
+            raise LumaError("RPC transition recovery requires the unchanged pre-ACL server configuration")
+        if not facts.get("rpcUpgradeMode") or not facts.get("verifyServerHostname"):
+            return result
+        if (facts.get("role") != "server" or facts.get("acl") or facts.get("tlsHTTP")
+                or not facts.get("tlsRPC")):
+            raise LumaError("RPC transition recovery requires the unchanged pre-ACL server configuration")
+        payload = {**journal["taskPayload"], "baselineSHA256": facts["baselineSHA256"], "rpcCompatibilityVersion": 1}
+        repair = journal["rpcTransitionRepair"] = {
+            "position": position, "status": "prepared", "startedAt": int(time.time()),
+            "request": payload, "priorResult": result, "priorHealth": journal.get("workloadHealth"),
+        }
+        _write_journal(journal)
+    # The normal host intent validates hashes and survives a crash after either
+    # writing the config or restarting. Preserve the original step's payload.
+    repaired = execute(repair["request"], allow_server=True)
+    if repaired.get("verifyServerHostname") is not False or not repaired.get("rpcUpgradeMode"):
+        raise LumaError("RPC transition compatibility was not applied")
+    journal["stepResult"]["result"] = repaired
+    repair.update(status="completed", completedAt=int(time.time()))
+    journal["workloadHealth"] = {"stage": str(position) + ":after", "startedAt": time.time()}
+    _write_journal(journal)
+    return repaired
+
+
 def _maintain_certificates(journal: dict[str, Any], state: Mapping[str, Any]) -> None:
     now = int(time.time())
     if now - int(journal.get("certificateCheckAt") or 0) < 3600:
@@ -803,6 +840,8 @@ def _reconcile_locked() -> dict[str, Any]:
             # must not repeat downloads, restarts or consumer submissions.
             journal["stepResult"] = {"position": position, "result": result}
             _write_journal(journal)
+        if kind == "rpc" and name == journal["manager"]:
+            result = _repair_rpc_transition(journal, result)
         if kind == "verify":
             journal["nodes"][name]["verification"] = result
         elif result.get("baselineSHA256"):

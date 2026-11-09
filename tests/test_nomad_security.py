@@ -229,6 +229,15 @@ class SecurityFiles(SecurityFixture):
 
 
 class NetworkAndTransportTests(unittest.TestCase):
+    def test_rpc_transition_is_limited_to_the_server_before_acl_and_https(self):
+        settings = dict(os_name="linux", role="server", tailscale_ip="100.64.0.1", region="cn",
+                        node_name="manager", acl_enabled=False, tls_http=False, rpc_upgrade_mode=True,
+                        tls={"ca_file": "/tls/ca.pem", "cert_file": "/tls/cert.pem", "key_file": "/tls/key.pem"})
+        for changed in ({"acl_enabled": True}, {"tls_http": True}, {"tls": None},
+                        {"role": "client", "server_addrs": ["100.64.0.1:4647"]}):
+            with self.subTest(changed=changed), self.assertRaisesRegex(LumaError, "pre-ACL, pre-HTTPS server"):
+                nomad_node.render_agent_config(**{**settings, **changed})
+
     def test_configuration_scopes_listeners_drivers_and_host_access(self):
         for os_name in ("linux", "darwin"):
             config = nomad_node.render_agent_config(os_name=os_name, role="client", tailscale_ip="100.64.0.2", region="home", node_name="worker", server_addrs=["100.64.0.1:4647"])

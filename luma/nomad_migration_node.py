@@ -80,6 +80,7 @@ def snapshot(*, with_csr: bool = True) -> dict[str, Any]:
             "tlsHTTP": (cfg.get("TLSConfig") or {}).get("EnableHTTP") is True,
             "tlsRPC": (cfg.get("TLSConfig") or {}).get("EnableRPC") is True,
             "rpcUpgradeMode": (cfg.get("TLSConfig") or {}).get("RPCUpgradeMode") is True,
+            "verifyServerHostname": (cfg.get("TLSConfig") or {}).get("VerifyServerHostname") is True,
             "jobTrackedVersions": (cfg.get("Server") or {}).get("JobTrackedVersions"),
             "isolatedHostEnvironment": isolated_environment,
             "certificateRenewalRequired": expires_soon(ADMIN_ROOT / "tls"),
