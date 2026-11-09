@@ -159,10 +159,15 @@ def _untagged_digest(job: Mapping[str, Any]) -> str:
 
 def _wait_for_job(current: Mapping[str, Any], client: NomadApi, submitted_at: int) -> None:
     job_id = str(current["ID"])
-    expected = _desired_group_counts_from_job(current, slug=job_id)
-    allocations = client.request("GET", "/v1/job/" + urllib.parse.quote(job_id, safe="") + "/allocations") or []
-    lifecycles = {group["Name"]: {task["Name"]: task.get("Lifecycle") or {} for task in group.get("Tasks") or []} for group in current["TaskGroups"]}
-    healthy, _, _ = _allocation_health(allocations, target_version=current["Version"], expected_groups=expected, task_lifecycles=lifecycles)
+    if current.get("Type") == "service":
+        from .nomad_upgrade import _workload_health
+        _, unhealthy = _workload_health({"jobs": [{"Job": current}]}, client=client)
+        healthy = not current.get("Stop") and not unhealthy
+    else:
+        expected = _desired_group_counts_from_job(current, slug=job_id)
+        allocations = client.request("GET", "/v1/job/" + urllib.parse.quote(job_id, safe="") + "/allocations") or []
+        lifecycles = {group["Name"]: {task["Name"]: task.get("Lifecycle") or {} for task in group.get("Tasks") or []} for group in current["TaskGroups"]}
+        healthy, _, _ = _allocation_health(allocations, target_version=current["Version"], expected_groups=expected, task_lifecycles=lifecycles)
     if not healthy:
         if time.time() - submitted_at > 2700:
             raise LumaError("application did not become healthy after its secret migration: " + job_id)

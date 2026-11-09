@@ -36,7 +36,7 @@ class VariableStore:
         cause = urllib.error.HTTPError("http://fixture", code, "fixture", {}, io.BytesIO())
         raise LumaError(f"Nomad API error {code}: fixture") from cause
 
-    def request(self, method, route, body=None):
+    def request(self, method, route, body=None, **kwargs):
         if route == "/v1/acl/policies":
             return []
         parsed = urllib.parse.urlsplit(route)
@@ -344,7 +344,7 @@ class SecretUpgradeRecovery(KeyFixture):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def request(self, method, route, body=None):
+    def request(self, method, route, body=None, **kwargs):
         if route.startswith("/v1/var/"):
             return self.variables(method, route, body)
         if route == "/v1/job/app":
@@ -355,7 +355,7 @@ class SecretUpgradeRecovery(KeyFixture):
             kind = "DestructiveUpdate" if self.disruptive_plan else "InPlaceUpdate"
             return {"Annotations": {"DesiredTGUpdates": {"app": {kind: 1}}}}
         if route == "/v1/job/app/allocations":
-            return [{"JobVersion": self.current["Version"], "TaskGroup": "app", "ClientStatus": "running",
+            return [{"ID": "fixture-allocation", "JobVersion": self.current["Version"], "TaskGroup": "app", "ClientStatus": "running",
                      "TaskStates": {"web": {"State": "running", "Failed": False}}}] if self.healthy else []
         if method == "POST" and route == "/v1/jobs":
             self.assertEqual(body["JobModifyIndex"], self.current["JobModifyIndex"])
