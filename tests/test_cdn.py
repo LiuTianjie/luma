@@ -558,6 +558,32 @@ class CdnCheckTests(unittest.TestCase):
         self.assertEqual(verdict, "danger")
         self.assertEqual(classify("/", 200, {"cache-control": "private, no-store", "set-cookie": "a=b", "content-type": "text/html"}, 10, {})[0], "ok")
 
+    def test_cookies_added_by_the_esa_edge_are_not_the_application_s(self):
+        from luma.cdn_check import audit_domain, classify
+
+        edge = "acw_tc=75b1;path=/;HttpOnly;Max-Age=3600\ncdn_sec_tc=75b1;path=/;HttpOnly;Max-Age=3600"
+        headers = {"cache-control": "public, s-maxage=60", "content-type": "text/html", "set-cookie": edge}
+        self.assertEqual(classify("/", 200, headers, 10, {}), ("ok", "cacheable"))
+        verdict, reason = classify("/", 200, {**headers, "set-cookie": edge + "\nsid=1; Path=/"}, 10, {})
+        self.assertEqual(verdict, "danger")
+        self.assertIn("sets cookie sid;", reason)
+
+        pages = {"/": (200, {"Content-Type": "text/html", "Cache-Control": "public, s-maxage=60", "Set-Cookie": edge}, b"<html></html>")}
+        rows = audit_domain("www.example.com", fetch=self._fetcher(pages))
+        self.assertFalse(next(row for row in rows if row["path"] == "/")["setCookie"])
+
+    def test_every_set_cookie_header_is_kept(self):
+        from email.message import Message
+        from luma.cdn_check import _header_dict, app_cookies
+
+        message = Message()
+        message["Content-Type"] = "text/html"
+        message["Set-Cookie"] = "sid=1; Path=/"
+        message["Set-Cookie"] = "acw_tc=2; Path=/"
+        headers = _header_dict(message)
+        self.assertEqual(headers["content-type"], "text/html")
+        self.assertEqual(app_cookies(headers), ["sid"])
+
 
 class ApexAndRedirectTests(unittest.TestCase):
     def test_cdn_on_the_zone_apex_is_refused_with_the_www_fix(self):

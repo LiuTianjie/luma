@@ -21,6 +21,10 @@ MAX_URLS = 20
 COMPRESS_MIN_BYTES = 1024
 CACHE_STATUS_HEADERS = ("x-site-cache-status", "x-cache", "x-cache-status", "cf-cache-status")
 ACCOUNT_PATH = re.compile(r"/(account|accounts|user|users|me|login|logout|signin|signup|session|profile|settings|admin|dashboard|cart|checkout|order|orders)(/|$)", re.I)
+# Cookies the Alibaba Cloud edge (ESA bot and WAF tracking) adds to each
+# response it serves, with a new value every time, including cache hits.
+# They are never stored in the cache, so they cannot leak between visitors.
+EDGE_COOKIES = frozenset({"acw_tc", "cdn_sec_tc", "acw_sc__v2"})
 STATIC_EXTENSIONS = frozenset(
     "css js mjs png jpg jpeg gif webp avif svg ico woff woff2 ttf otf eot mp4 webm mp3 pdf zip gz wasm map".split()
 )
@@ -28,13 +32,32 @@ STATIC_EXTENSIONS = frozenset(
 Fetch = Callable[[str], Tuple[int, Dict[str, str], bytes]]
 
 
+def _header_dict(message: Any) -> Dict[str, str]:
+    headers = {k.lower(): v for k, v in (message or {}).items()}
+    # A response can carry several Set-Cookie headers; keep them all, one per line.
+    cookies = message.get_all("set-cookie") if message is not None else None
+    if cookies:
+        headers["set-cookie"] = "\n".join(cookies)
+    return headers
+
+
 def _fetch(url: str) -> Tuple[int, Dict[str, str], bytes]:
     request = urllib.request.Request(url, headers={"User-Agent": "luma-cdn-check", "Accept-Encoding": "gzip"})
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
-            return int(response.status), {k.lower(): v for k, v in response.headers.items()}, response.read(MAX_BODY_BYTES)
+            return int(response.status), _header_dict(response.headers), response.read(MAX_BODY_BYTES)
     except urllib.error.HTTPError as exc:
-        return int(exc.code), {k.lower(): v for k, v in (exc.headers or {}).items()}, exc.read(MAX_BODY_BYTES)
+        return int(exc.code), _header_dict(exc.headers), exc.read(MAX_BODY_BYTES)
+
+
+def app_cookies(headers: Dict[str, str]) -> List[str]:
+    """Names of cookies set by the application, leaving out the edge's own."""
+    names: List[str] = []
+    for line in headers.get("set-cookie", "").split("\n"):
+        name = line.split("=", 1)[0].strip()
+        if name and name not in EDGE_COOKIES and name not in names:
+            names.append(name)
+    return names
 
 
 class _AssetParser(HTMLParser):
@@ -106,8 +129,9 @@ def classify(path: str, status: int, headers: Dict[str, str], size: int, second:
     ttl = _seconds(directives.get("s-maxage")) or _seconds(directives.get("max-age"))
     cacheable = not private and ("public" in directives or ttl > 0)
     content_type = headers.get("content-type", "").split(";")[0].strip().lower()
-    if cacheable and "set-cookie" in headers:
-        return "danger", "cacheable response sets a cookie; drop Set-Cookie or mark it private, no-store"
+    cookies = app_cookies(headers)
+    if cacheable and cookies:
+        return "danger", f"cacheable response sets cookie {', '.join(cookies)}; drop Set-Cookie or mark it private, no-store"
     if cacheable and ACCOUNT_PATH.search(urllib.parse.urlsplit(path).path):
         return "danger", "account-like path is publicly cacheable; return Cache-Control: private, no-store"
     if status >= 400:
@@ -188,7 +212,7 @@ def audit_domain(
             "status": status,
             "contentType": headers.get("content-type", "").split(";")[0],
             "cacheControl": headers.get("cache-control", ""),
-            "setCookie": "set-cookie" in headers,
+            "setCookie": bool(app_cookies(headers)),
             "bytes": size,
             "encoding": headers.get("content-encoding", ""),
             "cache": cache_status(second),
