@@ -25,6 +25,7 @@ import urllib.parse
 from typing import Any, Dict, List, Mapping, Sequence
 
 from .config import LumaConfig
+from .dns import cert_resolver_for
 from .container_dns import parse_dns_servers, shared_dns_servers
 from .compose import compose_replica_count, render_storage_class_volume, resolve_storage_mounts
 from .compose_network import (
@@ -77,7 +78,10 @@ TRAEFIK_WEBSECURE_READ_TIMEOUT = "6h"
 TRAEFIK_METRICS_ADDRESS = "127.0.0.1:8082"
 TRAEFIK_OTLP_HTTP_ENDPOINT = "http://127.0.0.1:4318"
 
-EDGE_EXPOSURES = {"cn-edge", "external-edge"}
+EDGE_EXPOSURES = {"cn-edge", "external-edge", "node-edge"}
+# Nomad service tag that hands a router to the Traefik running on that node.
+# The Manager's Traefik ignores every service carrying it.
+NODE_EDGE_TAG = "luma.edge"
 HOST_PORT_EXPOSURES = {"tailscale-relay", "tcp-relay"}
 NOMAD_TAILSCALE_META_KEY = "luma_tailscale_ip"
 NOMAD_TAILSCALE_SERVICE_ADDRESS = f"${{meta.{NOMAD_TAILSCALE_META_KEY}}}"
@@ -98,6 +102,7 @@ def render_traefik_job(
     acme_dns_token_file: str = "",
     acme_domains: list[str] | None = None,
     tcp_entrypoints: list[int] | None = None,
+    http_cert_resolver: str = "",
     as_json: bool = True,
 ) -> str | Dict[str, Any]:
     """Render the Traefik ingress job (host mode, ports 80/443 + tcp entrypoints).
@@ -115,6 +120,8 @@ def render_traefik_job(
         f"--providers.nomad.endpoint.address={nomad_addr}",
         "--providers.nomad.exposedByDefault=false",
         "--providers.nomad.watch=true",
+        # node-edge services are served by the Traefik on their own node.
+        f"--providers.nomad.constraints=!TagRegex(`^{re.escape(NODE_EDGE_TAG)}=.+$`)",
         "--accesslog=true",
         "--accesslog.format=json",
         # Behind Alibaba Cloud ESA the TCP peer is an ESA node; keep the real
@@ -157,6 +164,9 @@ def render_traefik_job(
                 f"--certificatesresolvers.{cert_resolver}.acme.httpchallenge=true",
                 f"--certificatesresolvers.{cert_resolver}.acme.httpchallenge.entrypoint=web",
             ])
+        if http_cert_resolver and http_cert_resolver != cert_resolver:
+            # Hostnames the DNS-01 token cannot validate (other DNS providers).
+            args.extend(_http_resolver_args(http_cert_resolver, acme_email))
     args.append("--api.dashboard=true")
     job = {
         "ID": "traefik", "Name": "traefik", "Type": "service", "Datacenters": ["dc1"],
@@ -231,6 +241,113 @@ def render_traefik_job(
             f"--entrypoints.websecure.http.tls.domains[{index}].main=*.{clean}",
             f"--entrypoints.websecure.http.tls.domains[{index}].sans={clean}",
         ])
+    wrapped = {"Job": job}
+    return json.dumps(wrapped, indent=2, ensure_ascii=False) if as_json else wrapped
+
+
+def _http_resolver_args(resolver: str, acme_email: str) -> List[str]:
+    return [
+        f"--certificatesresolvers.{resolver}.acme.email={acme_email}",
+        f"--certificatesresolvers.{resolver}.acme.storage=/letsencrypt/acme.json",
+        f"--certificatesresolvers.{resolver}.acme.httpchallenge=true",
+        f"--certificatesresolvers.{resolver}.acme.httpchallenge.entrypoint=web",
+    ]
+
+
+def node_traefik_job_id(node: str) -> str:
+    return f"traefik-node-{slugify(node)}"
+
+
+def render_node_traefik_job(
+    *,
+    node: str,
+    image: str,
+    acme_email: str,
+    cert_resolver: str,
+    nomad_addr: str = "http://127.0.0.1:4646",
+    as_json: bool = True,
+) -> str | Dict[str, Any]:
+    """Render the Traefik that serves ``node-edge`` routes on one node.
+
+    It binds 80/443 on that node only, picks up just the Nomad services tagged
+    for the node, and issues certificates over HTTP-01 so no DNS credential is
+    ever placed on the node. Metrics stay on loopback like the Manager edge.
+    """
+    node = str(node).strip()
+    if not node:
+        raise LumaError("node ingress requires a node name")
+    if not acme_email:
+        raise LumaError("node ingress requires an ACME email (TRAEFIK_ACME_EMAIL)")
+    args = [
+        "--providers.nomad=true",
+        f"--providers.nomad.endpoint.address={nomad_addr}",
+        "--providers.nomad.exposedByDefault=false",
+        "--providers.nomad.watch=true",
+        f"--providers.nomad.constraints=Tag(`{NODE_EDGE_TAG}={node}`)",
+        "--accesslog=true",
+        "--accesslog.format=json",
+        "--accesslog.fields.headers.names.Ali-Real-Client-Ip=keep",
+        "--entrypoints.metrics.address=" + TRAEFIK_METRICS_ADDRESS,
+        "--metrics.prometheus=true",
+        "--metrics.prometheus.entryPoint=metrics",
+        "--metrics.prometheus.addRoutersLabels=true",
+        "--metrics.prometheus.addServicesLabels=true",
+        "--entrypoints.web.address=:80",
+        "--entrypoints.websecure.address=:443",
+        f"--entrypoints.websecure.transport.respondingTimeouts.readTimeout={TRAEFIK_WEBSECURE_READ_TIMEOUT}",
+        "--entrypoints.web.http.redirections.entrypoint.to=websecure",
+        "--entrypoints.web.http.redirections.entrypoint.scheme=https",
+        f"--entrypoints.websecure.http.tls.certresolver={cert_resolver}",
+        *_http_resolver_args(cert_resolver, acme_email),
+    ]
+    job_id = node_traefik_job_id(node)
+    job = {
+        "ID": job_id, "Name": job_id, "Type": "service", "Datacenters": ["dc1"],
+        "Constraints": [{"LTarget": "${meta.luma_node_name}", "RTarget": node, "Operand": "="}],
+        "Update": {"AutoRevert": True, "MinHealthyTime": 5_000_000_000, "HealthyDeadline": 120_000_000_000},
+        "TaskGroups": [{
+            "Name": "traefik", "Count": 1, "MaxClientDisconnect": 3_600_000_000_000,
+            "Networks": [{
+                "Mode": "host",
+                # Reserving 80/443 makes Nomad refuse a second claimant on the
+                # node instead of letting Traefik crash-loop on a bind error.
+                "ReservedPorts": [
+                    {"Label": "web", "Value": 80},
+                    {"Label": "websecure", "Value": 443},
+                    {"Label": "metrics", "Value": 8082},
+                ],
+            }],
+            "Tasks": [{
+                "Name": "traefik", "Driver": "docker",
+                "Config": {
+                    "image": image,
+                    "network_mode": "host",
+                    "args": args,
+                    "mount": [
+                        {"type": "volume", "target": "/letsencrypt", "source": "luma_node_edge_letsencrypt"},
+                    ],
+                },
+                "Env": {"GOMEMLIMIT": "192MiB"},
+                "Resources": {"CPU": 200, "MemoryMB": 256},
+                "Services": [{
+                    "Name": f"{job_id}-health",
+                    "Provider": "nomad",
+                    "AddressMode": "auto",
+                    "Address": "127.0.0.1",
+                    "PortLabel": "metrics",
+                    "Checks": [{
+                        "Name": "traefik-local-metrics",
+                        "Type": "http",
+                        "Path": "/metrics",
+                        "Interval": 15_000_000_000,
+                        "Timeout": 5_000_000_000,
+                        "CheckRestart": {"Limit": 3, "Grace": 60_000_000_000, "IgnoreWarnings": False},
+                    }],
+                }],
+            }],
+        }],
+        "Meta": {"luma.managed": "true", "luma.node-edge": node},
+    }
     wrapped = {"Job": job}
     return json.dumps(wrapped, indent=2, ensure_ascii=False) if as_json else wrapped
 
@@ -454,7 +571,7 @@ def render_compose_job(
             docker_config["args"] = _as_args(body["command"])
         if host_network:
             docker_config["network_mode"] = "host"
-        elif port and exposure in {"tcp-relay", "tailscale-relay", "cn-edge", "external-edge"}:
+        elif port and exposure in {"tcp-relay", "tailscale-relay", *EDGE_EXPOSURES}:
             if exposure in EDGE_EXPOSURES and publish_port is None:
                 dynamic_ports.append({"Label": label, "To": int(port), "HostNetwork": "default"})
             else:
@@ -602,7 +719,7 @@ def render_compose_job(
         tasks.append(task)
 
         health_check = _compose_health_check(body, label, name, str(svc_name))
-        if exposure in {"cn-edge", "external-edge"} and override and override.domain and port:
+        if exposure in EDGE_EXPOSURES and override and override.domain and port:
             # Compose service names are only unique inside one stack. Registering
             # every tenant's common `web`/`api` task under that raw name makes
             # Traefik merge unrelated allocations and gives every stack the same
@@ -617,19 +734,21 @@ def render_compose_job(
                     "traefik.enable=true",
                     f"traefik.http.routers.{service_id}.rule=Host(`{override.domain}`)",
                     f"traefik.http.routers.{service_id}.entrypoints={config.entrypoint}",
-                    f"traefik.http.routers.{service_id}.tls.certresolver={config.cert_resolver}",
+                    f"traefik.http.routers.{service_id}.tls.certresolver={cert_resolver_for(config, str(override.domain), node_edge=exposure == 'node-edge')}",
                     f"traefik.http.routers.{service_id}.service={service_id}",
                 ],
             }
             service_block["Tags"].extend(
-                _router_tls_domain_tags(config, service_id, str(override.domain))
+                _router_tls_domain_tags(config, service_id, str(override.domain), node_edge=exposure == "node-edge")
             )
             service_block["Tags"].extend(
-                redirect_router_tags(config, service_id, str(override.domain), override.redirect_from, service=service_id, except_paths=override.redirect_except)
+                redirect_router_tags(config, service_id, str(override.domain), override.redirect_from, service=service_id, except_paths=override.redirect_except, node_edge=exposure == "node-edge")
             )
+            if exposure == "node-edge":
+                service_block["Tags"].append(f"{NODE_EDGE_TAG}={pinned_node}")
             if health_check is not None:
                 service_block["Checks"] = [health_check]
-            _set_edge_service_address(service_block, service_address)
+            _set_edge_service_address(service_block, NOMAD_LOCAL_HOST_SERVICE_ADDRESS if exposure == "node-edge" else service_address)
             nomad_services.append(service_block)
         elif exposure in {"tailscale-relay", "tcp-relay"} and health_check is not None:
             # File-provider relay routes do not need a discovery service, but
@@ -1070,22 +1189,29 @@ def _service_block(config: LumaConfig, service: ServiceSpec, port_label: str | N
     if port_label is None:
         return None
     name = service.slug
+    node_edge = service.exposure == "node-edge"
     tags = [
         "traefik.enable=true",
         f"traefik.http.routers.{name}.rule=Host(`{service.domain}`)",
         f"traefik.http.routers.{name}.entrypoints={config.entrypoint}",
-        f"traefik.http.routers.{name}.tls.certresolver={config.cert_resolver}",
+        f"traefik.http.routers.{name}.tls.certresolver={cert_resolver_for(config, str(service.domain), node_edge=node_edge)}",
     ]
-    tags.extend(_router_tls_domain_tags(config, name, str(service.domain)))
-    tags.extend(redirect_router_tags(config, name, str(service.domain), service.redirect_from, service=name, except_paths=service.redirect_except))
+    tags.extend(_router_tls_domain_tags(config, name, str(service.domain), node_edge=node_edge))
+    tags.extend(redirect_router_tags(config, name, str(service.domain), service.redirect_from, service=name, except_paths=service.redirect_except, node_edge=node_edge))
     tags.extend(str(t) for t in service.labels)
+    if node_edge:
+        tags.append(f"{NODE_EDGE_TAG}={service.node}")
     block: Dict[str, Any] = {
         "Name": name,
         "PortLabel": port_label,
         "Provider": "nomad",
         "Tags": tags,
     }
-    _set_edge_service_address(block, _node_service_address(config, service.node or ""))
+    if node_edge:
+        # Traefik runs on the same host as the allocation.
+        _set_edge_service_address(block, NOMAD_LOCAL_HOST_SERVICE_ADDRESS)
+    else:
+        _set_edge_service_address(block, _node_service_address(config, service.node or ""))
     check = _health_check(service, port_label)
     if check is not None:
         block["Checks"] = [check]
@@ -1137,7 +1263,7 @@ def redirect_routes(name: str, primary: str, hosts: List[str], except_paths: Lis
 
 
 def redirect_router_tags(
-    config: LumaConfig, name: str, primary: str, hosts: List[str], *, service: str, except_paths: List[str] = ()
+    config: LumaConfig, name: str, primary: str, hosts: List[str], *, service: str, except_paths: List[str] = (), node_edge: bool = False
 ) -> List[str]:
     routes = redirect_routes(name, primary, hosts, list(except_paths))
     if not routes:
@@ -1149,12 +1275,12 @@ def redirect_router_tags(
             f"{prefix}.rule={spec['rule']}",
             f"{prefix}.priority={spec['priority']}",
             f"{prefix}.entrypoints={config.entrypoint}",
-            f"{prefix}.tls.certresolver={config.cert_resolver}",
+            f"{prefix}.tls.certresolver={cert_resolver_for(config, hosts[0], node_edge=node_edge)}",
             f"{prefix}.service={service}",
         ])
         if spec.get("middlewares"):
             tags.append(f"{prefix}.middlewares={','.join(spec['middlewares'])}")
-        tags.extend(_router_tls_domain_tags(config, router, hosts[0]))
+        tags.extend(_router_tls_domain_tags(config, router, hosts[0], node_edge=node_edge))
     for middleware, spec in routes["middlewares"].items():
         prefix = f"traefik.http.middlewares.{middleware}.redirectregex"
         regex = spec["redirectRegex"]
@@ -1167,10 +1293,13 @@ def redirect_router_tags(
 
 
 def _router_tls_domain_tags(
-    config: LumaConfig, router_name: str, hostname: str
+    config: LumaConfig, router_name: str, hostname: str, *, node_edge: bool = False
 ) -> List[str]:
     """Bind generated host routes to the configured reusable wildcard cert."""
 
+    if node_edge:
+        # The node's Traefik validates over HTTP-01 and cannot issue wildcards.
+        return []
     clean_host = str(hostname or "").strip().lower().strip(".")
     for configured in config.acme_domains:
         domain = str(configured).strip().lower().strip(".")

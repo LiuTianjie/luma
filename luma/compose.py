@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from .cdn import CdnSpec, parse_cdn_block, validate_cdn_exposure
 from .config import LumaConfig
 from .container_dns import parse_dns_servers
+from .dns import cert_resolver_for
 from .errors import LumaError
 from .dependencies import validate_requirement_block
 from .io import dump_yaml, load_yaml
@@ -218,7 +219,7 @@ def render_compose_routes(config: LumaConfig, deployment: ComposeDeploymentSpec)
                         # stale Nomad-provider router for this Host must not win.
                         "priority": int(override.relay.get("priority", 1000)),
                         "entryPoints": [config.entrypoint],
-                        "tls": {"certResolver": config.cert_resolver},
+                        "tls": {"certResolver": cert_resolver_for(config, str(override.domain))},
                         "service": service_id,
                     }
                 },
@@ -350,6 +351,8 @@ def validate_compose_deployment_data(
                 raise LumaError(f"compose service {service_name} public exposure requires domain")
             if not isinstance(override.port, int):
                 raise LumaError(f"compose service {service_name} public exposure requires integer port")
+        if override.exposure == "node-edge" and not override.node:
+            raise LumaError(f"compose service {service_name} exposure=node-edge requires node")
         validate_cdn_exposure(override.cdn, override.exposure, label=f"services.{service_name}.cdn")
         try:
             validate_region_exposure_syntax(region, override.exposure)

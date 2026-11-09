@@ -20,9 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 # Project Pages base URL; canonical, hreflang, Open Graph and sitemap URLs must be absolute.
 SITE_URL = 'https://liutianjie.github.io/luma/'
 OG_IMAGE = {'en': SITE_URL + 'assets/og-image.png', 'zh-CN': SITE_URL + 'assets/og-image-zh.png'}
-GUIDES = [('README', 'Overview'), ('getting-started', 'Getting started'), ('concepts', 'Core concepts'), ('deploying', 'Deploying applications'), ('operations', 'Operations'), ('deployment-yaml', 'Deployment YAML'), ('compose-storage', 'Compose & storage'), ('secrets', 'Secrets & credentials'), ('exposure-model', 'Exposure model'), ('cdn', 'CDN'), ('observability', 'Observability'), ('dashboard-guide', 'Console guide'), ('troubleshooting', 'Troubleshooting'), ('luma-cli-reference', 'CLI reference'), ('ai-agent-skills', 'AI Agent Skills')]
+GUIDES = [('README', 'Overview'), ('getting-started', 'Getting started'), ('concepts', 'Core concepts'), ('deploying', 'Deploying applications'), ('operations', 'Operations'), ('deployment-yaml', 'Deployment YAML'), ('compose-storage', 'Compose & storage'), ('secrets', 'Secrets & credentials'), ('exposure-model', 'Exposure model'), ('dns-zones', 'DNS zones'), ('cdn', 'CDN'), ('observability', 'Observability'), ('dashboard-guide', 'Console guide'), ('troubleshooting', 'Troubleshooting'), ('luma-cli-reference', 'CLI reference'), ('ai-agent-skills', 'AI Agent Skills')]
 
-ZH_LABELS = ['概览', '快速上手', '核心概念', '部署应用', '日常运维', '部署 YAML', 'Compose 与存储', '密钥与凭据', '暴露模型', 'CDN', '可观测', '控制台指南', '故障排查', 'CLI 命令参考', 'AI Agent Skills']
+ZH_LABELS = ['概览', '快速上手', '核心概念', '部署应用', '日常运维', '部署 YAML', 'Compose 与存储', '密钥与凭据', '暴露模型', 'DNS 域名', 'CDN', '可观测', '控制台指南', '故障排查', 'CLI 命令参考', 'AI Agent Skills']
 
 def chinese_source(source):
     # Explicit translations or original Chinese prose; ignore command/help blocks.

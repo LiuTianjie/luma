@@ -47,6 +47,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("update", "Update the CLI, the manager or every node"),
         ("node", "Join, list and remove nodes"),
         ("region", "Manage scheduling regions"),
+        ("dns", "Manage DNS zones on Cloudflare, Alibaba Cloud DNS and DNSPod"),
         ("storage", "Manage NFS storage classes"),
         ("registry", "Manage registry credentials and the managed registry"),
         ("git-provider", "Manage saved GitHub and Gitea credentials"),
@@ -560,6 +561,21 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
     node_status.add_argument("name", nargs="?", help="Only this node (name, hostname or alias)")
     _add_control_arguments(node_status)
     _add_output_arguments(node_status)
+    node_ingress = _command(node_sub, "ingress", "Serve public traffic from a node itself (exposure: node-edge)")
+    node_ingress_sub = _commands(node_ingress, "node_ingress_command")
+    node_ingress_enable = _command(
+        node_ingress_sub,
+        "enable",
+        "Run Traefik on the node and point node-edge DNS at its public IP; rerun to re-check or change the IP",
+    )
+    node_ingress_enable.add_argument("name", help="Node name")
+    node_ingress_enable.add_argument("--public-ip", help="Address clients reach the node at (default: the address saved earlier)")
+    _add_control_arguments(node_ingress_enable)
+    _add_output_arguments(node_ingress_enable)
+    node_ingress_disable = _command(node_ingress_sub, "disable", "Stop the node's Traefik once no node-edge deployment uses it")
+    node_ingress_disable.add_argument("name", help="Node name")
+    _add_control_arguments(node_ingress_disable)
+    _add_output_arguments(node_ingress_disable)
     node_remove = _command(node_sub, "remove", "Unregister a node from Control")
     node_remove.add_argument("name", help="Node name")
     _add_control_arguments(node_remove)
@@ -580,6 +596,33 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
     _add_control_arguments(node_nomad_join)
     _add_output_arguments(node_nomad_join)
 
+    dns = _command(sub, "dns")
+    dns_sub = _commands(dns, "dns_command")
+    dns_zone = _command(dns_sub, "zone", "List, add, check and remove DNS zones")
+    dns_zone_sub = _commands(dns_zone, "dns_zone_command")
+    dns_zone_list = _command(dns_zone_sub, "list", "List DNS zones, their provider and the applications using them")
+    _add_control_arguments(dns_zone_list)
+    _add_output_arguments(dns_zone_list)
+    dns_zone_add = _command(
+        dns_zone_sub,
+        "add",
+        "Add a zone; credentials are prompted for or read from the provider's standard environment variables",
+    )
+    dns_zone_add.add_argument("zone", help="Registered domain, for example example.cn")
+    dns_zone_add.add_argument("--provider", required=True, choices=("cloudflare", "alidns", "dnspod"), help="DNS host of the zone")
+    dns_zone_add.add_argument("--same-as", metavar="ZONE", help="Reuse the credentials of another zone on the same account")
+    dns_zone_add.add_argument("--update", action="store_true", help="Replace the provider or credentials of an existing zone")
+    _add_control_arguments(dns_zone_add)
+    _add_output_arguments(dns_zone_add)
+    dns_zone_check = _command(dns_zone_sub, "check", "Verify a zone's credentials and API access without changing records")
+    dns_zone_check.add_argument("zone", help="Zone name")
+    _add_control_arguments(dns_zone_check)
+    _add_output_arguments(dns_zone_check)
+    dns_zone_remove = _command(dns_zone_sub, "remove", "Remove an unused zone and its stored credentials")
+    dns_zone_remove.add_argument("zone", help="Zone name")
+    _add_control_arguments(dns_zone_remove)
+    _add_output_arguments(dns_zone_remove)
+
     region = _command(sub, "region")
     region_sub = _commands(region, "region_command")
     region_list = _command(region_sub, "list", "List built-in and custom regions")
@@ -588,13 +631,13 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
     region_create = _command(region_sub, "create", "Create a custom region")
     region_create.add_argument("name", help="Region name")
     region_create.add_argument("--egress", choices=("proxy", "direct"), default="proxy", help="Joins and image pulls use the manager proxy or go direct (default: proxy)")
-    region_create.add_argument("--exposure", action="append", choices=("none", "tailscale-relay", "cloudflare-tunnel", "tcp-relay"), help="Allowed ingress; repeat for multiple modes (none is always allowed)")
+    region_create.add_argument("--exposure", action="append", choices=("none", "tailscale-relay", "cloudflare-tunnel", "tcp-relay", "node-edge"), help="Allowed ingress; repeat for multiple modes (none is always allowed)")
     _add_control_arguments(region_create)
     _add_output_arguments(region_create)
     region_update = _command(region_sub, "update", "Update a custom region's egress and allowed ingress")
     region_update.add_argument("name", help="Region name")
     region_update.add_argument("--egress", choices=("proxy", "direct"), help="Replace the egress policy")
-    region_update.add_argument("--exposure", action="append", choices=("none", "tailscale-relay", "cloudflare-tunnel", "tcp-relay"), help="Replace allowed ingress; repeat for multiple modes (none is always allowed)")
+    region_update.add_argument("--exposure", action="append", choices=("none", "tailscale-relay", "cloudflare-tunnel", "tcp-relay", "node-edge"), help="Replace allowed ingress; repeat for multiple modes (none is always allowed)")
     _add_control_arguments(region_update)
     _add_output_arguments(region_update)
     region_remove = _command(region_sub, "remove", "Remove an unused custom region")

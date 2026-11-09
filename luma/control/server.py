@@ -45,7 +45,9 @@ import yaml
 from ..registry_access import join_insecure_registries, registry_host_allows_http
 from ..assets import asset_path
 from ..build_capabilities import NATIVE_ARM_BUILD_CAPABILITY, REQUIRED_BUILD_CAPABILITY, REPOSITORY_BUILD_PLAN_CAPABILITY, native_arm_build_platform, normalize_build_capabilities, repository_build_requirements, require_build_result_capabilities
-from ..cloudflare import CloudflareClient, delete_dns, sync_dns
+from ..cloudflare import CloudflareClient
+from ..dns import delete_dns, sync_dns, with_dns_runtime
+from . import dns_zones, node_ingress
 from ..dependencies import initialize_service_requirements, require_service_requirements, service_requirements
 from ..egress import minimal_mihomo_config_from_bytes
 from ..compose import (
@@ -83,7 +85,7 @@ from ..nomad_security import nomad_token
 from ..nomad_enrollment import agent_credential as nomad_agent_credential
 from ..security_audit import SecurityAuditMiddleware, authenticated as audit_authenticated
 from ..nomad_api import NomadApi, deploy_to_nomad, remove_from_nomad, revert_job, job_versions, nomad_addr, nomad_status_summary, nomad_services_summary, nomad_service_directory
-from ..nomad_render import EDGE_EXPOSURES, render_nomad_job, render_compose_job, resource_policy_warnings
+from ..nomad_render import EDGE_EXPOSURES, node_traefik_job_id, render_node_traefik_job, render_nomad_job, render_compose_job, resource_policy_warnings
 from ..observe_instrument import OBSERVE_STACK, manager_tailscale_ip, mint_otlp_token, otlp_mesh_endpoint
 from .observe_access import guard_access_credentials
 from ..registry import (
@@ -2452,7 +2454,7 @@ def handle_dashboard(token: str, *, scope: str = "full", app: str = "", query: D
     if needs_stats:
         for service in services:
             _attach_service_actual_resources(service, service_stats.get(str(service.get("fullName") or ""), []))
-    traffic_paths = _dashboard_traffic_paths(services, route_files, dns_target) if scope in {"full", "network"} else []
+    traffic_paths = _dashboard_traffic_paths(services, route_files, dns_target, node_targets=_node_edge_targets(state)) if scope in {"full", "network"} else []
     storage = _dashboard_storage(services, _storage_classes_summary(state)) if scope in {"full", "storage", "deploy", "application"} else {}
     public_services = [_public_dashboard_service(item) for item in services]
     issues = _dashboard_issues(nodes, public_services) if scope in {"full", "overview"} else []
@@ -3261,6 +3263,38 @@ def _dns_missing_reasons(dns_provider: str, *, zone_id: object, token_configured
     return missing
 
 
+def _control_config() -> LumaConfig:
+    return load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
+
+
+def handle_dns_zone_list(token: str) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    return dns_zones.list_zones(_control_config(), state)
+
+
+def handle_dns_zone_add(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    return dns_zones.add_zone(
+        _control_config(), state, body,
+        token_check=lambda current: require_token(current, token, token_type="deploy"),
+    )
+
+
+def handle_dns_zone_check(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    return dns_zones.check_zone(_control_config(), state, body.get("name"))
+
+
+def handle_dns_zone_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    return dns_zones.remove_zone(state, body.get("name"), token_check=lambda current: require_token(current, token, token_type="deploy"))
+
+
 def handle_region_list(token: str) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -3715,6 +3749,113 @@ def handle_node_nomad_join(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "message": f"Nomad node joined through node agent: {node_name}",
     }
 
+
+def handle_node_public_ingress(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Enable, re-check or disable the public ingress a node serves itself."""
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    requested = str(body.get("node") or "").strip()
+    if not requested:
+        raise LumaError("node is required")
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    entry = _node_record_entry_for_name_or_id(nodes, requested)
+    if entry is None:
+        raise LumaError(f"unknown Luma node: {requested}")
+    key, record = entry
+    node_name = node_ingress.canonical_node_name(key, record)
+    aliases = _node_record_names(key, record) | {node_name}
+    config = _control_config()
+    api = NomadApi(nomad_addr(config, state), token=nomad_token(state))
+    job_id = node_traefik_job_id(node_name)
+    enabled = body.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise LumaError("enabled must be true or false")
+
+    if not enabled:
+        users = node_ingress.node_edge_users(state, aliases)
+        if users:
+            raise LumaError(f"node {node_name} still serves node-edge deployments: {', '.join(users)}; move or remove them first")
+        try:
+            api.request("DELETE", f"/v1/job/{urllib.parse.quote(job_id, safe='')}?purge=true")
+        except LumaError as exc:
+            if "404" not in str(exc) and "not found" not in str(exc).lower():
+                raise
+
+        def disable(current: Dict[str, Any]) -> Dict[str, Any]:
+            require_token(current, token, token_type="deploy")
+            current_nodes = current.get("nodes") if isinstance(current.get("nodes"), dict) else {}
+            target = current_nodes.get(key)
+            if isinstance(target, dict):
+                target.pop("publicIngress", None)
+            return {"node": node_name, "publicIngress": {"enabled": False}}
+
+        return mutate_state(disable)
+
+    if _node_record_is_manager(record):
+        raise LumaError(f"{node_name} is the Manager; its services already use the Manager edge (cn-edge)")
+    platform = _nomad_node_platform_from_record(record)
+    if (platform or "").split("/")[0] == "darwin":
+        raise LumaError(f"{node_name} is a macOS node; public ingress needs a Linux node with a public address")
+    _ensure_nomad_node_record_schedulable(node_name, record)
+    previous = node_ingress.ingress_record(record)
+    public_ip = node_ingress.parse_public_ip(
+        body.get("publicIp") or previous.get("publicIp") or record.get("publicIp") or record.get("publicIP")
+    )
+    from ..bootstrap import _acme_email, _traefik_image
+
+    job = render_node_traefik_job(
+        node=node_name,
+        image=_traefik_image(config),
+        acme_email=_acme_email(config),
+        cert_resolver=config.http_cert_resolver,
+        nomad_addr="http://127.0.0.1:4646",
+    )
+    deploy_message = deploy_to_nomad(config, str(job), state, slug=job_id)
+    status, detail = node_ingress.probe_summary(public_ip, node_ingress.probe_ports(public_ip))
+    ingress = node_ingress.ingress_state(
+        enabled=True, public_ip=public_ip, job_id=job_id, node_name=node_name, status=status, detail=detail,
+    )
+
+    def enable(current: Dict[str, Any]) -> None:
+        require_token(current, token, token_type="deploy")
+        current_nodes = current.get("nodes") if isinstance(current.get("nodes"), dict) else {}
+        target = current_nodes.get(key)
+        if not isinstance(target, dict):
+            raise LumaError(f"node {node_name} was removed while enabling public ingress")
+        target["publicIngress"] = ingress
+
+    mutate_state(enable)
+    dns_moves: list[str] = []
+    old_ip = str(previous.get("publicIp") or "")
+    if old_ip and old_ip != public_ip:
+        dns_moves = _move_node_edge_dns(load_state(), aliases)
+    return {
+        "node": node_name,
+        "publicIngress": node_ingress.public_summary({"publicIngress": ingress}),
+        "traefik": deploy_message,
+        "dns": dns_moves,
+    }
+
+
+def _move_node_edge_dns(state: Dict[str, Any], aliases: set[str]) -> list[str]:
+    """Repoint native node-edge services after the node's address changed."""
+    config = _dns_config(_control_config(), state)
+    messages: list[str] = []
+    services = (_deployments_state(state).get("services") or {})
+    for name in node_ingress.node_edge_users(state, aliases):
+        record = next((item for item in services.values() if isinstance(item, dict) and item.get("name") == name), None)
+        if record is None:
+            messages.append(f"{name}: redeploy to move its DNS records")
+            continue
+        try:
+            service = _load_service_manifest(str(record.get("manifest") or ""))
+            messages.append(sync_dns(config, service, override=cdn_service_dns_override(state, service)))
+            for host in service.redirect_from:
+                messages.append(sync_dns(config, _redirect_alias(service, host)))
+        except LumaError as exc:
+            messages.append(f"{name}: {exc}")
+    return messages
 
 
 def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -7434,7 +7575,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     requirements = service_requirements(
         service,
         state,
-        config,
+        _dns_config(config, state),
         resolved_secrets=secrets,
         require_verified=str(body.get("origin") or "") == "dashboard",
     )
@@ -7553,8 +7694,8 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         _deploy_step(steps, "Write Nomad job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
         written = [str(target)]
         _require_redirect_hosts_free(state, service)
-        cdn_prepared = _prepare_cdn_step(steps, progress, config, state, service)
-        dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service, override=cdn_prepared.get("override")), progress=progress)
+        cdn_prepared = _prepare_cdn_step(steps, progress, _dns_config(config, state), state, service)
+        dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(_dns_config(config, state), service, override=cdn_prepared.get("override")), progress=progress)
         orchestrator_result = _deploy_step(
             steps,
             "Deploy Nomad job",
@@ -7680,7 +7821,7 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
     requirements = service_requirements(
         service,
         state,
-        config,
+        _dns_config(config, state),
         require_verified=str(body.get("origin") or "") == "dashboard",
     )
     stack_text = render_nomad_job(
@@ -7818,7 +7959,7 @@ def _remove_service_deployment(
         "Delete DNS",
         lambda: "DNS skipped: --skip-dns"
         if body.get("skipDns")
-        else (_planned_delete_dns_message(service) if dry_run else delete_dns(config, service, override=_cdn_delete_override(state, service))),
+        else (_planned_delete_dns_message(service) if dry_run else delete_dns(_dns_config(config, state), service, override=_cdn_delete_override(state, service))),
         progress=progress,
     )
     _remove_cdn_steps(steps, progress, state, service, dry_run=dry_run, skip_dns=bool(body.get("skipDns")), config=config)
@@ -7903,7 +8044,7 @@ def _remove_compose_deployment(
                 f"Delete DNS {service.name}",
                 lambda service_spec=service_spec: "DNS skipped: --skip-dns"
                 if body.get("skipDns")
-                else (_planned_delete_dns_message(service_spec) if dry_run else delete_dns(config, service_spec, override=_cdn_delete_override(state, service_spec))),
+                else (_planned_delete_dns_message(service_spec) if dry_run else delete_dns(_dns_config(config, state), service_spec, override=_cdn_delete_override(state, service_spec))),
                 progress=progress,
             )
         )
@@ -8312,10 +8453,10 @@ def _reconcile_application_delivery(
             )
             route_target.parent.mkdir(parents=True, exist_ok=True)
             route_results.append(_write_route_file(route_target, route_text, routes_root=routes_root))
-        dns_results.append(sync_dns(config, route_service, override=cdn_service_dns_override(state, route_service)))
+        dns_results.append(sync_dns(_dns_config(config, state), route_service, override=cdn_service_dns_override(state, route_service)))
         for host in route_service.redirect_from:
-            dns_results.append(sync_dns(config, replace(route_service, domain=host, cdn=None)))
-        if route_service.exposure in {"cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel"} and route_service.domain:
+            dns_results.append(sync_dns(_dns_config(config, state), replace(route_service, domain=host, cdn=None)))
+        if route_service.exposure in {*EDGE_EXPOSURES, "tailscale-relay", "cloudflare-tunnel"} and route_service.domain:
             probe_results.append(_wait_for_public_route(route_service))
 
     if isinstance(service_record, dict):
@@ -8396,7 +8537,7 @@ def _compose_cni_fallback_nodes(deployment: ComposeDeploymentSpec) -> list[str]:
     exposed = [
         service
         for service in deployment.services.values()
-        if service.port and service.exposure in {"tailscale-relay", "tcp-relay", "cn-edge", "external-edge"}
+        if service.port and service.exposure in {"tailscale-relay", "tcp-relay", *EDGE_EXPOSURES}
     ]
     if not exposed:
         return []
@@ -9820,7 +9961,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         service_name: service_requirements(
             _compose_service_as_service_spec(deployment, compose_service),
             state,
-            config,
+            _dns_config(config, state),
             resolved_secrets=secrets,
             require_verified=str(body.get("origin") or "") == "dashboard",
         )
@@ -9950,13 +10091,13 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
             _require_redirect_hosts_free(state, _compose_service_as_service_spec(deployment, service))
         for service in compose_public_services(deployment):
             service_spec = _compose_service_as_service_spec(deployment, service)
-            cdn_prepared = _prepare_cdn_step(steps, progress, config, state, service_spec, label=service.name)
+            cdn_prepared = _prepare_cdn_step(steps, progress, _dns_config(config, state), state, service_spec, label=service.name)
             cdn_prepared_by_service[service.name] = cdn_prepared
             dns_results.append(
                 _deploy_step(
                     steps,
                     f"Sync DNS {service.name}",
-                    lambda service_spec=service_spec, cdn_prepared=cdn_prepared: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service_spec, override=cdn_prepared.get("override")),
+                    lambda service_spec=service_spec, cdn_prepared=cdn_prepared: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(_dns_config(config, state), service_spec, override=cdn_prepared.get("override")),
                     progress=progress,
                 )
             )
@@ -10118,7 +10259,7 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
         service_name: service_requirements(
             _compose_service_as_service_spec(deployment, service),
             state,
-            config,
+            _dns_config(config, state),
             require_verified=str(body.get("origin") or "") == "dashboard",
         )
         for service_name, service in deployment.services.items()
@@ -11090,7 +11231,7 @@ def _state_nodes(state: Dict[str, Any]) -> Dict[str, Any]:
 def _config_with_state_nodes(config: LumaConfig, state: Dict[str, Any]) -> LumaConfig:
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     if not nodes:
-        return config
+        return _dns_config(config, state)
     raw = dict(config.raw)
     raw_nodes = dict(raw.get("nodes") or {})
     for node_name, record in nodes.items():
@@ -11112,7 +11253,28 @@ def _config_with_state_nodes(config: LumaConfig, state: Dict[str, Any]) -> LumaC
                 merged[field] = value
         raw_nodes[key] = merged
     raw["nodes"] = raw_nodes
-    return LumaConfig(raw, config.path)
+    return _dns_config(LumaConfig(raw, config.path), state)
+
+
+def _dns_zone_records(state: Mapping[str, Any]) -> list[Dict[str, Any]]:
+    zones = state.get("dnsZones") if isinstance(state.get("dnsZones"), dict) else {}
+    return [dict(record) for _name, record in sorted(zones.items()) if isinstance(record, dict)]
+
+
+def _node_edge_targets(state: Dict[str, Any]) -> Dict[str, str]:
+    """Public address of every node serving its own ingress, keyed by each node alias."""
+    targets: Dict[str, str] = {}
+    for name, record in _state_nodes(state).items():
+        ingress = record.get("publicIngress") if isinstance(record.get("publicIngress"), dict) else {}
+        address = str(ingress.get("publicIp") or "").strip()
+        if ingress.get("enabled") and address:
+            targets[str(name)] = address
+    return targets
+
+
+def _dns_config(config: LumaConfig, state: Dict[str, Any]) -> LumaConfig:
+    """Control's config with the DNS zone catalog and node-edge targets for DNS calls."""
+    return with_dns_runtime(config, zones=_dns_zone_records(state), node_targets=_node_edge_targets(state))
 
 
 def _compose_service_as_service_spec(deployment: ComposeDeploymentSpec, service: Any) -> ServiceSpec:
@@ -11761,7 +11923,7 @@ def handle_cdn_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     require_token(state, token, token_type="deploy")
     _reject_control_maintenance(state)
     config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
-    return remove_unused_cdn_domain(config, state, _cdn_domain_from_body(body))
+    return remove_unused_cdn_domain(_dns_config(config, state), state, _cdn_domain_from_body(body))
 
 
 def handle_git_provider_list(token: str) -> Dict[str, Any]:
@@ -12199,7 +12361,7 @@ def _stack_env_for_text(stack_text: str) -> list[dict[str, str]]:
 
 
 def _probe_public_route(service: ServiceSpec) -> str:
-    if service.exposure not in {"cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel"}:
+    if service.exposure not in {*EDGE_EXPOSURES, "tailscale-relay", "cloudflare-tunnel"}:
         return "Public route probe skipped: service is not an HTTP route"
     if not service.domain:
         return "Public route probe skipped: service has no domain"
@@ -12239,7 +12401,12 @@ def _probe_origin_route(service: ServiceSpec, url: str) -> str:
     and a rewritten Server header would hide a missing Traefik router.
     """
     config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
-    origin = service.dns.get("target") or config.dns.get("edgeTarget") or config.dns_target_for(exposure=service.exposure, region=service.region)
+    if service.exposure == "node-edge":
+        config = _dns_config(config, load_state())
+    explicit = service.dns.get("target") if service.exposure != "node-edge" else None
+    origin = explicit or config.service_dns_target(
+        exposure=service.exposure, region=service.region, node=service.node, explicit=service.dns.get("target"),
+    )
     if not origin:
         return f"Public route probe inconclusive: {url} (no edge address to probe)"
     connection = _OriginHTTPSConnection(str(origin), str(service.domain), timeout=15, context=ssl.create_default_context())
@@ -12264,7 +12431,7 @@ def _deployment_health_result(service: ServiceSpec, probe: str | None = None) ->
     """
     checked_at = int(time.time())
     exposure = str(service.exposure or "none")
-    public_exposures = {"cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel"}
+    public_exposures = {*EDGE_EXPOSURES, "tailscale-relay", "cloudflare-tunnel"}
     if exposure in public_exposures:
         message = str(probe or "Public route probe was not executed")
         if message.startswith("Public route probe skipped:"):
@@ -12684,7 +12851,7 @@ def _sync_redirect_dns_steps(
         else:
             try:
                 alias = _redirect_alias(service, host)
-                message = sync_dns(config, alias) if listed else delete_dns(config, alias)
+                message = sync_dns(_dns_config(config, state), alias) if listed else delete_dns(_dns_config(config, state), alias)
                 status = "ok"
             except LumaError as exc:
                 message, status = f"{exc}; the primary domain is unaffected, redeploy to retry", "warning"
@@ -12724,7 +12891,7 @@ def _delete_redirect_dns_steps(
             f"Delete DNS {label + ' ' if label else ''}{host} (redirect)",
             lambda alias=alias: "DNS skipped: --skip-dns"
             if skip
-            else (_planned_delete_dns_message(alias) if dry_run else delete_dns(config, alias)),
+            else (_planned_delete_dns_message(alias) if dry_run else delete_dns(_dns_config(config, state), alias)),
             progress=progress,
         )
         if not dry_run and not skip:
@@ -12808,7 +12975,7 @@ def _remove_cdn_steps(
             step = {"name": name, "status": "ok", "message": f"CDN domain {domain} would be deleted"}
         else:
             try:
-                step = {"name": name, "status": "ok", "message": remove_cdn_domain(state, domain, config=config)}
+                step = {"name": name, "status": "ok", "message": remove_cdn_domain(state, domain, config=_dns_config(config, state))}
             except LumaError as exc:
                 step = {"name": name, "status": "warning", "message": f"CDN domain {domain} was not deleted: {exc}; run luma cdn remove {domain}"}
         steps.append(step)
@@ -13070,6 +13237,8 @@ def _registered_nodes_summary(nodes: Dict[str, Any]) -> list[Dict[str, Any]]:
             "metrics": _agent_metrics(metrics),
             "containerStats": _container_stats(container_stats),
             "diagnostics": diagnostics,
+            "publicIp": str(raw.get("publicIp") or raw.get("publicIP") or ""),
+            "publicIngress": node_ingress.public_summary(raw),
         }
         items.append(item)
     return items
@@ -13335,6 +13504,8 @@ def _dashboard_nodes(
                 "metrics": registered.get("metrics") if isinstance(registered.get("metrics"), dict) else {},
                 "capacity": orchestrator.get("capacity") if isinstance(orchestrator.get("capacity"), dict) else {},
                 "diskHygiene": _dashboard_disk_hygiene(registered.get("diagnostics")),
+                "publicIp": str(registered.get("publicIp") or ""),
+                "publicIngress": registered.get("publicIngress") if isinstance(registered.get("publicIngress"), dict) else {"enabled": False},
             }
         )
     return rows
@@ -13879,6 +14050,8 @@ def _dashboard_traffic_paths(
     services: list[Dict[str, Any]],
     route_files: dict[str, Dict[str, Any]],
     dns_target: str,
+    *,
+    node_targets: Mapping[str, str] | None = None,
 ) -> list[Dict[str, Any]]:
     paths: list[Dict[str, Any]] = []
     for service in services:
@@ -13888,7 +14061,11 @@ def _dashboard_traffic_paths(
         service_target = str(service.get("name") or "")
         if service.get("targetPort"):
             service_target = f"{service_target}:{service['targetPort']}"
-        if exposure in {"cn-edge", "external-edge"}:
+        if exposure == "node-edge":
+            node_target = next((str((node_targets or {})[node]) for node in nodes if node in (node_targets or {})), "")
+            segments = ["DNS", node_target or "node ingress address missing", "Traefik on node", service_target]
+            segments.extend(nodes or ["no running tasks"])
+        elif exposure in {"cn-edge", "external-edge"}:
             segments = ["Cloudflare DNS", dns_target or "DNS target missing", "Traefik", service_target]
             segments.extend(nodes or ["no running tasks"])
         elif exposure == "tailscale-relay":
@@ -16012,6 +16189,8 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             return _json_response(200, await run_in_threadpool(handle_secret_list, token))
         if parsed_path == "/v1/regions":
             return _json_response(200, await run_in_threadpool(handle_region_list, token))
+        if parsed_path == "/v1/dns/zones":
+            return _json_response(200, await run_in_threadpool(handle_dns_zone_list, token))
         if parsed_path == "/v1/storage":
             return _json_response(200, await run_in_threadpool(handle_storage_list, token))
         if parsed_path == "/v1/status":
@@ -16209,6 +16388,7 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/node-agent/tasks/progress": handle_node_agent_progress,
             "/v1/security/nomad/tasks": handle_nomad_security_task,
             "/v1/nodes/unregister": handle_node_unregister,
+            "/v1/nodes/public-ingress": handle_node_public_ingress,
             "/v1/workflows": handle_workflow_record,
             "/v1/workflows/check": handle_workflow_check,
             "/v1/deployments": handle_deployment,
@@ -16230,6 +16410,9 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/secrets": handle_secret_set,
             "/v1/secrets/remove": handle_secret_remove,
             "/v1/regions": handle_region_create,
+            "/v1/dns/zones": handle_dns_zone_add,
+            "/v1/dns/zones/check": handle_dns_zone_check,
+            "/v1/dns/zones/remove": handle_dns_zone_remove,
             "/v1/regions/remove": handle_region_remove,
             "/v1/regions/update": handle_region_update,
             "/v1/dashboard/metrics/history/batch": handle_metrics_history_batch,
