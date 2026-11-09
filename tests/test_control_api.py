@@ -2155,6 +2155,32 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_node_edge_traefik_404_recreates_only_that_node_ingress(self):
+        from luma.control.server import _probe_public_route_with_recovery
+
+        service = ServiceSpec(
+            source=Path("api.yaml"),
+            name="api",
+            image="nginx:alpine",
+            region="cn",
+            exposure="node-edge",
+            node="tx-sh-1",
+            domain="api.example.com",
+            port=80,
+        )
+        miss = LumaError("Public route unhealthy: https://api.example.com/ -> HTTP 404 (Traefik router not found)")
+        with patch("luma.control.server._probe_public_route", side_effect=miss), patch(
+            "luma.control.server._wait_for_public_route",
+            side_effect=[miss, "Public route reachable: https://api.example.com/ -> HTTP 200"],
+        ), patch(
+            "luma.control.server._recover_traefik_ingress",
+            return_value="Traefik allocation recreated (new-traefik)",
+        ) as recover_ingress, patch("luma.control.server._recover_public_route_allocation"):
+            _probe_public_route_with_recovery("deploy-token", service, stack="api", skip_orchestrator=False, steps=[])
+
+        # Never restart the Manager edge that serves every other service.
+        recover_ingress.assert_called_once_with("traefik-node-tx-sh-1")
+
     def test_persistent_traefik_404_recreates_ingress_not_application(self):
         from luma.control.server import _probe_public_route_with_recovery
 
@@ -2187,7 +2213,7 @@ class ControlApiTests(unittest.TestCase):
             )
 
         self.assertEqual(wait.call_count, 2)
-        recover_ingress.assert_called_once_with()
+        recover_ingress.assert_called_once_with("traefik")
         recover_app.assert_not_called()
         self.assertIn("Recovered public route after Traefik recreate", result)
 

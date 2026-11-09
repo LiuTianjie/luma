@@ -80,8 +80,16 @@ TRAEFIK_OTLP_HTTP_ENDPOINT = "http://127.0.0.1:4318"
 
 EDGE_EXPOSURES = {"cn-edge", "external-edge", "node-edge"}
 # Nomad service tag that hands a router to the Traefik running on that node.
-# The Manager's Traefik ignores every service carrying it.
 NODE_EDGE_TAG = "luma.edge"
+# node-edge routers use their own tag prefix. The Manager's Traefik reads only
+# ``traefik.*`` tags, so it never sees them and its configuration is untouched.
+NODE_EDGE_TAG_PREFIX = "lumaedge"
+
+
+def node_edge_tags(tags: List[str], node: str) -> List[str]:
+    """Move Traefik tags to the node-edge prefix and claim them for ``node``."""
+    moved = [f"{NODE_EDGE_TAG_PREFIX}.{tag[len('traefik.'):]}" if tag.startswith("traefik.") else tag for tag in tags]
+    return [*moved, f"{NODE_EDGE_TAG}={node}"]
 HOST_PORT_EXPOSURES = {"tailscale-relay", "tcp-relay"}
 NOMAD_TAILSCALE_META_KEY = "luma_tailscale_ip"
 NOMAD_TAILSCALE_SERVICE_ADDRESS = f"${{meta.{NOMAD_TAILSCALE_META_KEY}}}"
@@ -120,8 +128,6 @@ def render_traefik_job(
         f"--providers.nomad.endpoint.address={nomad_addr}",
         "--providers.nomad.exposedByDefault=false",
         "--providers.nomad.watch=true",
-        # node-edge services are served by the Traefik on their own node.
-        f"--providers.nomad.constraints=!TagRegex(`^{re.escape(NODE_EDGE_TAG)}=.+$`)",
         "--accesslog=true",
         "--accesslog.format=json",
         # Behind Alibaba Cloud ESA the TCP peer is an ESA node; keep the real
@@ -265,6 +271,7 @@ def render_node_traefik_job(
     acme_email: str,
     cert_resolver: str,
     nomad_addr: str = "http://127.0.0.1:4646",
+    registry_auth: Mapping[str, str] | None = None,
     as_json: bool = True,
 ) -> str | Dict[str, Any]:
     """Render the Traefik that serves ``node-edge`` routes on one node.
@@ -283,6 +290,7 @@ def render_node_traefik_job(
         f"--providers.nomad.endpoint.address={nomad_addr}",
         "--providers.nomad.exposedByDefault=false",
         "--providers.nomad.watch=true",
+        f"--providers.nomad.prefix={NODE_EDGE_TAG_PREFIX}",
         f"--providers.nomad.constraints=Tag(`{NODE_EDGE_TAG}={node}`)",
         "--accesslog=true",
         "--accesslog.format=json",
@@ -348,6 +356,12 @@ def render_node_traefik_job(
         }],
         "Meta": {"luma.managed": "true", "luma.node-edge": node},
     }
+    if registry_auth and registry_auth.get("username") and registry_auth.get("password"):
+        job["TaskGroups"][0]["Tasks"][0]["Config"]["auth"] = {
+            "username": str(registry_auth["username"]),
+            "password": str(registry_auth["password"]),
+            "server_address": str(registry_auth.get("serveraddress") or registry_auth.get("serverAddress") or ""),
+        }
     wrapped = {"Job": job}
     return json.dumps(wrapped, indent=2, ensure_ascii=False) if as_json else wrapped
 
@@ -745,7 +759,7 @@ def render_compose_job(
                 redirect_router_tags(config, service_id, str(override.domain), override.redirect_from, service=service_id, except_paths=override.redirect_except, node_edge=exposure == "node-edge")
             )
             if exposure == "node-edge":
-                service_block["Tags"].append(f"{NODE_EDGE_TAG}={pinned_node}")
+                service_block["Tags"] = node_edge_tags(service_block["Tags"], pinned_node)
             if health_check is not None:
                 service_block["Checks"] = [health_check]
             _set_edge_service_address(service_block, NOMAD_LOCAL_HOST_SERVICE_ADDRESS if exposure == "node-edge" else service_address)
@@ -1200,7 +1214,7 @@ def _service_block(config: LumaConfig, service: ServiceSpec, port_label: str | N
     tags.extend(redirect_router_tags(config, name, str(service.domain), service.redirect_from, service=name, except_paths=service.redirect_except, node_edge=node_edge))
     tags.extend(str(t) for t in service.labels)
     if node_edge:
-        tags.append(f"{NODE_EDGE_TAG}={service.node}")
+        tags = node_edge_tags(tags, str(service.node))
     block: Dict[str, Any] = {
         "Name": name,
         "PortLabel": port_label,

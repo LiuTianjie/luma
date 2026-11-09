@@ -398,14 +398,12 @@ def cmd_node_ingress(args: argparse.Namespace) -> int:
     client = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
     if enabled and _output_format(args) == "text":
         log(f"[start] Deploy Traefik on {args.name} and check ports 80/443")
-    if enabled:
-        result = _run_with_wait_heartbeat(
-            lambda: client.set_node_public_ingress(node=args.name, enabled=True, public_ip=str(getattr(args, "public_ip", "") or "")),
-            timeout=900,
-            emit=_output_format(args) == "text",
-        )
-    else:
-        result = client.set_node_public_ingress(node=args.name, enabled=False)
+    try:
+        result = _set_node_ingress(args, client, enabled)
+    except LumaError as exc:
+        if "control API error 404" in str(exc):
+            raise LumaError("this Control does not support node ingress yet; upgrade Control to a release that reports node-edge-v1 in luma version") from exc
+        raise
     if _output_format(args) != "text":
         _print_success(args, result)
         return 0
@@ -422,6 +420,16 @@ def cmd_node_ingress(args: argparse.Namespace) -> int:
         print(f"  DNS: {line}")
     print("  Deploy with: exposure: node-edge, node: " + str(node))
     return 0 if status == "ready" else 1
+
+
+def _set_node_ingress(args: argparse.Namespace, client: Any, enabled: bool) -> Dict[str, Any]:
+    if not enabled:
+        return client.set_node_public_ingress(node=args.name, enabled=False)
+    return _run_with_wait_heartbeat(
+        lambda: client.set_node_public_ingress(node=args.name, enabled=True, public_ip=str(getattr(args, "public_ip", "") or "")),
+        timeout=900,
+        emit=_output_format(args) == "text",
+    )
 
 
 def cmd_region(args: argparse.Namespace) -> int:

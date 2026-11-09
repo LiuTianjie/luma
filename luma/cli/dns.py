@@ -29,9 +29,31 @@ def cmd_dns(args: argparse.Namespace) -> int:
     raise LumaError(f"unknown dns command: {args.dns_command}")
 
 
-def _client(args: argparse.Namespace) -> common.ControlClient:
+class _Client:
+    """Control client that explains a missing DNS zone API on older Controls."""
+
+    def __init__(self, client: common.ControlClient):
+        self._client = client
+
+    def __getattr__(self, name: str):
+        method = getattr(self._client, name)
+
+        def call(*args, **kwargs):
+            try:
+                return method(*args, **kwargs)
+            except LumaError as exc:
+                if "control API error 404" in str(exc):
+                    raise LumaError(
+                        "this Control does not support DNS zones yet; upgrade Control to a release that reports dns-zones-v1 in luma version"
+                    ) from exc
+                raise
+
+        return call
+
+
+def _client(args: argparse.Namespace) -> _Client:
     endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
-    return common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    return _Client(common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip))
 
 
 def cmd_dns_zone_list(args: argparse.Namespace) -> int:

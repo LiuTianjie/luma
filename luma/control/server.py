@@ -3804,13 +3804,20 @@ def handle_node_public_ingress(token: str, body: Dict[str, Any]) -> Dict[str, An
     )
     from ..bootstrap import _acme_email, _traefik_image
 
+    image = _traefik_image(config)
+    build = _build_config(state)
+    if str(build.get("registryHost") or "").strip() and str(build.get("pushHost") or "").strip():
+        # Same rule as every workload: target nodes pull only from Builder Registry.
+        image = str(_cache_runtime_image_on_builder(config, state, image, platform=platform)["deployed"])
     job = render_node_traefik_job(
         node=node_name,
-        image=_traefik_image(config),
+        image=image,
         acme_email=_acme_email(config),
         cert_resolver=config.http_cert_resolver,
         nomad_addr="http://127.0.0.1:4646",
+        registry_auth=_registry_auth_for_image(state, image),
     )
+    _ensure_job_managed_registry_access(config, state, str(job))
     deploy_message = deploy_to_nomad(config, str(job), state, slug=job_id)
     status, detail = node_ingress.probe_summary(public_ip, node_ingress.probe_ports(public_ip))
     ingress = node_ingress.ingress_state(
@@ -12497,10 +12504,13 @@ def _probe_public_route_with_recovery(
                 return f"Recovered public route after provider reconciliation ({provider_message}): {retry}"
             except LumaError as provider_exc:
                 if _public_route_error_is_traefik_miss(provider_exc):
+                    # A node-edge route is served by its node's Traefik; never
+                    # restart the Manager edge that serves every other service.
+                    ingress_job = node_traefik_job_id(str(service.node)) if service.exposure == "node-edge" and service.node else "traefik"
                     _deploy_step(
                         steps,
                         "Recover Traefik ingress",
-                        _recover_traefik_ingress,
+                        lambda: _recover_traefik_ingress(ingress_job),
                         progress=progress,
                     )
                     retry = _wait_for_public_route(service)
@@ -12666,11 +12676,11 @@ def _nomad_blocked_evaluation_message(job_id: str, evaluation: Dict[str, Any]) -
     return message
 
 
-def _recover_traefik_ingress() -> str:
+def _recover_traefik_ingress(job_id: str = "traefik") -> str:
     state = load_state()
     config = load_config(_control_config_path())
     api = NomadApi(nomad_addr(config, state), token=nomad_token(state))
-    allocations = api.request("GET", "/v1/job/traefik/allocations")
+    allocations = api.request("GET", f"/v1/job/{urllib.parse.quote(job_id, safe='')}/allocations")
     if not isinstance(allocations, list):
         raise LumaError("Nomad returned invalid allocations for Traefik")
     running_ids = {
@@ -12683,7 +12693,7 @@ def _recover_traefik_ingress() -> str:
         raise LumaError("Traefik has no running allocation to recover")
     for allocation_id in sorted(running_ids):
         api.request("POST", f"/v1/allocation/{urllib.parse.quote(allocation_id, safe='')}/stop", None)
-    replacements = _wait_for_nomad_job_replacement(api, "traefik", running_ids, min_running=1)
+    replacements = _wait_for_nomad_job_replacement(api, job_id, running_ids, min_running=1)
     return f"Traefik allocation recreated ({', '.join(replacements)})"
 
 
@@ -15963,6 +15973,8 @@ async def _asgi_health(_: Request) -> JSONResponse:
                 "nomad-security-v1",
                 "nomad-security-upgrade-v1",
                 "region-exposures-v1",
+                "node-edge-v1",
+                "dns-zones-v1",
                 "macos-compose-network-v1",
                 "container-dns-v1",
                 "service-proxy",
