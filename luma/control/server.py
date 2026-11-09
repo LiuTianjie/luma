@@ -5289,6 +5289,21 @@ def _verify_authenticated_registry(
     )
 
 
+def _preload_registry_runtime_image(state: Dict[str, Any], service: ServiceSpec, registry_auth: Dict[str, str] | None) -> str:
+    if not service.node:
+        raise LumaError("Registry runtime image must be loaded on its pinned node before deployment")
+    payload: Dict[str, Any] = {"image": service.image, "forcePull": False, "platform": str(service.node_platform or "")}
+    if registry_auth:
+        payload["registryAuth"] = registry_auth
+    # The Registry may serve its own resolved image. Load that exact reference
+    # while its old allocation is still running; failure must precede job write
+    # and submission. This fixed task never reconfigures the Docker daemon.
+    result = _run_node_agent_task(state, service.node, "resolve-docker-image", payload, timeout=600, required_capability="docker-image")
+    if result.get("image") != service.image:
+        raise LumaError("Registry node did not confirm the requested runtime image")
+    return f"Registry runtime image is available on {service.node}"
+
+
 def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -5380,7 +5395,7 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
     _emit_progress(progress, registry_transport_step)
 
     deploy_body = {"manifest": manifest_text, "sourceName": f"{name} (luma registry serve)"}
-    deploy_result = handle_deployment(token, deploy_body, progress=progress)
+    deploy_result = handle_deployment(token, deploy_body, progress=progress, registry_runtime=True)
     if isinstance(deploy_result, dict):
         steps.extend(s for s in (deploy_result.get("steps") or []) if isinstance(s, dict))
 
@@ -7380,7 +7395,7 @@ def _forget_compose_deployment(state: Dict[str, Any], deployment: ComposeDeploym
 
 
 @_serialize_deploy
-def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
+def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None, registry_runtime: bool = False) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
     _reject_control_maintenance(state)
@@ -7525,6 +7540,12 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
                 lambda: _ensure_job_managed_registry_access(config, state, stack_text, progress=progress),
                 progress=progress,
             )
+            if registry_runtime:
+                _deploy_step(
+                    steps, "Load Registry runtime image on target",
+                    lambda: _preload_registry_runtime_image(state, service, registry_auth),
+                    progress=progress,
+                )
         if not _skip_orchestrator(body):
             stack_text = _prepare_nomad_workload_security(config, state, stack_text)
         else:

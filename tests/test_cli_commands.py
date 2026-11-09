@@ -885,6 +885,33 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("--profile", commands)
         self.assertNotIn("--egress", commands)
 
+    def test_local_nomad_identity_uses_privileged_helper_for_private_directory(self):
+        from luma.cli.manager import local_nomad_node_info
+
+        with patch("luma.cli.manager.Path.stat", side_effect=PermissionError("private directory")), patch(
+            "luma.bootstrap.LocalExecutor"
+        ) as executor, patch("luma.cli.manager._find_nomad_cli") as legacy:
+            executor.return_value.sudo_result.return_value = Mock(
+                code=0, output=json.dumps({"Name": "manager", "ID": "node-id"})
+            )
+            self.assertEqual(local_nomad_node_info(), ("manager", "node-id"))
+
+        executor.return_value.sudo_result.assert_called_once()
+        self.assertIn("luma.nomad_admin local-info", executor.return_value.sudo_result.call_args.args[0])
+        legacy.assert_not_called()
+
+    def test_local_nomad_identity_does_not_fall_back_when_privileged_lookup_fails(self):
+        from luma.cli.manager import local_nomad_node_info
+
+        with patch("luma.cli.manager.Path.stat", side_effect=PermissionError("private directory")), patch(
+            "luma.bootstrap.local_nomad_node_info", return_value=("manager", "")
+        ) as secured, patch("luma.cli.manager._find_nomad_cli") as legacy:
+            with self.assertRaisesRegex(LumaError, "scoped credential"):
+                local_nomad_node_info()
+
+        secured.assert_called_once()
+        legacy.assert_not_called()
+
     def test_update_manager_installs_cli_then_refreshes_control_only(self):
         state = {"clusterId": "luma-test", "domain": "luma.example.com", "deployToken": "deploy", "joinToken": "join"}
         with patch("luma.cli.manager._run_luma_installer") as installer, patch("luma.cli.manager._reexec_after_luma_update") as reexec, patch(

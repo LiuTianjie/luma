@@ -16,6 +16,96 @@ from tests.test_nomad_security import SecurityFixture, nomad_test_ports, workloa
 
 
 class AuthorityAndPKI(SecurityFixture):
+    def test_nomad_defaults_preserve_saved_application_authority(self):
+        self.enforce()
+        expected = workload(mounts=[{"type": "bind", "source": "/srv/luma/data/example", "target": "/data"}])
+        group = expected["TaskGroups"][0]
+        group["Networks"] = [{"Mode": "bridge"}]
+        group["Tasks"][0]["Services"] = [{"Provider": "nomad", "Checks": [{"Type": "http"}]}]
+        group["Tasks"][0]["Secrets"] = [{"Name": "luma", "Provider": "nomad", "Path": "nomad/jobs/example/app/app"}]
+        security.authorize_application(expected)
+        live = copy.deepcopy(expected)
+        live["TaskGroups"][0]["Constraints"] = [
+            *({"LTarget": "${attr.plugins.cni.version." + name + "}", "RTarget": ">= 0.4.0", "Operand": "semver"}
+              for name in ("bridge", "firewall", "host-local", "loopback", "portmap")),
+            {"LTarget": "${attr.nomad.service_discovery}", "RTarget": "true", "Operand": "="},
+            {"LTarget": "${attr.nomad.version}", "RTarget": ">= 1.4.0", "Operand": "semver"},
+            {"LTarget": "${attr.plugins.secrets.nomad.version}", "RTarget": "", "Operand": "is_set"},
+        ]
+        self.assertTrue(upgrade._matches_expected_job(live, expected))
+        security.admit_job(live)
+        for field, value in (("image", "unreviewed/image"), ("auth", {"username": "different"})):
+            changed = copy.deepcopy(live)
+            changed["TaskGroups"][0]["Tasks"][0]["Config"][field] = value
+            with self.subTest(field=field):
+                self.assertFalse(upgrade._matches_expected_job(changed, expected))
+        changed = copy.deepcopy(live)
+        changed["TaskGroups"][0]["Tasks"][0]["Secrets"][0]["Path"] = "nomad/jobs/another/app/app"
+        self.assertFalse(upgrade._matches_expected_job(changed, expected))
+
+    def test_explicit_constraints_remain_pinned_to_their_scope_and_bounds(self):
+        for scope, constraint in (
+            ("job", {"LTarget": "${meta.luma_region}", "RTarget": "cn", "Operand": "="}),
+            ("group", {"LTarget": "${meta.luma_node}", "RTarget": "owner", "Operand": "="}),
+            ("group", {"LTarget": "${attr.plugins.cni.version.bridge}", "RTarget": ">= 1.0.0", "Operand": "semver"}),
+            ("group", {"LTarget": "${attr.nomad.version}", "RTarget": ">= 2.1.1", "Operand": "semver"}),
+            ("group", {"LTarget": "${attr.nomad.service_discovery}", "RTarget": "true", "Operand": "!="}),
+            ("job", {"LTarget": "${attr.nomad.version}", "RTarget": ">= 1.4.0", "Operand": "semver"}),
+            ("task", {"LTarget": "${attr.plugins.cni.version.bridge}", "RTarget": ">= 0.4.0", "Operand": "semver"}),
+        ):
+            expected = workload()
+            group = expected["TaskGroups"][0]
+            group["Networks"] = [{"Mode": "bridge"}]
+            group["Services"] = [{"Provider": "nomad", "Checks": [{"Type": "http"}]}]
+            target = {"job": expected, "group": group, "task": group["Tasks"][0]}[scope]
+            target["Constraints"] = [constraint]
+            removed = copy.deepcopy(expected)
+            removed_group = removed["TaskGroups"][0]
+            {"job": removed, "group": removed_group, "task": removed_group["Tasks"][0]}[scope].pop("Constraints")
+            with self.subTest(scope=scope, constraint=constraint):
+                self.assertFalse(upgrade._matches_expected_job(removed, expected))
+                self.assertFalse(upgrade._matches_expected_job(expected, removed))
+
+    def test_default_looking_constraints_require_the_corresponding_feature(self):
+        expected = workload(network="host")
+        for constraint in (
+            {"LTarget": "${attr.plugins.cni.version.bridge}", "RTarget": ">= 0.4.0", "Operand": "semver"},
+            {"LTarget": "${attr.nomad.service_discovery}", "RTarget": "true", "Operand": "="},
+            {"LTarget": "${attr.nomad.version}", "RTarget": ">= 1.4.0", "Operand": "semver"},
+            {"LTarget": "${attr.plugins.secrets.nomad.version}", "RTarget": "", "Operand": "is_set"},
+        ):
+            changed = copy.deepcopy(expected)
+            changed["TaskGroups"][0]["Constraints"] = [constraint]
+            with self.subTest(constraint=constraint):
+                self.assertFalse(upgrade._matches_expected_job(changed, expected))
+
+    def test_unary_constraint_empty_target_is_a_nomad_default(self):
+        expected = workload()
+        expected["Constraints"] = [{"LTarget": "${meta.luma_region}", "Operand": "is_set"}]
+        live = copy.deepcopy(expected)
+        live["Constraints"][0]["RTarget"] = ""
+        self.assertTrue(upgrade._matches_expected_job(live, expected))
+        live["Constraints"][0]["Operand"] = "is_not_set"
+        self.assertFalse(upgrade._matches_expected_job(live, expected))
+
+    def test_egress_legacy_bind_is_verified_against_installed_configuration(self):
+        from luma.nomad_render import render_egress_job
+
+        expected = render_egress_job(image="example/mihomo:1", as_json=False)["Job"]
+        legacy = copy.deepcopy(expected)
+        cfg = legacy["TaskGroups"][0]["Tasks"][0]["Config"]
+        cfg.pop("mount")
+        cfg["volumes"] = ["/opt/luma/egress-gateway:/root/.config/mihomo"]
+        config = mock.Mock(defaults={"images": {"egressGateway": "example/mihomo:1"}})
+        with mock.patch.object(upgrade, "ADMIN_ROOT", self.admin), mock.patch("luma.config.load_config", return_value=config):
+            self.assertTrue(upgrade._system_job(expected))
+            self.assertTrue(upgrade._system_job(legacy))
+            for key, value in (("volumes", ["/:/host"]), ("image", "unreviewed/mihomo"), ("args", ["sh", "-c", "sleep infinity"])):
+                changed = copy.deepcopy(legacy)
+                changed["TaskGroups"][0]["Tasks"][0]["Config"][key] = value
+                with self.subTest(field=key):
+                    self.assertFalse(upgrade._system_job(changed))
+
     def test_application_updates_preserve_authority_but_cannot_gain_host_root(self):
         self.enforce()
         job = workload(network="host", mounts=[{"type": "bind", "source": "/srv/luma/data/app", "target": "/data"}])

@@ -220,14 +220,41 @@ def needs_host_volumes(job: Mapping[str, Any]) -> bool:
                for task in group.get("Tasks") or [] for key in ("mount", "mounts", "volumes"))
 
 
+def _implicit_group_constraints(job: Mapping[str, Any], group: Mapping[str, Any]) -> set[tuple[str, str, str]]:
+    """Exact defaults from Nomad's jobImpliedConstraints admission hook.
+
+    Derive them from the job features that require them. Custom constraints,
+    different version bounds, and constraints in other scopes remain pinned.
+    """
+    result: set[tuple[str, str, str]] = set()
+    if any(network.get("Mode") == "bridge" for network in group.get("Networks") or []):
+        result.update(("${attr.plugins.cni.version." + plugin + "}", ">= 0.4.0", "semver")
+                      for plugin in ("bridge", "firewall", "host-local", "loopback", "portmap"))
+    services = [*(group.get("Services") or []),
+                *(service for task in group.get("Tasks") or [] for service in task.get("Services") or [])]
+    native = [service for service in services if service.get("Provider") == "nomad"]
+    if native:
+        result.add(("${attr.nomad.service_discovery}", "true", "="))
+    if any(service.get("Checks") for service in native):
+        result.add(("${attr.nomad.version}", ">= 1.4.0", "semver"))
+    # Nomad currently adds a required secret provider to every group in the job.
+    if any(secret.get("Provider") == "nomad" for g in job.get("TaskGroups") or []
+           for task in g.get("Tasks") or [] for secret in task.get("Secrets") or []):
+        result.add(("${attr.plugins.secrets.nomad.version}", "", "is_set"))
+    return result
+
+
 def authority_shape(job: Mapping[str, Any]) -> dict[str, Any]:
     """Stable across Nomad's default expansion and ordinary image/env updates.
 
     This is used only for applications validated from a saved/rendered Luma
     deployment. Administrator/system grants still pin the complete job.
     """
-    def constraints(value):
-        return sorted(({key: c.get(key) for key in ("LTarget", "RTarget", "Operand")} for c in value or []), key=lambda c: json.dumps(c, sort_keys=True))
+    def constraints(value, implicit=()):
+        keys = ("LTarget", "RTarget", "Operand")
+        # Nomad returns an empty string for the omitted target of unary tests.
+        return sorted(({key: (c.get(key) or "") if key == "RTarget" else c.get(key) for key in keys} for c in value or []
+                       if tuple(c.get(key) or "" for key in keys) not in implicit), key=lambda c: json.dumps(c, sort_keys=True))
 
     groups = []
     for group in job.get("TaskGroups") or []:
@@ -249,7 +276,7 @@ def authority_shape(job: Mapping[str, Any]) -> dict[str, Any]:
                           "csi": task.get("CSIPluginConfig") or {}, "volumes": task.get("VolumeMounts") or [],
                           "artifacts": task.get("Artifacts") or [], "templates": sorted(str(t.get("DestPath") or "") for t in task.get("Templates") or [])})
         groups.append({"name": group.get("Name"), "networks": sorted(str(n.get("Mode") or "host") for n in group.get("Networks") or []),
-                       "volumes": group.get("Volumes") or {}, "constraints": constraints(group.get("Constraints")), "tasks": sorted(tasks, key=lambda t: t["name"])})
+                       "volumes": group.get("Volumes") or {}, "constraints": constraints(group.get("Constraints"), _implicit_group_constraints(job, group)), "tasks": sorted(tasks, key=lambda t: t["name"])})
     # The trusted-host constraint is installed by admission, not declared by
     # the application. Exclude only this exact extra restriction for comparison.
     own_constraints = [c for c in job.get("Constraints") or [] if c != {"LTarget": "${meta.luma_host_access}", "Operand": "=", "RTarget": "trusted"}]

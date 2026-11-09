@@ -55,7 +55,17 @@ def _find_nomad_cli() -> str:
 
 def local_nomad_node_info() -> tuple[str, str]:
     from ..nomad_security import ADMIN_ROOT
-    if (ADMIN_ROOT / "agent.token").exists():
+    try:
+        (ADMIN_ROOT / "agent.token").stat()
+        secured = True
+    except FileNotFoundError:
+        secured = False
+    except PermissionError:
+        # Normal operator accounts cannot traverse the root-private directory.
+        # Let the privileged helper check it; unreadable is never proof that
+        # credentials are absent or permission to use the legacy anonymous path.
+        secured = True
+    if secured:
         from ..bootstrap import local_nomad_node_info as secured_info
         name, node_id = secured_info()
         if not node_id:
