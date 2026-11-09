@@ -8,7 +8,7 @@ import time
 import unittest
 from unittest import mock
 
-from luma import agent, nomad_acl, nomad_enrollment, nomad_migration_node as host, nomad_node, nomad_pki as pki, nomad_security as security, nomad_upgrade as upgrade
+from luma import agent, nomad_acl, nomad_enrollment, nomad_migration_node as host, nomad_node, nomad_pki as pki, nomad_security as security, nomad_upgrade as upgrade, secret_migration
 from luma.local import LocalResult
 from luma.errors import LumaError
 from luma.nomad_api import NomadApi
@@ -240,11 +240,19 @@ class UpgradeWorkflow(SecurityFixture):
             mock.patch.object(upgrade, "_raft_snapshot", side_effect=lambda label: self.calls.append(("snapshot", label))),
             mock.patch.object(upgrade, "activate_acl", side_effect=lambda: self.calls.append(("acl", "activated"))),
             mock.patch.object(upgrade, "_consumers", side_effect=lambda journal: self.calls.append(("consumers", "verified"))),
+            mock.patch.object(secret_migration, "migrate", side_effect=self.secrets),
             mock.patch.object(upgrade, "verify_acl", return_value={"ok": True}),
         ]
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
+
+    def secrets(self, journal, state):
+        self.assertTrue(all(node["acl"] and node["tlsHTTP"] for node in self.models.values()))
+        self.assertEqual(self.models["manager"]["jobTrackedVersions"], 1)
+        journal["secretMigration"] = {"verifiedAt": int(time.time()), "databaseEncrypted": True}
+        self.calls.append(("secrets", "verified"))
+        return {"encryptedStorage": True, "taskIdentitySecrets": True}
 
     def execute(self, name, payload):
         operation = payload["op"]
@@ -256,6 +264,7 @@ class UpgradeWorkflow(SecurityFixture):
         if operation == "configure":
             self.assertEqual(payload["baselineSHA256"], node["baselineSHA256"])
             node.update(acl=payload["acl"], tlsHTTP=payload["tlsHTTP"], tlsRPC=True, rpcUpgradeMode=bool(payload.get("rpcUpgradeMode")))
+            node.update(isolatedHostEnvironment=True, jobTrackedVersions=1 if payload.get("secretMigration") else 6)
             node["baselineSHA256"] = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
             if name == "manager":
                 security.private_write(self.runtime / "transport.json", json.dumps({"http": payload["tlsHTTP"], "address": node["address"]}))
@@ -303,6 +312,8 @@ class UpgradeWorkflow(SecurityFixture):
                 self.assertGreater(index, activated)
         self.assertTrue(security.read_private_json(self.runtime / "cluster.json")["tlsRequired"])
         self.assertTrue(all(node["verified"] for node in result["nodes"]))
+        self.assertTrue(result["secrets"]["taskIdentitiesVerified"])
+        self.assertEqual(self.models["manager"]["jobTrackedVersions"], 6)
 
     def test_old_or_offline_agent_keeps_upgrade_pending_without_changing_nomad(self):
         self.state["nodes"]["mac"]["agent"]["capabilities"] = []

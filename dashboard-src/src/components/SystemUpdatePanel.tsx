@@ -353,12 +353,16 @@ export function SystemUpdatePanel({
       <Card aria-live="polite">
         <CardHeader>
           <CardTitle>{zh ? "集群安全升级" : "Cluster security upgrade"}</CardTitle>
-          <CardDescription>{zh ? "控制面与节点软件更新后，自动迁移并验证节点认证、加密连接、容器权限和网络防护。" : "After Control and node software updates, automatically migrate and verify node authentication, encrypted connections, container permissions and network protection."}</CardDescription>
+          <CardDescription>{zh ? "控制面与节点软件更新后，自动验证节点防护、数据加密和应用密钥隔离。现有应用会依次重启以完成密钥迁移。" : "After Control and node updates, verify node protection, encrypted storage and application secret isolation. Existing applications restart in sequence to migrate their secrets."}</CardDescription>
           <CardAction><Badge variant={securityError || nomadSecurity?.status === "failed" ? "destructive" : nomadSecurity?.status === "completed" ? "success" : "secondary"}>{securityError ? (zh ? "状态未验证" : "Unverified") : nomadSecurity?.status === "completed" ? (zh ? "全部验证通过" : "All checks passed") : statusLabel(nomadSecurity?.status || "pending", zh)}</Badge></CardAction>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <p className="break-words">{securityError || nomadSecurity?.message || (zh ? "正在读取自动迁移进度…" : "Loading automatic migration progress…")}</p>
           {nomadSecurity?.waitingNodes?.length ? <p>{zh ? "等待节点：" : "Waiting for nodes: "}{nomadSecurity.waitingNodes.join(", ")}</p> : null}
+          {nomadSecurity?.secrets ? <div className="flex flex-wrap gap-2">
+            <Badge variant={nomadSecurity.secrets.encryptedStorage ? "success" : "secondary"}>{zh ? (nomadSecurity.secrets.encryptedStorage ? "数据已加密" : "等待数据加密") : (nomadSecurity.secrets.encryptedStorage ? "Storage encrypted" : "Storage migration pending")}</Badge>
+            <Badge variant={nomadSecurity.secrets.taskIdentitiesVerified ? "success" : "secondary"}>{zh ? (nomadSecurity.secrets.taskIdentitiesVerified ? "应用密钥隔离已验证" : "等待密钥隔离验证") : (nomadSecurity.secrets.taskIdentitiesVerified ? "Secret isolation verified" : "Secret isolation pending")}</Badge>
+          </div> : null}
           {!!nomadSecurity?.totalSteps && nomadSecurity.status !== "completed" ? <Progress value={nomadSecurity.completedSteps || 0} max={nomadSecurity.totalSteps}><ProgressLabel>{zh ? "已验证步骤" : "Verified steps"}</ProgressLabel><ProgressValue>{() => `${nomadSecurity.completedSteps || 0}/${nomadSecurity.totalSteps}`}</ProgressValue></Progress> : null}
           {nomadSecurity?.verifiedAt ? <p className="text-sm text-muted-foreground">{zh ? "验证时间：" : "Verified: "}{formatDateTime(nomadSecurity.verifiedAt, lang)}</p> : null}
         </CardContent>

@@ -29,8 +29,10 @@ def bootstrap_manager(node_name: str) -> None:
     profile = read_private_json(security_root() / "cluster.json")
     profile["tlsRequired"] = True
     private_write(security_root() / "cluster.json", json.dumps(profile))
+    from .secret_storage import provision
+    provision()
     identity = client_introduction(node_name)
-    private_write(Path("/opt/nomad/data/intro_token"), identity + "\n")
+    private_write(Path("/opt/nomad/data/client/intro_token.jwt"), identity + "\n")
     print("Nomad ACL and scoped service credentials initialized; administrator secret retained only on the host")
 
 
@@ -52,14 +54,36 @@ def local_exec(role: str, args: list[str]) -> None:
     os.execvp("nomad", ["nomad", *args])
 
 
-def submit_system(path: Path) -> None:
+def submit_system(path: Path | None = None) -> None:
     from .nomad_api import NomadApi
-    document = read_private_json(path)
+    document = read_private_json(path) if path is not None else json.loads(sys.stdin.read(16 * 1024 * 1024))
     job = document.get("Job")
     if not isinstance(job, dict) or job.get("ID") not in {"luma-control", "traefik", "egress"}:
         raise LumaError("host bootstrap submit accepts only its built-in system jobs")
+    client = NomadApi("http://127.0.0.1:4646", token=nomad_token())
+    if job["ID"] == "luma-control":
+        from .control.database import SCHEMA_VERSION
+        from .nomad_secrets import _status
+        try:
+            previous = client.request("GET", "/v1/job/luma-control")
+        except LumaError as exc:
+            if _status(exc) != 404:
+                raise
+            previous = {}
+        compatible = (previous.get("Meta") or {}).get("luma.control.storage-schema") == str(SCHEMA_VERSION)
+        job.setdefault("Meta", {})["luma.control.storage-schema"] = str(SCHEMA_VERSION)
+        updates = [job.get("Update"), *(group.get("Update") for group in job.get("TaskGroups") or [])]
+        for update in updates:
+            if isinstance(update, dict):
+                update["AutoRevert"] = bool(compatible and update.get("AutoRevert"))
     root = security_root()
     prepare_job(job)
+    from .secret_storage import enabled as encrypted_storage
+    if encrypted_storage():
+        from .secret_migration import _system_secrets
+        from .nomad_secrets import protect_job
+        _system_secrets(job)
+        protect_job(job, client)
     from .nomad_security import ADMIN_ROOT
     private_write(ADMIN_ROOT / "system-jobs" / (job["ID"] + ".json"), json.dumps({"Job": job}))
     with workload_policy_lock():
@@ -67,7 +91,7 @@ def submit_system(path: Path) -> None:
         if policy:
             policy.setdefault("grants", {})["default/" + job["ID"]] = {"sha256": job_digest(job), "reason": "Rendered by the local administrator's Luma system bootstrap"}
             private_write(root / "workloads.json", json.dumps(policy, indent=2) + "\n")
-    NomadApi("http://127.0.0.1:4646", token=nomad_token()).request("POST", "/v1/jobs", {"Job": job})
+    client.request("POST", "/v1/jobs", {"Job": job})
     print("Nomad system job accepted")
 
 
@@ -92,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     execute.add_argument("--role", choices=("control", "agent"), default="control")
     execute.add_argument("args", nargs=argparse.REMAINDER)
     submit = sub.add_parser("submit-system")
-    submit.add_argument("path", type=Path)
+    submit.add_argument("path", type=Path, nargs="?")
     info = sub.add_parser("local-info")
     info.add_argument("--address", default="http://127.0.0.1:4646")
     pki = sub.add_parser("prepare-pki")

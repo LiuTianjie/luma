@@ -2,7 +2,7 @@
 
 首次执行 `luma bootstrap` 和 `luma node join` 就会配置 ACL、双向 TLS、节点引入凭据和持久网络规则。安装程序验证实际运行配置后才报告节点成功。用户不需要另外执行一组 `luma security` 命令。
 
-本版覆盖 Nomad 与节点入口加固，尚未完成业务密钥体系整改：SQLite 中的业务秘密仍未加密，现有 secret scope 只是配置范围，尚无按应用身份授权的独立秘密分发。具有 Nomad 作业读取权限的身份仍能读取作业 Env。短期令牌目前用于节点引入，业务长期凭据短期化、按实际凭据去重与批量轮换仍未实现。
+本版同时加密 Control 管理的数据，并通过 Nomad 加密 Variables 和 allocation 身份分发应用密钥。新安装在 bootstrap 时启用；现有安装在控制面和全部节点 Agent 升级后自动迁移。包版本更新不等于迁移完成，需要等待系统更新页显示全部检查通过。
 
 已有集群按正常方式升级即可：
 
@@ -60,6 +60,24 @@ Nomad 不支持原地二进制降级。确需恢复旧集群时，在独立、�
 
 已确认获得过宿主 root 的机器需要从可信系统重建，并轮换曾暴露的凭据。软件升级能部署防护，不能证明旧宿主已清除入侵。
 
-本次修复不改变业务秘密在 Control 数据库和运行时 Env 中的存储方式，也不会让已暴露的旧秘密失效。磁盘加密和工作负载秘密分发需要独立设计；解密能力仍由同一宿主 root 掌握时，单独加密数据库不能消除宿主失陷的风险。
+这些防护不会让已经暴露的凭据失效。确认迁移完成、接收新密钥的宿主可信后，仍需轮换旧凭据。
+
+## 密钥加密与应用身份
+
+Control SQLite schema 2 使用 AES-256-GCM 加密配置、部署记录、队列请求和历史 payload，告警与回调凭据也使用同一套认证加密。密文绑定具体记录；缺少密钥或校验失败时停止读写，不回退明文。存量迁移先原子提交密文，再 checkpoint、VACUUM，清理旧 SQLite 页和 WAL。普通配置与历史接口隐藏已保存的值；编辑同一个应用配置时，保留的 `<redacted>` 字段会继续使用原值。
+
+恢复键保存在 `/etc/luma/secrets/control-data.key`，位于 Control 的 `/opt/luma` 挂载和应用卷之外。Control 通过受验证的 TLS 和自己的 Nomad 角色，从 `luma/control/storage-key` 获取运行所需的键。`/opt/luma/security/nomad/secrets.json` 只保存键标识，不包含键本身。恢复键和该 profile 应独立私密备份；仅复制加密数据库不足以完成灾难恢复。Control 仍是能够管理和解密这些凭据的受信任组件。
+
+每个任务只从自身 namespace 下的 `nomad/jobs/<job>/<group>/<task>` 取得渲染给它的值。Nomad 内置工作负载身份授权原生 secret hook，Luma 不创建跨任务的 job/group 共享秘密路径。作业 Env、镜像仓库认证和业务启动参数保存引用；原生 hook 在内存解析。业务容器不会取得 Control 恢复键或通用 Nomad 读取令牌。Nomad 以干净环境启动，避免把宿主环境变量带给无关应用；已有未知工作负载 ACL 授权会阻止自动迁移并给出诊断。
+
+应用运行时需要在自身内存、环境中使用明文，宿主 root 或 Docker 管理权限仍能读取。普通 Nomad 作业读取身份无权读取 Variables；可读作业历史和 allocation 保存引用，allocation 接口不返回签名身份。密钥在原生 env 解析前做 JSON 引号编码，保留引号、换行、Unicode 和字面量插值字符。
+
+迁移依次替换应用，逐一等待准确版本健康；单副本应用可能有短暂重启窗口。宿主服务加密归档原状态、受管旧制品和备份，移除旧版本标签及明文作业历史，再回收退休 allocation。迁移期间暂时只保留一个版本，清理后恢复保留六个受保护版本，支持正常回滚；旧作业源文件也用空 source 替换。历史 Raft 日志、文件系统快照和 Luma 管理目录外的备份不会被追溯擦除，已经暴露的旧凭据仍需轮换。
+
+回滚前校验被引用的密钥版本仍然存在，避免先替换健康作业再启动失败。schema 1 的旧 Control 无法打开 schema 2 数据库；自动回退到迁移前 Control 镜像或明文作业被禁用。节点离线、应用启动失败或旧 allocation 未清理完都会保持迁移未完成。
+
+在可信隔离宿主恢复受管 `.enc` 备份时，先恢复私有键和 profile，再使用已安装 Luma 的解释器执行：`sudo /opt/luma-cli/bin/python -m luma.secret_storage decrypt-backup SOURCE.enc NEW_DESTINATION`。校验成功后才创建目标文件，禁止覆盖已有文件。恢复出的 SQLite 备份可能仍有加密行，需要继续保留对应恢复键。
+
+节点引入令牌有效期十分钟。默认 allocation 身份保留在 Nomad 内部，不将其宣传为短期业务凭据；第三方密钥仍使用服务商规定的有效期。本版不会替用户轮换服务商账号，也不会自动把所有长期凭据转换成动态凭据。
 
 参考：[Nomad 升级说明](https://developer.hashicorp.com/nomad/docs/upgrade/upgrade-specific)、[Nomad 升级流程与降级限制](https://developer.hashicorp.com/nomad/docs/upgrade)、[Nomad 官方发行包](https://releases.hashicorp.com/nomad/)。

@@ -13,28 +13,50 @@ deploys referencing the same secret name cannot clobber each other's value.
 
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict
 
 from ..errors import LumaError
 from .state import mutate_state
+
+_exported_names: set[str] = set()
 
 
 def _apply_state_secrets(state: Dict[str, Any]) -> None:
     secrets = state.get("secrets") or {}
     if not isinstance(secrets, dict):
         return
+    from ..secret_storage import enabled as encrypted_storage
+    private = encrypted_storage()
+    # These are explicit infrastructure integrations, never an application
+    # secret namespace. Do not export all business credentials to subprocesses.
+    infrastructure = {"CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ZONE_ID", "TRAEFIK_ACME_EMAIL", "TAILSCALE_AUTHKEY",
+                      "EGRESS_SUBSCRIPTION_URL", "GITHUB_TOKEN", "GITEA_TOKEN", "ALICLOUD_ACCESS_KEY_ID", "ALICLOUD_ACCESS_KEY_SECRET"}
+    if private:
+        from ..config import load_config
+        path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+        if path.is_file():
+            dns = load_config(path).dns
+            infrastructure.update(str(dns[name]) for name in ("apiTokenEnv", "zoneIdEnv") if dns.get(name))
+        for name in _exported_names - infrastructure:
+            os.environ.pop(name, None)
+        _exported_names.intersection_update(infrastructure)
     for key, value in secrets.items():
         if value is None:
             continue
+        if private and key not in infrastructure:
+            os.environ.pop(str(key), None)
+            continue
         os.environ[str(key)] = str(value)
+        _exported_names.add(str(key))
 
 
 def _render_secrets(state: Dict[str, Any], *, scope: str, body: Dict[str, Any], texts: list[str], extra_referenced: set[str] | None = None) -> tuple[Dict[str, str], Dict[str, Any]]:
     """Build the secrets map a render call consumes, WITHOUT touching os.environ.
 
-    Returns (secrets, result). `secrets` is the merged global∪scoped view the
-    renderer substitutes ${VAR} from — it is the full global map overlaid with
-    this scope's stored values, so tokens referenced by plain manifest fields
+    Returns (secrets, result). `secrets` contains only the referenced names the
+    renderer substitutes ${VAR} from, overlaid with this scope's stored values.
+    Tokens referenced by plain manifest fields
     (e.g. cloudflared `tokenEnv`, which is not a ${...} reference) still resolve.
     `result` carries {scope, imported, referenced, scoped} for progress display.
 
@@ -82,10 +104,9 @@ def _render_secrets(state: Dict[str, Any], *, scope: str, body: Dict[str, Any], 
             scoped = state["scopedSecrets"]
             current = scoped.get(scope) if isinstance(scoped.get(scope), dict) else {}
 
-    # Base map: every global secret. Render only substitutes names that actually
-    # appear in the manifest, so carrying unreferenced globals here is harmless
-    # and lets plain-field token references (cloudflared tokenEnv) resolve.
-    merged: Dict[str, str] = {str(k): str(v) for k, v in global_secrets.items() if v is not None}
+    # Plain-field references such as cloudflared tokenEnv are included above.
+    # Unreferenced credentials never enter this deployment's rendering context.
+    merged: Dict[str, str] = {str(k): str(v) for k, v in global_secrets.items() if k in referenced and v is not None}
     if scoped_mode:
         # Scoped names override globals; a referenced name absent from this
         # scope is an error (and must NOT silently fall back to a global value).

@@ -2798,17 +2798,20 @@ def _require_history_token(token: str) -> None:
 
 def handle_history_list(token: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
     _require_history_token(token)
-    return control_history.list_history(query)
+    from ..secret_redaction import redact_document
+    return redact_document(control_history.list_history(query))
 
 
 def handle_history_get(token: str, kind: str, record_id: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
     _require_history_token(token)
-    return control_history.get_history(kind, record_id, query)
+    from ..secret_redaction import redact_document
+    return redact_document(control_history.get_history(kind, record_id, query))
 
 
 def handle_build_run_list(token: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
     _require_history_token(token)
-    return control_history.list_builds(query)
+    from ..secret_redaction import redact_document
+    return redact_document(control_history.list_builds(query))
 
 
 def handle_build_run_get(token: str, build_id: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -2817,7 +2820,8 @@ def handle_build_run_get(token: str, build_id: str, query: Dict[str, Any] | None
     if result.get("run", {}).get("status") == "queued":
         from .build_queue import position
         result["run"].update(position(build_id))
-    return result
+    from ..secret_redaction import redact_document
+    return redact_document(result)
 
 
 def _build_run_agent_task(
@@ -2962,7 +2966,8 @@ def handle_deployment_history(token: str, query: Dict[str, Any] | None = None) -
 
 def handle_deployment_history_get(token: str, event_id: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
     _require_history_token(token)
-    return control_history.get_deployment(event_id, query)
+    from ..secret_redaction import redact_document
+    return redact_document(control_history.get_deployment(event_id, query))
 
 
 def _build_run_retry_overrides(body: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -5094,9 +5099,43 @@ def _ensure_job_managed_registry_access(
     return _ensure_nodes_managed_registry_access(state, node_registries, progress=progress)
 
 
+def _protect_nomad_secrets(config: Any, state: Dict[str, Any], job_json: str) -> str:
+    from ..secret_storage import enabled as encrypted_storage
+    if not encrypted_storage():
+        return job_json
+    from ..nomad_security import prepare_job
+    from ..nomad_secrets import protect_job
+    document = json.loads(job_json)
+    job = document["Job"]
+    prepare_job(job)
+    protect_job(job, NomadApi(nomad_addr(config, state), token=nomad_token(state)))
+    return json.dumps(document, indent=2)
+
+
+def _restore_write_only_configuration(state: Dict[str, Any], body: Dict[str, Any], *, compose: bool = False) -> Dict[str, Any]:
+    manifest = body.get("manifest")
+    if not isinstance(manifest, str) or not any("<redacted>" in str(body.get(field) or "") for field in ("manifest", "composeContent")):
+        return body
+    from ..secret_redaction import restore_configuration
+    try:
+        raw = yaml.safe_load(manifest)
+    except yaml.YAMLError:
+        raise LumaError("invalid deployment configuration") from None
+    name = str(raw.get("name") or "") if isinstance(raw, dict) else ""
+    record = (_compose_deployment_record if compose else _service_deployment_record)(state, name) or {}
+    if not record:
+        raise LumaError("write-only values can only be reused for their original application; supply values for the new application")
+    result = dict(body)
+    for field in ("manifest", "composeContent"):
+        if isinstance(body.get(field), str):
+            result[field] = restore_configuration(body[field], str(record.get(field) or ""))
+    return result
+
+
 def _prepare_nomad_workload_security(config: Any, state: Dict[str, Any], job_json: str) -> str:
     from ..nomad_security import authorize_application, needs_host_volumes, read_private_json, security_root, validate_application
     from ..nomad_migration_node import CAPABILITY
+    job_json = _protect_nomad_secrets(config, state, job_json)
     policy = read_private_json(security_root() / "workloads.json", optional=True)
     if policy.get("mode") != "enforce":
         return job_json
@@ -7291,7 +7330,8 @@ def handle_deployment_config(token: str, name: str) -> Dict[str, Any]:
     record = _service_deployment_record(state, wanted) or _compose_deployment_record(state, wanted)
     if not record:
         raise LumaError(f"deployment not found: {wanted}")
-    return {
+    from ..secret_redaction import redact_document
+    return redact_document({
         "kind": str(record.get("kind") or ""),
         "name": str(record.get("name") or wanted),
         "slug": str(record.get("slug") or slugify(wanted)),
@@ -7301,7 +7341,7 @@ def handle_deployment_config(token: str, name: str) -> Dict[str, Any]:
         "composeContent": str(record.get("composeContent") or ""),
         "gitSource": record.get("gitSource") if isinstance(record.get("gitSource"), dict) else None,
         "localStorage": record.get("localStorage") if isinstance(record.get("localStorage"), dict) else None,
-    }
+    })
 
 
 def _remove_request_name(body: Dict[str, Any]) -> str:
@@ -7344,6 +7384,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     state = load_state()
     require_token(state, token, token_type="deploy")
     _reject_control_maintenance(state)
+    body = _restore_write_only_configuration(state, body)
     _apply_state_secrets(state)
     steps: list[dict[str, str]] = []
     manifest = body.get("manifest")
@@ -7486,6 +7527,8 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
             )
         if not _skip_orchestrator(body):
             stack_text = _prepare_nomad_workload_security(config, state, stack_text)
+        else:
+            stack_text = _protect_nomad_secrets(config, state, stack_text)
         _deploy_step(steps, "Write Nomad job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
         written = [str(target)]
         _require_redirect_hosts_free(state, service)
@@ -9728,6 +9771,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     state = load_state()
     require_token(state, token, token_type="deploy")
     _reject_control_maintenance(state)
+    body = _restore_write_only_configuration(state, body, compose=True)
     _apply_state_secrets(state)
     steps: list[dict[str, str]] = []
     source_name = str(body.get("sourceName") or "luma.compose.yml")
@@ -9874,6 +9918,8 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         )
         if not _skip_orchestrator(body):
             stack_text = _prepare_nomad_workload_security(config, state, stack_text)
+        else:
+            stack_text = _protect_nomad_secrets(config, state, stack_text)
         _deploy_step(steps, "Write compose job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
         written = [str(target)]
 

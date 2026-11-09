@@ -30,13 +30,19 @@ class LocalInstallExecutor:
             raise RuntimeError(result.stderr)
         return result.stdout
 
+    def sudo_input(self, command, content, **kwargs):
+        result = subprocess.run(["bash", "-c", command], input=content, capture_output=True, text=True)
+        if result.returncode:
+            raise RuntimeError(result.stderr)
+        return result.stdout
+
 
 def watchdog_reader():
     remote = Mock()
     remote.run_result.return_value = Mock(code=0, output="Linux\n")
     configure_tailscale_watchdog(remote)
     command = remote.sudo.call_args.args[0]
-    return command.split('peers=$(python3 - "$control_state" <<\'PY\'\n', 1)[1].split("\nPY\n", 1)[0]
+    return command.split(' - "$control_state" <<\'PY\'\n', 1)[1].split("\nPY\n", 1)[0]
 
 
 class BootstrapStateTests(unittest.TestCase):
@@ -123,10 +129,13 @@ class BootstrapStateTests(unittest.TestCase):
         self.assertEqual((self.directory / "control.json.pre-sqlite.bak").read_bytes(), legacy)
 
     def _run_reader(self):
-        return subprocess.run([sys.executable, "-I", "-c", watchdog_reader(), str(state_path())],
+        # Production uses the installed Luma interpreter for the encrypted
+        # payload codec. Point this isolated interpreter at the candidate code.
+        script = "import sys; sys.path.insert(0, " + repr(str(Path(__file__).resolve().parents[1])) + ");\n" + watchdog_reader()
+        return subprocess.run([sys.executable, "-I", "-c", script, str(state_path())],
                               capture_output=True, text=True, check=True).stdout.strip()
 
-    def test_watchdog_reads_current_sqlite_nodes_without_importing_luma(self):
+    def test_watchdog_reads_current_sqlite_nodes_without_mutating_state(self):
         now = int(time.time())
         initial = {**self.initial, "nodes": {"old": {"tailscaleIP": "100.64.0.1", "agent": {"status": "online", "lastSeen": now}}}}
         save_state(initial)

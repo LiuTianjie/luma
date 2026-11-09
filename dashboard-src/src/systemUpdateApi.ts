@@ -9,6 +9,11 @@ export type NomadSecurityUpdate = {
   totalSteps?: number;
   waitingNodes?: string[];
   verifiedAt?: number;
+  secrets?: {
+    encryptedStorage?: boolean;
+    taskIdentitiesVerified?: boolean;
+    verifiedAt?: number;
+  };
 };
 
 export function getNomadSecurityUpdate(token: string, signal?: AbortSignal) {

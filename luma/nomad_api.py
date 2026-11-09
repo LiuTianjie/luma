@@ -229,6 +229,11 @@ def deploy_to_nomad(
         timeout_seconds=timeout_seconds,
     )
 
+    from .secret_storage import enabled as encrypted_storage
+    if encrypted_storage():
+        from .nomad_secrets import prune_job_variables
+        prune_job_variables(client, target_job)
+
     if not eval_id:
         suffix = f", deployment {deployment_id}" if deployment_id else ""
         return (
@@ -859,7 +864,12 @@ def _wait_for_healthy_allocations(
 
 def remove_from_nomad(config: LumaConfig, state: Dict[str, Any], *, slug: str) -> str:
     client = NomadApi(nomad_addr(config, state), token=_token(state))
+    started = time.time_ns()
     client.request("DELETE", f"/v1/job/{_q(slug)}?purge=true")
+    from .secret_storage import enabled as encrypted_storage
+    if encrypted_storage():
+        from .nomad_secrets import remove_job_variables
+        remove_job_variables(client, slug, before=started)
     return f"Nomad job removed: {slug}"
 
 
@@ -1473,12 +1483,18 @@ def _safe_nomad_error(detail: str, body: Any, token: str) -> str:
     def collect(value: Any, sensitive: bool = False) -> None:
         if isinstance(value, dict):
             for key, item in value.items():
-                collect(item, sensitive or str(key).lower() in {"secretid", "bootstrapsecret", "token", "authtoken", "password", "env", "auth", "registryauth"})
+                collect(item, sensitive or str(key).lower() in {"secretid", "bootstrapsecret", "token", "authtoken", "password", "env", "auth", "registryauth", "items"})
         elif isinstance(value, list):
             for item in value:
                 collect(item, sensitive)
         elif sensitive and isinstance(value, str) and value:
             secrets.add(value)
+            try:
+                decoded = json.loads(value)
+                if isinstance(decoded, str) and decoded:
+                    secrets.add(decoded)
+            except ValueError:
+                pass
 
     collect(body)
     for value in sorted(secrets, key=len, reverse=True):
@@ -1574,6 +1590,11 @@ class NomadApi:
         if mutation and isinstance(body, dict) and isinstance(body.get("Job"), dict):
             job = body["Job"]
             prepare_job(job)
+            from .secret_storage import enabled as encrypted_storage
+            if encrypted_storage():
+                from .nomad_secrets import assert_protected_job, verify_bindings
+                assert_protected_job(job)
+                verify_bindings(self, job)
             admit_job(job)
             audit.update(job=str(job.get("ID") or ""), namespace=str(job.get("Namespace") or "default"), sha256=job_digest(job))
         if mutation and path.split("?", 1)[0].endswith("/revert") and body and read_private_json(security_root() / "workloads.json", optional=True).get("mode") == "enforce":
@@ -1588,6 +1609,11 @@ class NomadApi:
             if job_digest(prepared) != job_digest(candidate):
                 raise LumaError("Nomad rollback version predates the current security requirements; redeploy that version through the normal Luma deployment workflow")
             admit_job(candidate)
+            from .secret_storage import enabled as encrypted_storage
+            if encrypted_storage():
+                from .nomad_secrets import assert_protected_job, verify_bindings
+                assert_protected_job(candidate)
+                verify_bindings(self, candidate)
             audit["sha256"] = job_digest(candidate)
         if mutation:
             security_audit.record("nomad.begin", **audit)
@@ -1606,7 +1632,9 @@ class NomadApi:
                 raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            detail = _safe_nomad_error(detail, body, request_token)
+            # CAS conflicts may contain another writer's values, which are
+            # absent from this request and cannot be redacted by comparison.
+            detail = "encrypted variable request rejected" if path.startswith("/v1/var/") else _safe_nomad_error(detail, body, request_token)
             if mutation:
                 security_audit.record("nomad.end", **audit, status=exc.code, outcome="rejected")
             raise LumaError(f"Nomad API error {exc.code}: {detail}") from exc

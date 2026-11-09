@@ -2,7 +2,7 @@
 
 `luma bootstrap` and `luma node join` provision ACLs, mutual TLS, introduction identities and persistent network rules on first use. The installer checks the running configuration before reporting success. No separate sequence of security commands is required.
 
-This release hardens Nomad and node access; it does not complete business-secret remediation. Business secrets in SQLite remain unencrypted, and secret scopes select configuration rather than authorize delivery by application identity. Authorized Nomad job readers can still read job Env. Short-lived tokens currently cover node introduction; short-lived business credentials, deduplication by actual credential and batch rotation remain unimplemented.
+This release also encrypts managed Control data and delivers application secrets through Nomad's encrypted Variables and allocation identities. New installations enable this during bootstrap. Existing installations migrate automatically after the manager and all node agents are upgraded; an updated package alone does not prove that migration has finished.
 
 For existing clusters, update the manager with `luma update manager` (or Dashboard **Update Control**), then update all node agents with the normal fleet or local update command. Watch **Cluster security upgrade** in the system update page. Package versions and security migration have separate results; only **All checks passed** confirms migration completion.
 
@@ -44,6 +44,8 @@ Job-only rollback cannot restore a revision that lacks current credential mounts
 
 ## Recovery and rollback
 
+The storage recovery key is `/etc/luma/secrets/control-data.key`; its profile is `/opt/luma/security/nomad/secrets.json`. Back up these independently from the encrypted database. To recover a managed `.enc` archive on a trusted, isolated host, restore the private key/profile and use the installed Luma interpreter: `sudo /opt/luma-cli/bin/python -m luma.secret_storage decrypt-backup SOURCE.enc NEW_DESTINATION`. Authentication must succeed before the new destination appears. It never overwrites an existing file. A restored SQLite backup may also contain encrypted rows and still requires that same key.
+
 Inspect the failed step in the dashboard and `journalctl -u luma-nomad-security`. The private `/etc/luma/nomad/upgrade.json` records progress. Do not publish this directory, full job artifacts or Raft snapshots in tickets.
 
 Temporary Control outages and offline nodes wait at the saved step. Interrupted/timed-out agent tasks retry the same typed request a bounded number of times. A private host operation record recovers a replaced binary/configuration even if the process stopped before restarting Nomad. Consumer updates persist both the previous and intended jobs before submission, verify the actual revision, and do not restart an already updated consumer on every retry.
@@ -54,6 +56,22 @@ Nomad does not support in-place binary downgrades. Restore a verified snapshot, 
 
 A host on which an attacker obtained root still requires a trusted rebuild and rotation of exposed credentials. Installing these protections cannot establish that the old operating system is clean.
 
-This change does not redesign business-secret storage in Control's database or runtime Env, nor invalidate exposed secrets. Encryption at rest and workload secret delivery are separate work; database encryption alone cannot protect against host root that retains the decryption authority.
+These protections do not invalidate exposed credentials. Rotate them after verifying migration and establishing trust in the hosts that will receive the replacements.
+
+## Encrypted storage and application identities
+
+Control SQLite schema 2 encrypts configuration, deployment records, queued requests and history payloads with AES-256-GCM. Alert and callback credentials use the same authenticated codec. Row identity is authenticated, and missing keys or tampered ciphertext stop reads/writes without falling back to plaintext. Migration commits ciphertext atomically, then checkpoints and vacuums SQLite to remove old pages and WAL contents. Ordinary configuration/history API responses hide stored values; an unchanged `<redacted>` field in the same application's configuration preserves its existing value during an update.
+
+The recovery key is outside the `/opt/luma` Control mount and application volumes. Control obtains its operational key through verified TLS and its own Nomad role from `luma/control/storage-key`. The storage profile contains the key identifier, not the key. Copying only the encrypted database is insufficient for disaster recovery. Control remains trusted to manage and decrypt the credentials it administers.
+
+Each task receives only values rendered for that task from `nomad/jobs/<job>/<group>/<task>` in its own namespace. Nomad's built-in workload identity authorizes the native secret hook; Luma writes no shared job/group secret paths. Jobs contain references in Env, registry authentication and application arguments. The native hook resolves values in memory, and applications receive neither the Control recovery key nor a general-purpose Nomad reader token. Nomad starts with a clean environment so host environment variables cannot leak into unrelated tasks. Unknown workload-bound ACL grants stop migration for review.
+
+Applications necessarily have their own plaintext values in memory/runtime environment; privileged host or Docker access can read them. Ordinary Nomad job readers cannot read the Variables. Readable job versions and allocation records contain references, and allocation APIs omit signed identities. Secret values are JSON-quoted before native env parsing, preserving quotes, newlines, Unicode and literal interpolation characters.
+
+Migration replaces applications sequentially and waits for each exact revision to become healthy. A single-replica application may have a restart window. The supervisor archives its previous state, encrypts managed legacy artifacts/backups, removes old version tags and inline-secret job history, and collects retired allocations. It temporarily limits history to one version, then restores six protected versions for normal rollback. It also replaces old stored job sources with an empty source. Existing historical Raft log entries, filesystem snapshots and backups outside Luma's managed locations are not retroactively erased; previously exposed credentials still need rotation.
+
+Job rollback checks that every referenced secret generation is still available before altering a healthy job. Schema 1 Control binaries cannot reopen schema 2 databases; automatic rollback to a pre-migration Control image or inline-secret job is disabled. Missing/offline nodes, a failed application rollout or unfinished old-allocation cleanup keep the upgrade incomplete.
+
+Node introduction tokens last ten minutes. Nomad's default allocation identity is kept inside Nomad; it is not presented as a short-lived business credential. External provider keys keep the lifetime chosen by their provider. This release does not rotate provider accounts or replace all long-lived credentials with dynamic credentials.
 
 References: [version upgrade notes](https://developer.hashicorp.com/nomad/docs/upgrade/upgrade-specific), [upgrade and downgrade limitations](https://developer.hashicorp.com/nomad/docs/upgrade), [official release archives](https://releases.hashicorp.com/nomad/).

@@ -88,6 +88,7 @@ def render_agent_config(
     tls_http: bool = True,
     rpc_upgrade_mode: bool = False,
     introduction_strict: bool = True,
+    secret_migration: bool = False,
 ) -> str:
     """Render a Nomad agent HCL config from detected node facts.
 
@@ -128,6 +129,12 @@ def render_agent_config(
         lines.append("server {")
         lines.append("  enabled          = true")
         lines.append("  bootstrap_expect = 1")
+        # Old versions contain inline Env and must not remain a read API for
+        # revoked credentials. Luma retains its encrypted deployment history.
+        lines.append(f"  job_tracked_versions = {1 if secret_migration else 6}")
+        # An empty migration source is allowed and evicts previous sources.
+        # Actual HCL/JSON source and its variable inputs are never retained.
+        lines.append('  job_max_source_size = "0"')
         # Tolerate slow/flaky home links (Tailscale DERP relay adds latency)
         # before declaring a client lost.
         lines.append('  heartbeat_grace   = "30s"')
@@ -241,6 +248,13 @@ def _nomad_arch(arch: str) -> str:
     return a or "amd64"
 
 
+def clean_agent_environment(os_name: str) -> list[str]:
+    # Nomad copies its own environment into tasks; env.denylist only accepts
+    # exact names. Start with an allowlist instead of guessing secret names.
+    return ["/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "HOME=/var/root" if os_name == "darwin" else "HOME=/root", "LANG=C"]
+
+
 def _systemd_unit() -> str:
     return (
         "[Unit]\n"
@@ -252,7 +266,7 @@ def _systemd_unit() -> str:
         "StartLimitIntervalSec=0\n\n"
         "[Service]\n"
         f"ExecStartPre={GUARD}\n"
-        "ExecStart=/usr/local/bin/nomad agent -config /etc/nomad.d\n"
+        "ExecStart=" + " ".join(clean_agent_environment("linux")) + " /usr/local/bin/nomad agent -config /etc/nomad.d\n"
         "ExecReload=/bin/kill -HUP $MAINPID\n"
         "KillMode=process\n"
         "Restart=always\n"
@@ -273,7 +287,7 @@ def _launchd_plist() -> str:
         '<plist version="1.0"><dict>\n'
         "  <key>Label</key><string>io.luma.nomad</string>\n"
         "  <key>ProgramArguments</key>\n"
-        "  <array><string>/bin/sh</string><string>-c</string>"
+        "  <array>" + "".join("<string>" + arg + "</string>" for arg in clean_agent_environment("darwin")) + "<string>/bin/sh</string><string>-c</string>"
         f"<string>{GUARD} &amp;&amp; exec /usr/local/bin/nomad agent -config /etc/nomad.d</string></array>\n"
         "  <key>RunAtLoad</key><true/>\n"
         "  <key>KeepAlive</key><true/>\n"

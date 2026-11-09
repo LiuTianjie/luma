@@ -91,6 +91,17 @@ available to GitHub Actions from the repository's default branch.
 
 ## Candidate Manager Upgrade And Rollback
 
+For 0.2.55, require the `nomad-security` CI job as well as the shared source
+gate: it verifies real ACL/mTLS, encrypted Variables with two Docker workloads,
+cross-application denial, legacy job/source/allocation cleanup and network
+packets. This is isolated protocol evidence, not a production upgrade.
+Publish the matching CLI and Control image, then upgrade Control and every
+node agent. Wait for the separate cluster security result, including encrypted
+storage and task identities. Application replacements can briefly interrupt
+single replicas. Back up the independent recovery key before relying on
+encrypted database backups; schema 1 Control rollback is no longer supported.
+See [Nomad security](../nomad-security.md).
+
 ### First JSON-to-SQLite upgrade
 
 The first release using SQLite requires a short Control maintenance window.

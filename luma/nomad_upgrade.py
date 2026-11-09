@@ -37,6 +37,22 @@ from .nomad_security import ADMIN_ROOT, NOMAD_RELEASES, NOMAD_VERSION, ROLES, au
 JOURNAL = ADMIN_ROOT / "upgrade.json"
 
 
+def _read_journal(*, optional: bool = False) -> dict[str, Any]:
+    from .secret_storage import context, loads
+    raw = private_read(JOURNAL, optional=optional)
+    if not raw and optional:
+        return {}
+    value = loads(raw, context("nomad-upgrade"))
+    if not isinstance(value, dict):
+        raise LumaError("invalid Nomad upgrade journal")
+    return value
+
+
+def _write_journal(journal: Mapping[str, Any]) -> None:
+    from .secret_storage import context, dumps
+    private_write(JOURNAL, dumps(journal, context("nomad-upgrade")) + "\n")
+
+
 @contextmanager
 def _journal_lock():
     ADMIN_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -59,11 +75,14 @@ def public_status() -> dict[str, Any]:
 
 def _save(journal: dict[str, Any], *, status: str, phase: str, message: str, waiting: list[str] | None = None) -> None:
     journal.update(status=status, phase=phase, message=message, updatedAt=int(time.time()))
-    private_write(JOURNAL, json.dumps(journal, indent=2) + "\n")
+    _write_journal(journal)
     steps = journal.get("steps") or []
     public = {key: journal.get(key) for key in ("status", "phase", "message", "updatedAt", "id", "verifiedAt") if journal.get(key) is not None}
     public.update(targetVersion=NOMAD_VERSION, completedSteps=int(journal.get("next") or 0), totalSteps=len(steps), waitingNodes=waiting or [])
     public["nodes"] = [{"node": name, "version": node.get("version"), "verified": bool(node.get("verification"))} for name, node in (journal.get("nodes") or {}).items()]
+    secrets = journal.get("secretMigration") or {}
+    public["secrets"] = {"encryptedStorage": bool(secrets.get("databaseEncrypted")),
+                         "taskIdentitiesVerified": bool(secrets.get("verifiedAt")), "verifiedAt": secrets.get("verifiedAt")}
     private_write(security_root() / "upgrade-status.json", json.dumps(public))
 
 
@@ -79,14 +98,14 @@ def prepare() -> dict[str, Any]:
 
 
 def _prepare_locked() -> dict[str, Any]:
-    previous = read_private_json(JOURNAL, optional=True)
+    previous = _read_journal(optional=True)
     recovered = resume_operation(allow_server=True, payload=previous.get("taskPayload"))
     if recovered and recovered.get("aclBootstrapPending"):
         activate_acl()
     try:
         facts = snapshot()
     except LumaError:
-        previous = read_private_json(JOURNAL, optional=True)
+        previous = _read_journal(optional=True)
         if previous.get("phase") != "activate" or not read_private_json(security_root() / "transport.json", optional=True).get("http"):
             raise
         activate_acl()
@@ -100,11 +119,20 @@ def _prepare_locked() -> dict[str, Any]:
     _require_single_server()
     prepare_acl(enforce_workloads=False)
     prepare_manager(facts["address"])
-    journal = read_private_json(JOURNAL, optional=True)
+    journal = _read_journal(optional=True)
     if not journal:
         journal = {"schema": 1, "id": "nomad-security-" + str(int(time.time())), "manager": facts["node"], "managerId": facts["nodeId"], "attempt": 0, "nodes": {facts["node"]: facts}, "next": 0}
     elif journal.get("managerId") != facts["nodeId"]:
         raise LumaError("the security journal belongs to a different Nomad server identity")
+    if journal.get("status") == "completed" and not (journal.get("secretMigration") or {}).get("verifiedAt"):
+        journal.update(nodes={facts["node"]: facts}, next=0, steps=[], status="pending")
+        journal.pop("verifiedAt", None)
+    elif journal.get("steps") and not any(step.get("kind") == "secrets" for step in journal["steps"]):
+        index = next((i for i, step in enumerate(journal["steps"]) if step.get("kind") == "verify"), len(journal["steps"]))
+        additions = [{"kind": "privacy", "node": name} for name in journal["nodes"]]
+        additions += [{"kind": "secrets", "node": journal["manager"]}, {"kind": "history", "node": journal["manager"]}]
+        journal["steps"][index:index] = additions
+        journal["next"] = min(int(journal.get("next") or 0), index)
     if journal.get("status") == "failed":
         journal["attempt"] = int(journal.get("attempt") or 0) + 1
         if not journal.get("steps"):
@@ -204,13 +232,21 @@ def re_slug(value: str) -> bool:
 def _matches_expected_job(job: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
     if not expected or authority_digest(expected) != authority_digest(job):
         return False
+    if (job.get("Meta") or {}).get("luma.secrets.version") != (expected.get("Meta") or {}).get("luma.secrets.version"):
+        return False
     expected_tasks = {(g["Name"], t["Name"]): t for g in expected.get("TaskGroups") or [] for t in g.get("Tasks") or []}
     for group in job.get("TaskGroups") or []:
         for task in group.get("Tasks") or []:
             original = expected_tasks.get((group["Name"], task["Name"])) or {}
             if (original.get("Env") or {}) != (task.get("Env") or {}):
                 return False
-            for key in ("image", "command", "args", "entrypoint", "work_dir"):
+            def secret_bindings(value):
+                return [{"Name": item.get("Name"), "Provider": item.get("Provider"), "Path": item.get("Path"), "Config": item.get("Config") or {}, "Env": item.get("Env") or {}} for item in value or []]
+            if secret_bindings(original.get("Secrets")) != secret_bindings(task.get("Secrets")):
+                return False
+            if (original.get("Identity") or {}).get("Env", False) != (task.get("Identity") or {}).get("Env", False) or (original.get("Identity") or {}).get("File", False) != (task.get("Identity") or {}).get("File", False):
+                return False
+            for key in ("image", "command", "args", "entrypoint", "work_dir", "auth"):
                 if ((original.get("Config") or {}).get(key) or None) != ((task.get("Config") or {}).get(key) or None):
                     return False
     return True
@@ -253,7 +289,7 @@ def inventory(state: Mapping[str, Any], nodes: Mapping[str, Any]) -> tuple[list[
         job = client.request("GET", "/v1/job/" + urllib.parse.quote(job_id, safe=""))
         system = job_id in {"luma-control", "traefik", "egress"} and _system_job(job)
         source = sources.get(job_id)
-        if not system and (source is None or authority_digest(source) != authority_digest(job)):
+        if not system and (source is None or not _matches_expected_job(job, source)):
             raise LumaError(f"Nomad job {job_id} does not match a saved Luma deployment; automatic migration will not trust unknown live jobs")
         if not system:
             validate_application(job)
@@ -284,7 +320,12 @@ def migration_steps(nodes: Mapping[str, Any], manager: str) -> list[dict[str, An
         steps += [{"kind": "rpc", "node": name} for name in order]
         steps.append({"kind": "activate", "node": manager})
         steps += [{"kind": "secure", "node": name} for name in order if name != manager]
+    else:
+        steps += [{"kind": "privacy", "node": name} for name in order
+                  if name == manager or not nodes[name].get("isolatedHostEnvironment")]
     steps.append({"kind": "consumers", "node": manager})
+    steps.append({"kind": "secrets", "node": manager})
+    steps.append({"kind": "history", "node": manager})
     steps += [{"kind": "verify", "node": name} for name in order]
     return steps
 
@@ -335,11 +376,12 @@ def _payload(journal: dict[str, Any], step: dict[str, Any]) -> dict[str, Any]:
         # The existing node's explicit proxy is only a download transport.
         proxy = journal.get("downloadProxy") or ""
         payload["proxy"] = proxy.replace(manager["address"], "127.0.0.1") if name == journal["manager"] else proxy
-    elif kind in {"rpc", "secure", "activate"}:
-        secure = kind in {"secure", "activate"} or node.get("acl")
+    elif kind in {"rpc", "secure", "activate", "privacy", "history"}:
+        secure = kind in {"secure", "activate", "privacy", "history"} or node.get("acl")
         payload.update(op="configure", version=NOMAD_VERSION, baselineSHA256=node["baselineSHA256"],
                        acl=bool(secure), tlsHTTP=bool(secure), rpcUpgradeMode=kind == "rpc" and name == journal["manager"] and not secure,
                        trustedHost=journal["mounts"][name]["trustedHost"],
+                       secretMigration=kind != "history",
                        certificate=sign_csr(node["csr"], role=node["role"], address=node["address"]))
     return payload
 
@@ -375,7 +417,7 @@ def _consumers(journal: dict[str, Any], *, consumers_only: bool = False) -> None
             prepare_job(target, enforce=True)
             if job_id in {"traefik", "luma-observe"}:
                 intent = item["consumerIntent"] = {"prior": current, "target": target}
-                private_write(JOURNAL, json.dumps(journal))
+                _write_journal(journal)
         if item["system"]:
             grant = {"sha256": job_digest(target), "reason": "Verified installed Luma system renderer"}
         else:
@@ -385,8 +427,8 @@ def _consumers(journal: dict[str, Any], *, consumers_only: bool = False) -> None
             policy = read_private_json(security_root() / "workloads.json")
             policy.setdefault("grants", {})["default/" + job_id] = grant
             private_write(security_root() / "workloads.json", json.dumps(policy))
-        # Only infrastructure consumers need a restart. Business allocations
-        # keep their existing images, environment, data and deployment owner.
+        # This step updates infrastructure consumers. The following secret
+        # migration replaces business allocations after preserving their data.
         if intent:
             if not _matches_expected_job(current, target):
                 response = client.request("POST", "/v1/jobs", {"Job": target, "EnforceIndex": True, "JobModifyIndex": current["JobModifyIndex"]})
@@ -398,11 +440,11 @@ def _consumers(journal: dict[str, Any], *, consumers_only: bool = False) -> None
             item["consumerModifyIndex"] = current["JobModifyIndex"]
             item["authoritySHA256"] = authority_digest(current)
             item["Job"] = current
-            private_write(JOURNAL, json.dumps(journal))
+            _write_journal(journal)
             if item["system"]:
                 private_write(ADMIN_ROOT / "system-jobs" / (job_id + ".json"), json.dumps({"Job": current}))
             item.pop("consumerIntent", None)
-            private_write(JOURNAL, json.dumps(journal))
+            _write_journal(journal)
     # Verify discovery/logging allocations correlate to the submitted revision.
     for item in journal["jobs"]:
         if not item.get("consumerModifyIndex"):
@@ -424,7 +466,9 @@ def _consumers(journal: dict[str, Any], *, consumers_only: bool = False) -> None
                     metric = metrics.get(task.get("Name"))
                     if not metric:
                         continue
-                    port = int((task.get("Env") or {}).get("LUMA_OBSERVE_PORT") or (9107 if task["Name"] == "nomad-exporter" else 9108))
+                    from .nomad_secrets import task_environment
+                    environment = task_environment(client, current, group, task)
+                    port = int(environment.get("LUMA_OBSERVE_PORT") or (9107 if task["Name"] == "nomad-exporter" else 9108))
                     try:
                         with opener.open(f"http://127.0.0.1:{port}/metrics", timeout=5) as response:
                             text = response.read(2 * 1024 * 1024).decode()
@@ -451,13 +495,13 @@ def _maintain_certificates(journal: dict[str, Any], state: Mapping[str, Any]) ->
             jobs, _ = inventory(state, journal["nodes"])
             journal["jobs"] = [item for item in journal["jobs"] if item["Job"]["ID"] not in {"traefik", "luma-observe"}] + [item for item in jobs if item["Job"]["ID"] in {"traefik", "luma-observe"}]
             journal["consumerRenewalPending"] = True
-            private_write(JOURNAL, json.dumps(journal))
+            _write_journal(journal)
         if changed:
             prepare_manager(manager["address"])
         LocalExecutor().run("systemctl reload nomad", timeout=30)
         _consumers(journal, consumers_only=True)
         journal.pop("consumerRenewalPending", None)
-        private_write(JOURNAL, json.dumps(journal))
+        _write_journal(journal)
     deferred = False
     for name, node in journal["nodes"].items():
         if name == journal["manager"]:
@@ -481,14 +525,14 @@ def _maintain_certificates(journal: dict[str, Any], state: Mapping[str, Any]) ->
             if renewal is None or renewal.get("epoch") != epoch:
                 renewal = {"epoch": epoch, "certificate": sign_csr(facts["csr"], role="client", address=node["address"])}
                 journal["renewals"][name] = renewal
-                private_write(JOURNAL, json.dumps(journal))
+                _write_journal(journal)
             response = control_task(state, name, f"renew:{epoch}:{name}", {"schema": 1, "op": "renew", "nodeId": node["nodeId"], "address": node["address"], "certificate": renewal["certificate"]})
             if response.get("status") in {"failed", "timeout", "interrupted"}:
                 raise LumaError("Nomad certificate renewal failed on " + name + ": " + str(response.get("message") or "no valid response"))
             if response.get("status") != "succeeded":
                 raise Pending("Renewing Nomad certificate on " + name)
     journal["certificateCheckAt"] = now - 3540 if deferred else now
-    private_write(JOURNAL, json.dumps(journal))
+    _write_journal(journal)
 
 
 def reconcile_once() -> dict[str, Any]:
@@ -497,7 +541,7 @@ def reconcile_once() -> dict[str, Any]:
 
 
 def _reconcile_locked() -> dict[str, Any]:
-    journal = read_private_json(JOURNAL)
+    journal = _read_journal()
     if journal.get("status") == "failed":
         return public_status()
     state = _state()
@@ -553,11 +597,13 @@ def _reconcile_locked() -> dict[str, Any]:
             checks = verify_acl()
             if not checks["ok"]:
                 raise LumaError("final ACL role verification failed")
+            if not (journal.get("secretMigration") or {}).get("verifiedAt"):
+                raise LumaError("encrypted storage and application secret identities have not completed verification")
             cluster = read_private_json(security_root() / "cluster.json")
             cluster.update(tlsRequired=True, nomadVersion=NOMAD_VERSION, securityVerifiedAt=int(time.time()))
             private_write(security_root() / "cluster.json", json.dumps(cluster))
             journal["verifiedAt"] = int(time.time())
-            _save(journal, status="completed", phase="verified", message="All registered nodes passed Nomad version, ACL, mTLS, driver and network checks")
+            _save(journal, status="completed", phase="verified", message="All nodes, encrypted Control storage, task secret identities and legacy job API cleanup passed verification")
             return public_status()
         step = journal["steps"][position]
         kind, name = step["kind"], step["node"]
@@ -565,10 +611,13 @@ def _reconcile_locked() -> dict[str, Any]:
         if kind == "consumers":
             _consumers(journal)
             result = {}
+        elif kind == "secrets":
+            from .secret_migration import migrate
+            result = migrate(journal, state)
         else:
             if "taskPayload" not in journal:
                 journal["taskPayload"] = _payload(journal, step)
-                private_write(JOURNAL, json.dumps(journal))
+                _write_journal(journal)
             payload = journal["taskPayload"]
             if name == journal["manager"]:
                 recovered = resume_operation(allow_server=True, payload=payload)
@@ -636,7 +685,7 @@ def run() -> None:
             reconcile_once()
         except Exception as exc:
             with _journal_lock():
-                journal = read_private_json(JOURNAL, optional=True)
+                journal = _read_journal(optional=True)
                 _save(journal, status="failed", phase=journal.get("phase") or "supervisor", message="Security supervisor failed: " + type(exc).__name__ + "; rerun the manager update to resume")
         time.sleep(5)
 

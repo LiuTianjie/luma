@@ -70,6 +70,8 @@ docker buildx imagetools inspect "$CONTROL_IMAGE"
 
 ## 候选 Manager 升级与回滚 {#candidate-manager-upgrade-and-rollback}
 
+0.2.55 发布前除了统一源码门禁，还必须通过 `nomad-security` CI：实际验证 ACL/mTLS、两个 Docker 应用使用加密 Variables、跨应用访问被拒绝、旧作业/source/allocation 清理和网络包边界。这是隔离协议验证，不代表现网已升级。发布匹配的 CLI 和 Control 镜像后，升级控制面与全部节点 Agent，等待独立安全结果确认加密存储和任务身份完成。单副本应用可能有短暂重启窗口；使用加密备份前独立备份恢复键，禁止回退 schema 1 Control。详见 [Nomad 安全升级](../nomad-security.zh-CN.md)。
+
 ### 首次从 JSON 升级到 SQLite {#first-json-to-sqlite-upgrade}
 
 首次使用 SQLite 的版本需要一个短暂的 Control 维护窗口。开始更新前，暂停新的部署和构建请求，等待正在运行的构建结束。记录当前 Control 任务定义与镜像、CLI 安装引用、入口基线，并对 `/opt/luma/control`、`/opt/luma/luma.yaml` 及[Control 存储](../control-storage.zh-CN.md)中说明的外部配置进行私密备份。

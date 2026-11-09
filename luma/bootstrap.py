@@ -140,7 +140,7 @@ def _install_traefik_dns_secret(
     token = str(os.environ.get(token_env) or persisted_token or "").strip()
     if not token:
         raise LumaError(f"missing Cloudflare API token env var for Traefik DNS-01: {token_env}")
-    remote.write_secret(token + "\n", TRAEFIK_DNS_TOKEN_FILE, mode="600")
+    remote.sudo_input(shlex.join([sys.executable, "-m", "luma.secret_storage", "store-credential", TRAEFIK_DNS_TOKEN_FILE]), token + "\n")
     return "Traefik Cloudflare DNS-01 secret installed"
 
 
@@ -215,19 +215,10 @@ def deploy_control_stack(
 def _deploy_nomad_job(remote: Executor, job_json: str, job_id: str) -> str:
     """Submit a rendered Nomad job (JSON) via the local Nomad agent.
 
-    Uses base64 to avoid any shell-quoting hazard with the JSON payload.
+    Uses stdin so a secret-bearing bootstrap document never enters argv/disk.
     """
-    import base64
-
-    b64 = base64.b64encode(job_json.encode("utf-8")).decode("ascii")
     try:
-        remote.sudo(
-            "set -e; umask 077; "
-            "tmp=$(mktemp /tmp/luma-nomad-job.XXXXXX.json); "
-            "trap 'rm -f \"$tmp\"' EXIT; "
-            f"printf %s {shlex.quote(b64)} | base64 -d > \"$tmp\"; "
-            f"{shlex.quote(sys.executable)} -m luma.nomad_admin submit-system \"$tmp\""
-        )
+        remote.sudo_input(shlex.join([sys.executable, "-m", "luma.nomad_admin", "submit-system"]), job_json)
     except LumaError as exc:
         _raise_nomad_tmpfs_error(exc)
     return f"Nomad job deployed: {job_id}"
@@ -726,8 +717,11 @@ def _checkpoint_legacy_control(root: Path, previous_job: dict[str, Any] | None) 
 
 def _install_control_state_file(payload: Path, *, overwrite: bool) -> bool:
     """Privileged local installer entry point; payload and errors never echo keys."""
+    return _install_control_state_request(json.loads(payload.read_text(encoding="utf-8")), overwrite=overwrite)
+
+
+def _install_control_state_request(request: dict[str, Any], *, overwrite: bool) -> bool:
     from .control import database
-    request = json.loads(payload.read_text(encoding="utf-8"))
     incoming = request["state"]
     if not isinstance(incoming, dict):
         raise LumaError("invalid Control installation state")
@@ -761,6 +755,9 @@ def _install_control_state_file(payload: Path, *, overwrite: bool) -> bool:
             current = database.read_state(conn, lazy=True)
             _merge_manager_state(current, incoming, secret_names=request["secretNames"])
             database.write_state(conn, current)
+    from .secret_storage import enabled as encrypted_storage
+    if encrypted_storage():
+        database.migrate_encryption()
     return pending.is_file()
 
 
@@ -768,18 +765,13 @@ def install_control_state(remote: Executor, state: dict[str, object], *, overwri
     # Both manager bootstrap/update callers run locally from the installed CLI.
     # Use its interpreter so sudo cannot select a system Python with old Luma.
     directory = str(os.environ.get("LUMA_CONTROL_STATE_DIR") or f"{ROOT}/control")
-    payload = str(Path(directory) / f".control-install-{secrets.token_hex(8)}.tmp")
     content = json.dumps({"state": state, "secretNames": secret_names or ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ZONE_ID"]}) + "\n"
-    remote.write_secret(content, payload, mode="600")
     script = (
-        "from pathlib import Path; import sys; "
-        "from luma.bootstrap import _install_control_state_file; "
-        "print('legacy-cutover-pending' if _install_control_state_file(Path(sys.argv[1]), overwrite=sys.argv[2] == '1') else 'sqlite-ready')"
+        "import json, sys; "
+        "from luma.bootstrap import _install_control_state_request; "
+        "print('legacy-cutover-pending' if _install_control_state_request(json.load(sys.stdin), overwrite=sys.argv[1] == '1') else 'sqlite-ready')"
     )
-    try:
-        output = remote.sudo(f"LUMA_CONTROL_STATE_DIR={shlex.quote(directory)} {shlex.quote(sys.executable)} -c {shlex.quote(script)} {shlex.quote(payload)} {'1' if overwrite else '0'}")
-    finally:
-        remote.sudo(f"rm -f -- {shlex.quote(payload)}", check=False)
+    output = remote.sudo_input(f"LUMA_CONTROL_STATE_DIR={shlex.quote(directory)} {shlex.quote(sys.executable)} -c {shlex.quote(script)} {'1' if overwrite else '0'}", content)
     return "Control SQLite state installed" + (" (legacy cutover pending)" if "legacy-cutover-pending" in str(output).splitlines() else "")
 
 
@@ -1104,8 +1096,10 @@ def configure_tailscale_watchdog(
         "  exit 0\n"
         "fi\n"
         "if [ -z \"$peers\" ] && command -v python3 >/dev/null 2>&1; then\n"
-        "  peers=$(python3 - \"$control_state\" <<'PY'\n"
+        f"  peers=$({shlex.quote(sys.executable)} - \"$control_state\" <<'PY'\n"
         "import ipaddress, json, pathlib, sqlite3, sys, time\n"
+        "from luma.control.database import decode_payload\n"
+        "from luma.errors import LumaError\n"
         "try:\n"
         "    source = pathlib.Path(sys.argv[1])\n"
         "    database = source.with_name('control.sqlite3')\n"
@@ -1125,7 +1119,7 @@ def configure_tailscale_watchdog(
         "                if not isinstance(saved, dict) or not identity or saved.get('databaseId') != identity[0]:\n"
         "                    raise ValueError('database identity does not match authority')\n"
         "            records = connection.execute(\"SELECT id,payload FROM control_entities WHERE kind='nodes'\").fetchall()\n"
-        "            state = {'nodes': {key: json.loads(payload) for key, payload in records}}\n"
+        "            state = {'nodes': {key: decode_payload(connection, payload, 'control_entities', 'nodes', key) for key, payload in records}}\n"
         "        finally:\n"
         "            connection.close()\n"
         "    elif marker.exists() or authority.exists():\n"
@@ -1133,7 +1127,7 @@ def configure_tailscale_watchdog(
         "    else:\n"
         "        with source.open(encoding='utf-8') as handle:\n"
         "            state = json.load(handle)\n"
-        "except (OSError, ValueError, sqlite3.Error):\n"
+        "except (OSError, ValueError, sqlite3.Error, LumaError):\n"
         "    raise SystemExit(0)\n"
         "now = int(time.time())\n"
         "values = set()\n"
@@ -1914,7 +1908,7 @@ def install_nomad_node(
             raise LumaError("Control did not return a node introduction identity")
         remote.sudo(f"install -d -m 700 {ADMIN_ROOT}")
         remote.write_secret(reader + "\n", str(ADMIN_ROOT / "agent.token"))
-        remote.write_secret(introduction + "\n", "/opt/nomad/data/intro_token")
+        remote.write_secret(introduction + "\n", "/opt/nomad/data/client/intro_token.jwt")
         remote.write_secret(json.dumps({"schema": 1, "aclRequired": True, "tlsRequired": True, "nomadVersion": nomad_node.NOMAD_VERSION}) + "\n", str(SECURITY_ROOT / "cluster.json"))
 
     def _start_service() -> str:

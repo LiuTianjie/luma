@@ -1695,20 +1695,20 @@ class ProductConfigTests(unittest.TestCase):
         command = remote.sudo_result.call_args.args[0]
         self.assertIn("luma.nomad_admin local-info", command)
 
-    def test_nomad_job_deploy_uses_unique_tmp_file(self):
+    def test_nomad_job_deploy_uses_private_stdin_without_a_plaintext_file(self):
         remote = Mock()
         result = _deploy_nomad_job(remote, '{"Job":{"ID":"traefik"}}', "traefik")
 
-        command = remote.sudo.call_args.args[0]
+        command, payload = remote.sudo_input.call_args.args
         self.assertEqual(result, "Nomad job deployed: traefik")
-        self.assertIn("mktemp /tmp/luma-nomad-job.", command)
-        self.assertIn("trap 'rm -f \"$tmp\"' EXIT", command)
-        self.assertIn('luma.nomad_admin submit-system "$tmp"', command)
-        self.assertNotIn("/tmp/traefik.nomad.json", command)
+        self.assertIn('luma.nomad_admin submit-system', command)
+        self.assertEqual(payload, '{"Job":{"ID":"traefik"}}')
+        self.assertNotIn(payload, command)
+        remote.write_secret.assert_not_called()
 
     def test_nomad_job_deploy_explains_tmpfs_noswap_failure(self):
         remote = Mock()
-        remote.sudo.side_effect = LumaError(
+        remote.sudo_input.side_effect = LumaError(
             "local command failed:\n"
             "prestart hook \"task_dir\" failed: mount: invalid argument\n"
             "tmpfs: Unknown parameter 'noswap'"

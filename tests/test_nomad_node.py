@@ -100,7 +100,8 @@ class InstallCommandTests(unittest.TestCase):
         out = nn.install_nomad_commands(os_name="linux", arch="x86_64", config_hcl="x")
         self.assertEqual(out["service_kind"], "systemd")
         self.assertIn(f"nomad_{nn.NOMAD_VERSION}_linux_amd64.zip", out["download_url"])
-        self.assertIn("ExecStart=/usr/local/bin/nomad agent", out["service_unit"])
+        self.assertIn("ExecStart=/usr/bin/env -i ", out["service_unit"])
+        self.assertIn(" /usr/local/bin/nomad agent", out["service_unit"])
 
     def test_linux_systemd_unit_survives_reboot_races(self):
         unit = nn.install_nomad_commands(os_name="linux", arch="x86_64", config_hcl="x")["service_unit"]

@@ -64,6 +64,9 @@ def snapshot(*, with_csr: bool = True) -> dict[str, Any]:
     cpu = re.search(r"\bcpu_total_compute\s*=\s*([0-9]+)", raw)
     version = str((cfg.get("Version") or {}).get("Version") or "")
     version_path(version)
+    os_name = detect_os()
+    service_path = Path("/etc/systemd/system/nomad.service") if os_name == "linux" else Path("/Library/LaunchDaemons/io.luma.nomad.plist")
+    isolated_environment = service_path.is_file() and service_path.read_text() == install_nomad_commands(os_name=os_name, arch=os.uname().machine, config_hcl="")["service_unit"]
     return {"schema": 1, "nodeId": node_id, "node": str(meta.get("luma_node_name") or node.get("Name") or ""),
             "nomadName": str(node.get("Name") or ""), "address": address, "os": detect_os(),
             "role": "server" if (cfg.get("Server") or {}).get("Enabled") else "client",
@@ -74,6 +77,8 @@ def snapshot(*, with_csr: bool = True) -> dict[str, Any]:
             "tlsHTTP": (cfg.get("TLSConfig") or {}).get("EnableHTTP") is True,
             "tlsRPC": (cfg.get("TLSConfig") or {}).get("EnableRPC") is True,
             "rpcUpgradeMode": (cfg.get("TLSConfig") or {}).get("RPCUpgradeMode") is True,
+            "jobTrackedVersions": (cfg.get("Server") or {}).get("JobTrackedVersions"),
+            "isolatedHostEnvironment": isolated_environment,
             "certificateRenewalRequired": expires_soon(ADMIN_ROOT / "tls"),
             "nodeStatus": node.get("Status"), **({"csr": create_csr()} if with_csr else {})}
 
@@ -325,6 +330,7 @@ def execute(payload: Mapping[str, Any], *, allow_server: bool = False) -> dict[s
         checks = {"version": facts["version"] == NOMAD_VERSION, "acl": facts["acl"], "tlsHTTP": facts["tlsHTTP"],
                   "tlsRPC": facts["tlsRPC"], "rpcStrict": not facts["rpcUpgradeMode"], "ready": facts["nodeStatus"] == "ready",
                   "dockerOnly": options.get("driver.allowlist") == "docker", "networkGuard": True}
+        checks["isolatedHostEnvironment"] = facts.get("isolatedHostEnvironment") is True
         try:
             NomadApi("http://127.0.0.1:4646", credential_role="agent").request("GET", "/v1/jobs", timeout=10)
             checks["anonymousDenied"] = False
@@ -397,7 +403,8 @@ def execute(payload: Mapping[str, Any], *, allow_server: bool = False) -> dict[s
                                  cpu_total_compute=facts["cpu"], extra_meta=facts["extraMeta"],
                                  acl_enabled=acl, trusted_host=bool(payload.get("trustedHost")), version=version,
                                  tls=tls_paths(ADMIN_ROOT / "tls"), tls_http=tls_http,
-                                 rpc_upgrade_mode=bool(payload.get("rpcUpgradeMode")), introduction_strict=acl)
+                                 rpc_upgrade_mode=bool(payload.get("rpcUpgradeMode")), introduction_strict=acl,
+                                 secret_migration=bool(payload.get("secretMigration")))
     config_hash = hashlib.sha256(config.encode()).hexdigest()
     expected = str(payload.get("baselineSHA256") or "")
     if facts["baselineSHA256"] not in {expected, config_hash}:

@@ -185,16 +185,20 @@ def acl_policies(namespaces: list[str] | None = None) -> dict[str, str]:
     if any(not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", n) for n in namespaces):
         raise LumaError("ACL namespace must be an exact name, without wildcards")
 
-    def ns(capabilities: list[str]) -> str:
+    def ns(capabilities: list[str], *, secret_writer: bool = False) -> str:
+        variables = ('\n  variables {\n'
+                     '    path "luma/control/storage-key" { capabilities = ["read"] }\n'
+                     '    path "nomad/jobs/*" { capabilities = ["read", "list", "write", "destroy"] }\n'
+                     '  }') if secret_writer else ""
         return "\n".join(
-            f"namespace {json.dumps(n)} {{\n  capabilities = {json.dumps(capabilities)}\n}}"
+            f"namespace {json.dumps(n)} {{\n  capabilities = {json.dumps(capabilities)}{variables}\n}}"
             for n in namespaces
         )
 
     return {
         # No ACL management, agent write, operator write, exec, CSI registration,
         # node exec, sentinel override, or unrestricted namespace wildcards.
-        "control": ns(CONTROL_CAPABILITIES) + '\nnode { policy = "write" }\nagent { policy = "read" }\noperator { policy = "read" }\n',
+        "control": ns(CONTROL_CAPABILITIES, secret_writer=True) + '\nnode { policy = "write" }\nagent { policy = "read" }\noperator { policy = "read" }\n',
         "traefik": ns(READ_CAPABILITIES) + "\n",
         "exporter": ns(READ_CAPABILITIES) + '\nnode { policy = "read" }\n',
         # Current shipper reads alloc/logs through the filesystem API. This is
@@ -403,7 +407,7 @@ def prepare_job(job: dict[str, Any], *, enforce: bool | None = None) -> None:
             mounts = cfg.setdefault("mount", [])
             if mount not in mounts:
                 mounts.append(mount)
-            env = task.setdefault("Env", {})
+            env = task["Env"] = task.get("Env") or {}
             env["NOMAD_TOKEN_FILE"] = target + "/token"
             transport = read_private_json(root / "transport.json", optional=True)
             if transport.get("http"):
@@ -432,7 +436,7 @@ def prepare_job(job: dict[str, Any], *, enforce: bool | None = None) -> None:
     policy = read_private_json(root / "workloads.json", optional=True)
     if (enforce if enforce is not None else policy.get("mode") == "enforce") and needs_host_volumes(job):
         constraint = {"LTarget": "${meta.luma_host_access}", "Operand": "=", "RTarget": "trusted"}
-        constraints = job.setdefault("Constraints", [])
+        constraints = job["Constraints"] = job.get("Constraints") or []
         if constraint not in constraints:
             constraints.append(constraint)
 

@@ -33,6 +33,10 @@ def prepare_acl(*, admin_root: Path = ADMIN_ROOT, service_root: Path = SECURITY_
         raise LumaError("Nomad bootstrap credentials must be outside the Control-mounted service credential directory")
     if admin_root.resolve() == Path("/opt/luma") or Path("/opt/luma") in admin_root.resolve().parents:
         raise LumaError("Nomad administrator credential directory must be outside Control's /opt/luma bind mount")
+    # Create the credential roots explicitly; mkdir(parents=True) on a role
+    # directory would otherwise use the caller's umask for these parents.
+    admin_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    service_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = admin_root / "acl-bootstrap.json"
     bundle = read_private_json(path, optional=True)
     requested = sorted(set(namespaces or ["default"]))
@@ -134,6 +138,7 @@ def verify_acl(*, address: str = "http://127.0.0.1:4646", service_root: Path = S
     # ACL denial is required even before this built-in job exists at bootstrap.
     checks["anonymousJobDetailsDenied"] = denied(factory(address, token=""), "/v1/job/luma-control")
     checks["anonymousJobVersionsDenied"] = denied(factory(address, token=""), "/v1/job/luma-control/versions")
+    checks["anonymousVariablesDenied"] = denied(factory(address, token=""), "/v1/var/luma/control/storage-key")
     for role in ROLES:
         # Read role secrets as root during the local verification, even if the
         # runtime file is owned by nobody for the unprivileged observe process.
@@ -147,6 +152,9 @@ def verify_acl(*, address: str = "http://127.0.0.1:4646", service_root: Path = S
         except LumaError:
             checks[role + "CanRead"] = False
         checks[role + "CannotManageACL"] = denied(client, "/v1/acl/tokens")
+        if role != "control":
+            checks[role + "CannotDecryptControl"] = denied(client, "/v1/var/luma/control/storage-key")
+            checks[role + "CannotReadApplicationSecrets"] = denied(client, "/v1/var/nomad/jobs/luma-control/luma-control/luma-control")
     return {"ok": all(checks.values()), "checks": checks}
 
 
