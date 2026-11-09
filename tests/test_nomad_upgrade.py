@@ -15,6 +15,47 @@ from luma.nomad_api import NomadApi
 from tests.test_nomad_security import SecurityFixture, nomad_test_ports, workload
 
 
+class LaunchdRestart(unittest.TestCase):
+    def test_fresh_service_and_delayed_unload_both_start(self):
+        from luma.launchd import restart_service
+
+        for results in (
+            [LocalResult(3, "Boot-out failed: 3: No such process"), LocalResult(0, "")],
+            [LocalResult(0, ""), LocalResult(5, "Bootstrap failed: 5: Input/output error"), LocalResult(0, "")],
+        ):
+            with self.subTest(results=results), mock.patch("luma.launchd.time.sleep"):
+                remote = mock.Mock()
+                remote.sudo_result.side_effect = results
+                restart_service(remote, label="io.luma.nomad", plist="/Library/LaunchDaemons/io.luma.nomad.plist")
+                commands = [call.args[0] for call in remote.sudo_result.call_args_list]
+                self.assertEqual(sum("bootout" in command for command in commands), 1)
+                self.assertTrue(all("bootstrap" in command for command in commands[1:]))
+
+    def test_persistent_bootstrap_failure_is_bounded_and_reported(self):
+        from luma.launchd import restart_service
+
+        remote = mock.Mock()
+        remote.sudo_result.side_effect = [LocalResult(0, "")] + [LocalResult(5, "Bootstrap failed: 5: Input/output error")] * 5
+        with mock.patch("luma.launchd.time.sleep") as sleep, self.assertRaisesRegex(LumaError, "could not load io.luma.nomad"):
+            restart_service(remote, label="io.luma.nomad", plist="/Library/LaunchDaemons/io.luma.nomad.plist")
+        self.assertEqual(remote.sudo_result.call_count, 6)
+        self.assertEqual(sleep.call_count, 4)
+
+    def test_unload_or_nontransient_bootstrap_error_stops_immediately(self):
+        from luma.launchd import restart_service
+
+        for results in (
+            [LocalResult(1, "Operation not permitted")],
+            [LocalResult(0, ""), LocalResult(124, "command timed out after 10s")],
+        ):
+            with self.subTest(results=results), mock.patch("luma.launchd.time.sleep") as sleep:
+                remote = mock.Mock()
+                remote.sudo_result.side_effect = results
+                with self.assertRaises(LumaError):
+                    restart_service(remote, label="io.luma.nomad", plist="/Library/LaunchDaemons/io.luma.nomad.plist")
+                sleep.assert_not_called()
+
+
 class AuthorityAndPKI(SecurityFixture):
     def test_nomad_defaults_preserve_saved_application_authority(self):
         self.enforce()

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .errors import LumaError
+from .launchd import restart_service
 from .local import LocalExecutor
 from .nomad_api import NomadApi
 from .nomad_firewall import GUARD, install_guard, network_policy
@@ -129,7 +130,7 @@ def _restart(remote: LocalExecutor, *, os_name: str) -> None:
     else:
         path = Path("/Library/LaunchDaemons/io.luma.nomad.plist")
         private_write(path, unit["service_unit"], mode=0o644)
-        remote.run("launchctl bootout system/io.luma.nomad >/dev/null 2>&1 || true; launchctl bootstrap system /Library/LaunchDaemons/io.luma.nomad.plist", timeout=60)
+        restart_service(remote, label="io.luma.nomad", plist=str(path))
 
 
 def _wait(version: str, node_id: str, *, timeout: float = 90) -> dict[str, Any]:
