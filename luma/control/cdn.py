@@ -25,7 +25,7 @@ from ..cdn import (
     purge_esa,
     reconcile_domain_rules,
 )
-from ..cloudflare import delete_record, dns_records, upsert_record, upsert_txt_record
+from ..dns import delete_record, dns_records, upsert_record, upsert_txt_record
 from ..errors import LumaError
 from ..service import ServiceSpec
 from .state import mutate_state
@@ -105,8 +105,8 @@ def _site_name(config: Any, domain: str) -> str:
 
 
 def _origin_for(config: Any, service: ServiceSpec) -> str:
-    target = service.dns.get("target") or config.dns.get("edgeTarget") or config.dns_target_for(
-        exposure=service.exposure, region=service.region
+    target = config.service_dns_target(
+        exposure=service.exposure, region=service.region, node=service.node, explicit=service.dns.get("target"),
     )
     if not target:
         raise LumaError("missing ESA origin: configure an edge node publicIp or set service dns.target")

@@ -1,6 +1,6 @@
 ---
 name: luma-deployment-yaml
-description: Generate, review, validate, or fix Luma deployment manifests and Compose sidecars; preserve recorded build/deploy workflows and handle workflow-change confirmation. Use for Luma YAML, local build/upload/deploy, GitHub or Gitea imports, Builder Registry, Docker/buildx/proxy issues, region/exposure choices, CDN/ESA acceleration and caching, storage, private images, CI deployment, and Nomad deployment errors.
+description: Generate, review, validate, or fix Luma deployment manifests and Compose sidecars; preserve recorded build/deploy workflows and handle workflow-change confirmation. Use for Luma YAML, local build/upload/deploy, GitHub or Gitea imports, Builder Registry, Docker/buildx/proxy issues, region/exposure choices including node-edge (a node serving its own public traffic), DNS zones on Cloudflare/Alibaba Cloud DNS/DNSPod, CDN/ESA acceleration and caching, storage, private images, CI deployment, and Nomad deployment errors.
 ---
 
 # Luma Deployment YAML
@@ -50,6 +50,7 @@ For actual deployments, recorded commands, or workflow-change prompts, read [Dep
 2. Identify the service access pattern:
    - China public HTTPS: `region: cn`, `exposure: cn-edge`
    - Global public HTTPS: `region: global`, `exposure: external-edge`
+   - Public HTTPS served by a node with its own public IP, bypassing the Manager (saves Manager bandwidth): `exposure: node-edge` plus `node:`; see [Node Edge](#node-edge)
    - Home service through China edge and Tailscale: `region: home`, `exposure: tailscale-relay`
    - Public TCP service: `exposure: tcp-relay`; Luma derives the TCP entrypoint from `publishPort` or `port`
    - Home/private Cloudflare Tunnel: usually `region: home`, `exposure: cloudflare-tunnel`
@@ -99,10 +100,10 @@ luma build local . --platform linux/amd64
   configured, belong in the Nomad docker auth block.
 - For repository import builds, prefer omitting `image` and adding `build:`. Luma builds and pushes to the configured builder registry, removes the `build` block from the runtime deploy payload, and injects the built image reference.
 - Valid regions: built-in `cn`, `global`, `home`, or a custom region created with `luma region create` / Dashboard → Infrastructure → Regions. Custom regions default to `none`; query `luma region list` for their live capabilities and enable relay with `luma region update NAME --exposure tailscale-relay`.
-- Valid exposures: `none`, `cn-edge`, `external-edge`, `tailscale-relay`, `cloudflare-tunnel`, `tcp-relay`.
+- Valid exposures: `none`, `cn-edge`, `external-edge`, `node-edge`, `tailscale-relay`, `cloudflare-tunnel`, `tcp-relay`.
 - Public exposures require `domain` and integer `port`.
-- `cdn: esa` (optional) puts a `cn-edge`, `external-edge` or `tailscale-relay` service behind Alibaba Cloud ESA. Run `luma cdn check DOMAIN` first and fix any DANGER row; list only visitor-independent paths in `cdn.cache`. Details and failure table: [CDN](references/cdn.md).
-- `cn-edge` requires `region: cn`; `external-edge` requires `region: global`; `tailscale-relay` requires `home` or a custom region that has enabled it.
+- `cdn: esa` (optional) puts a `cn-edge`, `external-edge`, `node-edge` or `tailscale-relay` service behind Alibaba Cloud ESA. ESA only supports domains in the primary Cloudflare zone. Run `luma cdn check DOMAIN` first and fix any DANGER row; list only visitor-independent paths in `cdn.cache`. Details and failure table: [CDN](references/cdn.md).
+- `cn-edge` requires `region: cn`; `external-edge` requires `region: global`; `tailscale-relay` requires `home` or a custom region that has enabled it; `node-edge` is allowed in `cn` and `global`, and in a custom region after `luma region update NAME --exposure node-edge`.
 - `tcp-relay` derives its entrypoint from `publishPort` or `port`. It is port-exclusive; ordinary MySQL should not be modeled as same-port SNI multiplexing.
 - `port` is the container's internal listening port, not a cloud firewall or host port. For `tcp-relay`, `publishPort` is the task node host port that Traefik forwards to.
 - `replicas` defaults to `1` and must be at least `1`.
@@ -116,6 +117,27 @@ luma build local . --platform linux/amd64
 - `engine` is optional. Omit it to inherit the cluster default. Set `engine: nomad` only when you need an explicit override.
 - New native services use named volumes or bind mounts in `volumes`; persistent writable mounts require `replicas: 1`. Preserve existing sources. Legacy `storage` metadata does not prove that the actual Nomad mount uses NFS; inspect the rendered/running mount before changing it.
 - `build` is for source-to-image builds via `luma import` / Dashboard Repository Import, not plain `luma deploy`. Subfields: `context` (default `.`), `dockerfile` (default `Dockerfile`), `platform` (default `linux/amd64`), and optional `repo` to override the internal image repository path.
+
+## Node Edge
+
+Use `node-edge` when the user wants public traffic to skip the Manager, usually to avoid paying for Manager bandwidth, and has a Linux node with its own public IP.
+
+- One-time per node: `luma node ingress enable NODE --public-ip IP` (or Dashboard → Infrastructure → Nodes → NODE → Public ingress). Control runs `traefik-node-<node>` on that node's 80/443 and probes the ports from outside. Rerun it to re-check or change the IP; DNS of native `node-edge` services moves with it.
+- Manifest: `exposure: node-edge`, `node: NODE` (required), `domain`, `port`. `dns.target` is rejected; the record always points at the node. `replicas` greater than 1 stay on the same node. Compose services support it with `services.<name>.node`.
+- Not available on the Manager (it already is the edge), on macOS nodes, or in `home` by default. There is no failover between nodes.
+- Certificates use HTTP-01 on the node, so the DNS record must reach the node and port 80 must be open. Ask the user to allow inbound TCP 80/443 in the cloud security group; in mainland China the domain needs ICP filing at the node's cloud provider or the ports are blocked.
+- `unreachable` from `luma node ingress enable` means Control could not connect to 80/443; fix the security group or firewall before deploying. The deploy prerequisite `node-ingress` fails until ingress is enabled.
+- Requires a Control that renders the Manager Traefik with the `luma.edge` tag filter. After upgrading, refresh the Manager (`luma update manager`) before the first `node-edge` deploy.
+
+## DNS Zones
+
+- Every public service's record goes to the zone that owns its domain (longest suffix). Domains outside every added zone use the primary Cloudflare zone from first install. Manifests do not name the provider.
+- Before deploying a domain hosted on Alibaba Cloud DNS or DNSPod, check `luma dns zone list`. If the zone is missing, the user adds it once: `luma dns zone add example.cn --provider alidns` (or `dnspod`, `cloudflare`). The CLI prompts for keys without echo, or reads `ALIBABA_CLOUD_ACCESS_KEY_ID`/`_SECRET`, `TENCENTCLOUD_SECRET_ID`/`_KEY`, `CLOUDFLARE_API_TOKEN`. Never ask the user to paste keys into chat or YAML.
+- Recommend least privilege: Alibaba Cloud RAM user with AliyunDNSFullAccess, Tencent Cloud CAM sub-user with QcloudDNSPodFullAccess, Cloudflare token with Zone → DNS → Edit.
+- `--same-as OTHER_ZONE` reuses a key for another domain on the same account. `luma dns zone check ZONE` verifies a key without writing records.
+- `dns.proxied` only works for Cloudflare zones. Alibaba Cloud and DNSPod TTLs are raised to at least 600 seconds.
+- Hostnames in non-Cloudflare zones get certificates over HTTP-01 instead of the Cloudflare DNS-01 wildcard, which also needs a refreshed Manager Traefik after upgrading.
+- A deploy prerequisite `dns-zone` lists the missing key secrets when a zone's credentials were removed.
 
 ## Builder Registry Workflow
 
@@ -218,6 +240,18 @@ replicas: 1
 ```
 
 On Linux, if host `8080` is occupied, keep container `port: 8080` and choose a free `publishPort`, such as `18080`. Native Mac services must omit `publishPort` and change their actual listening port instead. Mac Compose supports this remapping through a private allocation-owned Docker namespace; pin the group to one node. Internal single-service worker pools can remain region-scheduled. `publishPort` is the task node host port, not the container port.
+
+Node with its own public IP (`luma node ingress enable tx-sh-1` first):
+
+```yaml
+name: downloads
+image: ghcr.io/acme/downloads:1.0.0
+region: cn
+node: tx-sh-1
+exposure: node-edge
+domain: dl.example.cn
+port: 8080
+```
 
 Bounded worker on a small manager:
 

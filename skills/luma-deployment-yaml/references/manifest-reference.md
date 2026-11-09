@@ -9,8 +9,8 @@
 | `build` | no | map | Source-to-image build for `luma import` / Dashboard Repository Import. Subfields: `build.context` (default `.`), `build.dockerfile` (default `Dockerfile`), `build.platform` (default `linux/amd64`), optional `build.repo`, literal Dockerfile stage `build.target`, and remote-only `build.x-luma-git-contexts` with reviewed lock files (see below). When present, `image` may be omitted. Not used by plain `luma deploy`. |
 | `region` | yes | `cn` / `global` / `home` or a custom region | Runtime placement region. Custom regions default to `none`; live capabilities are in `luma region list`. Enable relay with `luma region update NAME --exposure tailscale-relay`. |
 | `engine` | no | `nomad` | Orchestrator override. Omit to inherit the cluster default. |
-| `node` | no | string | Luma node name from `luma node join --name`; control-plane deploy resolves it to a node-meta placement constraint and keeps the region constraint. Stable across node restarts. Do not use Docker hostnames for normal pins. |
-| `exposure` | recommended | `none` / `cn-edge` / `external-edge` / `tailscale-relay` / `tcp-relay` / `cloudflare-tunnel` | Access mode. Use explicit exposure in new files. |
+| `node` | no (required for `node-edge`) | string | Luma node name from `luma node join --name`; control-plane deploy resolves it to a node-meta placement constraint and keeps the region constraint. Stable across node restarts. Do not use Docker hostnames for normal pins. |
+| `exposure` | recommended | `none` / `cn-edge` / `external-edge` / `node-edge` / `tailscale-relay` / `tcp-relay` / `cloudflare-tunnel` | Access mode. Use explicit exposure in new files. |
 | `domain` | public only | string | Public hostname for exposed services. |
 | `port` | public only | integer | Container internal port, not the cloud firewall or host port. |
 | `publishPort` | public services | integer | Explicit Nomad bridge port mapping on Linux nodes: host `publishPort` -> container `port`. For `cn-edge` / `external-edge`, omit for dynamic ports. For native Mac/OrbStack relay services, omit because they use Docker host mode and routes target the real `port`. Mac Compose supports remapping through allocation-owned Docker networking. |
@@ -18,7 +18,7 @@
 | `env` / `environment` | no | map | Service environment. Use direct values for non-sensitive settings and `${SECRET_NAME}` for deployment secrets supplied by `--env` or stored with scoped `luma secret set`. |
 | `command` | no | string/list | Overrides container command. |
 | `constraints` | no | string[] | Extra placement constraints (`attr == value`). Luma adds region and node/storage constraints automatically. |
-| `labels` | no | string[] | Extra service tags. Luma adds Traefik routing tags for `cn-edge` and `external-edge`. |
+| `labels` | no | string[] | Extra service tags. Luma adds Traefik routing tags for `cn-edge`, `external-edge` and `node-edge`. |
 | `networks` | no | string[] | Extra network names for advanced renderers; Nomad services normally use bridge or host mode. |
 | `volumes` | no | string[] | Compose-style service mounts. Named sources such as `data:/data` are mounted as named volumes (Nomad mount blocks). |
 | `storage` | no | map | Legacy storage metadata; keys must reference named volume sources. For native Nomad services, inspect actual mounts rather than assuming this metadata changes their backend. |
@@ -33,12 +33,12 @@
 | `relay.host` | relay override | string | Optional advanced upstream host override. Usually omit. |
 | `relay.url` | relay override | string | Optional full upstream URL override. Usually omit. |
 | `tunnel.tokenEnv` | tunnel | string | Env var name for Cloudflare Tunnel token. Defaults to `CLOUDFLARE_TUNNEL_TOKEN`. |
-| `dns.target` | no | string | Optional DNS target override. |
+| `dns.target` | no | string | Optional DNS target override. Rejected for `node-edge`, whose record always points at the node's public ingress address. |
 | `dns.type` | no | string | Optional DNS record type override. |
-| `dns.proxied` | no | boolean | Optional Cloudflare proxied flag. |
+| `dns.proxied` | no | boolean | Optional Cloudflare proxied flag. Rejected for domains in Alibaba Cloud DNS or DNSPod zones. |
 | `dns.servers` | no | IP string or list | Runtime container DNS servers; IPv4/IPv6. Omit to inherit the existing resolver defaults. |
-| `cdn` | no | string or mapping | Alibaba Cloud ESA: `cdn: esa`, or `provider`, `scope` (`global`/`domestic`/`overseas`), `purge` (paths refreshed after deploy; omitted = whole hostname, `[]` = none, trailing `/*` = directory), `cache` (list of `{path, ttl}` for paths identical for every visitor, max 8). Only `cn-edge`, `external-edge`, `tailscale-relay`. Needs `LUMA_ALIBABA_CLOUD_ACCESS_KEY_ID`/`_SECRET` Control secrets and an ESA plan. Audit with `luma cdn check DOMAIN`. |
-| `redirectFrom` | no | list of hostnames, or `{hosts, except}` | GET/HEAD on these hosts get a 301 to `domain` (path and query kept); other methods pass to the service. `except` paths (`/api/*` = prefix) are served directly for every method, for APIs called with `Authorization` (dropped on cross-host redirects). Always a direct A record, never on the CDN. Only `cn-edge`, `external-edge`, `tailscale-relay`. |
+| `cdn` | no | string or mapping | Alibaba Cloud ESA: `cdn: esa`, or `provider`, `scope` (`global`/`domestic`/`overseas`), `purge` (paths refreshed after deploy; omitted = whole hostname, `[]` = none, trailing `/*` = directory), `cache` (list of `{path, ttl}` for paths identical for every visitor, max 8). Only `cn-edge`, `external-edge`, `node-edge`, `tailscale-relay`, and only domains in the primary Cloudflare zone. Needs `LUMA_ALIBABA_CLOUD_ACCESS_KEY_ID`/`_SECRET` Control secrets and an ESA plan. Audit with `luma cdn check DOMAIN`. |
+| `redirectFrom` | no | list of hostnames, or `{hosts, except}` | GET/HEAD on these hosts get a 301 to `domain` (path and query kept); other methods pass to the service. `except` paths (`/api/*` = prefix) are served directly for every method, for APIs called with `Authorization` (dropped on cross-host redirects). Always a direct A record, never on the CDN. Only `cn-edge`, `external-edge`, `node-edge`, `tailscale-relay`. |
 | `stackPath` | no | string | Override generated stack path. Rare. |
 | `routePath` | no | string | Override generated tailscale route path. Rare. |
 
@@ -64,6 +64,7 @@ read updated Git files. Later container recreation retains the DNS from the depl
 | --- | --- |
 | Domestic public HTTPS | `region: cn`, `exposure: cn-edge`, `domain`, `port` |
 | Overseas/global public HTTPS | `region: global`, `exposure: external-edge`, `domain`, `port` |
+| Public HTTPS straight to a node with its own public IP, bypassing the Manager | `exposure: node-edge`, `node`, `domain`, `port`; run `luma node ingress enable NODE` first |
 | Home service through China edge and Tailscale | `region: home`, `exposure: tailscale-relay`, `domain`, `port`; optional `node` only when pinning |
 | Public TCP service | `exposure: tcp-relay`, `domain`, `port`; use one service per published TCP port |
 | Home/private Cloudflare Tunnel | usually `region: home`, `exposure: cloudflare-tunnel`, `domain`, `port`, optional `tunnel.tokenEnv` |
@@ -75,6 +76,7 @@ Rules:
 - `cn-edge` requires `region: cn`.
 - `external-edge` requires `region: global`.
 - `tailscale-relay` requires `home` or an enabled custom region; Control validates its live exposure list.
+- `node-edge` requires `node`, a node with public ingress enabled, and `cn`, `global` or a custom region that enabled it. Not on the Manager or macOS nodes.
 - `tcp-relay` derives its Traefik entrypoint from `publishPort` or `port`; ordinary MySQL should use port-exclusive routing instead of SNI multiplexing.
 - Public services require `domain` and integer `port`.
 - `public` has been removed. Use `exposure`.
@@ -84,6 +86,8 @@ Rules:
 - Every service gets a `${meta.region} == <region>` placement constraint.
 - If `node` is set, Luma renders a `${meta.luma_node_name} == <node>` constraint. Node identities are stable across restarts, so a rejoining node keeps its pin with no constraint rewrite.
 - `cn-edge` and `external-edge` register Traefik routing via the Nomad service provider (service tags), using a bridge network with `port` as the load-balancer target.
+- `node-edge` renders the same service tags plus `luma.edge=<node>` and an HTTP-01 cert resolver. Only `traefik-node-<node>` on that node serves it; the Manager's Traefik ignores the tag. The DNS record points at the node's public IP.
+- DNS records go to the zone that owns the domain: added zones (`luma dns zone add`) on Cloudflare, Alibaba Cloud DNS or DNSPod, else the primary Cloudflare zone. Non-Cloudflare zones use the HTTP-01 resolver.
 - Native `tailscale-relay` defaults to Docker host networking and the container's real port. On Linux, `publishPort` selects bridge networking with explicit host-to-container mapping. Native macOS services must omit `publishPort`; Mac Compose has its own allocation-owned network. A Traefik file-provider route uses the resolved deployment node unless `relay.host`/`relay.url` overrides are set.
 - `tcp-relay` adds the derived TCP entrypoint to Traefik, writes a TCP route, and forwards to the host port; the published port is exclusive to that TCP service.
 - `cloudflare-tunnel` adds a `cloudflared` sidecar task in the same group using `${<tokenEnv>}`.
@@ -617,6 +621,8 @@ luma app remove <name> --delete-storage
 - For persistent services, are the local path/volume identity and original deployment node preserved? Do not require a storage class or silently move an offline owner.
 - For `tailscale-relay` or `tcp-relay`, is `publishPort` free on the target node?
 - For Compose storage backend or owner-node changes, was the data copied and verified before redeploying (Control only warns)?
+- For `node-edge`, is ingress enabled on that node (`luma node list` / Dashboard node page) and are TCP 80/443 open in its security group?
+- Is the domain's zone listed in `luma dns zone list`, or covered by the primary zone?
 - Should the service be public, or is `exposure: none` safer?
 
 ## Required Platform Ports
@@ -625,8 +631,8 @@ Manifest `port` is the container's internal listening port. It is separate from 
 
 | Port | Required path | Purpose |
 | --- | --- | --- |
-| `80/tcp` | public clients to edge manager | HTTP redirect and Let's Encrypt challenge. |
-| `443/tcp` | public clients to edge manager | HTTPS ingress for public services and Luma Control. |
+| `80/tcp` | public clients to edge manager, and to each `node-edge` node | HTTP redirect and Let's Encrypt challenge. |
+| `443/tcp` | public clients to edge manager, and to each `node-edge` node | HTTPS ingress for public services and Luma Control. |
 | `4646/tcp` | Control / operators to manager | Nomad HTTP API. |
 | `4647/tcp` | clients to server | Nomad RPC. |
 | `4648/tcp`, `4648/udp` | all Nomad nodes | Nomad Serf gossip. |

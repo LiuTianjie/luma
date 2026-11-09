@@ -4,7 +4,8 @@ Luma separates the control plane from the data plane.
 
 ## Roles
 
-- Cloudflare: DNS automation, optional proxy, optional Tunnel public hostname.
+- Cloudflare: DNS automation, optional proxy, optional Tunnel public hostname. Other domains can live on Alibaba Cloud DNS or DNSPod; see [DNS zones](dns-zones.md).
+- Node Traefik: optional per-node HTTP/HTTPS ingress for `node-edge` services.
 - Traefik: main public HTTP/HTTPS ingress for the `cn` edge, plus `tcp-relay` published ports.
 - Tailscale: management network and explicit relay path for `home` or enabled custom-region services.
 - Luma Control: deployment control plane, driving the Nomad HTTP API.
@@ -209,6 +210,55 @@ Luma generates:
 
 Use `dns.target` to choose the public/global edge IP for this service. Without a separate global edge target, a global workload can still be scheduled in `region: global`, but public HTTP traffic will not magically enter through every global node.
 
+### `node-edge`
+
+A node with its own public IP serves its services directly.
+
+```text
+User -> DNS -> node Traefik -> service on the same node
+```
+
+Use for:
+
+- bandwidth-heavy services whose traffic should not cross, or be billed on, the Manager;
+- a cloud server added to the cluster purely as a deployment target.
+
+Not for:
+
+- services that need more than one node (there is no failover between nodes);
+- home or macOS nodes.
+
+Enable ingress on the node once, then deploy to it:
+
+```bash
+luma node ingress enable tx-sh-1 --public-ip 203.0.113.20
+```
+
+```yaml
+name: downloads
+image: ghcr.io/your-org/downloads:latest
+region: cn
+node: tx-sh-1
+exposure: node-edge
+domain: dl.example.com
+port: 8080
+replicas: 2
+```
+
+Luma generates:
+
+- a `traefik-node-tx-sh-1` Nomad job bound to ports 80 and 443 on that node only;
+- Nomad service tags for the app with `luma.edge=tx-sh-1`, which the Manager's Traefik ignores;
+- a DNS record pointing at the node's public IP, in whichever [DNS zone](dns-zones.md) owns the domain.
+
+The node's Traefik issues certificates over HTTP-01 and holds no DNS credentials. `dns.target` is not accepted: the record always follows the node's address. Rerun `luma node ingress enable` to re-check the ports or change the address; Luma then repoints the DNS of every `node-edge` service on the node.
+
+Operational requirements:
+
+- the cloud security group and host firewall allow inbound TCP 80 and 443;
+- in mainland China the domain needs ICP filing at the node's cloud provider, or the provider blocks the ports;
+- `luma node ingress disable` is refused while any `node-edge` deployment still uses the node.
+
 ### `none`
 
 Internal services and workers.
@@ -249,4 +299,5 @@ Luma generates:
 - Public native TCP service: `tcp-relay`.
 - Home/private service through Cloudflare: `cloudflare-tunnel`.
 - Overseas public execution: `external-edge`.
+- Public traffic served by a node with its own public IP, bypassing the Manager: `node-edge`.
 - Workers and internal services: `none`.

@@ -4,7 +4,8 @@ Luma 将控制面和数据面分开。
 
 ## 各组件职责 {#roles}
 
-- Cloudflare：DNS 自动化、可选代理和 Tunnel 公共主机名。
+- Cloudflare：DNS 自动化、可选代理和 Tunnel 公共主机名。其他域名可以托管在阿里云 DNS 或 DNSPod，见 [DNS 域名](dns-zones.zh-CN.md)。
+- 节点 Traefik：可选，为 `node-edge` 服务提供节点自己的 HTTP/HTTPS 入口。
 - Traefik：`cn` 边缘的公共 HTTP/HTTPS 入口，以及 `tcp-relay` 发布端口。
 - Tailscale：管理网络，以及 `home` 或已启用中继的自定义 Region 服务的显式中继路径。
 - Luma Control：驱动 Nomad HTTP API 的部署控制面。
@@ -209,6 +210,55 @@ Luma 生成：
 
 通过 `dns.target` 选择此服务的公共/global 边缘 IP。没有独立 global 边缘目标时，工作负载仍可调度到 `region: global`，但公共 HTTP 流量不会自动从所有 global 节点进入。
 
+### `node-edge` {#node-edge}
+
+有公网 IP 的节点直接对外提供自己上面的服务。
+
+```text
+User -> DNS -> node Traefik -> service on the same node
+```
+
+适用于：
+
+- 流量大、不应经过 Manager（或不应按 Manager 带宽计费）的服务；
+- 只把一台云服务器加入集群当部署目标的场景。
+
+不适用于：
+
+- 需要跨多个节点的服务（节点之间没有故障切换）；
+- 家庭节点或 macOS 节点。
+
+先在节点上开启一次入口，再部署到它：
+
+```bash
+luma node ingress enable tx-sh-1 --public-ip 203.0.113.20
+```
+
+```yaml
+name: downloads
+image: ghcr.io/your-org/downloads:latest
+region: cn
+node: tx-sh-1
+exposure: node-edge
+domain: dl.example.com
+port: 8080
+replicas: 2
+```
+
+Luma 生成：
+
+- 只在该节点绑定 80 和 443 的 Nomad job `traefik-node-tx-sh-1`；
+- 应用的 Nomad 服务标签带 `luma.edge=tx-sh-1`，Manager 的 Traefik 会忽略它；
+- 指向节点公网 IP 的 DNS 记录，写在域名所属的 [DNS 域名](dns-zones.zh-CN.md)里。
+
+节点上的 Traefik 用 HTTP-01 申请证书，不持有任何 DNS 凭据。不接受 `dns.target`：记录始终跟随节点地址。重新执行 `luma node ingress enable` 可以复查端口或更换地址，Luma 会同时把该节点上所有 `node-edge` 服务的解析改过去。
+
+运维要求：
+
+- 云安全组和主机防火墙放行入站 TCP 80 和 443；
+- 节点在中国大陆时，域名需要在该节点所在云厂商完成备案接入，否则端口会被拦截；
+- 仍有 `node-edge` 部署使用该节点时，`luma node ingress disable` 会被拒绝。
+
 ### `none` {#none}
 
 内部服务与工作任务。
@@ -249,4 +299,5 @@ Luma 生成：
 - 公共原生 TCP 服务：`tcp-relay`。
 - 经 Cloudflare 访问家庭/私网服务：`cloudflare-tunnel`。
 - 海外公共服务：`external-edge`。
+- 由有公网 IP 的节点直接对外、不经过 Manager：`node-edge`。
 - 工作任务和内部服务：`none`。

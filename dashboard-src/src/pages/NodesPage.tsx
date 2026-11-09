@@ -9,6 +9,7 @@ import { NodeFleetMap } from "../components/NodeFleetMap";
 import { RegionPanel } from "../components/RegionPanel";
 import { NodeTopology } from "../components/NodeTopology";
 import { TrafficPaths } from "../components/TrafficPaths";
+import { DnsZonesPanel } from "../components/DnsZonesPanel";
 import { useRouter } from "../router";
 import type { DashboardNode, Lang } from "../types";
 import type { DashboardViewModel } from "../dashboardViewModel";
@@ -45,7 +46,7 @@ export function NodesPage({
   const zh = lang === "zh";
   const { path, navigate } = useRouter();
   const requestedSection = path.split("/")[2] || "nodes";
-  const section = ["nodes", "join", "regions", "network"].includes(requestedSection) ? requestedSection : "unknown";
+  const section = ["nodes", "join", "regions", "network", "domains"].includes(requestedSection) ? requestedSection : "unknown";
   const defaultRegion = vm.regions.find((item) => !item.builtin)?.name || vm.regions[0]?.name;
   const command = joinCommand(nodeJoin, defaultRegion);
   const joinTokenAvailable = Boolean(nodeJoin?.token?.trim());
@@ -69,10 +70,11 @@ export function NodesPage({
       <PageHeader
         meta={{
           eyebrow: zh ? "节点舰队" : "Fleet",
-          title: section === "join" ? (zh ? "加入节点" : "Join a node") : section === "regions" ? (zh ? "区域管理" : "Regions") : section === "network" ? (zh ? "网络与拓扑" : "Network and topology") : (zh ? "节点" : "Nodes"),
+          title: section === "join" ? (zh ? "加入节点" : "Join a node") : section === "regions" ? (zh ? "区域管理" : "Regions") : section === "network" ? (zh ? "网络与拓扑" : "Network and topology") : section === "domains" ? (zh ? "域名" : "Domains") : (zh ? "节点" : "Nodes"),
           description: section === "join" ? (zh ? "在目标机器上安装并接入当前集群。" : "Connect a host to this cluster.")
             : section === "regions" ? (zh ? "管理调度区域及其出口策略。" : "Manage scheduling regions and egress policies.")
             : section === "network" ? (zh ? "查看入口流量路径、证书和节点拓扑。" : "Inspect ingress paths, certificates, and node topology.")
+            : section === "domains" ? (zh ? "管理 DNS 域名及其所在的服务商。" : "Manage DNS zones and the providers that host them.")
             : (zh ? "查看节点资源、调度状态与终端可用性。" : "Inspect node resources, scheduling state, and terminal availability."),
           // The fleet map carries the live summary row; the header stays a title.
           metrics: [],
@@ -94,6 +96,7 @@ export function NodesPage({
       </Empty>}
       {section === "nodes" && <NodeFleetMap lang={lang} nodes={vm.nodes} services={vm.services} onSelect={onSelectNode} onTerminal={onTerminal} />}
       {section === "regions" && <RegionPanel lang={lang} token={token} regions={vm.regions} nodes={vm.nodes} onRefresh={onRefresh} />}
+      {section === "domains" && <DnsZonesPanel lang={lang} token={token} />}
 
       {section === "join" && (
         <Card>

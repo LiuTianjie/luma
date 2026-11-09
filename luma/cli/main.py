@@ -18,6 +18,7 @@ from .builds import cmd_build, cmd_import, cmd_workflow
 from .common import _print_structured_error
 from .deploy import cmd_compose, cmd_deploy, cmd_validate
 from .manager import cmd_bootstrap, cmd_manager, cmd_update
+from .dns import cmd_dns
 from .nodes import cmd_node, cmd_region, cmd_storage
 from .parser import build_parser
 from .session import cmd_context, cmd_doctor, cmd_init, cmd_login, cmd_status, cmd_version
@@ -48,6 +49,7 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "update": cmd_update,
     "node": cmd_node,
     "region": cmd_region,
+    "dns": cmd_dns,
     "storage": cmd_storage,
     "registry": cmd_registry,
     "cdn": cmd_cdn,

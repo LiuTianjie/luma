@@ -42,6 +42,7 @@ Cluster administration:
   update        Update the CLI, the manager or every node
   node          Join, list and remove nodes
   region        Manage scheduling regions
+  dns           Manage DNS zones on Cloudflare, Alibaba Cloud DNS and DNSPod
   storage       Manage NFS storage classes
   registry      Manage registry credentials and the managed registry
   git-provider  Manage saved GitHub and Gitea credentials
@@ -64,7 +65,7 @@ Documentation: https://liutianjie.github.io/luma/
 ## `luma init`
 
 ```text
-usage: luma init [-h] [--name NAME] [--image IMAGE] [--region REGION] [--exposure {cloudflare-tunnel,cn-edge,external-edge,none,tailscale-relay,tcp-relay}] [--domain DOMAIN] [--port PORT] [--replicas REPLICAS] [--output OUTPUT] [--force]
+usage: luma init [-h] [--name NAME] [--image IMAGE] [--region REGION] [--exposure {cloudflare-tunnel,cn-edge,external-edge,node-edge,none,tailscale-relay,tcp-relay}] [--domain DOMAIN] [--port PORT] [--replicas REPLICAS] [--output OUTPUT] [--force]
 
 Create a service manifest. Prompts for missing values in a terminal; without a terminal every value
 comes from flags or defaults.
@@ -75,7 +76,7 @@ arguments:
   --image IMAGE               Container image (default: ghcr.io/your-org/<name>:latest)
   --region REGION             Where the service runs: cn, global, home or a created region (default:
                               cn)
-  --exposure {cloudflare-tunnel,cn-edge,external-edge,none,tailscale-relay,tcp-relay}
+  --exposure {cloudflare-tunnel,cn-edge,external-edge,node-edge,none,tailscale-relay,tcp-relay}
                               How traffic reaches the service (default: cn-edge)
   --domain DOMAIN             Public hostname for edge and tunnel exposures
   --port PORT                 Container port (default: 3000)
@@ -1580,6 +1581,7 @@ arguments:
     join        Join this machine to the cluster
     list        List registered nodes
     status      Show node readiness, agent and resource details
+    ingress     Serve public traffic from a node itself (exposure: node-edge)
     remove      Unregister a node from Control
     exit        Stop Nomad on this machine and remove its Luma state
     tailscale   Install Tailscale on this machine and join the tailnet (needs TAILSCALE_AUTHKEY)
@@ -1714,6 +1716,74 @@ arguments:
   --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
 ```
 
+## `luma node ingress`
+
+```text
+usage: luma node ingress [-h] <command> ...
+
+Serve public traffic from a node itself (exposure: node-edge)
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  <command>
+    enable    Run Traefik on the node and point node-edge DNS at its public IP; rerun to re-check or
+              change the IP
+    disable   Stop the node's Traefik once no node-edge deployment uses it
+```
+
+## `luma node ingress enable`
+
+```text
+usage: luma node ingress enable [-h] [--public-ip PUBLIC_IP] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Run Traefik on the node and point node-edge DNS at its public IP; rerun to re-check or change the IP
+
+arguments:
+  name                        Node name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --public-ip PUBLIC_IP       Address clients reach the node at (default: the address saved earlier)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma node ingress disable`
+
+```text
+usage: luma node ingress disable [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Stop the node's Traefik once no node-edge deployment uses it
+
+arguments:
+  name                        Node name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
 ## `luma node remove`
 
 ```text
@@ -1793,6 +1863,141 @@ arguments:
   --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
 ```
 
+## `luma dns`
+
+```text
+usage: luma dns [-h] <command> ...
+
+Manage DNS zones on Cloudflare, Alibaba Cloud DNS and DNSPod
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  <command>
+    zone      List, add, check and remove DNS zones
+```
+
+## `luma dns zone`
+
+```text
+usage: luma dns zone [-h] <command> ...
+
+List, add, check and remove DNS zones
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  <command>
+    list      List DNS zones, their provider and the applications using them
+    add       Add a zone; credentials are prompted for or read from the provider's standard
+              environment variables
+    check     Verify a zone's credentials and API access without changing records
+    remove    Remove an unused zone and its stored credentials
+```
+
+## `luma dns zone list`
+
+```text
+usage: luma dns zone list [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List DNS zones, their provider and the applications using them
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma dns zone add`
+
+```text
+usage: luma dns zone add [-h] --provider {cloudflare,alidns,dnspod} [--same-as ZONE] [--update] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] zone
+
+Add a zone; credentials are prompted for or read from the provider's standard environment variables
+
+arguments:
+  zone                        Registered domain, for example example.cn
+
+arguments:
+  -h, --help                  show this help message and exit
+  --provider {cloudflare,alidns,dnspod}
+                              DNS host of the zone
+  --same-as ZONE              Reuse the credentials of another zone on the same account
+  --update                    Replace the provider or credentials of an existing zone
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma dns zone check`
+
+```text
+usage: luma dns zone check [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] zone
+
+Verify a zone's credentials and API access without changing records
+
+arguments:
+  zone                        Zone name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma dns zone remove`
+
+```text
+usage: luma dns zone remove [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] zone
+
+Remove an unused zone and its stored credentials
+
+arguments:
+  zone                        Zone name
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
 ## `luma region`
 
 ```text
@@ -1836,7 +2041,7 @@ arguments:
 ## `luma region create`
 
 ```text
-usage: luma region create [-h] [--egress {proxy,direct}] [--exposure {none,tailscale-relay,cloudflare-tunnel,tcp-relay}] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+usage: luma region create [-h] [--egress {proxy,direct}] [--exposure {none,tailscale-relay,cloudflare-tunnel,tcp-relay,node-edge}] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
 
 Create a custom region
 
@@ -1847,7 +2052,7 @@ arguments:
   -h, --help                  show this help message and exit
   --egress {proxy,direct}     Joins and image pulls use the manager proxy or go direct (default:
                               proxy)
-  --exposure {none,tailscale-relay,cloudflare-tunnel,tcp-relay}
+  --exposure {none,tailscale-relay,cloudflare-tunnel,tcp-relay,node-edge}
                               Allowed ingress; repeat for multiple modes (none is always allowed)
   --format {text,json,ndjson}
                               Output format (default: text)
@@ -1865,7 +2070,7 @@ arguments:
 ## `luma region update`
 
 ```text
-usage: luma region update [-h] [--egress {proxy,direct}] [--exposure {none,tailscale-relay,cloudflare-tunnel,tcp-relay}] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+usage: luma region update [-h] [--egress {proxy,direct}] [--exposure {none,tailscale-relay,cloudflare-tunnel,tcp-relay,node-edge}] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
 
 Update a custom region's egress and allowed ingress
 
@@ -1875,7 +2080,7 @@ arguments:
 arguments:
   -h, --help                  show this help message and exit
   --egress {proxy,direct}     Replace the egress policy
-  --exposure {none,tailscale-relay,cloudflare-tunnel,tcp-relay}
+  --exposure {none,tailscale-relay,cloudflare-tunnel,tcp-relay,node-edge}
                               Replace allowed ingress; repeat for multiple modes (none is always
                               allowed)
   --format {text,json,ndjson}

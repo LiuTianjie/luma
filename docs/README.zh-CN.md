@@ -16,6 +16,7 @@
 | [Compose 与存储](compose-storage.zh-CN.md) | 多服务应用与持久卷 |
 | [密钥与凭据](secrets.zh-CN.md) | 令牌、应用密钥与镜像仓库凭据 |
 | [暴露模型](exposure-model.zh-CN.md) | 每种入口方式的要求与示例 |
+| [DNS 域名](dns-zones.zh-CN.md) | 托管在 Cloudflare、阿里云 DNS 和 DNSPod 的域名 |
 | [CDN](cdn.zh-CN.md) | 阿里云 ESA 配置、缓存头和部署后刷新 |
 | [自定义 Region 公网入口](region-public-ingress.zh-CN.md) | 升级、开启 render 中继、Mac Compose 网络与回退 |
 | [出站代理](egress-gateway.zh-CN.md) | 镜像拉取与 `proxy: true` 服务使用的出站代理 |
