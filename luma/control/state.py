@@ -165,6 +165,11 @@ class _DeferredState(dict):
         self._resolve_all()
         return super().__len__()
 
+    def __bool__(self):
+        # Metadata presence is enough for ``state or {}``; resolving history
+        # here can turn a current-runtime lookup into a full log scan.
+        return dict.__len__(self) > 0 or bool(getattr(self, "_deferred", ()))
+
     def keys(self):
         self._resolve_all()
         return super().keys()
