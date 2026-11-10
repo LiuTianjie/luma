@@ -155,6 +155,7 @@ from .state import (
     init_state,
     load_dashboard_state,
     load_auth_state,
+    load_entity,
     load_runtime_state,
     load_state,
     mutate_state,
@@ -2988,7 +2989,7 @@ def handle_build_run_retry(
 ) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
-    run = (state.get("buildRuns") if isinstance(state.get("buildRuns"), dict) else {}).get(build_id)
+    run = load_entity("buildRuns", build_id)
     if not isinstance(run, dict):
         raise LumaError(f"build run not found: {build_id}")
     request = run.get("request") if isinstance(run.get("request"), dict) else {}
@@ -4398,7 +4399,8 @@ def handle_build_deploy(
     durable queue: ``requeueBuild`` after planning, ``requeueDeploy`` after the
     image is pushed. Unqueued (legacy) requests still run all stages inline.
     """
-    state = load_state()
+    from .build_queue import scheduling_state
+    state = scheduling_state()
     require_token(state, token, token_type="deploy")
     _reject_control_maintenance(state)
     _apply_state_secrets(state)
@@ -4570,7 +4572,7 @@ def handle_build_deploy(
                 raise LumaError("build canceled")
             planning_node = str(plan_result.pop("agentNode", "") or build_node)
             _build_plan = _checked_repository_build_plan(plan_result)
-            state = load_state()
+            state = scheduling_state()
             arm_platform = native_arm_build_platform(_build_plan["platforms"])
             if selection_mode == "pinned":
                 selected = [build_node]
