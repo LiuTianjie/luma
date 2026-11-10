@@ -79,6 +79,34 @@ def _current_runs(state: State) -> list[State]:
     return list(current.values())
 
 
+def scheduling_state() -> State:
+    """Read current builder ownership without loading historical log streams.
+
+    Admission and post-plan selection run outside a writer transaction. A
+    full detached snapshot would hydrate every build when ranking builders,
+    potentially aging its node heartbeats past the readiness window.
+    """
+    from .database import ensure_initialized, read_state, transaction
+    ensure_initialized()
+    with transaction(immediate=False) as conn:
+        state = read_state(conn, lazy=True, kinds={"nodes", *QUEUE_METADATA_KINDS},
+                           metadata_kinds=QUEUE_METADATA_KINDS)
+        runs = {run["id"]: run for run in _current_runs(state)}
+        tasks = state.get("agentTasks") or {}
+        current_tasks = {task["id"]: task for task in _active(tasks, {"queued", "running"})}
+        for run in runs.values():
+            task_id = run.get("agentTaskId")
+            task = tasks.get(task_id)
+            if isinstance(task, dict):
+                # A completed child releases its builder even while its run
+                # still owns a queue slot. Keep that receipt, without logs.
+                current_tasks[task_id] = task
+        state["nodes"] = (state.get("nodes") or {}).copy()
+        state["buildRuns"] = runs
+        state["agentTasks"] = current_tasks
+        return state
+
+
 def _caller_upload(run: State) -> bool:
     """A local build still running on the caller holds no queue position."""
     return (

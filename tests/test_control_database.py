@@ -63,6 +63,7 @@ class ControlDatabaseTests(unittest.TestCase):
             snapshot = state.load_state()
             self.assertEqual(snapshot["deployToken"], "private-token")
             self.assertEqual(set(snapshot.get("nodes")), {"node-a"})
+            self.assertIs(snapshot or {}, snapshot)
             self.assertEqual(len(reads), 1)
             self.assertNotIn("buildRuns", reads[0])
             self.assertIn("buildRuns", snapshot)

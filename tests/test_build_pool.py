@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from luma.control import build_queue as queue
+from luma.control import database
 from luma.control import server as srv
 from luma.control.state import init_state, load_state, save_state
 from luma.errors import LumaError
@@ -198,6 +199,57 @@ class BuildPoolTests(unittest.TestCase):
         self.assertFalse(srv._has_native_builder_choices(load_state()))
         response = srv.handle_build_deploy(self.token, {"repoUrl": "https://git.example.com/acme/app.git", "queue": True})
         self.assertEqual(load_state()["buildRuns"][response["buildRunId"]]["buildCandidates"], ["builder", "bd-prod"])
+
+    def test_import_admission_and_planning_never_hydrate_historical_logs(self):
+        srv._mutate_control_state(lambda state: state.setdefault("buildRuns", {}).update({
+            "old-history": {"id": "old-history", "status": "succeeded", "events": [{"message": "old log"}]},
+        }))
+        decode = database.decode_payload
+
+        def guard(conn, payload, *identity):
+            if "old-history" in identity:
+                raise AssertionError("builder selection read unrelated build history")
+            return decode(conn, payload, *identity)
+
+        with patch.object(database, "decode_payload", side_effect=guard):
+            accepted = srv.handle_build_deploy(self.token, {
+                "repoUrl": "https://git.example.com/acme/app.git", "queue": True,
+            })
+            build_id = accepted["buildRunId"]
+            self.assertEqual(accepted["run"]["status"], "queued")
+            srv._mutate_control_state(lambda state: state["nodes"]["lab"]["agent"].update(arch="arm64"))
+            with patch.object(srv, "_run_node_agent_task", return_value={
+                    "kind": "build-plan", "commit": "a" * 40, "platforms": ["linux/arm64"],
+                    "buildCapabilities": CAPABILITIES,
+            }):
+                planned = srv.handle_build_deploy(self.token, {
+                    "repoUrl": "https://git.example.com/acme/app.git", "queue": True,
+                }, _queued_run_id=build_id)
+            self.assertEqual(planned["requeueBuild"]["candidates"], ["lab"])
+
+    def test_scheduling_snapshot_retains_live_owners_and_completed_child_receipts(self):
+        def prepare(state):
+            state["buildRuns"] = {
+                "unwinding": {"id": "unwinding", "status": "failed", "queueExecuting": True,
+                              "buildNode": "builder", "agentTaskId": "child-running"},
+                "finishing": {"id": "finishing", "status": "running", "queueExecuting": True,
+                              "buildNode": "bd-prod", "agentTaskId": "child-done"},
+            }
+            state["buildQueue"] = {"unwinding": {"kind": "remote"}, "finishing": {"kind": "remote"}}
+            state["agentTasks"] = {
+                "child-running": {"id": "child-running", "status": "running", "nodeName": "builder",
+                                  "buildRunId": "unwinding", "progress": [{"line": "still stopping"}]},
+                "child-done": {"id": "child-done", "status": "succeeded", "nodeName": "bd-prod",
+                               "buildRunId": "finishing", "progress": [{"line": "done"}]},
+            }
+
+        srv._mutate_control_state(prepare)
+        with patch.object(database, "read_entity", side_effect=AssertionError("scheduling read a log stream")):
+            state = queue.scheduling_state()
+        self.assertEqual(srv._busy_build_nodes(state), {"builder"})
+        self.assertEqual(srv._busy_build_nodes(state, exclude_run="unwinding"), set())
+        self.assertEqual(state["agentTasks"]["child-done"]["status"], "succeeded")
+        self.assertNotIn("progress", state["agentTasks"]["child-running"])
 
     def test_no_ready_candidate_rejects_pooled_dispatch(self):
         srv._mutate_control_state(lambda state: [state["nodes"][name]["agent"].update(status="offline") for name in ("builder", "bd-prod")])

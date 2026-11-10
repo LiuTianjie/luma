@@ -141,8 +141,10 @@ class BuildCapabilityControlTests(unittest.TestCase):
         self.state = builder_state()
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch("luma.control.build_queue.scheduling_state", return_value=self.state))
         for name, kwargs in {
             "load_state": {"return_value": self.state},
+            "load_entity": {"side_effect": lambda kind, identifier: self.state.get(kind, {}).get(identifier)},
             "require_token": {}, "_reject_control_maintenance": {}, "_apply_state_secrets": {},
             "load_config": {}, "_build_proxy_for_request": {"return_value": ""},
             "_target_build_platform_inventory": {"return_value": {"byNode": {}, "byRegion": {}}},
