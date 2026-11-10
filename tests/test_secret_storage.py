@@ -16,7 +16,7 @@ import urllib.parse
 from pathlib import Path
 from unittest import mock
 
-from luma import nomad_secrets, nomad_security, nomad_upgrade, secret_migration, secret_storage
+from luma import bootstrap, nomad_secrets, nomad_security, nomad_upgrade, secret_migration, secret_storage
 from luma.control import database, state
 from luma.errors import LumaError
 from luma.local import LocalExecutor, LocalResult
@@ -115,6 +115,40 @@ class EncryptedPersistence(KeyFixture):
         with sqlite3.connect(database.database_path()) as conn:
             self.assertEqual(conn.execute("SELECT value FROM database_meta WHERE key='payload_cipher'").fetchone()[0], "aes256gcm-v1")
 
+    def test_fresh_installer_encrypts_state_without_running_the_security_migration(self):
+        self.enable()
+        original = self.data()
+        with mock.patch.object(database, "migrate_encryption", side_effect=AssertionError("installer must not run the security migration")):
+            self.assertFalse(bootstrap._install_control_state_request({"state": original, "secretNames": []}, overwrite=False))
+        self.assertEqual(state.load_state(), original)
+        self.assertTrue(database.check_database()["encrypted"])
+        for path in (self.root / "control").glob("control.sqlite3*"):
+            self.assertNotIn(b"nonproduction-key", path.read_bytes())
+            self.assertNotIn(b"nonproduction-admin", path.read_bytes())
+
+    def test_encrypted_installer_preserves_live_readers_and_runtime_history(self):
+        self.enable()
+        original = {**self.data(), "domain": "before.example"}
+        state.save_state(original)
+        database.migrate_encryption()
+        incoming = {**original, "domain": "after.example", "buildRuns": {}}
+        # A concurrent Control reader must not make an ordinary update wait
+        # for the exclusive checkpoint/VACUUM required by security migration.
+        reader = sqlite3.connect(database.database_path(), isolation_level=None)
+        try:
+            reader.execute("BEGIN")
+            previous = reader.execute("SELECT payload FROM control_config WHERE key='domain'").fetchone()[0]
+            history = reader.execute("SELECT payload FROM control_events").fetchall()
+            with mock.patch.object(database, "migrate_encryption", side_effect=AssertionError("installer must not repeat migration")):
+                self.assertFalse(bootstrap._install_control_state_request({"state": incoming, "secretNames": []}, overwrite=False))
+            self.assertEqual(reader.execute("SELECT payload FROM control_config WHERE key='domain'").fetchone()[0], previous)
+            with sqlite3.connect(database.database_path()) as current:
+                self.assertNotEqual(current.execute("SELECT payload FROM control_config WHERE key='domain'").fetchone()[0], previous)
+                self.assertEqual(current.execute("SELECT payload FROM control_events").fetchall(), history)
+            self.assertEqual(state.load_state(), {**original, "domain": "after.example"})
+        finally:
+            reader.close()
+
     def test_legacy_migration_survives_interruption_after_ciphertext_commit(self):
         original = self.data()
         state.save_state(original)
@@ -138,6 +172,10 @@ class EncryptedPersistence(KeyFixture):
             with self.assertRaisesRegex(RuntimeError, "interruption"):
                 database.migrate_encryption()
         self.assertEqual(state.load_state(), original)
+        # An installer retry must leave interrupted cleanup to its original
+        # owner instead of repeating it under the short installer deadline.
+        with mock.patch.object(database, "migrate_encryption", side_effect=AssertionError("installer must not take over cleanup")):
+            self.assertFalse(bootstrap._install_control_state_request({"state": original, "secretNames": []}, overwrite=False))
         self.assertTrue(database.migrate_encryption()["encrypted"])
         self.assertEqual(state.load_state(), original)
         for path in (self.root / "control").glob("control.sqlite3*"):
