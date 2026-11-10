@@ -28,6 +28,8 @@ New job mutations wait while migration applies node changes. Additional HCL/JSON
 
 ## Boundaries and verification
 
+Manager updates merge Control configuration through the encrypted storage codec without rescanning all history or vacuuming the live database. Full encryption and journal cleanup belong to the independent security supervisor, which preserves completed work and resumes interrupted cleanup. Fresh databases use encryption when the storage profile is enabled. A successful `Install control state` step does not replace the separate cluster security verification.
+
 - Administrator token, CA signing key, upgrade journal and backups: `/etc/luma/nomad`, private to the host and outside Control's `/opt/luma` mount.
 - Consumer credentials: `/opt/luma/security/nomad/<role>.d`; each reader mounts only its own directory read-only. Job JSON contains paths, never token/private-key values.
 - Node identities: local `/etc/luma/nomad`, delivered over authenticated Luma channels. Renewal tasks contain public CSRs/certificates, not private keys.

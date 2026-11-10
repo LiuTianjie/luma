@@ -29,6 +29,8 @@
 
 ## 凭据、网络与验收 {#boundaries-and-verification}
 
+Manager 更新通过加密存储接口合并 Control 配置，不再扫描全部历史或对正在使用的数据库执行 VACUUM。全库加密和日志清理由独立安全迁移服务负责，保留已完成进度并继续未完成的清理。启用存储加密配置后，新数据库直接加密写入。`Install control state` 成功不代表集群安全验收完成，仍以独立验收结果为准。
+
 | 内容 | 位置与边界 |
 | --- | --- |
 | Nomad 管理 token、CA 私钥、升级日志状态与备份 | `/etc/luma/nomad`，仅宿主管理员可读，不在 Control 的 `/opt/luma` 挂载树内 |

@@ -755,9 +755,11 @@ def _install_control_state_request(request: dict[str, Any], *, overwrite: bool) 
             current = database.read_state(conn, lazy=True)
             _merge_manager_state(current, incoming, secret_names=request["secretNames"])
             database.write_state(conn, current)
-    from .secret_storage import enabled as encrypted_storage
-    if encrypted_storage():
-        database.migrate_encryption()
+    # The independent security supervisor owns full-database encryption and
+    # journal cleanup, including interrupted migrations. Running that work here
+    # repeats it on every update, locks out the live Control and can exceed the
+    # private installer's deadline. Normal state writes already use the storage
+    # codec; fresh encrypted databases are marked by ensure_initialized().
     return pending.is_file()
 
 
