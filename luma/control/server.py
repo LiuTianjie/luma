@@ -7857,7 +7857,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
                     lambda: resolve_nomad_static_route_target(service, state),
                     progress=progress,
                 )
-                route_text = render_tailscale_route(config, route_service) if service.exposure == "tailscale-relay" else render_tcp_route(config, route_service)
+                route_text = render_tailscale_route(_dns_config(config, state), route_service) if service.exposure == "tailscale-relay" else render_tcp_route(config, route_service)
                 _deploy_step(steps, "Write route", lambda: _write_route_file(route_target, route_text, routes_root=routes_root), progress=progress)
                 written.append(str(route_target))
         probe_result = _deploy_step(
@@ -7954,7 +7954,7 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
             {
                 "kind": "route",
                 "path": str(route_path(config, service)),
-                "content": render_tailscale_route(config, route_service) if service.exposure == "tailscale-relay" else render_tcp_route(config, route_service),
+                "content": render_tailscale_route(runtime_config, route_service) if service.exposure == "tailscale-relay" else render_tcp_route(config, route_service),
             }
         )
     return {
@@ -8557,7 +8557,7 @@ def _reconcile_application_delivery(
                 prefer_publish_port=service.exposure == "tailscale-relay",
             )
             route_text = (
-                render_tailscale_route(config, route_service)
+                render_tailscale_route(_dns_config(config, state), route_service)
                 if service.exposure == "tailscale-relay"
                 else render_tcp_route(config, route_service)
             )
@@ -10274,7 +10274,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                     lambda service_spec=service_spec: resolve_nomad_static_route_target(service_spec, state, prefer_publish_port=True),
                     progress=progress,
                 )
-            route_text = render_tailscale_route(config, service_spec) if service.exposure == "tailscale-relay" else render_tcp_route(config, service_spec)
+            route_text = render_tailscale_route(runtime_config, service_spec) if service.exposure == "tailscale-relay" else render_tcp_route(config, service_spec)
             _deploy_step(
                 steps,
                 f"Write route {service_name}",
@@ -10393,7 +10393,7 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
             prefer_publish_port=True,
         )
         route_texts[service_name] = (
-            render_tailscale_route(config, service_spec)
+            render_tailscale_route(runtime_config, service_spec)
             if service.exposure == "tailscale-relay"
             else render_tcp_route(config, service_spec)
         )

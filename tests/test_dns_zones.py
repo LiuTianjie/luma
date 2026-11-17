@@ -9,12 +9,13 @@ from unittest.mock import MagicMock, patch
 
 from luma.config import LumaConfig
 from luma.control import dns_zones
-from luma.control.server import _dns_config, handle_dns_zone_add, handle_dns_zone_list, handle_dns_zone_remove
+from luma.control.server import _dns_config, handle_deployment_preview, handle_dns_zone_add, handle_dns_zone_list, handle_dns_zone_remove
 from luma.control.state import init_state, load_state, mutate_state
 from luma.dependencies import service_requirements
 from luma.dns import cert_resolver_for, delete_dns, sync_dns, zone_for
 from luma.dns_providers import AlidnsProvider, DnsRecord, DnspodProvider, TencentApiError, TencentClient, relative_name, tc3_authorization
 from luma.errors import LumaError
+from luma.nomad_render import render_nomad_job
 from luma.render import render_tailscale_route
 from luma.service import ServiceSpec
 
@@ -101,6 +102,53 @@ class ZoneRoutingTests(unittest.TestCase):
         config = LumaConfig({"providers": {"dns": {"provider": "cloudflare", "zone": "acme.dev", "zoneId": "z", "zones": ZONES}}}, None)
         service = ServiceSpec(source=Path("a.yaml"), name="panel", image="x", region="home", public=True, exposure="tailscale-relay", domain="panel.acme.cn", port=8080, node="mac", relay={"host": "100.64.0.2"})
         self.assertIn("certResolver: letsencrypt-http", render_tailscale_route(config, service))
+
+    def test_redirect_hosts_group_by_tls_resolver_and_wildcard_cert(self):
+        config = LumaConfig(
+            {
+                "defaults": {"acmeDomains": ["acme.dev"]},
+                "providers": {"dns": {"provider": "cloudflare", "zone": "acme.dev", "zoneId": "z", "zones": ZONES}},
+            },
+            None,
+        )
+        service = ServiceSpec(
+            source=Path("a.yaml"),
+            name="app",
+            image="nginx",
+            region="cn",
+            public=True,
+            exposure="cn-edge",
+            domain="app.acme.dev",
+            port=80,
+            redirect_from=["old.acme.dev", "legacy.acme.cn"],
+        )
+        tags = render_nomad_job(config, service, as_json=False)["Job"]["TaskGroups"][0]["Services"][0]["Tags"]
+        self.assertIn("traefik.http.routers.app-redirect.tls.certresolver=letsencrypt", tags)
+        self.assertIn("traefik.http.routers.app-redirect.tls.domains[0].main=*.acme.dev", tags)
+        self.assertIn("traefik.http.routers.app-redirect.middlewares=app-to-primary", tags)
+        self.assertIn("traefik.http.routers.app-z1-redirect.tls.certresolver=letsencrypt-http", tags)
+        self.assertIn("traefik.http.routers.app-z1-alias.tls.certresolver=letsencrypt-http", tags)
+        self.assertIn("traefik.http.routers.app-z1-redirect.middlewares=app-to-primary", tags)
+        self.assertFalse([tag for tag in tags if tag.startswith("traefik.http.routers.app-z1-") and ".tls.domains[" in tag])
+
+        relay_service = ServiceSpec(
+            source=Path("a.yaml"),
+            name="panel",
+            image="nginx",
+            region="home",
+            public=True,
+            exposure="tailscale-relay",
+            domain="panel.acme.dev",
+            port=8080,
+            node="mac",
+            relay={"host": "100.64.0.2"},
+            redirect_from=["old.acme.dev", "legacy.acme.cn"],
+        )
+        route_yaml = render_tailscale_route(config, relay_service)
+        self.assertIn("panel-redirect:", route_yaml)
+        self.assertIn("panel-z1-redirect:", route_yaml)
+        self.assertIn("certResolver: letsencrypt-http", route_yaml)
+        self.assertIn("panel-to-primary:", route_yaml)
 
     def test_requirements_need_zone_credentials_not_cloudflare(self):
         service = _service("api.acme.cn")
@@ -264,6 +312,26 @@ class ZoneCatalogHandlerTests(unittest.TestCase):
 
     def test_secret_name_shape(self):
         self.assertEqual(dns_zones.credential_secret_name("shop-1.acme.cn", "secretKey"), "LUMA_DNS_SHOP_1_ACME_CN_SECRET_KEY")
+
+    def test_tailscale_relay_preview_injects_state_zones_for_cert_resolver(self):
+        handle_dns_zone_add(self.token, {"name": "acme.cn", "provider": "alidns", "credentials": {"accessKeyId": "id", "accessKeySecret": "sk"}})
+
+        def add_node(current):
+            current.setdefault("nodes", {})["home-mac"] = {
+                "displayName": "home-mac",
+                "region": "home",
+                "tailscaleIP": "100.64.0.9",
+                "nomadStatus": "ready",
+            }
+
+        mutate_state(add_node)
+        manifest = (
+            "name: panel\nimage: nginx\nregion: home\nnode: home-mac\n"
+            "exposure: tailscale-relay\ndomain: panel.acme.cn\nport: 8080\n"
+        )
+        preview = handle_deployment_preview(self.token, {"manifest": manifest, "sourceName": "panel.yaml"})
+        route = next(item for item in preview["artifacts"] if item["kind"] == "route")
+        self.assertIn("certResolver: letsencrypt-http", route["content"])
 
 
 if __name__ == "__main__":

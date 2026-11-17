@@ -172,7 +172,14 @@ def render_traefik_job(
             ])
         if http_cert_resolver and http_cert_resolver != cert_resolver:
             # Hostnames the DNS-01 token cannot validate (other DNS providers).
-            args.extend(_http_resolver_args(http_cert_resolver, acme_email))
+            # Never share acme.json across resolvers: each Traefik LocalStore owns its file.
+            args.extend(
+                _http_resolver_args(
+                    http_cert_resolver,
+                    acme_email,
+                    storage=f"/letsencrypt/acme-{http_cert_resolver}.json",
+                )
+            )
     args.append("--api.dashboard=true")
     job = {
         "ID": "traefik", "Name": "traefik", "Type": "service", "Datacenters": ["dc1"],
@@ -251,10 +258,12 @@ def render_traefik_job(
     return json.dumps(wrapped, indent=2, ensure_ascii=False) if as_json else wrapped
 
 
-def _http_resolver_args(resolver: str, acme_email: str) -> List[str]:
+def _http_resolver_args(
+    resolver: str, acme_email: str, *, storage: str = "/letsencrypt/acme.json"
+) -> List[str]:
     return [
         f"--certificatesresolvers.{resolver}.acme.email={acme_email}",
-        f"--certificatesresolvers.{resolver}.acme.storage=/letsencrypt/acme.json",
+        f"--certificatesresolvers.{resolver}.acme.storage={storage}",
         f"--certificatesresolvers.{resolver}.acme.httpchallenge=true",
         f"--certificatesresolvers.{resolver}.acme.httpchallenge.entrypoint=web",
     ]
@@ -1297,28 +1306,50 @@ def redirect_routes(name: str, primary: str, hosts: List[str], except_paths: Lis
     }
 
 
+def group_redirect_hosts(
+    config: LumaConfig, hosts: List[str], *, node_edge: bool = False
+) -> List[tuple[str, List[str]]]:
+    """Group redirectFrom hosts by (certResolver, wildcard domain tags), preserving order."""
+    grouped: Dict[tuple[str, tuple[str, ...]], tuple[str, List[str]]] = {}
+    for host in hosts:
+        resolver = cert_resolver_for(config, host, node_edge=node_edge)
+        tls_domains = tuple(_router_tls_domain_tags(config, "_probe", host, node_edge=node_edge))
+        key = (resolver, tls_domains)
+        if key not in grouped:
+            grouped[key] = (resolver, [])
+        grouped[key][1].append(host)
+    return list(grouped.values())
+
+
 def redirect_router_tags(
     config: LumaConfig, name: str, primary: str, hosts: List[str], *, service: str, except_paths: List[str] = (), node_edge: bool = False
 ) -> List[str]:
-    routes = redirect_routes(name, primary, hosts, list(except_paths))
-    if not routes:
+    if not hosts:
         return []
+    groups = group_redirect_hosts(config, list(hosts), node_edge=node_edge)
+    middleware_name = f"{name}-to-primary"
     tags: List[str] = []
-    for router, spec in routes["routers"].items():
-        prefix = f"traefik.http.routers.{router}"
-        tags.extend([
-            f"{prefix}.rule={spec['rule']}",
-            f"{prefix}.priority={spec['priority']}",
-            f"{prefix}.entrypoints={config.entrypoint}",
-            f"{prefix}.tls.certresolver={cert_resolver_for(config, hosts[0], node_edge=node_edge)}",
-            f"{prefix}.service={service}",
-        ])
-        if spec.get("middlewares"):
-            tags.append(f"{prefix}.middlewares={','.join(spec['middlewares'])}")
-        tags.extend(_router_tls_domain_tags(config, router, hosts[0], node_edge=node_edge))
-    for middleware, spec in routes["middlewares"].items():
-        prefix = f"traefik.http.middlewares.{middleware}.redirectregex"
-        regex = spec["redirectRegex"]
+    middleware_spec: Dict[str, Any] | None = None
+    for idx, (resolver, group_hosts) in enumerate(groups):
+        group_name = name if idx == 0 else f"{name}-z{idx}"
+        routes = redirect_routes(group_name, primary, group_hosts, list(except_paths))
+        if middleware_spec is None and routes.get("middlewares"):
+            middleware_spec = routes["middlewares"].get(f"{group_name}-to-primary")
+        for router, spec in routes["routers"].items():
+            prefix = f"traefik.http.routers.{router}"
+            tags.extend([
+                f"{prefix}.rule={spec['rule']}",
+                f"{prefix}.priority={spec['priority']}",
+                f"{prefix}.entrypoints={config.entrypoint}",
+                f"{prefix}.tls.certresolver={resolver}",
+                f"{prefix}.service={service}",
+            ])
+            if spec.get("middlewares"):
+                tags.append(f"{prefix}.middlewares={middleware_name}")
+            tags.extend(_router_tls_domain_tags(config, router, group_hosts[0], node_edge=node_edge))
+    if middleware_spec is not None:
+        prefix = f"traefik.http.middlewares.{middleware_name}.redirectregex"
+        regex = middleware_spec["redirectRegex"]
         tags.extend([
             f"{prefix}.regex={regex['regex']}",
             f"{prefix}.replacement={regex['replacement']}",

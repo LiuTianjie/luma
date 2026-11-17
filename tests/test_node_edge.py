@@ -129,8 +129,12 @@ class NodeEdgeRenderTests(unittest.TestCase):
         # node-edge routers use another tag prefix, so the Manager job needs no
         # extra constraint and is unchanged for clusters without node-edge.
         self.assertFalse([arg for arg in args if arg.startswith(("--providers.nomad.constraints", "--providers.nomad.prefix"))])
-        self.assertIn("--certificatesresolvers.letsencrypt-http.acme.httpchallenge=true", args)
         self.assertIn("--certificatesresolvers.letsencrypt.acme.dnschallenge=true", args)
+        self.assertIn("--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json", args)
+        self.assertIn("--certificatesresolvers.letsencrypt-http.acme.httpchallenge=true", args)
+        self.assertIn("--certificatesresolvers.letsencrypt-http.acme.storage=/letsencrypt/acme-letsencrypt-http.json", args)
+        storage_flags = [arg for arg in args if ".acme.storage=" in arg]
+        self.assertEqual(len(storage_flags), len({arg.split("=", 1)[1] for arg in storage_flags}))
 
     def test_manager_always_exposes_http_resolver_for_added_zones(self):
         from luma.bootstrap import _manager_http_cert_resolver
@@ -147,6 +151,7 @@ class NodeEdgeRenderTests(unittest.TestCase):
         self.assertIn("--providers.nomad.constraints=Tag(`luma.edge=tx-sh-1`)", task["Config"]["args"])
         self.assertIn("--providers.nomad.prefix=lumaedge", task["Config"]["args"])
         self.assertIn("--certificatesresolvers.letsencrypt-http.acme.httpchallenge.entrypoint=web", task["Config"]["args"])
+        self.assertIn("--certificatesresolvers.letsencrypt-http.acme.storage=/letsencrypt/acme.json", task["Config"]["args"])
         self.assertEqual(task["Config"]["mount"], [{"type": "volume", "target": "/letsencrypt", "source": "traefik-node-tx-sh-1_letsencrypt"}])
         self.assertFalse([arg for arg in task["Config"]["args"] if "dnschallenge" in arg or "/dynamic" in arg])
         ports = {item["Label"]: item["Value"] for item in job["TaskGroups"][0]["Networks"][0]["ReservedPorts"]}
