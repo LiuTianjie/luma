@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .config import LumaConfig
+from .dns import cert_resolver_for
 from .io import dump_yaml
 from .nomad_render import redirect_routes
 from .service import ServiceSpec, tcp_entrypoint_name, tcp_relay_publish_port
@@ -56,7 +57,7 @@ def render_tailscale_route(config: LumaConfig, service: ServiceSpec) -> str:
                     # and send traffic to an unreachable private node address.
                     "priority": int(service.relay.get("priority", 1000)),
                     "entryPoints": [config.entrypoint],
-                    "tls": {"certResolver": config.cert_resolver},
+                    "tls": {"certResolver": cert_resolver_for(config, str(service.domain))},
                     "service": service_name,
                 }
             },
@@ -74,7 +75,7 @@ def render_tailscale_route(config: LumaConfig, service: ServiceSpec) -> str:
         route["http"]["routers"][router] = {
             **spec,
             "entryPoints": [config.entrypoint],
-            "tls": {"certResolver": config.cert_resolver},
+            "tls": {"certResolver": cert_resolver_for(config, str(service.redirect_from[0]))},
             "service": service_name,
         }
     if extra.get("middlewares"):

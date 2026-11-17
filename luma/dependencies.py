@@ -107,7 +107,18 @@ def service_requirements(
     dns_provider = str(getattr(config, "dns", {}).get("provider") or "")
     explicit_capabilities = {str(value).strip() for value in (explicit.get("capabilities") or [])} if isinstance(explicit, Mapping) else set()
     cdn = getattr(service, "cdn", None)
-    needs_cloudflare = exposure in {"cn-edge", "external-edge", "cloudflare-tunnel"} or "cloudflare" in explicit_capabilities or cdn is not None
+    domain = str(getattr(service, "domain", "") or "")
+    zone = _dns_zone(config, domain) if domain else None
+    # A domain in an Alibaba Cloud DNS or DNSPod zone needs that zone's key,
+    # not a Cloudflare token (cloudflare-tunnel and ESA still use Cloudflare).
+    other_zone = zone is not None and zone.provider != "cloudflare"
+    dns_exposures = {"cn-edge", "external-edge", "node-edge"}
+    needs_cloudflare = (
+        (exposure in dns_exposures and not other_zone)
+        or exposure == "cloudflare-tunnel"
+        or "cloudflare" in explicit_capabilities
+        or cdn is not None
+    )
     token_env = str(getattr(config, "dns", {}).get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))
     # sync_dns reads the process environment first; count it here too.
     cloudflare_token = str(secrets.get(token_env) or os.environ.get(token_env) or "")
@@ -123,6 +134,27 @@ def service_requirements(
     elif needs_cloudflare and require_verified and not verified_cloudflare:
         cloudflare_missing = ["run Dashboard setup check for Cloudflare"]
     add("cloudflare", needs_cloudflare, cloudflare_ready, "Cloudflare DNS provider and token available" if not require_verified or verified_cloudflare else "Cloudflare configuration is not verified", missing=cloudflare_missing, explicit="cloudflare" in explicit_capabilities or cdn is not None)
+
+    if other_zone and exposure in dns_exposures | {"tailscale-relay", "tcp-relay"}:
+        zone_missing = [
+            secret for secret in zone.credentials.values()
+            if not str(secrets.get(secret) or os.environ.get(secret) or "").strip()
+        ]
+        add("dns-zone", True, not zone_missing, f"DNS zone {zone.name} credentials available", missing=zone_missing, explicit=True)
+
+    if exposure == "node-edge":
+        node = str(getattr(service, "node", "") or "")
+        node_ready = bool(node and _node_edge_target(config, node))
+        add(
+            "node-ingress",
+            True,
+            node_ready,
+            f"Node {node} serves public ingress",
+            missing=[] if node_ready else [f"luma node ingress enable {node or 'NODE'}"],
+            # Without it the record would have nowhere to point; enforce for
+            # CLI deploys too, not only dashboard previews.
+            explicit=True,
+        )
 
     if cdn is not None:
         cdn_missing = [name for name in ESA_SECRET_NAMES if not str(secrets.get(name) or "").strip()]
@@ -210,3 +242,19 @@ def initialize_service_requirements(requirements: Mapping[str, Any], *, componen
             raise LumaError(f"initialization {action} is not ready for {component}: {detail}")
         completed.append(action)
     return completed
+
+
+def _dns_zone(config: Any, domain: str) -> Any:
+    if not isinstance(getattr(config, "raw", None), Mapping):
+        return None
+    from .dns import zone_for
+
+    try:
+        return zone_for(config, domain)
+    except LumaError:
+        return None
+
+
+def _node_edge_target(config: Any, node: str) -> str:
+    target = getattr(config, "node_edge_target", None)
+    return str(target(node) or "") if callable(target) else ""

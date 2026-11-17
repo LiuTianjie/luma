@@ -406,6 +406,59 @@ def job_risks(job: Mapping[str, Any]) -> list[str]:
     return sorted(findings)
 
 
+def is_node_traefik_job(job: Mapping[str, Any]) -> bool:
+    from .nomad_render import node_traefik_job_id
+    node = str((job.get("Meta") or {}).get("luma.node-edge") or "").strip()
+    return bool(node) and str(job.get("ID") or "") == node_traefik_job_id(node)
+
+
+def _prepare_node_traefik_task(root: Path, task: dict[str, Any]) -> None:
+    """Inject Nomad credentials into a node-edge Traefik for task-bound encryption.
+
+    Unlike Manager's ``traefik``, worker nodes have no host
+    ``/opt/luma/security/nomad/traefik.d`` directory. Credentials travel only
+    through Nomad's encrypted Variable into the task's in-memory ``/secrets``
+    tmpfs via ``NODE_TRAEFIK_WRAPPER_SCRIPT``.
+    """
+    from .nomad_render import NODE_TRAEFIK_WRAPPER_SCRIPT
+    from .secret_storage import enabled as encrypted_storage
+    if not encrypted_storage():
+        raise LumaError("finish the automatic Nomad security migration (encrypted task secrets) before enabling node public ingress")
+    token_dir = service_token_path(root, "traefik").parent
+    token_value = private_read(token_dir / "token").strip()
+    if not token_value:
+        raise LumaError("Nomad traefik role token is empty; refusing node public ingress")
+    cfg = task.setdefault("Config", {})
+    env = task["Env"] = task.get("Env") or {}
+    env["LUMA_NOMAD_TOKEN"] = token_value
+    arguments = list(cfg.get("args") or [])
+    transport = read_private_json(root / "transport.json", optional=True)
+    if transport.get("http"):
+        ca_pem = private_read(token_dir / "ca.pem")
+        cert_pem = private_read(token_dir / "cert.pem")
+        key_pem = private_read(token_dir / "key.pem")
+        env.update(
+            LUMA_NOMAD_CACERT_PEM=ca_pem,
+            LUMA_NOMAD_CERT_PEM=cert_pem,
+            LUMA_NOMAD_KEY_PEM=key_pem,
+            LUMA_NOMAD_TLS_GENERATION=hashlib.sha256(cert_pem.encode()).hexdigest(),
+        )
+        arguments = [
+            str(a).replace("--providers.nomad.endpoint.address=http://", "--providers.nomad.endpoint.address=https://")
+            for a in arguments
+        ]
+        for setting, value in (("ca", "ca.pem"), ("cert", "cert.pem"), ("key", "key.pem")):
+            option = f"--providers.nomad.endpoint.tls.{setting}=/secrets/nomad-tls/{value}"
+            if option not in arguments:
+                arguments.append(option)
+    if env.get("LUMA_NOMAD_CREDENTIAL_WRAPPER") != "1":
+        cfg["command"] = "/bin/sh"
+        cfg["args"] = ["-ec", NODE_TRAEFIK_WRAPPER_SCRIPT, "luma-nomad-auth", *arguments]
+        env["LUMA_NOMAD_CREDENTIAL_WRAPPER"] = "1"
+    else:
+        cfg["args"] = arguments
+
+
 def prepare_job(job: dict[str, Any], *, enforce: bool | None = None) -> None:
     """Attach role-only credential directories and constrain privileged work.
 
@@ -417,9 +470,15 @@ def prepare_job(job: dict[str, Any], *, enforce: bool | None = None) -> None:
     if not staged and read_private_json(root / "cluster.json", optional=True).get("aclRequired"):
         raise LumaError("active Nomad cluster is missing its staged consumer credential manifest")
     job_id = str(job.get("ID") or "")
+    node_traefik = is_node_traefik_job(job)
+    already_protected = (job.get("Meta") or {}).get("luma.secrets.version") == "1"
     for group in job.get("TaskGroups") or []:
         for task in group.get("Tasks") or []:
             name = str(task.get("Name") or "")
+            if node_traefik and name == "traefik":
+                if staged and not already_protected:
+                    _prepare_node_traefik_task(root, task)
+                continue
             role = ""
             if job_id == "traefik" and name == "traefik":
                 role = "traefik"

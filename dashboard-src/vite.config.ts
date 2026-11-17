@@ -21,6 +21,7 @@ const devDashboardPayload = {
   },
   nodes: [
     { name: "cn-edge", displayName: "cn-edge", region: "cn", role: "manager", state: "ready", availability: "active", leader: true, agentStatus: "ready", agentOs: "linux", storageCapabilities: ["terminal", "node-disk-hygiene-v1"], diskHygiene: { enabled: true, intervalHours: 24, minAgeDays: 7, lastRunAt: 1793000000, nextRunAt: 1793086400, lastTrigger: "schedule", lastStatus: "ok", lastMessage: "Removed 2 unused image(s); reclaimed 1.3GB", lastReclaimedBytes: 1300000000, lastRemovedImages: 2 }, terminalConnected: true, terminalStatus: "connected", metrics: { cpuPercent: 21.4, load1: 0.82, memoryUsedPercent: 58.2, memoryTotalBytes: 17179869184 }, capacity: { cpus: 4, memoryBytes: 17179869184 } },
+    { name: "tx-sh-1", displayName: "tx-sh-1", region: "cn", role: "worker", state: "ready", availability: "active", leader: false, agentStatus: "ready", agentOs: "linux", storageCapabilities: ["terminal"], terminalConnected: true, terminalStatus: "connected", publicIp: "47.100.1.20", publicIngress: { enabled: true, publicIp: "47.100.1.20", status: "ready", detail: "47.100.1.20 answers on ports 80, 443", jobId: "traefik-node-tx-sh-1", updatedAt: 1793000000 }, metrics: { cpuPercent: 11.2, load1: 0.3, memoryUsedPercent: 32.0, memoryTotalBytes: 4294967296 }, capacity: { cpus: 2, memoryBytes: 4294967296 } },
     { name: "home-mac-mini", displayName: "home-mac-mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false, agentStatus: "ready", agentOs: "darwin", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 13.8, load1: 1.1, memoryUsedPercent: 61.5, memoryTotalBytes: 34359738368 }, capacity: { cpus: 10, memoryBytes: 34359738368 } },
     { name: "tailscale-relay", displayName: "tailscale-relay", region: "home", role: "worker", state: "ready", availability: "active", leader: false, agentStatus: "ready", agentOs: "linux", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 8.1, load1: 0.2, memoryUsedPercent: 44.0, memoryTotalBytes: 8589934592 }, capacity: { cpus: 4, memoryBytes: 8589934592 } },
     { name: "home-mini", displayName: "home-mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false, agentStatus: "ready", agentOs: "darwin", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 29.7, load1: 2.4, memoryUsedPercent: 67.9, memoryTotalBytes: 17179869184 }, capacity: { cpus: 8, memoryBytes: 17179869184 } },
@@ -456,6 +457,21 @@ export default defineConfig({
             kind, name, requestedWindow, window: windowSeconds, series, updatedAt: nowSec,
             retentionSeconds: 21600, sampleIntervalSeconds: step,
             availableFrom: nowSec - (count - 1) * step, latestSampleAt: nowSec,
+          }));
+        });
+        server.middlewares.use("/v1/dns/zones", (request, response, next) => {
+          if (request.method !== "GET" || request.url !== "/") {
+            next();
+            return;
+          }
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.end(JSON.stringify({
+            zones: [
+              { name: "example.net", provider: "cloudflare", providerLabel: "Cloudflare", primary: true, credentialsConfigured: true, status: "ready", checkedAt: 1793000000, services: ["gitea", "blog"] },
+              { name: "example.cn", provider: "alidns", providerLabel: "Alibaba Cloud DNS", credentialsConfigured: true, status: "ready", detail: "Alibaba Cloud DNS zone example.cn is reachable", checkedAt: 1793000000, services: ["shop-api"] },
+              { name: "example.com.cn", provider: "dnspod", providerLabel: "Tencent Cloud DNSPod", credentialsConfigured: true, status: "error", detail: "Tencent Cloud DescribeDomain failed: AuthFailure.SecretIdNotFound", checkedAt: 1793000000, services: [] },
+            ],
           }));
         });
         server.middlewares.use("/v1/secrets", (request, response, next) => {

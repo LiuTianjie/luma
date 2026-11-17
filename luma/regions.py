@@ -14,20 +14,20 @@ EGRESS_PROXY = "proxy"
 EGRESS_DIRECT = "direct"
 VALID_EGRESS_MODES = {EGRESS_PROXY, EGRESS_DIRECT}
 CUSTOM_REGION_EXPOSURES = ("none",)
-CONFIGURABLE_REGION_EXPOSURES = ("none", "tailscale-relay", "cloudflare-tunnel", "tcp-relay")
+CONFIGURABLE_REGION_EXPOSURES = ("none", "tailscale-relay", "cloudflare-tunnel", "tcp-relay", "node-edge")
 
 BUILTIN_REGIONS: dict[str, dict[str, Any]] = {
     "cn": {
         "name": "cn",
         "builtin": True,
         "egress": EGRESS_PROXY,
-        "exposures": ["none", "cn-edge", "cloudflare-tunnel", "tcp-relay"],
+        "exposures": ["none", "cn-edge", "cloudflare-tunnel", "tcp-relay", "node-edge"],
     },
     "global": {
         "name": "global",
         "builtin": True,
         "egress": EGRESS_DIRECT,
-        "exposures": ["none", "external-edge", "cloudflare-tunnel", "tcp-relay"],
+        "exposures": ["none", "external-edge", "cloudflare-tunnel", "tcp-relay", "node-edge"],
     },
     "home": {
         "name": "home",

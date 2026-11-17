@@ -112,6 +112,17 @@ def _traefik_ports(config: LumaConfig) -> tuple[int, int]:
     return http_port, https_port
 
 
+def _manager_http_cert_resolver(config: LumaConfig, state: Mapping[str, object] | None = None) -> str:
+    """Return the Manager edge's HTTP-01 ACME resolver.
+
+    Always register it when the cluster uses Cloudflare DNS-01 so adding an
+    Alibaba Cloud DNS, DNSPod, or secondary Cloudflare zone via Control works
+    immediately without modifying the Manager's immutable system job at runtime.
+    """
+    _ = state
+    return config.http_cert_resolver
+
+
 def _acme_email(config: LumaConfig) -> str:
     dns = config.dns
     zone = str(dns.get("zone") or "").strip()
@@ -1311,6 +1322,7 @@ def _bootstrap_node_nomad(
                 nomad_addr="http://127.0.0.1:4646",
                 acme_email=_acme_email(config),
                 cert_resolver=config.cert_resolver,
+                http_cert_resolver=_manager_http_cert_resolver(config, None),
                 acme_dns_provider=config.acme_dns_provider,
                 acme_dns_token_file=TRAEFIK_DNS_TOKEN_FILE if config.acme_dns_provider == "cloudflare" else "",
                 acme_domains=config.acme_domains,
@@ -1607,6 +1619,7 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
                 nomad_addr=str(state.get("nomadAddr") or config.defaults.get("nomadAddr") or "http://127.0.0.1:4646"),
                 acme_email=_acme_email(config),
                 cert_resolver=config.cert_resolver,
+                http_cert_resolver=_manager_http_cert_resolver(config, state),
                 acme_dns_provider=config.acme_dns_provider,
                 acme_dns_token_file=TRAEFIK_DNS_TOKEN_FILE if config.acme_dns_provider == "cloudflare" else "",
                 acme_domains=config.acme_domains,

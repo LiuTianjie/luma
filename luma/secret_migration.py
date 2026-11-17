@@ -127,6 +127,21 @@ def _artifact_paths(state: Mapping[str, Any], job_id: str) -> list[Path]:
         if path.is_symlink() or root.resolve() not in path.resolve().parents:
             raise LumaError("secret migration artifact escapes the managed stack directory")
         paths.append(path)
+    from .control.node_ingress import canonical_node_name
+    from .nomad_render import node_traefik_job_id
+    for key, record in (state.get("nodes") or {}).items():
+        if not isinstance(record, Mapping):
+            continue
+        ingress = record.get("publicIngress")
+        if not isinstance(ingress, Mapping) or not ingress.get("enabled"):
+            continue
+        expected_id = node_traefik_job_id(canonical_node_name(str(key), record))
+        if job_id != expected_id or str(ingress.get("jobId") or expected_id) != expected_id:
+            continue
+        path = root / "node-edge" / job_id / (job_id + ".nomad.json")
+        if path.is_symlink() or root.resolve() not in path.resolve().parents:
+            raise LumaError("secret migration artifact escapes the managed stack directory")
+        paths.append(path)
     return paths
 
 

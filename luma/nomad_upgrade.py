@@ -229,6 +229,27 @@ def _source_jobs(state: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
                 if isinstance(job, dict) and job.get("ID") == slug:
                     validate_application(job)
                     sources[slug] = job
+    from .control.node_ingress import canonical_node_name
+    from .nomad_render import node_traefik_job_id
+    for key, record in (state.get("nodes") or {}).items():
+        if not isinstance(record, Mapping):
+            continue
+        ingress = record.get("publicIngress")
+        if not isinstance(ingress, Mapping) or not ingress.get("enabled"):
+            continue
+        node_name = canonical_node_name(str(key), record)
+        expected_id = node_traefik_job_id(node_name)
+        job_id = str(ingress.get("jobId") or expected_id)
+        if job_id != expected_id or not re_slug(job_id):
+            raise LumaError("recorded node ingress identifier does not match its node")
+        path = root / "node-edge" / job_id / (job_id + ".nomad.json")
+        if path.is_symlink() or root.resolve() not in path.resolve().parents:
+            raise LumaError("recorded Nomad artifact escapes the managed stack directory")
+        if path.is_file():
+            job = json.loads(path.read_text()).get("Job")
+            if isinstance(job, dict) and job.get("ID") == job_id:
+                validate_application(job)
+                sources[job_id] = job
     return sources
 
 
@@ -684,6 +705,66 @@ def _repair_rpc_transition(journal: dict[str, Any], result: dict[str, Any]) -> d
     return repaired
 
 
+def _refresh_node_traefik_consumers(state: Mapping[str, Any]) -> None:
+    from .secret_storage import enabled as encrypted_storage
+    if not encrypted_storage():
+        return
+    from .control.node_ingress import canonical_node_name
+    from .nomad_render import node_traefik_job_id, render_node_traefik_job
+    targets = []
+    for key, record in sorted((state.get("nodes") or {}).items()):
+        if not isinstance(record, Mapping):
+            continue
+        ingress = record.get("publicIngress")
+        if not isinstance(ingress, Mapping) or not ingress.get("enabled"):
+            continue
+        node_name = canonical_node_name(str(key), record)
+        expected_id = node_traefik_job_id(node_name)
+        job_id = str(ingress.get("jobId") or expected_id)
+        if job_id == expected_id and re_slug(job_id):
+            targets.append((node_name, job_id))
+    if not targets:
+        return
+    from .bootstrap import _acme_email, _traefik_image
+    from .config import load_config
+    from .control.resources import _registry_auth_for_image
+    from .nomad_secrets import assert_protected_job, protect_job
+    from .nomad_security import authorize_application
+
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "/opt/luma/luma.yaml")
+    config = load_config(config_path)
+    root = config.stack_root if config.stack_root.is_absolute() else config_path.parent / config.stack_root
+    client = NomadApi("http://127.0.0.1:4646", token=nomad_token())
+    for node_name, job_id in targets:
+        route = "/v1/job/" + urllib.parse.quote(job_id, safe="")
+        try:
+            current = client.request("GET", route)
+        except LumaError as exc:
+            if "404" in str(exc) or "Nomad API error 404:" in str(exc):
+                continue
+            raise
+        tasks = ((current.get("TaskGroups") or [{}])[0].get("Tasks") or [{}])
+        image = str((tasks[0].get("Config") or {}).get("image") or _traefik_image(config))
+        fresh = render_node_traefik_job(
+            node=node_name,
+            image=image,
+            acme_email=_acme_email(config),
+            cert_resolver=config.http_cert_resolver,
+            nomad_addr="http://127.0.0.1:4646",
+            registry_auth=_registry_auth_for_image(dict(state), image),
+            as_json=False,
+        )["Job"]
+        prepare_job(fresh, enforce=True)
+        protect_job(fresh, client)
+        assert_protected_job(fresh)
+        authorize_application(fresh)
+        stack_path = root / "node-edge" / job_id / (job_id + ".nomad.json")
+        if stack_path.is_symlink() or root.resolve() not in stack_path.resolve().parents:
+            raise LumaError("recorded Nomad artifact escapes the managed stack directory")
+        private_write(stack_path, json.dumps({"Job": fresh}, indent=2) + "\n")
+        client.request("POST", "/v1/jobs", {"Job": fresh, "EnforceIndex": True, "JobModifyIndex": current["JobModifyIndex"]})
+
+
 def _maintain_certificates(journal: dict[str, Any], state: Mapping[str, Any]) -> None:
     now = int(time.time())
     if now - int(journal.get("certificateCheckAt") or 0) < 3600:
@@ -702,6 +783,7 @@ def _maintain_certificates(journal: dict[str, Any], state: Mapping[str, Any]) ->
             prepare_manager(manager["address"])
         LocalExecutor().run("systemctl reload nomad", timeout=30)
         _consumers(journal, consumers_only=True)
+        _refresh_node_traefik_consumers(state)
         journal.pop("consumerRenewalPending", None)
         _write_journal(journal)
     deferred = False

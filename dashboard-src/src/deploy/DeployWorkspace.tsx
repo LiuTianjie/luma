@@ -19,7 +19,7 @@ import { DeployTemplates } from "./DeployTemplates";
 import { GithubImportEntryCard, GithubImportPanel } from "./GithubImportPanel";
 import { DEPLOY_TEMPLATES } from "./templates";
 import type { ComposeDeploymentDraft, DeployMode, DeployPreviewResult, DeployStep, DeploymentHealth, DeployTemplate, ServiceManifestDraft } from "./types";
-import { exposureAllowedInRegion, findNode, hasReadyNodeInRegion, isReadyNode, nodesForRegion, regionChoices } from "./options";
+import { exposureAllowedInRegion, findNode, hasReadyNodeInRegion, isReadyNode, nodeEdgeError, nodeForExposure, nodesForRegion, regionChoices } from "./options";
 import { composeDraftToSidecarYaml, serviceDraftToYaml, syncComposeYamlWithDraft } from "./yaml";
 import { SingleServiceDeployForm } from "./SingleServiceDeployForm";
 import { YamlPreviewEditor } from "./YamlPreviewEditor";
@@ -69,6 +69,7 @@ function hydrateServiceDraftDefaults(
   if ((next.exposure === "tailscale-relay" || next.exposure === "tcp-relay") && !next.node) {
     next.node = defaultNodeName(nodes, next.region);
   }
+  if (next.exposure === "node-edge") next.node = nodeForExposure(nodes, next.node, next.region, next.exposure);
   return next;
 }
 
@@ -78,9 +79,11 @@ function hydrateComposeDraftDefaults(
 ) {
   const next = clone(draft);
   next.services = (next.services || []).map((service) => (
-    (service.exposure === "tailscale-relay" || service.exposure === "tcp-relay") && !service.node
-      ? { ...service, node: defaultNodeName(nodes, service.region || next.region) }
-      : service
+    service.exposure === "node-edge"
+      ? { ...service, node: nodeForExposure(nodes, service.node, service.region || next.region, service.exposure) }
+      : (service.exposure === "tailscale-relay" || service.exposure === "tcp-relay") && !service.node
+        ? { ...service, node: defaultNodeName(nodes, service.region || next.region) }
+        : service
   ));
   return next;
 }
@@ -122,6 +125,8 @@ function serviceErrors(draft: ServiceManifestDraft, yamlDirty: boolean, serviceY
   const regionError = exposureRegionError(draft.exposure, draft.region, draft.name || serviceLabel, lang, catalog);
   if (regionError) errors.push(regionError);
   errors.push(...regionNodeErrors(nodes, draft.region, draft.node, draft.name || serviceLabel, lang));
+  const nodeEdgeProblem = nodeEdgeError(nodes, draft.exposure, draft.node, draft.name || serviceLabel, lang);
+  if (nodeEdgeProblem) errors.push(nodeEdgeProblem);
   if (draft.exposure !== "none" && !draft.domain.trim()) errors.push(lang === "zh" ? "公开入口必须填写域名" : "Public exposure requires a domain");
   if (draft.exposure !== "none" && !draft.port.trim()) errors.push(lang === "zh" ? "公开入口必须填写容器端口" : "Public exposure requires a container port");
   if (draft.exposure !== "none" && draft.port.trim() && !isPositiveInteger(draft.port)) errors.push(lang === "zh" ? "容器端口必须是正整数" : "Container port must be a positive integer");
@@ -158,6 +163,8 @@ function composeErrors(draft: ComposeDeploymentDraft, yamlDirty: boolean, compos
     const regionError = exposureRegionError(service.exposure, region, service.name, lang, catalog);
     if (regionError) errors.push(regionError);
     errors.push(...regionNodeErrors(nodes, region, service.node, service.name, lang));
+    const nodeEdgeProblem = nodeEdgeError(nodes, service.exposure, service.node, service.name, lang);
+    if (nodeEdgeProblem) errors.push(nodeEdgeProblem);
     if (service.exposure !== "none" && !service.domain.trim()) errors.push(lang === "zh" ? `${service.name} 必须填写域名` : `${service.name} requires a domain`);
     if (service.exposure !== "none" && !service.port.trim()) errors.push(lang === "zh" ? `${service.name} 必须填写容器端口` : `${service.name} requires a container port`);
     if (service.exposure !== "none" && service.port.trim() && !isPositiveInteger(service.port)) errors.push(lang === "zh" ? `${service.name} 容器端口必须是正整数` : `${service.name} container port must be a positive integer`);

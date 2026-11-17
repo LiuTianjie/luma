@@ -60,6 +60,18 @@ class LumaConfig:
         return str(self.defaults.get("certResolver", "letsencrypt"))
 
     @property
+    def http_cert_resolver(self) -> str:
+        """Resolver that validates over HTTP-01 on port 80.
+
+        Equal to ``cert_resolver`` when the cluster already uses HTTP-01. With
+        Cloudflare DNS-01 it is a second resolver for hostnames the Cloudflare
+        token cannot validate (zones on other providers, and node ingress).
+        """
+        if not self.acme_dns_provider:
+            return self.cert_resolver
+        return f"{self.cert_resolver}-http"
+
+    @property
     def acme_dns_provider(self) -> str:
         """Return the ACME DNS provider, when wildcard issuance is available.
 
@@ -154,7 +166,7 @@ class LumaConfig:
             return edge.public_ip
         return None
 
-    def dns_target_for(self, *, exposure: str, region: str) -> Optional[str]:
+    def dns_target_for(self, *, exposure: str, region: str, node: Optional[str] = None) -> Optional[str]:
         dns = self.dns
         if exposure in {"cn-edge", "tailscale-relay", "tcp-relay"}:
             if dns.get("edgeTarget"):
@@ -164,7 +176,34 @@ class LumaConfig:
         if exposure == "external-edge":
             global_edge = self.find_node(role="edge", region=region) or self.find_node(region=region)
             return global_edge.public_ip if global_edge else None
+        if exposure == "node-edge":
+            return self.node_edge_target(node)
         return self.default_dns_target()
+
+    def node_edge_target(self, node: Optional[str]) -> Optional[str]:
+        """Public address of a node that serves its own ingress.
+
+        Control publishes the address of every node with public ingress
+        enabled as ``providers.dns.nodeTargets``; a manifest cannot point a
+        ``node-edge`` service anywhere else.
+        """
+        targets = self.dns.get("nodeTargets")
+        if not node or not isinstance(targets, dict):
+            return None
+        value = str(targets.get(node) or "").strip()
+        return value or None
+
+    def service_dns_target(self, *, exposure: str, region: str, node: Optional[str] = None, explicit: Any = None) -> Optional[str]:
+        """The address a public service's DNS record (or CDN origin) points at."""
+        if exposure == "node-edge":
+            # The edge target belongs to the Manager; a node-edge record must
+            # never fall back to it, or traffic silently returns to the Manager.
+            return self.node_edge_target(node)
+        if explicit:
+            return str(explicit)
+        if self.dns.get("edgeTarget"):
+            return str(self.dns["edgeTarget"])
+        return self.dns_target_for(exposure=exposure, region=region)
 
 
 def load_config(path: Optional[Path]) -> LumaConfig:

@@ -2,7 +2,7 @@ import type { DashboardNode, DashboardStorageClass } from "../types";
 
 export type DeployMode = "service" | "compose";
 export type Region = string;
-export type Exposure = "none" | "cn-edge" | "external-edge" | "tailscale-relay" | "cloudflare-tunnel" | "tcp-relay";
+export type Exposure = "none" | "cn-edge" | "external-edge" | "tailscale-relay" | "cloudflare-tunnel" | "tcp-relay" | "node-edge";
 
 export type KeyValueRow = {
   id: string;

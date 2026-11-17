@@ -94,6 +94,18 @@ export type DashboardNode = {
   metrics?: NodeMetrics;
   capacity?: ResourceValues;
   diskHygiene?: NodeDiskHygiene;
+  publicIp?: string;
+  publicIngress?: NodePublicIngress;
+};
+
+/** A node serving its own public HTTP ingress (exposure: node-edge). */
+export type NodePublicIngress = {
+  enabled?: boolean;
+  publicIp?: string;
+  status?: "ready" | "unreachable" | string;
+  detail?: string;
+  jobId?: string;
+  updatedAt?: number;
 };
 
 // Last automatic or manual disk cleanup, as the node agent reports it.
