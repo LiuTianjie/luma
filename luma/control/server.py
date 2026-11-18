@@ -14958,6 +14958,25 @@ def _cache_runtime_image_on_builder(
         )
     pull_host = normalize_registry_host(pull_host_raw)
     push_host = normalize_registry_host(push_host_raw)
+    source_host = normalize_registry_host(registry_host_from_image(image))
+    if source_host in {pull_host, push_host}:
+        internal_image = _rewrite_internal_push_ref(image, push_host, pull_host)
+        return {
+            "deployed": internal_image,
+            "cacheImage": internal_image,
+            "builderNode": str(build.get("defaultNode") or DEFAULT_BUILD_NODE_NAME),
+            "cached": False,
+        }
+    if source_host not in _egress_pull_registries() and _registry_auth_for_image(state, image):
+        # Authenticated private/cloud registries (e.g. Aliyun ACR, Harbor) are
+        # configured for direct pull on target nodes; never bounce them through
+        # the Builder registry or require a legacy Builder node to be online.
+        return {
+            "deployed": image,
+            "cacheImage": image,
+            "builderNode": "",
+            "cached": False,
+        }
     # A deployment can cache several large images. Its original node snapshot
     # may outlive the heartbeat window while earlier copies are still running.
     # Keep the deployment's build configuration, but validate current readiness.
@@ -14967,15 +14986,6 @@ def _cache_runtime_image_on_builder(
         str(build.get("defaultNode") or DEFAULT_BUILD_NODE_NAME),
         purpose="runtime image cache",
     )
-    source_host = normalize_registry_host(registry_host_from_image(image))
-    if source_host in {pull_host, push_host}:
-        internal_image = _rewrite_internal_push_ref(image, push_host, pull_host)
-        return {
-            "deployed": internal_image,
-            "cacheImage": internal_image,
-            "builderNode": build_node,
-            "cached": False,
-        }
 
     selected_platform = str(platform or "").strip()
     if selected_platform.startswith("darwin/"):

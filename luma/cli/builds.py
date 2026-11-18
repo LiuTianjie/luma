@@ -544,15 +544,18 @@ def cmd_build(args: argparse.Namespace) -> int:
         nodes = [str(value).strip() for value in args.nodes if str(value).strip()]
         default_node = str(args.default_node or (nodes[0] if nodes else "")).strip()
         direct_egress_nodes = [] if args.clear_direct_egress else args.direct_egress_nodes
+        clear_registry = bool(getattr(args, "clear_registry", False))
         if args.clear_direct_egress and args.direct_egress_nodes:
             raise LumaError("--clear-direct-egress cannot be combined with --direct-egress-node")
-        if not nodes and not default_node and not args.registry_host and not args.push_host and direct_egress_nodes is None:
+        if clear_registry and (args.registry_host or args.push_host):
+            raise LumaError("--clear-registry cannot be combined with --registry-host or --push-host")
+        if not nodes and not default_node and not args.registry_host and not args.push_host and not clear_registry and direct_egress_nodes is None:
             raise LumaError("build config requires a builder, registry, or direct-egress option")
         result = client.configure_build(
             nodes=nodes or None,
             default_node=default_node,
-            registry_host=args.registry_host,
-            push_host=args.push_host,
+            registry_host="" if clear_registry else (args.registry_host or None),
+            push_host="" if clear_registry else (args.push_host or None),
             direct_egress_nodes=direct_egress_nodes,
         )
         if output_format != "text":

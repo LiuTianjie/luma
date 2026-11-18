@@ -603,7 +603,7 @@ arguments:
 ## `luma build config`
 
 ```text
-usage: luma build config [-h] [--node NODES] [--default-node DEFAULT_NODE] [--registry-host REGISTRY_HOST] [--push-host PUSH_HOST] [--direct-egress-node DIRECT_EGRESS_NODES] [--clear-direct-egress] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+usage: luma build config [-h] [--node NODES] [--default-node DEFAULT_NODE] [--registry-host REGISTRY_HOST] [--push-host PUSH_HOST] [--clear-registry] [--direct-egress-node DIRECT_EGRESS_NODES] [--clear-direct-egress] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
 
 Show or set builder nodes and the internal registry
 
@@ -616,6 +616,7 @@ arguments:
                               Registry host that nodes pull from, for example 10.0.0.5:5000
   --push-host PUSH_HOST       Registry host that builds push to (the builder's mesh address, not
                               localhost)
+  --clear-registry            Clear internal Builder registry settings so nodes pull images directly
   --direct-egress-node DIRECT_EGRESS_NODES
                               Builder with direct internet access; repeat for several
   --clear-direct-egress       Clear the direct-egress builder list
@@ -2068,7 +2069,7 @@ arguments:
 
 Examples:
   luma update
-  luma update --install-ref v0.2.71
+  luma update --install-ref v0.2.72
   luma update fleet
 ```
 

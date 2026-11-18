@@ -315,6 +315,46 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(result["deployed"], "100.64.0.70:5000/acme/api:abc123")
         task.assert_not_called()
 
+    def test_control_pulls_authenticated_private_registry_directly_even_when_builder_offline(self):
+        from luma.config import LumaConfig
+        from luma.control.server import _cache_runtime_image_on_builder
+
+        acr_image = "crpi-demo.cn-beijing.personal.cr.aliyuncs.com/luma/acme-api@sha256:" + "a" * 64
+        state = {
+            "build": {
+                "defaultNode": "offline-builder",
+                "registryHost": "100.64.0.70:5000",
+                "pushHost": "100.64.0.70:5000",
+            },
+            "registries": {
+                "crpi-demo.cn-beijing.personal.cr.aliyuncs.com": {
+                    "serverAddress": "crpi-demo.cn-beijing.personal.cr.aliyuncs.com",
+                    "username": "ro-pull",
+                    "password": "secret",
+                }
+            },
+            "nodes": {},
+        }
+        with patch("luma.control.server._run_node_agent_task") as task:
+            result = _cache_runtime_image_on_builder(
+                LumaConfig({}, None),
+                state,
+                acr_image,
+                platform="linux/amd64",
+            )
+            internal_res = _cache_runtime_image_on_builder(
+                LumaConfig({}, None),
+                state,
+                "100.64.0.70:5000/acme/existing:1",
+            )
+
+        self.assertFalse(result["cached"])
+        self.assertEqual(result["deployed"], acr_image)
+        self.assertEqual(result["builderNode"], "")
+        self.assertFalse(internal_res["cached"])
+        self.assertEqual(internal_res["deployed"], "100.64.0.70:5000/acme/existing:1")
+        task.assert_not_called()
+
     def test_compose_runtime_cache_reuses_duplicate_image_copy(self):
         from luma.compose import ComposeDeploymentSpec
         from luma.config import LumaConfig

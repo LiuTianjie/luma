@@ -979,8 +979,8 @@ class ControlClient:
         node: str = "",
         nodes: list[str] | None = None,
         default_node: str = "",
-        registry_host: str = "",
-        push_host: str = "",
+        registry_host: str | None = None,
+        push_host: str | None = None,
         direct_egress_nodes: list[str] | None = None,
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {}
@@ -990,9 +990,9 @@ class ControlClient:
             body["nodes"] = nodes
         if default_node:
             body["defaultNode"] = default_node
-        if registry_host:
+        if registry_host is not None:
             body["registryHost"] = registry_host
-        if push_host:
+        if push_host is not None:
             body["pushHost"] = push_host
         if direct_egress_nodes is not None:
             body["directEgressNodes"] = direct_egress_nodes

@@ -327,6 +327,7 @@ def _add_deploy_commands(sub: argparse._SubParsersAction) -> None:
     build_config.add_argument("--default-node", default="", help="Preferred planner and fallback builder for builds without ARM")
     build_config.add_argument("--registry-host", default="", help="Registry host that nodes pull from, for example 10.0.0.5:5000")
     build_config.add_argument("--push-host", default="", help="Registry host that builds push to (the builder's mesh address, not localhost)")
+    build_config.add_argument("--clear-registry", action="store_true", help="Clear internal Builder registry settings so nodes pull images directly")
     build_config.add_argument("--direct-egress-node", action="append", dest="direct_egress_nodes", default=None, help="Builder with direct internet access; repeat for several")
     build_config.add_argument("--clear-direct-egress", action="store_true", help="Clear the direct-egress builder list")
     _add_control_arguments(build_config)
@@ -520,7 +521,7 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
             "Update the local CLI. On a manager this also refreshes Luma Control, and on a joined "
             "node it refreshes the node agent."
         ),
-        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.71\n  luma update fleet",
+        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.72\n  luma update fleet",
     )
     _add_update_arguments(update)
     _add_control_arguments(update)
