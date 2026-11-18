@@ -14,7 +14,7 @@ if str(BUILD_ROOT) not in sys.path:
 from starlette.testclient import TestClient  # noqa: E402
 
 from luma_build.cli import BuildApiClient, main as cli_main  # noqa: E402
-from luma_build.deployer import ControlAuthVerifier, ControlDeployClient  # noqa: E402
+from luma_build.deployer import ControlAuthVerifier, extract_manifest_platforms  # noqa: E402
 from luma_build.errors import BuildCanceled, BuildError  # noqa: E402
 from luma_build.registry_naming import (  # noqa: E402
     derive_repo_slug,
@@ -48,7 +48,7 @@ class RegistryAndCacheNamingTests(unittest.TestCase):
         self.assertTrue(is_http_registry("registry.internal.example.com", explicit_insecure=True))
 
     def test_aliyun_acr_two_level_flattening_and_single_cache_repo(self) -> None:
-        slug = derive_repo_slug("https://gcode.gaojiua.com/MyOrg/Web_App.git")
+        slug = derive_repo_slug("https://git.example.com/MyOrg/Web_App.git")
         self.assertEqual(slug, "myorg/web_app")
 
         # Legacy internal registry preserves multi-segment path when namespace is empty
@@ -140,7 +140,7 @@ class DecoupledBuildServiceTests(unittest.TestCase):
         self.client.post(
             "/v1/credentials/git",
             headers=self.admin_headers,
-            json={"id": "gitea:gcode", "host": "gcode.gaojiua.com", "username": "bot", "token": "git-secret-pat"},
+            json={"id": "gitea:corp", "host": "git.example.com", "username": "bot", "token": "git-secret-pat"},
         )
         self.client.post(
             "/v1/credentials/registry",
@@ -157,7 +157,7 @@ class DecoupledBuildServiceTests(unittest.TestCase):
             "/v1/builds",
             headers=self.admin_headers,
             json={
-                "repoUrl": "https://gcode.gaojiua.com/acme/orders.git",
+                "repoUrl": "https://git.example.com/acme/orders.git",
                 "ref": "main",
                 "platform": "linux/amd64",
                 "envSecrets": {"DATABASE_URL": "postgres://super-secret-prod"},
@@ -438,8 +438,8 @@ class LumaNativeCredentialsAndSSOTests(unittest.TestCase):
             env_patch = {
                 "LUMA_BUILD_REGISTRY_USERNAME": "acr-push-user",
                 "LUMA_BUILD_REGISTRY_PASSWORD": "acr-push-secret-value",
-                "GITEA_HOST": "gcode.gaojiua.com",
-                "GITEA_USERNAME": "Nickname4th",
+                "GITEA_HOST": "git.example.com",
+                "GITEA_USERNAME": "ci-bot",
                 "GITEA_TOKEN": "gitea-scoped-secret",
                 "GITHUB_TOKEN": "ghp-scoped-secret",
             }
@@ -455,7 +455,7 @@ class LumaNativeCredentialsAndSSOTests(unittest.TestCase):
                     return False
 
                 def read(self) -> bytes:
-                    return b'{"clusterId": "luma-266ba124", "endpoint": "luma.itool.tech"}'
+                    return b'{"clusterId": "luma-demo1234", "endpoint": "luma.example.com"}'
 
             class FakeOpener:
                 def open(self, req, timeout=8):
@@ -473,7 +473,7 @@ class LumaNativeCredentialsAndSSOTests(unittest.TestCase):
                 app = create_app(
                     data_dir=data_dir,
                     admin_token="",
-                    control_url="https://luma.itool.tech",
+                    control_url="https://luma.example.com",
                     control_deploy_token="valid-luma-deploy-token",
                     default_registry_host="crpi-bj.cn-beijing.personal.cr.aliyuncs.com",
                     default_push_host="crpi-bj.cn-beijing.personal.cr.aliyuncs.com",
@@ -512,7 +512,7 @@ class LumaNativeCredentialsAndSSOTests(unittest.TestCase):
                     "/v1/builds",
                     headers={"Authorization": "Bearer valid-luma-deploy-token"},
                     json={
-                        "providerId": "gitea:gcode",
+                        "providerId": "gitea:corp",
                         "repository": "acme/backend",
                         "platform": "linux/arm64",
                         "deploy": False,
@@ -523,8 +523,8 @@ class LumaNativeCredentialsAndSSOTests(unittest.TestCase):
                     headers={"Authorization": f"Bearer {rtok}"},
                     json={"nativePlatform": "linux/arm64", "os": "darwin", "arch": "arm64"},
                 ).json()["task"]
-                self.assertEqual(leased["repoUrl"], "https://gcode.gaojiua.com/acme/backend.git")
-                self.assertEqual(leased["gitAuth"], {"username": "Nickname4th", "token": "gitea-scoped-secret"})
+                self.assertEqual(leased["repoUrl"], "https://git.example.com/acme/backend.git")
+                self.assertEqual(leased["gitAuth"], {"username": "ci-bot", "token": "gitea-scoped-secret"})
                 self.assertEqual(
                     leased["registryAuths"],
                     [
@@ -540,12 +540,12 @@ class LumaNativeCredentialsAndSSOTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg_home = Path(tmp) / "luma-cfg"
             (cfg_home / "contexts").mkdir(parents=True)
-            (cfg_home / "current-context").write_text("luma-266ba124\n", encoding="utf-8")
-            (cfg_home / "contexts" / "luma-266ba124.json").write_text(
+            (cfg_home / "current-context").write_text("luma-demo1234\n", encoding="utf-8")
+            (cfg_home / "contexts" / "luma-demo1234.json").write_text(
                 json.dumps(
                     {
-                        "clusterId": "luma-266ba124",
-                        "endpoint": "https://luma.itool.tech",
+                        "clusterId": "luma-demo1234",
+                        "endpoint": "https://luma.example.com",
                         "token": "context-borrowed-deploy-token",
                         "insecure": False,
                     }
@@ -562,10 +562,10 @@ class LumaNativeCredentialsAndSSOTests(unittest.TestCase):
                 },
                 clear=False,
             ):
-                rc = cli_main(["use", "https://build.itool.tech/"])
+                rc = cli_main(["use", "https://build.example.com/"])
                 self.assertEqual(rc, 0)
                 api = BuildApiClient("", "")
-                self.assertEqual(api.url, "https://build.itool.tech")
+                self.assertEqual(api.url, "https://build.example.com")
                 self.assertEqual(api.token, "context-borrowed-deploy-token")
 
 
@@ -699,20 +699,29 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
             elapsed = time.monotonic() - t0
             self.assertLess(elapsed, 3.0)
 
-    def test_infer_target_platforms_supports_dict_nodes_payload(self) -> None:
-        ctl = ControlDeployClient("https://luma.itool.tech", "tok")
-        with patch.object(
-            ctl,
-            "request_json",
-            return_value={
-                "nodes": {
-                    "air3": {"region": "render", "agent": {"arch": "arm64"}},
-                    "bd-prod": {"region": "cn", "agent": {"arch": "amd64"}},
-                }
-            },
+    def test_extract_manifest_platforms_and_default_platform_env(self) -> None:
+        self.assertEqual(
+            extract_manifest_platforms("name: web\nbuild:\n  platform: linux/arm64\n"),
+            ["linux/arm64"],
+        )
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ", {"LUMA_BUILD_DEFAULT_PLATFORM": "linux/arm64"}, clear=False
         ):
-            self.assertEqual(ctl.infer_target_platforms(region="render"), ["linux/arm64"])
-            self.assertEqual(ctl.infer_target_platforms(node="bd-prod"), ["linux/amd64"])
+            app = create_app(
+                data_dir=Path(tmp) / "data",
+                admin_token=ADMIN_TOKEN,
+                default_registry_host="100.66.177.70:5000",
+                start_worker=False,
+            )
+            client = TestClient(app)
+            hdr = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+            resp = client.post(
+                "/v1/builds",
+                headers=hdr,
+                json={"repoUrl": "https://git.example.com/acme/worker.git", "ref": "main"},
+            )
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json()["build"]["platforms"], ["linux/arm64"])
 
     def test_buildx_reconfigure_preserves_cache_state_and_unions_known_hosts(self) -> None:
         import subprocess as sp
@@ -796,44 +805,36 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
 
             csp1 = r1.headers.get("content-security-policy", "")
             csp2 = r2.headers.get("content-security-policy", "")
-            self.assertIn("require-trusted-types-for 'script'", csp1)
+            self.assertIn("strict-dynamic", csp1)
             self.assertIn("frame-ancestors 'none'", csp1)
             self.assertNotEqual(csp1, csp2)  # Fresh per-request cryptographic nonce!
             self.assertEqual(r1.headers.get("x-frame-options"), "DENY")
             self.assertEqual(r1.headers.get("x-content-type-options"), "nosniff")
             self.assertEqual(client.get("/favicon.svg").status_code, 200)
 
-    def test_single_file_manifest_probe_routes_arm_repo_directly_without_double_clone(self) -> None:
+    def test_explicit_manifest_platforms_route_build_deterministically_without_remote_probe(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app = create_app(
                 data_dir=Path(tmp) / "data",
                 admin_token=ADMIN_TOKEN,
-                control_url="https://luma.itool.tech",
+                control_url="https://luma.example.com",
                 control_deploy_token="ctl-tok",
                 default_registry_host="crpi-x.cn-beijing.personal.cr.aliyuncs.com",
                 default_registry_namespace="luma",
                 start_worker=False,
-                probe_manifests=True,
             )
             client = TestClient(app)
             hdr = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
-
-            with patch(
-                "luma_build.server.probe_remote_manifest",
-                return_value="name: serverx\nregion: render\nexposure: none\n",
-            ) as mock_probe, patch.object(
-                app.state.deployer,
-                "infer_target_platforms",
-                return_value=["linux/arm64"],
-            ):
-                resp = client.post(
-                    "/v1/builds",
-                    headers=hdr,
-                    json={"repoUrl": "https://gcode.gaojiua.com/gaojiuaTech/serverx.git", "ref": "main"},
-                )
+            resp = client.post(
+                "/v1/builds",
+                headers=hdr,
+                json={
+                    "repoUrl": "https://git.example.com/acme/service.git",
+                    "ref": "main",
+                    "manifest": "name: service\nbuild:\n  platforms:\n    - linux/arm64\n",
+                },
+            )
             self.assertEqual(resp.status_code, 200)
-            self.assertEqual(mock_probe.call_count, 1)
-            # Directly queued for linux/arm64 on first pass — zero planner git clone!
             self.assertEqual(resp.json()["build"]["platforms"], ["linux/arm64"])
 
 

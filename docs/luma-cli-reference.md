@@ -1014,11 +1014,11 @@ usage: luma builder git-cred set [-h] --host HOST [--username USERNAME] [--path-
 Save a Git credential on luma-build
 
 arguments:
-  id                          Credential ID, for example gitea:gcode or github:main
+  id                          Credential ID, for example gitea:corp or github:main
 
 arguments:
   -h, --help                  show this help message and exit
-  --host HOST                 Git hostname, for example gcode.gaojiua.com or github.com
+  --host HOST                 Git hostname, for example git.example.com or github.com
   --username USERNAME         Git HTTP username (default: x-access-token)
   --path-prefix PATH_PREFIX   Optional organization/owner prefix filter
   --token-stdin               Read the Git token from stdin
@@ -2068,7 +2068,7 @@ arguments:
 
 Examples:
   luma update
-  luma update --install-ref v0.2.69
+  luma update --install-ref v0.2.71
   luma update fleet
 ```
 

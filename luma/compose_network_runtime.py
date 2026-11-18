@@ -82,7 +82,7 @@ def inspect_owned(docker, allocation, job):
     return info
 
 
-def network_spec(image, services, ports, dns_servers=None):
+def network_spec(image, services, ports, dns_servers=None, extra_hosts=None):
     if not image or not isinstance(image, str):
         raise ValueError("network image is required")
     if not isinstance(services, list) or not services or any(
@@ -113,13 +113,35 @@ def network_spec(image, services, ports, dns_servers=None):
             raise ValueError("DNS servers must be a list of IP addresses")
         if dns_servers:
             spec["dns_servers"] = [str(ipaddress.ip_address(server)) for server in dns_servers]
+    if extra_hosts is not None:
+        if not isinstance(extra_hosts, list) or any(not isinstance(entry, str) for entry in extra_hosts):
+            raise ValueError("extra_hosts must be a list of host:ip strings")
+        validated_hosts = []
+        for entry in extra_hosts:
+            if ":" not in entry or any(c in entry for c in " \n\r\t"):
+                raise ValueError(f"invalid extra_hosts entry: {entry!r}")
+            host, target = entry.split(":", 1)
+            if not host or (target != "host-gateway" and not _is_ip(target)):
+                raise ValueError(f"invalid extra_hosts entry: {entry!r}")
+            validated_hosts.append(f"{host}:{target}")
+        if validated_hosts:
+            spec["extra_hosts"] = validated_hosts
     return spec
 
 
-def prepare(docker, allocation, job, image, services, ports, dns_servers=None):
-    spec = network_spec(image, services, ports, dns_servers)
+def _is_ip(value):
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def prepare(docker, allocation, job, image, services, ports, dns_servers=None, extra_hosts=None):
+    spec = network_spec(image, services, ports, dns_servers, extra_hosts)
     signature = json.dumps(spec, sort_keys=True, separators=(",", ":"))
     existing = inspect_owned(docker, allocation, job)
+    expected_extra_hosts = [f"{name}:127.0.0.1" for name in spec["services"]] + spec.get("extra_hosts", [])
     if existing is None:
         body = {
             "Image": image,
@@ -130,7 +152,7 @@ def prepare(docker, allocation, job, image, services, ports, dns_servers=None):
             "HostConfig": {
                 "NetworkMode": "bridge",
                 "PortBindings": spec["bindings"],
-                "ExtraHosts": [f"{name}:127.0.0.1" for name in spec["services"]],
+                "ExtraHosts": expected_extra_hosts,
                 "RestartPolicy": {"Name": "unless-stopped"},
                 "ReadonlyRootfs": True,
                 "CapDrop": ["ALL"],
@@ -197,10 +219,20 @@ def main():
     parser.add_argument("--services", default="[]")
     parser.add_argument("--ports", default="[]")
     parser.add_argument("--dns-servers", default="[]")
+    parser.add_argument("--extra-hosts", default="[]")
     args = parser.parse_args()
     docker = Docker()
     if args.action == "prepare":
-        prepare(docker, args.allocation, args.job, args.image, json.loads(args.services), json.loads(args.ports), json.loads(args.dns_servers))
+        prepare(
+            docker,
+            args.allocation,
+            args.job,
+            args.image,
+            json.loads(args.services),
+            json.loads(args.ports),
+            json.loads(args.dns_servers),
+            json.loads(args.extra_hosts),
+        )
     elif args.action == "watch":
         watch(docker, args.allocation, args.job)
     else:

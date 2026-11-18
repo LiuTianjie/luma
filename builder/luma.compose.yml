@@ -12,6 +12,6 @@ services:
   server:
     node: manager
     exposure: cn-edge
-    domain: build.itool.tech
+    domain: build.example.com
     port: 8090
     replicas: 1

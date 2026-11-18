@@ -60,10 +60,10 @@ luma build local builder --platform linux/amd64 --env builder/.env
 
 ### 2. 本地绑定一次地址（直接使用 `luma builder`，自动复用 `luma login` 身份）
 
-直接打开浏览器访问 `https://build.itool.tech` 即可进入内置的 **Luma 同风格 Web 控制台**（查看构建时间线、实时流式日志、网页提交构建与管理 Runner）；命令行同样已内置进 `luma builder`：
+直接打开浏览器访问 `https://build.example.com` 即可进入内置的 **Luma 同风格 Web 控制台**（查看构建时间线、实时流式日志、网页提交构建与管理 Runner）；命令行同样已内置进 `luma builder`：
 
 ```bash
-luma builder use https://build.itool.tech
+luma builder use https://build.example.com
 luma builder status
 ```
 
@@ -79,7 +79,7 @@ luma builder token create m4 --weight 100 --cache-mode read-only
   docker run -d --name luma-runner --restart=always --network=host \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v luma-runner-state:/var/lib/luma-runner \
-    -e LUMA_BUILD_URL="https://build.itool.tech" \
+    -e LUMA_BUILD_URL="https://build.example.com" \
     -e LUMA_RUNNER_TOKEN="lbr_xxx" \
     -e LUMA_RUNNER_CACHE_KEEP_GB="30" \
     luma-build-runner:latest
@@ -88,14 +88,14 @@ luma builder token create m4 --weight 100 --cache-mode read-only
 - **macOS 机器（如 `m4` / `air3` 跑 OrbStack 原生 ARM64 构建，直接用 `luma` CLI）**：
   ```bash
   LUMA_RUNNER_PROXY="http://127.0.0.1:7890" \
-  luma builder runner --url https://build.itool.tech --token lbr_xxx --cache-mode read-only --cache-keep-gb 25
+  luma builder runner --url https://build.example.com --token lbr_xxx --cache-mode read-only --cache-keep-gb 25
   ```
 
 ### 4. 提交构建与部署
 
 ```bash
 luma builder submit acme/my-app --ref main --env .env
-luma builder submit https://gcode.gaojiua.com/org/service.git --ref v1.2.0 --no-deploy
+luma builder submit https://git.example.com/org/service.git --ref v1.2.0 --no-deploy
 luma builder list
 ```
 

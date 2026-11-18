@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from .cdn import CdnSpec, parse_cdn_block, validate_cdn_exposure
 from .config import LumaConfig
-from .container_dns import parse_dns_servers
+from .container_dns import parse_dns_servers, parse_extra_hosts
 from .dns import cert_resolver_for
 from .errors import LumaError
 from .dependencies import validate_requirement_block
@@ -304,6 +304,11 @@ def validate_compose_deployment_data(
         if not isinstance(service, dict):
             raise LumaError(f"compose service {service_name} must be a mapping")
         parse_dns_servers(service.get("dns"), field_name=f"compose service {service_name} dns")
+        parse_extra_hosts(
+            service.get("extra_hosts"),
+            field_name=f"compose service {service_name} extra_hosts",
+            allow_placeholders=True,
+        )
         if not isinstance(service.get("image"), str) or not service.get("image"):
             if service.get("build") is not None and allow_build_services:
                 warnings.append(

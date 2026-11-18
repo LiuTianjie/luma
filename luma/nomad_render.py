@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 from .config import LumaConfig
 from .dns import cert_resolver_for
-from .container_dns import parse_dns_servers, shared_dns_servers
+from .container_dns import parse_dns_servers, parse_extra_hosts, shared_dns_servers, shared_extra_hosts
 from .compose import compose_replica_count, render_storage_class_volume, resolve_storage_mounts
 from .compose_network import (
     NETWORK_CONTAINER,
@@ -454,6 +454,43 @@ def _resolve_env_value(value: Any, *, secrets: Mapping[str, str] | None = None, 
     return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", repl, str(value))
 
 
+def _resolve_service_extra_hosts(
+    raw_extra_hosts: Any,
+    *,
+    svc_name: str,
+    sibling_names: set[str],
+    secrets: Mapping[str, str] | None,
+    resolve_secrets: bool,
+) -> list[str]:
+    field_name = f"compose service {svc_name} extra_hosts"
+    if raw_extra_hosts is None:
+        return []
+    # Validate syntax first before secret interpolation.
+    parse_extra_hosts(raw_extra_hosts, field_name=field_name, allow_placeholders=True)
+    if isinstance(raw_extra_hosts, Mapping):
+        resolved_raw: Any = {
+            k: (
+                [_resolve_env_value(item, secrets=secrets, resolve_secrets=resolve_secrets) for item in v]
+                if isinstance(v, list)
+                else _resolve_env_value(v, secrets=secrets, resolve_secrets=resolve_secrets)
+            )
+            for k, v in raw_extra_hosts.items()
+        }
+    elif isinstance(raw_extra_hosts, list):
+        resolved_raw = [
+            _resolve_env_value(entry, secrets=secrets, resolve_secrets=resolve_secrets)
+            for entry in raw_extra_hosts
+        ]
+    else:
+        resolved_raw = raw_extra_hosts
+    entries = parse_extra_hosts(resolved_raw, field_name=field_name, allow_placeholders=not resolve_secrets)
+    for entry in entries:
+        host = entry.split(":", 1)[0]
+        if host in sibling_names:
+            raise LumaError(f"{field_name} cannot override sibling service name: {host}")
+    return entries
+
+
 def _compose_host_network(services: Dict[str, Any], deployment: Any) -> bool:
     """Host networking colocates a Compose group with host listeners such as Traefik.
 
@@ -553,11 +590,23 @@ def render_compose_job(
 
     # service name -> 127.0.0.1 so DSNs referencing sibling service names resolve
     # over the shared group loopback.
+    sibling_names = {str(svc) for svc in services.keys()}
     extra_hosts = [f"{svc}:127.0.0.1" for svc in services.keys()]
     host_network = _compose_host_network(services, deployment)
     mac_network = uses_macos_compose_network(deployment, node_records)
     dns_by_service = {
         str(svc_name): parse_dns_servers(body.get("dns"), field_name=f"compose service {svc_name} dns")
+        for svc_name, body in services.items()
+        if isinstance(body, dict)
+    }
+    extra_hosts_by_service = {
+        str(svc_name): _resolve_service_extra_hosts(
+            body.get("extra_hosts"),
+            svc_name=str(svc_name),
+            sibling_names=sibling_names,
+            secrets=secrets,
+            resolve_secrets=resolve_secrets,
+        )
         for svc_name, body in services.items()
         if isinstance(body, dict)
     }
@@ -592,7 +641,10 @@ def render_compose_job(
         publish_port = override.publish_port if override else None
         publish = publish_port or port
 
-        docker_config: Dict[str, Any] = {"image": image, "extra_hosts": list(extra_hosts)}
+        docker_config: Dict[str, Any] = {
+            "image": image,
+            "extra_hosts": [*extra_hosts, *extra_hosts_by_service[str(svc_name)]],
+        }
         if dns_by_service[str(svc_name)] and not mac_network:
             docker_config["dns_servers"] = dns_by_service[str(svc_name)]
         if "read_only" in body:
@@ -811,6 +863,7 @@ def render_compose_job(
         tasks.extend(macos_compose_network_tasks(
             deployment, config, registry_auth_resolver,
             dns_servers=shared_dns_servers(dns_by_service),
+            extra_hosts=shared_extra_hosts(extra_hosts_by_service),
         ))
     group: Dict[str, Any] = {
         "Name": name,
