@@ -42,6 +42,10 @@ macOS 服务日志写入 `/opt/luma/runner/logs/runner.log`，按 10 MiB 轮转�
 
 `runner status` 查看的是**本机服务**，`builder token list` 查看的是**服务端观察到的心跳**，在线阈值为 90 秒。服务进程运行不等于网络、认证正常，需要结合日志和远端列表判断。`luma runner run` 明确表示调试或容器使用的前台运行；旧命令 `luma builder runner` 保留为前台兼容入口。
 
+## 恢复启动失败的 Linux 服务 {#recover-a-failed-linux-service}
+
+Luma 0.2.81 修复了旧版 Runner 服务生成的 `WorkingDirectory` 引号。如果 systemd 报 `WorkingDirectory= path is not absolute`，先升级该 Runner 机器的 CLI，再执行 `luma runner start`；它会重写服务定义，保留已保存的 token 和参数。命令从哪个目录执行不影响结果。Linux 日志通过 journald 读取（`luma runner logs`），不使用 macOS 日志文件路径。服务命令失败时会显示具体操作和脱敏后的诊断。
+
 ## 迁移已加入的 Runner {#migrate-existing-runners}
 
 原有注册记录和名称继续有效。先升级 runner 机器上的 Luma CLI，并部署新版 builder 服务；对旧前台命令按 Ctrl-C（或停止旧 Docker 容器），再用**原 token** 执行 `luma runner join`。无需新建另一个名称。手动安装的 `luma-build-runner.service` 会在验证成功后替换为 CLI 管理的服务。

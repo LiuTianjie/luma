@@ -100,6 +100,40 @@ class DeployWorkflowTests(unittest.TestCase):
         self.client.prepare_local_build.assert_not_called()
         build.assert_not_called()
 
+    def test_local_build_inherited_registry_matches_record_and_pins_upload(self):
+        self.record('build', 'local', '.', '--registry-host', 'acr.example.com', '--registry-namespace', 'luma-acr', selector={'repoUrl': 'https://github.com/acme/app.git'})
+        self.client.status.return_value = {'build': {'localRegistryHost': 'acr.example.com', 'registryNamespace': 'luma-acr'}}
+        self.client.prepare_local_build.side_effect = LumaError('stop before Docker')
+        with patch('luma.local_build.local_source_metadata', return_value={'path': str(self.root), 'repoUrl': 'https://github.com/acme/app.git', 'revision': 'abc'}), patch('luma.local_build.build_and_push_local_source') as build:
+            code, _, error, prompt = self.invoke('build', 'local', '.', interactive=True)
+        self.assertEqual(code, 1)
+        self.assertIn('stop before Docker', error)
+        prompt.assert_not_called()
+        self.assertEqual(self.client.prepare_local_build.call_args.args[0]['registryHost'], 'acr.example.com')
+        self.assertEqual(self.client.prepare_local_build.call_args.args[0]['registryNamespace'], 'luma-acr')
+        build.assert_not_called()
+
+    def test_changed_inherited_registry_still_stops_before_reservation(self):
+        old = self.record('build', 'local', '.', '--registry-host', 'acr.example.com', '--registry-namespace', 'luma-acr', selector={'repoUrl': 'https://github.com/acme/app.git'})
+        self.client.status.return_value = {'build': {'localRegistryHost': 'other.example.com', 'registryNamespace': 'other'}}
+        with patch('luma.local_build.local_source_metadata', return_value={'path': str(self.root), 'repoUrl': 'https://github.com/acme/app.git', 'revision': 'abc'}):
+            code, _, error, _ = self.invoke('build', 'local', '.', '--format', 'json')
+        self.assertEqual(code, 1)
+        self.assertIn('other.example.com', error)
+        self.assertIn('other', error)
+        self.assertNotIn('-> None', error)
+        self.client.prepare_local_build.assert_not_called()
+        self.assertEqual(handle_workflow_get(self.token, 'app')['workflow'], old)
+
+    def test_registry_lookup_failure_does_not_bypass_workflow_check(self):
+        self.record('build', 'local', '.', '--registry-host', 'acr.example.com', selector={'repoUrl': 'https://github.com/acme/app.git'})
+        self.client.status.side_effect = LumaError('Control registry lookup unavailable')
+        with patch('luma.local_build.local_source_metadata', return_value={'path': str(self.root), 'repoUrl': 'https://github.com/acme/app.git', 'revision': 'abc'}):
+            code, _, error, _ = self.invoke('build', 'local', '.', '--format', 'json')
+        self.assertEqual(code, 1)
+        self.assertIn('Control registry lookup unavailable', error)
+        self.client.prepare_local_build.assert_not_called()
+
     def test_first_local_build_records_after_completion(self):
         self.client.prepare_local_build.return_value = {'run': {'id': 'local-id'}, 'upload': {'registryHost': 'builder:5000', 'repository': 'acme/app', 'tag': 'abc', 'platform': 'linux/amd64'}}
         self.client.complete_local_build.return_value = {'service': 'app', 'image': 'builder:5000/acme/app:abc'}

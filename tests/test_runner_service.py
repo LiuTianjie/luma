@@ -7,7 +7,9 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -100,6 +102,41 @@ class RunnerServiceTests(unittest.TestCase):
         unit = service.service_definition(self.config, "systemd").decode()
         self.assertIn("Restart=on-failure", unit)
         self.assertIn("KillMode=control-group", unit)
+
+    @unittest.skipUnless(sys.platform == "linux" and shutil.which("systemd-analyze"), "requires the real systemd unit parser")
+    def test_generated_unit_passes_real_systemd_verification(self):
+        spaced_home = self.root / "home with spaces%"
+        spaced_home.mkdir()
+        for home in ("/root", str(spaced_home)):
+            with self.subTest(home=home):
+                config = {**self.config, "command": [shutil.which("true")],
+                          "owner": {**service._identity(), "home": home}}
+                service.UNIT_PATH.write_bytes(service.service_definition(config, "systemd"))
+                result = subprocess.run(["systemd-analyze", "verify", str(service.UNIT_PATH)], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_failed_service_command_reports_operation_and_redacts_credentials(self):
+        argv = ["systemctl", "start", service.UNIT]
+        error = ('Unit has a bad setting: WorkingDirectory="/root"\n'
+                 'ExecStart=/bin/luma --token old-private-value\n'
+                 'Rejected lbr_private-token and Bearer other-private-value')
+        with patch.object(service.subprocess, "run", return_value=subprocess.CompletedProcess(argv, 1, "", error)):
+            with self.assertRaises(LumaError) as raised:
+                service._command(argv)
+        message = str(raised.exception)
+        self.assertIn("systemctl start", message)
+        self.assertIn('WorkingDirectory="/root"', message)
+        for secret in ("old-private-value", "lbr_private-token", "other-private-value"):
+            self.assertNotIn(secret, message)
+
+    def test_missing_launchd_log_reports_installation_failure_without_running_tail(self):
+        with patch.object(service, "platform_backend", return_value="launchd"), patch.object(
+            service, "_command", return_value=subprocess.CompletedProcess([], 1, "", ""),
+        ) as command:
+            with self.assertRaisesRegex(LumaError, "log has not been created yet"):
+                service.logs()
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(command.call_args.args[0][0], "test")
 
     def test_managed_install_uses_registered_shim_instead_of_path(self):
         bindir = self.root / "managed/bin"

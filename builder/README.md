@@ -123,3 +123,5 @@ PYTHONPATH=builder .venv/bin/python -m unittest discover -s builder/tests -p 'te
 首次显式修改 scoped secrets 时传 `--env builder/.env`，日常发布复用已有作用域。
 Registry host/namespace 不固定在脚本中。运行镜像迁移和实际服务升级须在发布时执行；
 仅提交脚本不会升级 Builder、Control 或 Runner。
+
+CLI 0.2.81 起，脚本省略 Registry 参数时，工作流校验会读取 Control 的实际默认值，与已记录的显式 ACR 地址/命名空间比较，并固定本次上传目标。默认值相同不再误报为 `None`；真正改变地址或命名空间仍需确认。

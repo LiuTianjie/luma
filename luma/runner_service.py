@@ -44,6 +44,9 @@ def platform_backend() -> str:
 
 def _command(argv: list[str], *, privileged: bool = False, check: bool = True,
              stream: bool = False) -> subprocess.CompletedProcess:
+    operation = Path(argv[0]).name
+    if len(argv) > 1 and argv[1] in {"start", "restart", "stop", "enable", "disable", "daemon-reload", "bootstrap", "bootout", "kickstart"}:
+        operation += " " + argv[1]
     if privileged and os.geteuid() != 0:
         if not shutil.which("sudo"):
             raise LumaError("Installing or controlling the runner service requires sudo")
@@ -56,12 +59,27 @@ def _command(argv: list[str], *, privileged: bool = False, check: bool = True,
         result = subprocess.run(argv, text=True, capture_output=not stream,
                                 timeout=None if stream else 90, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise LumaError(f"Runner service command failed: {argv[-1]}") from exc
+        raise LumaError(f"Runner service command failed: {operation}: {_diagnostic(str(exc))}") from exc
     if check and result.returncode:
-        # Unit files may have been hand-written with a token in ExecStart. Do
-        # not echo arbitrary service-manager output containing that command.
-        raise LumaError(f"Runner service command failed ({result.returncode}); inspect 'luma runner status' and 'luma runner logs'")
+        detail = _diagnostic(result.stderr or "")
+        message = f"Runner service command failed ({result.returncode}): {operation}"
+        if detail:
+            message += "\n" + detail
+        raise LumaError(message + "\nInspect 'luma runner status' and 'luma runner logs'.")
     return result
+
+
+def _diagnostic(text: str) -> str:
+    # Hand-written units can contain credentials in commands or environment.
+    # Retain parser/permission errors while withholding those definitions.
+    lines = ["<service command/environment redacted>" if re.search(
+        r"\b(?:ExecStart|ExecStop|Environment|EnvironmentVariables|ProgramArguments)\b", line,
+    ) else line for line in text.splitlines()]
+    text = "\n".join(lines)
+    text = re.sub(r"lbr_[A-Za-z0-9_-]+", "<redacted>", text)
+    text = re.sub(r"(?i)(--(?:runner-)?token(?:=|\s+)|Bearer\s+)\S+", r"\1<redacted>", text)
+    text = re.sub(r"(https?://)[^/\s@]+@", r"\1<redacted>@", text)
+    return text.strip()[:2000]
 
 
 def load_config(*, required: bool = False) -> dict:
@@ -138,6 +156,15 @@ def _systemd_quote(value: str, *, command: bool = False) -> str:
     return '"' + (escaped.replace('$', '$$') if command else escaped) + '"'
 
 
+def _systemd_directory(value: str) -> str:
+    # WorkingDirectory is a path directive, not a shell/argv string. systemd
+    # treats surrounding quotes as literal path characters and rejects them.
+    value = str(value)
+    if not value.startswith("/") or value != value.strip() or any(c in value for c in "\r\n\x00"):
+        raise LumaError("Runner home must be an absolute directory without line breaks or surrounding whitespace")
+    return value.replace("%", "%%")
+
+
 def service_definition(config: dict, backend: str) -> bytes:
     owner = config["owner"]
     argv = [*config["command"], "--no-env", "runner", "run", "--service-config", str(CONFIG)]
@@ -153,7 +180,7 @@ def service_definition(config: dict, backend: str) -> bytes:
     lines = ["[Unit]", "Description=Luma Build Runner", "Wants=network-online.target",
              "After=network-online.target docker.service", "StartLimitIntervalSec=0", "", "[Service]",
              "Type=simple", f"User={owner['name']}",
-             f"WorkingDirectory={_systemd_quote(owner['home'])}",
+             f"WorkingDirectory={_systemd_directory(owner['home'])}",
              *(f"Environment={_systemd_quote(key + '=' + value)}" for key, value in startup_env.items()),
              "ExecStart=" + " ".join(_systemd_quote(arg, command=True) for arg in argv),
              "Restart=on-failure", "RestartSec=5", "TimeoutStopSec=60", "KillMode=control-group",
@@ -273,5 +300,7 @@ def logs(*, follow: bool = False, lines: int = 100) -> int:
     if backend == "systemd":
         argv = ["journalctl", "-u", UNIT, "-n", str(lines), "--no-pager"] + (["-f"] if follow else [])
     else:
+        if _command(["test", "-f", str(LOG)], privileged=True, check=False).returncode:
+            raise LumaError("Runner log has not been created yet; check 'luma runner status' and the service installation error")
         argv = ["tail", "-n", str(lines)] + (["-F"] if follow else []) + [str(LOG)]
     return _command(argv, privileged=True, stream=True).returncode

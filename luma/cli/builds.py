@@ -34,6 +34,28 @@ def _workflow_prepare(args: argparse.Namespace, client: ControlClient, *, name: 
     checked = client.check_workflow(body)
     if not isinstance(checked, dict) or checked.get("status") not in {"unrecorded", "match", "confirmation-required"}:
         raise LumaError("Control returned an invalid workflow check; deployment was not started")
+    inherited_registry = {
+        row.get("field") for row in checked.get("differences") or []
+        if row.get("field") in {"registry_host", "registry_namespace"}
+        and not getattr(args, row["field"], None)
+    }
+    if recipe["method"] == "local-build" and checked["status"] == "confirmation-required" and inherited_registry:
+        # Omitting an override means using Control's defaults, not clearing the
+        # registry. Resolve and pin those values before comparing with an older
+        # explicit recipe; the reservation must use the same checked target.
+        build = client.status().get("build")
+        if not isinstance(build, dict):
+            raise LumaError("Control did not return the local build registry configuration; deployment was not started")
+        defaults = {"registry_host": build.get("localRegistryHost") or build.get("registryHost"),
+                    "registry_namespace": build.get("registryNamespace")}
+        for key in inherited_registry:
+            value = defaults[key]
+            if value:
+                setattr(args, key, str(value).strip())
+        body["recipe"] = make_recipe(args)
+        checked = client.check_workflow(body)
+        if not isinstance(checked, dict) or checked.get("status") not in {"unrecorded", "match", "confirmation-required"}:
+            raise LumaError("Control returned an invalid workflow check; deployment was not started")
     previous = checked.get("workflow") or {}
     body["expectedRevision"] = previous.get("revision", 0)
     if previous and not body["selector"]["name"]:
