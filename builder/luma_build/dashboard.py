@@ -17,12 +17,13 @@ FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fil
 """
 
 
-def render_dashboard_html(*, version: str) -> Tuple[str, str]:
+def render_dashboard_html(*, version: str, control_sso: bool = False) -> Tuple[str, str]:
     """Return ``(html_body, csp_nonce)`` with a fresh per-request nonce."""
     nonce = secrets.token_urlsafe(18)
     html = (
         _TEMPLATE.replace("__CSP_NONCE__", nonce)
         .replace("__LUMA_BUILD_VERSION__", version)
+        .replace("__LUMA_CONTROL_SSO__", "true" if control_sso else "false")
     )
     return html, nonce
 
@@ -496,6 +497,14 @@ _TEMPLATE = r"""<!doctype html>
     }
     tbody tr:last-child th, tbody tr:last-child td { border-block-end: 0; }
 
+    /* Keep long build summaries from pushing the remaining columns off-screen. */
+    .resp-table { table-layout: fixed; }
+    .resp-table th { text-align: start; }
+    .resp-table thead th:nth-child(2) { width: 6.5rem; }
+    .resp-table thead th:nth-child(3) { width: 13rem; }
+    .resp-table thead th:nth-child(4) { width: 11.5rem; }
+    .resp-table .cell-meta { overflow-wrap: anywhere; }
+
     .record-primary { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
     .record-title { color: var(--link); font-weight: 600; font-size: 0.875rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .record-sub { color: var(--muted-foreground); font-size: 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -751,7 +760,7 @@ _TEMPLATE = r"""<!doctype html>
   </style>
 </head>
 <body>
-  <!-- Sign-in View (reuses Luma Control management token via SSO) -->
+  <!-- Browser SSO, with explicit Token sign-in for standalone/recovery use. -->
   <main id="auth-view" class="auth-screen">
     <form id="login-form" class="auth-card">
       <div class="auth-brand">
@@ -761,10 +770,13 @@ _TEMPLATE = r"""<!doctype html>
           <span>v__LUMA_BUILD_VERSION__ · 独立构建与算力中心</span>
         </div>
       </div>
-      <p class="auth-desc">
-        直接输入你的 <strong>Luma 管理 Token</strong> 登录（服务端通过 Luma Control SSO 自动验签，与 <code>luma login</code> 共用同一套身份）。
+      <p id="login-description" class="auth-desc">
+        使用 Luma 管理 Token 登录构建控制台。
       </p>
       <div id="login-error" class="banner-error" role="alert" hidden></div>
+      <a id="control-login" class="btn btn-primary w-full" href="/auth/login" hidden>使用 Luma 控制台登录</a>
+      <button id="manual-login" class="btn btn-ghost" type="button" hidden>使用管理 Token</button>
+      <div id="token-login-fields" class="stack-sm">
       <div class="field">
         <label for="login-token">访问令牌 (Token)</label>
         <input id="login-token" class="input" type="password" autocomplete="current-password" placeholder="粘贴 LUMA_DEPLOY_TOKEN…" required autofocus>
@@ -774,6 +786,7 @@ _TEMPLATE = r"""<!doctype html>
         <span>在此浏览器记住登录状态</span>
       </label>
       <button type="submit" class="btn btn-primary w-full">进入控制台</button>
+      </div>
     </form>
   </main>
 
@@ -1200,9 +1213,11 @@ _TEMPLATE = r"""<!doctype html>
   <script nonce="__CSP_NONCE__">
   (() => {
     const TOKEN_KEY = "luma-build-auth-token";
+    const CONTROL_SSO = __LUMA_CONTROL_SSO__;
     const SCHEME_KEY = "luma-build-color-scheme";
     const state = {
       token: "",
+      session: false,
       page: "builds",
       statusFilter: "",
       repoFilter: "",
@@ -1308,7 +1323,7 @@ _TEMPLATE = r"""<!doctype html>
       const res = await fetch(path, {
         method: opts.method || "GET",
         headers: {
-          "Authorization": `Bearer ${state.token}`,
+          ...(state.token ? { "Authorization": `Bearer ${state.token}` } : {}),
           "Accept": "application/json",
           ...(opts.body ? { "Content-Type": "application/json" } : {}),
         },
@@ -1335,6 +1350,7 @@ _TEMPLATE = r"""<!doctype html>
 
     function signOut() {
       state.token = "";
+      state.session = false;
       if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
       if (state.streamAbort) { state.streamAbort.abort(); state.streamAbort = null; }
       try { sessionStorage.removeItem(TOKEN_KEY); localStorage.removeItem(TOKEN_KEY); } catch {}
@@ -1342,7 +1358,25 @@ _TEMPLATE = r"""<!doctype html>
       document.getElementById("auth-view").hidden = false;
     }
 
-    document.getElementById("logout-btn").addEventListener("click", signOut);
+    document.getElementById("logout-btn").addEventListener("click", async () => {
+      if (state.session) {
+        try {
+          const response = await fetch("/v1/auth/logout", { method: "POST" });
+          if (!response.ok && response.status !== 401) throw new Error("退出失败，请稍后重试");
+        } catch (err) {
+          alert(err.message || "退出失败，请稍后重试");
+          return;
+        }
+      }
+      history.replaceState(null, "", "?signedOut=1");
+      signOut();
+    });
+    document.getElementById("manual-login").addEventListener("click", () => {
+      history.replaceState(null, "", "?login=manual");
+      document.getElementById("token-login-fields").hidden = false;
+      document.getElementById("manual-login").hidden = true;
+      document.getElementById("login-token").focus();
+    });
     document.getElementById("collapse-btn").addEventListener("click", () => {
       document.getElementById("app-shell").classList.toggle("collapsed");
     });
@@ -1374,6 +1408,7 @@ _TEMPLATE = r"""<!doctype html>
       state.token = tok;
       try {
         await api("/v1/status");
+        state.session = false;
         try {
           sessionStorage.setItem(TOKEN_KEY, tok);
           if (remember) localStorage.setItem(TOKEN_KEY, tok);
@@ -1392,7 +1427,7 @@ _TEMPLATE = r"""<!doctype html>
       refreshAll();
       if (!state.pollTimer) {
         state.pollTimer = setInterval(() => {
-          if (document.visibilityState === "visible" && state.token) refreshAll();
+          if (document.visibilityState === "visible" && (state.token || state.session)) refreshAll();
         }, 4000);
       }
     }
@@ -1473,8 +1508,8 @@ _TEMPLATE = r"""<!doctype html>
         const tr = el("tr", { onclick: () => openBuildDrawer(b.id) },
           el("th", { scope: "row" },
             el("div", { className: "record-primary" },
-              el("span", { className: "record-title" }, b.repoSlug),
-              el("span", { className: "record-sub mono" }, subtitle)
+              el("span", { className: "record-title", title: b.repoSlug }, b.repoSlug),
+              el("span", { className: "record-sub mono", title: subtitle }, subtitle)
             )
           ),
           el("td", { "data-col": "status" }, renderStatusPill(b.status)),
@@ -1621,7 +1656,7 @@ _TEMPLATE = r"""<!doctype html>
       let seenSeq = (b.events || []).reduce((m, e) => Math.max(m, e.seq || 0), 0);
       try {
         const res = await fetch(`/v1/builds/${encodeURIComponent(buildId)}/stream`, {
-          headers: { "Authorization": `Bearer ${state.token}` },
+          headers: state.token ? { "Authorization": `Bearer ${state.token}` } : {},
           signal: ctrl.signal,
         });
         const reader = res.body.getReader();
@@ -1856,14 +1891,49 @@ _TEMPLATE = r"""<!doctype html>
       }
     });
 
-    // Boot
-    const existing = loadStoredToken();
-    if (existing) {
-      state.token = existing;
-      api("/v1/status").then(() => enterShell()).catch(() => signOut());
-    } else {
-      document.getElementById("auth-view").hidden = false;
+    // Prefer the HttpOnly session. A saved management token must not silently
+    // bypass Control sign-out or its passkey policy when browser SSO is enabled.
+    async function boot() {
+      const query = new URLSearchParams(location.search);
+      const manual = query.get("login") === "manual";
+      if (CONTROL_SSO) {
+        document.getElementById("control-login").hidden = false;
+        document.getElementById("manual-login").hidden = manual;
+        document.getElementById("token-login-fields").hidden = !manual;
+        document.getElementById("login-description").textContent = "共用 Luma 控制台登录状态，支持通行密钥登录。";
+        try {
+          const response = await fetch("/v1/auth/session");
+          if (response.ok && (await response.json()).authenticated) {
+            state.session = true;
+            enterShell();
+            return;
+          }
+          if (response.status !== 401) throw new Error("Luma 登录服务暂不可用，请稍后重试。");
+        } catch (err) {
+          const error = document.getElementById("login-error");
+          error.textContent = err.message || "Luma 登录服务暂不可用，请稍后重试。";
+          error.hidden = false;
+          if (!manual) return;
+        }
+        if (!manual) {
+          signOut();
+          if (query.get("sso") === "failed") {
+            const error = document.getElementById("login-error");
+            error.textContent = "Luma 登录未完成或已过期，请重新登录。";
+            error.hidden = false;
+          } else if (!query.has("signedOut")) {
+            location.replace("/auth/login");
+          }
+          return;
+        }
+      }
+      const existing = loadStoredToken();
+      if (existing) {
+        state.token = existing;
+        try { await api("/v1/status"); enterShell(); } catch { signOut(); }
+      }
     }
+    boot();
   })();
   </script>
 </body>

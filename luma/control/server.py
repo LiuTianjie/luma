@@ -16377,6 +16377,16 @@ async def _asgi_auth(request: Request) -> Response:
             if not isinstance(body, dict):
                 raise LumaError("request body must be a JSON object")
         # Public: what the sign-in screen needs, and the sign-in ceremonies themselves.
+        if method == "POST" and path.startswith("/v1/auth/builder/"):
+            from . import builder_auth
+            if path == "/v1/auth/builder/authorize":
+                return _auth_json(await run_in_threadpool(builder_auth.authorize, session_id, request.headers, body))
+            if path == "/v1/auth/builder/exchange":
+                return _auth_json(await run_in_threadpool(builder_auth.exchange, body))
+            if path == "/v1/auth/builder/verify":
+                return _auth_json(await run_in_threadpool(builder_auth.verify, bearer_token(request.headers)))
+            if path == "/v1/auth/builder/logout":
+                return _auth_json(await run_in_threadpool(builder_auth.logout, bearer_token(request.headers)))
         if method == "GET" and path == "/v1/auth/config":
             return _auth_json(await run_in_threadpool(dashboard_auth.public_config))
         if method == "GET" and path == "/v1/auth/session":

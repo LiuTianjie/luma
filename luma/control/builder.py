@@ -10,21 +10,25 @@ from ..errors import LumaError
 from .state import load_auth_state, require_token
 
 
-def _client(token: str):
+def service_url(state: dict[str, Any]) -> str:
     from . import server
-    from ..cli.builder import BuilderClient
-
-    state = load_auth_state()
-    require_token(state, token, token_type="deploy")
     url = str(os.environ.get("LUMA_BUILD_URL") or server._builder_service_url(state)).strip().rstrip("/")
     parsed = urllib.parse.urlsplit(url)
     if not url:
         raise LumaError("独立 Builder 尚未配置：请部署 luma-build 应用，或在 Control 设置 LUMA_BUILD_URL")
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise LumaError("invalid configured Builder URL")
+    return url
+
+
+def _client(token: str):
+    from ..cli.builder import BuilderClient
+
+    state = load_auth_state()
+    require_token(state, token, token_type="deploy")
     # The endpoint is operator configuration, never a browser-supplied URL.
     # Reuse SSO server-side; the browser keeps only its HttpOnly Control session.
-    return BuilderClient(url, token), state
+    return BuilderClient(service_url(state), token), state
 
 
 def status(token: str) -> dict[str, Any]:

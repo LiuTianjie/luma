@@ -5,6 +5,7 @@ import { appToComposeDraft, serviceToDraft } from "./components/applicationModel
 import { EnrollPanel } from "./components/EnrollPanel";
 import { AuthLayout } from "./components/AuthLayout";
 import { LoginPanel } from "./components/LoginPanel";
+import { BuilderSignIn } from "./components/BuilderSignIn";
 import { Topbar } from "./components/Topbar";
 import { AppRoutes, preloadPage } from "./AppRoutes";
 import { AppSidebar } from "./Sidebar";
@@ -60,8 +61,9 @@ export function App() {
   const auth = useDashboardAuth();
   // A one-time enrollment link renders before (and instead of) sign-in.
   const enrolling = router.path === "/enroll";
+  const builderLogin = router.path === "/builder-login";
   const token = enrolling ? "" : auth.token;
-  const { payload, cluster, errors, syncStatus, lastUpdated, loadDashboard } = useDashboardData(dashboardScope, dashboardQuery, token, auth.expire);
+  const { payload, cluster, errors, syncStatus, lastUpdated, loadDashboard } = useDashboardData(dashboardScope, dashboardQuery, builderLogin ? "" : token, auth.expire);
   const { mode: themeMode, theme, setMode: setThemeMode } = useTheme();
   const vm = useMemo(() => createDashboardViewModel(payload), [payload]);
   // Pages that fetch their own data return no cluster identity; keep the last one seen.
@@ -212,6 +214,11 @@ export function App() {
         )}
       </AuthLayout>
     );
+  }
+
+  if (builderLogin) {
+    const challenge = new URLSearchParams(router.search).get("challenge") || "";
+    return <AuthLayout lang={lang} onLangChange={setLang}><BuilderSignIn key={challenge} token={token} challenge={challenge} lang={lang} /></AuthLayout>;
   }
 
   return (

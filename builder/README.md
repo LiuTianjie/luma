@@ -3,7 +3,8 @@
 独立的、可插拔的远程 BuildKit 构建队列服务与无状态算力 Runner 集群（架构地位同 [`observe/`](../observe/)）。
 
 `luma-build` 作为一个普通应用部署在 Luma 之上，与 `luma-control` **完全解耦**且**天然复用 Luma 的身份与 Scoped Secret 体系**：
-- **零二次登录（SSO 身份复用）**：操作员与 CLI 直接复用本机 `luma login`（`~/.config/luma/current-context`）的登录态，`luma-build` 通过 `luma-control` 只读接口 `POST /v1/auth/login/verify` 验签，无需维护额外的管理员密码。
+- **浏览器共用登录态**：配置 `LUMA_CONTROL_URL` 后，打开 Builder 会复用 Luma 控制面的 Cookie／Passkey 会话；未登录时先在控制面登录，再自动返回。控制面通过已部署的 `luma-build` 域名或 `LUMA_BUILD_URL` 确定唯一允许回跳的 HTTPS 地址。一次性票据绑定浏览器校验码，Builder 只持有 HttpOnly Cookie，不接触控制面的 Cookie 或管理 Token；控制面退出、撤销或过期后，Builder 后续请求立即失效。两端需同时升级到支持浏览器 SSO 的版本。
+- **CLI 身份复用**：CLI 继续使用本机 `luma login`（`~/.config/luma/current-context`）的 Token，由 `POST /v1/auth/login/verify` 验证。独立部署或恢复访问可在 Builder 登录页选择「使用管理 Token」（也可访问 `/?login=manual`）。Builder 的「退出」只退出当前 Builder 会话，控制面会话保持有效。
 - **凭据统一用 `luma secret --scope luma-build` 管理 + 读写权限分离**：
   - **ACR Push 写凭据 & Git Token**：直接作为 `luma-build` 服务的 Luma Scoped Secrets 注入该容器（集群内其他节点与其他应用不可见），单次构建租约达成瞬间按需从内存下发给 Runner，任务结束立即销毁；
   - **ACR Pull 只读凭据**：通过 `luma registry login` 存在 `luma-control` 供业务运行节点安全拉镜像，严格遵循最小权限分离。

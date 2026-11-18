@@ -18,6 +18,7 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, R
 from starlette.routing import Route
 
 from . import __version__
+from .browser_auth import BrowserAuth
 from .dashboard import FAVICON_SVG, render_dashboard_html
 from .deployer import (
     ControlAuthVerifier,
@@ -260,6 +261,7 @@ def create_app(
         insecure=resolved_insecure,
         ttl_seconds=resolved_auth_ttl,
     )
+    browser_auth = BrowserAuth(auth_verifier)
     deployer = ControlDeployClient(
         resolved_control_url,
         control_deploy_token if control_deploy_token is not None else os.environ.get("LUMA_DEPLOY_TOKEN", ""),
@@ -284,6 +286,9 @@ def create_app(
         return False
 
     async def require_admin(request: Request) -> None:
+        if not request.headers.get("authorization"):
+            await browser_auth.require_session(request)
+            return
         tok = _bearer_token(request)
         ok = await run_in_threadpool(_is_valid_admin_token_sync, tok)
         if not ok:
@@ -318,7 +323,7 @@ def create_app(
         return _no_store_json({"ok": True, "service": "luma-build", "version": __version__})
 
     async def dashboard_route(_request: Request) -> HTMLResponse:
-        html_body, nonce = render_dashboard_html(version=__version__)
+        html_body, nonce = render_dashboard_html(version=__version__, control_sso=auth_verifier.enabled)
         csp = "; ".join(
             [
                 "default-src 'self'",
@@ -689,6 +694,7 @@ def create_app(
     app = Starlette(
         lifespan=lifespan,
         routes=[
+            *browser_auth.routes(),
             Route("/", dashboard_route, methods=["GET"]),
             Route("/dashboard", dashboard_route, methods=["GET"]),
             Route("/favicon.svg", favicon_route, methods=["GET"]),
