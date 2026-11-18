@@ -115,3 +115,11 @@ PYTHONPATH=builder .venv/bin/python -m unittest discover -s builder/tests -p 'te
 ## 独立发版
 
 使用 `python scripts/bump-builder-version.py` 更新 builder 版本，提交后推送 `builder-v0.2.76` tag。`Publish Builder` CI 发布 GitHub Release 包制品和 `ghcr.io/liutianjie/luma-build-server:v0.2.76`、`ghcr.io/liutianjie/luma-build-runner:v0.2.76`，不自动部署。先升级 Luma/Control，再由操作员部署 builder；详见[发版指南](../docs/maintainers/release.zh-CN.md#independent-builder-release)。
+
+## 本集群维护入口
+
+`bash builder/deploy.sh` 使用本机 `luma.local.compose.yml` 和 Control 的全局 ACR 配置。
+本地 sidecar 定义实际域名；示例 `build.example.com` 不作为本集群默认入口。
+首次显式修改 scoped secrets 时传 `--env builder/.env`，日常发布复用已有作用域。
+Registry host/namespace 不固定在脚本中。运行镜像迁移和实际服务升级须在发布时执行；
+仅提交脚本不会升级 Builder、Control 或 Runner。

@@ -232,3 +232,13 @@ Do not publish these on `0.0.0.0` or the public NIC.
 the Nomad/docker0 bridge. Control itself is host-networked and queries
 `http://127.0.0.1:8428`. Grafana listens on `127.0.0.1:3100` and is published
 at `/grafana` on the Control domain.
+
+## Local release with ACR
+
+Run `bash observe/deploy.sh` from the repository. This preserves the local-build
+lane and the `luma-observe` application/storage. Control provides
+`build.localRegistryHost` and `build.registryNamespace`; do not put the former
+`:5000` registry in Compose. Explicit `--proxy` remains a caller-specific base-image
+network option, not a registry setting. If the saved workflow includes an old LAN
+proxy, review that difference before accepting it. Third-party image references
+remain upstream source images; this source change does not copy old runtime images.
