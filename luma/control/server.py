@@ -5368,7 +5368,7 @@ def _restore_write_only_configuration(state: Dict[str, Any], body: Dict[str, Any
 
 
 def _prepare_nomad_workload_security(config: Any, state: Dict[str, Any], job_json: str) -> str:
-    from ..nomad_security import authorize_application, needs_host_volumes, read_private_json, security_root, validate_application
+    from ..nomad_security import application_storage_mounts, authorize_application, needs_host_volumes, read_private_json, security_root, validate_application
     from ..nomad_migration_node import CAPABILITY
     job_json = _protect_nomad_secrets(config, state, job_json)
     policy = read_private_json(security_root() / "workloads.json", optional=True)
@@ -5385,7 +5385,7 @@ def _prepare_nomad_workload_security(config: Any, state: Dict[str, Any], job_jso
         targets: dict[str, tuple[Dict[str, Any], list[Dict[str, Any]]]] = {}
         trusted_constraint = {"LTarget": "${meta.luma_host_access}", "Operand": "=", "RTarget": "trusted"}
         for group in job.get("TaskGroups") or []:
-            mounts = [m for t in group.get("Tasks") or [] for m in (t.get("Config") or {}).get("mount") or []]
+            mounts = application_storage_mounts(job, group)
             if not mounts:
                 continue
             placement = {
@@ -7350,6 +7350,11 @@ def _register_compose_deployment(state: Dict[str, Any], deployment: ComposeDeplo
         "storageBackends": _compose_storage_backend_signatures(deployment),
         "updatedAt": int(time.time()),
     }
+    last_successful_at = previous.get("lastSuccessfulAt")
+    if previous.get("status") == "active":
+        last_successful_at = previous.get("updatedAt") or int(time.time())
+    if last_successful_at:
+        record["lastSuccessfulAt"] = last_successful_at
     compose_content = body.get("composeContent")
     if isinstance(compose_content, str):
         record["composeContent"] = compose_content
@@ -7397,6 +7402,8 @@ def _mark_compose_deployment(
         record["lastError"] = error
         record["steps"] = list(steps or [])
         record["updatedAt"] = int(time.time())
+        if status == "active":
+            record["lastSuccessfulAt"] = record["updatedAt"]
 
     mutate_state(mutate)
 
@@ -7416,7 +7423,11 @@ def _compose_deployment_record(state: Dict[str, Any], name: str) -> Dict[str, An
 def _observe_otlp_settings(state: Dict[str, Any], stack: str) -> Dict[str, str] | None:
     slug = slugify(stack)
     record = _compose_deployment_record(state, OBSERVE_STACK)
-    if slug != OBSERVE_STACK and (not isinstance(record, dict) or str(record.get("status") or "") != "active"):
+    # A failed update leaves the previous Observe deployment serving. Do not
+    # silently strip telemetry wiring from applications deployed afterwards.
+    if slug != OBSERVE_STACK and (not isinstance(record, dict) or not (
+        str(record.get("status") or "") == "active" or record.get("lastSuccessfulAt")
+    )):
         return None
     token = str(state.get("observeOtlpToken") or "")
     if len(token) < 32:

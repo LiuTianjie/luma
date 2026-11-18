@@ -302,18 +302,33 @@ def workload_policy_lock(path: Path | None = None):
         os.close(fd)
 
 
+def _observe_reader_mount(job: Mapping[str, Any], task: Mapping[str, Any], mount: Mapping[str, Any]) -> bool:
+    role = {"nomad-exporter": "exporter", "log-shipper": "logs"}.get(task.get("Name")) if job.get("ID") == "luma-observe" else None
+    return bool(role and mount == {
+        "type": "bind", "source": str(service_token_path(security_root(), role).parent),
+        "target": "/run/luma-nomad-credential", "readonly": True,
+    })
+
+
+def application_storage_mounts(job: Mapping[str, Any], group: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Data mounts for owner validation, excluding exact managed reader credentials.
+
+    Credential directories are installed and rotated by Nomad security, not
+    provisioned as application data. The complete job still passes admission.
+    """
+    return [mount for task in group.get("Tasks") or []
+            for mount in (task.get("Config") or {}).get("mount") or []
+            if not _observe_reader_mount(job, task, mount)]
+
+
 def validate_application(job: Mapping[str, Any]) -> None:
     inspected = copy.deepcopy(dict(job))
     # These exact, read-only reader directories are injected by prepare_job.
     # They never contain the submit token or a CA signing key.
-    if inspected.get("ID") == "luma-observe":
-        for group in inspected.get("TaskGroups") or []:
-            for task in group.get("Tasks") or []:
-                role = {"nomad-exporter": "exporter", "log-shipper": "logs"}.get(task.get("Name"))
-                if role:
-                    cfg = task.get("Config") or {}
-                    allowed = {"type": "bind", "source": str(service_token_path(security_root(), role).parent), "target": "/run/luma-nomad-credential", "readonly": True}
-                    cfg["mount"] = [m for m in cfg.get("mount") or [] if m != allowed]
+    for group in inspected.get("TaskGroups") or []:
+        for task in group.get("Tasks") or []:
+            cfg = task.get("Config") or {}
+            cfg["mount"] = [m for m in cfg.get("mount") or [] if not _observe_reader_mount(inspected, task, m)]
     deny_host_root(inspected)
     permitted = {"host or custom network", "host bind mount", "persistent Docker volume", "unscoped Docker volume"}
     unexpected = set(job_risks(job)) - permitted
