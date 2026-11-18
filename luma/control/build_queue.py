@@ -50,9 +50,9 @@ CANCELING_STALE_SECONDS = 180
 State = dict[str, Any]
 WorkItem = tuple[str, dict[str, Any]]
 QUEUE_METADATA_KINDS = {"buildRuns", "agentTasks"}
-# Deployments already serialize on the runtime lock; admitting more would only
-# park execution threads behind it.
-DEPLOY_SLOTS = 1
+# Independent deployments use separate workers from image builds. Per-target
+# ordering and resource locks, rather than a single global slot, protect writes.
+DEPLOY_SLOTS = 8
 
 
 def _runs(state: State) -> State:
@@ -277,18 +277,9 @@ def reap_stale(state: State, *, now: int | None = None) -> bool:
         status = str(run.get("status") or "")
         updated = int(run.get("updatedAt") or run.get("createdAt") or 0)
         if status == "canceling":
-            requested = int(run.get("cancelRequestedAt") or updated)
-            if current - max(requested, 0) < CANCELING_STALE_SECONDS:
-                continue
-            run.update(
-                status="canceled",
-                completedAt=current,
-                canceledAt=current,
-                updatedAt=current,
-                message="Canceled after waiting for queue unwind",
-            )
-            _request_stop(state, run, current)
-            changed = True
+            # Only the executor's exit receipt can confirm cancellation. Time
+            # or another button click cannot prove that Nomad/BuildKit stopped.
+            changed = _request_stop(state, run, current) or changed
         elif status == "finalizing" and updated and current - updated >= (
                 DEPLOY_STALE_SECONDS if _stage(state, run) == "deploy" else FINALIZING_STALE_SECONDS):
             run.update(
@@ -303,6 +294,13 @@ def reap_stale(state: State, *, now: int | None = None) -> bool:
     return changed
 
 
+def reserve_order(state: State, run: State) -> None:
+    if not run.get("queueOrder"):
+        order = int(state.get("buildQueueSequence") or 0) + 1
+        state["buildQueueSequence"] = order
+        run["queueOrder"] = order
+
+
 def attach(state: State, run: State, kind: str, body: State) -> None:
     # Called inside the same transaction that creates/claims the build record.
     private = dict(body)
@@ -310,6 +308,9 @@ def attach(state: State, run: State, kind: str, body: State) -> None:
     for key in ("token", "gitToken", "registryAuth", "password"):
         private.pop(key, None)  # credentials are resolved from Control at execution
     state.setdefault("buildQueue", {})[run["id"]] = {"kind": kind, "body": private}
+    reserve_order(state, run)
+    run.update(status="queued", queueManaged=True, queueRequestHash=_digest(private),
+               message="Waiting in branch deployment queue")
     key = replacement_key(run, body)
     if key:
         run["replacementKey"] = key
@@ -323,13 +324,12 @@ def attach(state: State, run: State, kind: str, body: State) -> None:
             older_key = replacement_key(older, older_payload.get("body") or {})
             if older_key != key or older.get("status") in TERMINAL and not older.get("queueExecuting"):
                 continue
+            if _order(older) > _order(run):
+                _cancel_superseded(state, run, older_id, now)
+                return
             _cancel_superseded(state, older, run["id"], now)
     run["queueKey"] = queue_identity(run, body)
     run["queueIdentityVersion"] = 2
-    order = int(state.get("buildQueueSequence") or 0) + 1
-    state["buildQueueSequence"] = order
-    run.update(status="queued", queueOrder=order, queueManaged=True,
-               queueRequestHash=_digest(private), message="Waiting in branch deployment queue")
 
 
 def discard(state: State, run: State) -> None:
@@ -433,6 +433,8 @@ def submit_local(token: str, build_id: str, body: State) -> State:
         srv._validate_local_build_result(run, private["buildResult"])
         srv._request_env_secrets(private)
         attach(state, run, "local", private)
+        if run.get("status") in TERMINAL:
+            return
         if not enter_deploy_stage(state, run, private["buildResult"].get("manifest"), int(time.time())):
             return
         # Protect the immutable uploaded images from Registry retention while
@@ -519,6 +521,10 @@ def _deploy_ahead(state: State, run: State, current: list[State]) -> list[State]
             continue
         other_key = str(other.get("deployKey") or "")
         same = other_key == key if key and other_key else identities_conflict(ident, _identity(state, other))
+        if key and _stage(state, other) == "build":
+            # An older image may finish later. enter_deploy_stage checks the
+            # submitted order against newer pending/successful deployments.
+            continue
         if same and (_deploying(state, other) or _order(other) < _order(run)):
             ahead.append(other)
     ahead.sort(key=lambda other: (not _deploying(state, other), _order(other)))

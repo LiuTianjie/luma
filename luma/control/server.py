@@ -70,6 +70,7 @@ from ..errors import LumaError
 from .build_events import append_build_run_events
 from .build_alert_details import result_fields as _build_alert_result_fields
 from .database_errors import is_database_busy, persist_receipt
+from .deploy_locks import DeploymentLocks, request_resources
 from .logs import LogReader, LogUnavailable, CAPABILITIES as LOG_CAPABILITIES, LIMITS as LOG_LIMITS, POLL_INTERVAL as LOG_POLL_INTERVAL, encode_event as _log_event
 from ..io import load_yaml
 from ..local import LocalExecutor
@@ -84,7 +85,7 @@ from ..local_storage import (
 from ..nomad_security import nomad_token
 from ..nomad_enrollment import agent_credential as nomad_agent_credential
 from ..security_audit import SecurityAuditMiddleware, authenticated as audit_authenticated
-from ..nomad_api import NomadApi, deploy_to_nomad, remove_from_nomad, revert_job, job_versions, nomad_addr, nomad_status_summary, nomad_services_summary, nomad_service_directory
+from ..nomad_api import NomadApi, NomadCancellationError, deploy_to_nomad, remove_from_nomad, revert_job, job_versions, nomad_addr, nomad_status_summary, nomad_services_summary, nomad_service_directory
 from ..nomad_render import EDGE_EXPOSURES, node_traefik_job_id, render_node_traefik_job, render_nomad_job, render_compose_job, resource_policy_warnings
 from ..observe_instrument import OBSERVE_STACK, manager_tailscale_ip, mint_otlp_token, otlp_mesh_endpoint
 from .observe_access import guard_access_credentials
@@ -235,10 +236,10 @@ PUBLIC_ROUTE_SETTLE_INTERVAL_SECONDS = float(os.environ.get("LUMA_PUBLIC_ROUTE_S
 TRAEFIK_PROVIDER_SETTLE_TIMEOUT_SECONDS = int(os.environ.get("LUMA_TRAEFIK_PROVIDER_SETTLE_TIMEOUT_SECONDS", "20"))
 DOCKER_RESTART_RECOVERY_TIMEOUT_SECONDS = int(os.environ.get("LUMA_DOCKER_RESTART_RECOVERY_TIMEOUT_SECONDS", "180"))
 
-# Serializes every control-plane deployment path.  A single lock prevents a
-# native manifest deploy and a Compose deploy from racing on job slugs, domains, routes, storage baselines, or the
-# generated Nomad artifact.
+# Held only while acquiring/releasing resource ownership. Independent jobs can
+# wait for Nomad concurrently; shared names/hosts/ports remain serialized.
 _DEPLOY_LOCK = threading.RLock()
+_DEPLOY_OWNERS = DeploymentLocks(_DEPLOY_LOCK)
 _FLEET_UPDATE_LOCK = threading.RLock()
 FLEET_UPDATE_CONCURRENCY = 4
 FLEET_UPDATE_ATTEMPTS = 5
@@ -267,17 +268,34 @@ def _serialize_deploy(func: Callable[..., Any]) -> Callable[..., Any]:
         body = kwargs.get("body") or (args[1] if len(args) > 1 and isinstance(args[1], dict) else {})
         source = body.get("gitSource") if isinstance(body, dict) else None
         build_id = str(source.get("buildRunId") or "") if isinstance(source, dict) else ""
-        while True:
-            if build_id and _build_run_cancel_requested(build_id):
-                raise LumaError("build canceled while waiting for runtime deployment")
-            if _DEPLOY_LOCK.acquire(timeout=0.25):
-                break
-        try:
-            if build_id and _build_run_cancel_requested(build_id):
-                raise LumaError("build canceled while waiting for runtime deployment")
+        def resources() -> set[str] | None:
+            keys = request_resources(func.__name__, body)
+            if keys is not None:
+                # Re-read after waiting: the previous revision's hosts must
+                # remain owned while removing old DNS/redirect routes, too.
+                state = load_auth_state()
+                jobs = {key.removeprefix("job:") for key in keys if key.startswith("job:")}
+                for kind, records in (state.get("deployments") or {}).items():
+                    if not isinstance(records, dict):
+                        continue
+                    for job in jobs:
+                        record = records.get(job)
+                        if not isinstance(record, dict):
+                            continue
+                        previous = request_resources(
+                            "handle_compose_deployment" if kind == "compose" else "handle_deployment",
+                            {"manifest": record.get("manifest")},
+                        )
+                        if previous is None:
+                            return None
+                        keys.update(previous)
+            return keys
+
+        with _DEPLOY_OWNERS.hold(
+            resources,
+            lambda: bool(build_id and _build_run_cancel_requested(build_id)),
+        ):
             return func(*args, **kwargs)
-        finally:
-            _DEPLOY_LOCK.release()
 
     return wrapper
 
@@ -1121,6 +1139,9 @@ def _create_build_run(
         if ident:
             runs[run_id]["queueKey"] = ident
             runs[run_id]["queueIdentityVersion"] = 2
+        if queued_work is not None or (mode == "local" and body.get("queue") is True):
+            from .build_queue import reserve_order
+            reserve_order(state, runs[run_id])
         if build_candidates and len(build_candidates) > 1:
             runs[run_id]["buildCandidates"] = list(build_candidates)
         if queued_work is not None:
@@ -1141,7 +1162,7 @@ def _append_build_run_event(run_id: str, event: Dict[str, Any]) -> None:
     append_build_run_events(run_id, [event], message_limit=BUILD_RUN_MESSAGE_LIMIT)
 
 
-def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | None = None, message: str = "") -> None:
+def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | None = None, message: str = "", cancel_failed: bool = False) -> None:
     now = int(time.time())
 
     def mutate(state: Dict[str, Any]) -> None:
@@ -1155,7 +1176,7 @@ def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | No
             if not run.get("completedAt"):
                 run.update(completedAt=now, updatedAt=now)
             return
-        final_status = "canceled" if current_status in {"canceling", "canceled"} and status != "canceled" else status
+        final_status = "failed" if cancel_failed else "canceled" if current_status in {"canceling", "canceled"} and status != "canceled" else status
         run["status"] = final_status
         run["updatedAt"] = now
         run["completedAt"] = now
@@ -2858,9 +2879,14 @@ def _build_run_agent_task(
 
 
 def _build_run_cancel_requested(build_id: str) -> bool:
-    from .state import load_entity
     run = load_entity("buildRuns", build_id)
     return isinstance(run, dict) and (bool(run.get("cancelRequestedAt")) or str(run.get("status") or "") in {"canceling", "canceled", "failed"})
+
+
+def _nomad_cancel_kwargs(body: Dict[str, Any]) -> Dict[str, Any]:
+    source = body.get("gitSource")
+    build_id = str(source.get("buildRunId") or "") if isinstance(source, dict) else ""
+    return {"cancel_requested": lambda: _build_run_cancel_requested(build_id)} if build_id else {}
 
 
 def handle_build_run_cancel(
@@ -2882,17 +2908,8 @@ def handle_build_run_cancel(
             return _build_run_public(run), True
         if run_status == "canceling":
             from .build_queue import _request_stop
-            run.update(
-                status="canceled",
-                message="Canceled after operator retry",
-                cancelRequestedAt=run.get("cancelRequestedAt") or now,
-                canceledAt=now,
-                completedAt=now,
-                updatedAt=now,
-            )
-            # Repeating cancel is not proof that the worker or child exited.
             _request_stop(current, run, now)
-            return _build_run_public(run), False
+            return _build_run_public(run), True
         if run_status == "queued":
             from .build_queue import discard
             run.update(status="canceled", message="Canceled while waiting in project deployment queue",
@@ -4484,7 +4501,8 @@ def handle_local_build_complete(token: str, build_id: str, body: Dict[str, Any],
         return submit_local(token, build_id, body)
     state = load_state()
     require_token(state, token, token_type="deploy")
-    run = _build_runs(state).get(build_id)
+    from .state import load_entity
+    run = load_entity("buildRuns", build_id)
     if not isinstance(run, dict):
         raise LumaError(f"build run not found: {build_id}")
     if str(run.get("mode") or "") != "local":
@@ -4534,7 +4552,7 @@ def handle_local_build_complete(token: str, build_id: str, body: Dict[str, Any],
     )
 
     def run_progress(event: dict[str, str]) -> None:
-        if _build_run_cancel_requested(build_id):
+        if event.get("status") == "start" and _build_run_cancel_requested(build_id):
             raise LumaError("build canceled")
         _append_build_run_event(build_id, event)
 
@@ -4605,7 +4623,7 @@ def handle_local_build_complete(token: str, build_id: str, body: Dict[str, Any],
         _complete_build_run(build_id, "succeeded", result=result if isinstance(result, dict) else {})
         return result
     except Exception as exc:
-        _complete_build_run(build_id, "failed", message=str(exc))
+        _complete_build_run(build_id, "failed", message=str(exc), cancel_failed=isinstance(exc, NomadCancellationError))
         raise
 
 
@@ -4960,6 +4978,7 @@ def handle_build_deploy(
             build_run_id,
             "canceled" if _build_run_cancel_requested(build_run_id) else "failed",
             message=str(exc),
+            cancel_failed=isinstance(exc, NomadCancellationError),
         )
         raise
     except Exception as exc:
@@ -4967,6 +4986,7 @@ def handle_build_deploy(
             build_run_id,
             "canceled" if _build_run_cancel_requested(build_run_id) else "failed",
             message=str(exc),
+            cancel_failed=isinstance(exc, NomadCancellationError),
         )
         raise
 
@@ -4989,6 +5009,7 @@ def handle_queued_repository_deploy(
             build_run_id,
             "canceled" if _build_run_cancel_requested(build_run_id) else "failed",
             message=str(exc),
+            cancel_failed=isinstance(exc, NomadCancellationError),
         )
         raise
 
@@ -7853,7 +7874,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
             "Deploy Nomad job",
             lambda: "Orchestrator deploy skipped"
             if _skip_orchestrator(body)
-            else deploy_to_nomad(config, stack_text, state, slug=service.slug),
+            else deploy_to_nomad(config, stack_text, state, slug=service.slug, **_nomad_cancel_kwargs(body)),
             progress=progress,
         )
         # The redirect routers ship with the new job, so the redirect hosts
@@ -10268,7 +10289,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
             "Deploy compose Nomad job",
             lambda: "Orchestrator deploy skipped"
             if _skip_orchestrator(body)
-            else deploy_to_nomad(config, stack_text, state, slug=deployment.slug),
+            else deploy_to_nomad(config, stack_text, state, slug=deployment.slug, **_nomad_cancel_kwargs(body)),
             progress=progress,
         )
         for service in compose_public_services(deployment):
@@ -12942,6 +12963,8 @@ def _deploy_step(steps: list[dict[str, str]], name: str, action: Any, *, progres
         step = {"name": name, "status": "fail", "message": str(exc)}
         steps.append(step)
         _emit_progress(progress, step)
+        if isinstance(exc, NomadCancellationError):
+            raise
         raise LumaError(f"{name} failed: {exc}") from exc
     except Exception as exc:
         # A non-LumaError (socket timeout, ConnectionError from sync_dns/Nomad,

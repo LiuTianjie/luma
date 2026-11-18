@@ -24,7 +24,7 @@ import urllib.parse
 import urllib.request
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Mapping
+from typing import Any, Callable, Dict, List, Mapping
 
 from .config import LumaConfig
 from .errors import LumaError
@@ -58,6 +58,45 @@ class NomadRolloutError(LumaError):
     """
 
 
+class NomadCancellationError(LumaError):
+    """Cancellation could not be confirmed by Nomad; never report canceled."""
+
+
+def _cancel_rollout(client: "NomadApi", *, job_id: str, target_modify_index: int, noop: bool) -> str:
+    job = client.request("GET", f"/v1/job/{_q(job_id)}")
+    if isinstance(job, dict) and job.get("ID") != job_id:
+        raise LumaError("Nomad cancellation returned a different job")
+    if not isinstance(job, dict) or _positive_index(job.get("JobModifyIndex")) != target_modify_index:
+        return "submitted revision is no longer current"
+    version = _nonnegative_int(job.get("Version"))
+    if version is None:
+        raise LumaError("Nomad cancellation cannot verify the submitted job version")
+    deployment = _target_deployment(client, job_id=job_id, target_modify_index=target_modify_index, target_version=version)
+    if deployment:
+        deployment_id = str(deployment.get("ID") or "")
+        if not deployment_id:
+            raise LumaError("Nomad cancellation found a deployment without an ID")
+        if deployment.get("Status") not in {"successful", "failed", "cancelled", "canceled"}:
+            # Nomad stops placing this rollout and honors its AutoRevert policy.
+            # An exact deployment ID cannot cancel a later job version.
+            try:
+                client.request("POST", f"/v1/deployment/fail/{_q(deployment_id)}", {"DeploymentID": deployment_id})
+            except LumaError:
+                current = client.request("GET", f"/v1/deployment/{_q(deployment_id)}")
+                if not isinstance(current, dict) or current.get("Status") not in {"successful", "failed", "cancelled", "canceled"}:
+                    raise
+        return f"deployment {deployment_id} stopped"
+    if not noop and not job.get("Stop"):
+        # Cancellation can arrive before the scheduler creates a deployment.
+        # CAS prevents stopping a newer revision submitted in the meantime.
+        client.request("POST", "/v1/jobs", {
+            "Job": {**job, "Stop": True},
+            "EnforceIndex": True,
+            "JobModifyIndex": target_modify_index,
+        })
+    return "no active deployment"
+
+
 def nomad_addr(config: LumaConfig, state: Dict[str, Any]) -> str:
     """Resolve the Nomad HTTP endpoint.
 
@@ -80,6 +119,7 @@ def deploy_to_nomad(
     *,
     slug: str,
     rollout_timeout_seconds: float | None = None,
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> str:
     """Register a job and wait for this exact Nomad rollout to be healthy.
 
@@ -113,6 +153,8 @@ def deploy_to_nomad(
         rollout_timeout_seconds,
     )
     deadline = time.monotonic() + timeout_seconds
+    if cancel_requested and cancel_requested():
+        raise NomadRolloutError(f"Nomad rollout canceled for {slug} before registration")
     resp = client.request("POST", "/v1/jobs", {"Job": job})
     if not isinstance(resp, dict):
         raise LumaError(
@@ -127,6 +169,14 @@ def deploy_to_nomad(
             "rollout cannot be correlated safely"
         )
 
+    def check_cancel() -> None:
+        if cancel_requested and cancel_requested():
+            try:
+                detail = _cancel_rollout(client, job_id=job_id, target_modify_index=target_modify_index, noop=not bool(eval_id))
+            except LumaError as exc:
+                raise NomadCancellationError(f"Could not confirm Nomad cancellation for {slug}: {exc}") from exc
+            raise NomadRolloutError(f"Nomad rollout canceled for {slug}: {detail}")
+
     deployment_id = ""
     evaluation: Dict[str, Any] | None = None
     if eval_id:
@@ -138,6 +188,7 @@ def deploy_to_nomad(
             target_modify_index=target_modify_index,
             deadline=deadline,
             timeout_seconds=timeout_seconds,
+            check_cancel=check_cancel,
         )
         deployment_id = str(evaluation.get("DeploymentID") or "").strip()
 
@@ -165,6 +216,7 @@ def deploy_to_nomad(
             target_version=target_version,
             deadline=deadline,
             timeout_seconds=timeout_seconds,
+            check_cancel=check_cancel,
         )
     else:
         # Empty EvalID is Nomad's normal no-op response.  A matching deployment
@@ -195,6 +247,7 @@ def deploy_to_nomad(
                     deadline=deadline,
                     timeout_seconds=timeout_seconds,
                     initial=matching,
+                    check_cancel=check_cancel,
                 )
             elif matching_status != "successful":
                 # A no-op registration did not create this historical terminal
@@ -226,6 +279,7 @@ def deploy_to_nomad(
         expected_groups=expected_groups,
         deadline=deadline,
         timeout_seconds=timeout_seconds,
+        check_cancel=check_cancel,
     )
 
     from .secret_storage import enabled as encrypted_storage
@@ -388,11 +442,14 @@ def _wait_for_evaluation(
     target_modify_index: int,
     deadline: float,
     timeout_seconds: float,
+    check_cancel: Callable[[], None] | None = None,
 ) -> Dict[str, Any]:
     current_eval_id = eval_id
     last_status = ""
     visited: set[str] = set()
     while True:
+        if check_cancel:
+            check_cancel()
         if _deadline_expired(deadline):
             raise _rollout_timeout(
                 slug,
@@ -670,10 +727,13 @@ def _wait_for_deployment(
     deadline: float,
     timeout_seconds: float,
     initial: Mapping[str, Any] | None = None,
+    check_cancel: Callable[[], None] | None = None,
 ) -> Dict[str, Any]:
     last_status = ""
     current: Mapping[str, Any] | None = initial
     while True:
+        if check_cancel:
+            check_cancel()
         if _deadline_expired(deadline):
             raise _rollout_timeout(
                 slug,
@@ -828,9 +888,12 @@ def _wait_for_healthy_allocations(
     expected_groups: Mapping[str, int],
     deadline: float,
     timeout_seconds: float,
+    check_cancel: Callable[[], None] | None = None,
 ) -> int:
     last_status = ""
     while True:
+        if check_cancel:
+            check_cancel()
         if _deadline_expired(deadline):
             raise _rollout_timeout(
                 slug,

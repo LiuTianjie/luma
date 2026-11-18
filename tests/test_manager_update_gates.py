@@ -39,7 +39,7 @@ class ManagerUpdateGateTests(unittest.TestCase):
             "id": "manager-op-1",
             "status": "held",
         })
-        with patch("luma.control.server.load_state", return_value=state):
+        with patch("luma.control.server.load_state", return_value=state), patch("luma.control.server.load_auth_state", return_value=state):
             with self.assertRaisesRegex(LumaError, "cluster maintenance in progress"):
                 handle_deployment("management-token", {"manifest": "name: demo\n"})
 

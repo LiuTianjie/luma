@@ -181,7 +181,9 @@ An external `--manifest` automatically requires the same capability, even withou
 Imports and retries enter a persistent queue and move through two stages:
 
 - **Build.** Builds never wait for another build of the same application, because every attempt pushes its own immutable image. They wait only for a free compatible builder. Without `--build-node`, every declared builder with the right native platform and agent capabilities forms a pool: whichever becomes free first takes the next build. A project's previous builder holds its BuildKit cache, so it gets a short head start (`LUMA_BUILD_AFFINITY_WAIT_SECONDS` on Control, default 20) before another idle builder may take over. Pooling requires `registryHost` and a `pushHost` that every builder reaches, rather than `localhost`. `--build-node` pins one builder.
-- **Deploy.** A finished image deploys after earlier requests for the same application (the manifest `name`), and after earlier requests from the same repository and ref that have not finished building yet. Within one repository and ref, the latest submission wins: older requests still waiting are canceled, and a deployment that is already running is never interrupted. `main` and `dev` are only ordered, never canceled by each other.
+- **Deploy.** Up to eight independent applications can deploy concurrently. The same application (the manifest `name`) and conflicting domains or TCP relay ports remain serialized. Within one repository and ref, the latest submission wins: a newer finished image can deploy while an older image is still building, and that older image cannot overwrite it later. Local build order is reserved before building, not when uploading finishes. A rollout already running finishes before the next revision; `main` and `dev` are ordered for a shared target, never canceled by each other.
+
+Canceling a build during rollout stops its exact Nomad deployment (honoring the job's automatic rollback policy), interrupts the Control wait, and releases its queue slot when the executor exits. Repeated clicks or elapsed time do not mark a still-running executor as canceled. If Nomad cannot confirm the stop, the attempt reports the cancellation error instead of claiming success.
 
 The builder is released as soon as its image is pushed, so the next build starts while the previous one deploys. `LUMA_BUILD_QUEUE_CONCURRENCY` (default 4) limits concurrent build stages on Control; deployments have their own slot.
 
@@ -227,7 +229,7 @@ Records never contain tokens or `.env` contents. Notes are free text; do not put
 CI can use the CLI without a saved login:
 
 ```bash
-python -m pip install "luma-infra==0.2.75"
+python -m pip install "luma-infra==0.2.76"
 export LUMA_CONTROL_URL=https://luma.example.com
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 

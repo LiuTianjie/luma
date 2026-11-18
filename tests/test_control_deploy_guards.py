@@ -148,9 +148,64 @@ env:
 
 
 class DeployConcurrencyTests(unittest.TestCase):
-    """The state-touching deploy handlers must be serialized by _DEPLOY_LOCK so
-    two concurrent deploys cannot interleave their read-modify-write of
-    control.json (the slug-availability / scopedSecrets TOCTOU)."""
+    """Only conflicting resources serialize; unrelated Nomad waits overlap."""
+
+    def test_independent_jobs_overlap_but_shared_host_waits(self):
+        from luma.control.deploy_locks import DeploymentLocks, request_resources
+        gate = DeploymentLocks(threading.RLock())
+        entered, release, shared_entered = threading.Event(), threading.Event(), threading.Event()
+        first = request_resources('handle_deployment', {'manifest': 'name: first\ndomain: shared.example.com\n'})
+        other = request_resources('handle_deployment', {'manifest': 'name: other\ndomain: other.example.com\n'})
+        conflicting = request_resources('handle_compose_deployment', {'manifest': 'name: third\nservices:\n  web:\n    domain: shared.example.com\n'})
+        def hold_first():
+            with gate.hold(lambda: first, lambda: False):
+                entered.set()
+                release.wait(3)
+        def hold_shared():
+            with gate.hold(lambda: conflicting, lambda: False):
+                shared_entered.set()
+        first_thread = threading.Thread(target=hold_first)
+        shared_thread = threading.Thread(target=hold_shared)
+        first_thread.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            shared_thread.start()
+            with gate.hold(lambda: other, lambda: False):
+                self.assertFalse(shared_entered.is_set())
+        finally:
+            release.set()
+            first_thread.join(3)
+            if shared_thread.ident is not None:
+                shared_thread.join(3)
+        self.assertTrue(shared_entered.is_set())
+
+    def test_same_job_and_cluster_operations_wait_and_cancel(self):
+        from luma.control.deploy_locks import DeploymentLocks
+        gate = DeploymentLocks(threading.RLock())
+        canceled, waiting = threading.Event(), threading.Event()
+        errors = []
+        def cancel_check():
+            waiting.set()
+            return canceled.is_set()
+        def attempt():
+            try:
+                with gate.hold(lambda: {'job:app'}, cancel_check):
+                    errors.append('entered occupied job')
+            except LumaError as exc:
+                errors.append(str(exc))
+        with gate.hold(lambda: None, lambda: False):
+            worker = threading.Thread(target=attempt)
+            worker.start()
+            self.assertTrue(waiting.wait(2))
+            canceled.set()
+            worker.join(2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, ['build canceled while waiting for runtime deployment'])
+
+    def test_request_resources_cover_redirects_and_tcp_relay_conflicts(self):
+        from luma.control.deploy_locks import request_resources
+        resources = request_resources('handle_deployment', {'manifest': 'name: My App\ndomain: App.Example.com.\nredirectFrom: [old.example.com]\nexposure: tcp-relay\npublishPort: 2345\n'})
+        self.assertEqual(resources, {'job:my-app', 'host:app.example.com', 'host:old.example.com', 'tcp-relay:2345'})
 
     def _assert_serialized(self, handler_name: str):
         from luma.control import server as srv

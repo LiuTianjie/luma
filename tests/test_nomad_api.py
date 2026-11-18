@@ -88,6 +88,51 @@ def _allocation(*, alloc_id, version, healthy=True, status="running"):
 
 
 class NomadApiTests(unittest.TestCase):
+    def test_cancel_before_registration_does_not_submit_job(self):
+        fake = _FakeApi({})
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake), self.assertRaisesRegex(LumaError, "canceled.*before registration"):
+            nomad_api.deploy_to_nomad(cfg(), json.dumps({"Job": {"ID": "app"}}), {}, slug="app", cancel_requested=lambda: True)
+        self.assertEqual(fake.calls, [])
+
+    def test_cancel_during_evaluation_stops_exact_deployment(self):
+        fake = _FakeApi({
+            "POST /v1/jobs": {"EvalID": "eval-123", "JobModifyIndex": 20},
+            "GET /v1/job/app": _job(),
+            "GET /v1/job/app/deployments": [_deployment(status="running")],
+            "POST /v1/deployment/fail/deployment-123": {"Index": 22},
+        })
+        checks = iter([False, True])
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake), self.assertRaisesRegex(LumaError, "rollout canceled"):
+            nomad_api.deploy_to_nomad(cfg(), json.dumps({"Job": {"ID": "app"}}), {}, slug="app", cancel_requested=lambda: next(checks))
+        self.assertEqual(fake.calls[-1], ("POST", "/v1/deployment/fail/deployment-123", {"DeploymentID": "deployment-123"}))
+
+    def test_cancel_before_deployment_exists_uses_job_cas(self):
+        fake = _FakeApi({"GET /v1/job/app": _job(), "GET /v1/job/app/deployments": []})
+        nomad_api._cancel_rollout(fake, job_id="app", target_modify_index=20, noop=False)
+        method, path, body = fake.calls[-1]
+        self.assertEqual((method, path), ("POST", "/v1/jobs"))
+        self.assertEqual(body["JobModifyIndex"], 20)
+        self.assertTrue(body["EnforceIndex"])
+        self.assertTrue(body["Job"]["Stop"])
+
+    def test_cancel_does_not_stop_a_newer_job_or_a_noop(self):
+        for job, noop in ((_job(version=3, modify_index=30), False), (_job(), True)):
+            with self.subTest(noop=noop):
+                fake = _FakeApi({"GET /v1/job/app": job, "GET /v1/job/app/deployments": []})
+                nomad_api._cancel_rollout(fake, job_id="app", target_modify_index=20, noop=noop)
+                self.assertFalse(any(method == "POST" for method, _, _ in fake.calls))
+
+    def test_nomad_cancel_failure_is_distinct_from_confirmed_cancellation(self):
+        fake = _FakeApi({
+            "POST /v1/jobs": {"EvalID": "eval-123", "JobModifyIndex": 20},
+            "GET /v1/job/app": _job(),
+            "GET /v1/job/app/deployments": [_deployment(status="running")],
+            "POST /v1/deployment/fail/deployment-123": LumaError("Nomad unavailable"),
+        })
+        checks = iter([False, True])
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake), self.assertRaisesRegex(nomad_api.NomadCancellationError, "Could not confirm"):
+            nomad_api.deploy_to_nomad(cfg(), json.dumps({"Job": {"ID": "app"}}), {}, slug="app", cancel_requested=lambda: next(checks))
+
     def test_default_rollout_timeout_exceeds_application_progress_deadline(self):
         self.assertEqual(nomad_api._rollout_timeout_seconds(cfg(), None), 2700.0)
 

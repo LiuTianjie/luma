@@ -76,15 +76,95 @@ class BuildQueueTests(unittest.TestCase):
         self.finish(next(item for item in claims if item and item[0] == first), 'failed')
         self.assertEqual(queue.claim()[0], second)
 
-    def test_local_uploads_replace_same_target_on_submission(self):
+    def test_local_upload_completion_does_not_reorder_submissions(self):
         a, b = self.prepare(), self.prepare()
         remote = self.remote()
         self.submit(b)
         self.submit(a)
+        self.assertEqual(load_state()['buildRuns'][a['run']['id']]['status'], 'canceled')
+        self.assertEqual(queue.claim()[0], b['run']['id'])
         self.assertEqual(queue.claim()[0], remote)
-        self.finish((remote, {}))
-        self.assertEqual(load_state()['buildRuns'][b['run']['id']]['status'], 'canceled')
-        self.assertEqual(queue.claim()[0], a['run']['id'])
+
+    def test_slow_local_upload_cannot_overwrite_already_deployed_newer_build(self):
+        older, newer = self.prepare(ref='main'), self.prepare(ref='main')
+        self.submit(newer)
+        with patch.object(srv, 'handle_deployment', return_value={'service': 'app'}):
+            queue.execute(queue.claim())
+        self.submit(older)
+        self.assertEqual(load_state()['buildRuns'][older['run']['id']]['status'], 'canceled')
+        self.assertIsNone(queue.claim())
+
+    def test_independent_deployments_claim_concurrently(self):
+        first = self.remote('acme/first', build_node='builder')
+        second = self.remote('acme/second', build_node='builder2')
+        a, b = queue.claim(), queue.claim()
+        self.built(a, name='first')
+        self.built(b, name='second')
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            claimed = list(pool.map(lambda _: queue.claim(), range(2)))
+        self.assertEqual({item[0] for item in claimed}, {first, second})
+
+    def test_cancel_nomad_rollout_once_releases_queue_and_next_target(self):
+        from luma import nomad_api
+        from tests.test_nomad_api import _FakeApi, _job, _deployment, cfg
+        first = self.prepare(ref='main')
+        self.submit(first)
+        item = queue.claim()
+        polled, failed, cleanup = threading.Event(), threading.Event(), threading.Event()
+        def deployment():
+            polled.set()
+            return _deployment(status='failed' if cleanup.is_set() else 'running')
+        def stop():
+            failed.set()
+            return {'Index': 22}
+        api = _FakeApi({
+            'POST /v1/jobs': {'EvalID': 'eval-123', 'JobModifyIndex': 20},
+            'GET /v1/evaluation/eval-123': {'JobID': 'app', 'JobModifyIndex': 20, 'Status': 'complete', 'DeploymentID': 'deployment-123'},
+            'GET /v1/job/app': _job(),
+            'GET /v1/job/app/deployments': [_deployment(status='running')],
+            'GET /v1/deployment/deployment-123': deployment,
+            'POST /v1/deployment/fail/deployment-123': stop,
+        })
+        def deploy(_token, body, **kwargs):
+            return srv._deploy_step([], 'Deploy Nomad job', lambda: nomad_api.deploy_to_nomad(
+                cfg(), json.dumps({'Job': {'ID': 'app'}}), {}, slug='app', **srv._nomad_cancel_kwargs(body),
+            ), progress=kwargs.get('progress'))
+        with patch.object(srv, 'handle_deployment', side_effect=deploy), patch.object(nomad_api, 'NomadApi', return_value=api):
+            worker = threading.Thread(target=queue.execute, args=(item,), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(polled.wait(3), 'rollout did not enter Nomad wait')
+                next_build = self.prepare(ref='main')
+                self.submit(next_build)
+                self.assertIsNone(queue.claim())
+                srv.handle_build_run_cancel(self.token, item[0])
+                worker.join(3)
+                self.assertFalse(worker.is_alive(), 'cancel did not interrupt Nomad polling')
+                self.assertTrue(failed.is_set(), 'Nomad deployment was not stopped')
+                state = load_state()
+                self.assertEqual(state['buildRuns'][item[0]]['status'], 'canceled')
+                self.assertNotIn(item[0], state['buildQueue'])
+                self.assertFalse(state['buildRuns'][item[0]].get('queueExecuting'))
+                self.assertEqual(queue.claim()[0], next_build['run']['id'])
+            finally:
+                cleanup.set()
+                worker.join(3)
+
+    def test_nomad_cancel_error_is_reported_instead_of_false_canceled(self):
+        prepared = self.prepare(ref='main')
+        self.submit(prepared)
+        item = queue.claim()
+        def deploy(_token, body, **kwargs):
+            def action():
+                srv.handle_build_run_cancel(self.token, item[0])
+                raise srv.NomadCancellationError('Could not confirm Nomad cancellation')
+            return srv._deploy_step([], 'Deploy Nomad job', action, progress=kwargs.get('progress'))
+        with patch.object(srv, 'handle_deployment', side_effect=deploy):
+            queue.execute(item)
+        run = load_state()['buildRuns'][item[0]]
+        self.assertEqual(run['status'], 'failed')
+        self.assertIn('Could not confirm', run['message'])
+        self.assertIn('Could not confirm', run['events'][-1]['message'])
 
     def test_same_sidecar_only_latest_survives(self):
         first = self.remote(composeSidecar='deploy/prod/luma.compose.yml')
@@ -139,7 +219,7 @@ class BuildQueueTests(unittest.TestCase):
         self.assertEqual(queue.claim()[0], first)
         self.assertEqual(queue.claim()[0], other)
 
-    def test_unknown_target_builds_in_parallel_and_fences_only_its_deployment(self):
+    def test_newer_ready_deployment_does_not_wait_for_older_unknown_build(self):
         first = self.remote(ref='main')
         same = self.remote(ref='main', composeSidecar='prod.yml', build_node='builder2')
         dev = self.remote(ref='dev', composeSidecar='prod.yml', build_node='builder2')
@@ -149,15 +229,28 @@ class BuildQueueTests(unittest.TestCase):
         self.assertEqual(same_item[0], same)  # Builds never wait for a target.
         self.assertEqual(queue.position(dev)['waitReason'], 'builder')
         self.built(same_item, 'prod')
-        # The older bare import may still deploy "prod": wait for its build.
-        self.assertEqual(queue.position(same), {'queuePosition': 2, 'waitingFor': first, 'waitReason': 'target'})
+        self.assertEqual(queue.position(same)['waitReason'], 'ready')
+        self.assertEqual(queue.claim()[0], same)
         dev_item = queue.claim()
         self.assertEqual(dev_item[0], dev)  # Another branch is not fenced.
         self.built(first_item, 'other')
         deploy = queue.claim()
         self.assertEqual(deploy[0], first)  # FIFO among ready deployments.
         self.finish(deploy)
-        self.assertEqual(queue.claim()[0], same)
+        self.finish((same, {}))
+
+    def test_local_deploy_reads_only_its_own_build_history(self):
+        from luma.control import database
+        prepared = self.prepare()
+        self.submit(prepared)
+        item = queue.claim()
+        read = database.read_entities
+        def no_history_scan(conn, kind):
+            self.assertNotEqual(kind, 'buildRuns', 'local deployment scanned all build history')
+            return read(conn, kind)
+        with patch.object(database, 'read_entities', side_effect=no_history_scan), patch.object(srv, 'handle_deployment', return_value={'service': 'app'}):
+            queue.execute(item)
+        self.assertEqual(load_state()['buildRuns'][item[0]]['status'], 'succeeded')
 
     def test_build_finishes_into_deploy_stage_without_holding_the_builder(self):
         first, second = self.remote(), self.remote('acme/other')
@@ -458,7 +551,7 @@ class BuildQueueTests(unittest.TestCase):
                 failures.append(str(exc))
             finally:
                 exited.set()
-        with patch.object(srv, '_build_run_cancel_requested', side_effect=observe), srv._DEPLOY_LOCK:
+        with patch.object(srv, '_build_run_cancel_requested', side_effect=observe), srv._DEPLOY_OWNERS.hold(lambda: None, lambda: False):
             worker = threading.Thread(target=execute)
             worker.start()
             self.assertTrue(entered.wait(2))
@@ -684,20 +777,20 @@ class BuildQueueTests(unittest.TestCase):
         )
         save_state(state)
         self.assertIsNone(queue.claim())
-        self.assertEqual(load_state()['buildRuns'][first]['status'], 'canceled')
+        self.assertEqual(load_state()['buildRuns'][first]['status'], 'canceling')
         with patch.object(srv, 'handle_build_deploy', side_effect=LumaError('canceled')):
             queue.execute(item)
         self.assertEqual(queue.claim()[0], second)
 
-    def test_operator_can_finish_stuck_canceling(self):
+    def test_repeated_cancel_does_not_fake_worker_completion(self):
         first = self.remote()
         queue.claim()
         state = load_state()
         state['buildRuns'][first]['status'] = 'canceling'
         save_state(state)
         public = srv.handle_build_run_cancel(self.token, first)
-        self.assertEqual(public['run']['status'] if 'run' in public else public.get('status'), 'canceled')
-        self.assertEqual(load_state()['buildRuns'][first]['status'], 'canceled')
+        self.assertEqual(public['run']['status'] if 'run' in public else public.get('status'), 'canceling')
+        self.assertEqual(load_state()['buildRuns'][first]['status'], 'canceling')
         self.assertTrue(load_state()['buildRuns'][first]['queueExecuting'])
         self.remote()
         self.assertIsNone(queue.claim())

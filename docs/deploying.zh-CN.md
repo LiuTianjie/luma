@@ -181,7 +181,9 @@ CLI 必须支持该参数，Control 必须声明 `required-build-capability-v1`�
 导入和重试会进入持久队列，分两个阶段执行：
 
 - **构建**：每次构建都推送自己的不可变镜像，所以构建不会等待同一应用的其他构建，只等一个空闲的兼容构建节点。不指定 `--build-node` 时，所有原生平台和 agent 能力都匹配的已声明构建节点组成一个池，谁先空闲谁领下一个构建。项目上次使用的构建节点保有 BuildKit 缓存，会先等它一小段时间（Control 上的 `LUMA_BUILD_AFFINITY_WAIT_SECONDS`，默认 20 秒），之后其他空闲节点才可以接手。构建池要求配置 `registryHost`，并且 `pushHost` 是所有构建节点都能访问的地址，不能是 `localhost`。`--build-node` 会固定使用一个构建节点。
-- **部署**：构建好的镜像要等同一应用（manifest 的 `name`）更早的请求，以及同一仓库、同一 ref 下还没构建完的更早请求都处理完，才会部署。在同一仓库、同一 ref 内，最新的提交生效：仍在等待的旧请求会被取消，已经在执行的部署不会被打断。`main` 和 `dev` 之间只排先后，不会互相取消。
+- **部署**：最多八个互不冲突的应用可以并行部署。同一应用（manifest 的 `name`）、冲突域名或 TCP 中继端口仍串行处理。同一仓库、同一 ref 内，最新提交生效：新构建先完成就可以部署，旧构建稍后完成也不能覆盖它。本地构建在开始时保留顺序号，不按上传完成时间排序。已经执行的 rollout 结束后才执行同一目标的下个版本；`main` 和 `dev` 共享目标时只排先后，不会互相取消。
+
+构建进入 rollout 后，取消会停止这次对应的 Nomad 部署（遵循任务的自动回滚配置），中断控制面的等待，并在执行器退出后释放队列。重复点击或等待超时都不会把仍在执行的任务标为已取消；如果 Nomad 无法确认停止，任务会明确报告取消错误。
 
 镜像推送完成后构建节点立即释放，下一个构建可以在上一个部署期间开始。`LUMA_BUILD_QUEUE_CONCURRENCY`（默认 4）限制 Control 上同时执行的构建阶段数量，部署阶段有单独的执行槽。
 
@@ -227,7 +229,7 @@ luma workflow run api --path ~/src/api
 CI 可以在不保存登录的情况下使用 CLI：
 
 ```bash
-python -m pip install "luma-infra==0.2.75"
+python -m pip install "luma-infra==0.2.76"
 export LUMA_CONTROL_URL=https://luma.example.com
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 
