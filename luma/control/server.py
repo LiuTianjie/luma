@@ -1549,12 +1549,6 @@ def handle_node_agent_token(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def handle_nomad_security_status(token: str) -> Dict[str, Any]:
-    require_token(load_state(), token, token_type="deploy")
-    from ..nomad_upgrade import public_status
-    return public_status()
-
-
 def handle_nomad_security_task(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     """Idempotent typed tasks used by the independent host supervisor."""
     from ..nomad_migration_node import CAPABILITY
@@ -3852,7 +3846,7 @@ def handle_node_public_ingress(token: str, body: Dict[str, Any]) -> Dict[str, An
         or read_private_json(sec_root / "cluster.json", optional=True).get("aclRequired")
     ) and not encrypted_storage():
         raise LumaError(
-            "finish the automatic Nomad security migration (encrypted task secrets) "
+            "encrypted Control storage and task secrets are required "
             "before enabling node public ingress"
         )
     previous = node_ingress.ingress_record(record)
@@ -8971,7 +8965,6 @@ def handle_fleet_update(
     succeeded = sum(1 for item in results if item.get("status") == "succeeded")
     failed = sum(1 for item in results if item.get("status") == "failed")
     skipped = sum(1 for item in results if item.get("status") == "skipped")
-    from ..nomad_upgrade import public_status
     return {
         "clusterId": str(state.get("clusterId") or ""),
         "installRef": install_ref,
@@ -8980,7 +8973,6 @@ def handle_fleet_update(
         "failed": failed,
         "skipped": skipped,
         "results": results,
-        "nomadSecurity": public_status(),
     }
 
 
@@ -9593,10 +9585,6 @@ def _control_maintenance(state: Dict[str, Any]) -> Dict[str, Any] | None:
 
 
 def _reject_control_maintenance(state: Dict[str, Any]) -> None:
-    from ..nomad_security import read_private_json, security_root
-    migration = read_private_json(security_root() / "upgrade-status.json", optional=True)
-    if migration.get("status") == "running":
-        raise LumaError("Nomad security migration is applying and verifying node changes; retry after it completes")
     current = _control_maintenance(state)
     if current:
         kind = str(current.get("kind") or "update")
@@ -16074,7 +16062,6 @@ async def _asgi_health(_: Request) -> JSONResponse:
             "capabilities": [
                 "node-region",
                 "nomad-security-v1",
-                "nomad-security-upgrade-v1",
                 "region-exposures-v1",
                 "node-edge-v1",
                 "dns-zones-v1",
@@ -16341,8 +16328,6 @@ async def _asgi_authenticated_get(request: Request) -> Response:
                     urllib.parse.unquote(fleet_update_match.group(1)),
                 ),
             )
-        if parsed_path == "/v1/security/nomad":
-            return _json_response(200, await run_in_threadpool(handle_nomad_security_status, token))
         if parsed_path == "/v1/dashboard/updates/fleet":
             return _json_response(200, await run_in_threadpool(handle_fleet_update_operation_get, token))
         control_image_match = re.fullmatch(r"/v1/dashboard/updates/control-image/([^/]+)", parsed_path)

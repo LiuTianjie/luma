@@ -1589,7 +1589,6 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
         lambda: _prefetch_control_image_for_manager_refresh(remote, config, state=state),
     )
     _step(results, emit, "Install Tailscale watchdog", lambda: configure_tailscale_watchdog(remote))
-    _step(results, emit, "Prepare automatic Nomad security migration", lambda: remote.sudo(shlex.join([sys.executable, "-m", "luma.nomad_upgrade", "prepare"])))
     _step(results, emit, "Limit journald disk use", lambda: configure_journald_limit(remote))
     _step(
         results,

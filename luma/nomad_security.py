@@ -423,7 +423,7 @@ def _prepare_node_traefik_task(root: Path, task: dict[str, Any]) -> None:
     from .nomad_render import NODE_TRAEFIK_WRAPPER_SCRIPT
     from .secret_storage import enabled as encrypted_storage
     if not encrypted_storage():
-        raise LumaError("finish the automatic Nomad security migration (encrypted task secrets) before enabling node public ingress")
+        raise LumaError("encrypted Control storage and task secrets are required before enabling node public ingress")
     token_dir = service_token_path(root, "traefik").parent
     token_value = private_read(token_dir / "token").strip()
     if not token_value:

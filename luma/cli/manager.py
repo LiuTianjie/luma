@@ -134,7 +134,7 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
     _attach_control_secrets(state, config)
     bootstrap_manager_local(config, node, profile, args.domain, state, run_egress=not args.skip_egress, emit=log, overwrite_control_state=args.overwrite_control_state)
     _try_refresh_manager_agent(args)
-    _start_manager_security()
+    _start_manager_maintenance()
     control_url = _control_url(args.domain, args.https_port or _config_https_port(config))
     print("Bootstrap complete")
     print(f"Control domain: {args.domain}")
@@ -187,8 +187,8 @@ def cmd_update(args: argparse.Namespace) -> int:
         _refresh_manager_control(args)
         print("[ok] Manager control plane refreshed")
         _try_refresh_manager_agent(args)
-        _start_manager_security()
-        print("[ok] Manager package update complete; Nomad security progress is reported separately")
+        _start_manager_maintenance()
+        print("[ok] Manager package update complete")
         return 0
 
     should_refresh, reason = _manager_refresh_decision(args)
@@ -199,14 +199,14 @@ def cmd_update(args: argparse.Namespace) -> int:
         _refresh_manager_control(args)
         print("[ok] Manager control plane refreshed")
         _try_refresh_manager_agent(args)
-        _start_manager_security()
-        print("[ok] Manager package update complete; Nomad security progress is reported separately")
+        _start_manager_maintenance()
+        print("[ok] Manager package update complete")
         return 0
 
     if _local_agent_config() or _safe_local_nomad_node_id():
         print("[info] Role: joined node")
         _refresh_joined_node_agent(args)
-        print("[ok] Node agent updated; automatic Nomad security migration may still be pending")
+        print("[ok] Node agent updated")
         return 0
 
     print("[info] Role: client")
@@ -228,7 +228,7 @@ def _cmd_update_fleet(args: argparse.Namespace) -> int:
         _refresh_manager_control(args)
         print("[ok] Manager control plane refreshed")
         _try_refresh_manager_agent(args)
-        _start_manager_security()
+        _start_manager_maintenance()
     else:
         print(f"[skip] Local manager control-plane refresh skipped: {reason}")
     endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
@@ -263,9 +263,6 @@ def _cmd_update_fleet(args: argparse.Namespace) -> int:
         f"[ok] Fleet update finished: {int(result.get('succeeded') or 0)} succeeded, "
         f"{int(result.get('failed') or 0)} failed, {int(result.get('skipped') or 0)} skipped"
     )
-    security = result.get("nomadSecurity") or {}
-    if security:
-        print(f"[{security.get('status') or 'pending'}] Nomad security: {security.get('message') or 'verification pending'}")
     return 1 if int(result.get("failed") or 0) else 0
 
 
@@ -281,11 +278,10 @@ def _try_refresh_manager_agent(args: argparse.Namespace) -> None:
     _refresh_local_node_agent(endpoint=endpoint, token=token, insecure=bool(getattr(args, "insecure", False)), resolve_ip=getattr(args, "resolve_ip", None), allow_skip=False)
 
 
-def _start_manager_security() -> None:
+def _start_manager_maintenance() -> None:
     remote = LocalExecutor()
-    remote.sudo(shlex.join([sys.executable, "-m", "luma.nomad_upgrade", "prepare"]))
     remote.sudo(shlex.join([sys.executable, "-m", "luma.nomad_upgrade", "install"]))
-    print("[pending] Nomad security migration runs automatically and waits for upgraded nodes; check the system update page for verified completion")
+    print("[ok] Nomad certificate maintenance installed")
 
 
 def _refresh_joined_node_agent(args: argparse.Namespace) -> None:

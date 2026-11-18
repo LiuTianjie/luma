@@ -354,7 +354,7 @@ def execute(payload: Mapping[str, Any], *, allow_server: bool = False) -> dict[s
         validate_mounts(list(payload.get("mounts") or []), allow_new=True)
         profile = read_private_json(security_root() / "node.json")
         if not facts["acl"] or not facts["tlsHTTP"] or not facts["tlsRPC"]:
-            raise LumaError("finish the automatic Nomad security upgrade before provisioning application storage")
+            raise LumaError("Nomad ACL and mutual TLS must be enabled before provisioning application storage")
         if not profile.get("trustedHost"):
             if facts["role"] == "server":
                 raise LumaError("manager storage permissions require its host-owned security profile")

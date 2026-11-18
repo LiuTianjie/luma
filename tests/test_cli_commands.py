@@ -39,7 +39,7 @@ class CliTests(unittest.TestCase):
     def setUp(self):
         # These CLI tests mock host deployment. Its new supervisor/agent
         # lifecycle hooks must never invoke real sudo or systemd either.
-        for name in ("_try_refresh_manager_agent", "_start_manager_security"):
+        for name in ("_try_refresh_manager_agent", "_start_manager_maintenance"):
             patcher = patch("luma.cli.manager." + name)
             patcher.start()
             self.addCleanup(patcher.stop)

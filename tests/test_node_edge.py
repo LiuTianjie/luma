@@ -382,14 +382,16 @@ class NodeIngressHandlerTests(unittest.TestCase):
         with self.assertRaisesRegex(LumaError, "not a public address"):
             self._enable({"node": "tx-sh-1", "publicIp": "10.0.0.5"})
 
-    def test_enable_is_refused_during_running_migration_or_unprovisioned_secrets(self):
+    def test_retired_migration_status_does_not_block_public_ingress(self):
         self.security.mkdir(mode=0o700, exist_ok=True)
         private_write(self.security / "upgrade-status.json", json.dumps({"status": "running"}))
-        with self.assertRaisesRegex(LumaError, "Nomad security migration"):
-            self._enable({"node": "tx-sh-1", "publicIp": "47.100.1.20"})
-        (self.security / "upgrade-status.json").unlink()
+        self._enable({"node": "tx-sh-1", "publicIp": "47.100.1.20"})
+        self.assertIn("publicIngress", load_state()["nodes"]["tx-sh-1"])
+
+    def test_enable_is_refused_without_provisioned_secrets(self):
+        self.security.mkdir(mode=0o700, exist_ok=True)
         private_write(self.security / "cluster.json", json.dumps({"schema": 1, "aclRequired": True}))
-        with self.assertRaisesRegex(LumaError, "encrypted task secrets"):
+        with self.assertRaisesRegex(LumaError, "encrypted Control storage and task secrets"):
             self._enable({"node": "tx-sh-1", "publicIp": "47.100.1.20"})
         self.assertNotIn("publicIngress", load_state()["nodes"]["tx-sh-1"])
 

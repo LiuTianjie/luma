@@ -15,7 +15,6 @@ import copy
 import hashlib
 import http.client
 import json
-import os
 import socket
 import ssl
 import threading
@@ -1585,10 +1584,6 @@ class NomadApi:
         if not path.startswith("/v1/") or path.startswith("//"):
             raise LumaError("invalid Nomad API path")
         mutation = method.upper() not in {"GET", "HEAD", "OPTIONS"}
-        if mutation and (path.startswith("/v1/jobs") or path.startswith("/v1/job/")) and os.environ.get("LUMA_NOMAD_UPGRADE_OWNER") != "1":
-            migration = read_private_json(security_root() / "upgrade-status.json", optional=True)
-            if migration.get("status") == "running":
-                raise LumaError("Nomad security migration is in progress; retry the recorded deployment after verification completes")
         audit: Dict[str, Any] = {"method": method, "path": path}
         if mutation and isinstance(body, dict) and isinstance(body.get("Job"), dict):
             job = body["Job"]

@@ -1,39 +1,18 @@
-# Nomad security defaults and automatic upgrades
+# Nomad security defaults and certificate maintenance
 
-`luma bootstrap` and `luma node join` provision ACLs, mutual TLS, introduction identities and persistent network rules on first use. The installer checks the running configuration before reporting success. No separate sequence of security commands is required.
+`luma bootstrap` and `luma node join` provision ACLs, mutual TLS, introduction identities and persistent network rules on first use. Existing Control data encryption and application secret isolation remain enabled.
 
-This release also encrypts managed Control data and delivers application secrets through Nomad's encrypted Variables and allocation identities. New installations enable this during bootstrap. Existing installations migrate automatically after the manager and all node agents are upgraded; an updated package alone does not prove that migration has finished.
+The one-time cluster security migration is retired from normal updates. Manager updates, node updates and the system update page no longer start, wait for or display it. Historical migration status no longer blocks deployments. Routine updates do not replay staged Nomad upgrades, secret migration or history cleanup.
 
-For existing clusters, update the manager with `luma update manager` (or Dashboard **Update Control**), then update all node agents with the normal fleet or local update command. Watch **Cluster security upgrade** in the system update page. Package versions and security migration have separate results; only **All checks passed** confirms migration completion.
-
-The manager installs an independent root service, `luma-nomad-security.service`. It waits for authenticated upgraded agents, checks recorded deployments and real storage sources, persists each step, and survives Control replacement and Nomad restarts. Offline nodes remain explicitly pending. Unknown live jobs, conflicting identities or unsafe configurations stop migration with a reason. Fix the cause and rerun the ordinary manager update to inspect and resume.
-
-## Upgrade behavior
-
-The automatic path supports a Luma-managed single Linux Nomad server, Linux/macOS clients, the `global` Nomad region, `dc1`, and `/opt/nomad/data`. From 1.9.x it traverses **1.10.5 → 1.11.3 → 2.0.7 → 2.1.1**, skipping completed releases. Each round upgrades the server first, then every client, verifying health and stable node identities before continuing. Official SHA-256 values for all four platforms are pinned in source.
-
-Before each server upgrade, Luma saves and inspects a private Raft snapshot and retains the old configuration/binary. It stages role credentials and certificates, rolls RPC TLS with a temporary compatibility mode, then activates server ACLs and the final strict configuration everywhere. Compatibility mode must be off before final success.
-
-Only during the server's pre-ACL, pre-HTTPS transition, client certificate-name enforcement is deferred so unconverted nodes can still register. Clients always verify the server certificate. Once all clients use TLS, the server requires certificate names and disables compatibility mode. Updating an older supervisor stuck at this transition preserves its original operation record, repairs the configuration and repeats the workload health gate.
-
-Before changing a node, the supervisor checks the recorded services across the cluster. After each change it requires 30 seconds of stable replica/task health, including fresh successful Nomad HTTP/TCP checks where configured. A ready node alone cannot advance the migration. Missing replicas, crash loops or failed probes stop further node changes; a ten-minute recovery timeout reports failure with the affected services. Completed host operations remain saved while health is pending, so resuming does not repeat their downloads or restarts. The same service check also gates final success. This does not replace application-specific checks for services without readiness probes.
-
-Running jobs must match Control's saved deployment artifacts. Names and `luma.managed` labels confer no authority. Mounts are checked on their actual nodes, including resolved paths, without changing data sources or ownership. Ordinary workers allow only Docker, disable privileged containers and arbitrary host volumes. The normal deployment flow verifies the single storage owner and enables a controlled storage profile when an application first needs persistent mounts.
-
-Linux bind sources are resolved on the host. macOS Docker runs in a separate VM, so the automatic path accepts only local named volumes without driver options there. Unproven macOS bind sources stop with an explicit diagnostic; a Mac filesystem check is not treated as VM filesystem evidence.
-
-Trusted application rendering records an authority profile, allowing normal image/command/environment updates without a manual review. It cannot authorize devices, privilege escalation, dangerous namespaces, host roots, engine sockets or host credential paths. System bootstrap grants pin complete job specs. Existing application workflows remain in place. Traefik and optional Observe readers adopt scoped credential mounts; their exact allocation revisions and Observe's real Nomad-read metrics must pass verification.
-
-New job mutations wait while migration applies node changes. Additional HCL/JSON fragments, external ACL/CA ownership and non-default namespaces stop with an explicit diagnostic instead of being overwritten.
+`luma-nomad-security.service` now only handles certificate enrollment and renewal, retaining its service name and private identity records. It follows current registered nodes and defers offline nodes until they return. Maintenance errors are logged and retried without reopening a completed migration.
 
 ## Boundaries and verification
 
-Manager updates merge Control configuration through the encrypted storage codec without rescanning all history or vacuuming the live database. Full encryption and journal cleanup belong to the independent security supervisor, which preserves completed work and resumes interrupted cleanup. Fresh databases use encryption when the storage profile is enabled. A successful `Install control state` step does not replace the separate cluster security verification.
+Manager updates merge Control configuration through the encrypted storage codec without rescanning all history or vacuuming the live database. The installed storage encryption profile continues to protect new writes.
 
 - Administrator token, CA signing key, upgrade journal and backups: `/etc/luma/nomad`, private to the host and outside Control's `/opt/luma` mount.
 - Consumer credentials: `/opt/luma/security/nomad/<role>.d`; each reader mounts only its own directory read-only. Job JSON contains paths, never token/private-key values.
 - Node identities: local `/etc/luma/nomad`, delivered over authenticated Luma channels. Renewal tasks contain public CSRs/certificates, not private keys.
-- Public progress: `/opt/luma/security/nomad/upgrade-status.json`, surfaced through the management API and system update page.
 - Audit: `/opt/luma/control/security-audit.jsonl`, with socket peer, credential fingerprint, request identity and job digest, without secret bodies.
 
 Service tokens do not unexpectedly expire after 24 hours. Explicit rotation stages replacements before old accessors are revoked. Certificates last one year and renew 30 days before expiry; a returning offline node can renew through its authenticated Agent channel even if its old Nomad certificate expired.
@@ -50,23 +29,11 @@ Control remains a trusted infrastructure administrator with its existing Docker 
 
 Job-only rollback cannot restore a revision that lacks current credential mounts or storage-node restrictions. Redeploy the desired image through the normal Luma workflow so it receives the current protections.
 
-## Recovery and rollback
+## Maintenance and recovery
 
-The storage recovery key is `/etc/luma/secrets/control-data.key`; its profile is `/opt/luma/security/nomad/secrets.json`. Back up these independently from the encrypted database. To recover a managed `.enc` archive on a trusted, isolated host, restore the private key/profile and use the installed Luma interpreter: `sudo /opt/luma-cli/bin/python -m luma.secret_storage decrypt-backup SOURCE.enc NEW_DESTINATION`. Authentication must succeed before the new destination appears. It never overwrites an existing file. A restored SQLite backup may also contain encrypted rows and still requires that same key.
+Read certificate maintenance logs with `journalctl -u luma-nomad-security`. Private enrollment and renewal records remain under `/etc/luma/nomad`. Offline nodes do not block Control updates or maintenance of other nodes.
 
-Inspect the failed step in the dashboard and `journalctl -u luma-nomad-security`. The private `/etc/luma/nomad/upgrade.json` records progress. Do not publish this directory, full job artifacts or Raft snapshots in tickets.
-
-Temporary Control outages and offline nodes wait at the saved step. Interrupted/timed-out agent tasks retry the same typed request a bounded number of times. A private host operation record recovers a replaced binary/configuration even if the process stopped before restarting Nomad. Consumer updates persist both the previous and intended jobs before submission, verify the actual revision, and do not restart an already updated consumer on every retry.
-
-Up to three compatible clients prepare upcoming version archives concurrently while installation remains server-first and serial. Preparation uses the existing authenticated preflight channel and requires the agent's download-cache capability; older agents retain the serial path. It does not restart Nomad, change configuration or resume a pending host operation. Root-owned archive caches recheck the pinned official SHA-256 on every reuse, and incomplete transfers never become cache entries.
-
-Downloads try the configured proxy and then direct access, including when a proxy response fails checksum verification. If neither returns the pinned archive, the installed binary is retained and the step reports failure. For download, configuration, identity or authority failures, fix the cause and rerun `luma update manager` to continue the saved migration. Do not delete bootstrap credentials, create an ACL reset file, regenerate the CA, disable ACLs or disable TLS to recover connectivity.
-
-Nomad does not support in-place binary downgrades. Restore a verified snapshot, matching version/configuration/credentials and application data onto separate trusted hosts in an isolated network. Verify jobs, nodes and routes before switching traffic. Raft snapshots do not contain application volume data.
-
-A host on which an attacker obtained root still requires a trusted rebuild and rotation of exposed credentials. Installing these protections cannot establish that the old operating system is clean.
-
-These protections do not invalidate exposed credentials. Rotate them after verifying migration and establishing trust in the hosts that will receive the replacements.
+Repair the relevant credential or certificate configuration when verification fails. Do not delete ACL bootstrap records, regenerate the CA or disable ACL/TLS to restore access.
 
 ## Encrypted storage and application identities
 

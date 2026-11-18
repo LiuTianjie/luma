@@ -1,8 +1,8 @@
-"""Independent manager supervisor for automatic Nomad security upgrades.
+"""Nomad certificate maintenance and retained legacy migration helpers.
 
-Installed by bootstrap / `luma update manager`. It waits for upgraded agents,
-persists every step, and outlives Control and Nomad restarts. Nothing runs on
-module import. The CA and administrator token stay outside Control's mount.
+Normal bootstrap and updates only install certificate maintenance. The completed
+one-time migration is never replayed by the host service. Its private journal is
+retained for enrolled identities and certificate renewal continuity.
 """
 from __future__ import annotations
 
@@ -151,7 +151,7 @@ def _prepare_locked() -> dict[str, Any]:
 
 
 def install_supervisor() -> None:
-    service = ("[Unit]\nDescription=Luma Nomad security migration and certificate enrollment\n"
+    service = ("[Unit]\nDescription=Luma Nomad certificate maintenance and enrollment\n"
                "Wants=network-online.target\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n"
                "[Service]\nType=simple\nUser=root\nUMask=0077\n"
                f"ExecStart={shlex.join([sys.executable, '-m', 'luma.nomad_upgrade', 'run'])}\n"
@@ -819,6 +819,28 @@ def _maintain_certificates(journal: dict[str, Any], state: Mapping[str, Any]) ->
     _write_journal(journal)
 
 
+def maintain_once() -> None:
+    """Renew current node identities without reopening the legacy migration."""
+    state = _state()
+    with _journal_lock():
+        local = snapshot()
+        journal = _read_journal(optional=True)
+        registered, _waiting = registered_nodes(state, local["nodeId"])
+        previous = journal.get("nodes") or {}
+        nodes = {local["node"]: local}
+        for name, identity in registered.items():
+            old = previous.get(name) or {}
+            # Enrollment owns membership. Do not carry a renewal receipt from
+            # a replaced node merely because it reused the same display name.
+            if old.get("nodeId") != identity["nodeId"]:
+                old = {}
+                (journal.get("renewals") or {}).pop(name, None)
+            nodes[name] = {**old, **identity}
+        journal.update(manager=local["node"], managerId=local["nodeId"], nodes=nodes)
+        journal.setdefault("jobs", [])
+        _maintain_certificates(journal, state)
+
+
 def reconcile_once() -> dict[str, Any]:
     with _journal_lock():
         return _reconcile_locked()
@@ -975,8 +997,6 @@ def run() -> None:
     # One supervisor owns the journal, including after an installer restart.
     fd = os.open(ADMIN_ROOT / "supervisor.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    os.environ["LUMA_NOMAD_UPGRADE_OWNER"] = "1"
-
     def enrollment_loop():
         while True:
             try:
@@ -990,26 +1010,26 @@ def run() -> None:
     threading.Thread(target=enrollment_loop, name="nomad-enrollment", daemon=True).start()
     while True:
         try:
-            reconcile_once()
+            maintain_once()
+        except Pending:
+            pass
         except Exception as exc:
-            with _journal_lock():
-                journal = _read_journal(optional=True)
-                _save(journal, status="failed", phase=journal.get("phase") or "supervisor", message="Security supervisor failed: " + type(exc).__name__ + "; rerun the manager update to resume")
+            # Certificate maintenance retries independently. A transient node
+            # failure must not turn a completed migration into a deploy lock.
+            print("Nomad certificate maintenance deferred: " + str(exc), file=sys.stderr, flush=True)
         time.sleep(5)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("prepare", "install", "run"))
+    parser.add_argument("command", choices=("install", "run"))
     args = parser.parse_args(argv)
     try:
         if os.geteuid() != 0:
             raise LumaError("Nomad manager security supervisor requires root")
-        if args.command == "prepare":
-            print(json.dumps(prepare()))
-        elif args.command == "install":
+        if args.command == "install":
             install_supervisor()
-            print("Automatic Nomad security migration supervisor installed")
+            print("Nomad certificate maintenance installed")
         else:
             run()
         return 0
