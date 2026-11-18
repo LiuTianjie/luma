@@ -21,7 +21,7 @@ services:
       GITEA_HOST: ${GITEA_HOST}
       GITEA_USERNAME: ${GITEA_USERNAME}
       GITEA_TOKEN: ${GITEA_TOKEN}
-      LUMA_BUILD_AFFINITY_SECONDS: "20"
+      LUMA_BUILD_AFFINITY_SECONDS: "3"
     volumes:
       - luma-build-data:/var/lib/luma-build
     healthcheck:

@@ -71,31 +71,39 @@ def _no_store_json(payload: dict[str, Any], *, status_code: int = 200) -> JSONRe
 
 
 class DeployWorker:
-    """Background worker that hands pushed immutable images to Luma Control."""
+    """Concurrent worker pool that hands pushed immutable images to Luma Control."""
 
-    def __init__(self, store: BuildStore, deployer: ControlDeployClient) -> None:
+    def __init__(self, store: BuildStore, deployer: ControlDeployClient, *, workers: int = 4) -> None:
         self.store = store
         self.deployer = deployer
-        self.wake = threading.Event()
+        self.workers = max(int(workers), 1)
+        self.cond = threading.Condition()
         self.stop_event = threading.Event()
-        self.thread: threading.Thread | None = None
+        self.threads: list[threading.Thread] = []
 
     def start(self) -> None:
-        if self.thread and self.thread.is_alive():
+        if any(t.is_alive() for t in self.threads):
             return
         self.store.recover_interrupted_deploys()
         self.stop_event.clear()
-        self.thread = threading.Thread(target=self._loop, name="luma-build-deployer", daemon=True)
-        self.thread.start()
+        self.threads = [
+            threading.Thread(target=self._loop, name=f"luma-build-deployer-{i}", daemon=True)
+            for i in range(self.workers)
+        ]
+        for t in self.threads:
+            t.start()
 
     def notify(self) -> None:
-        self.wake.set()
+        with self.cond:
+            self.cond.notify_all()
 
     def stop(self) -> None:
         self.stop_event.set()
-        self.wake.set()
-        if self.thread:
-            self.thread.join(timeout=3)
+        with self.cond:
+            self.cond.notify_all()
+        for t in self.threads:
+            t.join(timeout=3)
+        self.threads = []
 
     def run_pending_once(self) -> bool:
         self.store.reap_stale_builds()
@@ -129,8 +137,9 @@ class DeployWorker:
                     pass
             except Exception:
                 LOG.exception("luma-build deploy worker iteration error")
-            self.wake.wait(timeout=2.0)
-            self.wake.clear()
+            with self.cond:
+                if not self.stop_event.is_set():
+                    self.cond.wait(timeout=2.0)
 
 
 def _bearer_token(request: Request) -> str:

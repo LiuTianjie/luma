@@ -265,6 +265,20 @@ class DecoupledBuildServiceTests(unittest.TestCase):
         self.assertIsNone(self.poll(amd_2, platform="linux/amd64")["task"])
         self.assertEqual(self.poll(amd_1, platform="linux/amd64")["task"]["buildId"], b_next)
 
+        # While warm amd-low is BUSY, another idle runner claims a new branch build IMMEDIATELY (zero queueing!)
+        amd_3 = self.client.post(
+            "/v1/runners/tokens",
+            headers=self.admin_headers,
+            json={"name": "amd-spillover", "weight": 150},
+        ).json()["runner"]["runnerToken"]
+        self.poll(amd_3, platform="linux/amd64")
+        b_spill = self.client.post(
+            "/v1/builds",
+            headers=self.admin_headers,
+            json={"repository": "acme/cache-demo", "ref": "feat-fast", "platform": "linux/amd64", "deploy": False},
+        ).json()["build"]["id"]
+        self.assertEqual(self.poll(amd_3, platform="linux/amd64")["task"]["buildId"], b_spill)
+
         # 3) Submitting a newer commit on the same branch requests cancellation of the active build
         b_newer = self.client.post(
             "/v1/builds",

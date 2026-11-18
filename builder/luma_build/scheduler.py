@@ -6,7 +6,7 @@ from typing import Any, Iterable
 from .errors import BuildError
 
 RUNNER_ONLINE_TTL_SECONDS = 90
-DEFAULT_AFFINITY_WAIT_SECONDS = 20
+DEFAULT_AFFINITY_WAIT_SECONDS = 3
 
 
 def normalize_platform(value: str) -> str:
@@ -142,15 +142,18 @@ def is_runner_eligible_for_lease(
 
     queued_age = max(now - int(build.get("createdAt") or now), 0)
 
-    # Warm BuildKit cache affinity check
+    # Warm BuildKit cache affinity check: ONLY hold briefly when the warm runner is
+    # online AND currently has a free idle slot. If the warm runner is already busy,
+    # spill over to any other idle runner immediately (0ms wait) using remote ACR cache!
     if warm_runner_name and name != warm_runner_name and queued_age < max(affinity_wait_seconds, 0):
         warm_record = next((r for r in all_runners if r.get("name") == warm_runner_name), None)
-        if warm_record and runner_is_online(warm_record, now=now) and runner_matches_build(
-            warm_record, required_platforms=platforms, required_labels=req_labels
-        ):
-            # If the warm runner is idle (about to poll) or busy within the short
-            # affinity window, give it the head start to reuse its hot BuildKit cache.
-            return False
+        if warm_record and runner_is_online(warm_record, now=now):
+            warm_max = max(int(warm_record.get("maxConcurrency") or 1), 1)
+            warm_idle = active_counts.get(warm_runner_name, 0) < warm_max
+            if warm_idle and runner_matches_build(
+                warm_record, required_platforms=platforms, required_labels=req_labels
+            ):
+                return False
 
     if name == warm_runner_name:
         return True
