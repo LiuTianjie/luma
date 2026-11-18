@@ -315,6 +315,11 @@ class BuildStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_builds_deploy_target ON builds(deploy_target_key, seq)"
             )
+        # Upgrade old revoke tombstones to the new deletion semantics. Build
+        # history survives; no revoked rows remain in the runner list.
+        with self._conn(write=True) as conn:
+            for row in conn.execute("SELECT * FROM runners WHERE revoked = 1").fetchall():
+                self._delete_runner_row(conn, row, now=int(time.time()))
         try:
             self.db_path.chmod(0o600)
         except OSError:
@@ -394,7 +399,7 @@ class BuildStore:
             "labels": labels or {},
         }
 
-    def revoke_runner(self, name_or_id: str) -> dict[str, Any]:
+    def delete_runner(self, name_or_id: str) -> dict[str, Any]:
         target = str(name_or_id or "").strip()
         with self._conn(write=True) as conn:
             row = conn.execute(
@@ -402,9 +407,35 @@ class BuildStore:
             ).fetchone()
             if not row:
                 raise BuildError(f"runner not found: {target}", status_code=404)
-            conn.execute("UPDATE runners SET revoked = 1 WHERE id = ?", (row["id"],))
-            updated = conn.execute("SELECT * FROM runners WHERE id = ?", (row["id"],)).fetchone()
-            return self._runner_public(updated, now=int(time.time()), active_slots=0)
+            self._delete_runner_row(conn, row, now=int(time.time()))
+            return {"id": str(row["id"]), "name": str(row["name"]), "deleted": True}
+
+    def revoke_runner(self, name_or_id: str) -> dict[str, Any]:
+        """Compatibility for old clients; removal no longer leaves a tombstone."""
+        return self.delete_runner(name_or_id)
+
+    def _delete_runner_row(self, conn: sqlite3.Connection, row: sqlite3.Row, *, now: int) -> None:
+        name = str(row["name"])
+        affected = conn.execute(
+            "SELECT id FROM builds WHERE (status = 'building' AND runner_name = ?) OR (status = 'queued' AND pinned_runner = ?)",
+            (name, name),
+        ).fetchall()
+        message = f"Runner {name} was deleted"
+        for build in affected:
+            conn.execute(
+                "UPDATE builds SET status = 'canceled', cancel_requested = 1, lease_id = '', completed_at = ?, updated_at = ?, message = ? WHERE id = ?",
+                (now, now, message, build["id"]),
+            )
+            self._insert_event(conn, build["id"], "build", "status", message, now)
+        conn.execute("DELETE FROM build_affinity WHERE runner_name = ?", (name,))
+        conn.execute("DELETE FROM runners WHERE id = ?", (row["id"],))
+
+    def join_runner(self, token: str) -> dict[str, Any]:
+        """Validate enrollment without leasing a build or claiming it is online."""
+        with self._conn() as conn:
+            row = self._authenticate_runner(conn, token)
+            counts = self._active_runner_counts(conn)
+            return self._runner_public(row, now=int(time.time()), active_slots=counts.get(str(row["name"]), 0))
 
     def list_runners(self, *, now: int | None = None) -> list[dict[str, Any]]:
         current = int(time.time() if now is None else now)

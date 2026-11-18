@@ -1502,22 +1502,18 @@ _TEMPLATE = r"""<!doctype html>
         return;
       }
       for (const r of runners) {
-        const pill = r.revoked
-          ? el("span", { className: "pill pill-danger" }, "已吊销")
-          : r.online
-            ? el("span", { className: "pill pill-dot pill-success" }, "在线")
-            : el("span", { className: "pill pill-dot pill-neutral" }, "离线");
-        const revokeBtn = r.revoked
-          ? el("span", { className: "cell-meta" }, "-")
-          : el("button", {
-              type: "button",
-              className: "btn btn-sm btn-danger",
-              onclick: async () => {
-                if (!confirm(`确定立即吊销 Runner "${r.name}" 的令牌吗？`)) return;
-                await api(`/v1/runners/${encodeURIComponent(r.name)}/revoke`, { method: "POST", body: {} });
-                refreshAll();
-              },
-            }, "吊销");
+        const pill = r.online
+          ? el("span", { className: "pill pill-dot pill-success" }, "在线")
+          : el("span", { className: "pill pill-dot pill-neutral" }, "离线");
+        const deleteBtn = el("button", {
+          type: "button",
+          className: "btn btn-sm btn-danger",
+          onclick: async () => {
+            if (!confirm(`确定删除 Runner "${r.name}"？其 token 将失效，正在构建及固定等待它的任务会取消，历史记录保留。`)) return;
+            await api(`/v1/runners/${encodeURIComponent(r.name)}`, { method: "DELETE" });
+            refreshAll();
+          },
+        }, "删除");
         tbody.append(
           el("tr", { className: "static-row" },
             el("th", { scope: "row", className: "mono fw-semi" }, r.name),
@@ -1526,7 +1522,7 @@ _TEMPLATE = r"""<!doctype html>
             el("td", { "data-numeric": "" }, `${r.activeBuilds || 0} / ${r.maxConcurrency || 1}`),
             el("td", { className: "mono cell-meta" }, `weight=${r.weight} · ${r.cacheMode}`),
             el("td", { "data-numeric": "", className: "cell-time" }, fmtTime(r.lastSeenAt)),
-            el("td", null, revokeBtn)
+            el("td", null, deleteBtn)
           )
         );
       }
@@ -1787,11 +1783,12 @@ _TEMPLATE = r"""<!doctype html>
         const r = res.runner;
         const origin = window.location.origin;
         document.getElementById("token-cli-snippet").textContent =
-          `# 方式 A：通过 Luma CLI 启动（适合 macOS m4/air3 或已安装 luma 的主机）\n` +
-          `luma builder runner --url "${origin}" --token "${r.runnerToken}" --cache-mode ${r.cacheMode}`;
+          `# 方式 A：加入并默认启动后台服务（macOS / Linux，关闭终端后继续运行）\n` +
+          `luma runner join --url "${origin}" --token "${r.runnerToken}" --cache-mode ${r.cacheMode}\n` +
+          `# 日常管理：luma runner start / stop / restart / status / logs --follow`;
         document.getElementById("token-docker-snippet").textContent =
           `# 方式 B：Linux 容器一键启动\n` +
-          `docker run -d --name luma-runner-${r.name} --restart=always --network=host \\\n` +
+          `docker run -d --name luma-runner-${r.name} --restart=on-failure --network=host \\\n` +
           `  -v /var/run/docker.sock:/var/run/docker.sock -v luma-runner-state:/var/lib/luma-runner \\\n` +
           `  -e LUMA_BUILD_URL="${origin}" -e LUMA_RUNNER_TOKEN="${r.runnerToken}" \\\n` +
           `  luma-build-runner:latest`;

@@ -252,9 +252,12 @@ def build_parser() -> argparse.ArgumentParser:
     rt_list = rt_sub.add_parser("list", help="List registered runners")
     _add_client_args(rt_list)
 
-    rt_rev = rt_sub.add_parser("revoke", help="Revoke a runner token immediately")
+    rt_rev = rt_sub.add_parser("delete", help="Delete a runner and invalidate its token immediately")
     rt_rev.add_argument("name", help="Runner name or ID")
     _add_client_args(rt_rev)
+    legacy_revoke = rt_sub.add_parser("revoke")
+    legacy_revoke.add_argument("name")
+    _add_client_args(legacy_revoke)
 
     gc_p = sub.add_parser("git-cred", help="Manage server-stored Git pull credentials")
     gc_sub = gc_p.add_subparsers(dest="gc_cmd", required=True)
@@ -433,9 +436,9 @@ def _dispatch(args: argparse.Namespace) -> int:
             res = client.request("GET", "/v1/runners")
             print(json.dumps(res["runners"], indent=2))
             return 0
-        if args.rt_cmd == "revoke":
-            res = client.request("POST", f"/v1/runners/{urllib.parse.quote(args.name, safe='')}/revoke", {})
-            print(f"Revoked runner: {res['runner']['name']}")
+        if args.rt_cmd in {"delete", "revoke"}:
+            res = client.request("DELETE", f"/v1/runners/{urllib.parse.quote(args.name, safe='')}")
+            print(f"Deleted runner: {res['runner']['name']}")
             return 0
 
     if args.cmd == "git-cred":

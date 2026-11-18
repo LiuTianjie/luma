@@ -39,6 +39,7 @@ from typing import Any, Callable, Iterator, Mapping
 import yaml
 
 from . import __version__
+from .runner_http import interruptible_urlopen
 from .deployer import _NoRedirectHandler, extract_manifest_target_hints
 from .errors import BuildCanceled, BuildError
 from .registry_naming import (
@@ -1619,7 +1620,7 @@ def _build_compose_project(
 
 
 class RunnerDaemon:
-    """Reverse-polling runner daemon; zero inbound ports required."""
+    """Reverse-polling BuildKit runner daemon."""
 
     def __init__(
         self,
@@ -1648,6 +1649,7 @@ class RunnerDaemon:
         self.insecure_tls = insecure_tls
         self.poll_interval = max(poll_interval, 0.5)
         self.stop_event = threading.Event()
+        self.credential_rejected = False
         self.docker_bin = find_docker_binary()
         self.docker_runtime = capture_docker_runtime(self.docker_bin)
         self.native_platform = detect_native_engine_platform(
@@ -1669,12 +1671,33 @@ class RunnerDaemon:
         if self.insecure_tls:
             handlers.append(urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
         opener = urllib.request.build_opener(*handlers)
-        with opener.open(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        try:
+            connection = (interruptible_urlopen(req, timeout=timeout, stop_event=self.stop_event,
+                                                handlers=handlers, insecure=self.insecure_tls)
+                          if path == "/v1/runner/lease" else opener.open(req, timeout=timeout))
+            with connection as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code in {401, 403}:
+                self.credential_rejected = True
+                self.stop_event.set()
+                print("[luma-runner] token rejected or runner deleted; stopping. Join with a valid token to resume.", file=sys.stderr, flush=True)
+            raise
 
     def run_once_or_forever(self, *, once: bool = False) -> int:
+        handlers = {}
+        if threading.current_thread() is threading.main_thread():
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                handlers[sig] = signal.signal(sig, lambda *_: self.stop_event.set())
+        try:
+            return self._run_workers(once=once)
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+
+    def _run_workers(self, *, once: bool = False) -> int:
         print(
-            f"[luma-runner] online -> {self.server_url} | native={self.native_platform} "
+            f"[luma-runner] polling -> {self.server_url} | native={self.native_platform} "
             f"| workers={self.workers} | cache_keep={self.cache_keep_gb}GiB "
             f"| proxy={'set' if self.local_proxy else 'direct'}",
             flush=True,
@@ -1690,10 +1713,17 @@ class RunnerDaemon:
         try:
             while not self.stop_event.wait(1.0):
                 if not any(t.is_alive() for t in threads):
-                    break
+                    return 1
         except KeyboardInterrupt:
             self.stop_event.set()
             return 130
+        finally:
+            # Let all workers cancel their subprocesses and report completion
+            # before launchd/systemd finishes stopping this process.
+            self.stop_event.set()
+            deadline = time.monotonic() + 45
+            for thread in threads:
+                thread.join(timeout=max(0, deadline - time.monotonic()))
         return 0
 
     def _worker_loop(self, *, once: bool = False) -> int:
@@ -1714,8 +1744,10 @@ class RunnerDaemon:
                     timeout=30,
                 )
             except Exception as exc:
+                if self.stop_event.is_set():
+                    return 0
                 if once:
-                    raise
+                    raise BuildError(f"runner poll failed: {exc}") from exc
                 print(f"[luma-runner] poll error: {exc}", file=sys.stderr, flush=True)
                 self.stop_event.wait(self.poll_interval)
                 continue
@@ -1735,7 +1767,9 @@ class RunnerDaemon:
         build_id = str(task["buildId"])
         lease_id = str(task.get("leaseId") or "")
         cancel_event = threading.Event()
-        log_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        if self.stop_event.is_set():
+            cancel_event.set()
+        log_queue: queue.Queue = queue.Queue()
         hb_stop = threading.Event()
 
         def flush_logs(*, drain: bool = False) -> None:
@@ -1757,12 +1791,17 @@ class RunnerDaemon:
                     if res.get("cancelRequested"):
                         cancel_event.set()
                 except Exception:
+                    if self.credential_rejected:
+                        cancel_event.set()
                     break
                 if not drain:
                     break
 
         def heartbeat_loop() -> None:
             while not hb_stop.wait(2.5):
+                if self.stop_event.is_set():
+                    cancel_event.set()
+                    return
                 flush_logs()
                 try:
                     hb = self._post(
@@ -1773,7 +1812,9 @@ class RunnerDaemon:
                     if hb.get("cancelRequested"):
                         cancel_event.set()
                 except Exception:
-                    pass
+                    if self.credential_rejected:
+                        cancel_event.set()
+                        return
 
         hb_thread = threading.Thread(target=heartbeat_loop, daemon=True)
         hb_thread.start()
@@ -1811,7 +1852,7 @@ class RunnerDaemon:
             flush_logs(drain=True)
 
         attempt = 0
-        while not self.stop_event.is_set():
+        while attempt == 0 or not self.stop_event.is_set():
             attempt += 1
             try:
                 self._post(

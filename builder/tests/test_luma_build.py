@@ -46,6 +46,26 @@ ADMIN_TOKEN = "admin-secret-token-1234567890"
 
 
 class RegistryAndCacheNamingTests(unittest.TestCase):
+    def test_standalone_runner_stops_on_deleted_token(self) -> None:
+        import contextlib
+        import io
+        import urllib.error
+        from unittest.mock import Mock
+        from luma_build.runner import RunnerDaemon
+        opener = Mock()
+        opener.open.side_effect = urllib.error.HTTPError("https://build.test", 401, "Unauthorized", {}, None)
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch("luma_build.runner.find_docker_binary", return_value="docker"), \
+             patch("luma_build.runner.capture_docker_runtime", return_value={}), \
+             patch("luma_build.runner.detect_native_engine_platform", return_value="linux/amd64"), \
+             patch("luma_build.runner.urllib.request.build_opener", return_value=opener), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            runner = RunnerDaemon(server_url="https://build.test", runner_token="lbr_test", state_dir=Path(tmp))
+            self.assertEqual(runner.run_once_or_forever(), 0)
+            self.assertTrue(runner.credential_rejected)
+            self.assertTrue(runner.stop_event.is_set())
+            self.assertEqual(opener.open.call_count, 1)
+
     def test_http_vs_https_registry_detection(self) -> None:
         self.assertTrue(is_http_registry("localhost:5000"))
         self.assertTrue(is_http_registry("127.0.0.1:5000"))
@@ -143,6 +163,52 @@ class DecoupledBuildServiceTests(unittest.TestCase):
             json={"nativePlatform": "linux/arm64"},
         )
         self.assertEqual(denied.status_code, 401)
+
+    def test_join_authenticates_without_leasing_or_revealing_credentials(self) -> None:
+        token = self.create_runner("join-existing")
+        store = self.app.state.store
+        build = store.enqueue_build({"repoUrl": "https://git.example.com/acme/join.git", "platform": "linux/amd64"})
+        identity = self.client.post("/v1/runner/join", headers={"Authorization": f"Bearer {token}"}, json={})
+        self.assertEqual(identity.status_code, 200, identity.text)
+        self.assertEqual(identity.json()["runner"]["name"], "join-existing")
+        self.assertFalse(identity.json()["runner"]["online"])
+        self.assertEqual(store.get_build(build["id"])["status"], "queued")
+        self.assertNotIn(token, identity.text)
+        self.assertNotIn("task", identity.json())
+        self.assertEqual(self.client.post("/v1/runner/join", headers=self.admin_headers).status_code, 401)
+
+    def test_delete_removes_runner_cancels_affected_builds_and_keeps_history(self) -> None:
+        token = self.create_runner("delete-me")
+        other = self.create_runner("keep-me")
+        store = self.app.state.store
+        building = store.enqueue_build({"repoUrl": "https://git.example.com/acme/active.git", "platform": "linux/amd64", "runner": "delete-me"})
+        self.assertEqual(self.poll(token)["task"]["buildId"], building["id"])
+        pinned = store.enqueue_build({"repoUrl": "https://git.example.com/acme/pinned.git", "platform": "linux/amd64", "runner": "delete-me"})
+        generic = store.enqueue_build({"repoUrl": "https://git.example.com/acme/generic.git", "platform": "linux/amd64"})
+        history = store.enqueue_build({"repoUrl": "https://git.example.com/acme/history.git", "platform": "linux/amd64"})
+        deployment = store.enqueue_build({"repoUrl": "https://git.example.com/acme/deploy.git", "platform": "linux/amd64"})
+        with store._conn(write=True) as conn:
+            conn.execute("UPDATE builds SET status='succeeded', runner_name='delete-me' WHERE id=?", (history["id"],))
+            conn.execute("UPDATE builds SET status='queued_deploy', runner_name='delete-me' WHERE id=?", (deployment["id"],))
+        self.assertEqual(self.client.delete("/v1/runners/delete-me", headers={"Authorization": f"Bearer {other}"}).status_code, 401)
+        deleted = self.client.delete("/v1/runners/delete-me", headers=self.admin_headers)
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual([r["name"] for r in store.list_runners()], ["keep-me"])
+        self.assertEqual(store.get_build(building["id"])["status"], "canceled")
+        self.assertEqual(store.get_build(pinned["id"])["status"], "canceled")
+        self.assertEqual(store.get_build(generic["id"])["status"], "queued")
+        self.assertEqual(store.get_build(history["id"])["status"], "succeeded")
+        self.assertEqual(store.get_build(deployment["id"])["status"], "queued_deploy")
+        self.assertEqual(self.client.post("/v1/runner/join", headers={"Authorization": f"Bearer {token}"}).status_code, 401)
+
+    def test_old_revoked_rows_are_removed_on_upgrade(self) -> None:
+        self.create_runner("old-revoked")
+        self.create_runner("still-present")
+        store = self.app.state.store
+        with store._conn(write=True) as conn:
+            conn.execute("UPDATE runners SET revoked=1 WHERE name='old-revoked'")
+        store._init_schema()
+        self.assertEqual([r["name"] for r in store.list_runners()], ["still-present"])
 
     def test_credentials_leased_only_in_memory_and_env_secrets_never_sent_to_runner(self) -> None:
         self.client.post(

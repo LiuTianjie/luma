@@ -417,12 +417,13 @@ def create_app(
         except BuildError as exc:
             return error_response(exc)
 
-    async def runners_revoke(request: Request) -> JSONResponse:
+    async def runners_delete(request: Request) -> JSONResponse:
         try:
             await require_admin(request)
             name = str(request.path_params.get("name") or "")
-            revoked = await run_in_threadpool(store.revoke_runner, name)
-            return _no_store_json({"ok": True, "runner": revoked})
+            deleted = await run_in_threadpool(store.delete_runner, name)
+            notify_lease_waiters()
+            return _no_store_json({"ok": True, "runner": deleted})
         except BuildError as exc:
             return error_response(exc)
 
@@ -593,6 +594,13 @@ def create_app(
     # Runner-only endpoints (authenticated strictly by lbr_... token)
     # ------------------------------------------------------------------
 
+    async def runner_join(request: Request) -> JSONResponse:
+        try:
+            runner = await run_in_threadpool(store.join_runner, _bearer_token(request))
+            return _no_store_json({"ok": True, "runner": runner})
+        except BuildError as exc:
+            return error_response(exc)
+
     async def runner_lease(request: Request) -> JSONResponse:
         try:
             tok = _bearer_token(request)
@@ -601,6 +609,8 @@ def create_app(
             loop = asyncio.get_running_loop()
             deadline = loop.time() + wait_secs
             while True:
+                if await request.is_disconnected():
+                    return JSONResponse({"ok": False, "error": "runner disconnected"}, status_code=499)
                 wake_event = lease_wakeup
                 leased = await run_in_threadpool(store.poll_and_lease, tok, body)
                 if leased.get("task") is not None or loop.time() >= deadline:
@@ -687,7 +697,8 @@ def create_app(
             Route("/v1/status", status_endpoint, methods=["GET"]),
             Route("/v1/runners", runners_list, methods=["GET"]),
             Route("/v1/runners/tokens", runners_create_token, methods=["POST"]),
-            Route("/v1/runners/{name}/revoke", runners_revoke, methods=["POST"]),
+            Route("/v1/runners/{name}", runners_delete, methods=["DELETE"]),
+            Route("/v1/runners/{name}/revoke", runners_delete, methods=["POST"]),
             Route("/v1/credentials/git", git_creds_route, methods=["GET", "POST"]),
             Route("/v1/credentials/git/{id}", git_creds_delete, methods=["DELETE"]),
             Route("/v1/credentials/registry", reg_creds_route, methods=["GET", "POST"]),
@@ -697,6 +708,7 @@ def create_app(
             Route("/v1/builds/{id}/stream", build_stream, methods=["GET"]),
             Route("/v1/builds/{id}/cancel", build_cancel, methods=["POST"]),
             Route("/v1/builds/{id}/retry", build_retry, methods=["POST"]),
+            Route("/v1/runner/join", runner_join, methods=["POST"]),
             Route("/v1/runner/lease", runner_lease, methods=["POST"]),
             Route("/v1/runner/heartbeat", runner_heartbeat, methods=["POST"]),
             Route("/v1/runner/progress", runner_progress, methods=["POST"]),

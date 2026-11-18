@@ -117,6 +117,13 @@ jobs:
       - name: Validate sources
         run: bash scripts/check-luma.sh
 
+      - name: Validate the independent builder
+        run: |
+          python -m pip install -e "./builder[test]"
+          python scripts/bump-builder-version.py --check
+          python -m ruff check builder
+          python -m unittest discover -s builder/tests -p 'test_*.py'
+
       - name: Validate documentation links and translated heading anchors
         run: |
           python -m pip install Markdown==3.8.2
@@ -150,5 +157,7 @@ jobs:
           luma --version
           luma observe --help
           luma observe tasks --help
+          luma runner join --help
+          luma runner status --help
           python -m luma.cli node-agent run --help > /dev/null
           bash scripts/validate-stacks.sh

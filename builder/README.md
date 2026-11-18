@@ -9,7 +9,7 @@
   - **ACR Pull 只读凭据**：通过 `luma registry login` 存在 `luma-control` 供业务运行节点安全拉镜像，严格遵循最小权限分离。
 - **Runner 零控制面耦合**：任何 Linux 主机、macOS（OrbStack / Docker Desktop）或临时按量云主机只需配置 `LUMA_BUILD_URL` + `LUMA_RUNNER_TOKEN` 即可接入编译池，**无需 `luma node join`，无需安装 Nomad**。
 - **双层 BuildKit 缓存加速**：
-  1. **L1 本地热盘缓存 + 亲和调度**：Runner 持久化本地 BuildKit 守护进程缓存（内置 `gcpolicy` 默认保留 `20 GiB` 自动 LRU 淘汰），服务端优先把同一仓库派给上次编译它的同架构 Runner（默认 `20s` 亲和窗口）；
+  1. **L1 本地热盘缓存 + 亲和调度**：Runner 持久化本地 BuildKit 守护进程缓存（内置 `gcpolicy` 默认保留 `20 GiB` 自动 LRU 淘汰），服务端优先把同一仓库派给上次编译它的同架构 Runner（默认 `3s` 亲和窗口）；
   2. **L2 远端 Registry 缓存（`--cache-from` / `--cache-to`）**：溢出到新 Runner 时自动从 OCI Registry 拉取层缓存；所有项目共享单个 `luma-buildcache` 仓库按 Tag 隔离（不占阿里云 ACR 个人版 300 仓库配额）；家庭慢上行机器可设 `--cache-mode read-only` 只拉缓存不回推。
 
 ---
@@ -76,20 +76,24 @@ luma builder token create m4 --weight 100 --cache-mode read-only
 
 - **Linux 机器（容器方式一行启动）**：
   ```bash
-  docker run -d --name luma-runner --restart=always --network=host \
+  docker run -d --name luma-runner --restart=on-failure --network=host \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v luma-runner-state:/var/lib/luma-runner \
     -e LUMA_BUILD_URL="https://build.example.com" \
     -e LUMA_RUNNER_TOKEN="lbr_xxx" \
     -e LUMA_RUNNER_CACHE_KEEP_GB="30" \
-    luma-build-runner:latest
+    ghcr.io/liutianjie/luma-build-runner:v0.2.76
   ```
 
 - **macOS 机器（如 `m4` / `air3` 跑 OrbStack 原生 ARM64 构建，直接用 `luma` CLI）**：
   ```bash
   LUMA_RUNNER_PROXY="http://127.0.0.1:7890" \
-  luma builder runner --url https://build.example.com --token lbr_xxx --cache-mode read-only --cache-keep-gb 25
+  luma runner join --url https://build.example.com --token lbr_xxx --cache-mode read-only --cache-keep-gb 25
   ```
+
+首次 `luma runner join` 验证成功后默认启动后台服务；后续用 `luma runner start / stop / restart / status / logs --follow` 管理。已有 runner 用原 token 重新 join，无需新建名称；原 token 丢失时按原名称执行 `luma builder token create NAME --rotate`。
+
+控制台「删除」或 `luma builder token delete NAME` 会移除注册记录；新版 runner 收到 token 失效响应后自动退出。完整的旧 runner 迁移、删除和系统服务说明见[构建 Runner](../docs/runners.zh-CN.md)。容器的 `on-failure` 策略支持异常重启，主机开机自启请使用 `luma runner join`。
 
 ### 4. 提交构建与部署
 
@@ -107,3 +111,7 @@ luma builder list
 PYTHONPATH=builder .venv/bin/python -m unittest discover -s builder/tests -p 'test_*.py'
 .venv/bin/python -m ruff check builder
 ```
+
+## 独立发版
+
+使用 `python scripts/bump-builder-version.py` 更新 builder 版本，提交后推送 `builder-v0.2.76` tag。`Publish Builder` CI 发布 GitHub Release 包制品和 `ghcr.io/liutianjie/luma-build-server:v0.2.76`、`ghcr.io/liutianjie/luma-build-runner:v0.2.76`，不自动部署。先升级 Luma/Control，再由操作员部署 builder；详见[发版指南](../docs/maintainers/release.zh-CN.md#independent-builder-release)。
