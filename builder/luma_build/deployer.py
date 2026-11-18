@@ -13,111 +13,40 @@ import ssl
 import threading
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
 import yaml
 
 from .errors import BuildError
-from .scheduler import normalize_platform, parse_platforms
+from .scheduler import parse_platforms
 
 
-def extract_manifest_target_hints(manifest_text: str) -> tuple[list[str], str, str]:
-    """Extract ``(explicit_platforms, region, node)`` from a Luma service or Compose manifest."""
+def extract_manifest_platforms(manifest_text: str) -> list[str]:
+    """Extract explicit ``build.platforms`` / ``build.platform`` from an attached manifest."""
     if not manifest_text or not manifest_text.strip():
-        return [], "", ""
+        return []
     try:
         data = yaml.safe_load(manifest_text)
     except yaml.YAMLError:
-        return [], [], ""  # type: ignore[return-value]
+        return []
     if not isinstance(data, dict):
-        return [], "", ""
-
+        return []
     build_block = data.get("build") if isinstance(data.get("build"), dict) else {}
     raw_plat = build_block.get("platforms") or build_block.get("platform")
-    explicit_platforms = parse_platforms(raw_plat) if raw_plat else []
-
-    region = str(data.get("region") or "").strip()
-    node = str(data.get("node") or "").strip()
-    services = data.get("services")
-    if isinstance(services, dict):
-        for svc in services.values():
-            if not isinstance(svc, dict):
-                continue
-            if not node and svc.get("node"):
-                node = str(svc["node"]).strip()
-            if not region and svc.get("region"):
-                region = str(svc["region"]).strip()
-    return explicit_platforms, region, node
-
-
-def probe_remote_manifest(
-    *,
-    repo_url: str,
-    ref: str,
-    compose_sidecar: str = "",
-    git_auth: dict[str, str] | None = None,
-    insecure: bool = False,
-) -> str:
-    """Fetch ONLY the ~1 KB Luma manifest via GitHub/Gitea HTTP API (zero ``git clone``!).
-
-    Eliminates the legacy two-stage ``git clone`` where a planner node had to
-    clone the entire repository just to inspect ``.luma.yml`` / ``luma.compose.yml``
-    before routing the real build to an ARM or AMD64 runner.
-    """
-    if not repo_url.startswith(("https://", "http://")):
-        return ""
-    parsed = urllib.parse.urlsplit(repo_url)
-    host = (parsed.netloc or "").lower()
-    clean_path = parsed.path.strip("/")
-    if clean_path.endswith(".git"):
-        clean_path = clean_path[:-4]
-    parts = [p for p in clean_path.split("/") if p]
-    if not host or len(parts) < 2:
-        return ""
-    owner_repo = "/".join(urllib.parse.quote(p, safe="") for p in parts[-2:])
-    encoded_ref = urllib.parse.quote(ref, safe="")
-
-    candidates = (
-        [compose_sidecar.strip().lstrip("/")]
-        if compose_sidecar.strip()
-        else ["luma.compose.yml", ".luma.yml", "luma.yml", ".luma.compose.yml"]
-    )
-    token = str((git_auth or {}).get("token") or "").strip()
-    handlers: list[Any] = [_NoRedirectHandler()]
-    if insecure:
-        handlers.append(urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
-    opener = urllib.request.build_opener(*handlers)
-
-    for rel_file in candidates:
-        quoted_file = "/".join(urllib.parse.quote(seg, safe="") for seg in rel_file.split("/") if seg)
-        if host == "github.com":
-            api_url = f"https://api.github.com/repos/{owner_repo}/contents/{quoted_file}?ref={encoded_ref}"
-            headers = {"Accept": "application/vnd.github.raw+json", "User-Agent": "luma-build"}
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
-        else:
-            api_url = f"{parsed.scheme}://{host}/api/v1/repos/{owner_repo}/raw/{quoted_file}?ref={encoded_ref}"
-            headers = {"Accept": "text/plain", "User-Agent": "luma-build"}
-            if token:
-                headers["Authorization"] = f"token {token}"
-
-        req = urllib.request.Request(api_url, method="GET", headers=headers)
-        try:
-            with opener.open(req, timeout=4) as resp:
-                if int(resp.status) == 200:
-                    body = resp.read(65536).decode("utf-8", errors="replace")
-                    if body.strip():
-                        return body
-        except (urllib.error.HTTPError, urllib.error.URLError, OSError):
-            continue
-    return ""
+    return parse_platforms(raw_plat) if raw_plat else []
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
         raise urllib.error.HTTPError(req.full_url, code, f"unexpected redirect ({code})", headers, fp)
+
+
+def _standard_opener(*, insecure: bool) -> urllib.request.OpenerDirector:
+    handlers: list[Any] = [_NoRedirectHandler()]
+    if insecure:
+        handlers.append(urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
+    return urllib.request.build_opener(*handlers)
 
 
 class ControlAuthVerifier:
@@ -143,10 +72,7 @@ class ControlAuthVerifier:
         return bool(self.endpoint)
 
     def _opener(self) -> urllib.request.OpenerDirector:
-        handlers: list[Any] = [_NoRedirectHandler()]
-        if self.insecure:
-            handlers.append(urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
-        return urllib.request.build_opener(*handlers)
+        return _standard_opener(insecure=self.insecure)
 
     def verify(self, token: str) -> bool:
         clean = str(token or "").strip()
@@ -215,10 +141,7 @@ class ControlDeployClient:
         return bool(self.endpoint and self.deploy_token)
 
     def _opener(self) -> urllib.request.OpenerDirector:
-        handlers: list[Any] = [_NoRedirectHandler()]
-        if self.insecure:
-            handlers.append(urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
-        return urllib.request.build_opener(*handlers)
+        return _standard_opener(insecure=self.insecure)
 
     def request_json(self, method: str, path: str, body: dict[str, Any] | None = None, *, timeout: int = 30) -> dict[str, Any]:
         if not self.configured:
@@ -243,35 +166,6 @@ class ControlDeployClient:
             raise BuildError(f"Luma Control {path} returned HTTP {exc.code}: {detail}") from exc
         except (urllib.error.URLError, OSError, ValueError) as exc:
             raise BuildError(f"Luma Control {path} failed: {exc}") from exc
-
-    def infer_target_platforms(self, *, region: str = "", node: str = "") -> list[str]:
-        """Optionally query ``GET /v1/status`` to infer target node architecture."""
-        if not self.configured:
-            return ["linux/amd64"]
-        status = self.request_json("GET", "/v1/status", timeout=15)
-        raw_nodes = status.get("nodes")
-        if isinstance(raw_nodes, dict):
-            iterable = [{"name": k, **(v if isinstance(v, dict) else {})} for k, v in raw_nodes.items()]
-        elif isinstance(raw_nodes, list):
-            iterable = [item for item in raw_nodes if isinstance(item, dict)]
-        else:
-            iterable = []
-        matched: list[str] = []
-        for item in iterable:
-            item_name = str(item.get("name") or "")
-            if node and item_name != node:
-                continue
-            if not node and region and str(item.get("region") or "") != region:
-                continue
-            native_plat = str(item.get("nativePlatform") or "").strip()
-            if native_plat:
-                norm = normalize_platform(native_plat)
-            else:
-                arch = str(item.get("arch") or (item.get("agent") or {}).get("arch") or "").strip()
-                norm = normalize_platform(f"linux/{arch}") if arch else ""
-            if norm and norm not in matched:
-                matched.append(norm)
-        return matched or ["linux/amd64"]
 
     def deploy_built_artifact(
         self,

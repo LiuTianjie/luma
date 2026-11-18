@@ -1,13 +1,14 @@
 FROM python:3.12-slim
 
 WORKDIR /app
-COPY pyproject.toml README.md ./
-COPY luma_build ./luma_build
-
-RUN pip install --no-cache-dir '.[server]' \
+RUN pip install --no-cache-dir "PyYAML>=6.0.1" "starlette>=0.49.0" "uvicorn[standard]>=0.38.0" "cryptography>=43.0.0" \
     && useradd --system --create-home --uid 10001 luma \
     && mkdir -p /var/lib/luma-build \
     && chown -R luma:luma /var/lib/luma-build
+
+COPY pyproject.toml README.md ./
+COPY luma_build ./luma_build
+RUN pip install --no-cache-dir --no-deps .
 
 USER luma
 ENV PYTHONDONTWRITEBYTECODE=1 \

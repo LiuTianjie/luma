@@ -22,8 +22,7 @@ from .dashboard import FAVICON_SVG, render_dashboard_html
 from .deployer import (
     ControlAuthVerifier,
     ControlDeployClient,
-    extract_manifest_target_hints,
-    probe_remote_manifest,
+    extract_manifest_platforms,
 )
 from .errors import BuildError
 from .scheduler import DEFAULT_AFFINITY_WAIT_SECONDS
@@ -211,7 +210,6 @@ def create_app(
     default_registry_flatten: bool | None = None,
     affinity_wait_seconds: int | None = None,
     start_worker: bool = True,
-    probe_manifests: bool | None = None,
 ) -> Starlette:
     resolved_dir = Path(data_dir or os.environ.get("LUMA_BUILD_DATA_DIR") or "/var/lib/luma-build")
     resolved_admin = (admin_token if admin_token is not None else os.environ.get("LUMA_BUILD_ADMIN_TOKEN") or "").strip()
@@ -332,7 +330,6 @@ def create_app(
                 "base-uri 'none'",
                 "frame-ancestors 'none'",
                 "form-action 'self'",
-                "require-trusted-types-for 'script'",
             ]
         )
         return HTMLResponse(
@@ -509,35 +506,9 @@ def create_app(
                 body["port"] = _parse_int(body["port"], field="port", default=0)
 
             if not body.get("platform") and not body.get("platforms"):
-                def _auto_infer_platforms() -> list[str]:
-                    explicit_p, hint_region, hint_node = extract_manifest_target_hints(str(body.get("manifest") or ""))
-                    if explicit_p:
-                        return explicit_p
-                    eff_region = str(body.get("region") or hint_region or "").strip()
-                    eff_node = str(body.get("node") or hint_node or "").strip()
-                    if not eff_region and not eff_node and (start_worker if probe_manifests is None else probe_manifests):
-                        repo_url, ref, git_auth = store.preview_repo_and_git_auth(body)
-                        probed = probe_remote_manifest(
-                            repo_url=repo_url,
-                            ref=ref,
-                            compose_sidecar=str(body.get("composeSidecar") or ""),
-                            git_auth=git_auth,
-                            insecure=resolved_insecure,
-                        )
-                        if probed:
-                            explicit_p, hint_region, hint_node = extract_manifest_target_hints(probed)
-                            if explicit_p:
-                                return explicit_p
-                            eff_region = hint_region
-                            eff_node = hint_node
-                    if (eff_region or eff_node) and deployer.configured:
-                        return deployer.infer_target_platforms(region=eff_region, node=eff_node)
-                    return []
-
-                with contextlib.suppress(Exception):
-                    inferred = await run_in_threadpool(_auto_infer_platforms)
-                    if inferred:
-                        body["platforms"] = inferred
+                manifest_platforms = extract_manifest_platforms(str(body.get("manifest") or ""))
+                if manifest_platforms:
+                    body["platforms"] = manifest_platforms
             created = await run_in_threadpool(store.enqueue_build, body)
             notify_lease_waiters()
             if request.query_params.get("stream") in {"1", "true"}:

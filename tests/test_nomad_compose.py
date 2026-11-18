@@ -839,6 +839,105 @@ services:
         frontend = next(t for t in group["Tasks"] if t["Name"] == "ledger-frontend")
         self.assertEqual(frontend["Config"]["auth"]["username"], "deploy")
 
+    def test_compose_extra_hosts_list_mapping_gateway_and_secret_substitution(self):
+        compose = """
+services:
+  api:
+    image: registry.example.com/api:1
+    extra_hosts:
+      - "luma.example.com:100.64.0.10"
+      - "host.docker.internal=host-gateway"
+      - "v6.example.com:[2001:db8::1]"
+      - "dyn.example.com:${CONTROL_INTERNAL_IP}"
+  worker:
+    image: registry.example.com/worker:1
+    extra_hosts:
+      luma.example.com: "100.64.0.10"
+      host.docker.internal: host-gateway
+"""
+        sidecar = """
+name: extra-hosts-demo
+compose: docker-compose.yml
+region: cn
+services:
+  api:
+    exposure: cn-edge
+    domain: api.example.com
+    port: 8080
+  worker:
+    exposure: none
+"""
+        dep = write_deployment(sidecar, compose)
+        job = render_compose_job(
+            cfg(),
+            dep,
+            as_json=False,
+            secrets={"CONTROL_INTERNAL_IP": "10.10.0.5"},
+        )["Job"]
+        tasks = {t["Name"]: t for t in job["TaskGroups"][0]["Tasks"]}
+        self.assertEqual(
+            tasks["api"]["Config"]["extra_hosts"],
+            [
+                "api:127.0.0.1",
+                "worker:127.0.0.1",
+                "luma.example.com:100.64.0.10",
+                "host.docker.internal:host-gateway",
+                "v6.example.com:2001:db8::1",
+                "dyn.example.com:10.10.0.5",
+            ],
+        )
+        self.assertEqual(
+            tasks["worker"]["Config"]["extra_hosts"],
+            [
+                "api:127.0.0.1",
+                "worker:127.0.0.1",
+                "luma.example.com:100.64.0.10",
+                "host.docker.internal:host-gateway",
+            ],
+        )
+
+    def test_compose_extra_hosts_rejects_invalid_target_and_sibling_collision(self):
+        bad_ip = """
+services:
+  api:
+    image: registry.example.com/api:1
+    extra_hosts:
+      - "luma.example.com:not-an-ip"
+"""
+        sidecar = """
+name: bad-extra
+compose: docker-compose.yml
+region: cn
+services:
+  api:
+    exposure: none
+"""
+        with self.assertRaisesRegex(LumaError, "extra_hosts"):
+            write_deployment(sidecar, bad_ip)
+
+        collision_compose = """
+services:
+  api:
+    image: registry.example.com/api:1
+    extra_hosts:
+      - "db:10.0.0.9"
+  db:
+    image: postgres:16
+"""
+        collision_sidecar = """
+name: collision-extra
+compose: docker-compose.yml
+region: cn
+services:
+  api:
+    exposure: none
+  db:
+    exposure: none
+"""
+        dep = write_deployment(collision_sidecar, collision_compose)
+        with self.assertRaisesRegex(LumaError, "cannot override sibling service name: db"):
+            render_compose_job(cfg(), dep, as_json=False)
+
 
 if __name__ == "__main__":
     unittest.main()

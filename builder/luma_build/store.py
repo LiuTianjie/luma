@@ -565,32 +565,6 @@ class BuildStore:
     # Build queue, lease, progress, completion & deployment stage
     # ------------------------------------------------------------------
 
-    def preview_repo_and_git_auth(self, body: dict[str, Any]) -> tuple[str, str, dict[str, str] | None]:
-        """Resolve ``(repo_url, ref, git_auth)`` before enqueueing so manifest probing needs zero clone."""
-        provider_id = str(body.get("providerId") or "").strip()
-        default_git_host = "github.com"
-        with self._conn(write=False) as conn:
-            if provider_id:
-                prow = conn.execute(
-                    "SELECT host FROM git_credentials WHERE id = ?", (provider_id,)
-                ).fetchone()
-                if prow:
-                    default_git_host = str(prow["host"])
-                elif self._env_git_auth_by_id(provider_id):
-                    if provider_id.lower().startswith("gitea") and os.environ.get("GITEA_HOST", "").strip():
-                        gh = os.environ["GITEA_HOST"].strip()
-                        default_git_host = urllib.parse.urlsplit(gh).netloc if "://" in gh else gh
-                else:
-                    raise BuildError(f"unknown Git credential providerId: {provider_id}")
-            repo_url = normalize_repo_url(
-                str(body.get("repoUrl") or ""),
-                repository=str(body.get("repository") or ""),
-                default_host=default_git_host,
-            )
-            ref = validate_git_ref(str(body.get("ref") or "main"))
-            git_auth = self._resolve_git_auth(conn, repo_url=repo_url, provider_id=provider_id)
-        return repo_url, ref, git_auth
-
     def enqueue_build(self, body: dict[str, Any]) -> dict[str, Any]:
         provider_id = str(body.get("providerId") or "").strip()
         default_git_host = "github.com"
@@ -635,7 +609,8 @@ class BuildStore:
             else self.default_registry_flatten
         )
 
-        platforms = parse_platforms(body.get("platforms") or body.get("platform") or ["linux/amd64"])
+        default_plat = os.environ.get("LUMA_BUILD_DEFAULT_PLATFORM", "").strip() or "linux/amd64"
+        platforms = parse_platforms(body.get("platforms") or body.get("platform") or default_plat)
         pinned_runner = str(body.get("runner") or body.get("buildNode") or "").strip().lower()
         deploy_enabled = bool(body.get("deploy", True))
         compose_sidecar = str(body.get("composeSidecar") or "").strip()

@@ -192,7 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve_p.add_argument("--data-dir", type=Path, default=Path(os.environ.get("LUMA_BUILD_DATA_DIR", "/var/lib/luma-build")))
 
     use_p = sub.add_parser("use", help="Save default luma-build endpoint URL under ~/.config/luma/build.json")
-    use_p.add_argument("endpoint", help="e.g. https://build.itool.tech")
+    use_p.add_argument("endpoint", help="e.g. https://build.example.com")
 
     run_p = sub.add_parser("runner", help="Start a stateless BuildKit runner on Linux or macOS (OrbStack)")
     run_p.add_argument("--url", default=os.environ.get("LUMA_BUILD_URL", ""), help="luma-build server URL")
@@ -255,7 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
     gc_sub = gc_p.add_subparsers(dest="gc_cmd", required=True)
     gc_set = gc_sub.add_parser("set", help="Save a Git credential on luma-build")
     gc_set.add_argument("id", help="Credential ID, e.g. github:main or gitea:gcode")
-    gc_set.add_argument("--host", required=True, help="Git hostname, e.g. github.com or gcode.gaojiua.com")
+    gc_set.add_argument("--host", required=True, help="Git hostname, e.g. github.com or git.example.com")
     gc_set.add_argument("--username", default="x-access-token")
     gc_set.add_argument("--path-prefix", default="", help="Optional org/owner prefix")
     gc_set.add_argument("--token-stdin", action="store_true", help="Read Git token from stdin")

@@ -27,6 +27,8 @@ _site/
 # Local investigation notes and audit artifacts
 /.local-notes/
 /docs/research/
+*.local.compose.yml
+docker-compose.local.yml
 
 # Python packaging output
 /build/

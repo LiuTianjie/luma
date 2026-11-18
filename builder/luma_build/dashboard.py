@@ -27,7 +27,7 @@ def render_dashboard_html(*, version: str) -> Tuple[str, str]:
     return html, nonce
 
 
-_TEMPLATE = """<!doctype html>
+_TEMPLATE = r"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -727,7 +727,7 @@ _TEMPLATE = """<!doctype html>
 </head>
 <body>
   <!-- Sign-in View (reuses Luma Control management token via SSO) -->
-  <main id="auth-view" class="auth-screen" hidden>
+  <main id="auth-view" class="auth-screen">
     <form id="login-form" class="auth-card">
       <div class="auth-brand">
         <span class="brand-mark">L</span>
@@ -1002,7 +1002,7 @@ _TEMPLATE = """<!doctype html>
         <div id="submit-error" class="banner-error" hidden></div>
         <div class="field">
           <label for="sub-source">Git 仓库地址或 owner/repo</label>
-          <input id="sub-source" class="input" placeholder="例如 https://gcode.gaojiua.com/org/app.git 或 acme/web" required autofocus>
+          <input id="sub-source" class="input" placeholder="例如 https://git.example.com/org/app.git 或 acme/web" required autofocus>
         </div>
         <div class="field-row">
           <div class="field">
@@ -1104,8 +1104,8 @@ _TEMPLATE = """<!doctype html>
         <button type="button" data-close-dialog="git-cred-dialog" class="btn btn-sm btn-ghost" aria-label="关闭">✕</button>
       </div>
       <div class="dialog-body">
-        <div class="field"><label for="gc-id">凭据标识 ID</label><input id="gc-id" class="input" placeholder="例如 gitea:gcode 或 github:main" required autofocus></div>
-        <div class="field"><label for="gc-host">Git 域名</label><input id="gc-host" class="input" placeholder="例如 gcode.gaojiua.com 或 github.com" required></div>
+        <div class="field"><label for="gc-id">凭据标识 ID</label><input id="gc-id" class="input" placeholder="例如 gitea:corp 或 github:main" required autofocus></div>
+        <div class="field"><label for="gc-host">Git 域名</label><input id="gc-host" class="input" placeholder="例如 git.example.com 或 github.com" required></div>
         <div class="field"><label for="gc-user">用户名</label><input id="gc-user" class="input" value="x-access-token" required></div>
         <div class="field"><label for="gc-token">Personal Access Token</label><input id="gc-token" class="input" type="password" required></div>
       </div>

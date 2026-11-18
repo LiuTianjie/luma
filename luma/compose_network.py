@@ -80,7 +80,7 @@ def macos_compose_ports(deployment: ComposeDeploymentSpec) -> list[dict[str, int
 
 def macos_compose_network_tasks(
     deployment: ComposeDeploymentSpec, config: Any, registry_auth_resolver: Any = None,
-    *, dns_servers: list[str] | None = None,
+    *, dns_servers: list[str] | None = None, extra_hosts: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     services = deployment.compose.get("services") or {}
     if any(name.startswith("luma-network-") for name in services):
@@ -99,6 +99,8 @@ def macos_compose_network_tasks(
             args += ["--image", image, "--services", json.dumps(list(services)), "--ports", json.dumps(ports)]
             if dns_servers:
                 args += ["--dns-servers", json.dumps(dns_servers)]
+            if extra_hosts:
+                args += ["--extra-hosts", json.dumps(extra_hosts)]
         docker_config: dict[str, Any] = {
             "image": image, "command": "python", "args": args, "network_mode": "none",
             "mount": [{"type": "bind", "source": "/var/run/docker.sock", "target": "/var/run/docker.sock", "readonly": False}],
