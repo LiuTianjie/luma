@@ -136,6 +136,7 @@ from .observe import handle_observe_apps
 from .log_query import handle_log_query
 from .monitoring import CONTENT_TYPE as METRICS_CONTENT_TYPE, peer_is_loopback, render_metrics, require_metrics_token
 from . import dashboard_auth
+from . import builder as independent_builder
 from . import operations as operations_api
 from .workflows import handle_workflow_check, handle_workflow_get, handle_workflow_list, handle_workflow_record
 from . import history as control_history
@@ -13504,6 +13505,32 @@ def _registered_nodes_summary(nodes: Dict[str, Any]) -> list[Dict[str, Any]]:
     return items
 
 
+def _builder_service_url(state: Dict[str, Any]) -> str:
+    """Discover the independent Builder's public console without contacting it."""
+    deployments = state.get("deployments")
+    if not isinstance(deployments, dict):
+        return ""
+    for kind in ("services", "compose"):
+        records = deployments.get(kind)
+        record = records.get("luma-build") if isinstance(records, dict) else None
+        if not isinstance(record, dict):
+            continue
+        try:
+            manifest = _safe_yaml_mapping(str(record.get("manifest") or ""))
+        except LumaError:
+            continue
+        services = manifest.get("services")
+        service = services.get("server") if kind == "compose" and isinstance(services, dict) else manifest if kind == "services" else None
+        if not isinstance(service, dict) or service.get("exposure") not in {*EDGE_EXPOSURES, "tailscale-relay", "cloudflare-tunnel"}:
+            continue
+        domain = str(service.get("domain") or "").strip()
+        # Only a domain is accepted here, never URL credentials, query strings
+        # or paths copied from untrusted configuration into a console link.
+        if re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", domain):
+            return "https://" + domain
+    return ""
+
+
 def _build_summary(state: Dict[str, Any]) -> Dict[str, Any]:
     config = _build_config(state)
     nodes: list[Dict[str, Any]] = []
@@ -16418,6 +16445,11 @@ async def _asgi_authenticated_get(request: Request) -> Response:
     parsed_path = request.url.path
     try:
         token = await _request_credential(request)
+        if parsed_path == "/v1/builder/status":
+            return _json_response(200, await run_in_threadpool(independent_builder.status, token))
+        builder_match = re.fullmatch(r"/v1/builder/builds/([A-Za-z0-9_-]+)", parsed_path)
+        if builder_match:
+            return _json_response(200, await run_in_threadpool(independent_builder.detail, token, builder_match.group(1), request.query_params.get("afterSeq", "0")))
         if operations_api.handles(parsed_path):
             result = await run_in_threadpool(functools.partial(operations_api.dispatch, token, "GET", parsed_path, query=dict(request.query_params)))
             return _json_response(200, result)
@@ -16612,6 +16644,8 @@ async def _asgi_authenticated_post(request: Request) -> Response:
         if not isinstance(body, dict):
             raise LumaError("request body must be a JSON object")
         token = await _request_credential(request)
+        if path == "/v1/builder/builds":
+            return _json_response(200, await run_in_threadpool(independent_builder.submit, token, body))
         if operations_api.handles(path):
             result = await run_in_threadpool(functools.partial(operations_api.dispatch, token, "POST", path, body=body, query=dict(request.query_params)))
             return _json_response(200, result)

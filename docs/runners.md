@@ -2,6 +2,8 @@
 
 `luma builder` manages the independent `luma-build` queue. `luma runner` joins and controls the build process on the current machine. A runner needs Docker with Buildx and Git; it does not need Nomad or `luma node join`. Linux uses systemd; macOS uses a system launchd service with the invoking user's Docker environment.
 
+Control’s **Create application → Git repository** form submits to this same queue and follows build logs in place. It does not select a cluster build node or configure an internal registry. Control discovers the public domain of the `luma-build` application (`server` service for Compose); for a separately hosted Builder, configure `LUMA_BUILD_URL` on Control. Builder still needs its destination registry (such as ACR), Git credentials and Control deployment target configured.
+
 ## Join and start
 
 On an operator machine, bind the build service and create a token using the existing Luma login:

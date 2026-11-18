@@ -1,5 +1,5 @@
-import { AlertCircle, ArrowLeft, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, GitBranch, Rocket, Server, Settings2 } from "@/components/icons";
-import { useEffect, useMemo, useState } from "react";
+import { AlertCircle, ArrowLeft, ArrowRight, ChevronDown, ChevronUp, GitBranch, Rocket, Server, Settings2 } from "@/components/icons";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchGitProviderRefs,
   fetchGitProviderRepositories,
@@ -10,9 +10,9 @@ import {
 } from "../controlResourcesApi";
 import { useRouter } from "../router";
 import { ROUTE_BY_PAGE } from "../routes";
-import type { DashboardBuildNode, DashboardNode, DashboardRegion, Lang } from "../types";
-import { buildImportStream, registryServeStream } from "./deployApi";
-import { EXPOSURES, exposureAllowedInRegion, isReadyNode, regionChoices } from "./options";
+import type { DashboardNode, DashboardRegion, Lang } from "../types";
+import { buildImportStream, fetchBuilderStatus, type BuilderStatus } from "./deployApi";
+import { EXPOSURES, exposureAllowedInRegion, regionChoices } from "./options";
 import { StepLog } from "./StepLog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,15 +25,6 @@ import { DeployFormSection, DeploySelectField, DeployTextareaField, DeployTextFi
 import { PageHeader } from "../pages/PageHeader";
 import type { DeployStep, Exposure, Region } from "./types";
 const PROVIDER_TYPES = ["github", "gitea"] as const;
-
-function buildNodes(nodes: DashboardNode[], declared: DashboardBuildNode[] = []): DashboardNode[] {
-  const declaredNames = declared.filter((node) => node.ready && node.name).map((node) => node.name as string);
-  if (declaredNames.length) {
-    const byName = new Map(nodes.map((node) => [node.name, node]));
-    return declaredNames.map((name) => byName.get(name) || { name }).filter((node) => Boolean(node.name));
-  }
-  return nodes.filter((node) => isReadyNode(node) && (node.storageCapabilities || []).includes("docker-build"));
-}
 
 function providerTypeLabel(type: string, lang: Lang) {
   if (type === "github") return "GitHub";
@@ -81,7 +72,6 @@ export function GithubImportPanel({
   lang,
   token,
   nodes,
-  build,
   regions,
   regionCatalog,
   onBack,
@@ -93,12 +83,6 @@ export function GithubImportPanel({
   nodes: DashboardNode[];
   regions?: Region[];
   regionCatalog?: DashboardRegion[];
-  build?: {
-    defaultNode?: string;
-    registryHost?: string;
-    pushHost?: string;
-    nodes?: DashboardBuildNode[];
-  };
   onBack?: () => void;
   onRefresh: () => Promise<void> | void;
   onImported?: () => void;
@@ -106,12 +90,15 @@ export function GithubImportPanel({
   const zh = lang === "zh";
   const regionOptions = regions && regions.length ? regions : regionChoices(regionCatalog, nodes);
   const router = useRouter();
-  const candidates = useMemo(() => buildNodes(nodes, build?.nodes || []), [build?.nodes, nodes]);
-  const preferredBuildNode = useMemo(() => {
-    const defaultNode = build?.defaultNode || "";
-    return candidates.some((node) => node.name === defaultNode) ? defaultNode : candidates[0]?.name || "";
-  }, [build?.defaultNode, candidates]);
-  const clusterRegistryHost = (build?.registryHost || "").trim();
+  const [builderStatus, setBuilderStatus] = useState<BuilderStatus | null>(null);
+  const [builderError, setBuilderError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchBuilderStatus(token, controller.signal).then(setBuilderStatus).catch((error) => {
+      if (!controller.signal.aborted) setBuilderError(error instanceof Error ? error.message : String(error));
+    });
+    return () => controller.abort();
+  }, [token]);
 
   const [mode, setMode] = useState<"provider" | "manual">("provider");
   const [providerType, setProviderType] = useState<(typeof PROVIDER_TYPES)[number]>("github");
@@ -126,7 +113,6 @@ export function GithubImportPanel({
   const [refLoading, setRefLoading] = useState(false);
   const [sourceError, setSourceError] = useState("");
 
-  const [buildNode, setBuildNode] = useState("");
   const [ref, setRef] = useState("");
   const [region, setRegion] = useState<Region | "">("");
   const [exposure, setExposure] = useState<Exposure | "">("");
@@ -135,26 +121,14 @@ export function GithubImportPanel({
   const [manifest, setManifest] = useState("");
   const [envText, setEnvText] = useState("");
   const [platform, setPlatform] = useState("");
-  const [registryHost, setRegistryHost] = useState("");
-  const [pushHost, setPushHost] = useState("");
   const [context, setContext] = useState("");
   const [dockerfile, setDockerfile] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const followController = useRef<AbortController | null>(null);
+  useEffect(() => () => followController.current?.abort(), []);
   const [steps, setSteps] = useState<DeployStep[]>([]);
   const [status, setStatus] = useState<"idle" | "running">("idle");
   const [error, setError] = useState("");
-
-  // Expand only when the cluster has no configured registry yet.
-  const [showRegistry, setShowRegistry] = useState(() => !clusterRegistryHost);
-  const [registryNode, setRegistryNode] = useState(preferredBuildNode);
-  const [registrySteps, setRegistrySteps] = useState<DeployStep[]>([]);
-  const [registryStatus, setRegistryStatus] = useState<"idle" | "running">("idle");
-  const [registryError, setRegistryError] = useState("");
-  const [registryDone, setRegistryDone] = useState("");
-
-  useEffect(() => {
-    if (!registryNode && preferredBuildNode) setRegistryNode(preferredBuildNode);
-  }, [preferredBuildNode, registryNode]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -241,17 +215,18 @@ export function GithubImportPanel({
     } else if (!repoUrl.trim()) {
       list.push(zh ? "仓库地址不能为空" : "Repository URL is required");
     }
-    if (!candidates.length) list.push(zh ? "当前没有可用的构建节点" : "No builder is currently available");
     if (exposure && exposure !== "none" && !domain.trim()) list.push(zh ? "公开入口必须填写域名" : "Public exposure requires a domain");
     if (region && exposure && !exposureAllowedInRegion(exposure, region, regionCatalog)) list.push(zh ? `区域 ${region} 尚未启用 ${exposure}` : `Region ${region} has not enabled ${exposure}`);
     if (port.trim() && !/^[0-9]+$/.test(port.trim())) list.push(zh ? "端口必须是正整数" : "Port must be a positive integer");
     for (const message of parsedEnv.errors) list.push(zh ? `环境变量 ${message}` : `Environment ${message}`);
     return list;
-  }, [candidates.length, domain, envText, exposure, mode, port, providerId, region, regionCatalog, repoUrl, repository, zh]);
+  }, [domain, envText, exposure, mode, port, providerId, region, regionCatalog, repoUrl, repository, zh]);
 
   const run = async () => {
     if (errors.length) return;
     const parsedEnv = parseEnvText(envText);
+    const controller = new AbortController();
+    followController.current = controller;
     setStatus("running");
     setSteps([]);
     setError("");
@@ -262,7 +237,6 @@ export function GithubImportPanel({
           repoUrl: mode === "manual" ? repoUrl.trim() : undefined,
           providerId: mode === "provider" ? providerId : undefined,
           repository: mode === "provider" ? repository : undefined,
-          buildNode,
           ref: ref.trim(),
           region: region || undefined,
           exposure: exposure || undefined,
@@ -270,13 +244,12 @@ export function GithubImportPanel({
           port: port.trim(),
           manifest: manifest.trim(),
           platform: platform.trim(),
-          registryHost: registryHost.trim(),
-          pushHost: pushHost.trim(),
           context: context.trim(),
           dockerfile: dockerfile.trim(),
           envSecrets: Object.keys(parsedEnv.values).length ? parsedEnv.values : undefined,
         },
         (step) => setSteps((current) => [...current, step]),
+        controller.signal,
       );
       await onRefresh();
       onImported?.();
@@ -287,33 +260,13 @@ export function GithubImportPanel({
     }
   };
 
-  const runRegistry = async () => {
-    if (!registryNode) return;
-    setRegistryStatus("running");
-    setRegistrySteps([]);
-    setRegistryError("");
-    setRegistryDone("");
-    try {
-      const result = (await registryServeStream(
-        { token, node: registryNode },
-        (step) => setRegistrySteps((current) => [...current, step]),
-      )) as { registryHost?: string } | null;
-      setRegistryDone(result?.registryHost ? (zh ? `registry 就绪：${result.registryHost}` : `registry ready: ${result.registryHost}`) : (zh ? "registry 已部署" : "registry deployed"));
-      await onRefresh();
-    } catch (err) {
-      setRegistryError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRegistryStatus("idle");
-    }
-  };
-
   return <section className="flex min-w-0 flex-col gap-6">
     {onBack ? <Button type="button" variant="outline" className="w-fit" onClick={onBack} disabled={status !== "idle"}><ArrowLeft data-icon="inline-start" />{zh ? "返回模板" : "Back to templates"}</Button> : null}
     <PageHeader meta={{
       eyebrow: zh ? "应用 / 从 Git 构建" : "Applications / Build from Git",
       title: zh ? "从 Git 构建并部署" : "Build and deploy from Git",
-      description: zh ? "选择代码来源，构建节点默认按目标架构自动选择。部署配置沿用仓库，也可以在下方覆盖。" : "Choose a source. The builder is selected for the target architecture. Use the repository’s deployment configuration or override it below.",
-      metrics: [{ label: zh ? "可用构建节点" : "Build nodes", value: candidates.length }, { label: "Registry", value: clusterRegistryHost || (zh ? "尚未配置" : "Not configured") }],
+      description: zh ? "选择代码来源并提交，空闲 Runner 会按目标架构自动领取构建任务，镜像使用 Builder 配置的镜像仓库。" : "Choose a source and submit. An idle Runner compatible with the target architecture claims the build, using the registry configured in Builder.",
+      metrics: [],
     }} />
     <DeployFormSection title={zh ? "01 代码来源" : "01 Source repository"}>
       <FieldGroup>
@@ -346,31 +299,12 @@ export function GithubImportPanel({
       </FieldGroup>
       {sourceError ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{zh ? "代码来源读取失败" : "Could not load source"}</AlertTitle><AlertDescription>{sourceError}</AlertDescription></Alert> : null}
     </DeployFormSection>
-    <DeployFormSection title={zh ? "02 构建目标" : "02 Build target"}>
-      <FieldGroup><DeploySelectField label={zh ? "构建节点" : "Build node"} value={buildNode} onChange={setBuildNode} options={[
-        { value: "", label: zh ? "自动选择（按目标架构）" : "Automatic (target architecture)" },
-        ...candidates.map((node) => ({ value: node.name || "", label: node.displayName || node.name || "" })),
-      ]} description={!candidates.length ? (zh ? "当前没有可用的声明构建节点，节点需具备 docker-build 能力。" : "No declared builder node is currently available; the node must advertise docker-build.") : (zh ? "单一架构构建优先使用对应的原生节点；手动选择将固定构建节点。" : "Single-platform builds prefer a native builder; a manual selection pins the builder.")} /></FieldGroup>
-      {clusterRegistryHost ? <Alert><Server /><AlertTitle>{zh ? "集群 Registry" : "Cluster registry"}</AlertTitle><AlertDescription>{clusterRegistryHost}</AlertDescription></Alert> : null}
-      <Collapsible open={showRegistry} onOpenChange={setShowRegistry} className="flex flex-col gap-4">
-        <CollapsibleTrigger render={<Button variant="outline" className="w-fit" />}>
-          <Server data-icon="inline-start" />{zh ? "内部 Registry 设置" : "Internal registry setup"}{showRegistry ? <ChevronUp data-icon="inline-end" /> : <ChevronDown data-icon="inline-end" />}
-        </CollapsibleTrigger>
-        <CollapsibleContent className="flex flex-col gap-4">
-          <FieldGroup><DeploySelectField label={zh ? "Registry 所在节点" : "Registry node"} value={registryNode} onChange={setRegistryNode} disabled={registryStatus !== "idle"} options={[
-            { value: "", label: zh ? "选择节点" : "Select node" },
-            ...candidates.map((node) => ({ value: node.name || "", label: node.displayName || node.name || "" })),
-          ]} description={!candidates.length ? (zh ? "内部 Registry 需要部署到已声明且可用的构建节点。" : "Internal registry setup needs a declared, available builder node.") : undefined} /></FieldGroup>
-          <Button type="button" className="w-fit" disabled={registryStatus !== "idle" || !registryNode} onClick={() => void runRegistry()}>
-            {registryStatus === "running" ? <Spinner aria-hidden="true" data-icon="inline-start" /> : <Server data-icon="inline-start" />}{registryStatus === "running" ? (zh ? "部署中…" : "Deploying…") : (zh ? "部署 Registry" : "Deploy registry")}
-          </Button>
-          {registryDone ? <Alert><CheckCircle2 /><AlertTitle>{zh ? "Registry 部署完成" : "Registry deployed"}</AlertTitle><AlertDescription>{registryDone}</AlertDescription></Alert> : null}
-          {registryError ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{zh ? "Registry 部署失败" : "Registry deploy failed"}</AlertTitle><AlertDescription>{registryError}</AlertDescription></Alert> : null}
-          {registrySteps.length ? <StepLog steps={registrySteps} lang={lang} /> : null}
-        </CollapsibleContent>
-      </Collapsible>
-    </DeployFormSection>
-    <DeployFormSection title={zh ? "03 部署覆盖项" : "03 Deploy overrides"}>
+    <Alert><Server /><AlertTitle>{zh ? "自动调度构建" : "Automatic build scheduling"}</AlertTitle><AlertDescription>
+      {zh ? "无需选择构建节点或 Registry。任务进入 Builder 队列，匹配架构的空闲 Runner 自动领取；全部忙碌时继续排队。" : "No build node or registry selection is needed. A compatible idle Runner claims the task from Builder; tasks wait in the queue while Runners are busy."}
+      {builderStatus?.registry?.registryHost ? <p>{zh ? "镜像仓库：" : "Registry: "}<code>{builderStatus.registry.registryHost}{builderStatus.registry.namespace ? `/${builderStatus.registry.namespace}` : ""}</code></p> : null}
+    </AlertDescription></Alert>
+    {builderError ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{zh ? "Builder 暂时无法读取" : "Builder status unavailable"}</AlertTitle><AlertDescription>{builderError}</AlertDescription></Alert> : null}
+    <DeployFormSection title={zh ? "02 部署覆盖项" : "02 Deploy overrides"}>
       <FieldGroup className="grid grid-cols-1 items-start gap-4 @md:grid-cols-2">
         <DeploySelectField label={zh ? "区域" : "Region"} value={region} onChange={(value) => setRegion(value as Region | "")} options={[
           { value: "", label: zh ? "不覆盖（跟随仓库）" : "No override (use repo)" },
@@ -390,12 +324,10 @@ export function GithubImportPanel({
       <Card>
         <CardHeader>
           <CardTitle>{zh ? "高级选项" : "Advanced options"}</CardTitle>
-          <CardDescription>{zh ? "按需覆盖构建平台、镜像仓库和 Dockerfile 路径。" : "Optionally override the build platform, registry and Dockerfile paths."}</CardDescription>
+          <CardDescription>{zh ? "按需覆盖构建平台和 Dockerfile 路径。" : "Optionally override the build platform and Dockerfile paths."}</CardDescription>
         </CardHeader>
         <CollapsibleContent><CardContent className="@container"><FieldGroup className="grid grid-cols-1 items-start gap-4 @md:grid-cols-2">
           <DeployTextField label={zh ? "构建平台" : "Build platform"} type="text" value={platform} placeholder="linux/amd64" onChange={(event) => setPlatform(event.target.value)} />
-          <DeployTextField label={zh ? "Registry 地址" : "Registry host"} type="text" value={registryHost} placeholder="100.64.0.70:5000" onChange={(event) => setRegistryHost(event.target.value)} />
-          <DeployTextField label={zh ? "Push 地址" : "Push host"} type="text" value={pushHost} placeholder="localhost:5000" onChange={(event) => setPushHost(event.target.value)} />
           <DeployTextField label={zh ? "构建上下文" : "Context"} type="text" value={context} placeholder="." onChange={(event) => setContext(event.target.value)} />
           <DeployTextField label="Dockerfile" type="text" value={dockerfile} placeholder="Dockerfile" onChange={(event) => setDockerfile(event.target.value)} />
         </FieldGroup></CardContent></CollapsibleContent>
@@ -407,7 +339,7 @@ export function GithubImportPanel({
     {steps.length ? <Card className="min-w-0">
       <CardHeader><CardTitle>{zh ? "构建进度" : "Build progress"}</CardTitle></CardHeader>
       <CardContent><StepLog steps={steps} lang={lang} /></CardContent>
-      <CardFooter className="justify-end"><Button variant="outline" type="button" onClick={() => { const id = steps.find((step) => step.buildRunId)?.buildRunId; router.navigate(id ? `/deployments/build/${encodeURIComponent(id)}` : "/deployments?kind=build"); }}>{zh ? "查看持久构建记录" : "View build record"}<ArrowRight data-icon="inline-end" /></Button></CardFooter>
+      <CardFooter className="justify-end"><Button variant="outline" type="button" onClick={() => router.navigate("/deployments")} >{zh ? "查看部署记录" : "View deployments"}<ArrowRight data-icon="inline-end" /></Button></CardFooter>
     </Card> : null}
     <Card>
       <CardHeader><CardTitle>{mode === "provider" ? providerId || "Git provider" : (zh ? "手填仓库" : "Manual repository")}</CardTitle><CardDescription className="break-words">{mode === "provider" ? repository || (zh ? "选择仓库后即可构建部署" : "Select a repository to build and deploy") : repoUrl || (zh ? "临时仓库 URL" : "Temporary repository URL")}</CardDescription></CardHeader>

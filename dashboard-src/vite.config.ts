@@ -264,7 +264,7 @@ export default defineConfig({
     strictPort: Boolean(process.env.PORT),
     ...(process.env.LUMA_DEV_CONTROL_URL ? {
       proxy: {
-        "^/v1/(history|alerting|governance)(/|\\?|$)": { target: process.env.LUMA_DEV_CONTROL_URL, changeOrigin: true },
+        "^/v1/(history|alerting|governance|builder)(/|\\?|$)": { target: process.env.LUMA_DEV_CONTROL_URL, changeOrigin: true },
       },
     } : {}),
   },
@@ -718,6 +718,19 @@ export default defineConfig({
             return;
           }
           next();
+        });
+        server.middlewares.use("/v1/builder", (request, response, next) => {
+          if (process.env.LUMA_DEV_CONTROL_URL) { next(); return; }
+          response.setHeader("Content-Type", "application/json");
+          response.setHeader("Cache-Control", "no-store");
+          if (request.url === "/status") {
+            response.end(JSON.stringify({ registry: { registryHost: "crpi-demo.cn-beijing.personal.cr.aliyuncs.com", namespace: "luma" }, runners: [] }));
+          } else if (request.url === "/builds" && request.method === "POST") {
+            request.resume();
+            response.end(JSON.stringify({ build: { id: "build-preview", status: "queued" } }));
+          } else if (request.url?.startsWith("/builds/build-preview")) {
+            response.end(JSON.stringify({ build: { id: "build-preview", status: "succeeded", events: [{ seq: 1, stage: "build", message: "Preview: an idle Runner claimed the build and pushed to ACR." }] } }));
+          } else { next(); }
         });
         server.middlewares.use("/v1/builds", (request, response, next) => {
           if (request.method !== "GET") {

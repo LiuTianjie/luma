@@ -54,10 +54,12 @@ Settings and First install sit in the sidebar's Platform group. Creating an appl
 
 Open **Applications → Create application** and choose a source:
 
-- **Git repository**: select a connected provider or enter a repository URL, then choose a build node.
+- **Git repository**: select a connected provider or enter a repository URL, then submit from this page. Builder queues the request, a compatible idle Runner claims it, and images use the registry configured in Builder (for example Alibaba Cloud ACR). There is no build-node or registry selector.
 - **Container image**: configure an image, region, exposure, resources and environment variables.
 - **YAML file**: edit the deployment manifest directly.
 - **Application templates**: search single-service or Compose templates, then customize the configuration.
+
+Build logs remain on this page. All Runners being busy does not prevent submission; the task waits in the independent Builder queue. Closing the page stops following logs, not the build. Control’s saved Git accounts browse repository lists; Builder uses its own Git credentials matched to the repository URL.
 
 Selecting a template does not deploy it. Review the configuration and validate it before submitting. Manual YAML edits become the source used for validation and deployment; restoring the form asks before discarding those edits.
 

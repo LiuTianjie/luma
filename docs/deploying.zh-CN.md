@@ -12,10 +12,10 @@ luma deploy app.yaml -> Luma Control -> Nomad job -> Nomad client -> Docker cont
 | --- | --- | --- |
 | 已发布的容器镜像 | `luma deploy app.yaml` | 部署 manifest 中写明的镜像 |
 | 本地代码目录 | `luma build local .` | 用本机 Docker Buildx 构建，推送到集群镜像仓库，然后部署 |
-| GitHub 或 Gitea 仓库 | `luma import owner/repo` | 由构建节点克隆、构建、推送并部署 |
+| GitHub 或 Gitea 仓库 | `luma builder submit owner/repo` | 空闲且架构匹配的 Runner 克隆、构建、推送，再由 Builder 请求 Control 部署 |
 | `docker-compose.yml` | `luma compose deploy luma.compose.yml` | 把所有服务一起部署到同一个节点 |
 
-`luma deploy` 从不构建源码。构建需要构建节点和镜像仓库，见[构建](#builds)。
+`luma deploy` 从不构建源码。源码构建使用独立 Builder、Runner 和已配置的镜像仓库，见[构建](#builds)。
 
 ## 部署镜像 {#deploy-an-image}
 
@@ -80,6 +80,12 @@ luma secret import .env.production --scope api          # every variable in the 
 密钥按应用名隔离，`api/DATABASE_URL` 和 `worker/DATABASE_URL` 互不影响。私有镜像的仓库凭据用 `luma registry login` 设置。详见[密钥与凭据](secrets.zh-CN.md)。
 
 ## 构建 {#builds}
+
+Dashboard 的 Git 表单和 `luma builder submit` 使用独立 Builder 队列。CLI 先通过 `luma builder use https://build.example.com` 绑定一次地址。无需选择构建节点或镜像仓库：匹配架构的空闲 Runner 自动领取任务，复用 Builder 配置的目标仓库，例如阿里云 ACR。见 [Runner 配置](runners.zh-CN.md)。
+
+### 兼容的 Control 构建流程 {#legacy-control-builds}
+
+下方 `luma import` / `luma build config` 说明适用于已有的 Control 内置构建流程；Dashboard 的 Git 表单使用独立 Builder。
 
 源码构建需要一个装有 Docker Buildx 的构建节点（Linux，或使用 OrbStack / Docker Desktop 的 macOS）和一个集群能拉取的镜像仓库：
 
@@ -231,7 +237,7 @@ luma workflow run api --path ~/src/api
 CI 可以在不保存登录的情况下使用 CLI：
 
 ```bash
-python -m pip install "luma-infra==0.2.79"
+python -m pip install "luma-infra==0.2.80"
 export LUMA_CONTROL_URL=https://luma.example.com
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 

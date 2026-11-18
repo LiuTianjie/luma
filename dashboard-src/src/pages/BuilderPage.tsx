@@ -21,7 +21,6 @@ export function BuilderPage({
         lang={lang}
         token={token}
         nodes={payload.nodes || []}
-        build={payload.build}
         regionCatalog={payload.regions}
         onRefresh={onRefresh}
       />

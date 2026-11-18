@@ -85,35 +85,54 @@ export type BuildRun = {
   events?: DeployStep[];
 };
 
-export async function buildImportStream(request: BuildImportRequest, onStep: (step: DeployStep) => void): Promise<unknown> {
+export type BuilderStatus = {
+  registry?: { registryHost?: string; namespace?: string };
+  runners?: { name?: string; online?: boolean }[];
+};
+
+type BuilderBuild = {
+  id: string;
+  status: string;
+  message?: string;
+  events?: { seq: number; stage: string; message: string }[];
+};
+
+export async function fetchBuilderStatus(token: string, signal?: AbortSignal): Promise<BuilderStatus> {
+  return readJson<BuilderStatus>(await fetch("/v1/builder/status", { headers: authHeaders(token), signal }));
+}
+
+export async function buildImportStream(request: BuildImportRequest, onStep: (step: DeployStep) => void, signal?: AbortSignal): Promise<BuilderBuild> {
   const body: Record<string, unknown> = {};
-  for (const [src, dst] of [
-    ["repoUrl", "repoUrl"],
-    ["providerId", "providerId"],
-    ["repository", "repository"],
-    ["buildNode", "buildNode"],
-    ["ref", "ref"],
-    ["region", "region"],
-    ["exposure", "exposure"],
-    ["domain", "domain"],
-    ["manifest", "manifest"],
-    ["platform", "platform"],
-    ["registryHost", "registryHost"],
-    ["pushHost", "pushHost"],
-    ["context", "context"],
-    ["dockerfile", "dockerfile"],
-  ] as const) {
-    const value = request[src];
-    if (value) body[dst] = value;
+  for (const key of ["repoUrl", "providerId", "repository", "ref", "region", "exposure", "domain", "manifest", "platform", "context", "dockerfile"] as const) {
+    if (request[key]) body[key] = request[key];
   }
-  if (request.port && request.port.trim()) body.port = Number(request.port);
+  if (request.port?.trim()) body.port = Number(request.port);
   if (request.envSecrets) body.envSecrets = request.envSecrets;
-  const response = await fetch("/v1/builds/stream", {
-    method: "POST",
-    headers: authHeaders(request.token, true),
-    body: JSON.stringify(body),
-  });
-  return consumeStream(response, onStep);
+  const queued = await readJson<{ build: BuilderBuild }>(await fetch("/v1/builder/builds", {
+    method: "POST", headers: authHeaders(request.token, true), body: JSON.stringify(body), signal,
+  }));
+  const id = queued.build?.id;
+  if (!id) throw new Error("Builder did not return a build ID");
+  onStep({ name: "Builder", status: "start", message: `Queued: ${id}` });
+  let afterSeq = 0;
+  while (true) {
+    const { build } = await readJson<{ build: BuilderBuild }>(await fetch(`/v1/builder/builds/${encodeURIComponent(id)}?afterSeq=${afterSeq}`, {
+      headers: authHeaders(request.token), signal,
+    }));
+    if (!build || build.id !== id) throw new Error("Builder returned an invalid build record");
+    for (const event of build.events || []) {
+      if (event.seq <= afterSeq) continue;
+      afterSeq = event.seq;
+      onStep({ name: event.stage || "Builder", status: "ok", message: event.message });
+    }
+    if ((build.events?.length || 0) < 500 && ["succeeded", "failed", "canceled"].includes(build.status)) {
+      if (build.status !== "succeeded") throw new Error(build.message || `Build ${build.status}: ${id}`);
+      onStep({ name: "Builder", status: "ok", message: `Completed: ${id}` });
+      return build;
+    }
+    if (signal?.aborted) throw new DOMException("Build log follow aborted", "AbortError");
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
 }
 
 export async function fetchBuildRuns(token: string): Promise<{ runs?: BuildRun[] }> {

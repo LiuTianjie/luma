@@ -50,7 +50,7 @@ export function DeployPage({
     <PageHeader meta={{ eyebrow: zh ? "应用 / 创建" : "Applications / Create", title: zh ? "创建应用" : "Create application", description: zh ? "选择配置来源，再校验和部署到集群。" : "Choose a configuration source, then validate and deploy.", metrics: [] }} />
     <section className="grid gap-4 sm:grid-cols-2" aria-label={zh ? "创建来源" : "Application source"}>
       {[
-        { path: "/builds", icon: GitBranch, title: zh ? "从 Git 仓库构建" : "Build from a Git repository", description: zh ? "连接 GitHub、Gitea 或任意 Git URL，在构建节点生成镜像后部署。" : "Connect GitHub, Gitea or any Git URL. A build node produces the image, then it deploys.", hint: zh ? "推荐" : "Recommended" },
+        { path: "/builds", icon: GitBranch, title: zh ? "从 Git 仓库构建" : "Build from a Git repository", description: zh ? "提交 GitHub、Gitea 或任意 Git 仓库，空闲 Runner 自动构建镜像并部署。" : "Submit a GitHub, Gitea or other Git repository. An idle Runner builds the image for deployment.", hint: zh ? "推荐" : "Recommended" },
         { path: "/create/image", icon: Container, title: zh ? "部署容器镜像" : "Deploy a container image", description: zh ? "使用现有镜像，配置网络、资源、环境变量和存储。" : "Use an existing image and configure networking, resources, environment and storage." },
         { path: "/create/yaml", icon: FileCode2, title: zh ? "编写 YAML 清单" : "Write a YAML manifest", description: zh ? "直接编辑 Luma 服务清单；适合已有配置或需要完整控制。" : "Edit a Luma service manifest directly, for existing configs or full control." },
         { path: "/create/templates", icon: LayoutTemplate, title: zh ? "从模板开始" : "Start from a template", description: zh ? "单服务或 Compose 模板，保留所有高级配置项。" : "Service or Compose templates that keep every advanced option." },

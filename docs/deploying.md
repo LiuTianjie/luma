@@ -12,10 +12,10 @@ luma deploy app.yaml -> Luma Control -> Nomad job -> Nomad client -> Docker cont
 | --- | --- | --- |
 | A published container image | `luma deploy app.yaml` | Deploys the image named in the manifest |
 | A local checkout | `luma build local .` | Builds with your Docker Buildx, pushes to the cluster registry, deploys |
-| A GitHub or Gitea repository | `luma import owner/repo` | A builder node clones, builds, pushes and deploys |
+| A GitHub or Gitea repository | `luma builder submit owner/repo` | An idle compatible Runner clones, builds and pushes; Builder then requests deployment from Control |
 | A `docker-compose.yml` | `luma compose deploy luma.compose.yml` | Deploys all services together on one node |
 
-`luma deploy` never builds source code. Building requires a builder node and a registry; see [Builds](#builds).
+`luma deploy` never builds source code. Source builds use the independent Builder, a Runner and its configured registry; see [Builds](#builds).
 
 ## Deploy an image
 
@@ -80,6 +80,12 @@ luma secret import .env.production --scope api          # every variable in the 
 Secrets are scoped by application name, so `api/DATABASE_URL` and `worker/DATABASE_URL` are separate. Registry credentials for private images are set with `luma registry login`. See [Secrets](secrets.md).
 
 ## Builds
+
+The Dashboard Git form and `luma builder submit` use the independent Builder queue. Bind the CLI once with `luma builder use https://build.example.com`. No build-node or registry selection is needed: compatible idle Runners claim tasks and use Builder’s configured destination, such as Alibaba Cloud ACR. See [Runner setup](runners.md).
+
+### Legacy Control builds
+
+The following `luma import` / `luma build config` instructions apply to the existing Control-managed build path; the Dashboard Git form uses the independent Builder instead.
 
 Source builds need a node with Docker Buildx (Linux, or macOS with OrbStack / Docker Desktop) and a registry the cluster can pull from:
 
@@ -231,7 +237,7 @@ Records never contain tokens or `.env` contents. Notes are free text; do not put
 CI can use the CLI without a saved login:
 
 ```bash
-python -m pip install "luma-infra==0.2.79"
+python -m pip install "luma-infra==0.2.80"
 export LUMA_CONTROL_URL=https://luma.example.com
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 

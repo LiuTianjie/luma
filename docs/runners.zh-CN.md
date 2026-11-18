@@ -2,6 +2,8 @@
 
 `luma builder` 管理独立的 `luma-build` 队列，`luma runner` 负责当前机器上的加入与进程管理。Runner 需要 Docker、Buildx 和 Git，无需 Nomad 或 `luma node join`。Linux 使用 systemd，macOS 使用系统级 launchd 服务，并保留执行命令用户的 Docker 环境。
 
+Control 的 **创建应用 → Git 仓库** 表单向同一个队列提交，并在原页面跟随构建日志，无需选择集群构建节点或配置内部 Registry。Control 自动读取 `luma-build` 应用的公网域名（Compose 为 `server` 服务）；Builder 部署在其他地方时，在 Control 设置 `LUMA_BUILD_URL`。Builder 仍需配置目标镜像仓库（例如 ACR）、Git 凭据和 Control 部署目标。
+
 ## 加入并启动 {#join-and-start}
 
 在操作员机器上，绑定构建服务地址，并复用已有 Luma 登录态创建 token：
