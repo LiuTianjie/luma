@@ -21,9 +21,19 @@ luma runner status
 luma runner logs --follow
 ```
 
-Join checks local Docker and verifies the token without taking a queued build. Only after those checks pass does it save the configuration and start the background service. The process survives closing SSH/the terminal, starts automatically at boot and restarts after an unexpected failure. The operating system may request sudo to install/manage the service. macOS still needs its Docker engine (OrbStack or Docker Desktop) to be running, which can require user login.
+Join installs and verifies build tools, checks the Docker engine, verifies the token and warms BuildKit without taking a queued build. Only after those checks pass does it save the configuration and start the background service. The process survives closing SSH/the terminal, starts automatically at boot and restarts after an unexpected failure. The operating system may request sudo to install/manage the service. macOS still needs its Docker engine (OrbStack or Docker Desktop) to be running, which can require user login.
 
 Use `--token-stdin` to read a token from stdin, or `LUMA_RUNNER_TOKEN` to supply it from the environment. The service stores it in `/opt/luma/runner/config.json`, readable only by the runner's OS user and root. The system service command contains the config path, not the token. The first join saves the invoking user's home, Docker context and proxy settings. Joining again as that user refreshes the environment; start/restart reuse the saved environment. BuildKit metadata stays in `~/.luma-runner` unless `--state-dir` is set.
+
+## Build prerequisites and network preflight
+
+Both `luma runner join` and `luma node join` install missing Git/Buildx on apt-based Linux and verify them in the same private Docker configuration used for builds. A new Linux runner can install the Docker engine as well; an existing engine is not replaced or restarted to add Buildx. Docker CE uses `docker-buildx-plugin`; Ubuntu/Debian Docker uses `docker-buildx`.
+
+On macOS, start OrbStack or Docker Desktop first. Missing Git/Buildx are installed with native Homebrew: `/opt/homebrew` on Apple Silicon (including a Rosetta shell), `/usr/local` on Intel. Run join as the user who owns Docker/Homebrew. Build platforms come from the actual Docker engine; native ARM requirements still apply.
+
+Join bootstraps the actual persistent BuildKit instance and performs a cache-only `FROM scratch` preflight with `# syntax=docker/dockerfile:1`. This prepares the BuildKit image and Dockerfile frontend before reporting success. It does not build or publish an application image. The foreground runner repeats the tool and BuildKit preflight before it can lease tasks. A failed preflight preserves existing runner service configuration; node enrollment rolls back if BuildKit preparation fails.
+
+Docker has two separate network paths: the Docker daemon pulls the BuildKit container image, while BuildKit resolves the Dockerfile frontend and base images itself. A daemon proxy does not configure BuildKit. On restricted networks, use a reachable HTTP proxy with `luma runner join --proxy http://proxy-host:7890`; existing token/options are reused. Wait for active work to finish before rejoining. Node join uses the region's returned egress proxy for BuildKit. Configure daemon image-pull access separately if bootstrapping the BuildKit container fails; join surfaces that failure immediately. Application-specific images and dependencies are still resolved when their builds run.
 
 ## Daily commands
 

@@ -5,6 +5,7 @@ import argparse
 import os
 from typing import Any, Dict
 from ..bootstrap import _is_tailscale_manager_addr, configure_dns, configure_journald_limit, install_docker, install_nomad_node, local_host_name, setup_tailscale
+from ..build_prerequisites import prepare_build_dependencies, prepare_node_buildkit
 from ..compose import (
     load_compose_deployment,
     resolve_storage_mounts,
@@ -67,6 +68,8 @@ def cmd_node(args: argparse.Namespace) -> int:
         log(f"[ok] {configure_journald_limit(LocalExecutor())}")
         log("[start] Install Docker")
         log(f"[ok] {install_docker(LocalExecutor())}")
+        log("[start] Install and verify Git and Buildx")
+        prepare_build_dependencies()
         client = common.ControlClient(args.endpoint, args.token, insecure=args.insecure, resolve_ip=args.resolve_ip)
         if not args.endpoint.startswith("https://") or args.insecure:
             raise LumaError("secure node enrollment requires a verified HTTPS Control endpoint")
@@ -88,6 +91,8 @@ def cmd_node(args: argparse.Namespace) -> int:
             egress_proxy = str(result.get("egressProxy") or "").strip() or None
             if egress_proxy is None and str(result.get("egress") or "") == "proxy" and server_host:
                 egress_proxy = f"http://{server_host}:7890"
+            log("[start] Prepare BuildKit and Dockerfile frontend")
+            prepare_node_buildkit(proxy=egress_proxy or "")
             install_nomad_node(
                 node,
                 role="client",

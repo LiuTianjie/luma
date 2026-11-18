@@ -21,9 +21,19 @@ luma runner status
 luma runner logs --follow
 ```
 
-Join 先检查本机 Docker、验证 token，不会领取排队中的构建任务。通过后才保存配置并默认启动后台服务。关闭 SSH 或终端后进程继续运行，开机自动启动，异常退出自动重启。安装和管理系统服务时，系统可能要求输入 sudo 密码。macOS 上仍需 OrbStack 或 Docker Desktop 引擎运行，因此可能需要用户先登录系统。
+Join 先补齐并检查构建工具、验证 Docker 引擎和 token，再预热 BuildKit，不会领取排队中的构建任务。通过后才保存配置并默认启动后台服务。关闭 SSH 或终端后进程继续运行，开机自动启动，异常退出自动重启。安装和管理系统服务时，系统可能要求输入 sudo 密码。macOS 上仍需 OrbStack 或 Docker Desktop 引擎运行，因此可能需要用户先登录系统。
 
 可以用 `--token-stdin` 从标准输入读取 token，或使用环境变量 `LUMA_RUNNER_TOKEN`。服务将其保存在 `/opt/luma/runner/config.json`，只允许 runner 的系统用户和 root 读取；系统服务命令中只有配置路径，不包含 token。首次 join 保存执行命令用户的 home、Docker context 和代理设置；同一用户重新 join 会刷新环境变量，start/restart 复用已保存环境。BuildKit 元数据默认保存在 `~/.luma-runner`，可用 `--state-dir` 修改。
+
+## 构建依赖与网络预检
+
+`luma runner join` 和 `luma node join` 都会在 apt 系 Linux 上补齐 Git/Buildx，并在实际构建使用的私有 Docker 配置中验证。新 Linux runner 缺少 Docker 时会安装引擎；仅补装 Buildx 时不替换或重启已有引擎。Docker CE 使用 `docker-buildx-plugin`，Ubuntu/Debian Docker 使用 `docker-buildx`。
+
+macOS 先启动 OrbStack 或 Docker Desktop，再以拥有 Docker/Homebrew 的用户执行 join。缺少 Git/Buildx 时使用原生 Homebrew 安装：Apple Silicon（包括 Rosetta 终端）使用 `/opt/homebrew`，Intel 使用 `/usr/local`。构建平台仍以实际 Docker 引擎为准，保留原生 ARM 限制。
+
+加入时会启动实际使用的持久 BuildKit 实例，并使用 `# syntax=docker/dockerfile:1` 和 `FROM scratch` 执行仅保留缓存的预检，在报告成功前准备好 BuildKit 镜像与 Dockerfile 前端，不构建或发布业务镜像。前台 runner 每次启动后、领取任务前也会执行工具检查和 BuildKit 预检。预检失败保留已有 runner 服务配置；node 的 BuildKit 准备失败会回滚注册。
+
+Docker 有两条网络路径：Docker daemon 拉取 BuildKit 容器镜像，BuildKit 自己拉取 Dockerfile 前端和基础镜像。daemon 的代理不会自动传入 BuildKit。受限网络使用节点可达的 HTTP 代理：`luma runner join --proxy http://proxy-host:7890`；会复用已有 token 和参数，重新加入前等待当前构建结束。node join 使用 Control 返回的区域出口代理。若 BuildKit 容器镜像拉取失败，需先配置 daemon 的镜像拉取通路；join 会当场报错。具体业务基础镜像和依赖仍在对应构建时解析。
 
 ## 日常命令 {#daily-commands}
 

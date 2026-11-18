@@ -2054,7 +2054,7 @@ arguments:
 
 arguments:
   <command>
-    join      Verify a runner token, save configuration and start the background service
+    join      Install build tools, prepare BuildKit and join the background runner
     start     Start the configured runner and enable automatic startup
     stop      Stop the local runner and disable automatic startup; keep its configuration
     restart   Restart the configured runner service
@@ -2071,7 +2071,7 @@ Then: luma runner stop / start / restart / status / logs --follow
 ```text
 usage: luma runner join [-h] [--url RUNNER_URL] [--token RUNNER_TOKEN] [--token-stdin] [--state-dir STATE_DIR] [--proxy PROXY] [--no-proxy NO_PROXY] [--cache-mode {read-write,read-only,local-only}] [--cache-keep-gb CACHE_KEEP_GB] [--max-parallelism MAX_PARALLELISM] [--workers WORKERS] [--insecure] [--format {text,json,ndjson}] [--quiet]
 
-Verify a runner token, save configuration and start the background service
+Install build tools, prepare BuildKit and join the background runner
 
 arguments:
   -h, --help                  show this help message and exit
@@ -2246,7 +2246,7 @@ arguments:
 
 Examples:
   luma update
-  luma update --install-ref v0.2.81
+  luma update --install-ref v0.2.82
   luma update fleet
 ```
 

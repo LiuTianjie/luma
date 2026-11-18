@@ -13,6 +13,7 @@ from ..builder_runner import RunnerDaemon
 from ..errors import LumaError
 from .. import runner_service
 from ..runner_logging import rotating_output
+from ..build_prerequisites import prepare_build_dependencies, prepare_runner_buildkit, verify_build_dependencies
 from . import common
 
 
@@ -37,7 +38,7 @@ def add_parser(sub, command_fn, commands_fn, add_output_arguments) -> None:
                         epilog="First: luma runner join --url https://build.example.com --token lbr_xxx\n"
                         "Then: luma runner stop / start / restart / status / logs --follow")
     commands = commands_fn(parser, "runner_command")
-    join = command_fn(commands, "join", "Verify a runner token, save configuration and start the background service")
+    join = command_fn(commands, "join", "Install build tools, prepare BuildKit and join the background runner")
     add_runner_arguments(join)
     add_output_arguments(join)
     for name, help_text in (
@@ -102,7 +103,10 @@ def run_foreground(args: argparse.Namespace) -> int:
         options = resolve_options(args)
     output = rotating_output(runner_service.LOG) if config_path and sys.platform == "darwin" else contextlib.nullcontext()
     with output:
-        return RunnerDaemon(**options).run_once_or_forever(once=bool(getattr(args, "once", False)))
+        verify_build_dependencies()
+        daemon = RunnerDaemon(**options)
+        prepare_runner_buildkit(daemon)
+        return daemon.run_once_or_forever(once=bool(getattr(args, "once", False)))
 
 
 def cmd_runner(args: argparse.Namespace) -> int:
@@ -115,8 +119,9 @@ def cmd_runner(args: argparse.Namespace) -> int:
         runner_service.platform_backend()
         previous = runner_service.load_config()
         options = resolve_options(args, previous.get("options"))
-        # Docker detection and runner-token authentication happen before any
-        # configuration or service is replaced. Enrollment never leases a build.
+        # Install and verify build tools before replacing service configuration
+        # or registering presence. Enrollment never leases a build.
+        prepare_build_dependencies()
         daemon = RunnerDaemon(**options)
         try:
             response = daemon._post("/v1/runner/join", {})
@@ -131,6 +136,9 @@ def cmd_runner(args: argparse.Namespace) -> int:
         runner = response.get("runner") or {}
         if not runner.get("id") or not runner.get("name"):
             raise LumaError("luma-build returned an invalid runner identity")
+        if runner.get("activeBuilds", 0):
+            raise LumaError("Runner has active builds; wait for them to finish before joining again")
+        prepare_runner_buildkit(daemon)
         result = runner_service.start(options, configure=True)
         result["runner"] = runner["name"]
     elif action in {"start", "restart"}:

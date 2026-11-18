@@ -41,6 +41,10 @@ class RunnerServiceTests(unittest.TestCase):
         self.env = {"HOME": str(self.root), "PATH": "/usr/bin:/bin", "DOCKER_CONTEXT": "orbstack"}
         self.command = [str(self.root / "bin/luma")]
         self.config = dict(schemaVersion=1, owner=self.owner, options=OPTIONS, command=self.command, environment=self.env)
+        for name in ("prepare_build_dependencies", "prepare_runner_buildkit"):
+            manager = patch("luma.cli.runner." + name)
+            manager.start()
+            self.addCleanup(manager.stop)
 
     def test_systemd_join_start_stop_and_restart_reuse_one_private_config(self):
         state = {"running": False, "enabled": False}
@@ -182,6 +186,52 @@ class RunnerServiceTests(unittest.TestCase):
             start.assert_not_called()
             self.assertEqual(service.CONFIG.read_bytes(), before)
             self.assertNotIn("lbr_invalid", err.getvalue())
+
+    def test_failed_buildkit_preflight_preserves_service_and_does_not_report_joined(self):
+        service.CONFIG.write_text(json.dumps(self.config))
+        before = service.CONFIG.read_bytes()
+        daemon = Mock()
+        daemon._post.return_value = {"runner": {"id": "rn-1", "name": "existing"}}
+        with patch("luma.cli.main.auto_sync"), patch("luma.cli.main._load_environment"), \
+             patch("luma.cli.runner.RunnerDaemon", return_value=daemon), \
+             patch("luma.cli.runner.prepare_runner_buildkit", side_effect=LumaError("frontend unreachable")), \
+             patch.object(service, "platform_backend", return_value="systemd"), \
+             patch.object(service, "start") as start, \
+             patch("luma.cli.builder._load_saved_builder_url", return_value=""), \
+             patch.dict(os.environ, {}, clear=True), contextlib.redirect_stderr(io.StringIO()), \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(main(["runner", "join"]), 1)
+        start.assert_not_called()
+        daemon.run_once_or_forever.assert_not_called()
+        self.assertEqual(service.CONFIG.read_bytes(), before)
+        self.assertNotIn("Runner joined", output.getvalue())
+
+    def test_foreground_runner_cannot_lease_before_buildkit_is_ready(self):
+        from types import SimpleNamespace
+        from luma.cli.runner import run_foreground
+        daemon = Mock()
+        with patch("luma.cli.runner.resolve_options", return_value=OPTIONS), \
+             patch("luma.cli.runner.verify_build_dependencies"), \
+             patch("luma.cli.runner.RunnerDaemon", return_value=daemon), \
+             patch("luma.cli.runner.prepare_runner_buildkit", side_effect=LumaError("frontend unreachable")), \
+             self.assertRaisesRegex(LumaError, "frontend unreachable"):
+            run_foreground(SimpleNamespace(service_config=None, once=True))
+        daemon.run_once_or_forever.assert_not_called()
+
+    def test_rejoin_does_not_reconfigure_buildkit_while_builds_are_active(self):
+        service.CONFIG.write_text(json.dumps(self.config))
+        daemon = Mock()
+        daemon._post.return_value = {"runner": {"id": "rn-1", "name": "existing", "activeBuilds": 1}}
+        with patch("luma.cli.main.auto_sync"), patch("luma.cli.main._load_environment"), \
+             patch("luma.cli.runner.RunnerDaemon", return_value=daemon), \
+             patch("luma.cli.runner.prepare_runner_buildkit") as warm, \
+             patch.object(service, "platform_backend", return_value="systemd"), \
+             patch.object(service, "start") as start, \
+             patch("luma.cli.builder._load_saved_builder_url", return_value=""), \
+             patch.dict(os.environ, {}, clear=True), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(["runner", "join"]), 1)
+        warm.assert_not_called()
+        start.assert_not_called()
 
 
 class RunnerExitTests(unittest.TestCase):

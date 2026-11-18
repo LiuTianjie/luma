@@ -43,6 +43,10 @@ class CliTests(unittest.TestCase):
             patcher = patch("luma.cli.manager." + name)
             patcher.start()
             self.addCleanup(patcher.stop)
+        for name in ("prepare_build_dependencies", "prepare_node_buildkit"):
+            patcher = patch("luma.cli.nodes." + name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         # Enrollment now connects Tailscale before registering. Keep that host
         # operation isolated too; setup_tailscale is tested with a mock executor.
         patcher = patch("luma.cli.nodes.setup_tailscale", return_value=[])
