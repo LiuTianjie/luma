@@ -2160,9 +2160,9 @@ usage: luma runner logs [-h] [--follow] [--lines LINES]
 Read the local runner service logs
 
 arguments:
-  -h, --help         show this help message and exit
-  --follow, -f       Follow new log output
-  --lines, -n LINES  Number of recent lines, 1-10000 (default: 100)
+  -h, --help               show this help message and exit
+  --follow, -f             Follow new log output
+  --lines LINES, -n LINES  Number of recent lines, 1-10000 (default: 100)
 ```
 
 ## `luma runner run`
@@ -2246,7 +2246,7 @@ arguments:
 
 Examples:
   luma update
-  luma update --install-ref v0.2.78
+  luma update --install-ref v0.2.79
   luma update fleet
 ```
 

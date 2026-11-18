@@ -52,7 +52,9 @@ Control 按以下步骤执行并逐步输出：
 2. 渲染 Nomad job；`tailscale-relay` 和 `tcp-relay` 还会渲染 Traefik 路由文件；
 3. 创建或更新 Cloudflare DNS（`--skip-dns` 跳过）；
 4. 提交 job 并等待滚动发布完成；
-5. 探测 `cn-edge` 和 `external-edge` 服务的公网路由；如果 Traefik 尚未识别，会重建一次 allocation。
+5. 探测公网路由并等待 provider 和上游收敛；Traefik 路由持续缺失时可以重建对应入口，网关错误持续存在时可以重建应用 allocation。
+
+并发部署共享同一 Traefik 入口正在执行的恢复操作。Control 在开始恢复前重新探测路由，避免已经恢复后再触发不必要的重启。不同入口和正常部署仍独立执行。
 
 默认等待 3000 秒（`--timeout`）。如果某一步在前面步骤已经修改集群后失败，部署会记录为 `failed_partial`，之后仍可用 `luma app remove` 清理。
 
@@ -229,7 +231,7 @@ luma workflow run api --path ~/src/api
 CI 可以在不保存登录的情况下使用 CLI：
 
 ```bash
-python -m pip install "luma-infra==0.2.78"
+python -m pip install "luma-infra==0.2.79"
 export LUMA_CONTROL_URL=https://luma.example.com
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 

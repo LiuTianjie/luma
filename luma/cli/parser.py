@@ -85,6 +85,15 @@ class LumaHelpFormatter(argparse.RawDescriptionHelpFormatter):
                 paragraphs.append(textwrap.fill(block, width, initial_indent=indent, subsequent_indent=indent))
         return "\n\n".join(paragraphs)
 
+    def _format_action_invocation(self, action: argparse.Action) -> str:
+        # Python 3.13 stopped repeating a value's metavar after every alias.
+        # Keep terminal help and generated docs identical on supported Pythons.
+        if action.option_strings and action.nargs != 0:
+            metavar = self._get_default_metavar_for_optional(action)
+            value = self._format_args(action, metavar)
+            return ", ".join(f"{option} {value}" for option in action.option_strings)
+        return super()._format_action_invocation(action)
+
 
 class LumaArgumentParser(argparse.ArgumentParser):
     """ArgumentParser with "did you mean" hints for mistyped commands."""
@@ -536,7 +545,7 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
             "Update the local CLI. On a manager this also refreshes Luma Control, and on a joined "
             "node it refreshes the node agent."
         ),
-        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.78\n  luma update fleet",
+        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.79\n  luma update fleet",
     )
     _add_update_arguments(update)
     _add_control_arguments(update)

@@ -1,6 +1,7 @@
 """Deployment guards: secret isolation, locking, publish ports and terminal states."""
 import tempfile
 import shutil
+import concurrent.futures
 import threading
 import time
 import unittest
@@ -254,6 +255,69 @@ class DeployConcurrencyTests(unittest.TestCase):
 
     def test_handle_compose_deployment_is_serialized(self):
         self._assert_serialized("handle_compose_deployment")
+
+
+class TraefikRecoveryConcurrencyTests(unittest.TestCase):
+    def test_same_ingress_shares_recovery_and_failure_without_blocking_other_ingresses(self):
+        from luma.control import server as srv
+
+        for fails in (False, True):
+            with self.subTest(fails=fails):
+                entered, release, waiting = threading.Event(), threading.Event(), threading.Event()
+                results, errors = [], []
+
+                class ObservedFuture(concurrent.futures.Future):
+                    def result(self, timeout=None):
+                        waiting.set()
+                        return super().result(timeout)
+
+                def recreate(job_id, **kwargs):
+                    if job_id == "traefik":
+                        entered.set()
+                        if not release.wait(3):
+                            raise AssertionError("recovery was not released")
+                        if fails:
+                            raise LumaError("replacement failed")
+                    return "recreated " + job_id
+
+                def recover():
+                    try:
+                        results.append(srv._recover_traefik_ingress("traefik"))
+                    except Exception as exc:
+                        errors.append(str(exc))
+
+                with patch.object(srv.concurrent.futures, "Future", ObservedFuture), patch.object(
+                    srv, "_recreate_traefik_ingress", side_effect=recreate,
+                ) as replace:
+                    first, second = threading.Thread(target=recover), threading.Thread(target=recover)
+                    first.start()
+                    try:
+                        self.assertTrue(entered.wait(2))
+                        second.start()
+                        self.assertTrue(waiting.wait(2))
+                        self.assertEqual(srv._recover_traefik_ingress("traefik-node-other"), "recreated traefik-node-other")
+                    finally:
+                        release.set()
+                        first.join(3)
+                        if second.ident is not None:
+                            second.join(3)
+                    self.assertFalse(first.is_alive() or second.is_alive())
+                    self.assertEqual([c.args[0] for c in replace.call_args_list], ["traefik", "traefik-node-other"])
+                    self.assertEqual(errors, ["replacement failed"] * 2 if fails else [])
+                    self.assertEqual(results, [] if fails else ["recreated traefik"] * 2)
+                    # A failed recovery must not poison subsequent attempts.
+                    replace.side_effect = None
+                    replace.return_value = "retry recovered"
+                    self.assertEqual(srv._recover_traefik_ingress("traefik"), "retry recovered")
+
+    def test_completed_recovery_does_not_restart_a_now_reachable_ingress(self):
+        from luma.control import server as srv
+
+        service = ServiceSpec(source=Path("api.yaml"), name="api", image="nginx:alpine",
+                              region="cn", exposure="cn-edge", domain="api.example.com", port=80)
+        with patch.object(srv, "_probe_public_route", return_value="Public route reachable: HTTP 200"), patch.object(srv, "NomadApi") as api:
+            self.assertIn("recreate skipped", srv._recover_traefik_ingress(service=service))
+        api.assert_not_called()
 
 
 class MacPublishPortGuardTests(unittest.TestCase):

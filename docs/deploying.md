@@ -52,7 +52,9 @@ Control performs these steps and prints each one:
 2. render the Nomad job and, for `tailscale-relay` or `tcp-relay`, a Traefik route file;
 3. create or update Cloudflare DNS (skip with `--skip-dns`);
 4. submit the job and wait for the rollout;
-5. probe the public route of `cn-edge` and `external-edge` services, recreating the allocation once if Traefik has not picked it up yet.
+5. probe public routes and wait for provider/upstream convergence; persistent Traefik router misses can recreate the affected ingress, while persistent gateway errors can recreate the application allocation.
+
+Concurrent deployments share an in-progress recovery of the same Traefik ingress. Control rechecks the route before starting recovery so a completed recovery does not trigger another unnecessary restart. Separate ingresses and healthy deployments continue independently.
 
 The default wait is 3000 seconds (`--timeout`). If a step fails after earlier ones changed the cluster, the deployment is recorded as `failed_partial` so `luma app remove` can still clean it up.
 
@@ -229,7 +231,7 @@ Records never contain tokens or `.env` contents. Notes are free text; do not put
 CI can use the CLI without a saved login:
 
 ```bash
-python -m pip install "luma-infra==0.2.78"
+python -m pip install "luma-infra==0.2.79"
 export LUMA_CONTROL_URL=https://luma.example.com
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 

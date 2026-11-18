@@ -240,6 +240,8 @@ DOCKER_RESTART_RECOVERY_TIMEOUT_SECONDS = int(os.environ.get("LUMA_DOCKER_RESTAR
 # wait for Nomad concurrently; shared names/hosts/ports remain serialized.
 _DEPLOY_LOCK = threading.RLock()
 _DEPLOY_OWNERS = DeploymentLocks(_DEPLOY_LOCK)
+_TRAEFIK_RECOVERY_LOCK = threading.Lock()
+_TRAEFIK_RECOVERIES: dict[str, concurrent.futures.Future[str]] = {}
 _FLEET_UPDATE_LOCK = threading.RLock()
 FLEET_UPDATE_CONCURRENCY = 4
 FLEET_UPDATE_ATTEMPTS = 5
@@ -12715,7 +12717,7 @@ def _probe_public_route_with_recovery(
                     _deploy_step(
                         steps,
                         "Recover Traefik ingress",
-                        lambda: _recover_traefik_ingress(ingress_job),
+                        lambda: _recover_traefik_ingress(ingress_job, service=service),
                         progress=progress,
                     )
                     retry = _wait_for_public_route(service)
@@ -12881,7 +12883,46 @@ def _nomad_blocked_evaluation_message(job_id: str, evaluation: Dict[str, Any]) -
     return message
 
 
-def _recover_traefik_ingress(job_id: str = "traefik") -> str:
+def _recover_traefik_ingress(job_id: str = "traefik", *, service: ServiceSpec | None = None) -> str:
+    # Independent deployments can discover the same ingress failure. Share its
+    # recovery until replacement is complete, including failures, so a follower
+    # cannot stop the replacement another deployment is still waiting for.
+    with _TRAEFIK_RECOVERY_LOCK:
+        pending = _TRAEFIK_RECOVERIES.get(job_id)
+        if pending is None:
+            pending = concurrent.futures.Future()
+            _TRAEFIK_RECOVERIES[job_id] = pending
+            owner = True
+        else:
+            owner = False
+    if not owner:
+        return pending.result()
+    try:
+        result = _recreate_traefik_ingress(job_id, service=service)
+    except BaseException as exc:
+        pending.set_exception(exc)
+        raise
+    else:
+        pending.set_result(result)
+        return result
+    finally:
+        with _TRAEFIK_RECOVERY_LOCK:
+            _TRAEFIK_RECOVERIES.pop(job_id, None)
+
+
+def _recreate_traefik_ingress(job_id: str, *, service: ServiceSpec | None = None) -> str:
+    if service is not None:
+        # A prior recovery may have finished after this caller's failed probe.
+        # Only a still-missing router warrants another ingress replacement.
+        try:
+            probe = _probe_public_route(service)
+        except LumaError as exc:
+            if not _public_route_error_is_traefik_miss(exc):
+                if _public_route_error_is_gateway_failure(exc):
+                    return "Traefik router available; waiting for upstream convergence"
+                raise
+        else:
+            return f"Traefik recreate skipped after recheck: {probe}"
     state = load_state()
     config = load_config(_control_config_path())
     api = NomadApi(nomad_addr(config, state), token=nomad_token(state))

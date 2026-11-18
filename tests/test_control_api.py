@@ -2280,7 +2280,7 @@ class ControlApiTests(unittest.TestCase):
             _probe_public_route_with_recovery("deploy-token", service, stack="api", skip_orchestrator=False, steps=[])
 
         # Never restart the Manager edge that serves every other service.
-        recover_ingress.assert_called_once_with("traefik-node-tx-sh-1")
+        recover_ingress.assert_called_once_with("traefik-node-tx-sh-1", service=service)
 
     def test_persistent_traefik_404_recreates_ingress_not_application(self):
         from luma.control.server import _probe_public_route_with_recovery
@@ -2314,7 +2314,7 @@ class ControlApiTests(unittest.TestCase):
             )
 
         self.assertEqual(wait.call_count, 2)
-        recover_ingress.assert_called_once_with("traefik")
+        recover_ingress.assert_called_once_with("traefik", service=service)
         recover_app.assert_not_called()
         self.assertIn("Recovered public route after Traefik recreate", result)
 
