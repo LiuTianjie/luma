@@ -1247,6 +1247,465 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
         self.assertNotIn("HTTP_PROXY", seen_envs[0])
         self.assertIn(".aliyuncs.com", seen_envs[0]["NO_PROXY"])
 
+    def test_git_credential_strictly_validates_origin_port_and_path_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "GITHUB_TOKEN": "ghp-env-token",
+                "GITEA_HOST": "git.example.com",
+                "GITEA_TOKEN": "gitea-env-token",
+            },
+            clear=False,
+        ):
+            app = create_app(
+                data_dir=Path(tmp) / "data",
+                admin_token=ADMIN_TOKEN,
+                default_registry_host="crpi-x.cn-beijing.personal.cr.aliyuncs.com",
+                default_registry_namespace="luma",
+                start_worker=False,
+            )
+            client = TestClient(app)
+            hdr = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+
+            client.post(
+                "/v1/credentials/git",
+                headers=hdr,
+                json={
+                    "id": "gitea:scoped",
+                    "host": "git.example.com:8443",
+                    "pathPrefix": "corp/team-a",
+                    "token": "scoped-secret-token",
+                },
+            )
+
+            # Wrong domain, wrong port, wrong path prefix, or SSH scheme with explicit providerId MUST fail (HTTP 400)
+            for bad_url in (
+                "https://evil.example.com:8443/corp/team-a/service.git",
+                "https://git.example.com/corp/team-a/service.git",
+                "https://git.example.com:8443/corp/team-b/service.git",
+                "ssh://git@git.example.com:8443/corp/team-a/service.git",
+            ):
+                bad = client.post(
+                    "/v1/builds",
+                    headers=hdr,
+                    json={"providerId": "gitea:scoped", "repoUrl": bad_url, "deploy": False},
+                )
+                self.assertEqual(bad.status_code, 400, f"expected 400 for {bad_url}: {bad.text}")
+
+            # Env-backed GITHUB_TOKEN and GITEA_TOKEN also validate target host strictly
+            bad_gh = client.post(
+                "/v1/builds",
+                headers=hdr,
+                json={"providerId": "github", "repoUrl": "https://evil.example.com/a/b.git", "deploy": False},
+            )
+            self.assertEqual(bad_gh.status_code, 400)
+            bad_gt = client.post(
+                "/v1/builds",
+                headers=hdr,
+                json={"providerId": "gitea", "repoUrl": "https://github.com/a/b.git", "deploy": False},
+            )
+            self.assertEqual(bad_gt.status_code, 400)
+
+            # Matching host + port + path_prefix succeeds
+            ok = client.post(
+                "/v1/builds",
+                headers=hdr,
+                json={
+                    "providerId": "gitea:scoped",
+                    "repoUrl": "https://git.example.com:8443/corp/team-a/service.git",
+                    "deploy": False,
+                },
+            )
+            self.assertEqual(ok.status_code, 200, ok.text)
+
+            # Saving https://git.example.com:443 MUST reject plaintext http:// on port 80 or 443!
+            client.post(
+                "/v1/credentials/git",
+                headers=hdr,
+                json={"id": "https-443", "host": "https://git.example.com:443", "token": "tls-only-pat"},
+            )
+            for downgrade_url in (
+                "http://git.example.com:80/acme/app.git",
+                "http://git.example.com/acme/app.git",
+                "http://git.example.com:443/acme/app.git",
+                "https://git.example.com:80/acme/app.git",
+            ):
+                bad_dg = client.post(
+                    "/v1/builds",
+                    headers=hdr,
+                    json={"providerId": "https-443", "repoUrl": downgrade_url, "deploy": False},
+                )
+                self.assertEqual(bad_dg.status_code, 400, f"expected 400 for {downgrade_url}")
+            self.assertEqual(
+                client.post(
+                    "/v1/builds",
+                    headers=hdr,
+                    json={"providerId": "https-443", "repoUrl": "https://git.example.com/acme/app.git", "deploy": False},
+                ).status_code,
+                200,
+            )
+
+            # Explicit http:// internal Git host preserves scheme for shorthand and rejects https:// mismatch
+            client.post(
+                "/v1/credentials/git",
+                headers=hdr,
+                json={"id": "http-lan", "host": "http://100.66.177.70:3000", "token": "lan-pat"},
+            )
+            ok_lan = client.post(
+                "/v1/builds",
+                headers=hdr,
+                json={"providerId": "http-lan", "repository": "acme/lan-svc", "deploy": False},
+            )
+            self.assertEqual(ok_lan.status_code, 200, ok_lan.text)
+            self.assertEqual(ok_lan.json()["build"]["repoUrl"], "http://100.66.177.70:3000/acme/lan-svc.git")
+            self.assertEqual(
+                client.post(
+                    "/v1/builds",
+                    headers=hdr,
+                    json={"providerId": "http-lan", "repoUrl": "https://100.66.177.70:3000/acme/lan-svc.git", "deploy": False},
+                ).status_code,
+                400,
+            )
+
+        # GITEA_TOKEN without GITEA_HOST must refuse rather than defaulting to github.com
+        with tempfile.TemporaryDirectory() as tmp2, patch.dict(
+            "os.environ", {"GITEA_HOST": "", "GITEA_TOKEN": "orphan-gitea-token"}, clear=False
+        ):
+            app2 = create_app(
+                data_dir=Path(tmp2) / "data",
+                admin_token=ADMIN_TOKEN,
+                default_registry_host="crpi-x.cn-beijing.personal.cr.aliyuncs.com",
+                start_worker=False,
+            )
+            c2 = TestClient(app2)
+            res_no_host = c2.post(
+                "/v1/builds",
+                headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+                json={"providerId": "gitea", "repository": "acme/app", "deploy": False},
+            )
+            self.assertEqual(res_no_host.status_code, 400)
+
+    def test_canonical_app_identity_prevents_override_bypass_and_concurrent_deploy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = create_app(
+                data_dir=Path(tmp) / "data",
+                admin_token=ADMIN_TOKEN,
+                control_url="https://luma.example.com",
+                control_deploy_token="ctl-tok",
+                default_registry_host="crpi-x.cn-beijing.personal.cr.aliyuncs.com",
+                default_registry_namespace="luma",
+                affinity_wait_seconds=0,
+                start_worker=False,
+            )
+            client = TestClient(app)
+            hdr = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+            r_slow = client.post("/v1/runners/tokens", headers=hdr, json={"name": "r-slow"}).json()["runner"]["runnerToken"]
+            r_fast = client.post("/v1/runners/tokens", headers=hdr, json={"name": "r-fast"}).json()["runner"]["runnerToken"]
+
+            # Distinct apps from the same repo (--manifest name: orders-prod vs orders-staging) MUST NOT cancel each other!
+            m_prod = client.post(
+                "/v1/builds",
+                headers=hdr,
+                json={"repository": "acme/orders", "ref": "main", "manifest": "name: orders-prod\nregion: cn\n"},
+            ).json()["build"]["id"]
+            m_stg = client.post(
+                "/v1/builds",
+                headers=hdr,
+                json={"repository": "acme/orders", "ref": "main", "manifest": "name: orders-staging\nregion: cn\n"},
+            ).json()["build"]["id"]
+            self.assertEqual(client.get(f"/v1/builds/{m_prod}", headers=hdr).json()["build"]["status"], "queued")
+            self.assertEqual(client.get(f"/v1/builds/{m_stg}", headers=hdr).json()["build"]["status"], "queued")
+            client.post(f"/v1/builds/{m_prod}/cancel", headers=hdr)
+            client.post(f"/v1/builds/{m_stg}/cancel", headers=hdr)
+
+            # Build 1 omits --node/--domain/--manifest-path; Build 2 passes explicit overrides for the SAME app!
+            b_old = client.post(
+                "/v1/builds",
+                headers=hdr,
+                json={"repository": "acme/orders", "ref": "1" * 40, "runner": "r-slow", "supersede": False, "deploy": True},
+            ).json()["build"]["id"]
+            b_new = client.post(
+                "/v1/builds",
+                headers=hdr,
+                json={
+                    "repository": "acme/orders",
+                    "ref": "2" * 40,
+                    "runner": "r-fast",
+                    "node": "manager",
+                    "domain": "orders.example.com",
+                    "manifestPath": ".luma.yml",
+                    "supersede": False,
+                    "deploy": True,
+                },
+            ).json()["build"]["id"]
+
+            t_old = client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {r_slow}"}, json={"nativePlatform": "linux/amd64"}).json()["task"]
+            t_new = client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {r_fast}"}, json={"nativePlatform": "linux/amd64"}).json()["task"]
+            self.assertEqual(t_old["buildId"], b_old)
+            self.assertEqual(t_new["buildId"], b_new)
+
+            # Fast build completes & deploys first
+            client.post(
+                "/v1/runner/complete",
+                headers={"Authorization": f"Bearer {r_fast}"},
+                json={
+                    "buildId": b_new,
+                    "leaseId": t_new["leaseId"],
+                    "status": "succeeded",
+                    "result": {"kind": "service", "image": "img:new", "manifest": "name: orders\nnode: manager\n"},
+                },
+            )
+            with patch.object(app.state.deployer, "deploy_built_artifact", return_value={"service": "orders", "revision": 1}):
+                self.assertTrue(app.state.deploy_worker.run_pending_once())
+            self.assertEqual(client.get(f"/v1/builds/{b_new}", headers=hdr).json()["build"]["status"], "succeeded")
+
+            # Slow earlier build finishes later -> blocked by canonical app identity ('service:orders')!
+            client.post(
+                "/v1/runner/complete",
+                headers={"Authorization": f"Bearer {r_slow}"},
+                json={
+                    "buildId": b_old,
+                    "leaseId": t_old["leaseId"],
+                    "status": "succeeded",
+                    "result": {"kind": "service", "image": "img:old", "manifest": "name: orders\nnode: manager\n"},
+                },
+            )
+            with patch.object(app.state.deployer, "deploy_built_artifact", return_value={"service": "orders", "revision": 2}) as mock_dep:
+                self.assertFalse(app.state.deploy_worker.run_pending_once())
+                mock_dep.assert_not_called()
+            old_rec = client.get(f"/v1/builds/{b_old}", headers=hdr).json()["build"]
+            self.assertEqual(old_rec["status"], "canceled")
+            self.assertEqual(old_rec["supersededBy"], b_new)
+
+            # Deploy mutex: while 'service:billing' is actively deploying, a newer build for 'service:billing' waits in queued_deploy
+            d1 = client.post("/v1/builds", headers=hdr, json={"repository": "acme/billing", "ref": "3" * 40, "runner": "r-slow", "supersede": False}).json()["build"]["id"]
+            d2 = client.post("/v1/builds", headers=hdr, json={"repository": "acme/billing", "ref": "4" * 40, "runner": "r-fast", "node": "worker-1", "manifestPath": ".luma.yml", "supersede": False}).json()["build"]["id"]
+            l1 = client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {r_slow}"}, json={"nativePlatform": "linux/amd64"}).json()["task"]
+            l2 = client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {r_fast}"}, json={"nativePlatform": "linux/amd64"}).json()["task"]
+            client.post("/v1/runner/complete", headers={"Authorization": f"Bearer {r_slow}"}, json={"buildId": d1, "leaseId": l1["leaseId"], "status": "succeeded", "result": {"kind": "service", "image": "b:1", "manifest": "name: billing\n"}})
+            claimed1 = app.state.store.claim_next_deploy()
+            self.assertIsNotNone(claimed1)
+            self.assertEqual(claimed1[0]["id"], d1)
+            client.post("/v1/runner/complete", headers={"Authorization": f"Bearer {r_fast}"}, json={"buildId": d2, "leaseId": l2["leaseId"], "status": "succeeded", "result": {"kind": "service", "image": "b:2", "manifest": "name: billing\n"}})
+            # Must wait while d1 is still 'deploying'!
+            self.assertIsNone(app.state.store.claim_next_deploy())
+            app.state.store.complete_deploy(d1, succeeded=True, deploy_result={"service": "billing"})
+            claimed2 = app.state.store.claim_next_deploy()
+            self.assertIsNotNone(claimed2)
+            self.assertEqual(claimed2[0]["id"], d2)
+
+    def test_requeue_completion_receipt_replay_is_idempotent_and_runner_drops_409(self) -> None:
+        import urllib.error
+        from luma_build.runner import RunnerDaemon
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app = create_app(
+                data_dir=Path(tmp) / "data",
+                admin_token=ADMIN_TOKEN,
+                default_registry_host="crpi-x.cn-beijing.personal.cr.aliyuncs.com",
+                default_registry_namespace="luma",
+                affinity_wait_seconds=0,
+                start_worker=False,
+            )
+            client = TestClient(app)
+            hdr = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+            amd_tok = client.post("/v1/runners/tokens", headers=hdr, json={"name": "amd-1"}).json()["runner"]["runnerToken"]
+            arm_tok = client.post("/v1/runners/tokens", headers=hdr, json={"name": "m4"}).json()["runner"]["runnerToken"]
+
+            bid = client.post("/v1/builds", headers=hdr, json={"repository": "acme/handoff", "deploy": False}).json()["build"]["id"]
+            lease1 = client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {amd_tok}"}, json={"nativePlatform": "linux/amd64"}).json()["task"]
+            self.assertEqual(lease1["buildId"], bid)
+            self.assertTrue(lease1["leaseId"].startswith("lse-"))
+
+            # First requeue succeeds and clears runner_name
+            r1 = client.post(
+                "/v1/runner/complete",
+                headers={"Authorization": f"Bearer {amd_tok}"},
+                json={
+                    "buildId": bid,
+                    "leaseId": lease1["leaseId"],
+                    "status": "requeue",
+                    "result": {"requiredPlatforms": ["linux/arm64"]},
+                },
+            )
+            self.assertEqual(r1.status_code, 200)
+            self.assertFalse(r1.json()["replayed"])
+
+            # Even AFTER m4 has already leased the requeued build, amd-1 replaying its lost ACK gets 200 replayed=True!
+            lease2 = client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {arm_tok}"}, json={"nativePlatform": "linux/arm64"}).json()["task"]
+            self.assertEqual(lease2["buildId"], bid)
+            self.assertNotEqual(lease2["leaseId"], lease1["leaseId"])
+
+            replay = client.post(
+                "/v1/runner/complete",
+                headers={"Authorization": f"Bearer {amd_tok}"},
+                json={
+                    "buildId": bid,
+                    "leaseId": lease1["leaseId"],
+                    "status": "requeue",
+                    "result": {"requiredPlatforms": ["linux/arm64"]},
+                },
+            )
+            self.assertEqual(replay.status_code, 200, replay.text)
+            self.assertTrue(replay.json()["replayed"])
+            # m4 still owns the active build undisturbed!
+            self.assertEqual(client.get(f"/v1/builds/{bid}", headers=hdr).json()["build"]["runner"], "m4")
+
+            # RunnerDaemon drops non-retryable HTTP 409 immediately instead of wedging the worker thread
+            with patch("luma_build.runner.find_docker_binary", return_value="docker"), patch(
+                "luma_build.runner.capture_docker_runtime", return_value={}
+            ), patch("luma_build.runner.detect_native_engine_platform", return_value="linux/amd64"), patch(
+                "luma_build.runner.execute_build_task", return_value={"image": "x"}
+            ):
+                daemon = RunnerDaemon(
+                    server_url="http://127.0.0.1:9",
+                    runner_token=amd_tok,
+                    state_dir=Path(tmp) / "rstate",
+                )
+                calls = 0
+
+                def fake_post(path: str, body: dict, *, timeout: int = 35):
+                    nonlocal calls
+                    if path == "/v1/runner/complete":
+                        calls += 1
+                        raise urllib.error.HTTPError(path, 409, "conflict", None, None)  # type: ignore[arg-type]
+                    return {}
+
+                with patch.object(daemon, "_post", side_effect=fake_post):
+                    daemon._run_leased_task({"buildId": "bld-stale", "leaseId": "lse-stale"})
+                self.assertEqual(calls, 1)
+
+    def test_pinned_arm_runner_first_build_leases_immediately_and_rejects_explicit_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = create_app(
+                data_dir=Path(tmp) / "data",
+                admin_token=ADMIN_TOKEN,
+                default_registry_host="crpi-x.cn-beijing.personal.cr.aliyuncs.com",
+                default_registry_namespace="luma",
+                affinity_wait_seconds=0,
+                start_worker=False,
+            )
+            client = TestClient(app)
+            hdr = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+            amd_tok = client.post("/v1/runners/tokens", headers=hdr, json={"name": "amd-cloud", "weight": 200}).json()["runner"]["runnerToken"]
+            arm_tok = client.post("/v1/runners/tokens", headers=hdr, json={"name": "m4", "weight": 100}).json()["runner"]["runnerToken"]
+            client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {amd_tok}"}, json={"nativePlatform": "linux/amd64"})
+            client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {arm_tok}"}, json={"nativePlatform": "linux/arm64"})
+
+            # 1) First build with --runner m4 (no --platform) adopts m4's native linux/arm64 and leases immediately!
+            res = client.post(
+                "/v1/builds",
+                headers=hdr,
+                json={"repository": "acme/first-arm-repo", "runner": "m4", "deploy": False},
+            )
+            self.assertEqual(res.status_code, 200, res.text)
+            self.assertEqual(res.json()["build"]["platforms"], ["linux/arm64"])
+            leased = client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {arm_tok}"}, json={"nativePlatform": "linux/arm64"}).json()["task"]
+            self.assertEqual(leased["buildId"], res.json()["build"]["id"])
+            self.assertEqual(leased["pinnedRunner"], "m4")
+
+            # 2) Explicit incompatible platform (--runner m4 --platform linux/amd64) fails fast with HTTP 400!
+            mismatch = client.post(
+                "/v1/builds",
+                headers=hdr,
+                json={"repository": "acme/first-arm-repo", "runner": "m4", "platform": "linux/amd64", "deploy": False},
+            )
+            self.assertEqual(mismatch.status_code, 400)
+            self.assertIn("incompatible", mismatch.json()["error"])
+
+    def test_isolated_docker_config_preserves_pinned_docker_context_and_acr_inline_cache(self) -> None:
+        import subprocess as sp
+        from luma_build.runner import _write_docker_config, capture_docker_runtime
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orig_docker = root / "orig-docker"
+            meta_dir = orig_docker / "contexts" / "meta" / "hash123"
+            meta_dir.mkdir(parents=True)
+            meta_bytes = b'{"Name":"orbstack","Endpoints":{"docker":{"Host":"unix:///tmp/orb.sock"}}}'
+            (meta_dir / "meta.json").write_bytes(meta_bytes)
+            (orig_docker / "config.json").write_text('{"currentContext":"orbstack"}\n', encoding="utf-8")
+
+            inspect_json = json.dumps(
+                [
+                    {
+                        "Name": "orbstack",
+                        "Endpoints": {"docker": {"Host": "unix:///tmp/orb.sock"}},
+                        "Storage": {"MetadataPath": str(meta_dir), "TLSPath": ""},
+                    }
+                ]
+            )
+            with patch(
+                "luma_build.runner.subprocess.run",
+                return_value=sp.CompletedProcess(["docker"], 0, stdout=inspect_json, stderr=""),
+            ):
+                rt = capture_docker_runtime("docker", base_env={"DOCKER_CONFIG": str(orig_docker)})
+
+            # Even if original config changes afterwards, isolated job config keeps pinned orbstack context!
+            (orig_docker / "config.json").write_text('{"currentContext":"other"}\n', encoding="utf-8")
+            job_cfg = root / "job-docker-cfg"
+            _write_docker_config(
+                job_cfg,
+                [{"host": "crpi-x.cn-beijing.personal.cr.aliyuncs.com", "username": "u", "password": "p"}],
+                docker_runtime=rt,
+            )
+            written_cfg = json.loads((job_cfg / "config.json").read_text(encoding="utf-8"))
+            self.assertEqual(written_cfg["currentContext"], "orbstack")
+            self.assertEqual((job_cfg / "contexts" / "meta" / "hash123" / "meta.json").read_bytes(), meta_bytes)
+
+            # Verify ACR buildx invocation uses BUILDX_NO_DEFAULT_ATTESTATIONS=1, oci-mediatypes=false, and inline cache!
+            df = root / "Dockerfile"
+            df.write_text("FROM scratch\n", encoding="utf-8")
+            seen_popen: list[tuple[list[str], dict[str, str]]] = []
+
+            class FakeProc:
+                def __init__(self, cmd, env, **kwargs):
+                    seen_popen.append((list(cmd), dict(env)))
+                    import io
+
+                    self.stdout = io.StringIO("")
+                    self.pid = 99999
+
+                def poll(self):
+                    return 0
+
+                def wait(self, timeout=None):
+                    return 0
+
+            with patch("luma_build.runner.subprocess.Popen", side_effect=FakeProc):
+                _run_buildx_command(
+                    docker_bin="docker",
+                    builder_name="luma-runner",
+                    buildx_state_dir=root / "bx",
+                    docker_config=job_cfg,
+                    push_host="crpi-x.cn-beijing.personal.cr.aliyuncs.com",
+                    pull_host="crpi-x.cn-beijing.personal.cr.aliyuncs.com",
+                    image_repo="luma-acr/acme-app",
+                    tag="sha-1",
+                    context_dir=root,
+                    dockerfile_path=df,
+                    platforms=["linux/amd64"],
+                    push_insecure=False,
+                    cache_mode="read-write",
+                    cache_ref="crpi-x.cn-beijing.personal.cr.aliyuncs.com/luma-acr/luma-buildcache:acme-app-linux-amd64",
+                    no_cache=False,
+                    proxy="",
+                    no_proxy="",
+                    build_args={},
+                    target="",
+                    docker_runtime=rt,
+                    timeout=120,
+                    metadata_file=root / "meta.json",
+                    on_line=None,
+                    cancel_event=__import__("threading").Event(),
+                )
+            cmd, env = seen_popen[0]
+            self.assertEqual(env["BUILDX_NO_DEFAULT_ATTESTATIONS"], "1")
+            self.assertEqual(env["DOCKER_CONTEXT"], "orbstack")
+            self.assertIn("type=image,push=true,oci-mediatypes=false", cmd)
+            self.assertIn("type=inline", cmd)
+            self.assertIn("crpi-x.cn-beijing.personal.cr.aliyuncs.com/luma-acr/acme-app:cache-acme-app-linux-amd64", cmd)
+
 
 if __name__ == "__main__":
     unittest.main()

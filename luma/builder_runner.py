@@ -200,6 +200,12 @@ def format_image_repository(
     return f"{ns}/{path}" if ns else path
 
 
+def uses_inline_registry_cache(host: str) -> bool:
+    normalized = normalize_registry_host(host)
+    bare = (urllib.parse.urlsplit("http://" + normalized).hostname or "").lower()
+    return any(bare.endswith(suffix) for suffix in CLOUD_REGISTRY_NO_PROXY_SUFFIXES)
+
+
 def registry_no_proxy_entries(host: str) -> List[str]:
     normalized = normalize_registry_host(host)
     parsed = urllib.parse.urlsplit("http://" + normalized)
@@ -420,7 +426,176 @@ def extra_cli_plugin_dirs() -> List[str]:
     return dirs
 
 
-def detect_native_engine_platform(docker_bin: str) -> str:
+def _collect_context_tree(
+    src_root: Path, rel_prefix: str, out: Dict[str, bytes], *, max_bytes: int = 1024 * 1024
+) -> None:
+    if not src_root.is_dir():
+        return
+    used = sum(len(v) for v in out.values())
+    with contextlib.suppress(OSError):
+        for p in sorted(src_root.rglob("*")):
+            if not p.is_file() or p.is_symlink():
+                continue
+            data = p.read_bytes()
+            if used + len(data) > max_bytes:
+                break
+            used += len(data)
+            rel = p.relative_to(src_root).as_posix()
+            out[f"{rel_prefix.strip('/')}/{rel}"] = data
+
+
+def _snapshot_docker_config_context(base_env: Optional[Mapping[str, str]] = None) -> Dict[str, Any]:
+    env_src = dict(os.environ if base_env is None else base_env)
+    explicit_host = str(env_src.get("DOCKER_HOST") or "").strip()
+    explicit_ctx = str(env_src.get("DOCKER_CONTEXT") or "").strip()
+    tls_verify = str(env_src.get("DOCKER_TLS_VERIFY") or "").strip()
+    cert_path = str(env_src.get("DOCKER_CERT_PATH") or "").strip()
+    orig_cfg_dir = Path(env_src.get("DOCKER_CONFIG") or (Path.home() / ".docker")).expanduser()
+
+    if explicit_host and not explicit_ctx:
+        return {
+            "dockerHost": explicit_host,
+            "resolvedEndpoint": explicit_host,
+            "tlsVerify": tls_verify,
+            "certPath": cert_path,
+            "currentContext": "",
+            "contextFiles": {},
+        }
+
+    ctx_name = explicit_ctx
+    if not ctx_name:
+        cfg_json_path = orig_cfg_dir / "config.json"
+        if cfg_json_path.is_file():
+            with contextlib.suppress(OSError, ValueError):
+                loaded = json.loads(cfg_json_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    ctx_name = str(loaded.get("currentContext") or "").strip()
+
+    if ctx_name and ctx_name != "default":
+        context_files: Dict[str, bytes] = {}
+        _collect_context_tree(orig_cfg_dir / "contexts", "contexts", context_files)
+        return {
+            "dockerHost": "",
+            "resolvedEndpoint": "",
+            "tlsVerify": "",
+            "certPath": "",
+            "currentContext": ctx_name,
+            "contextFiles": context_files,
+        }
+
+    return {
+        "dockerHost": explicit_host,
+        "resolvedEndpoint": explicit_host,
+        "tlsVerify": tls_verify,
+        "certPath": cert_path,
+        "currentContext": "",
+        "contextFiles": {},
+    }
+
+
+def capture_docker_runtime(
+    docker_bin: str, *, base_env: Optional[Mapping[str, str]] = None
+) -> Dict[str, Any]:
+    snap = _snapshot_docker_config_context(base_env=base_env)
+    if snap["dockerHost"]:
+        return snap
+    env_src = dict(os.environ if base_env is None else base_env)
+    cmd = [docker_bin, "context", "inspect"]
+    if snap["currentContext"]:
+        cmd.append(snap["currentContext"])
+    proc = subprocess.run(
+        cmd,
+        env=env_src,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=15,
+    )
+    if proc.returncode == 0:
+        with contextlib.suppress(ValueError, TypeError, KeyError):
+            items = json.loads(proc.stdout or "")
+            if isinstance(items, list) and items and isinstance(items[0], dict):
+                info = items[0]
+                inspected_name = str(info.get("Name") or snap["currentContext"] or "default").strip()
+                ep_docker = (info.get("Endpoints") or {}).get("docker") or {}
+                ep_host = str(ep_docker.get("Host") or "").strip()
+                storage = info.get("Storage") if isinstance(info.get("Storage"), dict) else {}
+                ctx_files: Dict[str, bytes] = {}
+                meta_path = str(storage.get("MetadataPath") or "").strip()
+                tls_path = str(storage.get("TLSPath") or "").strip()
+                if meta_path:
+                    mp = Path(meta_path)
+                    _collect_context_tree(mp, f"contexts/meta/{mp.name}", ctx_files)
+                if tls_path:
+                    tp = Path(tls_path)
+                    _collect_context_tree(tp, f"contexts/tls/{tp.name}", ctx_files)
+                if not ctx_files:
+                    ctx_files = dict(snap["contextFiles"])
+                if inspected_name == "default":
+                    return {
+                        "dockerHost": ep_host,
+                        "resolvedEndpoint": ep_host,
+                        "tlsVerify": snap["tlsVerify"],
+                        "certPath": snap["certPath"],
+                        "currentContext": "",
+                        "contextFiles": {},
+                    }
+                return {
+                    "dockerHost": "",
+                    "resolvedEndpoint": ep_host,
+                    "tlsVerify": "",
+                    "certPath": "",
+                    "currentContext": inspected_name,
+                    "contextFiles": ctx_files,
+                }
+    return snap
+
+
+def _apply_docker_runtime_env(
+    env: Dict[str, str],
+    *,
+    docker_config: Optional[Path] = None,
+    buildx_state_dir: Optional[Path] = None,
+    docker_runtime: Optional[Mapping[str, Any]] = None,
+    force_no_attestations: bool = False,
+) -> Dict[str, str]:
+    if docker_config is not None:
+        env["DOCKER_CONFIG"] = str(docker_config)
+    if buildx_state_dir is not None:
+        env["BUILDX_CONFIG"] = str(buildx_state_dir)
+    if force_no_attestations:
+        env["BUILDX_NO_DEFAULT_ATTESTATIONS"] = "1"
+    else:
+        env.setdefault("BUILDX_NO_DEFAULT_ATTESTATIONS", "1")
+    if docker_runtime is not None:
+        ctx_name = str(docker_runtime.get("currentContext") or "").strip()
+        ctx_files = (
+            docker_runtime.get("contextFiles")
+            if isinstance(docker_runtime.get("contextFiles"), Mapping)
+            else {}
+        )
+        d_host = str(docker_runtime.get("dockerHost") or "").strip()
+        res_ep = str(docker_runtime.get("resolvedEndpoint") or "").strip()
+        if ctx_name and (ctx_files or docker_config is None):
+            env["DOCKER_CONTEXT"] = ctx_name
+            env.pop("DOCKER_HOST", None)
+        elif d_host or res_ep:
+            env["DOCKER_HOST"] = d_host or res_ep
+            env.pop("DOCKER_CONTEXT", None)
+            if docker_runtime.get("tlsVerify"):
+                env["DOCKER_TLS_VERIFY"] = str(docker_runtime["tlsVerify"])
+            if docker_runtime.get("certPath"):
+                env["DOCKER_CERT_PATH"] = str(docker_runtime["certPath"])
+    return env
+
+
+def detect_native_engine_platform(
+    docker_bin: str, *, docker_runtime: Optional[Mapping[str, Any]] = None
+) -> str:
+    run_kwargs: Dict[str, Any] = {}
+    if docker_runtime is not None:
+        run_kwargs["env"] = _apply_docker_runtime_env(dict(os.environ), docker_runtime=docker_runtime)
     proc = subprocess.run(
         [docker_bin, "version", "--format", "{{.Server.Os}}/{{.Server.Arch}}"],
         text=True,
@@ -428,6 +603,7 @@ def detect_native_engine_platform(docker_bin: str) -> str:
         stderr=subprocess.STDOUT,
         check=False,
         timeout=15,
+        **run_kwargs,
     )
     if proc.returncode != 0:
         raise LumaError(f"unable to query Docker daemon on runner: {(proc.stdout or '').strip()}")
@@ -473,7 +649,13 @@ def _discover_manifest(
     return None
 
 
-def _write_docker_config(config_dir: Path, registry_auths: List[Dict[str, str]]) -> None:
+def _write_docker_config(
+    config_dir: Path,
+    registry_auths: List[Dict[str, str]],
+    *,
+    docker_runtime: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    rt = dict(docker_runtime) if docker_runtime is not None else _snapshot_docker_config_context()
     config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     config_dir.chmod(0o700)
     auths_obj: Dict[str, Any] = {}
@@ -490,9 +672,23 @@ def _write_docker_config(config_dir: Path, registry_auths: List[Dict[str, str]])
     plugin_dirs = extra_cli_plugin_dirs()
     if plugin_dirs:
         payload["cliPluginsExtraDirs"] = plugin_dirs
+    ctx_name = str(rt.get("currentContext") or "").strip()
+    ctx_files = rt.get("contextFiles") if isinstance(rt.get("contextFiles"), Mapping) else {}
+    if ctx_name and ctx_files:
+        payload["currentContext"] = ctx_name
+        cfg_root = config_dir.resolve()
+        for rel_path, raw_bytes in ctx_files.items():
+            clean_parts = [p for p in PurePosixPath(str(rel_path)).parts if p not in {"", ".", "..", "/"}]
+            if not clean_parts or clean_parts[0] != "contexts":
+                continue
+            dest_file = cfg_root.joinpath(*clean_parts)
+            dest_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            dest_file.write_bytes(bytes(raw_bytes))
+            dest_file.chmod(0o600)
     cfg_file = config_dir / "config.json"
     cfg_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     cfg_file.chmod(0o600)
+    return rt
 
 
 def _clone_repo(
@@ -627,6 +823,7 @@ def _use_runner_buildx(
     http_hosts: List[str],
     cache_keep_gb: int,
     max_parallelism: int,
+    docker_runtime: Optional[Mapping[str, Any]] = None,
 ) -> Iterator[str]:
     with _BUILDX_COND:
         builder_name = _ensure_runner_buildx_locked(
@@ -638,6 +835,7 @@ def _use_runner_buildx(
             http_hosts=http_hosts,
             cache_keep_gb=cache_keep_gb,
             max_parallelism=max_parallelism,
+            docker_runtime=docker_runtime,
         )
         _ACTIVE_BUILDER_JOBS[builder_name] = _ACTIVE_BUILDER_JOBS.get(builder_name, 0) + 1
     try:
@@ -662,6 +860,7 @@ def _ensure_runner_buildx_locked(
     http_hosts: List[str],
     cache_keep_gb: int,
     max_parallelism: int,
+    docker_runtime: Optional[Mapping[str, Any]] = None,
 ) -> str:
     name = "luma-runner-egress" if proxy else "luma-runner"
     buildx_state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -685,17 +884,29 @@ def _ensure_runner_buildx_locked(
         cache_keep_gb=cache_keep_gb,
         max_parallelism=max_parallelism,
     )
-    desired_spec = {
+    desired_spec: Dict[str, Any] = {
         "toml": toml_body,
         "proxy": proxy,
         "noProxy": merged_no_proxy,
         "httpHosts": merged_http_hosts,
     }
+    if docker_runtime is not None:
+        ep_key = str(
+            docker_runtime.get("resolvedEndpoint")
+            or docker_runtime.get("dockerHost")
+            or docker_runtime.get("currentContext")
+            or ""
+        ).strip()
+        if ep_key:
+            desired_spec["endpoint"] = ep_key
     fingerprint = hashlib.sha256(json.dumps(desired_spec, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
-    env = dict(os.environ)
-    env["DOCKER_CONFIG"] = str(docker_config)
-    env["BUILDX_CONFIG"] = str(buildx_state_dir)
+    env = _apply_docker_runtime_env(
+        dict(os.environ),
+        docker_config=docker_config,
+        buildx_state_dir=buildx_state_dir,
+        docker_runtime=docker_runtime,
+    )
 
     inspect_res = subprocess.run(
         [docker_bin, "buildx", "inspect", name],
@@ -825,6 +1036,7 @@ def _run_buildx_command(
     build_args: Dict[str, str],
     target: str,
     build_contexts: Optional[Mapping[str, Path]] = None,
+    docker_runtime: Optional[Mapping[str, Any]] = None,
     timeout: int = 7200,
     metadata_file: Path,
     on_line: Optional[Callable[[str], None]],
@@ -832,7 +1044,12 @@ def _run_buildx_command(
 ) -> Tuple[str, str]:
     push_tag = f"{push_host}/{image_repo}:{tag}"
     platform_arg = ",".join(platforms)
-    output_spec = "type=image,push=true" + (",registry.insecure=true" if push_insecure else "")
+    inline_cache = (not push_insecure) and uses_inline_registry_cache(push_host)
+    output_spec = (
+        "type=image,push=true"
+        + (",oci-mediatypes=false" if inline_cache else "")
+        + (",registry.insecure=true" if push_insecure else "")
+    )
 
     cmd = [
         docker_bin,
@@ -859,14 +1076,21 @@ def _run_buildx_command(
         cmd.append("--no-cache")
     elif cache_ref and cache_mode in {"read-write", "read-only"}:
         insecure_suffix = ",registry.insecure=true" if push_insecure else ""
-        cmd.extend(["--cache-from", f"type=registry,ref={cache_ref}{insecure_suffix}"])
-        if cache_mode == "read-write":
-            cmd.extend(
-                [
-                    "--cache-to",
-                    f"type=registry,ref={cache_ref},mode=min,image-manifest=true,oci-mediatypes=true{insecure_suffix}",
-                ]
-            )
+        if inline_cache:
+            cache_suffix = cache_ref.rsplit(":", 1)[1] if ":" in cache_ref else "latest"
+            inline_ref = f"{push_host}/{image_repo}:cache-{cache_suffix[-96:]}"
+            cmd.extend(["--cache-from", f"type=registry,ref={inline_ref}{insecure_suffix}"])
+            if cache_mode == "read-write":
+                cmd.extend(["-t", inline_ref, "--cache-to", "type=inline"])
+        else:
+            cmd.extend(["--cache-from", f"type=registry,ref={cache_ref}{insecure_suffix}"])
+            if cache_mode == "read-write":
+                cmd.extend(
+                    [
+                        "--cache-to",
+                        f"type=registry,ref={cache_ref},mode=min,image-manifest=true,oci-mediatypes=true{insecure_suffix}",
+                    ]
+                )
 
     if proxy:
         for k, v in (("HTTP_PROXY", proxy), ("HTTPS_PROXY", proxy), ("NO_PROXY", no_proxy)):
@@ -882,9 +1106,13 @@ def _run_buildx_command(
         cmd.append(f"--build-arg={key_clean}={v}")
     cmd.extend(["--", str(context_dir)])
 
-    env = dict(os.environ)
-    env["DOCKER_CONFIG"] = str(docker_config)
-    env["BUILDX_CONFIG"] = str(buildx_state_dir)
+    env = _apply_docker_runtime_env(
+        dict(os.environ),
+        docker_config=docker_config,
+        buildx_state_dir=buildx_state_dir,
+        docker_runtime=docker_runtime,
+        force_no_attestations=inline_cache,
+    )
     if proxy:
         env["HTTP_PROXY"] = proxy
         env["HTTPS_PROXY"] = proxy
@@ -985,6 +1213,7 @@ def _prepare_runner_git_contexts(
         return {}
     token = str((git_auth or {}).get("token") or "").strip() or None
     username = str((git_auth or {}).get("username") or "").strip() or None
+    token_path_prefix = str((git_auth or {}).get("pathPrefix") or "").strip() or None
     effective_proxy = None if (proxy and _url_bypasses_proxy(repo_url, no_proxy)) else (proxy or None)
     try:
         prepared = prepare_git_contexts(
@@ -994,6 +1223,7 @@ def _prepare_runner_git_contexts(
             workspace=workspace,
             token=token,
             username=username,
+            token_path_prefix=token_path_prefix,
             proxy=effective_proxy,
             cancel_event=cancel_event,
             progress=on_line,
@@ -1087,6 +1317,7 @@ def _build_compose_project(
     builder_name: str,
     buildx_state_dir: Path,
     docker_cfg: Path,
+    docker_runtime: Optional[Mapping[str, Any]] = None,
     push_host: str,
     pull_host: str,
     repo_slug: str,
@@ -1216,6 +1447,7 @@ def _build_compose_project(
             build_args=svc_args,
             target=str(spec.get("target") or ""),
             build_contexts=extra_contexts,
+            docker_runtime=docker_runtime,
             timeout=timeout,
             metadata_file=tmp / f"meta-{idx}.json",
             on_line=on_line,
@@ -1261,6 +1493,7 @@ def execute_build_task(
     local_no_proxy: str = "",
     cache_keep_gb: int = 20,
     max_parallelism: int = 0,
+    docker_runtime: Optional[Mapping[str, Any]] = None,
     on_line: Optional[Callable[[str], None]] = None,
     cancel_event: Optional[threading.Event] = None,
 ) -> Dict[str, Any]:
@@ -1305,7 +1538,9 @@ def execute_build_task(
         tmp.chmod(0o700)
         src_dir = tmp / "src"
         docker_cfg = tmp / "docker-config"
-        _write_docker_config(docker_cfg, list(task.get("registryAuths") or []))
+        effective_runtime = _write_docker_config(
+            docker_cfg, list(task.get("registryAuths") or []), docker_runtime=docker_runtime
+        )
 
         if on_line:
             on_line(f"Cloning {repo_url} ({ref})...")
@@ -1361,6 +1596,7 @@ def execute_build_task(
             http_hosts=http_hosts,
             cache_keep_gb=cache_keep_gb,
             max_parallelism=max_parallelism,
+            docker_runtime=effective_runtime,
         ) as builder_name:
             if discovered and discovered[0] == "compose":
                 return _build_compose_project(
@@ -1371,6 +1607,7 @@ def execute_build_task(
                     builder_name=builder_name,
                     buildx_state_dir=buildx_state_dir,
                     docker_cfg=docker_cfg,
+                    docker_runtime=effective_runtime,
                     push_host=push_host,
                     pull_host=pull_host,
                     repo_slug=repo_slug,
@@ -1459,6 +1696,7 @@ def execute_build_task(
                 build_args=merged_args,
                 target=target,
                 build_contexts=extra_contexts,
+                docker_runtime=effective_runtime,
                 timeout=timeout,
                 metadata_file=tmp / "meta-service.json",
                 on_line=on_line,
@@ -1507,7 +1745,10 @@ class RunnerDaemon:
         self.poll_interval = max(poll_interval, 0.5)
         self.stop_event = threading.Event()
         self.docker_bin = find_docker_binary()
-        self.native_platform = detect_native_engine_platform(self.docker_bin)
+        self.docker_runtime = capture_docker_runtime(self.docker_bin)
+        self.native_platform = detect_native_engine_platform(
+            self.docker_bin, docker_runtime=self.docker_runtime
+        )
 
     def _post(self, path: str, body: Dict[str, Any], *, timeout: int = 35) -> Dict[str, Any]:
         req = urllib.request.Request(
@@ -1588,6 +1829,7 @@ class RunnerDaemon:
 
     def _run_leased_task(self, task: Dict[str, Any]) -> None:
         build_id = str(task["buildId"])
+        lease_id = str(task.get("leaseId") or "")
         cancel_event = threading.Event()
         log_queue: queue.Queue = queue.Queue()
         hb_stop = threading.Event()
@@ -1603,7 +1845,11 @@ class RunnerDaemon:
                 if not batch:
                     break
                 try:
-                    res = self._post("/v1/runner/progress", {"buildId": build_id, "events": batch}, timeout=15)
+                    res = self._post(
+                        "/v1/runner/progress",
+                        {"buildId": build_id, "leaseId": lease_id, "events": batch},
+                        timeout=15,
+                    )
                     if res.get("cancelRequested"):
                         cancel_event.set()
                 except Exception:
@@ -1615,7 +1861,11 @@ class RunnerDaemon:
             while not hb_stop.wait(2.5):
                 flush_logs()
                 try:
-                    hb = self._post("/v1/runner/heartbeat", {"buildId": build_id}, timeout=10)
+                    hb = self._post(
+                        "/v1/runner/heartbeat",
+                        {"buildId": build_id, "leaseId": lease_id},
+                        timeout=10,
+                    )
                     if hb.get("cancelRequested"):
                         cancel_event.set()
                 except Exception:
@@ -1636,6 +1886,7 @@ class RunnerDaemon:
                 local_no_proxy=self.local_no_proxy,
                 cache_keep_gb=self.cache_keep_gb,
                 max_parallelism=self.max_parallelism,
+                docker_runtime=self.docker_runtime,
                 on_line=lambda line: log_queue.put({"kind": "log", "line": line, "ts": int(time.time())}),
                 cancel_event=cancel_event,
             )
@@ -1663,6 +1914,7 @@ class RunnerDaemon:
                     "/v1/runner/complete",
                     {
                         "buildId": build_id,
+                        "leaseId": lease_id,
                         "status": status,
                         "result": result,
                         "message": message,
@@ -1670,6 +1922,24 @@ class RunnerDaemon:
                     timeout=20,
                 )
                 return
+            except urllib.error.HTTPError as exc:
+                if exc.code in {400, 401, 403, 404, 409}:
+                    detail = ""
+                    with contextlib.suppress(Exception):
+                        detail = exc.read().decode("utf-8", errors="replace").strip()
+                    print(
+                        f"[luma-runner] dropping rejected completion report for {build_id} (HTTP {exc.code}): {detail or exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return
+                delay = min(15.0, 0.5 * (2 ** min(attempt - 1, 5)))
+                print(
+                    f"[luma-runner] retrying completion report for {build_id} in {delay:.1f}s: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                self.stop_event.wait(delay)
             except Exception as exc:
                 delay = min(15.0, 0.5 * (2 ** min(attempt - 1, 5)))
                 print(
@@ -1677,4 +1947,4 @@ class RunnerDaemon:
                     file=sys.stderr,
                     flush=True,
                 )
-                time.sleep(delay)
+                self.stop_event.wait(delay)

@@ -56,7 +56,7 @@ class CliBuilderTests(unittest.TestCase):
                             "version": "0.1.0",
                             "authMode": "control-sso",
                             "registry": {"registryHost": "crpi-x.cn-beijing.personal.cr.aliyuncs.com", "namespace": "luma", "flatten": True},
-                            "controlTarget": {"configured": True, "endpoint": "https://luma.itool.tech"},
+                            "controlTarget": {"configured": True, "endpoint": "https://luma.example.com"},
                             "runners": [{"name": "m4", "online": True, "nativePlatform": "linux/arm64", "activeBuilds": 0, "maxConcurrency": 1, "weight": 100, "cacheMode": "read-only"}],
                         }
                     )
@@ -91,7 +91,7 @@ class CliBuilderTests(unittest.TestCase):
             ctx_dir.mkdir(parents=True)
             (cfg_home / "current-context").write_text("luma-demo\n", encoding="utf-8")
             (ctx_dir / "luma-demo.json").write_text(
-                json.dumps({"clusterId": "luma-demo", "endpoint": "https://luma.itool.tech", "token": "sso-borrowed-token"}),
+                json.dumps({"clusterId": "luma-demo", "endpoint": "https://luma.example.com", "token": "sso-borrowed-token"}),
                 encoding="utf-8",
             )
 
@@ -164,6 +164,105 @@ class CliBuilderTests(unittest.TestCase):
         acr = "crpi-abc.cn-beijing.personal.cr.aliyuncs.com"
         self.assertEqual(cli_runner.registry_no_proxy_entries(acr), pkg_naming.registry_no_proxy_entries(acr))
         self.assertIn(".aliyuncs.com", cli_runner.registry_no_proxy_entries(acr))
+        self.assertTrue(cli_runner.uses_inline_registry_cache(acr))
+        self.assertEqual(cli_runner.uses_inline_registry_cache(acr), pkg_naming.uses_inline_registry_cache(acr))
+        self.assertFalse(cli_runner.uses_inline_registry_cache("100.64.0.70:5000"))
+
+        with tempfile.TemporaryDirectory() as td:
+            rt = {
+                "dockerHost": "",
+                "resolvedEndpoint": "unix:///tmp/orb.sock",
+                "tlsVerify": "",
+                "certPath": "",
+                "currentContext": "orbstack",
+                "contextFiles": {"contexts/meta/h1/meta.json": b'{"Name":"orbstack"}'},
+            }
+            c_dir = Path(td) / "cli-cfg"
+            p_dir = Path(td) / "pkg-cfg"
+            cli_runner._write_docker_config(c_dir, [], docker_runtime=rt)
+            pkg_runner._write_docker_config(p_dir, [], docker_runtime=rt)
+            self.assertEqual(
+                json.loads((c_dir / "config.json").read_text(encoding="utf-8")),
+                json.loads((p_dir / "config.json").read_text(encoding="utf-8")),
+            )
+            self.assertEqual(
+                (c_dir / "contexts/meta/h1/meta.json").read_bytes(),
+                (p_dir / "contexts/meta/h1/meta.json").read_bytes(),
+            )
+
+            # Both CLI runner and standalone runner strip scoped gitAuth when x-luma-git-contexts points outside pathPrefix!
+            import hashlib
+            import subprocess as sp
+
+            shared_repo = Path(td) / "shared-src"
+            shared_repo.mkdir()
+            (shared_repo / "x.txt").write_text("ok\n", encoding="utf-8")
+            sp.run(["git", "-C", str(shared_repo), "init"], check=True, stdout=sp.DEVNULL)
+            sp.run(["git", "-C", str(shared_repo), "config", "user.email", "ci@example.com"], check=True)
+            sp.run(["git", "-C", str(shared_repo), "config", "user.name", "ci"], check=True)
+            sp.run(["git", "-C", str(shared_repo), "add", "."], check=True)
+            sp.run(["git", "-C", str(shared_repo), "commit", "-m", "init"], check=True, stdout=sp.DEVNULL)
+            commit = sp.check_output(["git", "-C", str(shared_repo), "rev-parse", "HEAD"], text=True).strip()
+            archive_sha = hashlib.sha256(
+                sp.check_output(["git", "-C", str(shared_repo), "archive", "--format=tar.gz", commit])
+            ).hexdigest()
+
+            primary_repo = Path(td) / "primary-src"
+            primary_repo.mkdir()
+            (primary_repo / "team_b.lock.json").write_text(
+                json.dumps(
+                    {
+                        "repository": "https://git.example.com/corp/team-b/shared.git",
+                        "commit": commit,
+                        "archive_sha256": archive_sha,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            work = Path(td) / "ctx-work"
+            work.mkdir()
+            seen_cli_tokens: list[str | None] = []
+            seen_pkg_auths: list[dict | None] = []
+
+            def fake_gitops_clone(url, dest, *, ref=None, token=None, **kw):
+                import shutil
+
+                seen_cli_tokens.append(token)
+                shutil.copytree(shared_repo, dest)
+
+            def fake_pkg_clone(*, repo_url, ref, dest, git_auth, proxy="", **kw):
+                import shutil
+
+                seen_pkg_auths.append(git_auth)
+                shutil.copytree(shared_repo, dest)
+                return commit[:12], commit
+
+            scoped_auth = {"username": "bot", "token": "team-a-secret", "pathPrefix": "corp/team-a"}
+            spec = {"x-luma-git-contexts": {"shared": {"lock": "team_b.lock.json"}}}
+            with patch("luma.build_sources.gitops.clone", side_effect=fake_gitops_clone):
+                cli_runner._prepare_runner_git_contexts(
+                    primary_repo,
+                    spec,
+                    repo_url="https://git.example.com/corp/team-a/app.git",
+                    workspace=work,
+                    git_auth=scoped_auth,
+                    proxy="",
+                    on_line=None,
+                    cancel_event=threading.Event(),
+                )
+            with patch("luma_build.runner._clone_repo", side_effect=fake_pkg_clone):
+                pkg_runner._prepare_git_contexts(
+                    primary_repo,
+                    spec,
+                    primary_repo_url="https://git.example.com/corp/team-a/app.git",
+                    workspace=work,
+                    git_auth=scoped_auth,
+                    proxy="",
+                    on_line=None,
+                    cancel_event=threading.Event(),
+                )
+            self.assertEqual(seen_cli_tokens, [None])
+            self.assertEqual(seen_pkg_auths, [None])
 
         manifest_samples = [
             "name: svc\nregion: cn\nnode: arm-1\n",

@@ -18,6 +18,8 @@ import urllib.parse
 from pathlib import Path
 from typing import Any, Iterator
 
+import yaml
+
 from .crypto import SecretBox
 from .errors import BuildError
 from .registry_naming import (
@@ -33,6 +35,7 @@ from .scheduler import (
     normalize_platform,
     parse_platforms,
     runner_is_online,
+    runner_matches_build,
 )
 
 TERMINAL_STATUSES = {"succeeded", "failed", "canceled"}
@@ -46,6 +49,102 @@ def _sha256_hex(value: str) -> str:
 
 def _is_commit_sha(ref: str) -> bool:
     return bool(re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", str(ref or "").strip()))
+
+
+def _normalize_git_prefix(value: str) -> str:
+    clean = str(value or "").strip().strip("/").lower()
+    if clean.endswith(".git"):
+        clean = clean[:-4].rstrip("/")
+    return clean
+
+
+def _parse_git_origin(host_or_url: str, *, allow_path: bool = False) -> tuple[str, str, int]:
+    raw = str(host_or_url or "").strip()
+    if not raw:
+        raise BuildError("Git credential host is required")
+    if "://" in raw:
+        parsed = urllib.parse.urlsplit(raw)
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in {"https", "http"}:
+            raise BuildError(f"unsupported Git HTTP(S) scheme in {host_or_url!r}")
+        if not allow_path and (parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+            raise BuildError(f"Git credential host must not include a path or query: {host_or_url}")
+    else:
+        if allow_path:
+            raise BuildError(f"repository URL must include explicit http(s) scheme: {host_or_url}")
+        if "/" in raw.rstrip("/") or "?" in raw or "#" in raw:
+            raise BuildError(f"Git credential host must not include a path or query: {host_or_url}")
+        parsed = urllib.parse.urlsplit(f"https://{raw.rstrip('/')}")
+        scheme = "https"
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise BuildError(f"invalid Git host or port: {host_or_url}") from exc
+    hostname = (parsed.hostname or "").lower()
+    if not hostname or parsed.username or parsed.password:
+        raise BuildError(f"invalid Git host: {host_or_url}")
+    if port is not None and not (1 <= port <= 65535):
+        raise BuildError(f"invalid Git port in host: {host_or_url}")
+    resolved_port = port if port is not None else (443 if scheme == "https" else 80)
+    return scheme, hostname, resolved_port
+
+
+def _format_git_origin(host_or_url: str) -> str:
+    scheme, hostname, port = _parse_git_origin(host_or_url, allow_path=False)
+    host_str = f"[{hostname}]" if (":" in hostname and not hostname.startswith("[")) else hostname
+    if scheme == "http":
+        return f"http://{host_str}" if port == 80 else f"http://{host_str}:{port}"
+    return host_str if port == 443 else f"{host_str}:{port}"
+
+
+def _repo_matches_git_scope(repo_url: str, *, allowed_host: str, path_prefix: str = "") -> bool:
+    url = str(repo_url or "").strip()
+    if not url.startswith(("https://", "http://")):
+        return False
+    try:
+        repo_origin = _parse_git_origin(url, allow_path=True)
+        cred_origin = _parse_git_origin(allowed_host, allow_path=False)
+    except BuildError:
+        return False
+    if repo_origin != cred_origin:
+        return False
+    clean_prefix = _normalize_git_prefix(path_prefix)
+    if not clean_prefix:
+        return True
+    repo_path = _normalize_git_prefix(urllib.parse.urlsplit(url).path)
+    return repo_path == clean_prefix or repo_path.startswith(clean_prefix + "/")
+
+
+def _control_app_slug(value: str) -> str:
+    return re.sub(r"[^a-z0-9-]+", "-", str(value or "").strip().lower()).strip("-")
+
+
+def _canonical_deploy_identity(manifest_text: str, *, kind: str = "", fallback_app: str = "") -> str:
+    resolved_kind = kind if kind in {"service", "compose"} else ""
+    if manifest_text and manifest_text.strip():
+        with contextlib.suppress(yaml.YAMLError):
+            loaded = yaml.safe_load(manifest_text)
+            if isinstance(loaded, dict):
+                if not resolved_kind:
+                    resolved_kind = (
+                        "compose"
+                        if ("compose" in loaded or isinstance(loaded.get("services"), dict))
+                        else "service"
+                    )
+                slug = _control_app_slug(str(loaded.get("name") or ""))
+                if slug:
+                    return f"{resolved_kind}:{slug}"
+    if fallback_app:
+        slug = _control_app_slug(fallback_app)
+        if slug:
+            return f"{resolved_kind or 'service'}:{slug}"
+    return ""
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    cols = {str(r["name"]) for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
 class BuildStore:
@@ -144,9 +243,11 @@ class BuildStore:
                     repo_slug TEXT NOT NULL,
                     ref TEXT NOT NULL,
                     target_key TEXT NOT NULL,
+                    deploy_target_key TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL,
                     deploy_enabled INTEGER NOT NULL DEFAULT 1,
                     runner_name TEXT NOT NULL DEFAULT '',
+                    lease_id TEXT NOT NULL DEFAULT '',
                     pinned_runner TEXT NOT NULL DEFAULT '',
                     platforms_json TEXT NOT NULL DEFAULT '["linux/amd64"]',
                     required_labels_json TEXT NOT NULL DEFAULT '{}',
@@ -165,6 +266,15 @@ class BuildStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_builds_status_seq ON builds(status, seq);
                 CREATE INDEX IF NOT EXISTS idx_builds_repo_slug ON builds(repo_slug, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS lease_receipts (
+                    lease_id TEXT PRIMARY KEY,
+                    build_id TEXT NOT NULL,
+                    runner_name TEXT NOT NULL,
+                    response_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_lease_receipts_build ON lease_receipts(build_id, runner_name);
 
                 CREATE TABLE IF NOT EXISTS build_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -199,6 +309,11 @@ class BuildStore:
                     value INTEGER NOT NULL
                 );
                 """
+            )
+            _ensure_column(conn, "builds", "deploy_target_key", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(conn, "builds", "lease_id", "TEXT NOT NULL DEFAULT ''")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_builds_deploy_target ON builds(deploy_target_key, seq)"
             )
         try:
             self.db_path.chmod(0o600)
@@ -352,12 +467,10 @@ class BuildStore:
         path_prefix: str = "",
     ) -> dict[str, Any]:
         cid = str(cred_id or "").strip()
-        clean_host = str(host or "").strip().lower()
-        if "://" in clean_host:
-            clean_host = urllib.parse.urlsplit(clean_host).netloc.lower()
-        clean_prefix = str(path_prefix or "").strip().strip("/").lower()
-        if not cid or not clean_host or not token:
+        if not cid or not str(host or "").strip() or not token:
             raise BuildError("id, host, and token are required for a Git credential")
+        clean_host = _format_git_origin(host)
+        clean_prefix = _normalize_git_prefix(path_prefix)
         now = int(time.time())
         enc = self.secret_box.encrypt(token)
         with self._conn(write=True) as conn:
@@ -400,75 +513,106 @@ class BuildStore:
     ) -> dict[str, str] | None:
         if provider_id:
             row = conn.execute(
-                "SELECT username, encrypted_token FROM git_credentials WHERE id = ?",
+                "SELECT host, path_prefix, username, encrypted_token FROM git_credentials WHERE id = ?",
                 (provider_id,),
             ).fetchone()
             if row:
-                return {
+                cred_host = str(row["host"])
+                cred_prefix = str(row["path_prefix"] or "")
+                if not _repo_matches_git_scope(repo_url, allowed_host=cred_host, path_prefix=cred_prefix):
+                    scope = f"{cred_host}/{cred_prefix}" if cred_prefix else cred_host
+                    raise BuildError(
+                        f"repository {repo_url} does not match Git credential {provider_id!r} scope ({scope})"
+                    )
+                auth = {
                     "username": str(row["username"]),
                     "token": self.secret_box.decrypt(str(row["encrypted_token"])),
                 }
-            env_match = self._env_git_auth_by_id(provider_id)
-            if env_match:
-                return env_match
+                if cred_prefix:
+                    auth["pathPrefix"] = cred_prefix
+                return auth
+
+            env_spec = self._env_git_credential_spec(provider_id, strict=True)
+            if env_spec:
+                if not _repo_matches_git_scope(
+                    repo_url, allowed_host=env_spec["host"], path_prefix=env_spec["path_prefix"]
+                ):
+                    scope = (
+                        f"{env_spec['host']}/{env_spec['path_prefix']}"
+                        if env_spec["path_prefix"]
+                        else env_spec["host"]
+                    )
+                    raise BuildError(
+                        f"repository {repo_url} does not match Git credential {provider_id!r} scope ({scope})"
+                    )
+                auth = {"username": env_spec["username"], "token": env_spec["token"]}
+                if env_spec["path_prefix"]:
+                    auth["pathPrefix"] = env_spec["path_prefix"]
+                return auth
             raise BuildError(f"unknown Git credential id: {provider_id}")
 
-        parsed = urllib.parse.urlsplit(repo_url)
-        host = (parsed.netloc or "").lower()
-        repo_path = parsed.path.strip("/").lower()
-        if not host:
+        if not str(repo_url or "").strip().startswith(("https://", "http://")):
             return None
         rows = conn.execute(
-            "SELECT path_prefix, username, encrypted_token FROM git_credentials WHERE host = ?",
-            (host,),
+            "SELECT host, path_prefix, username, encrypted_token FROM git_credentials"
         ).fetchall()
         best: sqlite3.Row | None = None
         best_len = -1
         for row in rows:
             prefix = str(row["path_prefix"] or "")
-            if not prefix or repo_path == prefix or repo_path.startswith(prefix + "/"):
+            if _repo_matches_git_scope(repo_url, allowed_host=str(row["host"]), path_prefix=prefix):
                 if len(prefix) > best_len:
                     best = row
                     best_len = len(prefix)
         if best:
-            return {
+            best_prefix = str(best["path_prefix"] or "")
+            auth = {
                 "username": str(best["username"]),
                 "token": self.secret_box.decrypt(str(best["encrypted_token"])),
             }
-        return self._env_git_auth_by_host(host)
+            if best_prefix:
+                auth["pathPrefix"] = best_prefix
+            return auth
+        return self._env_git_auth_by_url(repo_url)
 
     @staticmethod
-    def _env_git_auth_by_id(provider_id: str) -> dict[str, str] | None:
+    def _env_git_credential_spec(provider_id: str, *, strict: bool = False) -> dict[str, str] | None:
         pid = provider_id.strip().lower()
-        if pid.startswith("github") and os.environ.get("GITHUB_TOKEN", "").strip():
+        if (pid == "github" or pid.startswith(("github:", "github-"))) and os.environ.get("GITHUB_TOKEN", "").strip():
+            gh_host = _format_git_origin(os.environ.get("GITHUB_HOST") or "github.com")
+            gh_prefix = _normalize_git_prefix(os.environ.get("GITHUB_PATH_PREFIX") or "")
             return {
+                "host": gh_host,
+                "path_prefix": gh_prefix,
                 "username": os.environ.get("GITHUB_USERNAME", "").strip() or "x-access-token",
                 "token": os.environ["GITHUB_TOKEN"].strip(),
             }
-        if pid.startswith("gitea") and os.environ.get("GITEA_TOKEN", "").strip():
+        if (pid == "gitea" or pid.startswith(("gitea:", "gitea-"))) and os.environ.get("GITEA_TOKEN", "").strip():
+            gitea_raw = os.environ.get("GITEA_HOST", "").strip()
+            if not gitea_raw:
+                if strict:
+                    raise BuildError("GITEA_HOST must be configured on luma-build to use GITEA_TOKEN")
+                return None
             return {
+                "host": _format_git_origin(gitea_raw),
+                "path_prefix": _normalize_git_prefix(os.environ.get("GITEA_PATH_PREFIX") or ""),
                 "username": os.environ.get("GITEA_USERNAME", "").strip() or "x-access-token",
                 "token": os.environ["GITEA_TOKEN"].strip(),
             }
         return None
 
-    @staticmethod
-    def _env_git_auth_by_host(host: str) -> dict[str, str] | None:
-        """Fallback to Luma scoped service secrets injected via container env."""
-        clean_host = host.strip().lower()
-        if clean_host == "github.com" and os.environ.get("GITHUB_TOKEN", "").strip():
-            return {
-                "username": os.environ.get("GITHUB_USERNAME", "").strip() or "x-access-token",
-                "token": os.environ["GITHUB_TOKEN"].strip(),
-            }
-        gitea_raw = os.environ.get("GITEA_HOST", "").strip().lower()
-        if "://" in gitea_raw:
-            gitea_raw = urllib.parse.urlsplit(gitea_raw).netloc.lower()
-        if gitea_raw and clean_host == gitea_raw and os.environ.get("GITEA_TOKEN", "").strip():
-            return {
-                "username": os.environ.get("GITEA_USERNAME", "").strip() or "x-access-token",
-                "token": os.environ["GITEA_TOKEN"].strip(),
-            }
+    @classmethod
+    def _env_git_auth_by_url(cls, repo_url: str) -> dict[str, str] | None:
+        """Fallback to Luma scoped service secrets injected via container env, strictly bound to origin."""
+        for candidate_id in ("github", "gitea"):
+            spec = cls._env_git_credential_spec(candidate_id, strict=False)
+            if spec and _repo_matches_git_scope(
+                repo_url, allowed_host=spec["host"], path_prefix=spec["path_prefix"]
+            ):
+                auth = {"username": spec["username"], "token": spec["token"]}
+                if spec["path_prefix"]:
+                    auth["pathPrefix"] = spec["path_prefix"]
+                return auth
         return None
 
     def set_registry_credential(
@@ -587,14 +731,12 @@ class BuildStore:
                 ).fetchone()
             if prow:
                 default_git_host = str(prow["host"])
-            elif self._env_git_auth_by_id(provider_id):
-                if provider_id.lower().startswith("gitea") and os.environ.get("GITEA_HOST", "").strip():
-                    gh = os.environ["GITEA_HOST"].strip()
-                    default_git_host = urllib.parse.urlsplit(gh).netloc if "://" in gh else gh
-                else:
-                    default_git_host = "github.com"
             else:
-                raise BuildError(f"unknown Git credential providerId: {provider_id}")
+                env_spec = self._env_git_credential_spec(provider_id, strict=True)
+                if env_spec:
+                    default_git_host = env_spec["host"]
+                else:
+                    raise BuildError(f"unknown Git credential providerId: {provider_id}")
 
         repo_url = normalize_repo_url(
             str(body.get("repoUrl") or ""),
@@ -653,26 +795,30 @@ class BuildStore:
                 raise BuildError(f"invalid build arg name: {k!r}")
             clean_build_args[key_str] = str(v)
 
-        region_override = str(body.get("region") or "").strip().lower()
-        node_override = str(body.get("node") or "").strip().lower()
-        domain_override = str(body.get("domain") or "").strip().lower()
-        placement_suffix = (
-            f"@r={region_override}|n={node_override}|d={domain_override}"
-            if (region_override or node_override or domain_override)
-            else ""
-        )
         explicit_app = str(body.get("appName") or "").strip().lower()
+        manifest_text_req = str(body.get("manifest") or "")
+        deploy_target_key = _canonical_deploy_identity(
+            manifest_text_req,
+            kind="compose" if compose_sidecar else "",
+            fallback_app=explicit_app,
+        )
         if explicit_app:
-            target_key = f"app:{explicit_app}{placement_suffix}"
+            target_key = f"app:{_control_app_slug(explicit_app) or explicit_app}"
         elif compose_sidecar:
-            target_key = f"compose:{compose_sidecar}{placement_suffix}"
+            target_key = f"compose:{compose_sidecar}"
         elif manifest_path:
-            target_key = f"manifest:{manifest_path}{placement_suffix}"
+            target_key = f"manifest:{manifest_path}"
+        elif manifest_text_req.strip():
+            target_key = (
+                f"inline:{deploy_target_key}"
+                if deploy_target_key
+                else f"inline-sha:{_sha256_hex(manifest_text_req)[:16]}"
+            )
         else:
             target_key = json.dumps(
                 ["service", context_rel or ".", dockerfile_rel or "Dockerfile", target_stage],
                 separators=(",", ":"),
-            ) + placement_suffix
+            )
         supersede = bool(body.get("supersede", True))
 
         env_secrets = body.get("envSecrets")
@@ -687,6 +833,7 @@ class BuildStore:
             "repoSlug": repo_slug,
             "ref": ref,
             "providerId": provider_id,
+            **({"appName": explicit_app} if explicit_app else {}),
             "registryHost": registry_host,
             "pushHost": push_host,
             "registryNamespace": namespace,
@@ -701,7 +848,7 @@ class BuildStore:
             "target": target_stage,
             "composeSidecar": compose_sidecar,
             "manifestPath": manifest_path,
-            "manifest": str(body.get("manifest") or ""),
+            "manifest": manifest_text_req,
             "region": str(body.get("region") or "").strip(),
             "node": str(body.get("node") or "").strip(),
             "exposure": str(body.get("exposure") or "").strip(),
@@ -718,14 +865,40 @@ class BuildStore:
         build_id = f"bld-{int(now * 1000)}-{secrets.token_hex(4)}"
 
         with self._conn(write=True) as conn:
+            if provider_id:
+                self._resolve_git_auth(conn, repo_url=repo_url, provider_id=provider_id)
+
             if pinned_runner:
                 rrow = conn.execute(
-                    "SELECT revoked FROM runners WHERE name = ?", (pinned_runner,)
+                    "SELECT * FROM runners WHERE name = ?", (pinned_runner,)
                 ).fetchone()
                 if not rrow or rrow["revoked"]:
                     raise BuildError(f"pinned runner is not registered or is revoked: {pinned_runner}")
+                if req_labels:
+                    rlabels = json.loads(rrow["labels_json"] or "{}")
+                    for lk, lv in req_labels.items():
+                        if str(rlabels.get(lk) or "") != str(lv):
+                            raise BuildError(
+                                f"pinned runner {pinned_runner!r} does not satisfy required label {lk}={lv}"
+                            )
+                pinned_plat = normalize_platform(str(rrow["native_platform"] or ""))
+                if pinned_plat:
+                    if platform_explicit:
+                        if not runner_matches_build(
+                            self._runner_public(rrow, now=now, active_slots=0),
+                            required_platforms=platforms,
+                            pinned_runner=pinned_runner,
+                            required_labels=req_labels,
+                        ):
+                            raise BuildError(
+                                f"pinned runner {pinned_runner!r} ({pinned_plat}) is incompatible with "
+                                f"target platform {','.join(platforms)}"
+                            )
+                    else:
+                        platforms = [pinned_plat]
+                        stored_request["platforms"] = platforms
 
-            if not platform_explicit:
+            if not platform_explicit and not pinned_runner:
                 trow = conn.execute(
                     "SELECT platforms_json FROM target_platforms WHERE repo_slug = ? AND target_key = ?",
                     (repo_slug, target_key),
@@ -750,13 +923,19 @@ class BuildStore:
             if supersede:
                 older_rows = conn.execute(
                     """
-                    SELECT id, ref, status, deploy_enabled FROM builds
-                    WHERE repo_slug = ? AND target_key = ?
+                    SELECT id, ref, status, deploy_enabled, target_key, deploy_target_key FROM builds
+                    WHERE repo_slug = ?
                       AND status IN ('queued', 'building')
                     """,
-                    (repo_slug, target_key),
+                    (repo_slug,),
                 ).fetchall()
                 for older in older_rows:
+                    older_app = str(older["deploy_target_key"] or "")
+                    if older_app and deploy_target_key:
+                        if older_app != deploy_target_key:
+                            continue
+                    elif str(older["target_key"]) != target_key:
+                        continue
                     older_ref = str(older["ref"])
                     older_deploy = bool(older["deploy_enabled"])
                     if deploy_enabled:
@@ -792,10 +971,10 @@ class BuildStore:
             conn.execute(
                 """
                 INSERT INTO builds(
-                    id, seq, repo_url, repo_slug, ref, target_key, status,
+                    id, seq, repo_url, repo_slug, ref, target_key, deploy_target_key, status,
                     deploy_enabled, pinned_runner, platforms_json, required_labels_json,
                     request_json, encrypted_env_secrets, message, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     build_id,
@@ -804,6 +983,7 @@ class BuildStore:
                     repo_slug,
                     ref,
                     target_key,
+                    deploy_target_key,
                     int(deploy_enabled),
                     pinned_runner,
                     json.dumps(platforms),
@@ -821,6 +1001,7 @@ class BuildStore:
             return self._build_public(row)
 
     def _prune_completed_builds(self, conn: sqlite3.Connection, *, keep: int = 500) -> None:
+        limit_keep = max(int(keep), 50)
         conn.execute(
             """
             DELETE FROM builds WHERE id IN (
@@ -829,7 +1010,16 @@ class BuildStore:
                 ORDER BY seq DESC LIMIT -1 OFFSET ?
             )
             """,
-            (max(int(keep), 50),),
+            (limit_keep,),
+        )
+        conn.execute(
+            """
+            DELETE FROM lease_receipts WHERE lease_id IN (
+                SELECT lease_id FROM lease_receipts
+                ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?
+            )
+            """,
+            (limit_keep * 4,),
         )
 
     def recover_interrupted_deploys(self, *, now: int | None = None) -> int:
@@ -898,7 +1088,7 @@ class BuildStore:
                 conn.execute(
                     """
                     UPDATE builds
-                    SET status = 'failed', message = ?, completed_at = ?, updated_at = ?
+                    SET status = 'failed', lease_id = '', message = ?, completed_at = ?, updated_at = ?
                     WHERE id = ?
                     """,
                     (msg, current, current, bid),
@@ -954,6 +1144,33 @@ class BuildStore:
 
             for brow in queued_rows:
                 build_dict = self._build_public(brow)
+                req = json.loads(brow["request_json"] or "{}")
+                if build_dict["pinnedRunner"] == runner_name and native_platform:
+                    if req.get("platformExplicit"):
+                        if not runner_matches_build(
+                            me,
+                            required_platforms=build_dict["platforms"],
+                            pinned_runner=runner_name,
+                            required_labels=build_dict["requiredLabels"],
+                        ):
+                            fail_msg = (
+                                f"Pinned runner {runner_name} ({native_platform}) is incompatible with "
+                                f"target platform {','.join(build_dict['platforms'])}"
+                            )
+                            conn.execute(
+                                """
+                                UPDATE builds
+                                SET status = 'failed', message = ?, completed_at = ?, updated_at = ?
+                                WHERE id = ?
+                                """,
+                                (fail_msg, current, current, build_dict["id"]),
+                            )
+                            self._insert_event(conn, build_dict["id"], "queue", "error", fail_msg, current)
+                            continue
+                    elif build_dict["platforms"] != [native_platform]:
+                        build_dict["platforms"] = [native_platform]
+                        req["platforms"] = [native_platform]
+
                 primary_platform = (build_dict["platforms"] or ["linux/amd64"])[0]
                 aff_row = conn.execute(
                     "SELECT runner_name FROM build_affinity WHERE project_key = ? AND platform = ?",
@@ -972,23 +1189,27 @@ class BuildStore:
                 ):
                     continue
 
-                req = json.loads(brow["request_json"] or "{}")
                 git_auth = self._resolve_git_auth(
                     conn, repo_url=req["repoUrl"], provider_id=str(req.get("providerId") or "")
                 )
                 reg_auths, insecure_map = self._resolve_registry_auths(
                     conn, [req["pushHost"], req["registryHost"]]
                 )
+                lease_id = f"lse-{secrets.token_hex(8)}"
 
                 conn.execute(
                     """
                     UPDATE builds
-                    SET status = 'building', runner_name = ?, started_at = ?,
-                        lease_heartbeat_at = ?, updated_at = ?, message = ?
+                    SET status = 'building', runner_name = ?, lease_id = ?, platforms_json = ?,
+                        request_json = ?, started_at = ?, lease_heartbeat_at = ?,
+                        updated_at = ?, message = ?
                     WHERE id = ?
                     """,
                     (
                         runner_name,
+                        lease_id,
+                        json.dumps(build_dict["platforms"]),
+                        json.dumps(req, sort_keys=True),
                         current,
                         current,
                         current,
@@ -1008,7 +1229,9 @@ class BuildStore:
                 task_payload = {
                     **req,
                     "buildId": build_dict["id"],
+                    "leaseId": lease_id,
                     "runnerName": runner_name,
+                    "pinnedRunner": build_dict["pinnedRunner"],
                     "cacheMode": effective_cache_mode,
                     "pushInsecure": insecure_map.get(normalize_registry_host(req["pushHost"]), False),
                     "pullInsecure": insecure_map.get(normalize_registry_host(req["registryHost"]), False),
@@ -1019,7 +1242,9 @@ class BuildStore:
 
             return {"runner": me, "task": None}
 
-    def runner_heartbeat(self, token: str, *, build_id: str = "", now: int | None = None) -> dict[str, Any]:
+    def runner_heartbeat(
+        self, token: str, *, build_id: str = "", lease_id: str = "", now: int | None = None
+    ) -> dict[str, Any]:
         current = int(time.time() if now is None else now)
         with self._conn(write=True) as conn:
             rrow = self._authenticate_runner(conn, token)
@@ -1028,28 +1253,36 @@ class BuildStore:
             cancel_requested = False
             if build_id:
                 brow = conn.execute(
-                    "SELECT status, runner_name, cancel_requested FROM builds WHERE id = ?",
+                    "SELECT status, runner_name, lease_id, cancel_requested FROM builds WHERE id = ?",
                     (build_id,),
                 ).fetchone()
-                if brow and str(brow["runner_name"]) == rname:
+                if brow and str(brow["runner_name"]) == rname and (
+                    not lease_id or not brow["lease_id"] or str(brow["lease_id"]) == lease_id
+                ):
                     conn.execute(
                         "UPDATE builds SET lease_heartbeat_at = ?, updated_at = ? WHERE id = ?",
                         (current, current, build_id),
                     )
                     cancel_requested = bool(brow["cancel_requested"]) or brow["status"] == "canceled"
+                elif brow:
+                    cancel_requested = True
             return {"runner": rname, "cancelRequested": cancel_requested}
 
-    def runner_progress(self, token: str, *, build_id: str, events: list[dict[str, Any]]) -> dict[str, Any]:
+    def runner_progress(
+        self, token: str, *, build_id: str, events: list[dict[str, Any]], lease_id: str = ""
+    ) -> dict[str, Any]:
         now = int(time.time())
         with self._conn(write=True) as conn:
             rrow = self._authenticate_runner(conn, token)
             rname = str(rrow["name"])
             conn.execute("UPDATE runners SET last_seen_at = ? WHERE id = ?", (now, rrow["id"]))
             brow = conn.execute(
-                "SELECT runner_name, cancel_requested, status FROM builds WHERE id = ?", (build_id,)
+                "SELECT runner_name, lease_id, cancel_requested, status FROM builds WHERE id = ?", (build_id,)
             ).fetchone()
             if not brow or str(brow["runner_name"]) != rname:
                 raise BuildError(f"build {build_id} is not owned by runner {rname}", status_code=409)
+            if lease_id and brow["lease_id"] and str(brow["lease_id"]) != lease_id:
+                raise BuildError(f"stale lease {lease_id} for build {build_id}", status_code=409)
             conn.execute(
                 "UPDATE builds SET lease_heartbeat_at = ?, updated_at = ? WHERE id = ?",
                 (now, now, build_id),
@@ -1076,6 +1309,7 @@ class BuildStore:
         status: str,
         result: dict[str, Any] | None = None,
         message: str = "",
+        lease_id: str = "",
         now: int | None = None,
     ) -> dict[str, Any]:
         if status not in {"succeeded", "failed", "canceled", "requeue"}:
@@ -1085,17 +1319,46 @@ class BuildStore:
             rrow = self._authenticate_runner(conn, token)
             rname = str(rrow["name"])
             conn.execute("UPDATE runners SET last_seen_at = ? WHERE id = ?", (current, rrow["id"]))
+
+            # 1) Idempotent lease receipt replay (handles lost HTTP ACK even after requeue clears runner_name!)
+            clean_lease = str(lease_id or "").strip()
+            if clean_lease:
+                rcpt = conn.execute(
+                    "SELECT build_id, runner_name, response_json FROM lease_receipts WHERE lease_id = ?",
+                    (clean_lease,),
+                ).fetchone()
+                if rcpt:
+                    if str(rcpt["runner_name"]) != rname or str(rcpt["build_id"]) != build_id:
+                        raise BuildError(f"lease {clean_lease} does not belong to {rname}/{build_id}", status_code=409)
+                    brow_now = conn.execute("SELECT * FROM builds WHERE id = ?", (build_id,)).fetchone()
+                    saved_build = json.loads(rcpt["response_json"]).get("build")
+                    return {
+                        "build": self._build_public(brow_now) if brow_now else saved_build,
+                        "replayed": True,
+                    }
+            else:
+                legacy_rcpt = conn.execute(
+                    "SELECT response_json FROM lease_receipts WHERE build_id = ? AND runner_name = ? ORDER BY created_at DESC LIMIT 1",
+                    (build_id, rname),
+                ).fetchone()
+                brow_probe = conn.execute("SELECT * FROM builds WHERE id = ?", (build_id,)).fetchone()
+                if legacy_rcpt and brow_probe and str(brow_probe["runner_name"]) != rname:
+                    return {"build": self._build_public(brow_probe), "replayed": True}
+
             brow = conn.execute("SELECT * FROM builds WHERE id = ?", (build_id,)).fetchone()
             if not brow or str(brow["runner_name"]) != rname:
                 raise BuildError(f"build {build_id} is not owned by runner {rname}", status_code=409)
+            if clean_lease and brow["lease_id"] and str(brow["lease_id"]) != clean_lease:
+                raise BuildError(f"stale lease {clean_lease} for build {build_id}", status_code=409)
 
-            # Idempotent replay support if network dropped the first ACK
             if str(brow["status"]) in TERMINAL_STATUSES | {"queued_deploy", "deploying"}:
                 return {"build": self._build_public(brow), "replayed": True}
 
+            active_lease_id = clean_lease or str(brow["lease_id"] or f"legacy-{build_id}-{rname}-{current}")
             res = result if isinstance(result, dict) else {}
+            req = json.loads(brow["request_json"] or "{}")
+
             if status == "requeue" and not brow["cancel_requested"]:
-                req = json.loads(brow["request_json"] or "{}")
                 requeue_count = int(req.get("requeueCount") or 0)
                 raw_req_plats = res.get("requiredPlatforms")
                 if not brow["pinned_runner"] and requeue_count < 1 and raw_req_plats:
@@ -1120,7 +1383,7 @@ class BuildStore:
                     conn.execute(
                         """
                         UPDATE builds
-                        SET status = 'queued', runner_name = '', platforms_json = ?,
+                        SET status = 'queued', runner_name = '', lease_id = '', platforms_json = ?,
                             request_json = ?, message = ?, started_at = 0,
                             lease_heartbeat_at = 0, updated_at = ?
                         WHERE id = ?
@@ -1135,13 +1398,22 @@ class BuildStore:
                     )
                     self._insert_event(conn, build_id, "queue", "status", requeue_msg, current)
                     updated = conn.execute("SELECT * FROM builds WHERE id = ?", (build_id,)).fetchone()
-                    return {"build": self._build_public(updated), "replayed": False}
+                    resp_payload = {"build": self._build_public(updated), "replayed": False}
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO lease_receipts(lease_id, build_id, runner_name, response_json, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (active_lease_id, build_id, rname, json.dumps(resp_payload, sort_keys=True), current),
+                    )
+                    return resp_payload
                 status = "failed"
                 if not message:
                     message = "Runner platform mismatch cannot be requeued"
 
+            resolved_deploy_key = str(brow["deploy_target_key"] or "")
             if status == "succeeded" and not brow["cancel_requested"]:
-                # Record BuildKit cache affinity and learned target architecture!
+                # Record BuildKit cache affinity, learned target architecture, and canonical Control app identity!
                 platforms = json.loads(brow["platforms_json"] or '["linux/amd64"]')
                 primary_platform = (platforms or ["linux/amd64"])[0]
                 conn.execute(
@@ -1164,6 +1436,16 @@ class BuildStore:
                     """,
                     (str(brow["repo_slug"]), str(brow["target_key"]), json.dumps(platforms), current),
                 )
+                manifest_for_id = str(res.get("manifest") or req.get("manifest") or "")
+                kind_for_id = str(res.get("kind") or ("compose" if req.get("composeSidecar") else "service"))
+                resolved_deploy_key = (
+                    _canonical_deploy_identity(
+                        manifest_for_id,
+                        kind=kind_for_id,
+                        fallback_app=str(req.get("appName") or ""),
+                    )
+                    or resolved_deploy_key
+                )
 
                 if brow["deploy_enabled"]:
                     next_status = "queued_deploy"
@@ -1181,11 +1463,20 @@ class BuildStore:
             conn.execute(
                 """
                 UPDATE builds
-                SET status = ?, result_json = ?, message = ?, built_at = ?,
-                    completed_at = ?, updated_at = ?
+                SET status = ?, lease_id = '', deploy_target_key = ?, result_json = ?,
+                    message = ?, built_at = ?, completed_at = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (next_status, json.dumps(res, sort_keys=True), next_msg[:2000], current, completed_at, current, build_id),
+                (
+                    next_status,
+                    resolved_deploy_key,
+                    json.dumps(res, sort_keys=True),
+                    next_msg[:2000],
+                    current,
+                    completed_at,
+                    current,
+                    build_id,
+                ),
             )
             self._insert_event(
                 conn,
@@ -1196,7 +1487,15 @@ class BuildStore:
                 current,
             )
             updated = conn.execute("SELECT * FROM builds WHERE id = ?", (build_id,)).fetchone()
-            return {"build": self._build_public(updated), "replayed": False}
+            resp_payload = {"build": self._build_public(updated), "replayed": False}
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO lease_receipts(lease_id, build_id, runner_name, response_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (active_lease_id, build_id, rname, json.dumps(resp_payload, sort_keys=True), current),
+            )
+            return resp_payload
 
     # ------------------------------------------------------------------
     # Deployment handoff stage (Runner is already free!)
@@ -1205,21 +1504,31 @@ class BuildStore:
     def claim_next_deploy(self) -> tuple[dict[str, Any], dict[str, str]] | None:
         now = int(time.time())
         with self._conn(write=True) as conn:
-            # Serialize deployments per (repo_slug, target_key) so two commits of the
-            # same app never race on Luma Control simultaneously.
-            busy_targets = {
+            # Serialize deployments by canonical Luma Control application identity
+            # (with fallback to repo_slug + target_key when manifest name is absent).
+            deploying_rows = conn.execute(
+                "SELECT repo_slug, target_key, deploy_target_key FROM builds WHERE status = 'deploying'"
+            ).fetchall()
+            busy_apps = {str(r["deploy_target_key"]) for r in deploying_rows if r["deploy_target_key"]}
+            busy_unkeyed_targets = {
                 (str(r["repo_slug"]), str(r["target_key"]))
-                for r in conn.execute(
-                    "SELECT repo_slug, target_key FROM builds WHERE status = 'deploying'"
-                ).fetchall()
+                for r in deploying_rows
+                if not r["deploy_target_key"]
             }
+            busy_all_targets = {(str(r["repo_slug"]), str(r["target_key"])) for r in deploying_rows}
+
             candidates = conn.execute(
                 "SELECT * FROM builds WHERE status = 'queued_deploy' ORDER BY seq ASC"
             ).fetchall()
             for row in candidates:
                 key = (str(row["repo_slug"]), str(row["target_key"]))
-                if key in busy_targets:
+                app_id = str(row["deploy_target_key"] or "")
+                if app_id:
+                    if app_id in busy_apps or key in busy_unkeyed_targets:
+                        continue
+                elif key in busy_all_targets:
                     continue
+
                 bid = str(row["id"])
                 if row["cancel_requested"]:
                     conn.execute(
@@ -1227,18 +1536,35 @@ class BuildStore:
                         (now, now, bid),
                     )
                     continue
+
                 # Never allow a slow earlier build (smaller seq) to roll back a newer deployment
-                # of the same (repo_slug, target_key), even when CI submits distinct commit SHAs!
-                newer = conn.execute(
-                    """
-                    SELECT id FROM builds
-                    WHERE repo_slug = ? AND target_key = ?
-                      AND deploy_enabled = 1
-                      AND seq > ? AND status IN ('queued_deploy', 'deploying', 'succeeded')
-                    ORDER BY seq DESC LIMIT 1
-                    """,
-                    (row["repo_slug"], row["target_key"], row["seq"]),
-                ).fetchone()
+                # of the same Luma Control application, regardless of CLI placement overrides!
+                if app_id:
+                    newer = conn.execute(
+                        """
+                        SELECT id FROM builds
+                        WHERE deploy_enabled = 1
+                          AND seq > ?
+                          AND status IN ('queued_deploy', 'deploying', 'succeeded')
+                          AND (
+                              deploy_target_key = ?
+                              OR (deploy_target_key = '' AND repo_slug = ? AND target_key = ?)
+                          )
+                        ORDER BY seq DESC LIMIT 1
+                        """,
+                        (row["seq"], app_id, row["repo_slug"], row["target_key"]),
+                    ).fetchone()
+                else:
+                    newer = conn.execute(
+                        """
+                        SELECT id FROM builds
+                        WHERE repo_slug = ? AND target_key = ?
+                          AND deploy_enabled = 1
+                          AND seq > ? AND status IN ('queued_deploy', 'deploying', 'succeeded')
+                        ORDER BY seq DESC LIMIT 1
+                        """,
+                        (row["repo_slug"], row["target_key"], row["seq"]),
+                    ).fetchone()
                 if newer:
                     nid = str(newer["id"])
                     conn.execute(

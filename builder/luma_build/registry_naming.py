@@ -79,12 +79,13 @@ def is_http_registry(host: str, explicit_insecure: bool | None = None) -> bool:
 
 def normalize_repo_url(repo_url: str, *, repository: str = "", default_host: str = "github.com") -> str:
     url = str(repo_url or "").strip()
+    default_scheme = "http" if str(default_host or "").strip().lower().startswith("http://") else "https"
     if not url and repository:
         slug = repository.strip().strip("/")
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", slug):
             raise BuildError(f"invalid repository shorthand: {repository}")
         clean_default_host = normalize_registry_host(default_host)
-        url = f"https://{clean_default_host}/{slug}.git"
+        url = f"{default_scheme}://{clean_default_host}/{slug}.git"
     if not url:
         raise BuildError("repoUrl or repository is required")
     if url.startswith("-") or any(ord(ch) <= 32 or ord(ch) == 127 for ch in url):
@@ -92,7 +93,7 @@ def normalize_repo_url(repo_url: str, *, repository: str = "", default_host: str
     if not url.startswith(("https://", "http://", "ssh://", "git@")):
         if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", url):
             clean_default_host = normalize_registry_host(default_host)
-            url = f"https://{clean_default_host}/{url}.git"
+            url = f"{default_scheme}://{clean_default_host}/{url}.git"
         else:
             url = "https://" + url.lstrip("/")
     if not url.startswith(("https://", "http://", "ssh://", "git@")):
@@ -174,6 +175,13 @@ def format_image_repository(
 
     path = "/".join(segments)
     return f"{ns}/{path}" if ns else path
+
+
+def uses_inline_registry_cache(host: str) -> bool:
+    """Return True when the registry rejects BuildKit cacheconfig.v0 / OCI empty manifests (e.g. Aliyun ACR)."""
+    normalized = normalize_registry_host(host)
+    bare = (urllib.parse.urlsplit("http://" + normalized).hostname or "").lower()
+    return any(bare.endswith(suffix) for suffix in CLOUD_REGISTRY_NO_PROXY_SUFFIXES)
 
 
 def registry_no_proxy_entries(host: str) -> list[str]:

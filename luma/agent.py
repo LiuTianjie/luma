@@ -3795,6 +3795,7 @@ def _buildx_environment(
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(root, 0o700)
     env["BUILDX_CONFIG"] = str(root)
+    env.setdefault("BUILDX_NO_DEFAULT_ATTESTATIONS", "1")
     return env
 
 
@@ -3967,16 +3968,26 @@ def _docker_buildx_build(
         raise TaskCanceled("build-image task canceled")
     tag_sha = f"{push_host}/{repo}:{sha}"
     tag_latest = f"{push_host}/{repo}:latest"
-    from .control.resources import _merge_no_proxy, _no_proxy_entries_for_registry
+    from .control.resources import (
+        DEFAULT_CLOUD_REGISTRY_NO_PROXY_SUFFIXES,
+        _merge_no_proxy,
+        _no_proxy_entries_for_registry,
+    )
 
     no_proxy = _merge_no_proxy(
         "localhost,127.0.0.1,::1,100.64.0.0/10",
         *_no_proxy_entries_for_registry(push_host),
         *_no_proxy_entries_for_registry(registry_host),
     )
+    cloud_docker_v2 = (not insecure) and any(
+        push_host.lower().split(":", 1)[0].endswith(suffix)
+        for suffix in DEFAULT_CLOUD_REGISTRY_NO_PROXY_SUFFIXES
+    )
     env = _buildx_environment(
         docker_config, buildx_config_root=buildx_config_root
     )
+    if cloud_docker_v2:
+        env["BUILDX_NO_DEFAULT_ATTESTATIONS"] = "1"
     proxy_build_args: list[str] = []
     if proxy:
         env["HTTP_PROXY"] = proxy
@@ -4011,7 +4022,9 @@ def _docker_buildx_build(
         # does not inherit daemon.json. Tell the image exporter explicitly so
         # pushes do not get upgraded to HTTPS inside BuildKit.
         "--output",
-        "type=image,push=true" + (",registry.insecure=true" if insecure else ""),
+        "type=image,push=true"
+        + (",oci-mediatypes=false" if cloud_docker_v2 else "")
+        + (",registry.insecure=true" if insecure else ""),
         "-t", tag_sha,
         "-t", tag_latest,
         "-f", str(dockerfile_path),

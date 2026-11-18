@@ -283,6 +283,7 @@ def prepare_git_contexts(
     workspace: Path,
     token: str | None = None,
     username: str | None = None,
+    token_path_prefix: str | None = None,
     proxy: str | None = None,
     cancel_event: threading.Event | None = None,
     progress: Callable[[str], None] | None = None,
@@ -310,12 +311,24 @@ def prepare_git_contexts(
             with tempfile.TemporaryDirectory(prefix="luma-git-fetch-", dir=work) as scratch:
                 repo = Path(scratch) / "repository"
                 archive = Path(scratch) / "source.tar.gz"
+                ctx_token = token
+                ctx_username = username
+                if ctx_token and token_path_prefix:
+                    allowed_prefix = str(token_path_prefix).strip().strip("/").lower()
+                    if allowed_prefix.endswith(".git"):
+                        allowed_prefix = allowed_prefix[:-4].rstrip("/")
+                    ctx_path = urllib.parse.urlsplit(lock.repository).path.strip("/").lower()
+                    if ctx_path.endswith(".git"):
+                        ctx_path = ctx_path[:-4].rstrip("/")
+                    if allowed_prefix and not (ctx_path == allowed_prefix or ctx_path.startswith(allowed_prefix + "/")):
+                        ctx_token = None
+                        ctx_username = None
                 gitops.clone(
                     lock.repository,
                     repo,
                     ref=lock.commit,
-                    token=token,
-                    username=username,
+                    token=ctx_token,
+                    username=ctx_username,
                     proxy=proxy,
                     strict_https_origin=True,
                 )

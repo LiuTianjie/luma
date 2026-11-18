@@ -615,7 +615,11 @@ def create_app(
             tok = _bearer_token(request)
             body = await json_body(request)
             res = await run_in_threadpool(
-                lambda: store.runner_heartbeat(tok, build_id=str(body.get("buildId") or ""))
+                lambda: store.runner_heartbeat(
+                    tok,
+                    build_id=str(body.get("buildId") or ""),
+                    lease_id=str(body.get("leaseId") or ""),
+                )
             )
             return _no_store_json({"ok": True, **res})
         except BuildError as exc:
@@ -627,7 +631,12 @@ def create_app(
             body = await json_body(request)
             events = body.get("events") if isinstance(body.get("events"), list) else []
             res = await run_in_threadpool(
-                lambda: store.runner_progress(tok, build_id=str(body.get("buildId") or ""), events=events)
+                lambda: store.runner_progress(
+                    tok,
+                    build_id=str(body.get("buildId") or ""),
+                    events=events,
+                    lease_id=str(body.get("leaseId") or ""),
+                )
             )
             return _no_store_json({"ok": True, **res})
         except BuildError as exc:
@@ -644,13 +653,15 @@ def create_app(
                     status=str(body.get("status") or ""),
                     result=body.get("result") if isinstance(body.get("result"), dict) else None,
                     message=str(body.get("message") or ""),
+                    lease_id=str(body.get("leaseId") or ""),
                 )
             )
-            next_status = (res.get("build") or {}).get("status")
-            if next_status == "queued_deploy":
-                worker.notify()
-            elif next_status == "queued":
-                notify_lease_waiters()
+            if not res.get("replayed"):
+                next_status = (res.get("build") or {}).get("status")
+                if next_status == "queued_deploy":
+                    worker.notify()
+                elif next_status == "queued":
+                    notify_lease_waiters()
             return _no_store_json({"ok": True, **res})
         except BuildError as exc:
             return error_response(exc)
