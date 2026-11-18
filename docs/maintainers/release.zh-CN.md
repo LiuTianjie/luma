@@ -152,7 +152,7 @@ export LUMA_CONTROL_IMAGE="$PREVIOUS_CONTROL_IMAGE"
 5. 创建标签，发布带版本的镜像、GitHub 归档和 PyPI 包：
 
 ```bash
-git tag v0.2.77
+git tag v0.2.78
 git push origin main --tags
 ```
 
@@ -161,13 +161,13 @@ git push origin main --tags
 6. CI 用户使用以下方式安装：
 
 ```bash
-python -m pip install "luma-infra==0.2.77"
+python -m pip install "luma-infra==0.2.78"
 ```
 
 交互式使用仍可采用：
 
 ```bash
-export LUMA_INSTALL_REF=v0.2.77
+export LUMA_INSTALL_REF=v0.2.78
 curl -fsSL "https://raw.githubusercontent.com/LiuTianjie/luma/$LUMA_INSTALL_REF/scripts/install-luma.sh" -o /tmp/install-luma.sh && sh /tmp/install-luma.sh
 ```
 
@@ -207,7 +207,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninst
 ```yaml
 defaults:
   images:
-    lumaControl: ghcr.io/liutianjie/luma-control:v0.2.77
+    lumaControl: ghcr.io/liutianjie/luma-control:v0.2.78
 ```
 
 ## 最新版本渠道 {#latest-channel}
@@ -223,7 +223,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 CI 应优先使用固定版本的 PyPI 包：
 
 ```bash
-python -m pip install "luma-infra==0.2.77"
+python -m pip install "luma-infra==0.2.78"
 ```
 
 ## 自定义托管地址或派生仓库 {#custom-host-or-fork}
@@ -233,7 +233,7 @@ python -m pip install "luma-infra==0.2.77"
 ```bash
 curl -fsSL https://example.com/install-luma.sh | \
   LUMA_REPO_URL=https://github.com/acme/luma \
-  LUMA_INSTALL_REF=v0.2.77 \
+  LUMA_INSTALL_REF=v0.2.78 \
   sh
 ```
 
@@ -255,3 +255,17 @@ luma version --local
 ```
 
 包中包含运行时 stack 模板和控制台静态资源。一行安装命令仍可用于本地预检、创建 venv 和配置 PATH。Linux DNS 修复等主机级变更由 Manager 初始化或节点加入流程负责，单独安装 CLI 不会执行这些变更。
+
+## 独立 builder 发版 {#independent-builder-release}
+
+`builder/` 包与 Luma/Control 独立维护版本。发版流程运行 builder 测试，将多架构服务端和 runner 镜像发布到 GHCR，并在 GitHub Release 附上 wheel、sdist 和 SHA256SUMS；不会部署服务，也不会发布到 PyPI。
+
+```bash
+python scripts/bump-builder-version.py
+python scripts/bump-builder-version.py --check
+# Commit the prepared sources before tagging.
+git tag builder-v0.2.76
+git push origin main builder-v0.2.76
+```
+
+`Publish Builder` 流程产出 `ghcr.io/liutianjie/luma-build-server:v0.2.76` 和 `ghcr.io/liutianjie/luma-build-runner:v0.2.76`。Luma 继续使用自己的 `vX.Y.Z` tag、PyPI 包和 Control 镜像流程。分别发布并验证后，由操作员先升级 Control/CLI，再部署 builder。Runner join 依赖新版 builder API；旧 runner 进程也需要升级 CLI 或镜像，才能在服务端删除后自动退出。

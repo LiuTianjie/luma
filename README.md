@@ -59,6 +59,10 @@ The example assumes an initialized manager and a domain in your Cloudflare zone.
 
 Luma fits personal infrastructure and small teams running web apps, APIs, and workers on a few machines. The control plane currently uses **one Manager with local SQLite storage**. Multi-active Manager high availability and Kubernetes-style tenant isolation are outside that model. See [storage and recovery](docs/control-storage.md) before relying on it for production.
 
+## Independent build runners
+
+Use `luma builder` for the independent build queue and `luma runner join` to enroll a Linux or macOS build machine. Join starts a persistent background service; manage it with `luma runner start`, `stop`, `restart`, `status` and `logs`. See [Build runners](docs/runners.md) for existing-runner migration and deletion.
+
 ## Quick start
 
 ### 1. Install the CLI
@@ -80,7 +84,7 @@ Python 3.9+ is required. Use a virtual environment on systems with externally ma
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install "luma-infra==0.2.77"
+python -m pip install "luma-infra==0.2.78"
 ```
 
 See [installation lifecycle](docs/installation-lifecycle.md) for runtime diagnostics and uninstall behavior.

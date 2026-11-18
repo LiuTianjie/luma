@@ -229,7 +229,7 @@ luma workflow run api --path ~/src/api
 CI 可以在不保存登录的情况下使用 CLI：
 
 ```bash
-python -m pip install "luma-infra==0.2.77"
+python -m pip install "luma-infra==0.2.78"
 export LUMA_CONTROL_URL=https://luma.example.com
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 
@@ -247,3 +247,7 @@ luma login https://staging.example.com --token-stdin < staging.token
 luma context list
 luma deploy app.yaml --control-context staging
 ```
+
+## 独立构建队列 {#independent-build-queue}
+
+`luma builder submit` 使用独立的 `luma-build` 服务和 runner token 认证的构建机器，拥有独立的构建池、凭据、队列和版本。配置方式及其与 Control 管理的 `luma import` / `luma build` 的区别见[构建 Runner](runners.zh-CN.md)。

@@ -1,0 +1,92 @@
+# Build runners
+
+`luma builder` manages the independent `luma-build` queue. `luma runner` joins and controls the build process on the current machine. A runner needs Docker with Buildx and Git; it does not need Nomad or `luma node join`. Linux uses systemd; macOS uses a system launchd service with the invoking user's Docker environment.
+
+## Join and start
+
+On an operator machine, bind the build service and create a token using the existing Luma login:
+
+```bash
+luma builder use https://build.example.com
+luma builder token create my-runner --cache-mode read-write
+```
+
+On the machine that will build images:
+
+```bash
+luma runner join --url https://build.example.com --token lbr_xxx
+luma runner status
+luma runner logs --follow
+```
+
+Join checks local Docker and verifies the token without taking a queued build. Only after those checks pass does it save the configuration and start the background service. The process survives closing SSH/the terminal, starts automatically at boot and restarts after an unexpected failure. The operating system may request sudo to install/manage the service. macOS still needs its Docker engine (OrbStack or Docker Desktop) to be running, which can require user login.
+
+Use `--token-stdin` to read a token from stdin, or `LUMA_RUNNER_TOKEN` to supply it from the environment. The service stores it in `/opt/luma/runner/config.json`, readable only by the runner's OS user and root. The system service command contains the config path, not the token. The first join saves the invoking user's home, Docker context and proxy settings. Joining again as that user refreshes the environment; start/restart reuse the saved environment. BuildKit metadata stays in `~/.luma-runner` unless `--state-dir` is set.
+
+## Daily commands
+
+```bash
+luma runner stop
+luma runner start
+luma runner restart
+luma runner status --format json
+luma runner logs --lines 100
+luma builder token list
+```
+
+`stop` stops the local service and disables automatic startup while retaining its configuration. `start` reuses that configuration and enables automatic startup again. `restart` replaces the running process. Stop/restart interrupts an idle HTTP long poll instead of waiting for the server's 15-second response. These commands control one runner service per machine; repeated joins update it instead of adding another service. A stop/restart during a build cancels the local work; wait for builds to finish when interruption is undesirable.
+
+macOS service logs use `/opt/luma/runner/logs/runner.log`, rotating at 10 MiB with 5 backups. Linux uses journald. `luma runner logs --follow` follows across rotations.
+
+`runner status` reports the **local service**. `builder token list` reports **server-observed heartbeats**; the online threshold is 90 seconds. A running service can still have a network or authentication problem; inspect its logs and the remote list. `luma runner run` is explicitly foreground execution for debugging and containers. The old `luma builder runner` command remains a foreground compatibility entry point.
+
+## Migrate existing runners
+
+Existing registrations and names remain valid. Upgrade the Luma CLI on the runner machine and deploy the new builder service before joining. Stop its old foreground command with Ctrl-C (or stop its old Docker container), then run `luma runner join` with the **existing token**. Do not create another runner name. An existing manually installed `luma-build-runner.service` is replaced by the managed service after successful validation.
+
+If the token was lost, rotate it under the same registered name on the operator machine:
+
+```bash
+luma builder token create my-runner --rotate
+```
+
+Use the new token in `luma runner join` on that runner machine. Rotation keeps the runner name and ID and invalidates the previous token. Reapply nondefault weight, concurrency and cache flags when rotating. The previous process must be upgraded to this runner release to exit automatically when its old token is rejected.
+
+## Delete a runner
+
+Use the builder dashboard's **Delete** action or:
+
+```bash
+luma builder token delete my-runner
+```
+
+Deletion removes the registration and token from the list. It cancels builds currently assigned to that runner and queued builds explicitly pinned to it. Completed build history remains, and already-built images waiting for deployment continue through the deploy queue. Old revoked entries are removed when the updated builder starts. The previous `token revoke` command/API is retained as a deletion compatibility alias; it no longer creates a revoked row.
+
+Updated runners treat HTTP 401/403 as terminal authentication rejection: they cancel local work and exit successfully so systemd, launchd and the documented Docker restart policy do not relaunch them repeatedly. Network timeouts and HTTP 5xx remain retryable. To reconnect a deleted runner, create a new token and join again. Deletion does not remove the machine's local BuildKit cache or uninstall Luma.
+
+## Cache and containers
+
+For a slow-upload home Mac, join with a read-only registry cache:
+
+```bash
+luma runner join --url https://build.example.com --token lbr_xxx --cache-mode read-only --cache-keep-gb 25
+```
+
+The independent builder's cache-affinity wait is 3 seconds by default (`LUMA_BUILD_AFFINITY_SECONDS`), separate from Control's builder scheduling. Local BuildKit cache defaults to 20 GiB. `--workers` sets local worker slots; the token's `--concurrency` caps server assignments.
+
+Linux containers can use the independent runner image instead of installing a host service:
+
+```bash
+docker run -d --name luma-runner --restart=on-failure --network=host \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v luma-runner-state:/var/lib/luma-runner \
+  -e LUMA_BUILD_URL=https://build.example.com \
+  -e LUMA_RUNNER_TOKEN=lbr_xxx \
+  ghcr.io/liutianjie/luma-build-runner:v0.2.76
+```
+
+Docker's `on-failure` policy does not start a container after a Docker-daemon/host restart. Use `luma runner join` for host boot startup. Do not use `--restart=always` if deletion must leave the process stopped.
+
+## Upgrade order
+
+Luma/Control and the independent builder have separate release versions. Upgrade Control and the Luma CLI first, then deploy the matching builder release, then migrate/restart runner processes. `runner join` requires the builder's `/v1/runner/join` endpoint and gives an upgrade error with older servers. Updating Control alone does not deploy builder or restart standalone runner processes. See the [release guide](maintainers/release.md#independent-builder-release) and [builder deployment files](../builder/README.md).

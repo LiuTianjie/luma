@@ -40,6 +40,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     ("Operate", (
         ("status", "Show cluster, node and application health"),
         ("app", "Inspect, restart, roll back or remove deployed applications"),
+        ("runner", "Join and manage this machine's persistent build runner"),
         ("observe", "Read platform health, application telemetry and alert evidence"),
         ("secret", "Manage application secrets"),
     )),
@@ -140,6 +141,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_get_started_commands(sub)
     _add_deploy_commands(sub)
     _add_operate_commands(sub)
+    from .runner import add_parser as add_runner_parser
+    add_runner_parser(sub, _command, _commands, _add_output_arguments)
     _add_cluster_commands(sub)
     from .security import add_parser as add_security_parser
     add_security_parser(sub)
@@ -533,7 +536,7 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
             "Update the local CLI. On a manager this also refreshes Luma Control, and on a joined "
             "node it refreshes the node agent."
         ),
-        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.77\n  luma update fleet",
+        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.78\n  luma update fleet",
     )
     _add_update_arguments(update)
     _add_control_arguments(update)

@@ -229,7 +229,7 @@ Records never contain tokens or `.env` contents. Notes are free text; do not put
 CI can use the CLI without a saved login:
 
 ```bash
-python -m pip install "luma-infra==0.2.77"
+python -m pip install "luma-infra==0.2.78"
 export LUMA_CONTROL_URL=https://luma.example.com
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 
@@ -247,3 +247,7 @@ luma login https://staging.example.com --token-stdin < staging.token
 luma context list
 luma deploy app.yaml --control-context staging
 ```
+
+## Independent build queue
+
+`luma builder submit` uses the separate `luma-build` service and token-authenticated runners. It has its own runner pool, credentials, queue and releases. See [Build runners](runners.md) for setup and the distinction from Control-managed `luma import` / `luma build`.

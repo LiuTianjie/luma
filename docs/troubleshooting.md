@@ -398,3 +398,11 @@ The Nomad HTTP API listens on `4646`, RPC on `4647`, and Serf gossip on `4648`, 
 ```bash
 luma bootstrap --domain luma.example.com
 ```
+
+## Runner goes offline after closing the terminal
+
+`luma builder runner` and `luma runner run` run in the foreground. Upgrade the CLI and independent builder service, stop the old process, then use `luma runner join --url https://build.example.com --token lbr_xxx` to install and start a persistent service. Existing registrations can reuse the same token. Check `luma runner status`, `luma runner logs --follow` and `luma builder token list`; heartbeat expiry takes 90 seconds. If a token was deleted/rotated, the updated runner intentionally exits and needs a valid token to join again. See [migration and deletion](runners.md).
+
+## SSH and the node Agent report different Luma versions
+
+Check `type -a luma` and `luma version --local` in the actual SSH account. Node Agent upgrades follow the Agent's installation identity; another user's CLI can remain on an older release. Current/rollback candidates under one installation are different from independent root/user installs. Runner services use the CLI installation that created them; they do not consolidate other installations. See [installation identity](installation-lifecycle.md#installation-identity).

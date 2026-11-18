@@ -232,7 +232,7 @@ The package distribution name is `luma-infra`; the installed console command rem
 5. Create a tag to publish a versioned image, GitHub archive, and PyPI package:
 
 ```bash
-git tag v0.2.77
+git tag v0.2.78
 git push origin main --tags
 ```
 
@@ -241,13 +241,13 @@ The `Publish Python Package` workflow builds wheel and sdist, runs `twine check`
 6. CI users install with:
 
 ```bash
-python -m pip install "luma-infra==0.2.77"
+python -m pip install "luma-infra==0.2.78"
 ```
 
 Interactive users can still install with:
 
 ```bash
-export LUMA_INSTALL_REF=v0.2.77
+export LUMA_INSTALL_REF=v0.2.78
 curl -fsSL "https://raw.githubusercontent.com/LiuTianjie/luma/$LUMA_INSTALL_REF/scripts/install-luma.sh" -o /tmp/install-luma.sh && sh /tmp/install-luma.sh
 ```
 
@@ -287,7 +287,7 @@ The default control image is `ghcr.io/liutianjie/luma-control:latest`. If you wa
 ```yaml
 defaults:
   images:
-    lumaControl: ghcr.io/liutianjie/luma-control:v0.2.77
+    lumaControl: ghcr.io/liutianjie/luma-control:v0.2.78
 ```
 
 ## Latest Channel
@@ -303,7 +303,7 @@ This is convenient but less reproducible than a tag. For real users, prefer a ve
 For CI, prefer the pinned PyPI package:
 
 ```bash
-python -m pip install "luma-infra==0.2.77"
+python -m pip install "luma-infra==0.2.78"
 ```
 
 ## Custom Host Or Fork
@@ -313,7 +313,7 @@ Use these environment variables when the code is hosted somewhere else:
 ```bash
 curl -fsSL https://example.com/install-luma.sh | \
   LUMA_REPO_URL=https://github.com/acme/luma \
-  LUMA_INSTALL_REF=v0.2.77 \
+  LUMA_INSTALL_REF=v0.2.78 \
   sh
 ```
 
@@ -335,3 +335,17 @@ luma version --local
 ```
 
 The package includes runtime stack templates and dashboard assets as package data. The one-line installer remains useful for local preflight, venv creation, and PATH setup. Host-level changes such as Linux DNS repair are handled by manager bootstrap or node join, not by a CLI-only install.
+
+## Independent builder release
+
+The `builder/` package is versioned separately from Luma/Control. Its release workflow validates builder tests, publishes multi-architecture server/runner images to GHCR and attaches wheel/sdist plus SHA256SUMS to a GitHub release; it does not deploy the service or publish to PyPI.
+
+```bash
+python scripts/bump-builder-version.py
+python scripts/bump-builder-version.py --check
+# Commit the prepared sources before tagging.
+git tag builder-v0.2.76
+git push origin main builder-v0.2.76
+```
+
+The `Publish Builder` workflow produces `ghcr.io/liutianjie/luma-build-server:v0.2.76` and `ghcr.io/liutianjie/luma-build-runner:v0.2.76`. Luma continues to use its own `vX.Y.Z` tag, PyPI package and Control-image workflows. Publish and verify both releases; the operator upgrades Control/CLI first and deploys builder afterward. Runner join requires the new builder API. Old runner processes also need the new CLI/image for deletion-triggered exit.

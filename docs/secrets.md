@@ -2,7 +2,7 @@
 
 Luma stores project topology in `luma.yaml`, but secrets stay outside Git.
 
-By default, the CLI loads `.env` from the current working directory and `~/.luma.config.json` from the current user. Use `--env-file <path>` for another project-local file or `--no-env` to disable local secret loading.
+By default, the CLI reads only Luma settings from the working directory's `.env`, plus `~/.luma.config.json`; it does not implicitly load application secrets or Control credentials from `.env`. Explicit `--env-file <path>` loads the full selected file. `--no-env` disables these local-file inputs.
 
 For normal use, run the target command directly. If local values are missing, Luma prompts for them before continuing:
 
@@ -128,3 +128,7 @@ Rotate any token or subscription URL that appears in:
 - logs;
 - screenshots;
 - Git commits.
+
+## Runner credentials
+
+Runner `lbr_` tokens are separate from Control management/node-join tokens. Create or rotate them with `luma builder token create`, enroll with `luma runner join`, and permanently remove them with `luma builder token delete`. They cannot access administrator or secret-list endpoints. Local service credentials are saved in a mode-0600 config; join also accepts `--token-stdin`. See [Build runners](runners.md).

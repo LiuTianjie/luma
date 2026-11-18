@@ -59,6 +59,10 @@ luma deploy status.yaml
 
 Luma 适合在少量机器上运行 Web、API 和 Worker 的个人开发者与小团队。目前控制面采用 **单 Manager + 本地 SQLite**，不提供多活 Manager 高可用或 Kubernetes 式租户隔离。用于生产前，请阅读[存储与恢复说明](docs/control-storage.zh-CN.md)。
 
+## 独立构建 Runner
+
+使用 `luma builder` 管理独立构建队列，在 Linux 或 macOS 构建机器上通过 `luma runner join` 加入并默认启动后台服务。之后使用 `luma runner start`、`stop`、`restart`、`status` 和 `logs` 管理，关闭终端不影响运行。旧 Runner 迁移和删除见[构建 Runner](docs/runners.zh-CN.md)。
+
 ## 快速开始
 
 ### 1. 安装 CLI
@@ -80,7 +84,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install "luma-infra==0.2.77"
+python -m pip install "luma-infra==0.2.78"
 ```
 
 运行时诊断与卸载行为见[安装生命周期](docs/installation-lifecycle.zh-CN.md)。

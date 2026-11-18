@@ -377,3 +377,11 @@ Nomad HTTP API 使用 `4646`，RPC 使用 `4647`，Serf gossip 使用 `4648`，�
 ```bash
 luma bootstrap --domain luma.example.com
 ```
+
+## 关闭终端后 Runner 离线 {#runner-goes-offline-after-closing-the-terminal}
+
+`luma builder runner` 和 `luma runner run` 都是前台运行。升级 CLI 和独立 builder 服务，停止旧进程，再用 `luma runner join --url https://build.example.com --token lbr_xxx` 安装并启动持久后台服务。已有注册记录可以复用原 token。结合 `luma runner status`、`luma runner logs --follow` 和 `luma builder token list` 检查，心跳过期阈值为 90 秒。如果 token 已删除或轮换，新版 runner 会主动退出，需要有效 token 重新 join。见[迁移与删除](runners.zh-CN.md)。
+
+## SSH 和节点 Agent 的 Luma 版本不同 {#ssh-and-the-node-agent-report-different-luma-versions}
+
+在实际 SSH 登录账号中检查 `type -a luma` 和 `luma version --local`。节点 Agent 升级沿用该 Agent 的安装身份，另一用户的 CLI 可能仍是旧版。一套安装中的当前/回滚候选版本，与 root/普通用户各自独立安装不同。Runner 服务使用创建它的 CLI 安装，不会合并其他安装。见[安装身份](installation-lifecycle.zh-CN.md#installation-identity)。

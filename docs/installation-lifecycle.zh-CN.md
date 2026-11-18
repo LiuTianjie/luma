@@ -69,4 +69,8 @@ Control 未返回 agent 凭据时，`luma node join` 不再报告完成。本地
 
 ## 尚未覆盖 {#not-yet-covered}
 
-切换中途监督器崩溃恢复、公开接管/修复、控制台生命周期 UI、稳定版本默认解析、Builder/Registry 验证、Manager 维护门禁和 observe/备份标准化仍待完成。不能仅凭候选准备测试就判断可安全进行真实升级。
+切换中途监督器崩溃恢复、公开接管/修复、控制台生命周期 UI、完整的 Builder/Registry 验证和 observe/备份标准化仍待完成。不能仅凭候选准备测试就判断可安全进行真实升级。
+
+## Runner 服务与 CLI 升级 {#runner-services-and-cli-updates}
+
+`luma runner join` 记录当前安装的稳定命令 shim（或显式 pip/开发环境解释器），不会从 root PATH 选择另一份 `luma`。升级该 CLI 安装后，执行 `luma runner restart` 使用新运行时。升级 Control 或节点 Agent 不会自动更新无关的独立 runner 安装。卸载其 CLI 前先执行 `luma runner stop`；卸载脚本不会删除 runner 服务配置或 BuildKit 缓存。见[构建 Runner](runners.zh-CN.md)。

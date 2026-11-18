@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
-import os
 import ssl
 import sys
 import urllib.error
@@ -19,12 +18,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..builder_runner import NoRedirectHandler, RunnerDaemon
+from ..builder_runner import NoRedirectHandler
 from ..control.context import config_home, current_context_name
 from ..envfile import parse_env_file
 from ..errors import LumaError
 from ..io import atomic_write_text
 from . import common
+from .runner import add_runner_arguments, run_foreground
 
 
 def _builder_config_file() -> Path:
@@ -220,7 +220,7 @@ def add_parser(
             "Examples:\n"
             "  luma builder use https://build.example.com\n"
             "  luma builder submit acme/web --ref main\n"
-            "  luma builder runner --url https://build.example.com --token lbr_xxx"
+            "  luma runner join --url https://build.example.com --token lbr_xxx"
         ),
     )
     bsub = commands_fn(builder, "builder_command")
@@ -279,7 +279,7 @@ def add_parser(
     ret_p.add_argument("--detach", action="store_true", help="Return immediately after queueing the retry")
     _add_builder_client_options(ret_p, add_control_arguments, add_output_arguments)
 
-    tok_p = command_fn(bsub, "token", "Issue, list and revoke stateless runner registration tokens")
+    tok_p = command_fn(bsub, "token", "Issue tokens, list runners and delete runners")
     tok_sub = commands_fn(tok_p, "builder_token_command")
     tok_create = command_fn(tok_sub, "create", "Issue a scoped lbr_... token for a runner")
     tok_create.add_argument("name", help="Runner name, for example x86-builder, m4 or air3")
@@ -297,41 +297,19 @@ def add_parser(
     tok_list = command_fn(tok_sub, "list", "List registered runners and their heartbeat status")
     _add_builder_client_options(tok_list, add_control_arguments, add_output_arguments)
 
-    tok_rev = command_fn(tok_sub, "revoke", "Revoke a runner token immediately")
+    tok_rev = command_fn(tok_sub, "delete", "Delete a runner and invalidate its token immediately")
     tok_rev.add_argument("name", help="Runner name or ID")
     _add_builder_client_options(tok_rev, add_control_arguments, add_output_arguments)
+    legacy_revoke = tok_sub.add_parser("revoke")
+    legacy_revoke.add_argument("name")
+    _add_builder_client_options(legacy_revoke, add_control_arguments, add_output_arguments)
 
     run_p = command_fn(
         bsub,
         "runner",
-        "Start a stateless BuildKit runner daemon on this machine (no Nomad required)",
+        "Run a build runner in the foreground (background service: luma runner join)",
     )
-    run_p.add_argument("--url", dest="runner_url", default="", help="luma-build URL (or set LUMA_BUILD_URL)")
-    run_p.add_argument("--token", dest="runner_token", default="", help="Runner token starting with lbr_ (or set LUMA_RUNNER_TOKEN)")
-    run_p.add_argument(
-        "--state-dir",
-        type=Path,
-        default=Path("~/.luma-runner"),
-        help="Local directory for persistent BuildKit builder metadata (default: ~/.luma-runner)",
-    )
-    run_p.add_argument("--proxy", default="", help="Optional local HTTP(S) proxy for git clone and base image pulls")
-    run_p.add_argument(
-        "--no-proxy",
-        dest="no_proxy",
-        default="",
-        help="Comma-separated hosts/CIDRs bypassing --proxy (or set LUMA_RUNNER_NO_PROXY)",
-    )
-    run_p.add_argument(
-        "--cache-mode",
-        choices=("", "read-write", "read-only", "local-only"),
-        default="",
-        help="Override remote registry cache policy on this host",
-    )
-    run_p.add_argument("--cache-keep-gb", type=int, default=20, help="Local BuildKit SSD cache LRU cap in GiB (default: 20)")
-    run_p.add_argument("--max-parallelism", type=int, default=0, help="Max parallel BuildKit steps; 0 uses engine default")
-    run_p.add_argument("--workers", type=int, default=1, help="Concurrent worker slots on this host, 1-16 (default: 1)")
-    run_p.add_argument("--insecure", action="store_true", help="Skip TLS verification for the luma-build endpoint")
-    run_p.add_argument("--once", action="store_true", help="Poll once, run at most one build and exit")
+    add_runner_arguments(run_p, foreground=True)
 
     gc_p = command_fn(bsub, "git-cred", "Manage dynamic Git pull credentials stored on luma-build")
     gc_sub = commands_fn(gc_p, "builder_git_cred_command")
@@ -383,31 +361,7 @@ def cmd_builder(args: argparse.Namespace) -> int:
         return 0
 
     if subcmd == "runner":
-        url = (
-            common._arg_text(args, "runner_url")
-            or common._env_text("LUMA_BUILD_URL")
-            or _load_saved_builder_url()
-        )
-        tok = common._arg_text(args, "runner_token") or common._env_text("LUMA_RUNNER_TOKEN")
-        if not url or not tok:
-            raise LumaError("runner requires --url (or LUMA_BUILD_URL) and --token (or LUMA_RUNNER_TOKEN)")
-        proxy = common._arg_text(args, "proxy") or common._env_text("LUMA_RUNNER_PROXY") or ""
-        no_proxy = common._arg_text(args, "no_proxy") or common._env_text("LUMA_RUNNER_NO_PROXY") or ""
-        cache_mode = common._arg_text(args, "cache_mode") or common._env_text("LUMA_RUNNER_CACHE_MODE") or ""
-        state_dir = Path(os.environ.get("LUMA_RUNNER_STATE_DIR") or args.state_dir)
-        daemon = RunnerDaemon(
-            server_url=url,
-            runner_token=tok,
-            state_dir=state_dir,
-            local_proxy=proxy,
-            local_no_proxy=no_proxy,
-            cache_mode=cache_mode,
-            cache_keep_gb=int(os.environ.get("LUMA_RUNNER_CACHE_KEEP_GB") or args.cache_keep_gb),
-            max_parallelism=int(os.environ.get("LUMA_RUNNER_MAX_PARALLELISM") or args.max_parallelism),
-            workers=int(os.environ.get("LUMA_RUNNER_WORKERS") or args.workers),
-            insecure_tls=bool(args.insecure),
-        )
-        return daemon.run_once_or_forever(once=bool(args.once))
+        return run_foreground(args)
 
     url, token, insecure = _resolve_builder_connection(args)
     client = BuilderClient(url, token, insecure=insecure)
@@ -646,7 +600,7 @@ def cmd_builder(args: argparse.Namespace) -> int:
                 r = res["runner"]
                 print(f"Runner registered: {r['name']} (weight={r['weight']}, cache={r['cacheMode']})")
                 print(f"LUMA_RUNNER_TOKEN={r['runnerToken']}")
-                print(f"\nStart on macOS/Linux:\n  luma builder runner --url {url} --token {r['runnerToken']} --cache-mode {r['cacheMode']}")
+                print(f"\nJoin and start in the background on macOS/Linux:\n  luma runner join --url {url} --token {r['runnerToken']} --cache-mode {r['cacheMode']}")
             return 0
         if tcmd == "list":
             res = client.request("GET", "/v1/runners")
@@ -672,12 +626,12 @@ def cmd_builder(args: argparse.Namespace) -> int:
                         ],
                     )
             return 0
-        if tcmd == "revoke":
-            res = client.request("POST", f"/v1/runners/{urllib.parse.quote(args.name, safe='')}/revoke", {})
+        if tcmd in {"delete", "revoke"}:
+            res = client.request("DELETE", f"/v1/runners/{urllib.parse.quote(args.name, safe='')}")
             if fmt != "text":
                 common._print_success(args, res)
             elif not quiet:
-                print(f"Revoked runner: {res['runner']['name']}")
+                print(f"Deleted runner: {res['runner']['name']}")
             return 0
 
     if subcmd == "git-cred":

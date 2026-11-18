@@ -2,7 +2,7 @@
 
 Luma 将项目拓扑存放在 `luma.yaml`，密钥则保留在 Git 之外。
 
-CLI 默认加载当前工作目录的 `.env` 和当前用户的 `~/.luma.config.json`。可用 `--env-file <path>` 指定其他项目本地文件，或用 `--no-env` 禁止加载本地密钥。
+CLI 默认只读取当前目录 `.env` 中的 Luma 配置项，以及 `~/.luma.config.json`，不会隐式加载 `.env` 中的应用密钥或 Control 凭据。显式 `--env-file <path>` 会完整加载所选文件；`--no-env` 禁止这些本地文件输入。
 
 正常使用时直接运行目标命令即可。本地缺少配置值时，Luma 会先提示输入，再继续执行：
 
@@ -124,3 +124,6 @@ Git 忽略 `.env` 和 `.env.*`，仅提交安全模板 `.env.example`。
 - 日志；
 - 截图；
 - Git 提交。
+## Runner 凭据 {#runner-credentials}
+
+Runner 的 `lbr_` token 与 Control 管理令牌、节点加入令牌不同。通过 `luma builder token create` 创建或轮换，用 `luma runner join` 加入，用 `luma builder token delete` 永久删除。Runner token 无权调用管理员或密钥列表接口。本机服务凭据保存在 0600 配置文件中，join 支持 `--token-stdin`。详见[构建 Runner](runners.zh-CN.md)。

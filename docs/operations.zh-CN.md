@@ -288,7 +288,7 @@ sudo docker pull hello-world:latest
 
 ```bash
 luma update                                  # manager: CLI + Control; node: CLI + agent; client: CLI
-luma update --install-ref v0.2.77           # a specific release, branch or full commit
+luma update --install-ref v0.2.78           # a specific release, branch or full commit
 luma update fleet                            # every non-manager node with a ready agent
 luma update fleet --include-manager          # explicit repair only
 ```
@@ -432,3 +432,15 @@ Nomad 节点可能仍 `ready`，但 Luma agent 离线。安装缺失 Python 包�
 安装程序在发布 shim 或刷新服务前验证目标环境：依赖导入、CLI/agent 命令加载和 `pip check` 必须通过。包安装失败只有通过这些检查才可使用源码回退。Shim 通过已验证 Python 的 `-m luma.cli` 启动，不复用 shebang 可能指向其他环境的旧脚本。验证失败非零退出，不显示成功、不替换 shim，也不刷新/重启服务。
 
 该发布门禁不会事务性回滚目标目录内已发生的源码或包变化。受影响主机应先恢复到验证正常的环境，再检查 systemd 重启次数与新鲜 Control 心跳；进程存在不代表已重新连接。
+
+## 构建 Runner 服务 {#build-runner-services}
+
+按[构建 Runner](runners.zh-CN.md)完成 join 后，在 runner 机器上使用以下命令。Stop 关闭自动启动，start 复用已保存的 token 和配置。
+
+```bash
+luma runner status
+luma runner stop
+luma runner start
+luma runner restart
+luma runner logs --follow
+```

@@ -297,7 +297,7 @@ sudo docker pull hello-world:latest
 
 ```bash
 luma update                                  # manager: CLI + Control; node: CLI + agent; client: CLI
-luma update --install-ref v0.2.77           # a specific release, branch or full commit
+luma update --install-ref v0.2.78           # a specific release, branch or full commit
 luma update fleet                            # every non-manager node with a ready agent
 luma update fleet --include-manager          # explicit repair only
 ```
@@ -454,3 +454,15 @@ already made inside the target install directory. For an affected existing host,
 restore the service to a verified working environment, then check both systemd
 restart counts and fresh Control heartbeats; a running process alone does not prove
 that the agent has reconnected.
+
+## Build runner services
+
+After [joining a runner](runners.md), use these local commands. Stop disables automatic startup; start reuses the saved token/configuration.
+
+```bash
+luma runner status
+luma runner stop
+luma runner start
+luma runner restart
+luma runner logs --follow
+```

@@ -34,6 +34,7 @@ Deploy:
 Operate:
   status        Show cluster, node and application health
   app           Inspect, restart, roll back or remove deployed applications
+  runner        Join and manage this machine's persistent build runner
   observe       Read platform health, application telemetry and alert evidence
   secret        Manage application secrets
 
@@ -663,15 +664,15 @@ arguments:
     logs           Show build details and BuildKit logs
     cancel         Cancel a queued or running build
     retry          Retry a previous remote build
-    token          Issue, list and revoke stateless runner registration tokens
-    runner         Start a stateless BuildKit runner daemon on this machine (no Nomad required)
+    token          Issue tokens, list runners and delete runners
+    runner         Run a build runner in the foreground (background service: luma runner join)
     git-cred       Manage dynamic Git pull credentials stored on luma-build
     registry-cred  Manage dynamic OCI registry push credentials on luma-build
 
 Examples:
   luma builder use https://build.example.com
   luma builder submit acme/web --ref main
-  luma builder runner --url https://build.example.com --token lbr_xxx
+  luma runner join --url https://build.example.com --token lbr_xxx
 ```
 
 ## `luma builder use`
@@ -890,7 +891,7 @@ arguments:
 ```text
 usage: luma builder token [-h] <command> ...
 
-Issue, list and revoke stateless runner registration tokens
+Issue tokens, list runners and delete runners
 
 arguments:
   -h, --help  show this help message and exit
@@ -899,7 +900,7 @@ arguments:
   <command>
     create    Issue a scoped lbr_... token for a runner
     list      List registered runners and their heartbeat status
-    revoke    Revoke a runner token immediately
+    delete    Delete a runner and invalidate its token immediately
 ```
 
 ## `luma builder token create`
@@ -959,12 +960,12 @@ arguments:
   --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
 ```
 
-## `luma builder token revoke`
+## `luma builder token delete`
 
 ```text
-usage: luma builder token revoke [-h] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+usage: luma builder token delete [-h] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
 
-Revoke a runner token immediately
+Delete a runner and invalidate its token immediately
 
 arguments:
   name                        Runner name or ID
@@ -989,26 +990,27 @@ arguments:
 ## `luma builder runner`
 
 ```text
-usage: luma builder runner [-h] [--url RUNNER_URL] [--token RUNNER_TOKEN] [--state-dir STATE_DIR] [--proxy PROXY] [--no-proxy NO_PROXY] [--cache-mode {,read-write,read-only,local-only}] [--cache-keep-gb CACHE_KEEP_GB] [--max-parallelism MAX_PARALLELISM] [--workers WORKERS] [--insecure] [--once]
+usage: luma builder runner [-h] [--url RUNNER_URL] [--token RUNNER_TOKEN] [--token-stdin] [--state-dir STATE_DIR] [--proxy PROXY] [--no-proxy NO_PROXY] [--cache-mode {read-write,read-only,local-only}] [--cache-keep-gb CACHE_KEEP_GB] [--max-parallelism MAX_PARALLELISM] [--workers WORKERS] [--insecure] [--once]
 
-Start a stateless BuildKit runner daemon on this machine (no Nomad required)
+Run a build runner in the foreground (background service: luma runner join)
 
 arguments:
   -h, --help                  show this help message and exit
-  --url RUNNER_URL            luma-build URL (or set LUMA_BUILD_URL)
-  --token RUNNER_TOKEN        Runner token starting with lbr_ (or set LUMA_RUNNER_TOKEN)
-  --state-dir STATE_DIR       Local directory for persistent BuildKit builder metadata (default:
-                              ~/.luma-runner)
-  --proxy PROXY               Optional local HTTP(S) proxy for git clone and base image pulls
-  --no-proxy NO_PROXY         Comma-separated hosts/CIDRs bypassing --proxy (or set
-                              LUMA_RUNNER_NO_PROXY)
-  --cache-mode {,read-write,read-only,local-only}
-                              Override remote registry cache policy on this host
+  --url RUNNER_URL            luma-build URL (or LUMA_BUILD_URL / saved builder URL)
+  --token RUNNER_TOKEN        Runner token starting with lbr_ (or LUMA_RUNNER_TOKEN)
+  --token-stdin               Read the runner token from stdin instead of putting it in shell
+                              history
+  --state-dir STATE_DIR       Persistent BuildKit metadata directory (default: ~/.luma-runner)
+  --proxy PROXY               Local HTTP(S) proxy for Git and base image pulls (or
+                              LUMA_RUNNER_PROXY)
+  --no-proxy NO_PROXY         Hosts/CIDRs bypassing --proxy (or LUMA_RUNNER_NO_PROXY)
+  --cache-mode {read-write,read-only,local-only}
+                              Remote registry cache policy; omitted keeps the server policy
   --cache-keep-gb CACHE_KEEP_GB
-                              Local BuildKit SSD cache LRU cap in GiB (default: 20)
+                              Local BuildKit disk cache cap in GiB (default: 20)
   --max-parallelism MAX_PARALLELISM
-                              Max parallel BuildKit steps; 0 uses engine default
-  --workers WORKERS           Concurrent worker slots on this host, 1-16 (default: 1)
+                              Max parallel BuildKit steps; 0 uses the engine default
+  --workers WORKERS           Concurrent worker slots, 1-16 (default: 1)
   --insecure                  Skip TLS verification for the luma-build endpoint
   --once                      Poll once, run at most one build and exit
 ```
@@ -2039,6 +2041,157 @@ arguments:
   --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
 ```
 
+## `luma runner`
+
+```text
+usage: luma runner [-h] <command> ...
+
+Join and manage this machine's persistent build runner
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  <command>
+    join      Verify a runner token, save configuration and start the background service
+    start     Start the configured runner and enable automatic startup
+    stop      Stop the local runner and disable automatic startup; keep its configuration
+    restart   Restart the configured runner service
+    status    Show the local runner service state (remote presence: luma builder token list)
+    logs      Read the local runner service logs
+    run       Run in the foreground for debugging or inside a container
+
+First: luma runner join --url https://build.example.com --token lbr_xxx
+Then: luma runner stop / start / restart / status / logs --follow
+```
+
+## `luma runner join`
+
+```text
+usage: luma runner join [-h] [--url RUNNER_URL] [--token RUNNER_TOKEN] [--token-stdin] [--state-dir STATE_DIR] [--proxy PROXY] [--no-proxy NO_PROXY] [--cache-mode {read-write,read-only,local-only}] [--cache-keep-gb CACHE_KEEP_GB] [--max-parallelism MAX_PARALLELISM] [--workers WORKERS] [--insecure] [--format {text,json,ndjson}] [--quiet]
+
+Verify a runner token, save configuration and start the background service
+
+arguments:
+  -h, --help                  show this help message and exit
+  --url RUNNER_URL            luma-build URL (or LUMA_BUILD_URL / saved builder URL)
+  --token RUNNER_TOKEN        Runner token starting with lbr_ (or LUMA_RUNNER_TOKEN)
+  --token-stdin               Read the runner token from stdin instead of putting it in shell
+                              history
+  --state-dir STATE_DIR       Persistent BuildKit metadata directory (default: ~/.luma-runner)
+  --proxy PROXY               Local HTTP(S) proxy for Git and base image pulls (or
+                              LUMA_RUNNER_PROXY)
+  --no-proxy NO_PROXY         Hosts/CIDRs bypassing --proxy (or LUMA_RUNNER_NO_PROXY)
+  --cache-mode {read-write,read-only,local-only}
+                              Remote registry cache policy; omitted keeps the server policy
+  --cache-keep-gb CACHE_KEEP_GB
+                              Local BuildKit disk cache cap in GiB (default: 20)
+  --max-parallelism MAX_PARALLELISM
+                              Max parallel BuildKit steps; 0 uses the engine default
+  --workers WORKERS           Concurrent worker slots, 1-16 (default: 1)
+  --insecure                  Skip TLS verification for the luma-build endpoint
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+```
+
+## `luma runner start`
+
+```text
+usage: luma runner start [-h] [--format {text,json,ndjson}] [--quiet]
+
+Start the configured runner and enable automatic startup
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+```
+
+## `luma runner stop`
+
+```text
+usage: luma runner stop [-h] [--format {text,json,ndjson}] [--quiet]
+
+Stop the local runner and disable automatic startup; keep its configuration
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+```
+
+## `luma runner restart`
+
+```text
+usage: luma runner restart [-h] [--format {text,json,ndjson}] [--quiet]
+
+Restart the configured runner service
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+```
+
+## `luma runner status`
+
+```text
+usage: luma runner status [-h] [--format {text,json,ndjson}] [--quiet]
+
+Show the local runner service state (remote presence: luma builder token list)
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+```
+
+## `luma runner logs`
+
+```text
+usage: luma runner logs [-h] [--follow] [--lines LINES]
+
+Read the local runner service logs
+
+arguments:
+  -h, --help         show this help message and exit
+  --follow, -f       Follow new log output
+  --lines, -n LINES  Number of recent lines, 1-10000 (default: 100)
+```
+
+## `luma runner run`
+
+```text
+usage: luma runner run [-h] [--url RUNNER_URL] [--token RUNNER_TOKEN] [--token-stdin] [--state-dir STATE_DIR] [--proxy PROXY] [--no-proxy NO_PROXY] [--cache-mode {read-write,read-only,local-only}] [--cache-keep-gb CACHE_KEEP_GB] [--max-parallelism MAX_PARALLELISM] [--workers WORKERS] [--insecure] [--once]
+
+Run in the foreground for debugging or inside a container
+
+arguments:
+  -h, --help                  show this help message and exit
+  --url RUNNER_URL            luma-build URL (or LUMA_BUILD_URL / saved builder URL)
+  --token RUNNER_TOKEN        Runner token starting with lbr_ (or LUMA_RUNNER_TOKEN)
+  --token-stdin               Read the runner token from stdin instead of putting it in shell
+                              history
+  --state-dir STATE_DIR       Persistent BuildKit metadata directory (default: ~/.luma-runner)
+  --proxy PROXY               Local HTTP(S) proxy for Git and base image pulls (or
+                              LUMA_RUNNER_PROXY)
+  --no-proxy NO_PROXY         Hosts/CIDRs bypassing --proxy (or LUMA_RUNNER_NO_PROXY)
+  --cache-mode {read-write,read-only,local-only}
+                              Remote registry cache policy; omitted keeps the server policy
+  --cache-keep-gb CACHE_KEEP_GB
+                              Local BuildKit disk cache cap in GiB (default: 20)
+  --max-parallelism MAX_PARALLELISM
+                              Max parallel BuildKit steps; 0 uses the engine default
+  --workers WORKERS           Concurrent worker slots, 1-16 (default: 1)
+  --insecure                  Skip TLS verification for the luma-build endpoint
+  --once                      Poll once, run at most one build and exit
+```
+
 ## `luma bootstrap`
 
 ```text
@@ -2092,7 +2245,7 @@ arguments:
 
 Examples:
   luma update
-  luma update --install-ref v0.2.77
+  luma update --install-ref v0.2.78
   luma update fleet
 ```
 

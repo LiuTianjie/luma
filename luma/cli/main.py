@@ -15,6 +15,7 @@ from ..userconfig import load_user_config
 from .observe import cmd_observe
 from .apps import cmd_app
 from .builder import cmd_builder
+from .runner import cmd_runner
 from .builds import cmd_build, cmd_import, cmd_workflow
 from .common import _print_structured_error
 from .deploy import cmd_compose, cmd_deploy, cmd_validate
@@ -42,6 +43,7 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "import": cmd_import,
     "build": cmd_build,
     "builder": cmd_builder,
+    "runner": cmd_runner,
     "workflow": cmd_workflow,
     "status": cmd_status,
     "app": cmd_app,
@@ -105,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         _load_environment(args)
         if args.command == "node-agent":
             return _run_node_agent(args)
-        if args.command != "skills":
+        if args.command != "skills" and not (args.command == "runner" and args.runner_command == "run"):
             auto_sync()
         return COMMANDS[args.command](args)
     except LumaError as exc:

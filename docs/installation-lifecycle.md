@@ -139,7 +139,10 @@ do not find `target.json` keep the previous in-process service refresh.
 ## Not yet covered
 
 Crash recovery of a supervisor that died mid-switch, public adoption/repair,
-Dashboard lifecycle UI, stable-release default resolution, builder/registry
-validation, manager maintenance gates and observe/backup standardization remain
+Dashboard lifecycle UI, complete builder/registry validation and observe/backup standardization remain
 open. No live upgrade should
 be justified by candidate-preparation tests alone.
+
+## Runner services and CLI updates
+
+`luma runner join` records the current installation's stable command shim (or the explicit pip/development interpreter), not a different `luma` found through root's PATH. Update that CLI installation, then run `luma runner restart` to use the new runtime. Updating Control or a node Agent does not itself update an unrelated standalone runner installation. Before uninstalling its CLI, stop the runner with `luma runner stop`; the uninstall script does not delete its service configuration or BuildKit cache. See [Build runners](runners.md).
