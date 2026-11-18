@@ -721,7 +721,7 @@ arguments:
 ## `luma builder submit`
 
 ```text
-usage: luma builder submit [-h] [--ref REF] [--provider-id PROVIDER_ID] [--platform PLATFORM] [--runner RUNNER] [--compose-sidecar COMPOSE_SIDECAR] [--manifest-path MANIFEST_PATH] [--manifest MANIFEST] [--context CONTEXT] [--dockerfile DOCKERFILE] [--target TARGET] [--region REGION] [--node NODE] [--exposure EXPOSURE] [--domain DOMAIN] [--port PORT] [--env DEPLOY_ENV_FILE] [--no-deploy] [--no-cache] [--detach] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] source
+usage: luma builder submit [-h] [--ref REF] [--provider-id PROVIDER_ID] [--platform PLATFORM] [--runner RUNNER] [--compose-sidecar COMPOSE_SIDECAR] [--manifest-path MANIFEST_PATH] [--manifest MANIFEST] [--context CONTEXT] [--dockerfile DOCKERFILE] [--target TARGET] [--region REGION] [--node NODE] [--exposure EXPOSURE] [--domain DOMAIN] [--port PORT] [--env DEPLOY_ENV_FILE] [--no-deploy] [--no-cache] [--detach] [--workflow-app WORKFLOW_APP] [--accept-workflow-change] [--workflow-note WORKFLOW_NOTE] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] source
 
 Submit a Git repository build and optional Luma deployment
 
@@ -757,6 +757,13 @@ arguments:
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
+
+arguments:
+  --workflow-app WORKFLOW_APP
+                              Application whose workflow to check, when a repository has several
+  --accept-workflow-change    Proceed after reviewing the reported workflow differences
+  --workflow-note WORKFLOW_NOTE
+                              Record why this workflow is used; never include secrets
 
 arguments:
   --control-context CONTROL_CONTEXT
@@ -983,7 +990,7 @@ arguments:
 ## `luma builder runner`
 
 ```text
-usage: luma builder runner [-h] [--url RUNNER_URL] [--token RUNNER_TOKEN] [--state-dir STATE_DIR] [--proxy PROXY] [--cache-mode {,read-write,read-only,local-only}] [--cache-keep-gb CACHE_KEEP_GB] [--max-parallelism MAX_PARALLELISM] [--workers WORKERS] [--insecure] [--once]
+usage: luma builder runner [-h] [--url RUNNER_URL] [--token RUNNER_TOKEN] [--state-dir STATE_DIR] [--proxy PROXY] [--no-proxy NO_PROXY] [--cache-mode {,read-write,read-only,local-only}] [--cache-keep-gb CACHE_KEEP_GB] [--max-parallelism MAX_PARALLELISM] [--workers WORKERS] [--insecure] [--once]
 
 Start a stateless BuildKit runner daemon on this machine (no Nomad required)
 
@@ -994,6 +1001,8 @@ arguments:
   --state-dir STATE_DIR       Local directory for persistent BuildKit builder metadata (default:
                               ~/.luma-runner)
   --proxy PROXY               Optional local HTTP(S) proxy for git clone and base image pulls
+  --no-proxy NO_PROXY         Comma-separated hosts/CIDRs bypassing --proxy (or set
+                              LUMA_RUNNER_NO_PROXY)
   --cache-mode {,read-write,read-only,local-only}
                               Override remote registry cache policy on this host
   --cache-keep-gb CACHE_KEEP_GB
@@ -2084,7 +2093,7 @@ arguments:
 
 Examples:
   luma update
-  luma update --install-ref v0.2.73
+  luma update --install-ref v0.2.74
   luma update fleet
 ```
 

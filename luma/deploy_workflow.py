@@ -18,6 +18,7 @@ from .errors import LumaError
 
 METHODS = {
     "remote-build": "Git checkout and build on Luma Builder, then deploy",
+    "builder-submit": "Submit Git build to decoupled luma-build service, then deploy",
     "local-build": "Build local checkout, push to Luma registry, then deploy",
     "image-deploy": "Deploy an existing image from a service manifest",
     "compose-deploy": "Deploy existing images from a Compose sidecar",
@@ -27,6 +28,8 @@ METHODS = {
 def method_for(args: argparse.Namespace) -> str:
     if args.command == "import":
         return "remote-build"
+    if args.command == "builder" and getattr(args, "builder_command", "") == "submit":
+        return "builder-submit"
     if args.command == "build" and args.build_command == "local":
         return "local-build"
     if args.command == "build" and args.build_command == "retry":
@@ -35,7 +38,7 @@ def method_for(args: argparse.Namespace) -> str:
         return "image-deploy"
     if args.command == "compose" and args.compose_command == "deploy":
         return "compose-deploy"
-    raise LumaError("workflow supports only import, build local/retry, deploy, and compose deploy")
+    raise LumaError("workflow supports only import, builder submit, build local/retry, deploy, and compose deploy")
 
 
 def project_root(start: Path) -> Path:
@@ -82,8 +85,8 @@ def parse_recipe(argv: Any) -> argparse.Namespace:
     except SystemExit as exc:
         raise LumaError("workflow must contain a valid Luma deployment command") from exc
     method_for(args)
-    if any(getattr(args, key, False) for key in ("dry_run", "skip_orchestrator", "commit", "push", "accept_workflow_change", "workflow_app")):
-        raise LumaError("workflow cannot include dry-run, skip-orchestrator, commit/push, or workflow confirmation flags")
+    if any(getattr(args, key, False) for key in ("dry_run", "skip_orchestrator", "commit", "push", "accept_workflow_change", "workflow_app", "no_deploy", "detach")):
+        raise LumaError("workflow cannot include dry-run, skip-orchestrator, no-deploy, detach, commit/push, or workflow confirmation flags")
     return args
 
 
@@ -91,8 +94,8 @@ def make_recipe(args: argparse.Namespace) -> dict[str, Any]:
     method = method_for(args)
     if args.command == "build" and args.build_command == "retry":
         return retry_recipe(args)
-    if any(getattr(args, key, False) for key in ("dry_run", "skip_orchestrator", "commit", "push")):
-        raise LumaError("cannot remember a dry-run, skipped deployment, or deprecated commit/push command")
+    if any(getattr(args, key, False) for key in ("dry_run", "skip_orchestrator", "commit", "push", "no_deploy", "detach")):
+        raise LumaError("cannot remember a dry-run, skipped deployment, detached build, or deprecated commit/push command")
     cwd = Path.cwd().resolve()
     start = args.path if method == "local-build" else cwd
     if method == "image-deploy":
@@ -120,6 +123,8 @@ def make_recipe(args: argparse.Namespace) -> dict[str, Any]:
         argv += ["--env-file", local_path(args.env_file)]
     if method == "remote-build":
         argv += ["import"] + ([safe_url(args.repo)] if args.repo else [])
+    elif method == "builder-submit":
+        argv += ["builder", "submit", safe_url(args.source)]
     elif method == "local-build":
         argv += ["build", "local", local_path(args.path)]
     elif method == "image-deploy":
@@ -128,10 +133,12 @@ def make_recipe(args: argparse.Namespace) -> dict[str, Any]:
         argv += ["compose", "deploy", local_path(args.sidecar)]
     options = {
         "provider_id": "--provider-id", "repository": "--repository",
-        "build_node": "--build-node", "ref": "--ref", "region": "--region",
+        "build_node": "--build-node", "runner": "--runner", "ref": "--ref",
+        "region": "--region", "node": "--node",
         "exposure": "--exposure", "domain": "--domain", "port": "--port",
-        "manifest": "--manifest", "compose_sidecar": "--compose-sidecar",
-        "platform": "--platform", "build_context": "--context", "dockerfile": "--dockerfile",
+        "manifest": "--manifest", "manifest_path": "--manifest-path", "compose_sidecar": "--compose-sidecar",
+        "platform": "--platform", "build_context": "--context", "context": "--context",
+        "dockerfile": "--dockerfile", "target": "--target",
         "registry_host": "--registry-host", "registry_namespace": "--registry-namespace", "proxy_mode": "--proxy-mode",
         "repo_url": "--repo-url", "builder": "--builder", "proxy": "--proxy",
         "deploy_env_file": "--env", "timeout": "--timeout", "engine": "--engine",
@@ -141,6 +148,8 @@ def make_recipe(args: argparse.Namespace) -> dict[str, Any]:
         if value is not None and value != "":
             value = local_path(value) if key in {"manifest", "deploy_env_file"} else safe_url(str(value))
             argv += [flag, value]
+    if getattr(args, "no_cache", False):
+        argv.append("--no-cache")
     for capability in repository_build_requirements(getattr(args, "require_build_capabilities", None), fallback_manifest=bool(getattr(args, "manifest", None))):
         argv += ["--require-build-capability", capability]
     if getattr(args, "skip_dns", False):
@@ -186,17 +195,20 @@ def retry_recipe(args: argparse.Namespace) -> dict[str, Any]:
 def comparison_fields(recipe: dict[str, Any]) -> dict[str, Any]:
     args = parse_recipe(recipe["argv"])
     keys = (
-        "provider_id", "repository", "repo", "repo_url", "ref", "build_node",
-        "region", "exposure", "domain", "port", "manifest", "compose_sidecar",
-        "platform", "build_context", "dockerfile", "registry_host", "proxy_mode",
-        "builder", "proxy", "service", "sidecar", "path", "skip_dns", "engine",
+        "provider_id", "repository", "repo", "source", "repo_url", "ref",
+        "build_node", "runner", "region", "node", "exposure", "domain", "port",
+        "manifest", "manifest_path", "compose_sidecar",
+        "platform", "build_context", "context", "dockerfile", "target",
+        "registry_host", "registry_namespace", "proxy_mode",
+        "builder", "proxy", "service", "sidecar", "path", "skip_dns", "no_cache", "engine",
         "deploy_env_file",
     )
     result: dict[str, Any] = {"method": recipe["method"]}
     for key in keys:
         value = getattr(args, key, None)
         if value not in (None, "", False):
-            result[key] = str(value) if isinstance(value, Path) else value
+            out_key = "build_context" if key == "context" else key
+            result[out_key] = str(value) if isinstance(value, Path) else value
     if args.command == "build" and args.build_command == "retry":
         result = dict(recipe["retryParameters"])
     required = normalize_build_capabilities(result.get("require_build_capabilities", getattr(args, "require_build_capabilities", None)))
@@ -216,7 +228,7 @@ def validate_recipe(value: Any) -> dict[str, Any]:
     args = parse_recipe(value.get("argv"))
     if value.get("method") != method_for(args):
         raise LumaError("workflow method does not match its command")
-    if any(getattr(args, key, None) for key in ("token", "control_url", "insecure", "resolve_ip", "workflow_note")):
+    if any(getattr(args, key, None) for key in ("token", "control_url", "builder_url", "insecure", "resolve_ip", "workflow_note")):
         raise LumaError("workflow must not contain credentials, control connection options or nested notes")
     # Sanitize all URL-bearing arguments, including credentials in positional URLs.
     result = {

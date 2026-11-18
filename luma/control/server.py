@@ -12411,6 +12411,31 @@ def ensure_image_pull_network(state: Dict[str, Any], image: str) -> str:
     return str(result.get("message") or f"Image pull proxy bypass configured for {registry}")
 
 
+def _state_private_registry_no_proxy(state: Dict[str, Any]) -> str:
+    registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
+    build = state.get("build") if isinstance(state.get("build"), dict) else {}
+    candidates: list[str] = []
+    for raw_key, raw_rec in registries.items():
+        if isinstance(raw_rec, dict):
+            server = str(raw_rec.get("serverAddress") or raw_rec.get("server") or raw_rec.get("host") or raw_key).strip()
+        else:
+            server = str(raw_key).strip()
+        if server:
+            candidates.append(server)
+    for bkey in ("registryHost", "pushHost", "localRegistryHost"):
+        bval = str(build.get(bkey) or "").strip()
+        if bval:
+            candidates.append(bval)
+    entries: list[str] = [EGRESS_NO_PROXY]
+    for server in candidates:
+        if server.lower() not in _egress_pull_registries():
+            try:
+                entries.extend(_no_proxy_entries_for_registry(server))
+            except LumaError:
+                continue
+    return _merge_no_proxy(*entries)
+
+
 def ensure_image_pull_egress_proxy(state: Dict[str, Any], image: str) -> str:
     registry = _image_registry_host(image)
     if registry not in _egress_pull_registries():
@@ -12427,7 +12452,7 @@ def ensure_image_pull_egress_proxy(state: Dict[str, Any], image: str) -> str:
         state,
         node_name,
         "configure-docker-egress-proxy",
-        {"proxy": EGRESS_PROXY_URL, "noProxy": EGRESS_NO_PROXY},
+        {"proxy": EGRESS_PROXY_URL, "noProxy": _merge_no_proxy(_docker_info_no_proxy(info), _state_private_registry_no_proxy(state))},
         timeout=180,
         required_capability="docker-egress-proxy",
     )
@@ -13395,6 +13420,8 @@ def _registered_nodes_summary(nodes: Dict[str, Any]) -> list[Dict[str, Any]]:
             "labels": {str(key): str(value) for key, value in labels.items()},
             "agentStatus": _node_agent_status(raw),
             "agentOs": str(agent.get("os") or ""),
+            "agentArch": str(agent.get("arch") or ""),
+            "nativePlatform": _container_platform_for_node(raw),
             "agentVersion": str(agent.get("version") or ""),
             "agentLastSeen": int(agent.get("lastSeen") or 0),
             "storageCapabilities": [str(value) for value in agent.get("capabilities") or []],
@@ -15275,7 +15302,7 @@ def _configure_target_image_pull_proxy(state: Dict[str, Any], node_name: str, im
         state,
         node_name,
         "configure-docker-egress-proxy",
-        {"proxy": proxy, "noProxy": EGRESS_NO_PROXY},
+        {"proxy": proxy, "noProxy": _state_private_registry_no_proxy(state)},
         timeout=180,
         required_capability="docker-egress-proxy",
     )

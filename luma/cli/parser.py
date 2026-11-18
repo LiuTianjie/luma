@@ -339,7 +339,14 @@ def _add_deploy_commands(sub: argparse._SubParsersAction) -> None:
     _add_output_arguments(build_config)
 
     from .builder import add_parser as add_builder_parser
-    add_builder_parser(sub, _command, _commands, _add_control_arguments, _add_output_arguments)
+    add_builder_parser(
+        sub,
+        _command,
+        _commands,
+        _add_control_arguments,
+        _add_output_arguments,
+        _add_workflow_arguments,
+    )
 
     workflow = _command(
         sub, "workflow",
@@ -526,7 +533,7 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
             "Update the local CLI. On a manager this also refreshes Luma Control, and on a joined "
             "node it refreshes the node agent."
         ),
-        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.73\n  luma update fleet",
+        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.74\n  luma update fleet",
     )
     _add_update_arguments(update)
     _add_control_arguments(update)

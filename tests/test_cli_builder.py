@@ -140,6 +140,122 @@ class CliBuilderTests(unittest.TestCase):
         with self.assertRaises(LumaError):
             normalize_registry_host('bad"\n[evil]')
 
+    def test_runner_parity_between_luma_cli_and_standalone_builder_package(self) -> None:
+        import sys
+
+        builder_root = Path(__file__).resolve().parents[1] / "builder"
+        if str(builder_root) not in sys.path:
+            sys.path.insert(0, str(builder_root))
+
+        from luma import builder_runner as cli_runner
+        from luma_build import deployer as pkg_deployer
+        from luma_build import registry_naming as pkg_naming
+        from luma_build import runner as pkg_runner
+
+        cases = [
+            {"single_service": True},
+            {"manifest_path": "luma.prod.api.yml", "context": "apps/api", "single_service": True},
+            {"compose_sidecar": "apps/billing/luma.billing.compose.yml", "service_name": "web", "single_service": True},
+            {"compose_sidecar": "luma.compose.yml", "service_name": "worker", "single_service": False},
+        ]
+        for kwargs in cases:
+            self.assertEqual(cli_runner.derive_cache_variant(**kwargs), pkg_naming.derive_cache_variant(**kwargs))
+
+        acr = "crpi-abc.cn-beijing.personal.cr.aliyuncs.com"
+        self.assertEqual(cli_runner.registry_no_proxy_entries(acr), pkg_naming.registry_no_proxy_entries(acr))
+        self.assertIn(".aliyuncs.com", cli_runner.registry_no_proxy_entries(acr))
+
+        manifest_samples = [
+            "name: svc\nregion: cn\nnode: arm-1\n",
+            "name: svc\nbuild:\n  platform: linux/arm64\n",
+            "name: stack\nregion: hk\nservices:\n  api:\n    node: arm-2\n  web:\n    exposure: public\n",
+        ]
+        for sample in manifest_samples:
+            self.assertEqual(
+                cli_runner.extract_manifest_target_hints(sample),
+                pkg_deployer.extract_manifest_target_hints(sample),
+            )
+
+        task = {
+            "platformExplicit": False,
+            "nodePlatforms": {"arm-1": "linux/arm64"},
+            "regionPlatforms": {"cn": ["linux/amd64"]},
+        }
+        c_plats = cli_runner._resolve_post_clone_platforms(task, manifest_text=manifest_samples[0], fallback=["linux/amd64"])
+        p_plats = pkg_runner._resolve_post_clone_platforms(task, manifest_text=manifest_samples[0], fallback=["linux/amd64"])
+        self.assertEqual(c_plats, ["linux/arm64"])
+        self.assertEqual(c_plats, p_plats)
+        with self.assertRaises(cli_runner.PlatformRequeueRequired):
+            cli_runner._check_runner_platform_compatibility(c_plats, native_platform="linux/amd64", task=task)
+        with self.assertRaises(pkg_runner.PlatformRequeueRequired):
+            pkg_runner._check_runner_platform_compatibility(p_plats, native_platform="linux/amd64", task=task)
+
+    def test_deploy_workflow_supports_builder_submit_and_registry_namespace(self) -> None:
+        from luma.deploy_workflow import comparison_fields, make_recipe, parse_recipe, validate_recipe
+
+        args = parse_recipe(
+            [
+                "builder",
+                "submit",
+                "acme/web",
+                "--ref",
+                "main",
+                "--manifest-path",
+                "luma.prod.api.yml",
+                "--region",
+                "cn",
+                "--node",
+                "manager",
+            ]
+        )
+        recipe = validate_recipe(make_recipe(args))
+        self.assertEqual(recipe["method"], "builder-submit")
+        fields = comparison_fields(recipe)
+        self.assertEqual(fields["manifest_path"], "luma.prod.api.yml")
+        self.assertEqual(fields["node"], "manager")
+
+        # Detached, build-only, or custom --url invocations must not be persisted as shared recipes
+        for rejected in (
+            ["builder", "submit", "acme/web", "--no-deploy"],
+            ["builder", "submit", "acme/web", "--detach"],
+        ):
+            with self.assertRaises(LumaError):
+                parse_recipe(rejected)
+        with self.assertRaises(LumaError):
+            validate_recipe({"schemaVersion": 1, "method": "builder-submit", "argv": ["builder", "submit", "acme/web", "--url", "https://evil.example.com"]})
+
+        # build local --registry-namespace must be preserved and compared
+        local_a = make_recipe(parse_recipe(["build", "local", ".", "--registry-namespace", "luma"]))
+        local_b = make_recipe(parse_recipe(["build", "local", ".", "--registry-namespace", "other"]))
+        self.assertEqual(comparison_fields(local_a)["registry_namespace"], "luma")
+        self.assertNotEqual(comparison_fields(local_a), comparison_fields(local_b))
+
+    def test_control_registry_no_proxy_and_node_native_platform_summary(self) -> None:
+        from luma.control.resources import EGRESS_NO_PROXY, _no_proxy_entries_for_registry
+        from luma.control.server import _registered_nodes_summary, _state_private_registry_no_proxy
+
+        self.assertIn(".aliyuncs.com", EGRESS_NO_PROXY)
+        acr_entries = _no_proxy_entries_for_registry("crpi-test.cn-beijing.personal.cr.aliyuncs.com")
+        self.assertIn(".aliyuncs.com", acr_entries)
+
+        merged = _state_private_registry_no_proxy(
+            {"registries": {"acr": {"server": "crpi-test.cn-beijing.personal.cr.aliyuncs.com"}, "corp": {"server": "reg.corp.example.com:5000"}}}
+        )
+        self.assertIn("reg.corp.example.com:5000", merged)
+        self.assertIn(".aliyuncs.com", merged)
+
+        summary = _registered_nodes_summary(
+            {
+                "arm-edge": {
+                    "region": "hk",
+                    "status": "labeled",
+                    "agent": {"os": "darwin", "arch": "arm64", "lastSeen": 1},
+                }
+            }
+        )
+        self.assertEqual(summary[0]["agentArch"], "arm64")
+        self.assertEqual(summary[0]["nativePlatform"], "linux/arm64")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -205,6 +205,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_p.add_argument("--proxy", default=os.environ.get("LUMA_RUNNER_PROXY", ""), help="Optional local HTTP(S) proxy for git/base images")
     run_p.add_argument(
+        "--no-proxy",
+        default=os.environ.get("LUMA_RUNNER_NO_PROXY", ""),
+        help="Comma-separated hosts/CIDRs bypassing --proxy (e.g. git.example.com)",
+    )
+    run_p.add_argument(
         "--cache-mode",
         choices=("", "read-write", "read-only", "local-only"),
         default=os.environ.get("LUMA_RUNNER_CACHE_MODE", ""),
@@ -361,6 +366,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             runner_token=args.token,
             state_dir=args.state_dir,
             local_proxy=args.proxy,
+            local_no_proxy=args.no_proxy,
             cache_mode=args.cache_mode,
             cache_keep_gb=args.cache_keep_gb,
             max_parallelism=args.max_parallelism,

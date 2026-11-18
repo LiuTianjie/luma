@@ -21,9 +21,18 @@ from ..registry import normalize_registry_host, public_registry_url, registry_au
 EGRESS_PROXY_URL = os.environ.get("LUMA_EGRESS_PROXY_URL", "http://127.0.0.1:7890")
 
 
+DEFAULT_CLOUD_REGISTRY_NO_PROXY_SUFFIXES = (
+    ".aliyuncs.com",
+    ".myqcloud.com",
+    ".volces.com",
+    ".myhuaweicloud.com",
+)
+
 EGRESS_NO_PROXY = os.environ.get(
     "LUMA_EGRESS_NO_PROXY",
-    "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,docker.1panel.live,docker.m.daocloud.io,docker.1ms.run",
+    "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,"
+    "docker.1panel.live,docker.m.daocloud.io,docker.1ms.run,"
+    + ",".join(DEFAULT_CLOUD_REGISTRY_NO_PROXY_SUFFIXES),
 )
 
 
@@ -111,9 +120,14 @@ def _image_registry_host(image: str) -> str:
 
 def _no_proxy_entries_for_registry(registry: str) -> tuple[str, ...]:
     host = normalize_registry_host(public_registry_url(registry))
+    bare = host.rsplit(":", 1)[0] if ":" in host and not host.endswith("]") else host
     entries = [host]
-    if ":" in host:
-        entries.append(host.rsplit(":", 1)[0])
+    if bare != host:
+        entries.append(bare)
+    lower_bare = bare.strip("[]").lower()
+    for suffix in DEFAULT_CLOUD_REGISTRY_NO_PROXY_SUFFIXES:
+        if lower_bare.endswith(suffix) and suffix not in entries:
+            entries.append(suffix)
     return tuple(entries)
 
 

@@ -17,20 +17,26 @@ from luma_build.cli import BuildApiClient, main as cli_main  # noqa: E402
 from luma_build.deployer import ControlAuthVerifier, extract_manifest_platforms  # noqa: E402
 from luma_build.errors import BuildCanceled, BuildError  # noqa: E402
 from luma_build.registry_naming import (  # noqa: E402
+    derive_cache_variant,
     derive_repo_slug,
     format_cache_reference,
     format_image_repository,
     is_http_registry,
+    merge_no_proxy,
     normalize_registry_host,
     normalize_repo_url,
+    registry_no_proxy_entries,
     validate_git_ref,
 )
 from luma_build.runner import (  # noqa: E402
+    PlatformRequeueRequired,
+    _clone_repo,
     _discover_manifest,
     _ensure_runner_buildx,
     _prepare_git_contexts,
     _render_buildkitd_toml,
     _run_buildx_command,
+    _url_bypasses_proxy,
     execute_build_task,
 )
 from luma_build.server import create_app  # noqa: E402
@@ -803,6 +809,11 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
             self.assertIn("构建与推送时间线", r1.text)
             self.assertIn('<meta name="color-scheme" content="light dark">', r1.text)
             self.assertIn('closedby="any"', r1.text)
+            self.assertIn('role="alert"', r1.text)
+            self.assertIn("overscroll-behavior: contain", r1.text)
+            self.assertIn('id="sub-manifest-path"', r1.text)
+            self.assertIn('id="sub-compose-sidecar"', r1.text)
+            self.assertIn('id="sub-provider-id"', r1.text)
             self.assertNotIn("style=", r1.text)
 
             csp1 = r1.headers.get("content-security-policy", "")
@@ -919,6 +930,322 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
                     on_line=None,
                     cancel_event=__import__("threading").Event(),
                 )
+
+    def test_auto_arm_routing_via_control_placement_and_manifest_handoff_learning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = create_app(
+                data_dir=root / "data",
+                admin_token=ADMIN_TOKEN,
+                control_url="https://luma.example.com",
+                control_deploy_token="ctl-tok",
+                default_registry_host="crpi-x.cn-beijing.personal.cr.aliyuncs.com",
+                default_registry_namespace="luma",
+                affinity_wait_seconds=0,
+                start_worker=False,
+            )
+            client = TestClient(app)
+            hdr = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+
+            amd_tok = client.post("/v1/runners/tokens", headers=hdr, json={"name": "cloud-x86", "weight": 200}).json()["runner"]["runnerToken"]
+            arm_tok = client.post("/v1/runners/tokens", headers=hdr, json={"name": "m4-arm", "weight": 100}).json()["runner"]["runnerToken"]
+            client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {amd_tok}"}, json={"nativePlatform": "linux/amd64"})
+            client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {arm_tok}"}, json={"nativePlatform": "linux/arm64"})
+
+            fake_status = {
+                "nodes": {
+                    "items": [
+                        {"name": "manager", "region": "cn", "nativePlatform": "linux/amd64", "agentStatus": "online"},
+                        {"name": "arm-box", "aliases": ["arm-edge-1"], "region": "hk-arm", "nativePlatform": "linux/arm64", "agentStatus": "online"},
+                    ]
+                }
+            }
+            with patch.object(app.state.deployer, "request_json", return_value=fake_status):
+                # 1) Passing --node arm-box (even alongside mixed --region cn) resolves immediately to linux/arm64!
+                direct_arm = client.post(
+                    "/v1/builds",
+                    headers=hdr,
+                    json={"repository": "acme/direct-arm", "node": "arm-box", "region": "cn", "deploy": False},
+                ).json()["build"]
+                self.assertEqual(direct_arm["platforms"], ["linux/arm64"])
+                # Drain direct_arm on arm_tok
+                self.assertEqual(
+                    client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {arm_tok}"}, json={"nativePlatform": "linux/arm64"}).json()["task"]["buildId"],
+                    direct_arm["id"],
+                )
+                client.post(
+                    "/v1/runner/complete",
+                    headers={"Authorization": f"Bearer {arm_tok}"},
+                    json={"buildId": direct_arm["id"], "status": "succeeded", "result": {"image": "x"}},
+                )
+
+                # 2) Un-annotated submission where .luma.yml inside Git targets node: arm-box
+                b1 = client.post(
+                    "/v1/builds",
+                    headers=hdr,
+                    json={"repository": "acme/git-arm-svc", "ref": "main", "deploy": False},
+                ).json()["build"]
+                # First-ever build starts as default linux/amd64 before Git repo is inspected
+                self.assertEqual(b1["platforms"], ["linux/amd64"])
+
+                leased_x86 = client.post(
+                    "/v1/runner/lease",
+                    headers={"Authorization": f"Bearer {amd_tok}"},
+                    json={"nativePlatform": "linux/amd64"},
+                ).json()["task"]
+                self.assertEqual(leased_x86["buildId"], b1["id"])
+
+                def fake_clone(*, repo_url, ref, dest, git_auth, proxy="", **kwargs):
+                    dest.mkdir(parents=True, exist_ok=True)
+                    (dest / "Dockerfile").write_text("FROM alpine:3.20\n", encoding="utf-8")
+                    (dest / ".luma.yml").write_text("name: git-arm-svc\nregion: cn\nnode: arm-box\n", encoding="utf-8")
+                    return "111111222222", "1" * 40
+
+                # x86 runner inspects .luma.yml, detects node: arm-box -> linux/arm64, and raises PlatformRequeueRequired BEFORE buildx!
+                with patch("luma_build.runner._clone_repo", side_effect=fake_clone), patch(
+                    "luma_build.runner._ensure_runner_buildx"
+                ) as mock_bx:
+                    with self.assertRaises(PlatformRequeueRequired) as ctx:
+                        execute_build_task(
+                            leased_x86,
+                            docker_bin="docker",
+                            native_platform="linux/amd64",
+                            buildx_state_dir=root / "bx",
+                        )
+                    self.assertEqual(ctx.exception.platforms, ["linux/arm64"])
+                    mock_bx.assert_not_called()
+
+                # Runner reports requeue -> server hands off to linux/arm64 and learns target_platforms!
+                req_res = client.post(
+                    "/v1/runner/complete",
+                    headers={"Authorization": f"Bearer {amd_tok}"},
+                    json={
+                        "buildId": b1["id"],
+                        "status": "requeue",
+                        "result": {"requiredPlatforms": ["linux/arm64"]},
+                    },
+                ).json()["build"]
+                self.assertEqual(req_res["status"], "queued")
+                self.assertEqual(req_res["platforms"], ["linux/arm64"])
+
+                # x86 runner cannot lease it now; ARM64 runner leases and completes it!
+                self.assertIsNone(
+                    client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {amd_tok}"}, json={"nativePlatform": "linux/amd64"}).json()["task"]
+                )
+                leased_arm = client.post(
+                    "/v1/runner/lease",
+                    headers={"Authorization": f"Bearer {arm_tok}"},
+                    json={"nativePlatform": "linux/arm64"},
+                ).json()["task"]
+                self.assertEqual(leased_arm["buildId"], b1["id"])
+                client.post(
+                    "/v1/runner/complete",
+                    headers={"Authorization": f"Bearer {arm_tok}"},
+                    json={"buildId": b1["id"], "status": "succeeded", "result": {"image": "arm-img"}},
+                )
+
+                # 3) Second build of acme/git-arm-svc routes to linux/arm64 IMMEDIATELY at queue time (zero handoff)!
+                b2 = client.post(
+                    "/v1/builds",
+                    headers=hdr,
+                    json={"repository": "acme/git-arm-svc", "ref": "main", "deploy": False},
+                ).json()["build"]
+                self.assertEqual(b2["platforms"], ["linux/arm64"])
+
+    def test_ci_commit_sha_supersede_and_out_of_order_deploy_rollback_protection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = create_app(
+                data_dir=Path(tmp) / "data",
+                admin_token=ADMIN_TOKEN,
+                control_url="https://luma.example.com",
+                control_deploy_token="ctl-tok",
+                default_registry_host="100.66.177.70:5000",
+                affinity_wait_seconds=0,
+                start_worker=False,
+            )
+            client = TestClient(app)
+            hdr = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+            r_slow = client.post("/v1/runners/tokens", headers=hdr, json={"name": "slow-home", "weight": 50}).json()["runner"]["runnerToken"]
+            r_fast = client.post("/v1/runners/tokens", headers=hdr, json={"name": "fast-cloud", "weight": 200}).json()["runner"]["runnerToken"]
+
+            sha1 = "1" * 40
+            sha2 = "2" * 40
+            # 1) Default supersede=True: sequential 40-hex commit SHAs for deploy=True supersede older queued SHA!
+            c1 = client.post("/v1/builds", headers=hdr, json={"repository": "acme/api", "ref": sha1, "deploy": True}).json()["build"]["id"]
+            # A --no-deploy PR check must NOT cancel an active deploy=True build
+            c_pr = client.post("/v1/builds", headers=hdr, json={"repository": "acme/api", "ref": sha1, "deploy": False}).json()["build"]["id"]
+            self.assertEqual(client.get(f"/v1/builds/{c1}", headers=hdr).json()["build"]["status"], "queued")
+            self.assertEqual(client.get(f"/v1/builds/{c_pr}", headers=hdr).json()["build"]["status"], "queued")
+            # Next CI push sha2 (deploy=True) supersedes c1 (deploy=True), leaving c_pr (deploy=False) intact!
+            c2 = client.post("/v1/builds", headers=hdr, json={"repository": "acme/api", "ref": sha2, "deploy": True}).json()["build"]["id"]
+            self.assertEqual(client.get(f"/v1/builds/{c1}", headers=hdr).json()["build"]["status"], "canceled")
+            self.assertEqual(client.get(f"/v1/builds/{c_pr}", headers=hdr).json()["build"]["status"], "queued")
+            client.post(f"/v1/builds/{c_pr}/cancel", headers=hdr)
+            client.post(f"/v1/builds/{c2}/cancel", headers=hdr)
+
+            # 2) Concurrent builds (supersede=False): fast newer build finishes & deploys BEFORE slow older build!
+            sha_old = "a" * 40
+            sha_new = "b" * 40
+            b_old = client.post(
+                "/v1/builds",
+                headers=hdr,
+                json={"repository": "acme/orders", "ref": sha_old, "runner": "slow-home", "supersede": False, "deploy": True},
+            ).json()["build"]["id"]
+            b_new = client.post(
+                "/v1/builds",
+                headers=hdr,
+                json={"repository": "acme/orders", "ref": sha_new, "runner": "fast-cloud", "supersede": False, "deploy": True},
+            ).json()["build"]["id"]
+
+            self.assertEqual(client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {r_slow}"}, json={"nativePlatform": "linux/amd64"}).json()["task"]["buildId"], b_old)
+            self.assertEqual(client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {r_fast}"}, json={"nativePlatform": "linux/amd64"}).json()["task"]["buildId"], b_new)
+
+            # Fast runner finishes b_new FIRST and deploys to production
+            client.post(
+                "/v1/runner/complete",
+                headers={"Authorization": f"Bearer {r_fast}"},
+                json={"buildId": b_new, "status": "succeeded", "result": {"kind": "service", "image": "img:new", "manifest": "name: orders\nregion: cn\n"}},
+            )
+            deployed_ids: list[str] = []
+
+            def fake_deploy(**kwargs):
+                deployed_ids.append(str(kwargs["build_record"]["id"]))
+                return {"service": "orders", "revision": len(deployed_ids)}
+
+            with patch.object(app.state.deployer, "deploy_built_artifact", side_effect=fake_deploy):
+                self.assertTrue(app.state.deploy_worker.run_pending_once())
+            self.assertEqual(deployed_ids, [b_new])
+            self.assertEqual(client.get(f"/v1/builds/{b_new}", headers=hdr).json()["build"]["status"], "succeeded")
+
+            # Slow runner finishes b_old 60s LATER -> must be skipped (NEVER roll back b_new)!
+            client.post(
+                "/v1/runner/complete",
+                headers={"Authorization": f"Bearer {r_slow}"},
+                json={"buildId": b_old, "status": "succeeded", "result": {"kind": "service", "image": "img:old", "manifest": "name: orders\nregion: cn\n"}},
+            )
+            with patch.object(app.state.deployer, "deploy_built_artifact", side_effect=fake_deploy):
+                self.assertFalse(app.state.deploy_worker.run_pending_once())
+            self.assertEqual(deployed_ids, [b_new])
+            old_final = client.get(f"/v1/builds/{b_old}", headers=hdr).json()["build"]
+            self.assertEqual(old_final["status"], "canceled")
+            self.assertEqual(old_final["supersededBy"], b_new)
+
+            # Intentional manual rollback submitted AFTER b_new (higher seq) MUST deploy cleanly!
+            b_manual_rollback = client.post(
+                "/v1/builds",
+                headers=hdr,
+                json={"repository": "acme/orders", "ref": sha_old, "runner": "fast-cloud", "deploy": True},
+            ).json()["build"]["id"]
+            client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {r_fast}"}, json={"nativePlatform": "linux/amd64"})
+            client.post(
+                "/v1/runner/complete",
+                headers={"Authorization": f"Bearer {r_fast}"},
+                json={"buildId": b_manual_rollback, "status": "succeeded", "result": {"kind": "service", "image": "img:rollback", "manifest": "name: orders\nregion: cn\n"}},
+            )
+            with patch.object(app.state.deployer, "deploy_built_artifact", side_effect=fake_deploy):
+                self.assertTrue(app.state.deploy_worker.run_pending_once())
+            self.assertEqual(deployed_ids, [b_new, b_manual_rollback])
+
+    def test_retry_build_preserves_encrypted_env_secrets_after_build_or_deploy_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = create_app(
+                data_dir=Path(tmp) / "data",
+                admin_token=ADMIN_TOKEN,
+                control_url="https://luma.example.com",
+                control_deploy_token="ctl-tok",
+                default_registry_host="100.66.177.70:5000",
+                start_worker=False,
+            )
+            client = TestClient(app)
+            hdr = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+            rtok = client.post("/v1/runners/tokens", headers=hdr, json={"name": "r1"}).json()["runner"]["runnerToken"]
+
+            b1 = client.post(
+                "/v1/builds",
+                headers=hdr,
+                json={
+                    "repository": "acme/pay",
+                    "ref": "main",
+                    "runner": "r1",
+                    "envSecrets": {"STRIPE_SECRET": "sk_live_keep_me"},
+                },
+            ).json()["build"]["id"]
+            client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {rtok}"}, json={"nativePlatform": "linux/amd64"})
+            client.post(
+                "/v1/runner/complete",
+                headers={"Authorization": f"Bearer {rtok}"},
+                json={"buildId": b1, "status": "succeeded", "result": {"kind": "service", "image": "img:1", "manifest": "name: pay\nregion: cn\n"}},
+            )
+
+            # Simulate transient Control failure during deploy
+            with patch.object(app.state.deployer, "deploy_built_artifact", side_effect=BuildError("Control 503")):
+                self.assertTrue(app.state.deploy_worker.run_pending_once())
+            self.assertEqual(client.get(f"/v1/builds/{b1}", headers=hdr).json()["build"]["status"], "failed")
+
+            # Retry from dashboard/CLI without re-uploading .env -> envSecrets MUST survive!
+            b2 = client.post(f"/v1/builds/{b1}/retry", headers=hdr, json={}).json()["build"]["id"]
+            client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {rtok}"}, json={"nativePlatform": "linux/amd64"})
+            client.post(
+                "/v1/runner/complete",
+                headers={"Authorization": f"Bearer {rtok}"},
+                json={"buildId": b2, "status": "succeeded", "result": {"kind": "service", "image": "img:2", "manifest": "name: pay\nregion: cn\n"}},
+            )
+            captured_secrets: dict = {}
+
+            def ok_deploy(**kwargs):
+                captured_secrets.update(kwargs["env_secrets"] or {})
+                return {"service": "pay", "revision": 2}
+
+            with patch.object(app.state.deployer, "deploy_built_artifact", side_effect=ok_deploy):
+                self.assertTrue(app.state.deploy_worker.run_pending_once())
+            self.assertEqual(captured_secrets, {"STRIPE_SECRET": "sk_live_keep_me"})
+
+    def test_monorepo_cache_variants_and_cloud_registry_no_proxy(self) -> None:
+        # Default single-service repo keeps existing tag unchanged
+        self.assertEqual(derive_cache_variant(single_service=True), "")
+        # Distinct monorepo manifests & sidecars produce non-colliding cache variants
+        v_api = derive_cache_variant(manifest_path="luma.prod.api.yml", context="apps/api", single_service=True)
+        v_worker = derive_cache_variant(manifest_path="luma.prod.worker.yml", context="apps/worker", single_service=True)
+        self.assertNotEqual(v_api, v_worker)
+        self.assertNotEqual(
+            format_cache_reference(push_host="crpi-x.cn-beijing.personal.cr.aliyuncs.com", repo_slug="acme/mono", service_name=v_api, namespace="luma"),
+            format_cache_reference(push_host="crpi-x.cn-beijing.personal.cr.aliyuncs.com", repo_slug="acme/mono", service_name=v_worker, namespace="luma"),
+        )
+        c_bill = derive_cache_variant(compose_sidecar="apps/billing/luma.billing.compose.yml", service_name="web", single_service=True)
+        c_crm = derive_cache_variant(compose_sidecar="apps/crm/luma.crm.compose.yml", service_name="web", single_service=True)
+        self.assertNotEqual(c_bill, c_crm)
+
+        # Aliyun ACR automatically adds .aliyuncs.com so 307 OSS layer redirects bypass Mihomo!
+        acr_entries = registry_no_proxy_entries("crpi-x.cn-beijing.personal.cr.aliyuncs.com")
+        self.assertIn(".aliyuncs.com", acr_entries)
+        merged = merge_no_proxy("100.64.0.0/10,git.corp.internal", *acr_entries)
+        self.assertTrue(_url_bypasses_proxy("https://bucket.oss-cn-beijing.aliyuncs.com/layer", merged))
+        self.assertTrue(_url_bypasses_proxy("http://100.66.177.70:3000/org/repo.git", merged))
+        self.assertTrue(_url_bypasses_proxy("https://git.corp.internal/org/repo.git", merged))
+        self.assertFalse(_url_bypasses_proxy("https://github.com/org/repo.git", merged))
+
+        # _clone_repo strips HTTP_PROXY when cloning a Tailscale/bypassed Git URL
+        import subprocess as sp
+
+        seen_envs: list[dict] = []
+
+        def fake_git_run(cmd, **kwargs):
+            seen_envs.append(dict(kwargs.get("env") or {}))
+            return sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp, patch("luma_build.runner.subprocess.run", side_effect=fake_git_run), patch(
+            "luma_build.runner.subprocess.check_output", side_effect=["abcdef123456\n", "a" * 40 + "\n"]
+        ):
+            _clone_repo(
+                repo_url="http://100.66.177.70:3000/acme/internal.git",
+                ref="main",
+                dest=Path(tmp) / "repo",
+                git_auth=None,
+                proxy="http://127.0.0.1:7890",
+                no_proxy=merged,
+            )
+        self.assertNotIn("HTTP_PROXY", seen_envs[0])
+        self.assertIn(".aliyuncs.com", seen_envs[0]["NO_PROXY"])
 
 
 if __name__ == "__main__":

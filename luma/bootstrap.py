@@ -40,7 +40,11 @@ DEFAULT_EGRESS_IMAGE = "docker.1panel.live/metacubex/mihomo:latest"
 DEFAULT_CONTROL_IMAGE = "ghcr.io/liutianjie/luma-control:latest"
 CONTROL_IMAGE_PULL_RETRY_DELAYS = (2, 4, 8, 12, 20)
 EGRESS_PROXY_URL = "http://127.0.0.1:7890"
-EGRESS_NO_PROXY = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,docker.1panel.live,docker.m.daocloud.io,docker.1ms.run"
+EGRESS_NO_PROXY = (
+    "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,"
+    "docker.1panel.live,docker.m.daocloud.io,docker.1ms.run,"
+    ".aliyuncs.com,.myqcloud.com,.volces.com,.myhuaweicloud.com"
+)
 DEFAULT_EGRESS_PULL_REGISTRIES = {
     "docker.io",
     "registry-1.docker.io",

@@ -19,22 +19,64 @@ from typing import Any, Callable
 import yaml
 
 from .errors import BuildError
-from .scheduler import parse_platforms
+from .scheduler import normalize_platform, parse_platforms
+
+
+def extract_manifest_target_hints(manifest_text: str) -> dict[str, list[str]]:
+    """Extract explicit build platforms and target node/region placement from a manifest."""
+    empty: dict[str, list[str]] = {"platforms": [], "nodes": [], "regions": []}
+    if not manifest_text or not manifest_text.strip():
+        return empty
+    try:
+        data = yaml.safe_load(manifest_text)
+    except yaml.YAMLError:
+        return empty
+    if not isinstance(data, dict):
+        return empty
+
+    platforms: list[str] = []
+    nodes: list[str] = []
+    regions: list[str] = []
+
+    def _add_platforms(raw: Any) -> None:
+        if not raw:
+            return
+        for plat in parse_platforms(raw):
+            if plat not in platforms:
+                platforms.append(plat)
+
+    build_block = data.get("build") if isinstance(data.get("build"), dict) else {}
+    _add_platforms(build_block.get("platforms") or build_block.get("platform"))
+
+    top_node = str(data.get("node") or "").strip()
+    top_region = str(data.get("region") or "").strip()
+    services = data.get("services")
+    if isinstance(services, dict) and services:
+        for svc in services.values():
+            if not isinstance(svc, dict):
+                continue
+            _add_platforms(svc.get("platform"))
+            svc_build = svc.get("build") if isinstance(svc.get("build"), dict) else {}
+            _add_platforms(svc_build.get("platforms") or svc_build.get("platform"))
+            eff_node = str(svc.get("node") or top_node).strip()
+            eff_region = str(svc.get("region") or top_region).strip()
+            if eff_node:
+                if eff_node not in nodes:
+                    nodes.append(eff_node)
+            elif eff_region and eff_region not in regions:
+                regions.append(eff_region)
+    else:
+        if top_node:
+            nodes.append(top_node)
+        elif top_region:
+            regions.append(top_region)
+
+    return {"platforms": platforms, "nodes": nodes, "regions": regions}
 
 
 def extract_manifest_platforms(manifest_text: str) -> list[str]:
     """Extract explicit ``build.platforms`` / ``build.platform`` from an attached manifest."""
-    if not manifest_text or not manifest_text.strip():
-        return []
-    try:
-        data = yaml.safe_load(manifest_text)
-    except yaml.YAMLError:
-        return []
-    if not isinstance(data, dict):
-        return []
-    build_block = data.get("build") if isinstance(data.get("build"), dict) else {}
-    raw_plat = build_block.get("platforms") or build_block.get("platform")
-    return parse_platforms(raw_plat) if raw_plat else []
+    return extract_manifest_target_hints(manifest_text)["platforms"]
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -135,6 +177,9 @@ class ControlDeployClient:
         self.endpoint = clean
         self.deploy_token = str(deploy_token or "").strip()
         self.insecure = insecure
+        self._placement_lock = threading.Lock()
+        self._placement_cache: dict[str, Any] = {}
+        self._placement_cached_at = 0.0
 
     @property
     def configured(self) -> bool:
@@ -142,6 +187,97 @@ class ControlDeployClient:
 
     def _opener(self) -> urllib.request.OpenerDirector:
         return _standard_opener(insecure=self.insecure)
+
+    def cluster_placement_platforms(self, *, ttl_seconds: float = 15.0) -> dict[str, Any]:
+        """Query Luma Control ``GET /v1/status`` for target node and region platforms."""
+        empty: dict[str, Any] = {"nodes": {}, "regions": {}}
+        if not self.configured:
+            return empty
+        now = time.monotonic()
+        with self._placement_lock:
+            if self._placement_cache and (now - self._placement_cached_at) < max(ttl_seconds, 0.0):
+                return self._placement_cache
+        try:
+            payload = self.request_json("GET", "/v1/status", timeout=4)
+        except Exception:
+            with self._placement_lock:
+                self._placement_cache = empty
+                self._placement_cached_at = time.monotonic() - max(ttl_seconds - 5.0, 0.0)
+            return empty
+
+        nodes_block = payload.get("nodes") if isinstance(payload.get("nodes"), dict) else {}
+        items = nodes_block.get("items") if isinstance(nodes_block.get("items"), list) else []
+        by_node: dict[str, str] = {}
+        ready_by_region: dict[str, set[str]] = {}
+        all_by_region: dict[str, set[str]] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            raw_plat = str(item.get("nativePlatform") or "").strip()
+            if not raw_plat:
+                os_name = str(item.get("agentOs") or "").strip().lower()
+                arch = str(item.get("agentArch") or "").strip().lower()
+                if os_name == "darwin":
+                    os_name = "linux"
+                if os_name and arch:
+                    raw_plat = f"{os_name}/{arch}"
+            if not raw_plat:
+                continue
+            try:
+                plat = normalize_platform(raw_plat)
+            except BuildError:
+                continue
+            if not plat:
+                continue
+
+            aliases = [
+                item.get("name"),
+                item.get("displayName"),
+                item.get("hostname"),
+                *(item.get("aliases") if isinstance(item.get("aliases"), list) else []),
+            ]
+            for alias in aliases:
+                clean_alias = str(alias or "").strip().lower()
+                if clean_alias:
+                    by_node[clean_alias] = plat
+
+            region = str(item.get("region") or "").strip().lower()
+            if region:
+                all_by_region.setdefault(region, set()).add(plat)
+                agent_status = str(item.get("agentStatus") or "").strip().lower()
+                if agent_status in {"online", "ready", ""}:
+                    ready_by_region.setdefault(region, set()).add(plat)
+
+        by_region = {
+            reg: sorted(ready_by_region.get(reg) or plats)
+            for reg, plats in sorted(all_by_region.items())
+        }
+        snapshot = {"nodes": by_node, "regions": by_region}
+        with self._placement_lock:
+            self._placement_cache = snapshot
+            self._placement_cached_at = time.monotonic()
+        return snapshot
+
+    def infer_platforms_for_placement(
+        self,
+        *,
+        nodes: list[str] | None = None,
+        regions: list[str] | None = None,
+        placement: dict[str, Any] | None = None,
+    ) -> list[str]:
+        snap = placement if isinstance(placement, dict) else self.cluster_placement_platforms()
+        by_node = snap.get("nodes") if isinstance(snap.get("nodes"), dict) else {}
+        by_region = snap.get("regions") if isinstance(snap.get("regions"), dict) else {}
+        resolved: list[str] = []
+        for n in nodes or []:
+            plat = by_node.get(str(n or "").strip().lower())
+            if plat and plat not in resolved:
+                resolved.append(plat)
+        for r in regions or []:
+            for plat in by_region.get(str(r or "").strip().lower()) or []:
+                if plat and plat not in resolved:
+                    resolved.append(plat)
+        return resolved
 
     def request_json(self, method: str, path: str, body: dict[str, Any] | None = None, *, timeout: int = 30) -> dict[str, Any]:
         if not self.configured:
@@ -196,6 +332,10 @@ class ControlDeployClient:
                 raise BuildError("luma.compose.yml must be a YAML mapping")
             if request.get("region"):
                 sidecar["region"] = request["region"]
+            if request.get("node") and isinstance(sidecar.get("services"), dict):
+                for svc in sidecar["services"].values():
+                    if isinstance(svc, dict):
+                        svc["node"] = request["node"]
             body: dict[str, Any] = {
                 "manifest": yaml.safe_dump(sidecar, sort_keys=False, allow_unicode=False),
                 "composeContent": compose_content,

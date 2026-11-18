@@ -2469,7 +2469,11 @@ def _execute_agent_task_impl(
         proxy = str(payload.get("proxy") or "http://127.0.0.1:7890")
         no_proxy = str(
             payload.get("noProxy")
-            or "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,docker.1panel.live,docker.m.daocloud.io,docker.1ms.run"
+            or (
+                "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,"
+                "docker.1panel.live,docker.m.daocloud.io,docker.1ms.run,"
+                ".aliyuncs.com,.myqcloud.com,.volces.com,.myhuaweicloud.com"
+            )
         )
         return configure_docker_egress_proxy(proxy=proxy, no_proxy=no_proxy)
     if action == "resolve-docker-image":
@@ -3963,7 +3967,13 @@ def _docker_buildx_build(
         raise TaskCanceled("build-image task canceled")
     tag_sha = f"{push_host}/{repo}:{sha}"
     tag_latest = f"{push_host}/{repo}:latest"
-    no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
+    from .control.resources import _merge_no_proxy, _no_proxy_entries_for_registry
+
+    no_proxy = _merge_no_proxy(
+        "localhost,127.0.0.1,::1,100.64.0.0/10",
+        *_no_proxy_entries_for_registry(push_host),
+        *_no_proxy_entries_for_registry(registry_host),
+    )
     env = _buildx_environment(
         docker_config, buildx_config_root=buildx_config_root
     )
@@ -4355,7 +4365,13 @@ def _build_compose_images(
     if plan is not None:
         return plan
 
-    no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
+    from .control.resources import _merge_no_proxy, _no_proxy_entries_for_registry
+
+    no_proxy = _merge_no_proxy(
+        "localhost,127.0.0.1,::1,100.64.0.0/10",
+        *_no_proxy_entries_for_registry(push_host),
+        *_no_proxy_entries_for_registry(registry_host),
+    )
     buildx_env = _buildx_environment(
         docker_config, buildx_config_root=buildx_config_root
     )
@@ -4613,7 +4629,13 @@ def build_image(
         # CLI/daemon proxy), and the BuildKit container itself (set at builder
         # creation in _ensure_buildx_builder). Keep the in-cluster registry and
         # localhost out of the proxy so --push stays on the internal network.
-        no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
+        from .control.resources import _merge_no_proxy, _no_proxy_entries_for_registry
+
+        no_proxy = _merge_no_proxy(
+            "localhost,127.0.0.1,::1,100.64.0.0/10",
+            *_no_proxy_entries_for_registry(push_host),
+            *_no_proxy_entries_for_registry(registry_host),
+        )
         buildx_env = _buildx_environment(docker_config)
         builder = _ensure_buildx_builder(
             docker,

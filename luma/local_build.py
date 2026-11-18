@@ -24,6 +24,7 @@ from .agent import (
 )
 from .errors import LumaError
 from .build_capabilities import NATIVE_ARM_BUILD_CAPABILITY
+from .control.resources import _merge_no_proxy, _no_proxy_entries_for_registry
 from .registry_access import registry_host_allows_http
 from .service import build_target
 
@@ -266,7 +267,10 @@ def build_and_push_local_source(
         builder = selected_builder or _ensure_buildx_builder(
             docker,
             proxy=local_proxy,
-            no_proxy=f"localhost,127.0.0.1,::1,{registry_host}",
+            no_proxy=_merge_no_proxy(
+                "localhost,127.0.0.1,::1,100.64.0.0/10",
+                *_no_proxy_entries_for_registry(registry_host),
+            ),
             registry_host=registry_host,
             insecure=resolved_insecure,
             env=buildx_env,

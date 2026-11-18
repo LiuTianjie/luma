@@ -26,11 +26,11 @@ def _repo_key(value: str) -> str:
 
 def _recipe_repo(state: dict[str, Any], recipe: dict[str, Any]) -> str:
     fields = comparison_fields(recipe)
-    url = fields.get("repo", "") or fields.get("repo_url", "")
-    if url:
+    url = fields.get("repo", "") or fields.get("source", "") or fields.get("repo_url", "")
+    if url and ("://" in url or url.startswith("git@") or not fields.get("provider_id")):
         return _repo_key(url)
     provider_id = fields.get("provider_id", "")
-    repository = fields.get("repository", "")
+    repository = fields.get("repository", "") or fields.get("source", "")
     if provider_id and repository:
         provider = (state.get("gitProviders") or {}).get(provider_id) or {}
         base = provider.get("baseUrl") or ("https://github.com" if provider_id.startswith("github:") else "")
@@ -73,9 +73,11 @@ def handle_workflow_check(token: str, body: dict[str, Any]) -> dict[str, Any]:
     if len(records) > 1:
         # A monorepo may deliberately use different workflows per Compose sidecar.
         fields = comparison_fields(recipe)
-        sidecar = fields.get("compose_sidecar") or fields.get("sidecar")
+        sidecar = fields.get("compose_sidecar") or fields.get("sidecar") or fields.get("manifest_path")
         matches = [row for row in records if sidecar and sidecar == (
-            comparison_fields(row["recipe"]).get("compose_sidecar") or comparison_fields(row["recipe"]).get("sidecar")
+            comparison_fields(row["recipe"]).get("compose_sidecar")
+            or comparison_fields(row["recipe"]).get("sidecar")
+            or comparison_fields(row["recipe"]).get("manifest_path")
         )]
         if len(matches) == 1:
             records = matches
@@ -88,7 +90,7 @@ def handle_workflow_check(token: str, body: dict[str, Any]) -> dict[str, Any]:
     after = comparison_fields(recipe)
     # Provider-backed and URL-backed imports can name the same repository.
     for fields, candidate, fallback_repo in ((before, previous["recipe"], previous.get("repoKey", "")), (after, recipe, selector["repoKey"])):
-        for key in ("provider_id", "repository", "repo", "repo_url"):
+        for key in ("provider_id", "repository", "repo", "source", "repo_url"):
             fields.pop(key, None)
         fields["repository"] = _recipe_repo(state, candidate) or fallback_repo
     differences = [

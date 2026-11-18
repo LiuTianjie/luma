@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+import ipaddress
 import json
 import os
 import platform as py_platform
@@ -38,13 +39,17 @@ from typing import Any, Callable, Iterator, Mapping
 import yaml
 
 from . import __version__
-from .deployer import _NoRedirectHandler
+from .deployer import _NoRedirectHandler, extract_manifest_target_hints
 from .errors import BuildCanceled, BuildError
 from .registry_naming import (
+    DEFAULT_BASE_NO_PROXY,
+    derive_cache_variant,
     format_cache_reference,
     format_image_repository,
+    merge_no_proxy,
     normalize_registry_host,
     normalize_repo_url,
+    registry_no_proxy_entries,
     validate_git_ref,
 )
 from .scheduler import normalize_platform, parse_platforms, required_native_arm_platform
@@ -53,6 +58,42 @@ ORBSTACK_XBIN = "/Applications/OrbStack.app/Contents/MacOS/xbin"
 DOCKER_APP_BIN = "/Applications/Docker.app/Contents/Resources/bin"
 _BUILDX_COND = threading.Condition()
 _ACTIVE_BUILDER_JOBS: dict[str, int] = {}
+
+
+class PlatformRequeueRequired(BuildError):
+    """Raised when the cloned repository manifest targets a different native runner platform."""
+
+    def __init__(self, platforms: list[str]) -> None:
+        self.platforms = platforms
+        super().__init__(f"manifest requires native {', '.join(platforms)} runner")
+
+
+def _url_bypasses_proxy(url: str, no_proxy: str) -> bool:
+    if not url or not no_proxy:
+        return False
+    parsed = urllib.parse.urlsplit(url if "://" in url else "ssh://" + url.replace(":", "/", 1))
+    host = (parsed.hostname or "").strip("[]").lower()
+    if not host:
+        return False
+    host_ip = None
+    with contextlib.suppress(ValueError):
+        host_ip = ipaddress.ip_address(host)
+    for raw_item in no_proxy.split(","):
+        entry = raw_item.strip().lower()
+        if not entry:
+            continue
+        if entry == "*":
+            return True
+        if "/" in entry and host_ip is not None:
+            with contextlib.suppress(ValueError):
+                net = ipaddress.ip_network(entry, strict=False)
+                if host_ip.version == net.version and host_ip in net:
+                    return True
+            continue
+        entry_host = entry.rsplit(":", 1)[0] if (":" in entry and not entry.startswith("[")) else entry.strip("[]")
+        if host == entry_host or (entry_host.startswith(".") and host.endswith(entry_host)) or host.endswith("." + entry_host):
+            return True
+    return False
 
 
 def find_docker_binary() -> str:
@@ -164,16 +205,25 @@ def _clone_repo(
     dest: Path,
     git_auth: dict[str, str] | None,
     proxy: str = "",
+    no_proxy: str = "",
 ) -> tuple[str, str]:
     safe_url = normalize_repo_url(repo_url)
     safe_ref = validate_git_ref(ref)
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_TRACE")}
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GIT_CONFIG_NOSYSTEM"] = "1"
-    if proxy:
+    if proxy and not _url_bypasses_proxy(safe_url, no_proxy):
         env["HTTP_PROXY"] = proxy
         env["HTTPS_PROXY"] = proxy
         env["ALL_PROXY"] = proxy
+        if no_proxy:
+            env["NO_PROXY"] = no_proxy
+            env["no_proxy"] = no_proxy
+    elif no_proxy and _url_bypasses_proxy(safe_url, no_proxy):
+        for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            env.pop(k, None)
+        env["NO_PROXY"] = no_proxy
+        env["no_proxy"] = no_proxy
 
     git_base = [
         "git",
@@ -359,6 +409,7 @@ def _prepare_git_contexts(
     workspace: Path,
     git_auth: dict[str, str] | None,
     proxy: str,
+    no_proxy: str = "",
     on_line: Callable[[str], None] | None,
     cancel_event: threading.Event,
 ) -> dict[str, Path]:
@@ -405,6 +456,7 @@ def _prepare_git_contexts(
                 dest=cloned,
                 git_auth=git_auth,
                 proxy=proxy,
+                **({"no_proxy": no_proxy} if (proxy and no_proxy) else {}),
             )
             if got_full != ctx_commit:
                 raise BuildError(f"Git context {alias} checkout commit mismatch")
@@ -849,6 +901,81 @@ def _terminate_process_group(proc: subprocess.Popen[str]) -> None:
             pass
 
 
+def _resolve_post_clone_platforms(
+    task: Mapping[str, Any],
+    *,
+    manifest_text: str,
+    compose_data: Mapping[str, Any] | None = None,
+    fallback: list[str],
+) -> list[str]:
+    if task.get("platformExplicit"):
+        return fallback
+
+    hints = extract_manifest_target_hints(manifest_text)
+    explicit: list[str] = list(hints["platforms"])
+    if isinstance(compose_data, Mapping) and isinstance(compose_data.get("services"), Mapping):
+        for svc in compose_data["services"].values():
+            if not isinstance(svc, Mapping):
+                continue
+            raw_svc_plat = svc.get("platform")
+            if raw_svc_plat:
+                for p in parse_platforms(raw_svc_plat):
+                    if p not in explicit:
+                        explicit.append(p)
+            raw_b = svc.get("build")
+            if isinstance(raw_b, Mapping):
+                b_plat = raw_b.get("platforms") or raw_b.get("platform")
+                if b_plat:
+                    for p in parse_platforms(b_plat):
+                        if p not in explicit:
+                            explicit.append(p)
+    if explicit:
+        return explicit
+
+    node_map = task.get("nodePlatforms") if isinstance(task.get("nodePlatforms"), Mapping) else {}
+    region_map = task.get("regionPlatforms") if isinstance(task.get("regionPlatforms"), Mapping) else {}
+    req_node = str(task.get("node") or "").strip()
+    req_region = str(task.get("region") or "").strip()
+    target_nodes = [req_node] if req_node else hints["nodes"]
+    target_regions = [] if target_nodes else ([req_region] if req_region else hints["regions"])
+    inferred: list[str] = []
+    for n in target_nodes:
+        plat = str(node_map.get(n.strip().lower()) or "")
+        if plat and plat not in inferred:
+            inferred.append(plat)
+    for r in target_regions:
+        for plat in region_map.get(r.strip().lower()) or []:
+            if plat and plat not in inferred:
+                inferred.append(plat)
+    return inferred or fallback
+
+
+def _check_runner_platform_compatibility(
+    platforms: list[str],
+    *,
+    native_platform: str,
+    task: Mapping[str, Any],
+) -> None:
+    arm_needed = required_native_arm_platform(platforms)
+    compatible = (
+        (native_platform == arm_needed)
+        if arm_needed
+        else (len(platforms) != 1 or native_platform == platforms[0])
+    )
+    if compatible:
+        return
+    if task.get("pinnedRunner") or int(task.get("requeueCount") or 0) >= 1:
+        if arm_needed:
+            raise BuildError(
+                f"ARM build requires native {arm_needed} engine, but runner has {native_platform}; "
+                "ARM QEMU emulation is disabled"
+            )
+        raise BuildError(
+            f"build requires native {platforms[0]} engine, but runner has {native_platform}"
+        )
+    raise PlatformRequeueRequired(platforms)
+
+
 def execute_build_task(
     task: dict[str, Any],
     *,
@@ -856,6 +983,7 @@ def execute_build_task(
     native_platform: str,
     buildx_state_dir: Path,
     local_proxy: str = "",
+    local_no_proxy: str = "",
     cache_keep_gb: int = 20,
     max_parallelism: int = 0,
     on_line: Callable[[str], None] | None = None,
@@ -888,7 +1016,14 @@ def execute_build_task(
         http_hosts.append(push_host)
     if pull_insecure:
         http_hosts.append(pull_host)
-    no_proxy = ",".join(dict.fromkeys(["localhost", "127.0.0.1", "::1", "100.64.0.0/10", push_host, pull_host]))
+    no_proxy = merge_no_proxy(
+        DEFAULT_BASE_NO_PROXY,
+        os.environ.get("NO_PROXY", ""),
+        os.environ.get("no_proxy", ""),
+        local_no_proxy,
+        *registry_no_proxy_entries(push_host),
+        *registry_no_proxy_entries(pull_host),
+    )
 
     with tempfile.TemporaryDirectory(prefix="luma-build-job-") as tmp_raw:
         tmp = Path(tmp_raw)
@@ -905,9 +1040,41 @@ def execute_build_task(
             dest=src_dir,
             git_auth=task.get("gitAuth"),
             proxy=local_proxy,
+            **({"no_proxy": no_proxy} if (local_proxy or local_no_proxy) else {}),
         )
         if cancel.is_set():
             raise BuildCanceled("build canceled")
+
+        discovered = _discover_manifest(
+            src_dir,
+            compose_sidecar=str(task.get("composeSidecar") or ""),
+            manifest_path=str(task.get("manifestPath") or ""),
+        )
+        pre_compose_data: dict[str, Any] | None = None
+        if discovered and discovered[0] == "compose":
+            manifest_text = discovered[1].read_text(encoding="utf-8")
+            sidecar_preview = yaml.safe_load(manifest_text) or {}
+            if isinstance(sidecar_preview, dict):
+                c_rel = str(sidecar_preview.get("compose") or "docker-compose.yml")
+                c_path = (discovered[1].parent / c_rel).resolve()
+                if (src_dir.resolve() in c_path.parents or c_path == src_dir.resolve()) and c_path.is_file():
+                    loaded_compose = yaml.safe_load(c_path.read_text(encoding="utf-8")) or {}
+                    if isinstance(loaded_compose, dict):
+                        pre_compose_data = loaded_compose
+        else:
+            manifest_text = discovered[1].read_text(encoding="utf-8") if discovered else str(task.get("manifest") or "")
+
+        platforms = _resolve_post_clone_platforms(
+            task,
+            manifest_text=manifest_text,
+            compose_data=pre_compose_data,
+            fallback=platforms,
+        )
+        _check_runner_platform_compatibility(
+            platforms,
+            native_platform=native_platform,
+            task=task,
+        )
 
         tag = f"{short_sha}-{os.urandom(4).hex()}"
         with _use_runner_buildx(
@@ -920,11 +1087,6 @@ def execute_build_task(
             cache_keep_gb=cache_keep_gb,
             max_parallelism=max_parallelism,
         ) as builder_name:
-            discovered = _discover_manifest(
-                src_dir,
-                compose_sidecar=str(task.get("composeSidecar") or ""),
-                manifest_path=str(task.get("manifestPath") or ""),
-            )
             if discovered and discovered[0] == "compose":
                 return _build_compose_project(
                     src_dir=src_dir,
@@ -954,7 +1116,6 @@ def execute_build_task(
                     cancel=cancel,
                 )
 
-            manifest_text = discovered[1].read_text(encoding="utf-8") if discovered else str(task.get("manifest") or "")
             parsed = yaml.safe_load(manifest_text) if manifest_text.strip() else {}
             build_block = parsed.get("build") if isinstance(parsed, dict) and isinstance(parsed.get("build"), dict) else {}
 
@@ -977,9 +1138,17 @@ def execute_build_task(
                 namespace=namespace,
                 flatten=flatten,
             )
+            cache_variant = derive_cache_variant(
+                manifest_path=str(task.get("manifestPath") or ""),
+                context=ctx_rel,
+                dockerfile=df_rel,
+                target=target,
+                single_service=True,
+            )
             cache_ref = format_cache_reference(
                 push_host=push_host,
                 repo_slug=repo_slug,
+                service_name=cache_variant,
                 platform=platforms[0],
                 namespace=namespace,
             )
@@ -990,6 +1159,7 @@ def execute_build_task(
                 workspace=tmp,
                 git_auth=task.get("gitAuth"),
                 proxy=local_proxy,
+                no_proxy=no_proxy,
                 on_line=on_line,
                 cancel_event=cancel,
             )
@@ -1122,10 +1292,15 @@ def _build_compose_project(
             namespace=namespace,
             flatten=flatten,
         )
+        cache_variant = derive_cache_variant(
+            compose_sidecar=str(task.get("composeSidecar") or ""),
+            service_name=svc_name,
+            single_service=single_build,
+        )
         cache_ref = format_cache_reference(
             push_host=push_host,
             repo_slug=repo_slug,
-            service_name="" if single_build else svc_name,
+            service_name=cache_variant,
             platform=platforms[0],
             namespace=namespace,
         )
@@ -1139,6 +1314,7 @@ def _build_compose_project(
             workspace=tmp,
             git_auth=task.get("gitAuth"),
             proxy=proxy,
+            no_proxy=no_proxy,
             on_line=on_line,
             cancel_event=cancel,
         )
@@ -1208,6 +1384,7 @@ class RunnerDaemon:
         runner_token: str,
         state_dir: Path,
         local_proxy: str = "",
+        local_no_proxy: str = "",
         cache_mode: str = "",
         cache_keep_gb: int = 20,
         max_parallelism: int = 0,
@@ -1219,6 +1396,7 @@ class RunnerDaemon:
         self.runner_token = runner_token.strip()
         self.state_dir = Path(state_dir).expanduser()
         self.local_proxy = local_proxy.strip()
+        self.local_no_proxy = local_no_proxy.strip()
         self.cache_mode = cache_mode.strip()
         self.cache_keep_gb = cache_keep_gb
         self.max_parallelism = max_parallelism
@@ -1353,12 +1531,17 @@ class RunnerDaemon:
                 native_platform=self.native_platform,
                 buildx_state_dir=self.state_dir / "buildx",
                 local_proxy=self.local_proxy,
+                local_no_proxy=self.local_no_proxy,
                 cache_keep_gb=self.cache_keep_gb,
                 max_parallelism=self.max_parallelism,
                 on_line=lambda line: log_queue.put({"kind": "log", "line": line, "ts": int(time.time())}),
                 cancel_event=cancel_event,
             )
             message = f"Built and pushed {result.get('image') or ''}"
+        except PlatformRequeueRequired as exc:
+            status = "requeue"
+            result = {"requiredPlatforms": exc.platforms}
+            message = f"Manifest requires {','.join(exc.platforms)}; handing off from {self.native_platform} runner"
         except BuildCanceled as exc:
             status = "canceled"
             message = str(exc)

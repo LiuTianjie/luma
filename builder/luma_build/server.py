@@ -22,7 +22,7 @@ from .dashboard import FAVICON_SVG, render_dashboard_html
 from .deployer import (
     ControlAuthVerifier,
     ControlDeployClient,
-    extract_manifest_platforms,
+    extract_manifest_target_hints,
 )
 from .errors import BuildError
 from .scheduler import DEFAULT_AFFINITY_WAIT_SECONDS
@@ -506,9 +506,27 @@ def create_app(
                 body["port"] = _parse_int(body["port"], field="port", default=0)
 
             if not body.get("platform") and not body.get("platforms"):
-                manifest_platforms = extract_manifest_platforms(str(body.get("manifest") or ""))
-                if manifest_platforms:
-                    body["platforms"] = manifest_platforms
+                hints = extract_manifest_target_hints(str(body.get("manifest") or ""))
+                if hints["platforms"]:
+                    body["platforms"] = hints["platforms"]
+                    body["_platformExplicit"] = True
+                elif deployer.configured:
+                    placement = await run_in_threadpool(deployer.cluster_placement_platforms)
+                    body["_nodePlatforms"] = placement.get("nodes") or {}
+                    body["_regionPlatforms"] = placement.get("regions") or {}
+                    req_node = str(body.get("node") or "").strip()
+                    req_region = str(body.get("region") or "").strip()
+                    target_nodes = [req_node] if req_node else hints["nodes"]
+                    target_regions = [] if target_nodes else ([req_region] if req_region else hints["regions"])
+                    if target_nodes or target_regions:
+                        inferred = deployer.infer_platforms_for_placement(
+                            nodes=target_nodes,
+                            regions=target_regions,
+                            placement=placement,
+                        )
+                        if inferred:
+                            body["platforms"] = inferred
+                            body["_platformExplicit"] = True
             created = await run_in_threadpool(store.enqueue_build, body)
             notify_lease_waiters()
             if request.query_params.get("stream") in {"1", "true"}:
@@ -628,8 +646,11 @@ def create_app(
                     message=str(body.get("message") or ""),
                 )
             )
-            if (res.get("build") or {}).get("status") == "queued_deploy":
+            next_status = (res.get("build") or {}).get("status")
+            if next_status == "queued_deploy":
                 worker.notify()
+            elif next_status == "queued":
+                notify_lease_waiters()
             return _no_store_json({"ok": True, **res})
         except BuildError as exc:
             return error_response(exc)

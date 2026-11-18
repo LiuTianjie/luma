@@ -1,6 +1,7 @@
 """OCI registry naming, Aliyun ACR 2-level namespace flattening, and HTTP/HTTPS detection."""
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 import ipaddress
 import re
 import urllib.parse
@@ -12,6 +13,13 @@ _TAILSCALE_IPV6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 _NAMESPACE_RE = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 _SAFE_HOST_RE = re.compile(r"^(?:\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.-]+)(?::[0-9]{1,5})?$")
 _GIT_REF_INVALID_RE = re.compile(r"[\x00-\x20\x7f~^:?*\[\\]")
+CLOUD_REGISTRY_NO_PROXY_SUFFIXES = (
+    ".aliyuncs.com",
+    ".myqcloud.com",
+    ".volces.com",
+    ".myhuaweicloud.com",
+)
+DEFAULT_BASE_NO_PROXY = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10"
 
 
 def normalize_registry_host(value: str) -> str:
@@ -166,6 +174,100 @@ def format_image_repository(
 
     path = "/".join(segments)
     return f"{ns}/{path}" if ns else path
+
+
+def registry_no_proxy_entries(host: str) -> list[str]:
+    """Return NO_PROXY entries for an OCI registry, including cloud OSS redirect suffixes."""
+    normalized = normalize_registry_host(host)
+    parsed = urllib.parse.urlsplit("http://" + normalized)
+    bare = (parsed.hostname or "").lower()
+    entries = [normalized]
+    if bare and bare not in entries:
+        entries.append(bare)
+    for suffix in CLOUD_REGISTRY_NO_PROXY_SUFFIXES:
+        if bare.endswith(suffix) and suffix not in entries:
+            entries.append(suffix)
+    return entries
+
+
+def merge_no_proxy(*values: str) -> str:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        for item in str(raw or "").split(","):
+            entry = item.strip()
+            if not entry:
+                continue
+            key = entry.lower()
+            if key not in seen:
+                seen.add(key)
+                merged.append(entry)
+    return ",".join(merged)
+
+
+def derive_cache_variant(
+    *,
+    manifest_path: str = "",
+    compose_sidecar: str = "",
+    context: str = "",
+    dockerfile: str = "",
+    target: str = "",
+    service_name: str = "",
+    single_service: bool = True,
+) -> str:
+    """Disambiguate remote BuildKit cache tags for monorepos with multiple manifests/Dockerfiles."""
+    default_sidecars = {
+        "",
+        "luma.compose.yml",
+        "luma.compose.yaml",
+        ".luma.compose.yml",
+        ".luma.compose.yaml",
+        "docker-compose.luma.yml",
+        "docker-compose.luma.yaml",
+    }
+    clean_sidecar = compose_sidecar.strip().lstrip("/")
+    if clean_sidecar or not single_service:
+        parts: list[str] = []
+        if clean_sidecar and clean_sidecar not in default_sidecars:
+            stem = PurePosixPath(clean_sidecar).name
+            for ext in (".compose.yml", ".compose.yaml", ".yml", ".yaml"):
+                if stem.lower().endswith(ext):
+                    stem = stem[: -len(ext)]
+                    break
+            if stem:
+                parts.append(slugify_token(stem))
+        if service_name and (not single_service or parts):
+            parts.append(slugify_token(service_name))
+        return "-".join(parts)
+
+    clean_manifest = manifest_path.strip().lstrip("/")
+    clean_ctx = context.strip().strip("/")
+    clean_df = dockerfile.strip().lstrip("/")
+    clean_target = target.strip()
+    is_default = (
+        not clean_manifest
+        and clean_ctx in {"", "."}
+        and clean_df in {"", "Dockerfile"}
+        and not clean_target
+    )
+    if is_default:
+        return ""
+    tokens: list[str] = []
+    if clean_manifest:
+        mstem = PurePosixPath(clean_manifest).name
+        for ext in (".yml", ".yaml"):
+            if mstem.lower().endswith(ext):
+                mstem = mstem[: -len(ext)]
+                break
+        if mstem:
+            tokens.append(slugify_token(mstem))
+    if clean_ctx not in {"", "."}:
+        tokens.append(slugify_token(clean_ctx))
+    if clean_df not in {"", "Dockerfile"}:
+        tokens.append(slugify_token(clean_df))
+    if clean_target:
+        tokens.append(slugify_token(clean_target))
+    return "-".join(tokens)[:48].strip("-")
 
 
 def format_cache_reference(

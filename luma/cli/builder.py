@@ -207,6 +207,7 @@ def add_parser(
     commands_fn: Any,
     add_control_arguments: Any,
     add_output_arguments: Any,
+    add_workflow_arguments: Any = None,
 ) -> None:
     builder = command_fn(
         sub,
@@ -253,6 +254,8 @@ def add_parser(
     sub_p.add_argument("--no-deploy", action="store_true", help="Build and push image only without deploying to Luma Control")
     sub_p.add_argument("--no-cache", action="store_true", help="Disable BuildKit cache for this build")
     sub_p.add_argument("--detach", action="store_true", help="Return immediately after queueing the build")
+    if add_workflow_arguments is not None:
+        add_workflow_arguments(sub_p)
     _add_builder_client_options(sub_p, add_control_arguments, add_output_arguments)
 
     ls_p = command_fn(bsub, "list", "List recent remote builds on luma-build")
@@ -312,6 +315,12 @@ def add_parser(
         help="Local directory for persistent BuildKit builder metadata (default: ~/.luma-runner)",
     )
     run_p.add_argument("--proxy", default="", help="Optional local HTTP(S) proxy for git clone and base image pulls")
+    run_p.add_argument(
+        "--no-proxy",
+        dest="no_proxy",
+        default="",
+        help="Comma-separated hosts/CIDRs bypassing --proxy (or set LUMA_RUNNER_NO_PROXY)",
+    )
     run_p.add_argument(
         "--cache-mode",
         choices=("", "read-write", "read-only", "local-only"),
@@ -383,6 +392,7 @@ def cmd_builder(args: argparse.Namespace) -> int:
         if not url or not tok:
             raise LumaError("runner requires --url (or LUMA_BUILD_URL) and --token (or LUMA_RUNNER_TOKEN)")
         proxy = common._arg_text(args, "proxy") or common._env_text("LUMA_RUNNER_PROXY") or ""
+        no_proxy = common._arg_text(args, "no_proxy") or common._env_text("LUMA_RUNNER_NO_PROXY") or ""
         cache_mode = common._arg_text(args, "cache_mode") or common._env_text("LUMA_RUNNER_CACHE_MODE") or ""
         state_dir = Path(os.environ.get("LUMA_RUNNER_STATE_DIR") or args.state_dir)
         daemon = RunnerDaemon(
@@ -390,6 +400,7 @@ def cmd_builder(args: argparse.Namespace) -> int:
             runner_token=tok,
             state_dir=state_dir,
             local_proxy=proxy,
+            local_no_proxy=no_proxy,
             cache_mode=cache_mode,
             cache_keep_gb=int(os.environ.get("LUMA_RUNNER_CACHE_KEEP_GB") or args.cache_keep_gb),
             max_parallelism=int(os.environ.get("LUMA_RUNNER_MAX_PARALLELISM") or args.max_parallelism),
@@ -478,6 +489,19 @@ def cmd_builder(args: argparse.Namespace) -> int:
                 raise LumaError(f"deployment env file not found: {args.deploy_env_file}")
             body["envSecrets"] = parse_env_file(args.deploy_env_file)
 
+        ctl_client = None
+        workflow_requested = bool(
+            getattr(args, "workflow_app", "")
+            or getattr(args, "accept_workflow_change", False)
+            or getattr(args, "workflow_note", None) is not None
+        )
+        if workflow_requested and not args.no_deploy and not args.detach and not common._arg_text(args, "builder_url"):
+            from .builds import _workflow_finish, _workflow_prepare
+
+            ctl_url, ctl_token, ctl_insecure, ctl_resolve = common._control_context(args, require_token=True)
+            ctl_client = common.ControlClient(ctl_url, ctl_token, insecure=ctl_insecure, resolve_ip=ctl_resolve)
+            _workflow_prepare(args, ctl_client, repo_url=src if is_url else "")
+
         if args.detach:
             res = client.request("POST", "/v1/builds", body)
             if fmt != "text":
@@ -495,6 +519,17 @@ def cmd_builder(args: argparse.Namespace) -> int:
         )
         if final_build.get("status") != "succeeded":
             raise LumaError(str(final_build.get("message") or f"build {final_build.get('id')} {final_build.get('status')}"))
+        if ctl_client is not None:
+            res_block = final_build.get("result") if isinstance(final_build.get("result"), dict) else {}
+            dep_block = res_block.get("deployment") if isinstance(res_block.get("deployment"), dict) else {}
+            wf_payload: Dict[str, Any] = {
+                **dep_block,
+                "image": res_block.get("image"),
+                "buildId": str(final_build.get("id") or ""),
+            }
+            if wf_payload.get("revision") is not None:
+                wf_payload["revision"] = str(wf_payload["revision"])
+            _workflow_finish(args, ctl_client, wf_payload, name=str(getattr(args, "workflow_app", "") or ""))
         if fmt != "text":
             common._print_success(args, {"build": final_build})
         else:

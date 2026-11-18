@@ -2108,7 +2108,10 @@ class GithubImportTests(unittest.TestCase):
         self.assertEqual(run.call_count, 2)
         self.assertEqual(ensure.call_args.args, ("docker",))
         self.assertEqual(ensure.call_args.kwargs["proxy"], "http://127.0.0.1:7890")
-        self.assertEqual(ensure.call_args.kwargs["no_proxy"], "localhost,127.0.0.1,::1,localhost:5000,100.64.0.70:5000")
+        self.assertEqual(
+            ensure.call_args.kwargs["no_proxy"],
+            "localhost,127.0.0.1,::1,100.64.0.0/10,localhost:5000,100.64.0.70:5000,100.64.0.70",
+        )
         self.assertTrue(ensure.call_args.kwargs["recreate"])
         self.assertEqual(ensure.call_args.kwargs["env"]["DOCKER_CONFIG"], str(docker_config))
         self.assertEqual(ensure.call_args.kwargs["env"]["BUILDX_CONFIG"], str(root / "buildx"))

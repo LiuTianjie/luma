@@ -44,6 +44,10 @@ def _sha256_hex(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _is_commit_sha(ref: str) -> bool:
+    return bool(re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", str(ref or "").strip()))
+
+
 class BuildStore:
     def __init__(
         self,
@@ -180,6 +184,14 @@ class BuildStore:
                     runner_name TEXT NOT NULL,
                     updated_at INTEGER NOT NULL,
                     PRIMARY KEY(project_key, platform)
+                );
+
+                CREATE TABLE IF NOT EXISTS target_platforms (
+                    repo_slug TEXT NOT NULL,
+                    target_key TEXT NOT NULL,
+                    platforms_json TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(repo_slug, target_key)
                 );
 
                 CREATE TABLE IF NOT EXISTS counters (
@@ -610,7 +622,9 @@ class BuildStore:
         )
 
         default_plat = os.environ.get("LUMA_BUILD_DEFAULT_PLATFORM", "").strip() or "linux/amd64"
-        platforms = parse_platforms(body.get("platforms") or body.get("platform") or default_plat)
+        raw_explicit_plat = body.get("platforms") or body.get("platform")
+        platform_explicit = bool(body.get("_platformExplicit")) or bool(raw_explicit_plat)
+        platforms = parse_platforms(raw_explicit_plat or default_plat)
         pinned_runner = str(body.get("runner") or body.get("buildNode") or "").strip().lower()
         deploy_enabled = bool(body.get("deploy", True))
         compose_sidecar = str(body.get("composeSidecar") or "").strip()
@@ -639,18 +653,26 @@ class BuildStore:
                 raise BuildError(f"invalid build arg name: {k!r}")
             clean_build_args[key_str] = str(v)
 
+        region_override = str(body.get("region") or "").strip().lower()
+        node_override = str(body.get("node") or "").strip().lower()
+        domain_override = str(body.get("domain") or "").strip().lower()
+        placement_suffix = (
+            f"@r={region_override}|n={node_override}|d={domain_override}"
+            if (region_override or node_override or domain_override)
+            else ""
+        )
         explicit_app = str(body.get("appName") or "").strip().lower()
         if explicit_app:
-            target_key = f"app:{explicit_app}"
+            target_key = f"app:{explicit_app}{placement_suffix}"
         elif compose_sidecar:
-            target_key = f"compose:{compose_sidecar}"
+            target_key = f"compose:{compose_sidecar}{placement_suffix}"
         elif manifest_path:
-            target_key = f"manifest:{manifest_path}"
+            target_key = f"manifest:{manifest_path}{placement_suffix}"
         else:
             target_key = json.dumps(
                 ["service", context_rel or ".", dockerfile_rel or "Dockerfile", target_stage],
                 separators=(",", ":"),
-            )
+            ) + placement_suffix
         supersede = bool(body.get("supersede", True))
 
         env_secrets = body.get("envSecrets")
@@ -670,6 +692,10 @@ class BuildStore:
             "registryNamespace": namespace,
             "registryFlatten": flatten,
             "platforms": platforms,
+            "platformExplicit": platform_explicit,
+            "requeueCount": int(body.get("_requeueCount") or 0),
+            "nodePlatforms": body.get("_nodePlatforms") if isinstance(body.get("_nodePlatforms"), dict) else {},
+            "regionPlatforms": body.get("_regionPlatforms") if isinstance(body.get("_regionPlatforms"), dict) else {},
             "context": context_rel,
             "dockerfile": dockerfile_rel,
             "target": target_stage,
@@ -699,17 +725,48 @@ class BuildStore:
                 if not rrow or rrow["revoked"]:
                     raise BuildError(f"pinned runner is not registered or is revoked: {pinned_runner}")
 
+            if not platform_explicit:
+                trow = conn.execute(
+                    "SELECT platforms_json FROM target_platforms WHERE repo_slug = ? AND target_key = ?",
+                    (repo_slug, target_key),
+                ).fetchone()
+                if trow and trow["platforms_json"]:
+                    platforms = parse_platforms(json.loads(trow["platforms_json"]))
+                elif not os.environ.get("LUMA_BUILD_DEFAULT_PLATFORM", "").strip():
+                    runner_rows = conn.execute(
+                        "SELECT * FROM runners WHERE revoked = 0 ORDER BY weight DESC, name ASC"
+                    ).fetchall()
+                    online_plats = [
+                        normalize_platform(str(r["native_platform"] or ""))
+                        for r in runner_rows
+                        if runner_is_online(self._runner_public(r, now=now, active_slots=0), now=now)
+                    ]
+                    online_plats = [p for p in online_plats if p]
+                    if online_plats and platforms[0] not in online_plats:
+                        platforms = [online_plats[0]]
+                stored_request["platforms"] = platforms
+
             seq = self._next_seq(conn, "build_seq")
             if supersede:
                 older_rows = conn.execute(
                     """
-                    SELECT id, status FROM builds
-                    WHERE repo_slug = ? AND ref = ? AND target_key = ?
+                    SELECT id, ref, status, deploy_enabled FROM builds
+                    WHERE repo_slug = ? AND target_key = ?
                       AND status IN ('queued', 'building')
                     """,
-                    (repo_slug, ref, target_key),
+                    (repo_slug, target_key),
                 ).fetchall()
                 for older in older_rows:
+                    older_ref = str(older["ref"])
+                    older_deploy = bool(older["deploy_enabled"])
+                    if deploy_enabled:
+                        should_supersede = (older_ref == ref) or (
+                            older_deploy and _is_commit_sha(older_ref) and _is_commit_sha(ref)
+                        )
+                    else:
+                        should_supersede = (not older_deploy) and (older_ref == ref)
+                    if not should_supersede:
+                        continue
                     oid = str(older["id"])
                     if older["status"] == "queued":
                         conn.execute(
@@ -786,7 +843,7 @@ class BuildStore:
                 conn.execute(
                     """
                     UPDATE builds
-                    SET status = 'failed', message = ?, encrypted_env_secrets = '',
+                    SET status = 'failed', message = ?,
                         completed_at = ?, updated_at = ?
                     WHERE id = ?
                     """,
@@ -1021,8 +1078,8 @@ class BuildStore:
         message: str = "",
         now: int | None = None,
     ) -> dict[str, Any]:
-        if status not in {"succeeded", "failed", "canceled"}:
-            raise BuildError("runner completion status must be succeeded, failed, or canceled")
+        if status not in {"succeeded", "failed", "canceled", "requeue"}:
+            raise BuildError("runner completion status must be succeeded, failed, canceled, or requeue")
         current = int(time.time() if now is None else now)
         with self._conn(write=True) as conn:
             rrow = self._authenticate_runner(conn, token)
@@ -1037,8 +1094,54 @@ class BuildStore:
                 return {"build": self._build_public(brow), "replayed": True}
 
             res = result if isinstance(result, dict) else {}
+            if status == "requeue" and not brow["cancel_requested"]:
+                req = json.loads(brow["request_json"] or "{}")
+                requeue_count = int(req.get("requeueCount") or 0)
+                raw_req_plats = res.get("requiredPlatforms")
+                if not brow["pinned_runner"] and requeue_count < 1 and raw_req_plats:
+                    req_plats = parse_platforms(raw_req_plats)
+                    req["platforms"] = req_plats
+                    req["platformExplicit"] = True
+                    req["requeueCount"] = requeue_count + 1
+                    conn.execute(
+                        """
+                        INSERT INTO target_platforms(repo_slug, target_key, platforms_json, updated_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(repo_slug, target_key) DO UPDATE SET
+                            platforms_json = excluded.platforms_json,
+                            updated_at = excluded.updated_at
+                        """,
+                        (str(brow["repo_slug"]), str(brow["target_key"]), json.dumps(req_plats), current),
+                    )
+                    requeue_msg = (
+                        message
+                        or f"Handed off from {rname}; queued for {','.join(req_plats)} runner"
+                    )[:2000]
+                    conn.execute(
+                        """
+                        UPDATE builds
+                        SET status = 'queued', runner_name = '', platforms_json = ?,
+                            request_json = ?, message = ?, started_at = 0,
+                            lease_heartbeat_at = 0, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            json.dumps(req_plats),
+                            json.dumps(req, sort_keys=True),
+                            requeue_msg,
+                            current,
+                            build_id,
+                        ),
+                    )
+                    self._insert_event(conn, build_id, "queue", "status", requeue_msg, current)
+                    updated = conn.execute("SELECT * FROM builds WHERE id = ?", (build_id,)).fetchone()
+                    return {"build": self._build_public(updated), "replayed": False}
+                status = "failed"
+                if not message:
+                    message = "Runner platform mismatch cannot be requeued"
+
             if status == "succeeded" and not brow["cancel_requested"]:
-                # Record BuildKit cache affinity for this repo + architecture!
+                # Record BuildKit cache affinity and learned target architecture!
                 platforms = json.loads(brow["platforms_json"] or '["linux/amd64"]')
                 primary_platform = (platforms or ["linux/amd64"])[0]
                 conn.execute(
@@ -1050,6 +1153,16 @@ class BuildStore:
                         updated_at = excluded.updated_at
                     """,
                     (str(brow["repo_slug"]), primary_platform, rname, current),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO target_platforms(repo_slug, target_key, platforms_json, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(repo_slug, target_key) DO UPDATE SET
+                        platforms_json = excluded.platforms_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (str(brow["repo_slug"]), str(brow["target_key"]), json.dumps(platforms), current),
                 )
 
                 if brow["deploy_enabled"]:
@@ -1114,15 +1227,17 @@ class BuildStore:
                         (now, now, bid),
                     )
                     continue
-                # Check if a newer build of the exact same branch + target already deployed or is queued_deploy ahead
+                # Never allow a slow earlier build (smaller seq) to roll back a newer deployment
+                # of the same (repo_slug, target_key), even when CI submits distinct commit SHAs!
                 newer = conn.execute(
                     """
                     SELECT id FROM builds
-                    WHERE repo_slug = ? AND ref = ? AND target_key = ?
+                    WHERE repo_slug = ? AND target_key = ?
+                      AND deploy_enabled = 1
                       AND seq > ? AND status IN ('queued_deploy', 'deploying', 'succeeded')
                     ORDER BY seq DESC LIMIT 1
                     """,
-                    (row["repo_slug"], row["ref"], row["target_key"], row["seq"]),
+                    (row["repo_slug"], row["target_key"], row["seq"]),
                 ).fetchone()
                 if newer:
                     nid = str(newer["id"])
@@ -1167,10 +1282,11 @@ class BuildStore:
                 """
                 UPDATE builds
                 SET status = ?, result_json = ?, message = ?,
-                    encrypted_env_secrets = '', completed_at = ?, updated_at = ?
+                    encrypted_env_secrets = CASE WHEN ? THEN '' ELSE encrypted_env_secrets END,
+                    completed_at = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (status, json.dumps(merged_result, sort_keys=True), final_msg[:2000], now, now, build_id),
+                (status, json.dumps(merged_result, sort_keys=True), final_msg[:2000], int(bool(succeeded)), now, now, build_id),
             )
             self._insert_event(
                 conn, build_id, "deploy", "status" if succeeded else "error", final_msg, now
@@ -1251,10 +1367,20 @@ class BuildStore:
             if not row:
                 raise BuildError(f"build not found: {build_id}", status_code=404)
             req = json.loads(row["request_json"] or "{}")
+            enc_secrets = str(row["encrypted_env_secrets"] or "")
             if row["pinned_runner"]:
                 req["runner"] = str(row["pinned_runner"])
+        was_explicit = bool(req.pop("platformExplicit", False))
+        req.pop("requeueCount", None)
+        if was_explicit:
+            req["_platformExplicit"] = True
+        else:
+            req.pop("platforms", None)
+            req.pop("platform", None)
         if env_secrets is not None:
             req["envSecrets"] = env_secrets
+        elif enc_secrets:
+            req["envSecrets"] = json.loads(self.secret_box.decrypt(enc_secrets))
         return self.enqueue_build(req)
 
     def metrics_snapshot(self, *, now: int | None = None) -> dict[str, Any]:
@@ -1284,7 +1410,9 @@ class BuildStore:
         res = json.loads(row["result_json"] or "{}")
         # Strip raw manifest/composeContent blobs from list summaries if huge, keep in result
         req = json.loads(row["request_json"] or "{}")
-        req_public = {k: v for k, v in req.items() if k != "manifest"}
+        req_public = {
+            k: v for k, v in req.items() if k not in {"manifest", "nodePlatforms", "regionPlatforms"}
+        }
         return {
             "id": str(row["id"]),
             "seq": int(row["seq"]),

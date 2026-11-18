@@ -587,9 +587,15 @@ _TEMPLATE = r"""<!doctype html>
       overscroll-behavior: contain;
     }
     dialog.center-modal {
-      width: min(32rem, calc(100vw - 2rem));
+      width: min(34rem, calc(100vw - 2rem));
+      max-height: calc(100dvh - 2rem);
       border-radius: calc(var(--radius) * 1.4);
       margin: auto;
+    }
+    dialog.center-modal[open] > form {
+      display: flex;
+      flex-direction: column;
+      max-height: calc(100dvh - 2rem);
     }
     dialog.drawer-sheet {
       margin: 0 0 0 auto;
@@ -628,6 +634,25 @@ _TEMPLATE = r"""<!doctype html>
     .field small { font-size: 0.72rem; color: var(--muted-foreground); }
     .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
     .check-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; }
+    .adv-box {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--muted);
+      padding: 0.625rem 0.875rem;
+    }
+    .adv-summary {
+      cursor: pointer;
+      font-size: 0.78rem;
+      font-weight: 500;
+      color: var(--foreground);
+      user-select: none;
+    }
+    .adv-body {
+      margin-block-start: 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
 
     .kv-grid {
       display: grid;
@@ -739,7 +764,7 @@ _TEMPLATE = r"""<!doctype html>
       <p class="auth-desc">
         直接输入你的 <strong>Luma 管理 Token</strong> 登录（服务端通过 Luma Control SSO 自动验签，与 <code>luma login</code> 共用同一套身份）。
       </p>
-      <div id="login-error" class="banner-error" hidden></div>
+      <div id="login-error" class="banner-error" role="alert" hidden></div>
       <div class="field">
         <label for="login-token">访问令牌 (Token)</label>
         <input id="login-token" class="input" type="password" autocomplete="current-password" placeholder="粘贴 LUMA_DEPLOY_TOKEN…" required autofocus>
@@ -999,7 +1024,7 @@ _TEMPLATE = r"""<!doctype html>
         <button type="button" data-close-dialog="submit-dialog" class="btn btn-sm btn-ghost" aria-label="关闭">✕</button>
       </div>
       <div class="dialog-body">
-        <div id="submit-error" class="banner-error" hidden></div>
+        <div id="submit-error" class="banner-error" role="alert" hidden></div>
         <div class="field">
           <label for="sub-source">Git 仓库地址或 owner/repo</label>
           <input id="sub-source" class="input" placeholder="例如 https://git.example.com/org/app.git 或 acme/web" required autofocus>
@@ -1012,7 +1037,7 @@ _TEMPLATE = r"""<!doctype html>
           <div class="field">
             <label for="sub-platform">目标架构</label>
             <select id="sub-platform" class="select">
-              <option value="">自动（默认 linux/amd64）</option>
+              <option value="">自动识别（按目标节点 / 清单 / 历史记录路由）</option>
               <option value="linux/amd64">linux/amd64 (x86_64)</option>
               <option value="linux/arm64">linux/arm64 (Apple Silicon / ARM)</option>
             </select>
@@ -1028,6 +1053,41 @@ _TEMPLATE = r"""<!doctype html>
             <input id="sub-context" class="input" placeholder="默认仓库根目录 .">
           </div>
         </div>
+        <details class="adv-box">
+          <summary class="adv-summary">高级与单仓多服选项（Provider / 清单路径 / 部署覆盖）</summary>
+          <div class="adv-body">
+            <div class="field-row">
+              <div class="field">
+                <label for="sub-provider-id">Git 凭据 Provider ID（可选）</label>
+                <input id="sub-provider-id" class="input" placeholder="例如 gitea:corp 或 github:main">
+              </div>
+              <div class="field">
+                <label for="sub-dockerfile">Dockerfile 路径（可选）</label>
+                <input id="sub-dockerfile" class="input" placeholder="默认 Dockerfile">
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="sub-manifest-path">单服务清单路径（可选）</label>
+                <input id="sub-manifest-path" class="input" placeholder="例如 luma.prod.api.yml">
+              </div>
+              <div class="field">
+                <label for="sub-compose-sidecar">Compose 清单路径（可选）</label>
+                <input id="sub-compose-sidecar" class="input" placeholder="例如 luma.prod.compose.yml">
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="sub-region">覆盖目标 Region（可选）</label>
+                <input id="sub-region" class="input" placeholder="例如 cn 或 hk">
+              </div>
+              <div class="field">
+                <label for="sub-node">覆盖目标节点 Node（可选）</label>
+                <input id="sub-node" class="input" placeholder="例如 manager 或 arm-worker">
+              </div>
+            </div>
+          </div>
+        </details>
         <label class="check-row">
           <input id="sub-no-deploy" type="checkbox">
           <span>仅构建并推送镜像（不触发 Luma Control 部署）</span>
@@ -1055,7 +1115,7 @@ _TEMPLATE = r"""<!doctype html>
         <button type="button" data-close-dialog="token-dialog" class="btn btn-sm btn-ghost" aria-label="关闭">✕</button>
       </div>
       <div class="dialog-body">
-        <div id="token-error" class="banner-error" hidden></div>
+        <div id="token-error" class="banner-error" role="alert" hidden></div>
         <div class="field">
           <label for="tok-name">Runner 名称</label>
           <input id="tok-name" class="input" placeholder="例如 x86-builder、m4、air3" required autofocus>
@@ -1104,6 +1164,7 @@ _TEMPLATE = r"""<!doctype html>
         <button type="button" data-close-dialog="git-cred-dialog" class="btn btn-sm btn-ghost" aria-label="关闭">✕</button>
       </div>
       <div class="dialog-body">
+        <div id="git-cred-error" class="banner-error" role="alert" hidden></div>
         <div class="field"><label for="gc-id">凭据标识 ID</label><input id="gc-id" class="input" placeholder="例如 gitea:corp 或 github:main" required autofocus></div>
         <div class="field"><label for="gc-host">Git 域名</label><input id="gc-host" class="input" placeholder="例如 git.example.com 或 github.com" required></div>
         <div class="field"><label for="gc-user">用户名</label><input id="gc-user" class="input" value="x-access-token" required></div>
@@ -1124,6 +1185,7 @@ _TEMPLATE = r"""<!doctype html>
         <button type="button" data-close-dialog="reg-cred-dialog" class="btn btn-sm btn-ghost" aria-label="关闭">✕</button>
       </div>
       <div class="dialog-body">
+        <div id="reg-cred-error" class="banner-error" role="alert" hidden></div>
         <div class="field"><label for="rc-host">Registry 域名</label><input id="rc-host" class="input" placeholder="例如 crpi-xxx.cn-beijing.personal.cr.aliyuncs.com" required autofocus></div>
         <div class="field"><label for="rc-user">Push 用户名</label><input id="rc-user" class="input" required></div>
         <div class="field"><label for="rc-pass">Push 密码</label><input id="rc-pass" class="input" type="password" required></div>
@@ -1666,13 +1728,26 @@ _TEMPLATE = r"""<!doctype html>
       errEl.hidden = true;
       const src = document.getElementById("sub-source").value.trim();
       const isUrl = src.includes("://") || src.startsWith("git@");
+      const manifestPath = document.getElementById("sub-manifest-path").value.trim();
+      const composeSidecar = document.getElementById("sub-compose-sidecar").value.trim();
+      if (manifestPath && composeSidecar) {
+        errEl.textContent = "单服务清单路径与 Compose 清单路径不能同时填写";
+        errEl.hidden = false;
+        return;
+      }
       const body = {
         repoUrl: isUrl ? src : "",
         repository: isUrl ? "" : src,
         ref: document.getElementById("sub-ref").value.trim() || "main",
+        providerId: document.getElementById("sub-provider-id").value.trim(),
         platform: document.getElementById("sub-platform").value,
         runner: document.getElementById("sub-runner").value.trim(),
         context: document.getElementById("sub-context").value.trim(),
+        dockerfile: document.getElementById("sub-dockerfile").value.trim(),
+        manifestPath,
+        composeSidecar,
+        region: document.getElementById("sub-region").value.trim(),
+        node: document.getElementById("sub-node").value.trim(),
         deploy: !document.getElementById("sub-no-deploy").checked,
         noCache: document.getElementById("sub-no-cache").checked,
       };
@@ -1730,38 +1805,58 @@ _TEMPLATE = r"""<!doctype html>
 
     // Dynamic Git & Registry credential modals
     const gcDialog = document.getElementById("git-cred-dialog");
-    document.getElementById("open-git-cred-btn").addEventListener("click", () => gcDialog.showModal());
+    document.getElementById("open-git-cred-btn").addEventListener("click", () => {
+      document.getElementById("git-cred-error").hidden = true;
+      gcDialog.showModal();
+    });
     document.getElementById("git-cred-form").addEventListener("submit", async (ev) => {
       ev.preventDefault();
-      await api("/v1/credentials/git", {
-        method: "POST",
-        body: {
-          id: document.getElementById("gc-id").value.trim(),
-          host: document.getElementById("gc-host").value.trim(),
-          username: document.getElementById("gc-user").value.trim(),
-          token: document.getElementById("gc-token").value.trim(),
-        },
-      });
-      document.getElementById("gc-token").value = "";
-      gcDialog.close();
-      refreshAll();
+      const errEl = document.getElementById("git-cred-error");
+      errEl.hidden = true;
+      try {
+        await api("/v1/credentials/git", {
+          method: "POST",
+          body: {
+            id: document.getElementById("gc-id").value.trim(),
+            host: document.getElementById("gc-host").value.trim(),
+            username: document.getElementById("gc-user").value.trim(),
+            token: document.getElementById("gc-token").value.trim(),
+          },
+        });
+        document.getElementById("gc-token").value = "";
+        gcDialog.close();
+        refreshAll();
+      } catch (err) {
+        errEl.textContent = err.message;
+        errEl.hidden = false;
+      }
     });
 
     const rcDialog = document.getElementById("reg-cred-dialog");
-    document.getElementById("open-reg-cred-btn").addEventListener("click", () => rcDialog.showModal());
+    document.getElementById("open-reg-cred-btn").addEventListener("click", () => {
+      document.getElementById("reg-cred-error").hidden = true;
+      rcDialog.showModal();
+    });
     document.getElementById("reg-cred-form").addEventListener("submit", async (ev) => {
       ev.preventDefault();
-      await api("/v1/credentials/registry", {
-        method: "POST",
-        body: {
-          host: document.getElementById("rc-host").value.trim(),
-          username: document.getElementById("rc-user").value.trim(),
-          password: document.getElementById("rc-pass").value.trim(),
-        },
-      });
-      document.getElementById("rc-pass").value = "";
-      rcDialog.close();
-      refreshAll();
+      const errEl = document.getElementById("reg-cred-error");
+      errEl.hidden = true;
+      try {
+        await api("/v1/credentials/registry", {
+          method: "POST",
+          body: {
+            host: document.getElementById("rc-host").value.trim(),
+            username: document.getElementById("rc-user").value.trim(),
+            password: document.getElementById("rc-pass").value.trim(),
+          },
+        });
+        document.getElementById("rc-pass").value = "";
+        rcDialog.close();
+        refreshAll();
+      } catch (err) {
+        errEl.textContent = err.message;
+        errEl.hidden = false;
+      }
     });
 
     // Boot
