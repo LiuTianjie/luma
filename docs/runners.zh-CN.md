@@ -25,7 +25,7 @@ Join 先补齐并检查构建工具、验证 Docker 引擎和 token，再预热 
 
 可以用 `--token-stdin` 从标准输入读取 token，或使用环境变量 `LUMA_RUNNER_TOKEN`。服务将其保存在 `/opt/luma/runner/config.json`，只允许 runner 的系统用户和 root 读取；系统服务命令中只有配置路径，不包含 token。首次 join 保存执行命令用户的 home、Docker context 和代理设置；同一用户重新 join 会刷新环境变量，start/restart 复用已保存环境。BuildKit 元数据默认保存在 `~/.luma-runner`，可用 `--state-dir` 修改。
 
-## 构建依赖与网络预检
+## 构建依赖与网络预检 {#build-prerequisites-and-network-preflight}
 
 `luma runner join` 和 `luma node join` 都会在 apt 系 Linux 上补齐 Git/Buildx，并在实际构建使用的私有 Docker 配置中验证。新 Linux runner 缺少 Docker 时会安装引擎；仅补装 Buildx 时不替换或重启已有引擎。Docker CE 使用 `docker-buildx-plugin`，Ubuntu/Debian Docker 使用 `docker-buildx`。
 
