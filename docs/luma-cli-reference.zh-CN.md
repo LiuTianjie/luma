@@ -28,6 +28,7 @@ Deploy:
   compose       Deploy a Docker Compose application with a Luma sidecar
   import        Build a Git repository on a builder node and deploy it
   build         Build a local checkout, or inspect and retry build runs
+  builder       Submit remote builds and manage decoupled luma-build runners
   workflow      Show or record how an application is built and deployed
 
 Operate:
@@ -617,6 +618,561 @@ arguments:
   --direct-egress-node DIRECT_EGRESS_NODES
                               Builder with direct internet access; repeat for several
   --clear-direct-egress       Clear the direct-egress builder list
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma builder`
+
+```text
+usage: luma builder [-h] <command> ...
+
+Submit remote builds and manage stateless BuildKit runners through the decoupled luma-build service.
+Operator authentication reuses your current 'luma login' session.
+
+arguments:
+  -h, --help       show this help message and exit
+
+arguments:
+  <command>
+    use            Save the default luma-build endpoint URL
+    status         Show luma-build service health, registry target and online runners
+    submit         Submit a Git repository build and optional Luma deployment
+    list           List recent remote builds on luma-build
+    logs           Show build details and BuildKit logs
+    cancel         Cancel a queued or running build
+    retry          Retry a previous remote build
+    token          Issue, list and revoke stateless runner registration tokens
+    runner         Start a stateless BuildKit runner daemon on this machine (no Nomad required)
+    git-cred       Manage dynamic Git pull credentials stored on luma-build
+    registry-cred  Manage dynamic OCI registry push credentials on luma-build
+
+Examples:
+  luma builder use https://build.example.com
+  luma builder submit acme/web --ref main
+  luma builder runner --url https://build.example.com --token lbr_xxx
+```
+
+## `luma builder use`
+
+```text
+usage: luma builder use [-h] [--control-context CONTROL_CONTEXT] [--format {text,json,ndjson}] [--quiet] endpoint
+
+Save the default luma-build endpoint URL
+
+arguments:
+  endpoint                    luma-build base URL, for example https://build.example.com
+
+arguments:
+  -h, --help                  show this help message and exit
+  --control-context CONTROL_CONTEXT
+                              Associate this URL with a named Luma login context
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+```
+
+## `luma builder status`
+
+```text
+usage: luma builder status [-h] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+Show luma-build service health, registry target and online runners
+
+arguments:
+  -h, --help                  show this help message and exit
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
+                              LUMA_BUILD_URL)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma builder submit`
+
+```text
+usage: luma builder submit [-h] [--ref REF] [--provider-id PROVIDER_ID] [--platform PLATFORM] [--runner RUNNER] [--compose-sidecar COMPOSE_SIDECAR] [--context CONTEXT] [--dockerfile DOCKERFILE] [--target TARGET] [--region REGION] [--node NODE] [--exposure EXPOSURE] [--domain DOMAIN] [--port PORT] [--env DEPLOY_ENV_FILE] [--no-deploy] [--no-cache] [--detach] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] source
+
+Submit a Git repository build and optional Luma deployment
+
+arguments:
+  source                      Git repository URL or owner/name shorthand
+
+arguments:
+  -h, --help                  show this help message and exit
+  --ref REF                   Branch, tag or 40-char commit SHA (default: main)
+  --provider-id PROVIDER_ID   Saved Git credential ID, for example gitea:gcode
+  --platform PLATFORM         Target container platform, for example linux/amd64 or linux/arm64
+  --runner RUNNER             Pin a specific registered runner name
+  --compose-sidecar COMPOSE_SIDECAR
+                              Repository-relative luma.compose.yml path
+  --context CONTEXT           Docker build context subdirectory inside the repository
+  --dockerfile DOCKERFILE     Dockerfile path inside the repository
+  --target TARGET             Dockerfile multi-stage target name
+  --region REGION             Override Luma deployment region
+  --node NODE                 Override Luma deployment target node
+  --exposure EXPOSURE         Override Luma single-service exposure
+  --domain DOMAIN             Override Luma single-service domain
+  --port PORT                 Override Luma single-service container port
+  --env DEPLOY_ENV_FILE       Runtime .env forwarded only to Luma Control on deploy
+  --no-deploy                 Build and push image only without deploying to Luma Control
+  --no-cache                  Disable BuildKit cache for this build
+  --detach                    Return immediately after queueing the build
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
+                              LUMA_BUILD_URL)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma builder list`
+
+```text
+usage: luma builder list [-h] [--status STATUS] [--repo REPO] [--limit LIMIT] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List recent remote builds on luma-build
+
+arguments:
+  -h, --help                  show this help message and exit
+  --status STATUS             Filter by status (queued, building, deploying, succeeded, failed,
+                              canceled)
+  --repo REPO                 Filter by repository substring
+  --limit LIMIT               Maximum records to return, 1-200 (default: 25)
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
+                              LUMA_BUILD_URL)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma builder logs`
+
+```text
+usage: luma builder logs [-h] [--follow] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] id
+
+Show build details and BuildKit logs
+
+arguments:
+  id                          Build ID from 'luma builder list'
+
+arguments:
+  -h, --help                  show this help message and exit
+  --follow, -f                Stream live logs until the build finishes
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
+                              LUMA_BUILD_URL)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma builder cancel`
+
+```text
+usage: luma builder cancel [-h] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] id
+
+Cancel a queued or running build
+
+arguments:
+  id                          Build ID to cancel
+
+arguments:
+  -h, --help                  show this help message and exit
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
+                              LUMA_BUILD_URL)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma builder retry`
+
+```text
+usage: luma builder retry [-h] [--env DEPLOY_ENV_FILE] [--detach] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] id
+
+Retry a previous remote build
+
+arguments:
+  id                          Build ID to retry
+
+arguments:
+  -h, --help                  show this help message and exit
+  --env DEPLOY_ENV_FILE       Updated runtime .env for Luma Control deployment
+  --detach                    Return immediately after queueing the retry
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
+                              LUMA_BUILD_URL)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma builder token`
+
+```text
+usage: luma builder token [-h] <command> ...
+
+Issue, list and revoke stateless runner registration tokens
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  <command>
+    create    Issue a scoped lbr_... token for a runner
+    list      List registered runners and their heartbeat status
+    revoke    Revoke a runner token immediately
+```
+
+## `luma builder token create`
+
+```text
+usage: luma builder token create [-h] [--weight WEIGHT] [--concurrency CONCURRENCY] [--cache-mode {read-write,read-only,local-only}] [--rotate] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Issue a scoped lbr_... token for a runner
+
+arguments:
+  name                        Runner name, for example x86-builder, m4 or air3
+
+arguments:
+  -h, --help                  show this help message and exit
+  --weight WEIGHT             Scheduling weight when idle, 1-1000 (default: 100)
+  --concurrency CONCURRENCY   Max concurrent builds on this runner, 1-16 (default: 1)
+  --cache-mode {read-write,read-only,local-only}
+                              Remote OCI cache policy; use read-only on low-upload home runners
+                              (default: read-write)
+  --rotate                    Rotate token if the runner name already exists
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
+                              LUMA_BUILD_URL)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma builder token list`
+
+```text
+usage: luma builder token list [-h] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List registered runners and their heartbeat status
+
+arguments:
+  -h, --help                  show this help message and exit
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
+                              LUMA_BUILD_URL)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma builder token revoke`
+
+```text
+usage: luma builder token revoke [-h] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] name
+
+Revoke a runner token immediately
+
+arguments:
+  name                        Runner name or ID
+
+arguments:
+  -h, --help                  show this help message and exit
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
+                              LUMA_BUILD_URL)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma builder runner`
+
+```text
+usage: luma builder runner [-h] [--url RUNNER_URL] [--token RUNNER_TOKEN] [--state-dir STATE_DIR] [--proxy PROXY] [--cache-mode {,read-write,read-only,local-only}] [--cache-keep-gb CACHE_KEEP_GB] [--max-parallelism MAX_PARALLELISM] [--workers WORKERS] [--insecure] [--once]
+
+Start a stateless BuildKit runner daemon on this machine (no Nomad required)
+
+arguments:
+  -h, --help                  show this help message and exit
+  --url RUNNER_URL            luma-build URL (or set LUMA_BUILD_URL)
+  --token RUNNER_TOKEN        Runner token starting with lbr_ (or set LUMA_RUNNER_TOKEN)
+  --state-dir STATE_DIR       Local directory for persistent BuildKit builder metadata (default:
+                              ~/.luma-runner)
+  --proxy PROXY               Optional local HTTP(S) proxy for git clone and base image pulls
+  --cache-mode {,read-write,read-only,local-only}
+                              Override remote registry cache policy on this host
+  --cache-keep-gb CACHE_KEEP_GB
+                              Local BuildKit SSD cache LRU cap in GiB (default: 20)
+  --max-parallelism MAX_PARALLELISM
+                              Max parallel BuildKit steps; 0 uses engine default
+  --workers WORKERS           Concurrent worker slots on this host, 1-16 (default: 1)
+  --insecure                  Skip TLS verification for the luma-build endpoint
+  --once                      Poll once, run at most one build and exit
+```
+
+## `luma builder git-cred`
+
+```text
+usage: luma builder git-cred [-h] <command> ...
+
+Manage dynamic Git pull credentials stored on luma-build
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  <command>
+    set       Save a Git credential on luma-build
+    list      List dynamic Git credentials on luma-build
+    remove    Remove a dynamic Git credential from luma-build
+```
+
+## `luma builder git-cred set`
+
+```text
+usage: luma builder git-cred set [-h] --host HOST [--username USERNAME] [--path-prefix PATH_PREFIX] [--token-stdin] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] id
+
+Save a Git credential on luma-build
+
+arguments:
+  id                          Credential ID, for example gitea:gcode or github:main
+
+arguments:
+  -h, --help                  show this help message and exit
+  --host HOST                 Git hostname, for example gcode.gaojiua.com or github.com
+  --username USERNAME         Git HTTP username (default: x-access-token)
+  --path-prefix PATH_PREFIX   Optional organization/owner prefix filter
+  --token-stdin               Read the Git token from stdin
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
+                              LUMA_BUILD_URL)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma builder git-cred list`
+
+```text
+usage: luma builder git-cred list [-h] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List dynamic Git credentials on luma-build
+
+arguments:
+  -h, --help                  show this help message and exit
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
+                              LUMA_BUILD_URL)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma builder git-cred remove`
+
+```text
+usage: luma builder git-cred remove [-h] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] id
+
+Remove a dynamic Git credential from luma-build
+
+arguments:
+  id                          Credential ID to remove
+
+arguments:
+  -h, --help                  show this help message and exit
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
+                              LUMA_BUILD_URL)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma builder registry-cred`
+
+```text
+usage: luma builder registry-cred [-h] <command> ...
+
+Manage dynamic OCI registry push credentials on luma-build
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  <command>
+    set       Save an OCI registry push credential on luma-build
+    list      List dynamic OCI registry credentials on luma-build
+    remove    Remove a dynamic OCI registry credential from luma-build
+```
+
+## `luma builder registry-cred set`
+
+```text
+usage: luma builder registry-cred set [-h] --username USERNAME [--password-stdin] [--http] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] host
+
+Save an OCI registry push credential on luma-build
+
+arguments:
+  host                        Registry host, for example crpi-xxx.cn-
+                              beijing.personal.cr.aliyuncs.com
+
+arguments:
+  -h, --help                  show this help message and exit
+  --username USERNAME         Registry push username
+  --password-stdin            Read registry password from stdin
+  --http                      Force plain HTTP for an internal registry
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
+                              LUMA_BUILD_URL)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma builder registry-cred list`
+
+```text
+usage: luma builder registry-cred list [-h] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List dynamic OCI registry credentials on luma-build
+
+arguments:
+  -h, --help                  show this help message and exit
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
+                              LUMA_BUILD_URL)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma builder registry-cred remove`
+
+```text
+usage: luma builder registry-cred remove [-h] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] host
+
+Remove a dynamic OCI registry credential from luma-build
+
+arguments:
+  host                        Registry host to remove
+
+arguments:
+  -h, --help                  show this help message and exit
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
+                              LUMA_BUILD_URL)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -1511,7 +2067,7 @@ arguments:
 
 Examples:
   luma update
-  luma update --install-ref v0.2.67
+  luma update --install-ref v0.2.68
   luma update fleet
 ```
 

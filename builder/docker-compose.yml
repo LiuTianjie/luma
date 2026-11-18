@@ -1,0 +1,41 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: luma-build-server:local
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    environment:
+      # Luma's Compose secret renderer matches strict ${VAR} placeholders (no :- defaults).
+      # Provide all referenced ${VAR} entries in builder/.env or via `luma secret set --scope luma-build`.
+      LUMA_CONTROL_URL: ${LUMA_CONTROL_URL}
+      LUMA_DEPLOY_TOKEN: ${LUMA_DEPLOY_TOKEN}
+      LUMA_BUILD_REGISTRY_HOST: ${LUMA_BUILD_REGISTRY_HOST}
+      LUMA_BUILD_PUSH_HOST: ${LUMA_BUILD_PUSH_HOST}
+      LUMA_BUILD_REGISTRY_NAMESPACE: ${LUMA_BUILD_REGISTRY_NAMESPACE}
+      LUMA_BUILD_REGISTRY_USERNAME: ${LUMA_BUILD_REGISTRY_USERNAME}
+      LUMA_BUILD_REGISTRY_PASSWORD: ${LUMA_BUILD_REGISTRY_PASSWORD}
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      GITEA_HOST: ${GITEA_HOST}
+      GITEA_USERNAME: ${GITEA_USERNAME}
+      GITEA_TOKEN: ${GITEA_TOKEN}
+      LUMA_BUILD_AFFINITY_SECONDS: "20"
+    volumes:
+      - luma-build-data:/var/lib/luma-build
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.10"
+          memory: 128M
+        limits:
+          memory: 512M
+
+volumes:
+  luma-build-data:

@@ -54,7 +54,17 @@ def _parse_env_value(value: str, *, path: Path, lineno: int) -> str:
 LUMA_SETTING_NAMES = frozenset(
     {"CLOUDFLARE_API_TOKEN", "EGRESS_SUBSCRIPTION_URL", "TAILSCALE_AUTHKEY", "TRAEFIK_ACME_EMAIL"}
 )
-LUMA_CREDENTIAL_NAMES = frozenset({"LUMA_CONTROL_URL", "LUMA_DEPLOY_TOKEN", "LUMA_CONTROL_CONTEXT"})
+LUMA_CREDENTIAL_NAMES = frozenset(
+    {
+        "LUMA_CONTROL_URL",
+        "LUMA_DEPLOY_TOKEN",
+        "LUMA_CONTROL_CONTEXT",
+        "LUMA_BUILD_URL",
+        "LUMA_BUILD_TOKEN",
+        "LUMA_BUILD_ADMIN_TOKEN",
+        "LUMA_RUNNER_TOKEN",
+    }
+)
 
 
 def is_luma_setting(name: str) -> bool:

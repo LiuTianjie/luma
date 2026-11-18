@@ -1,0 +1,17 @@
+# Deploy luma-build as an independent, decoupled Luma Compose stack (like observe/).
+# Update region/domain/node to match your target edge host before deploying.
+name: luma-build
+compose: docker-compose.yml
+region: cn
+
+volumes:
+  luma-build-data:
+    initialize: empty
+
+services:
+  server:
+    node: manager
+    exposure: cn-edge
+    domain: build.itool.tech
+    port: 8090
+    replicas: 1

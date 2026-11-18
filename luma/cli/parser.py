@@ -34,6 +34,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("compose", "Deploy a Docker Compose application with a Luma sidecar"),
         ("import", "Build a Git repository on a builder node and deploy it"),
         ("build", "Build a local checkout, or inspect and retry build runs"),
+        ("builder", "Submit remote builds and manage decoupled luma-build runners"),
         ("workflow", "Show or record how an application is built and deployed"),
     )),
     ("Operate", (
@@ -331,6 +332,9 @@ def _add_deploy_commands(sub: argparse._SubParsersAction) -> None:
     _add_control_arguments(build_config)
     _add_output_arguments(build_config)
 
+    from .builder import add_parser as add_builder_parser
+    add_builder_parser(sub, _command, _commands, _add_control_arguments, _add_output_arguments)
+
     workflow = _command(
         sub, "workflow",
         description="Show or record how an application is built and deployed. Deploy, import and "
@@ -516,7 +520,7 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
             "Update the local CLI. On a manager this also refreshes Luma Control, and on a joined "
             "node it refreshes the node agent."
         ),
-        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.67\n  luma update fleet",
+        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.68\n  luma update fleet",
     )
     _add_update_arguments(update)
     _add_control_arguments(update)

@@ -1,0 +1,31 @@
+# Single-service Luma manifest alternative when publishing a prebuilt luma-build image.
+# Manage secrets natively via: luma secret import builder/.env --scope luma-build
+name: luma-build
+image: ghcr.io/liutianjie/luma-build-server:0.1.0
+region: cn
+exposure: cn-edge
+domain: build.itool.tech
+port: 8090
+healthcheck:
+  test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=3)"]
+resources:
+  reservations:
+    cpus: "0.2"
+    memory: 256M
+  limits:
+    memory: 512M
+volumes:
+  - luma-build-data:/var/lib/luma-build
+env:
+  LUMA_CONTROL_URL: https://luma.itool.tech
+  LUMA_DEPLOY_TOKEN: ${LUMA_DEPLOY_TOKEN}
+  LUMA_BUILD_REGISTRY_HOST: crpi-example.cn-beijing.personal.cr.aliyuncs.com
+  LUMA_BUILD_PUSH_HOST: crpi-example.cn-beijing.personal.cr.aliyuncs.com
+  LUMA_BUILD_REGISTRY_NAMESPACE: luma
+  LUMA_BUILD_REGISTRY_USERNAME: ${LUMA_BUILD_REGISTRY_USERNAME}
+  LUMA_BUILD_REGISTRY_PASSWORD: ${LUMA_BUILD_REGISTRY_PASSWORD}
+  GITHUB_TOKEN: ${GITHUB_TOKEN}
+  GITEA_HOST: gcode.gaojiua.com
+  GITEA_USERNAME: ${GITEA_USERNAME}
+  GITEA_TOKEN: ${GITEA_TOKEN}
+  LUMA_BUILD_AFFINITY_SECONDS: "20"

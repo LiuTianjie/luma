@@ -14,6 +14,7 @@ from ..errors import LumaError
 from ..userconfig import load_user_config
 from .observe import cmd_observe
 from .apps import cmd_app
+from .builder import cmd_builder
 from .builds import cmd_build, cmd_import, cmd_workflow
 from .common import _print_structured_error
 from .deploy import cmd_compose, cmd_deploy, cmd_validate
@@ -40,6 +41,7 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "compose": cmd_compose,
     "import": cmd_import,
     "build": cmd_build,
+    "builder": cmd_builder,
     "workflow": cmd_workflow,
     "status": cmd_status,
     "app": cmd_app,

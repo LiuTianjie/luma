@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "luma-build"
+version = "0.1.0"
+description = "Decoupled, pluggable BuildKit build service and stateless runner fleet for Luma."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+  "PyYAML>=6.0.1",
+]
+
+[project.optional-dependencies]
+server = [
+  "starlette>=0.49.0",
+  "uvicorn[standard]>=0.38.0",
+  "cryptography>=43.0.0",
+]
+test = [
+  "httpx>=0.27",
+  "starlette>=0.49.0",
+  "cryptography>=43.0.0",
+  "ruff>=0.6",
+]
+
+[project.scripts]
+luma-build = "luma_build.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["luma_build*"]
+
+[tool.ruff]
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["F", "E9"]

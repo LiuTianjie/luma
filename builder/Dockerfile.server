@@ -1,0 +1,20 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY luma_build ./luma_build
+
+RUN pip install --no-cache-dir '.[server]' \
+    && useradd --system --create-home --uid 10001 luma \
+    && mkdir -p /var/lib/luma-build \
+    && chown -R luma:luma /var/lib/luma-build
+
+USER luma
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    LUMA_BUILD_HOST=0.0.0.0 \
+    LUMA_BUILD_PORT=8090 \
+    LUMA_BUILD_DATA_DIR=/var/lib/luma-build
+
+EXPOSE 8090
+CMD ["luma-build", "serve"]

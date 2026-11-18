@@ -32,12 +32,13 @@ import luma
 from luma import skills
 from luma.cli import build_parser
 from luma.cli.main import main
-from luma import command_session
+from luma import builder_runner, command_session
 from luma import nomad_upgrade, nomad_migration_node, nomad_pki, nomad_consumer
 
 assert Path(luma.__file__).is_relative_to(target), luma.__file__
 assert skills.bundle_root().is_relative_to(target), skills.bundle_root()
 assert Path(command_session.__file__).is_relative_to(target)
+assert Path(builder_runner.__file__).is_relative_to(target)
 for module in (nomad_upgrade, nomad_migration_node, nomad_pki, nomad_consumer):
     assert Path(module.__file__).is_relative_to(target), module.__file__
 for args in (
@@ -47,6 +48,14 @@ for args in (
     ['observe', 'tasks', 'example', '--view', 'trace', '--trace-id', 'a' * 32],
 ):
     assert build_parser().parse_args(args).command == 'observe'
+for args in (
+    ['builder', 'use', 'https://build.example.com'],
+    ['builder', 'status', '--format', 'json'],
+    ['builder', 'submit', 'acme/web', '--ref', 'main', '--no-deploy'],
+    ['builder', 'token', 'create', 'm4', '--cache-mode', 'read-only'],
+    ['builder', 'runner', '--url', 'https://build.example.com', '--token', 'lbr_test', '--once'],
+):
+    assert build_parser().parse_args(args).command == 'builder'
 for command, name in [('node', 'worker'), ('app', 'shop_api')]:
     parsed = build_parser().parse_args([command, 'shell', name, '--transport', 'relay'])
     assert parsed.command == command and parsed.name == name and parsed.transport == 'relay'
