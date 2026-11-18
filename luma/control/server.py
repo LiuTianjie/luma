@@ -1188,6 +1188,11 @@ def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | No
             run["message"] = str(message)[:BUILD_RUN_MESSAGE_LIMIT]
         if final_status != "canceled" and isinstance(result, dict):
             run["result"] = _build_run_result_summary(result)
+        if final_status == "succeeded":
+            # Publish success and its ordering fence atomically. A slower build
+            # may finish while workflow receipts / executor cleanup still run.
+            from .build_queue import record_deployed
+            record_deployed(state, run)
 
     # A completed deployment must not be reclassified as failed merely because
     # its success receipt cannot acquire the writer. Retain this exact outcome

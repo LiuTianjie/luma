@@ -310,6 +310,19 @@ class BuildQueueTests(unittest.TestCase):
         self.assertEqual(run['status'], 'canceled')
         self.assertIn('Superseded', run['message'])
 
+    def test_success_fences_late_build_before_executor_cleanup(self):
+        older = self.remote(ref='main', composeSidecar='a.yml')
+        newer = self.remote(ref='main', composeSidecar='b.yml', build_node='builder2')
+        old_item, new_item = queue.claim(), queue.claim()
+        self.built(new_item)
+        self.assertEqual(queue.claim()[0], newer)
+        srv._complete_build_run(newer, 'succeeded')
+        self.assertTrue(load_state()['buildRuns'][newer]['queueExecuting'])
+        self.built(old_item)
+        self.assertEqual(load_state()['buildRuns'][older]['status'], 'canceled')
+        self.finish((newer, {}))
+        self.assertIsNone(queue.claim())
+
     def test_main_latest_wins_does_not_cancel_dev(self):
         main = self.remote(ref='main', composeSidecar='luma.compose.yml')
         dev = self.remote(ref='dev', composeSidecar='luma.compose.yml', build_node='builder2')
