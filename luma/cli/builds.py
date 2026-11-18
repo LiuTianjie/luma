@@ -420,6 +420,8 @@ def cmd_build(args: argparse.Namespace) -> int:
             "context": args.build_context,
             "dockerfile": args.dockerfile,
             "composeSidecar": args.compose_sidecar,
+            "registryHost": getattr(args, "registry_host", ""),
+            "registryNamespace": getattr(args, "registry_namespace", ""),
         }.items():
             if value not in (None, ""):
                 prepare_body[key] = value
@@ -444,6 +446,8 @@ def cmd_build(args: argparse.Namespace) -> int:
                 platform=str(upload.get("platform") or ""),
                 builder=args.builder,
                 proxy=args.proxy,
+                flatten_services=bool(upload.get("flattenServices")),
+                insecure=upload.get("insecure") if isinstance(upload.get("insecure"), bool) else None,
                 timeout=args.timeout,
                 progress=(lambda line: print(line, flush=True)) if not quiet else None,
             )
@@ -545,17 +549,24 @@ def cmd_build(args: argparse.Namespace) -> int:
         default_node = str(args.default_node or (nodes[0] if nodes else "")).strip()
         direct_egress_nodes = [] if args.clear_direct_egress else args.direct_egress_nodes
         clear_registry = bool(getattr(args, "clear_registry", False))
+        clear_local_registry = bool(getattr(args, "clear_local_registry", False))
+        local_registry_host = str(getattr(args, "local_registry_host", "") or "").strip()
+        registry_namespace = str(getattr(args, "registry_namespace", "") or "").strip()
         if args.clear_direct_egress and args.direct_egress_nodes:
             raise LumaError("--clear-direct-egress cannot be combined with --direct-egress-node")
         if clear_registry and (args.registry_host or args.push_host):
             raise LumaError("--clear-registry cannot be combined with --registry-host or --push-host")
-        if not nodes and not default_node and not args.registry_host and not args.push_host and not clear_registry and direct_egress_nodes is None:
+        if clear_local_registry and (local_registry_host or registry_namespace):
+            raise LumaError("--clear-local-registry cannot be combined with --local-registry-host or --registry-namespace")
+        if not any((nodes, default_node, args.registry_host, args.push_host, clear_registry, local_registry_host, registry_namespace, clear_local_registry, direct_egress_nodes is not None)):
             raise LumaError("build config requires a builder, registry, or direct-egress option")
         result = client.configure_build(
             nodes=nodes or None,
             default_node=default_node,
             registry_host="" if clear_registry else (args.registry_host or None),
             push_host="" if clear_registry else (args.push_host or None),
+            local_registry_host="" if clear_local_registry else (local_registry_host or None),
+            registry_namespace="" if clear_local_registry else (registry_namespace or None),
             direct_egress_nodes=direct_egress_nodes,
         )
         if output_format != "text":
@@ -566,6 +577,8 @@ def cmd_build(args: argparse.Namespace) -> int:
         print(f"  Default node: {build.get('defaultNode') or '-'}")
         print(f"  Registry host: {build.get('registryHost') or '-'}")
         print(f"  Push host: {build.get('pushHost') or '-'}")
+        if build.get("localRegistryHost") or build.get("registryNamespace"):
+            print(f"  Local registry: {build.get('localRegistryHost') or '-'} (namespace: {build.get('registryNamespace') or '-'})")
         print(f"  Direct egress: {', '.join(build.get('directEgressNodes') or []) or '-'}")
         rows = []
         for node in build.get("nodes") or []:

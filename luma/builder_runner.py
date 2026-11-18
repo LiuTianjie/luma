@@ -26,11 +26,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
 
 import yaml
 
 from . import __version__
+from .build_sources import GitContextCanceled, prepare_git_contexts
 from .errors import LumaError
 
 ORBSTACK_XBIN = "/Applications/OrbStack.app/Contents/MacOS/xbin"
@@ -255,12 +256,19 @@ def _safe_subpath(root: Path, rel: str) -> Path:
     return target
 
 
-def _discover_manifest(repo_root: Path, compose_sidecar: str = "") -> Optional[Tuple[str, Path]]:
+def _discover_manifest(
+    repo_root: Path, compose_sidecar: str = "", manifest_path: str = ""
+) -> Optional[Tuple[str, Path]]:
     if compose_sidecar:
         target = _safe_subpath(repo_root, compose_sidecar)
         if not target.is_file():
             raise LumaError(f"composeSidecar not found in repository: {compose_sidecar}")
         return "compose", target
+    if manifest_path:
+        target = _safe_subpath(repo_root, manifest_path)
+        if not target.is_file():
+            raise LumaError(f"manifestPath not found in repository: {manifest_path}")
+        return "service", target
     for name in (
         "luma.compose.yml",
         "luma.compose.yaml",
@@ -621,7 +629,8 @@ def _run_buildx_command(
     no_proxy: str,
     build_args: Dict[str, str],
     target: str,
-    timeout: int,
+    build_contexts: Optional[Mapping[str, Path]] = None,
+    timeout: int = 7200,
     metadata_file: Path,
     on_line: Optional[Callable[[str], None]],
     cancel_event: threading.Event,
@@ -667,6 +676,10 @@ def _run_buildx_command(
     if proxy:
         for k, v in (("HTTP_PROXY", proxy), ("HTTPS_PROXY", proxy), ("NO_PROXY", no_proxy)):
             cmd.append(f"--build-arg={k}={v}")
+    for ctx_alias, ctx_path in sorted((build_contexts or {}).items()):
+        if not re.fullmatch(r"[a-z][a-z0-9_-]{0,62}", str(ctx_alias)):
+            raise LumaError(f"invalid build context alias: {ctx_alias!r}")
+        cmd.extend(["--build-context", f"{ctx_alias}={ctx_path}"])
     for k, v in sorted(build_args.items()):
         key_clean = str(k).strip()
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", key_clean):
@@ -761,10 +774,43 @@ def _run_buildx_command(
     return immutable_ref, pull_tag_ref
 
 
+def _prepare_runner_git_contexts(
+    src_dir: Path,
+    spec: Mapping[str, Any],
+    *,
+    repo_url: str,
+    workspace: Path,
+    git_auth: Optional[Dict[str, str]],
+    proxy: str,
+    on_line: Optional[Callable[[str], None]],
+    cancel_event: threading.Event,
+) -> Dict[str, Path]:
+    if "x-luma-git-contexts" not in spec:
+        return {}
+    token = str((git_auth or {}).get("token") or "").strip() or None
+    username = str((git_auth or {}).get("username") or "").strip() or None
+    try:
+        prepared = prepare_git_contexts(
+            src_dir,
+            dict(spec),
+            repository_url=repo_url,
+            workspace=workspace,
+            token=token,
+            username=username,
+            proxy=proxy or None,
+            cancel_event=cancel_event,
+            progress=on_line,
+        )
+    except GitContextCanceled as exc:
+        raise _RunnerCanceled("build canceled") from exc
+    return {alias: item.path for alias, item in prepared.items()}
+
+
 def _build_compose_project(
     *,
     src_dir: Path,
     sidecar_path: Path,
+    task: Dict[str, Any],
     docker_bin: str,
     builder_name: str,
     buildx_state_dir: Path,
@@ -861,6 +907,16 @@ def _build_compose_project(
         if on_line:
             on_line(f"Building compose service {svc_name} -> {push_host}/{image_repo}:{tag}")
 
+        extra_contexts = _prepare_runner_git_contexts(
+            src_dir,
+            spec,
+            repo_url=str(task["repoUrl"]),
+            workspace=tmp,
+            git_auth=task.get("gitAuth"),
+            proxy=proxy,
+            on_line=on_line,
+            cancel_event=cancel,
+        )
         immutable_ref, _ = _run_buildx_command(
             docker_bin=docker_bin,
             builder_name=builder_name,
@@ -881,6 +937,7 @@ def _build_compose_project(
             no_proxy=no_proxy,
             build_args=svc_args,
             target=str(spec.get("target") or ""),
+            build_contexts=extra_contexts,
             timeout=timeout,
             metadata_file=tmp / f"meta-{idx}.json",
             on_line=on_line,
@@ -987,11 +1044,16 @@ def execute_build_task(
             cache_keep_gb=cache_keep_gb,
             max_parallelism=max_parallelism,
         ) as builder_name:
-            discovered = _discover_manifest(src_dir, str(task.get("composeSidecar") or ""))
+            discovered = _discover_manifest(
+                src_dir,
+                compose_sidecar=str(task.get("composeSidecar") or ""),
+                manifest_path=str(task.get("manifestPath") or ""),
+            )
             if discovered and discovered[0] == "compose":
                 return _build_compose_project(
                     src_dir=src_dir,
                     sidecar_path=discovered[1],
+                    task=task,
                     docker_bin=docker_bin,
                     builder_name=builder_name,
                     buildx_state_dir=buildx_state_dir,
@@ -1045,6 +1107,16 @@ def execute_build_task(
                 platform=platforms[0],
                 namespace=namespace,
             )
+            extra_contexts = _prepare_runner_git_contexts(
+                src_dir,
+                build_block,
+                repo_url=repo_url,
+                workspace=tmp,
+                git_auth=task.get("gitAuth"),
+                proxy=local_proxy,
+                on_line=on_line,
+                cancel_event=cancel,
+            )
             immutable_ref, tag_ref = _run_buildx_command(
                 docker_bin=docker_bin,
                 builder_name=builder_name,
@@ -1065,6 +1137,7 @@ def execute_build_task(
                 no_proxy=no_proxy,
                 build_args=merged_args,
                 target=target,
+                build_contexts=extra_contexts,
                 timeout=timeout,
                 metadata_file=tmp / "meta-service.json",
                 on_line=on_line,

@@ -24,6 +24,7 @@ from .agent import (
 )
 from .errors import LumaError
 from .build_capabilities import NATIVE_ARM_BUILD_CAPABILITY
+from .registry_access import registry_host_allows_http
 from .service import build_target
 
 
@@ -158,10 +159,13 @@ def build_and_push_local_source(
     platform: str = "",
     builder: str = "",
     proxy: str = "",
+    flatten_services: bool = False,
+    insecure: bool | None = None,
     timeout: int = 7200,
     progress: Callable[[str], None] | None = None,
 ) -> Dict[str, Any]:
     root = source.expanduser().resolve()
+    resolved_insecure = registry_host_allows_http({}, registry_host) if insecure is None else bool(insecure)
     selected_builder = str(builder or "").strip()
     local_proxy = str(proxy or "").strip()
     if selected_builder and not all(
@@ -230,6 +234,8 @@ def build_and_push_local_source(
                 payload=payload,
                 progress=emit,
                 allow_repo_overrides=False,
+                flatten_services=flatten_services,
+                insecure=resolved_insecure,
                 buildx_builder=local_builder,
                 buildx_config_root=user_buildx_root,
             )
@@ -262,6 +268,7 @@ def build_and_push_local_source(
             proxy=local_proxy,
             no_proxy=f"localhost,127.0.0.1,::1,{registry_host}",
             registry_host=registry_host,
+            insecure=resolved_insecure,
             env=buildx_env,
         )
         image = _docker_buildx_build(
@@ -278,6 +285,7 @@ def build_and_push_local_source(
             proxy=local_proxy,
             build_timeout=timeout,
             target=target,
+            insecure=resolved_insecure,
             progress=emit,
             buildx_config_root=user_buildx_root,
         )

@@ -614,11 +614,15 @@ class BuildStore:
         pinned_runner = str(body.get("runner") or body.get("buildNode") or "").strip().lower()
         deploy_enabled = bool(body.get("deploy", True))
         compose_sidecar = str(body.get("composeSidecar") or "").strip()
+        manifest_path = str(body.get("manifestPath") or "").strip()
+        if compose_sidecar and manifest_path:
+            raise BuildError("composeSidecar cannot be combined with manifestPath")
         context_rel = str(body.get("context") or "").strip()
         dockerfile_rel = str(body.get("dockerfile") or "").strip()
         target_stage = str(body.get("target") or "").strip()
         for label, rel_val in (
             ("composeSidecar", compose_sidecar),
+            ("manifestPath", manifest_path),
             ("context", context_rel),
             ("dockerfile", dockerfile_rel),
         ):
@@ -640,6 +644,8 @@ class BuildStore:
             target_key = f"app:{explicit_app}"
         elif compose_sidecar:
             target_key = f"compose:{compose_sidecar}"
+        elif manifest_path:
+            target_key = f"manifest:{manifest_path}"
         else:
             target_key = json.dumps(
                 ["service", context_rel or ".", dockerfile_rel or "Dockerfile", target_stage],
@@ -668,6 +674,7 @@ class BuildStore:
             "dockerfile": dockerfile_rel,
             "target": target_stage,
             "composeSidecar": compose_sidecar,
+            "manifestPath": manifest_path,
             "manifest": str(body.get("manifest") or ""),
             "region": str(body.get("region") or "").strip(),
             "node": str(body.get("node") or "").strip(),

@@ -297,6 +297,8 @@ def _add_deploy_commands(sub: argparse._SubParsersAction) -> None:
     build_local.add_argument("--context", dest="build_context", default="", help="Docker build context inside the project")
     build_local.add_argument("--dockerfile", default="", help="Dockerfile inside the project")
     build_local.add_argument("--repo-url", default="", help="Project Git URL used to name the image (default: the origin remote)")
+    build_local.add_argument("--registry-host", dest="registry_host", default="", help="Registry host for local build upload (overrides Control default)")
+    build_local.add_argument("--registry-namespace", dest="registry_namespace", default="", help="Two-level registry namespace (e.g. luma for Aliyun ACR)")
     build_local.add_argument("--env", dest="deploy_env_file", type=Path, help="Store variables from this .env file as application secrets")
     build_local.add_argument("--timeout", type=int, default=7200, help="Seconds allowed for build and deploy (default: 7200)")
     _add_workflow_arguments(build_local)
@@ -328,6 +330,9 @@ def _add_deploy_commands(sub: argparse._SubParsersAction) -> None:
     build_config.add_argument("--registry-host", default="", help="Registry host that nodes pull from, for example 10.0.0.5:5000")
     build_config.add_argument("--push-host", default="", help="Registry host that builds push to (the builder's mesh address, not localhost)")
     build_config.add_argument("--clear-registry", action="store_true", help="Clear internal Builder registry settings so nodes pull images directly")
+    build_config.add_argument("--local-registry-host", default="", help="Registry host for 'luma build local' when internal Builder registry is disabled")
+    build_config.add_argument("--registry-namespace", default="", help="Two-level registry namespace for 'luma build local' (e.g. luma for Aliyun ACR)")
+    build_config.add_argument("--clear-local-registry", action="store_true", help="Clear local-build registry host and namespace settings")
     build_config.add_argument("--direct-egress-node", action="append", dest="direct_egress_nodes", default=None, help="Builder with direct internet access; repeat for several")
     build_config.add_argument("--clear-direct-egress", action="store_true", help="Clear the direct-egress builder list")
     _add_control_arguments(build_config)
@@ -521,7 +526,7 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
             "Update the local CLI. On a manager this also refreshes Luma Control, and on a joined "
             "node it refreshes the node agent."
         ),
-        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.72\n  luma update fleet",
+        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.73\n  luma update fleet",
     )
     _add_update_arguments(update)
     _add_control_arguments(update)

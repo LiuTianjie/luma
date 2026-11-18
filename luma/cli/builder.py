@@ -235,10 +235,12 @@ def add_parser(
     sub_p = command_fn(bsub, "submit", "Submit a Git repository build and optional Luma deployment")
     sub_p.add_argument("source", help="Git repository URL or owner/name shorthand")
     sub_p.add_argument("--ref", default="main", help="Branch, tag or 40-char commit SHA (default: main)")
-    sub_p.add_argument("--provider-id", default="", help="Saved Git credential ID, for example gitea:gcode")
+    sub_p.add_argument("--provider-id", default="", help="Saved Git credential ID, for example gitea:corp")
     sub_p.add_argument("--platform", default="", help="Target container platform, for example linux/amd64 or linux/arm64")
     sub_p.add_argument("--runner", default="", help="Pin a specific registered runner name")
     sub_p.add_argument("--compose-sidecar", default="", help="Repository-relative luma.compose.yml path")
+    sub_p.add_argument("--manifest-path", default="", help="Repository-relative single-service manifest path (for example luma.prod.api.yml)")
+    sub_p.add_argument("--manifest", type=Path, default=None, help="Local manifest file to attach when the repository has none")
     sub_p.add_argument("--context", default="", help="Docker build context subdirectory inside the repository")
     sub_p.add_argument("--dockerfile", default="", help="Dockerfile path inside the repository")
     sub_p.add_argument("--target", default="", help="Dockerfile multi-stage target name")
@@ -441,6 +443,15 @@ def cmd_builder(args: argparse.Namespace) -> int:
     if subcmd == "submit":
         src = str(args.source).strip()
         is_url = "://" in src or src.startswith("git@")
+        if args.compose_sidecar and (args.manifest_path or args.manifest):
+            raise LumaError("--compose-sidecar cannot be combined with --manifest-path or --manifest")
+        if args.manifest_path and args.manifest:
+            raise LumaError("use either --manifest-path (in-repo) or --manifest (local file), not both")
+        manifest_text = ""
+        if args.manifest is not None:
+            if not args.manifest.is_file():
+                raise LumaError(f"local manifest file not found: {args.manifest}")
+            manifest_text = args.manifest.read_text(encoding="utf-8")
         body: Dict[str, Any] = {
             "repoUrl": src if is_url else "",
             "repository": "" if is_url else src,
@@ -449,6 +460,8 @@ def cmd_builder(args: argparse.Namespace) -> int:
             "platform": args.platform,
             "runner": args.runner,
             "composeSidecar": args.compose_sidecar,
+            "manifestPath": args.manifest_path,
+            "manifest": manifest_text,
             "context": args.context,
             "dockerfile": args.dockerfile,
             "target": args.target,

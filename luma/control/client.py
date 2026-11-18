@@ -981,6 +981,8 @@ class ControlClient:
         default_node: str = "",
         registry_host: str | None = None,
         push_host: str | None = None,
+        local_registry_host: str | None = None,
+        registry_namespace: str | None = None,
         direct_egress_nodes: list[str] | None = None,
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {}
@@ -994,6 +996,10 @@ class ControlClient:
             body["registryHost"] = registry_host
         if push_host is not None:
             body["pushHost"] = push_host
+        if local_registry_host is not None:
+            body["localRegistryHost"] = local_registry_host
+        if registry_namespace is not None:
+            body["registryNamespace"] = registry_namespace
         if direct_egress_nodes is not None:
             body["directEgressNodes"] = direct_egress_nodes
         return self.request("POST", "/v1/builds/config", body)

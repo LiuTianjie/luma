@@ -132,7 +132,7 @@ def make_recipe(args: argparse.Namespace) -> dict[str, Any]:
         "exposure": "--exposure", "domain": "--domain", "port": "--port",
         "manifest": "--manifest", "compose_sidecar": "--compose-sidecar",
         "platform": "--platform", "build_context": "--context", "dockerfile": "--dockerfile",
-        "registry_host": "--registry-host", "proxy_mode": "--proxy-mode",
+        "registry_host": "--registry-host", "registry_namespace": "--registry-namespace", "proxy_mode": "--proxy-mode",
         "repo_url": "--repo-url", "builder": "--builder", "proxy": "--proxy",
         "deploy_env_file": "--env", "timeout": "--timeout", "engine": "--engine",
     }

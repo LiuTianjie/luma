@@ -25,13 +25,15 @@ import signal
 import ssl
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
-from pathlib import Path
-from typing import Any, Callable, Iterator
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Iterator, Mapping
 
 import yaml
 
@@ -99,12 +101,19 @@ def _safe_subpath(root: Path, rel: str) -> Path:
     return target
 
 
-def _discover_manifest(repo_root: Path, compose_sidecar: str = "") -> tuple[str, Path] | None:
+def _discover_manifest(
+    repo_root: Path, compose_sidecar: str = "", manifest_path: str = ""
+) -> tuple[str, Path] | None:
     if compose_sidecar:
         target = _safe_subpath(repo_root, compose_sidecar)
         if not target.is_file():
             raise BuildError(f"composeSidecar not found in repository: {compose_sidecar}")
         return "compose", target
+    if manifest_path:
+        target = _safe_subpath(repo_root, manifest_path)
+        if not target.is_file():
+            raise BuildError(f"manifestPath not found in repository: {manifest_path}")
+        return "service", target
 
     service_names = (".luma.yml", ".luma.yaml", "luma.yml", "luma.yaml")
     compose_names = (
@@ -232,6 +241,198 @@ def _clone_repo(
     short_sha = subprocess.check_output(["git", "-C", str(dest), "rev-parse", "--short=12", "HEAD"], text=True, timeout=15).strip()
     full_sha = subprocess.check_output(["git", "-C", str(dest), "rev-parse", "HEAD"], text=True, timeout=15).strip()
     return short_sha, full_sha
+
+
+_GIT_CONTEXT_ALIAS_RE = re.compile(r"^[a-z][a-z0-9_-]{0,62}$")
+_GIT_CONTEXT_COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_GIT_CONTEXT_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_GIT_CONTEXT_RESERVED = {"context", "dockerfile", "scratch"}
+_MAX_GIT_CONTEXTS = 16
+_MAX_LOCK_BYTES = 64 * 1024
+_MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
+_MAX_EXTRACTED_BYTES = 4 * _MAX_ARCHIVE_BYTES
+_MAX_ARCHIVE_MEMBERS = 100_000
+
+
+def _https_origin(url: str) -> tuple[str, int]:
+    parsed = urllib.parse.urlsplit(url)
+    port = parsed.port if parsed.port is not None else 443
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or "?" in url
+        or "#" in url
+        or "\\" in url
+        or not parsed.path.strip("/")
+        or not (0 < port <= 65535)
+    ):
+        raise BuildError("x-luma-git-contexts requires HTTPS repository URLs without credentials or query")
+    return parsed.hostname.lower(), port
+
+
+def _safe_archive_relpath(raw_name: str) -> PurePosixPath:
+    if not raw_name or "\\" in raw_name or any(ord(c) < 32 or ord(c) == 127 for c in raw_name):
+        raise BuildError("Git context archive contains an invalid path")
+    p = PurePosixPath(raw_name)
+    if p.is_absolute() or any(part in {"", ".", ".."} for part in raw_name.split("/")):
+        raise BuildError("Git context archive path escapes root")
+    if any(part.casefold() == ".git" for part in p.parts):
+        raise BuildError("Git context archive must not contain .git metadata")
+    return p
+
+
+def _extract_verified_tar_gz(archive: Path, destination: Path, cancel_event: threading.Event) -> None:
+    try:
+        with tarfile.open(archive, "r:gz") as source:
+            members: dict[PurePosixPath, tarfile.TarInfo] = {}
+            total_size = 0
+            for member in source:
+                if cancel_event.is_set():
+                    raise BuildCanceled("build canceled")
+                name = member.name[:-1] if member.isdir() and member.name.endswith("/") else member.name
+                rel = _safe_archive_relpath(name)
+                if rel in members:
+                    raise BuildError("Git context archive contains duplicate path")
+                if not (member.isdir() or member.isreg() or member.issym()) or member.sparse or member.size < 0:
+                    raise BuildError("Git context archive contains unsupported entry")
+                total_size += member.size
+                if len(members) >= _MAX_ARCHIVE_MEMBERS or total_size > _MAX_EXTRACTED_BYTES:
+                    raise BuildError("Git context archive exceeds extraction limit")
+                if member.issym() and (
+                    not member.linkname
+                    or PurePosixPath(member.linkname).is_absolute()
+                    or "\\" in member.linkname
+                    or any(ord(c) < 32 for c in member.linkname)
+                ):
+                    raise BuildError("Git context archive contains invalid symlink")
+                members[rel] = member
+            for rel in members:
+                for parent in rel.parents:
+                    anc = members.get(parent)
+                    if anc is not None and not anc.isdir():
+                        raise BuildError("Git context archive writes through non-directory")
+            destination.mkdir(mode=0o755)
+            for rel, member in members.items():
+                if cancel_event.is_set():
+                    raise BuildCanceled("build canceled")
+                target = destination.joinpath(*rel.parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if member.isdir():
+                    target.mkdir(exist_ok=True)
+                elif member.isreg():
+                    reader = source.extractfile(member)
+                    if reader is None:
+                        raise BuildError("unable to read regular archive member")
+                    with reader, target.open("xb") as writer:
+                        while True:
+                            if cancel_event.is_set():
+                                raise BuildCanceled("build canceled")
+                            chunk = reader.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            writer.write(chunk)
+                    target.chmod(0o755 if member.mode & 0o111 else 0o644)
+            for rel, member in members.items():
+                if member.issym():
+                    destination.joinpath(*rel.parts).symlink_to(member.linkname)
+            dest_root = destination.resolve(strict=True)
+            for rel, member in members.items():
+                if member.issym():
+                    target = destination.joinpath(*rel.parts)
+                    if not target.resolve(strict=False).is_relative_to(dest_root):
+                        raise BuildError("Git context symlink escapes root")
+                    with contextlib.suppress(FileNotFoundError):
+                        target.stat()
+    except (BuildError, BuildCanceled):
+        raise
+    except (OSError, RuntimeError, tarfile.TarError) as exc:
+        raise BuildError("Git context archive cannot be safely extracted") from exc
+
+
+def _prepare_git_contexts(
+    src_dir: Path,
+    build_spec: Mapping[str, Any],
+    *,
+    primary_repo_url: str,
+    workspace: Path,
+    git_auth: dict[str, str] | None,
+    proxy: str,
+    on_line: Callable[[str], None] | None,
+    cancel_event: threading.Event,
+) -> dict[str, Path]:
+    if "x-luma-git-contexts" not in build_spec:
+        return {}
+    raw_contexts = build_spec["x-luma-git-contexts"]
+    if not isinstance(raw_contexts, Mapping) or not raw_contexts or len(raw_contexts) > _MAX_GIT_CONTEXTS:
+        raise BuildError(f"build.x-luma-git-contexts must declare 1..{_MAX_GIT_CONTEXTS} named contexts")
+    primary_origin = _https_origin(primary_repo_url)
+    out_root = Path(tempfile.mkdtemp(prefix="luma-git-ctx-", dir=workspace))
+    prepared: dict[str, Path] = {}
+    for alias, item in raw_contexts.items():
+        if cancel_event.is_set():
+            raise BuildCanceled("build canceled")
+        if not isinstance(alias, str) or not _GIT_CONTEXT_ALIAS_RE.fullmatch(alias) or alias in _GIT_CONTEXT_RESERVED:
+            raise BuildError(f"invalid or reserved x-luma-git-contexts alias: {alias!r}")
+        if not isinstance(item, Mapping) or set(item) != {"lock"} or not isinstance(item["lock"], str):
+            raise BuildError(f"Git context {alias} must declare only a lock path")
+        lock_path = _safe_subpath(src_dir, item["lock"])
+        if not lock_path.is_file() or lock_path.stat().st_size > _MAX_LOCK_BYTES:
+            raise BuildError(f"Git context {alias} lock file missing or too large: {item['lock']}")
+        try:
+            lock_data = json.loads(lock_path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            raise BuildError(f"Git context {alias} lock is invalid JSON") from exc
+        if not isinstance(lock_data, dict) or set(lock_data) != {"repository", "commit", "archive_sha256"}:
+            raise BuildError(f"Git context {alias} lock must contain repository, commit, and archive_sha256")
+        ctx_repo = str(lock_data["repository"])
+        ctx_commit = str(lock_data["commit"])
+        ctx_sha256 = str(lock_data["archive_sha256"])
+        if _https_origin(ctx_repo) != primary_origin:
+            raise BuildError(f"Git context {alias} must share the primary repository HTTPS origin")
+        if not _GIT_CONTEXT_COMMIT_RE.fullmatch(ctx_commit) or not _GIT_CONTEXT_SHA256_RE.fullmatch(ctx_sha256):
+            raise BuildError(f"Git context {alias} lock requires lowercase commit and archive_sha256")
+        if on_line:
+            on_line(f"Preparing pinned Git context {alias} ({ctx_commit[:12]})...")
+        with tempfile.TemporaryDirectory(prefix="luma-ctx-fetch-", dir=workspace) as fetch_raw:
+            fetch_dir = Path(fetch_raw)
+            cloned = fetch_dir / "repo"
+            archive = fetch_dir / "source.tar.gz"
+            _, got_full = _clone_repo(
+                repo_url=ctx_repo,
+                ref=ctx_commit,
+                dest=cloned,
+                git_auth=git_auth,
+                proxy=proxy,
+            )
+            if got_full != ctx_commit:
+                raise BuildError(f"Git context {alias} checkout commit mismatch")
+            with archive.open("xb") as stream:
+                ar_res = subprocess.run(
+                    ["git", "-C", str(cloned), "archive", "--format=tar.gz", ctx_commit],
+                    stdout=stream,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    timeout=180,
+                )
+            if ar_res.returncode != 0 or archive.stat().st_size > _MAX_ARCHIVE_BYTES:
+                raise BuildError(f"failed to archive pinned Git context {alias}")
+            digest = hashlib.sha256()
+            with archive.open("rb") as stream:
+                while True:
+                    if cancel_event.is_set():
+                        raise BuildCanceled("build canceled")
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+            if digest.hexdigest() != ctx_sha256:
+                raise BuildError(f"Git context {alias} archive SHA256 does not match reviewed lock")
+            extracted = out_root / alias
+            _extract_verified_tar_gz(archive, extracted, cancel_event)
+            prepared[alias] = extracted
+    return prepared
 
 
 def _render_buildkitd_toml(
@@ -485,6 +686,7 @@ def _run_buildx_command(
     no_proxy: str,
     build_args: dict[str, str],
     target: str,
+    build_contexts: Mapping[str, Path] | None = None,
     timeout: int,
     metadata_file: Path,
     on_line: Callable[[str], None] | None,
@@ -531,6 +733,10 @@ def _run_buildx_command(
     if proxy:
         for k, v in (("HTTP_PROXY", proxy), ("HTTPS_PROXY", proxy), ("NO_PROXY", no_proxy)):
             cmd.append(f"--build-arg={k}={v}")
+    for ctx_alias, ctx_path in sorted((build_contexts or {}).items()):
+        if not _GIT_CONTEXT_ALIAS_RE.fullmatch(str(ctx_alias)):
+            raise BuildError(f"invalid build context alias: {ctx_alias!r}")
+        cmd.extend(["--build-context", f"{ctx_alias}={ctx_path}"])
     for k, v in sorted(build_args.items()):
         key_clean = str(k).strip()
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", key_clean):
@@ -714,7 +920,11 @@ def execute_build_task(
             cache_keep_gb=cache_keep_gb,
             max_parallelism=max_parallelism,
         ) as builder_name:
-            discovered = _discover_manifest(src_dir, str(task.get("composeSidecar") or ""))
+            discovered = _discover_manifest(
+                src_dir,
+                compose_sidecar=str(task.get("composeSidecar") or ""),
+                manifest_path=str(task.get("manifestPath") or ""),
+            )
             if discovered and discovered[0] == "compose":
                 return _build_compose_project(
                     src_dir=src_dir,
@@ -773,6 +983,16 @@ def execute_build_task(
                 platform=platforms[0],
                 namespace=namespace,
             )
+            extra_contexts = _prepare_git_contexts(
+                src_dir,
+                build_block,
+                primary_repo_url=repo_url,
+                workspace=tmp,
+                git_auth=task.get("gitAuth"),
+                proxy=local_proxy,
+                on_line=on_line,
+                cancel_event=cancel,
+            )
             immutable_ref, tag_ref = _run_buildx_command(
                 docker_bin=docker_bin,
                 builder_name=builder_name,
@@ -793,6 +1013,7 @@ def execute_build_task(
                 no_proxy=no_proxy,
                 build_args=merged_args,
                 target=target,
+                build_contexts=extra_contexts,
                 timeout=timeout,
                 metadata_file=tmp / "meta-service.json",
                 on_line=on_line,
@@ -911,6 +1132,16 @@ def _build_compose_project(
         if on_line:
             on_line(f"Building compose service {svc_name} -> {push_host}/{image_repo}:{tag}")
 
+        extra_contexts = _prepare_git_contexts(
+            src_dir,
+            spec,
+            primary_repo_url=str(task["repoUrl"]),
+            workspace=tmp,
+            git_auth=task.get("gitAuth"),
+            proxy=proxy,
+            on_line=on_line,
+            cancel_event=cancel,
+        )
         immutable_ref, _ = _run_buildx_command(
             docker_bin=docker_bin,
             builder_name=builder_name,
@@ -931,6 +1162,7 @@ def _build_compose_project(
             no_proxy=no_proxy,
             build_args=svc_args,
             target=str(spec.get("target") or ""),
+            build_contexts=extra_contexts,
             timeout=timeout,
             metadata_file=tmp / f"meta-{idx}.json",
             on_line=on_line,

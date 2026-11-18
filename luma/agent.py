@@ -3528,6 +3528,7 @@ def _ensure_buildx_builder(
     proxy: str = "",
     no_proxy: str = "",
     registry_host: str = "",
+    insecure: bool = True,
     recreate: bool = False,
     env: Mapping[str, str] | None = None,
 ) -> str:
@@ -3537,6 +3538,7 @@ def _ensure_buildx_builder(
     # distinct builder name per proxy state so a build never reuses a builder that
     # lacks the proxy it needs.
     name = "luma-builder-egress" if proxy else "luma-builder"
+    marker_value = (registry_host if insecure else f"tls:{registry_host}") if registry_host else ""
     if recreate:
         subprocess.run(
             [docker, "buildx", "rm", "-f", name],
@@ -3565,7 +3567,7 @@ def _ensure_buildx_builder(
             no_proxy=no_proxy,
             env=env,
         )
-        or not _buildx_registry_marker_matches(name, registry_host=registry_host, env=env)
+        or not _buildx_registry_marker_matches(name, registry_host=marker_value, env=env)
     ):
         # Builder names distinguish proxy/no-proxy in the common case, but the
         # egress proxy URL and NO_PROXY list can change while the named builder
@@ -3588,7 +3590,7 @@ def _ensure_buildx_builder(
     if needs_create:
         create_cmd = [docker, "buildx", "create", "--name", name, "--driver", "docker-container", "--driver-opt", "network=host"]
         buildkit_config: tempfile.NamedTemporaryFile[str] | None = None
-        if registry_host:
+        if registry_host and insecure:
             # The image exporter has its own ``registry.insecure`` switch, but
             # Dockerfile FROM/COPY --from resolution is performed by the
             # independent BuildKit daemon.  Give that resolver an explicit
@@ -3608,21 +3610,21 @@ def _ensure_buildx_builder(
             )
             buildkit_config.flush()
             create_cmd += ["--buildkitd-config", buildkit_config.name]
+        if registry_host and _buildx_config_root(env) is not None:
             # A task-scoped DOCKER_CONFIG used to discard Buildx metadata while
             # leaving this deterministic BuildKit container behind.  Remove
             # only that orphan container before re-creating the builder; keep
             # its named state volume so cache survives.  This never touches
             # dockerd configuration or application containers.
-            if _buildx_config_root(env) is not None:
-                subprocess.run(
-                    [docker, "rm", "-f", f"buildx_buildkit_{name}0"],
-                    text=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                    env=env,
-                    timeout=60,
-                )
+            subprocess.run(
+                [docker, "rm", "-f", f"buildx_buildkit_{name}0"],
+                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                env=env,
+                timeout=60,
+            )
         if proxy:
             create_cmd += [
                 "--driver-opt", f"env.HTTP_PROXY={proxy}",
@@ -3665,7 +3667,7 @@ def _ensure_buildx_builder(
             env=env,
         ):
             raise LumaError(f"failed to create buildx builder {name} with the requested network settings")
-        _write_buildx_registry_marker(name, registry_host=registry_host, env=env)
+        _write_buildx_registry_marker(name, registry_host=marker_value, env=env)
     return name
 
 
@@ -3951,6 +3953,7 @@ def _docker_buildx_build(
     build_timeout: int,
     build_args: Mapping[str, str] | None = None,
     target: str = "",
+    insecure: bool = True,
     build_contexts: Mapping[str, Path] | None = None,
     progress: Callable[[Dict[str, Any]], None] | None = None,
     cancel_event: threading.Event | None = None,
@@ -3997,7 +4000,8 @@ def _docker_buildx_build(
         # registry, but the docker-container BuildKit daemon is independent and
         # does not inherit daemon.json. Tell the image exporter explicitly so
         # pushes do not get upgraded to HTTPS inside BuildKit.
-        "--output", "type=image,push=true,registry.insecure=true",
+        "--output",
+        "type=image,push=true" + (",registry.insecure=true" if insecure else ""),
         "-t", tag_sha,
         "-t", tag_latest,
         "-f", str(dockerfile_path),
@@ -4292,6 +4296,8 @@ def _build_compose_images(
     progress: Callable[[Dict[str, Any]], None] | None = None,
     cancel_event: threading.Event | None = None,
     allow_repo_overrides: bool = True,
+    flatten_services: bool = False,
+    insecure: bool = True,
     buildx_builder: str = "",
     buildx_config_root: Path | None = None,
     source_workspace: Path | None = None,
@@ -4358,6 +4364,7 @@ def _build_compose_images(
         proxy=proxy or "",
         no_proxy=no_proxy,
         registry_host=registry_host,
+        insecure=insecure,
         env=buildx_env,
     )
     images: Dict[str, str] = {}
@@ -4378,7 +4385,8 @@ def _build_compose_images(
             if allow_repo_overrides
             else ""
         )
-        image_repo = _safe_image_repo(repo_override or (repo if single_build else f"{repo}/{slugify(service_name)}"))
+        sep = "-" if flatten_services else "/"
+        image_repo = _safe_image_repo(repo_override or (repo if single_build else f"{repo}{sep}{slugify(service_name)}"))
         build_contexts = _prepare_build_git_contexts(
             src, spec, payload=payload, workspace=source_workspace, proxy=proxy,
             progress=progress, cancel_event=cancel_event,
@@ -4398,6 +4406,7 @@ def _build_compose_images(
             build_timeout=build_timeout,
             build_args=_compose_build_args(spec),
             target=build_target(spec),
+            insecure=insecure,
             build_contexts=build_contexts,
             progress=progress,
             cancel_event=cancel_event,

@@ -355,6 +355,67 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(internal_res["deployed"], "100.64.0.70:5000/acme/existing:1")
         task.assert_not_called()
 
+    def test_control_image_prepare_and_local_build_work_after_retiring_internal_registry(self):
+        from luma.control.server import (
+            _control_image_prepare_plan,
+            _validate_local_build_result,
+            handle_local_build_prepare,
+        )
+        from luma.control.state import save_state
+
+        acr_host = "crpi-demo.cn-beijing.personal.cr.aliyuncs.com"
+        state = {
+            "deployToken": "tok-123",
+            "build": {
+                "localRegistryHost": acr_host,
+                "registryNamespace": "luma",
+            },
+            "registries": {
+                acr_host: {
+                    "serverAddress": acr_host,
+                    "username": "ro",
+                    "password": "pw",
+                }
+            },
+            "nodes": {
+                "manager": {
+                    "name": "manager",
+                    "region": "cn",
+                    "agent": {"status": "online", "os": "linux", "arch": "amd64", "lastSeen": int(time.time())},
+                }
+            },
+        }
+        plan = _control_image_prepare_plan(
+            state, "v0.2.73", "ghcr.io/liutianjie/luma-control:v0.2.73"
+        )
+        self.assertTrue(plan["alreadyInternal"])
+        self.assertEqual(plan["destinationImage"], "ghcr.io/liutianjie/luma-control:v0.2.73")
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ, {"LUMA_CONTROL_STATE_DIR": tmp}, clear=False
+        ):
+            save_state({"clusterId": "luma-test", **state})
+            prepared = handle_local_build_prepare(
+                "tok-123",
+                {"repoUrl": "https://github.com/LiuTianjie/luma.git", "region": "cn"},
+            )
+            upload = prepared["upload"]
+            self.assertEqual(upload["registryHost"], acr_host)
+            self.assertEqual(upload["repository"], "luma/liutianjie-luma")
+            self.assertTrue(upload["flattenServices"])
+            self.assertFalse(upload["insecure"])
+            tag = upload["tag"]
+            _validate_local_build_result(
+                prepared["run"],
+                {
+                    "image": f"{acr_host}/luma/liutianjie-luma-collector:{tag}",
+                    "images": {
+                        "collector": f"{acr_host}/luma/liutianjie-luma-collector:{tag}",
+                        "grafana": f"{acr_host}/luma/liutianjie-luma-grafana:{tag}",
+                    },
+                },
+            )
+
     def test_compose_runtime_cache_reuses_duplicate_image_copy(self):
         from luma.compose import ComposeDeploymentSpec
         from luma.config import LumaConfig

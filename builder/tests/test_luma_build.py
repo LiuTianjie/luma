@@ -26,7 +26,9 @@ from luma_build.registry_naming import (  # noqa: E402
     validate_git_ref,
 )
 from luma_build.runner import (  # noqa: E402
+    _discover_manifest,
     _ensure_runner_buildx,
+    _prepare_git_contexts,
     _render_buildkitd_toml,
     _run_buildx_command,
     execute_build_task,
@@ -836,6 +838,87 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
             )
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(resp.json()["build"]["platforms"], ["linux/arm64"])
+
+    def test_manifest_path_and_x_luma_git_contexts_end_to_end(self) -> None:
+        import hashlib
+        import subprocess as sp
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Create a real local git repo to archive as pinned shared context
+            shared = root / "shared-src"
+            shared.mkdir()
+            (shared / "lib.py").write_text("VALUE = 42\n", encoding="utf-8")
+            sp.run(["git", "-C", str(shared), "init"], check=True, stdout=sp.DEVNULL)
+            sp.run(["git", "-C", str(shared), "config", "user.email", "ci@example.com"], check=True)
+            sp.run(["git", "-C", str(shared), "config", "user.name", "ci"], check=True)
+            sp.run(["git", "-C", str(shared), "add", "."], check=True)
+            sp.run(["git", "-C", str(shared), "commit", "-m", "init"], check=True, stdout=sp.DEVNULL)
+            commit = sp.check_output(["git", "-C", str(shared), "rev-parse", "HEAD"], text=True).strip()
+            archive_bytes = sp.check_output(["git", "-C", str(shared), "archive", "--format=tar.gz", commit])
+            archive_sha = hashlib.sha256(archive_bytes).hexdigest()
+
+            primary = root / "primary"
+            primary.mkdir()
+            (primary / "luma.prod.api.yml").write_text("name: api-prod\nregion: cn\n", encoding="utf-8")
+            (primary / "shared.lock.json").write_text(
+                json.dumps(
+                    {
+                        "repository": "https://git.example.com/acme/shared.git",
+                        "commit": commit,
+                        "archive_sha256": archive_sha,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            discovered = _discover_manifest(primary, manifest_path="luma.prod.api.yml")
+            assert discovered is not None
+            self.assertEqual(discovered[0], "service")
+            self.assertEqual(discovered[1].name, "luma.prod.api.yml")
+
+            def fake_clone(*, repo_url, ref, dest, git_auth, proxy=""):
+                import shutil
+
+                shutil.copytree(shared, dest)
+                return commit[:12], commit
+
+            work = root / "work"
+            work.mkdir()
+            with patch("luma_build.runner._clone_repo", side_effect=fake_clone):
+                prepared = _prepare_git_contexts(
+                    primary,
+                    {"x-luma-git-contexts": {"shared": {"lock": "shared.lock.json"}}},
+                    primary_repo_url="https://git.example.com/acme/primary.git",
+                    workspace=work,
+                    git_auth={"username": "bot", "token": "pat"},
+                    proxy="",
+                    on_line=None,
+                    cancel_event=__import__("threading").Event(),
+                )
+            self.assertEqual((prepared["shared"] / "lib.py").read_text(encoding="utf-8"), "VALUE = 42\n")
+
+            # Cross-origin repository must be rejected so gitAuth never leaks
+            (primary / "bad.lock.json").write_text(
+                json.dumps(
+                    {
+                        "repository": "https://evil.example.com/acme/shared.git",
+                        "commit": commit,
+                        "archive_sha256": archive_sha,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(BuildError, "must share the primary repository HTTPS origin"):
+                _prepare_git_contexts(
+                    primary,
+                    {"x-luma-git-contexts": {"shared": {"lock": "bad.lock.json"}}},
+                    primary_repo_url="https://git.example.com/acme/primary.git",
+                    workspace=work,
+                    git_auth={"username": "bot", "token": "pat"},
+                    proxy="",
+                    on_line=None,
+                    cancel_event=__import__("threading").Event(),
+                )
 
 
 if __name__ == "__main__":

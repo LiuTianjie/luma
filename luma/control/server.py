@@ -3073,15 +3073,21 @@ def handle_build_config_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                 build["directEgressNodes"] = sorted(set(direct_egress_nodes))
             else:
                 build.pop("directEgressNodes", None)
-        for key in ("registryHost", "pushHost"):
+        for key in ("registryHost", "pushHost", "localRegistryHost", "registryNamespace"):
             if body.get(key) is not None:
                 value = str(body.get(key) or "").strip()
                 if value:
+                    if key == "registryNamespace":
+                        value = value.strip("/").lower()
+                        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", value):
+                            raise LumaError(f"invalid registryNamespace: {value!r}")
+                    else:
+                        value = normalize_registry_host(value)
                     build[key] = value
                 else:
                     build.pop(key, None)
         state["build"] = build
-        if any(body.get(key) is not None for key in ("registryHost", "pushHost")):
+        if any(body.get(key) is not None for key in ("registryHost", "pushHost", "localRegistryHost", "registryNamespace")):
             _invalidate_setup_checks(state, "registry")
         return _build_summary(state)
 
@@ -4343,9 +4349,30 @@ def handle_local_build_prepare(token: str, body: Dict[str, Any]) -> Dict[str, An
     repo_url = normalize_import_repo_url(str(body.get("repoUrl") or "").strip())
     if not repo_url:
         raise LumaError("repoUrl is required for a local build")
-    project_key = _image_repo_from_repo_url(repo_url)
+    raw_project_key = _image_repo_from_repo_url(repo_url)
     build_config = _build_config(state)
-    registry_host = normalize_registry_host(str(build_config.get("registryHost") or "").strip())
+    raw_registry_host = str(
+        body.get("registryHost")
+        or build_config.get("localRegistryHost")
+        or build_config.get("registryHost")
+        or ""
+    ).strip()
+    registry_host = normalize_registry_host(raw_registry_host)
+    raw_namespace = (
+        body["registryNamespace"]
+        if "registryNamespace" in body and body["registryNamespace"] is not None
+        else build_config.get("registryNamespace")
+    )
+    registry_namespace = str(raw_namespace or "").strip().strip("/").lower()
+    if registry_namespace:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", registry_namespace):
+            raise LumaError(f"invalid registryNamespace: {registry_namespace!r}")
+        flat_project = re.sub(r"[^a-z0-9._-]+", "-", raw_project_key.replace("/", "-").lower()).strip("-._") or "app"
+        project_key = f"{registry_namespace}/{flat_project}"
+        flatten_services = True
+    else:
+        project_key = raw_project_key
+        flatten_services = False
     raw_target_nodes = body.get("targetNodes")
     target_nodes = [
         str(value).strip()
@@ -4381,6 +4408,8 @@ def handle_local_build_prepare(token: str, body: Dict[str, Any]) -> Dict[str, An
     request = dict(body)
     request["repoUrl"] = repo_url
     request["registryHost"] = registry_host
+    request["registryNamespace"] = registry_namespace
+    request["flattenServices"] = flatten_services
     request["localBuild"] = True
     request["platform"] = build_platform
     run_id = _create_build_run(
@@ -4408,6 +4437,8 @@ def handle_local_build_prepare(token: str, body: Dict[str, Any]) -> Dict[str, An
             "tag": tag,
             "image": f"{registry_host}/{project_key}:{tag}",
             "platform": build_platform,
+            "flattenServices": flatten_services,
+            "insecure": registry_host_allows_http(state, registry_host),
         },
     }
 
@@ -4418,6 +4449,7 @@ def _validate_local_build_result(run: Dict[str, Any], build_result: Dict[str, An
     if native_arm_build_platform(_platform_parts(request.get("platform"))):
         require_build_result_capabilities(build_result, [NATIVE_ARM_BUILD_CAPABILITY], owner="Local builder")
     registry_host = normalize_registry_host(str(request.get("registryHost") or "").strip())
+    flatten_services = bool(request.get("flattenServices"))
     tag = f"local-{str(run.get('id') or '').removeprefix('build-')}"
     expected_root = f"{registry_host}/{project_key}"
     images: list[str] = []
@@ -4431,7 +4463,12 @@ def _validate_local_build_result(run: Dict[str, Any], build_result: Dict[str, An
         raise LumaError("local build result must include at least one image")
     for image in images:
         repository = _image_repository(image)
-        if repository != expected_root and not repository.startswith(expected_root + "/"):
+        valid_repo = (
+            repository == expected_root
+            or repository.startswith(expected_root + "/")
+            or (flatten_services and repository.startswith(expected_root + "-"))
+        )
+        if not valid_repo:
             raise LumaError(
                 f"local build image must use the reserved project repository {expected_root}: {image}"
             )
@@ -9409,17 +9446,31 @@ def _control_image_prepare_plan(state: Dict[str, Any], install_ref: str, source_
         raise LumaError("controlImage is invalid")
     build = _build_config(state)
     pull_host_raw = str(build.get("registryHost") or "").strip()
+    push_host_raw = str(build.get("pushHost") or "").strip()
+    source_host = normalize_registry_host(registry_host_from_image(source))
+    if not pull_host_raw and not push_host_raw:
+        return {
+            "sourceImage": source,
+            "destinationImage": source,
+            "alreadyInternal": True,
+            "directMessage": "Internal Builder registry is not configured; Manager will pull the Control image directly.",
+        }
+    if source_host not in _egress_pull_registries() and _registry_auth_for_image(state, source):
+        return {
+            "sourceImage": source,
+            "destinationImage": source,
+            "alreadyInternal": True,
+            "directMessage": "Control image uses an authenticated direct-pull registry.",
+        }
     if not pull_host_raw:
         raise LumaError("internal build registryHost is not configured; configure Builder registry settings before updating Control")
     pull_host = normalize_registry_host(pull_host_raw)
-    source_host = normalize_registry_host(registry_host_from_image(source))
     if source_host == pull_host:
         return {
             "sourceImage": source,
             "destinationImage": source,
             "alreadyInternal": True,
         }
-    push_host_raw = str(build.get("pushHost") or "").strip()
     if not push_host_raw:
         raise LumaError("internal build pushHost is not configured; configure Builder registry settings before updating Control")
     push_host = normalize_registry_host(push_host_raw)
@@ -9485,15 +9536,16 @@ def handle_control_image_prepare_start(token: str, body: Dict[str, Any]) -> Dict
         "log": [],
     }
     if plan.get("alreadyInternal"):
+        ready_msg = str(plan.get("directMessage") or "Control image already uses the internal registry.")
         record.update(
             {
                 "status": "succeeded",
-                "message": "Control image already uses the internal registry.",
+                "message": ready_msg,
                 "finishedAt": now,
                 "result": {
                     "sourceImage": source_image,
                     "destinationImage": source_image,
-                    "message": "Control image already uses the internal registry.",
+                    "message": ready_msg,
                 },
             }
         )
@@ -13375,7 +13427,9 @@ def _build_summary(state: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "defaultNode": str(config.get("defaultNode") or DEFAULT_BUILD_NODE_NAME),
         "registryHost": str(config.get("registryHost") or ""),
-        "pushHost": str(config.get("pushHost") or "localhost:5000"),
+        "pushHost": str(config.get("pushHost") or ("localhost:5000" if config.get("registryHost") else "")),
+        "localRegistryHost": str(config.get("localRegistryHost") or ""),
+        "registryNamespace": str(config.get("registryNamespace") or ""),
         "directEgressNodes": [str(value) for value in config.get("directEgressNodes") or []],
         "nodes": nodes,
     }

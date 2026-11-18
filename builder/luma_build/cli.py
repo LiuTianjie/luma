@@ -291,6 +291,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub_p.add_argument("--platform", default="", help="Target platform, e.g. linux/amd64 or linux/arm64")
     sub_p.add_argument("--runner", default="", help="Pin a specific runner name")
     sub_p.add_argument("--compose-sidecar", default="", help="Path to luma.compose.yml in repo")
+    sub_p.add_argument("--manifest-path", default="", help="Repository-relative single-service manifest path (e.g. luma.prod.api.yml)")
+    sub_p.add_argument("--manifest", type=Path, default=None, help="Local fallback manifest file")
     sub_p.add_argument("--context", default="", help="Build context subpath")
     sub_p.add_argument("--dockerfile", default="", help="Dockerfile path")
     sub_p.add_argument("--target", default="", help="Dockerfile target stage")
@@ -473,6 +475,9 @@ def _dispatch(args: argparse.Namespace) -> int:
             return 0
 
     if args.cmd == "submit":
+        if args.compose_sidecar and (args.manifest_path or args.manifest):
+            raise BuildError("--compose-sidecar cannot be combined with --manifest-path or --manifest")
+        manifest_text = args.manifest.read_text(encoding="utf-8") if args.manifest is not None else ""
         body: dict[str, Any] = {
             "repoUrl": args.source if "://" in args.source or args.source.startswith("git@") else "",
             "repository": "" if ("://" in args.source or args.source.startswith("git@")) else args.source,
@@ -481,6 +486,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             "platform": args.platform,
             "runner": args.runner,
             "composeSidecar": args.compose_sidecar,
+            "manifestPath": args.manifest_path,
+            "manifest": manifest_text,
             "context": args.context,
             "dockerfile": args.dockerfile,
             "target": args.target,

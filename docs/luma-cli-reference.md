@@ -439,7 +439,7 @@ arguments:
 ## `luma build local`
 
 ```text
-usage: luma build local [-h] [--compose-sidecar COMPOSE_SIDECAR] [--region REGION] [--exposure EXPOSURE] [--domain DOMAIN] [--port PORT] [--platform PLATFORM] [--builder BUILDER] [--proxy PROXY] [--context BUILD_CONTEXT] [--dockerfile DOCKERFILE] [--repo-url REPO_URL] [--env DEPLOY_ENV_FILE] [--timeout TIMEOUT] [--workflow-app WORKFLOW_APP] [--accept-workflow-change] [--workflow-note WORKFLOW_NOTE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] [path]
+usage: luma build local [-h] [--compose-sidecar COMPOSE_SIDECAR] [--region REGION] [--exposure EXPOSURE] [--domain DOMAIN] [--port PORT] [--platform PLATFORM] [--builder BUILDER] [--proxy PROXY] [--context BUILD_CONTEXT] [--dockerfile DOCKERFILE] [--repo-url REPO_URL] [--registry-host REGISTRY_HOST] [--registry-namespace REGISTRY_NAMESPACE] [--env DEPLOY_ENV_FILE] [--timeout TIMEOUT] [--workflow-app WORKFLOW_APP] [--accept-workflow-change] [--workflow-note WORKFLOW_NOTE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] [path]
 
 Build a local checkout with Docker Buildx, push it and deploy it
 
@@ -460,6 +460,10 @@ arguments:
   --context BUILD_CONTEXT     Docker build context inside the project
   --dockerfile DOCKERFILE     Dockerfile inside the project
   --repo-url REPO_URL         Project Git URL used to name the image (default: the origin remote)
+  --registry-host REGISTRY_HOST
+                              Registry host for local build upload (overrides Control default)
+  --registry-namespace REGISTRY_NAMESPACE
+                              Two-level registry namespace (e.g. luma for Aliyun ACR)
   --env DEPLOY_ENV_FILE       Store variables from this .env file as application secrets
   --timeout TIMEOUT           Seconds allowed for build and deploy (default: 7200)
   --format {text,json,ndjson}
@@ -603,7 +607,7 @@ arguments:
 ## `luma build config`
 
 ```text
-usage: luma build config [-h] [--node NODES] [--default-node DEFAULT_NODE] [--registry-host REGISTRY_HOST] [--push-host PUSH_HOST] [--clear-registry] [--direct-egress-node DIRECT_EGRESS_NODES] [--clear-direct-egress] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+usage: luma build config [-h] [--node NODES] [--default-node DEFAULT_NODE] [--registry-host REGISTRY_HOST] [--push-host PUSH_HOST] [--clear-registry] [--local-registry-host LOCAL_REGISTRY_HOST] [--registry-namespace REGISTRY_NAMESPACE] [--clear-local-registry] [--direct-egress-node DIRECT_EGRESS_NODES] [--clear-direct-egress] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
 
 Show or set builder nodes and the internal registry
 
@@ -617,6 +621,13 @@ arguments:
   --push-host PUSH_HOST       Registry host that builds push to (the builder's mesh address, not
                               localhost)
   --clear-registry            Clear internal Builder registry settings so nodes pull images directly
+  --local-registry-host LOCAL_REGISTRY_HOST
+                              Registry host for 'luma build local' when internal Builder registry is
+                              disabled
+  --registry-namespace REGISTRY_NAMESPACE
+                              Two-level registry namespace for 'luma build local' (e.g. luma for
+                              Aliyun ACR)
+  --clear-local-registry      Clear local-build registry host and namespace settings
   --direct-egress-node DIRECT_EGRESS_NODES
                               Builder with direct internet access; repeat for several
   --clear-direct-egress       Clear the direct-egress builder list
@@ -710,7 +721,7 @@ arguments:
 ## `luma builder submit`
 
 ```text
-usage: luma builder submit [-h] [--ref REF] [--provider-id PROVIDER_ID] [--platform PLATFORM] [--runner RUNNER] [--compose-sidecar COMPOSE_SIDECAR] [--context CONTEXT] [--dockerfile DOCKERFILE] [--target TARGET] [--region REGION] [--node NODE] [--exposure EXPOSURE] [--domain DOMAIN] [--port PORT] [--env DEPLOY_ENV_FILE] [--no-deploy] [--no-cache] [--detach] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] source
+usage: luma builder submit [-h] [--ref REF] [--provider-id PROVIDER_ID] [--platform PLATFORM] [--runner RUNNER] [--compose-sidecar COMPOSE_SIDECAR] [--manifest-path MANIFEST_PATH] [--manifest MANIFEST] [--context CONTEXT] [--dockerfile DOCKERFILE] [--target TARGET] [--region REGION] [--node NODE] [--exposure EXPOSURE] [--domain DOMAIN] [--port PORT] [--env DEPLOY_ENV_FILE] [--no-deploy] [--no-cache] [--detach] [--url BUILDER_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] source
 
 Submit a Git repository build and optional Luma deployment
 
@@ -720,11 +731,15 @@ arguments:
 arguments:
   -h, --help                  show this help message and exit
   --ref REF                   Branch, tag or 40-char commit SHA (default: main)
-  --provider-id PROVIDER_ID   Saved Git credential ID, for example gitea:gcode
+  --provider-id PROVIDER_ID   Saved Git credential ID, for example gitea:corp
   --platform PLATFORM         Target container platform, for example linux/amd64 or linux/arm64
   --runner RUNNER             Pin a specific registered runner name
   --compose-sidecar COMPOSE_SIDECAR
                               Repository-relative luma.compose.yml path
+  --manifest-path MANIFEST_PATH
+                              Repository-relative single-service manifest path (for example
+                              luma.prod.api.yml)
+  --manifest MANIFEST         Local manifest file to attach when the repository has none
   --context CONTEXT           Docker build context subdirectory inside the repository
   --dockerfile DOCKERFILE     Dockerfile path inside the repository
   --target TARGET             Dockerfile multi-stage target name
@@ -2069,7 +2084,7 @@ arguments:
 
 Examples:
   luma update
-  luma update --install-ref v0.2.72
+  luma update --install-ref v0.2.73
   luma update fleet
 ```
 
