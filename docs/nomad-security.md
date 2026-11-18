@@ -1,4 +1,4 @@
-# Nomad security defaults and certificate maintenance
+# Nomad security defaults and certificate maintenance {#nomad-security-defaults-and-automatic-upgrades}
 
 `luma bootstrap` and `luma node join` provision ACLs, mutual TLS, introduction identities and persistent network rules on first use. Existing Control data encryption and application secret isolation remain enabled.
 
@@ -29,7 +29,7 @@ Control remains a trusted infrastructure administrator with its existing Docker 
 
 Job-only rollback cannot restore a revision that lacks current credential mounts or storage-node restrictions. Redeploy the desired image through the normal Luma workflow so it receives the current protections.
 
-## Maintenance and recovery
+## Maintenance and recovery {#recovery-and-rollback}
 
 Read certificate maintenance logs with `journalctl -u luma-nomad-security`. Private enrollment and renewal records remain under `/etc/luma/nomad`. Offline nodes do not block Control updates or maintenance of other nodes.
 
