@@ -17,13 +17,28 @@ FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fil
 """
 
 
-def render_dashboard_html(*, version: str, control_sso: bool = False) -> Tuple[str, str]:
+def render_dashboard_html(
+    *,
+    version: str,
+    control_sso: bool = False,
+    session_state: str = "none",
+) -> Tuple[str, str]:
     """Return ``(html_body, csp_nonce)`` with a fresh per-request nonce."""
     nonce = secrets.token_urlsafe(18)
+    valid_state = (
+        session_state
+        if session_state in {"none", "authenticated", "check", "expired", "unavailable", "manual"}
+        else "none"
+    )
+    authenticated = valid_state == "authenticated"
     html = (
         _TEMPLATE.replace("__CSP_NONCE__", nonce)
         .replace("__LUMA_BUILD_VERSION__", version)
         .replace("__LUMA_CONTROL_SSO__", "true" if control_sso else "false")
+        .replace("__LUMA_SESSION_STATE__", f'"{valid_state}"')
+        .replace("__AUTH_VIEW_HIDDEN__", " hidden")
+        .replace("__AUTH_CHECKING_HIDDEN__", " hidden" if authenticated else "")
+        .replace("__APP_SHELL_HIDDEN__", "" if authenticated else " hidden")
     )
     return html, nonce
 
@@ -735,6 +750,58 @@ _TEMPLATE = r"""<!doctype html>
     }
     .auth-brand { display: flex; align-items: center; gap: 0.65rem; }
     .auth-desc { margin: 0; font-size: 0.8125rem; color: var(--muted-foreground); }
+    .auth-checking-box {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      font-size: 0.8125rem;
+      color: var(--muted-foreground);
+    }
+    .spinner {
+      width: 1rem;
+      height: 1rem;
+      border-radius: 999px;
+      border: 2px solid var(--border);
+      border-block-start-color: var(--primary);
+      animation: luma-spin 0.75s linear infinite;
+    }
+    @keyframes luma-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) {
+      .spinner { animation: none; }
+    }
+    .table-footer {
+      border-block-start: 1px solid var(--border);
+      padding: 0.75rem 1rem;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      background: var(--card);
+    }
+    .pagination-info {
+      font-size: 0.75rem;
+      color: var(--muted-foreground);
+      font-variant-numeric: tabular-nums;
+    }
+    .pagination-controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .select-sm {
+      height: 1.75rem;
+      padding-inline: 0.5rem;
+      font-size: 0.75rem;
+    }
+    .pagination-page {
+      font-size: 0.75rem;
+      color: var(--muted-foreground);
+      font-variant-numeric: tabular-nums;
+      min-width: 5.5rem;
+      text-align: center;
+    }
     .w-full { width: 100%; }
     .stat-host { font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .section-card { padding: 1.25rem; display: flex; flex-direction: column; gap: 0.75rem; }
@@ -760,8 +827,15 @@ _TEMPLATE = r"""<!doctype html>
   </style>
 </head>
 <body>
+  <div id="auth-checking" class="auth-screen" role="status" aria-live="polite"__AUTH_CHECKING_HIDDEN__>
+    <div class="auth-checking-box">
+      <span class="spinner" aria-hidden="true"></span>
+      <span>正在检查登录状态…</span>
+    </div>
+  </div>
+
   <!-- Browser SSO, with explicit Token sign-in for standalone/recovery use. -->
-  <main id="auth-view" class="auth-screen">
+  <main id="auth-view" class="auth-screen"__AUTH_VIEW_HIDDEN__>
     <form id="login-form" class="auth-card">
       <div class="auth-brand">
         <span class="brand-mark">L</span>
@@ -791,7 +865,7 @@ _TEMPLATE = r"""<!doctype html>
   </main>
 
   <!-- Authenticated Console Shell -->
-  <div id="app-shell" class="shell" hidden>
+  <div id="app-shell" class="shell"__APP_SHELL_HIDDEN__>
     <aside class="sidebar" aria-label="主导航">
       <div class="sidebar-header">
         <span class="brand-mark">L</span>
@@ -883,7 +957,7 @@ _TEMPLATE = r"""<!doctype html>
             <div class="stat-tile">
               <span class="stat-label">累计成功 / 失败</span>
               <strong id="stat-outcomes" class="stat-value" data-numeric>0 / 0</strong>
-              <span class="stat-sub">自动保留最近 500 条记录</span>
+              <span class="stat-sub">按页加载历史构建记录</span>
             </div>
             <div class="stat-tile">
               <span class="stat-label">目标镜像仓库 (Registry)</span>
@@ -917,9 +991,26 @@ _TEMPLATE = r"""<!doctype html>
                     <th>创建时间</th>
                   </tr>
                 </thead>
-                <tbody id="builds-tbody"></tbody>
+                <tbody id="builds-tbody">
+                  <tr class="static-row">
+                    <td colspan="4" class="empty-state">正在加载构建记录…</td>
+                  </tr>
+                </tbody>
               </table>
             </div>
+            <nav id="builds-pagination" class="table-footer" aria-label="构建记录分页">
+              <span id="builds-range" class="pagination-info">正在加载构建记录…</span>
+              <div class="pagination-controls">
+                <select id="builds-page-size" class="select select-sm" aria-label="每页显示条数">
+                  <option value="20" selected>20 条/页</option>
+                  <option value="50">50 条/页</option>
+                  <option value="100">100 条/页</option>
+                </select>
+                <button type="button" id="builds-prev-btn" class="btn btn-sm" disabled>上一页</button>
+                <span id="builds-page-info" class="pagination-page">第 1 / 1 页</span>
+                <button type="button" id="builds-next-btn" class="btn btn-sm" disabled>下一页</button>
+              </div>
+            </nav>
           </div>
         </section>
 
@@ -1214,6 +1305,7 @@ _TEMPLATE = r"""<!doctype html>
   (() => {
     const TOKEN_KEY = "luma-build-auth-token";
     const CONTROL_SSO = __LUMA_CONTROL_SSO__;
+    const INITIAL_SESSION_STATE = __LUMA_SESSION_STATE__;
     const SCHEME_KEY = "luma-build-color-scheme";
     const state = {
       token: "",
@@ -1221,6 +1313,12 @@ _TEMPLATE = r"""<!doctype html>
       page: "builds",
       statusFilter: "",
       repoFilter: "",
+      pageSize: 20,
+      pageIndex: 1,
+      buildsTotal: 0,
+      buildsLoaded: false,
+      buildsReqSeq: 0,
+      repoDebounce: null,
       statusData: null,
       builds: [],
       selectedBuildId: "",
@@ -1271,15 +1369,22 @@ _TEMPLATE = r"""<!doctype html>
 
     // Two-state color-scheme toggle synced with <meta name="color-scheme">
     const schemeMeta = document.querySelector('meta[name="color-scheme"]');
+    const darkMedia = window.matchMedia("(prefers-color-scheme: dark)");
     function currentRenderedScheme() {
       const content = schemeMeta.content;
       if (content === "dark" || content === "light") return content;
-      return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      return darkMedia.matches ? "dark" : "light";
+    }
+    function loginHref() {
+      return `/auth/login?theme=${encodeURIComponent(currentRenderedScheme())}`;
+    }
+    function syncLoginLink() {
+      const link = document.getElementById("control-login");
+      if (link) link.href = loginHref();
     }
     document.getElementById("theme-toggle").addEventListener("click", () => {
       const target = currentRenderedScheme() === "dark" ? "light" : "dark";
-      const sysDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-      const sysScheme = sysDark ? "dark" : "light";
+      const sysScheme = darkMedia.matches ? "dark" : "light";
       try {
         if (target === sysScheme) {
           localStorage.removeItem(SCHEME_KEY);
@@ -1291,12 +1396,16 @@ _TEMPLATE = r"""<!doctype html>
       } catch {
         schemeMeta.content = target;
       }
+      syncLoginLink();
     });
     window.addEventListener("storage", (ev) => {
       if (ev.key === SCHEME_KEY) {
         schemeMeta.content = ev.newValue === "light" || ev.newValue === "dark" ? ev.newValue : "light dark";
+        syncLoginLink();
       }
     });
+    darkMedia.addEventListener("change", syncLoginLink);
+    syncLoginLink();
 
     function fmtTime(epoch) {
       if (!epoch) return "-";
@@ -1348,14 +1457,27 @@ _TEMPLATE = r"""<!doctype html>
       }
     }
 
-    function signOut() {
+    function showAuthView(errorMsg = "") {
+      document.getElementById("auth-checking").hidden = true;
+      document.getElementById("app-shell").hidden = true;
+      document.getElementById("auth-view").hidden = false;
+      syncLoginLink();
+      const errEl = document.getElementById("login-error");
+      if (errorMsg) {
+        errEl.textContent = errorMsg;
+        errEl.hidden = false;
+      } else {
+        errEl.hidden = true;
+      }
+    }
+
+    function signOut(errorMsg = "") {
       state.token = "";
       state.session = false;
       if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
       if (state.streamAbort) { state.streamAbort.abort(); state.streamAbort = null; }
       try { sessionStorage.removeItem(TOKEN_KEY); localStorage.removeItem(TOKEN_KEY); } catch {}
-      document.getElementById("app-shell").hidden = true;
-      document.getElementById("auth-view").hidden = false;
+      showAuthView(errorMsg);
     }
 
     document.getElementById("logout-btn").addEventListener("click", async () => {
@@ -1422,6 +1544,7 @@ _TEMPLATE = r"""<!doctype html>
     });
 
     function enterShell() {
+      document.getElementById("auth-checking").hidden = true;
       document.getElementById("auth-view").hidden = true;
       document.getElementById("app-shell").hidden = false;
       refreshAll();
@@ -1432,29 +1555,85 @@ _TEMPLATE = r"""<!doctype html>
       }
     }
 
+    async function refreshBuilds() {
+      const reqSeq = ++state.buildsReqSeq;
+      try {
+        const bl = await api(buildListUrl());
+        if (reqSeq !== state.buildsReqSeq) return;
+        const total = typeof bl.total === "number" ? bl.total : (bl.builds || []).length;
+        const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
+        if (state.pageIndex > totalPages) {
+          state.pageIndex = totalPages;
+          await refreshBuilds();
+          return;
+        }
+        state.builds = bl.builds || [];
+        state.buildsTotal = total;
+        state.buildsLoaded = true;
+        renderBuildsTable(state.builds);
+        renderBuildsPagination();
+      } catch {}
+    }
+
     async function refreshAll() {
       try {
-        const [st, bl] = await Promise.all([
-          api("/v1/status"),
-          api(buildListUrl()),
-        ]);
-        state.statusData = st;
-        state.builds = bl.builds || [];
-        renderSummary(st);
-        renderBuildsTable(state.builds);
-        renderRunnersTable(st.runners || []);
-        if (state.page === "settings") {
-          const [gc, rc] = await Promise.all([api("/v1/credentials/git"), api("/v1/credentials/registry")]);
+        if (state.page === "builds") {
+          const [st] = await Promise.all([
+            api("/v1/status"),
+            refreshBuilds(),
+          ]);
+          state.statusData = st;
+          renderSummary(st);
+          renderRunnersTable(st.runners || []);
+        } else if (state.page === "settings") {
+          const [st, gc, rc] = await Promise.all([
+            api("/v1/status"),
+            api("/v1/credentials/git"),
+            api("/v1/credentials/registry"),
+          ]);
+          state.statusData = st;
+          renderSummary(st);
+          renderRunnersTable(st.runners || []);
           renderSettings(st, gc.credentials || [], rc.credentials || []);
+        } else {
+          const st = await api("/v1/status");
+          state.statusData = st;
+          renderSummary(st);
+          renderRunnersTable(st.runners || []);
         }
       } catch {}
     }
 
     function buildListUrl() {
-      const p = new URLSearchParams({ limit: "80" });
+      const offset = Math.max(0, (state.pageIndex - 1) * state.pageSize);
+      const p = new URLSearchParams({
+        limit: String(state.pageSize),
+        offset: String(offset),
+      });
       if (state.statusFilter) p.set("status", state.statusFilter);
       if (state.repoFilter) p.set("repo", state.repoFilter);
       return `/v1/builds?${p}`;
+    }
+
+    function renderBuildsPagination() {
+      const total = state.buildsTotal;
+      const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
+      const rangeEl = document.getElementById("builds-range");
+      const pageInfoEl = document.getElementById("builds-page-info");
+      const prevBtn = document.getElementById("builds-prev-btn");
+      const nextBtn = document.getElementById("builds-next-btn");
+      if (!state.buildsLoaded) {
+        rangeEl.textContent = "正在加载构建记录…";
+      } else if (!total) {
+        rangeEl.textContent = "共 0 条记录";
+      } else {
+        const start = (state.pageIndex - 1) * state.pageSize + 1;
+        const end = Math.min(start + state.builds.length - 1, total);
+        rangeEl.textContent = `显示第 ${start}–${end} 条，共 ${total} 条`;
+      }
+      pageInfoEl.textContent = `第 ${state.pageIndex} / ${totalPages} 页`;
+      prevBtn.disabled = state.pageIndex <= 1;
+      nextBtn.disabled = state.pageIndex >= totalPages;
     }
 
     function renderSummary(st) {
@@ -1735,17 +1914,42 @@ _TEMPLATE = r"""<!doctype html>
     document.getElementById("refresh-runners-btn").addEventListener("click", refreshAll);
     document.getElementById("filter-repo").addEventListener("input", (ev) => {
       state.repoFilter = ev.target.value.trim();
-      refreshAll();
+      state.pageIndex = 1;
+      if (state.repoDebounce) clearTimeout(state.repoDebounce);
+      state.repoDebounce = setTimeout(() => {
+        state.repoDebounce = null;
+        refreshBuilds();
+      }, 250);
     });
     for (const seg of document.querySelectorAll("#status-segments .seg-btn")) {
       seg.addEventListener("click", () => {
         state.statusFilter = seg.getAttribute("data-status") || "";
+        state.pageIndex = 1;
         for (const s of document.querySelectorAll("#status-segments .seg-btn")) {
           s.setAttribute("aria-pressed", s === seg ? "true" : "false");
         }
-        refreshAll();
+        refreshBuilds();
       });
     }
+    document.getElementById("builds-prev-btn").addEventListener("click", () => {
+      if (state.pageIndex > 1) {
+        state.pageIndex -= 1;
+        refreshBuilds();
+      }
+    });
+    document.getElementById("builds-next-btn").addEventListener("click", () => {
+      const totalPages = Math.max(1, Math.ceil(state.buildsTotal / state.pageSize));
+      if (state.pageIndex < totalPages) {
+        state.pageIndex += 1;
+        refreshBuilds();
+      }
+    });
+    document.getElementById("builds-page-size").addEventListener("change", (ev) => {
+      const next = Number(ev.target.value) || 20;
+      state.pageSize = Math.max(1, Math.min(next, 200));
+      state.pageIndex = 1;
+      refreshBuilds();
+    });
 
     // Submit Build modal
     const submitDialog = document.getElementById("submit-dialog");
@@ -1785,6 +1989,7 @@ _TEMPLATE = r"""<!doctype html>
       try {
         const res = await api("/v1/builds", { method: "POST", body });
         submitDialog.close();
+        state.pageIndex = 1;
         await refreshAll();
         openBuildDrawer(res.build.id);
       } catch (err) {
@@ -1901,37 +2106,51 @@ _TEMPLATE = r"""<!doctype html>
         document.getElementById("manual-login").hidden = manual;
         document.getElementById("token-login-fields").hidden = !manual;
         document.getElementById("login-description").textContent = "共用 Luma 控制台登录状态，支持通行密钥登录。";
-        try {
-          const response = await fetch("/v1/auth/session");
-          if (response.ok && (await response.json()).authenticated) {
-            state.session = true;
-            enterShell();
-            return;
-          }
-          if (response.status !== 401) throw new Error("Luma 登录服务暂不可用，请稍后重试。");
-        } catch (err) {
-          const error = document.getElementById("login-error");
-          error.textContent = err.message || "Luma 登录服务暂不可用，请稍后重试。";
-          error.hidden = false;
-          if (!manual) return;
+        syncLoginLink();
+        if (INITIAL_SESSION_STATE === "authenticated") {
+          state.session = true;
+          enterShell();
+          return;
         }
         if (!manual) {
-          signOut();
           if (query.get("sso") === "failed") {
-            const error = document.getElementById("login-error");
-            error.textContent = "Luma 登录未完成或已过期，请重新登录。";
-            error.hidden = false;
-          } else if (!query.has("signedOut")) {
-            location.replace("/auth/login");
+            signOut("Luma 登录未完成或已过期，请重新登录。");
+            return;
           }
+          if (query.has("signedOut")) {
+            signOut();
+            return;
+          }
+          if (INITIAL_SESSION_STATE === "expired") {
+            location.replace(loginHref());
+            return;
+          }
+          if (INITIAL_SESSION_STATE === "unavailable") {
+            showAuthView("Luma 登录服务暂不可用，请稍后重试。");
+            return;
+          }
+          try {
+            const response = await fetch("/v1/auth/session", { credentials: "same-origin" });
+            if (response.ok && (await response.json()).authenticated) {
+              state.session = true;
+              enterShell();
+              return;
+            }
+            if (response.status !== 401) throw new Error("Luma 登录服务暂不可用，请稍后重试。");
+          } catch (err) {
+            showAuthView(err.message || "Luma 登录服务暂不可用，请稍后重试。");
+            return;
+          }
+          location.replace(loginHref());
           return;
         }
       }
       const existing = loadStoredToken();
       if (existing) {
         state.token = existing;
-        try { await api("/v1/status"); enterShell(); } catch { signOut(); }
+        try { await api("/v1/status"); enterShell(); return; } catch { signOut(); return; }
       }
+      showAuthView();
     }
     boot();
   })();

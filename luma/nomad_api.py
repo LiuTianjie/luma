@@ -130,9 +130,10 @@ def deploy_to_nomad(
     allocations.  A still-running allocation from the previous job version can
     therefore never make a new rollout look healthy.
 
-    Nomad returns an empty EvalID for a no-op registration.  That path still
-    verifies the returned JobModifyIndex and the allocations for its exact
-    current JobVersion before returning success.
+    Nomad may return either an empty EvalID or a no-op evaluation with
+    JobModifyIndex 0 for an unchanged registration.  Both paths still verify
+    the returned JobModifyIndex on the job itself and the allocations for its
+    exact current JobVersion before returning success.
     """
     client = NomadApi(nomad_addr(config, state), token=_token(state))
     try:
@@ -471,6 +472,12 @@ def _wait_for_evaluation(
             raise LumaError(
                 f"Nomad returned no evaluation {current_eval_id} for {slug}"
             )
+        # Nomad sets JobModifyIndex=0 (or omits it) on evaluations that do not
+        # mutate the job spec — including unchanged/no-op re-registrations and
+        # follow-up evaluations.  Still enforce JobID and reject any mismatched
+        # positive JobModifyIndex here; _read_target_job, _wait_for_deployment,
+        # and _wait_for_healthy_allocations enforce the exact target_modify_index
+        # and JobVersion correlation.
         _require_rollout_identity(
             evaluation,
             kind="evaluation",
@@ -478,7 +485,7 @@ def _wait_for_evaluation(
             job_id=job_id,
             slug=slug,
             target_modify_index=target_modify_index,
-            require_modify_index=current_eval_id == eval_id,
+            require_modify_index=False,
         )
         status = str(evaluation.get("Status") or "").strip().lower()
         last_status = status or "unknown"

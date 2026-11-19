@@ -68,12 +68,16 @@ class BrowserAuth:
                 raise BuildError("request origin does not match the Builder console", status_code=403)
         return info
 
-    async def start(self, _request: Request):
+    async def start(self, request: Request):
         if not self.control.enabled:
             return JSONResponse({"error": "Luma Control browser sign-in is not configured"}, status_code=404, headers=HEADERS)
         verifier = secrets.token_urlsafe(32)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-        response = RedirectResponse(f"{self.control.endpoint}/dashboard/builder-login?challenge={challenge}", status_code=303, headers=HEADERS)
+        theme = request.query_params.get("theme", "").strip().lower()
+        query = f"challenge={challenge}"
+        if theme in {"light", "dark"}:
+            query += f"&theme={theme}"
+        response = RedirectResponse(f"{self.control.endpoint}/dashboard/builder-login?{query}", status_code=303, headers=HEADERS)
         response.set_cookie(LOGIN_COOKIE, verifier, max_age=300, path="/", secure=True, httponly=True, samesite="lax")
         return response
 

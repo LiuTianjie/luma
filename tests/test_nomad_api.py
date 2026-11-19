@@ -278,6 +278,96 @@ class NomadApiTests(unittest.TestCase):
             any(path.startswith("/v1/evaluation/") for _, path, _ in fake.calls)
         )
 
+    def test_deploy_noop_eval_with_zero_or_omitted_job_modify_index_verifies_job_and_allocs(self):
+        for eval_payload in (
+            {
+                "ID": "eval-noop",
+                "JobID": "app",
+                "JobModifyIndex": 0,
+                "Status": "complete",
+            },
+            {
+                "ID": "eval-noop",
+                "JobID": "app",
+                "Status": "complete",
+            },
+        ):
+            with self.subTest(eval_payload=eval_payload):
+                fake = _FakeApi(
+                    {
+                        "POST /v1/jobs": {"EvalID": "eval-noop", "JobModifyIndex": 20},
+                        "GET /v1/evaluation/eval-noop": eval_payload,
+                        "GET /v1/job/app": _job(),
+                        "GET /v1/job/app/deployments": [_deployment()],
+                        "GET /v1/job/app/allocations": [
+                            _allocation(alloc_id="alloc-current", version=2)
+                        ],
+                    }
+                )
+                with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
+                    msg = nomad_api.deploy_to_nomad(
+                        cfg(),
+                        json.dumps({"Job": {"ID": "app", "Name": "app"}}),
+                        {},
+                        slug="app",
+                    )
+                self.assertIn("rollout healthy", msg)
+                self.assertIn("v2", msg)
+                self.assertIn("eval eval-noop", msg)
+
+    def test_deploy_still_rejects_mismatched_evaluation_job_modify_index(self):
+        fake = _FakeApi(
+            {
+                "POST /v1/jobs": {"EvalID": "eval-wrong", "JobModifyIndex": 20},
+                "GET /v1/evaluation/eval-wrong": {
+                    "ID": "eval-wrong",
+                    "JobID": "app",
+                    "JobModifyIndex": 19,
+                    "Status": "complete",
+                },
+            }
+        )
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
+            with self.assertRaisesRegex(
+                LumaError,
+                r"evaluation eval-wrong has JobModifyIndex 19, expected 20",
+            ):
+                nomad_api.deploy_to_nomad(
+                    cfg(),
+                    json.dumps({"Job": {"ID": "app"}}),
+                    {},
+                    slug="app",
+                )
+
+    def test_deploy_still_requires_deployment_job_modify_index_when_eval_index_is_zero(self):
+        dep = _deployment()
+        dep["JobModifyIndex"] = 0
+        fake = _FakeApi(
+            {
+                "POST /v1/jobs": {"EvalID": "eval-123", "JobModifyIndex": 20},
+                "GET /v1/evaluation/eval-123": {
+                    "ID": "eval-123",
+                    "JobID": "app",
+                    "JobModifyIndex": 0,
+                    "DeploymentID": "deployment-123",
+                    "Status": "complete",
+                },
+                "GET /v1/job/app": _job(),
+                "GET /v1/deployment/deployment-123": dep,
+            }
+        )
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
+            with self.assertRaisesRegex(
+                LumaError,
+                r"deployment deployment-123 is missing JobModifyIndex",
+            ):
+                nomad_api.deploy_to_nomad(
+                    cfg(),
+                    json.dumps({"Job": {"ID": "app"}}),
+                    {},
+                    slug="app",
+                )
+
     def test_deploy_ignores_terminal_predecessor_after_reschedule(self):
         predecessor = _allocation(
             alloc_id="alloc-failed",

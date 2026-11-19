@@ -265,6 +265,7 @@ class BuildStore:
                     updated_at INTEGER NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_builds_status_seq ON builds(status, seq);
+                CREATE INDEX IF NOT EXISTS idx_builds_seq ON builds(seq DESC);
                 CREATE INDEX IF NOT EXISTS idx_builds_repo_slug ON builds(repo_slug, created_at DESC);
 
                 CREATE TABLE IF NOT EXISTS lease_receipts (
@@ -1701,22 +1702,66 @@ class BuildStore:
             ]
             return pub
 
-    def list_builds(self, *, limit: int = 30, status: str = "", repo: str = "") -> list[dict[str, Any]]:
+    _BUILD_LIST_COLUMNS = (
+        "id, seq, repo_url, repo_slug, ref, target_key, status, deploy_enabled, "
+        "runner_name, pinned_runner, platforms_json, required_labels_json, "
+        "request_json, result_json, message, cancel_requested, superseded_by, "
+        "created_at, started_at, built_at, completed_at, updated_at"
+    )
+
+    def list_builds_page(
+        self,
+        *,
+        limit: int = 30,
+        offset: int = 0,
+        status: str = "",
+        repo: str = "",
+    ) -> dict[str, Any]:
         clauses: list[str] = []
         params: list[Any] = []
         if status:
             clauses.append("status = ?")
             params.append(status)
-        if repo:
-            clauses.append("repo_slug LIKE ?")
-            params.append(f"%{repo.strip().lower()}%")
+        clean_repo = repo.strip().lower()
+        if clean_repo:
+            like = f"%{clean_repo}%"
+            clauses.append("(repo_slug LIKE ? OR LOWER(ref) LIKE ?)")
+            params.extend([like, like])
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        params.append(max(1, min(int(limit), 200)))
+        clean_limit = max(1, min(int(limit), 200))
+        clean_offset = max(0, int(offset))
         with self._conn(write=False) as conn:
+            total_row = conn.execute(
+                f"SELECT COUNT(*) AS cnt FROM builds {where}", tuple(params)
+            ).fetchone()
+            total = int(total_row["cnt"]) if total_row else 0
             rows = conn.execute(
-                f"SELECT * FROM builds {where} ORDER BY seq DESC LIMIT ?", tuple(params)
+                f"SELECT {self._BUILD_LIST_COLUMNS} FROM builds {where} ORDER BY seq DESC LIMIT ? OFFSET ?",
+                (*params, clean_limit, clean_offset),
             ).fetchall()
-            return [self._build_public(r) for r in rows]
+            items = [self._build_public(r, summary=True) for r in rows]
+        return {
+            "builds": items,
+            "total": total,
+            "limit": clean_limit,
+            "offset": clean_offset,
+            "hasMore": (clean_offset + len(items)) < total,
+        }
+
+    def list_builds(
+        self,
+        *,
+        limit: int = 30,
+        offset: int = 0,
+        status: str = "",
+        repo: str = "",
+    ) -> list[dict[str, Any]]:
+        return self.list_builds_page(
+            limit=limit,
+            offset=offset,
+            status=status,
+            repo=repo,
+        )["builds"]
 
     def retry_build(self, build_id: str, *, env_secrets: dict[str, str] | None = None) -> dict[str, Any]:
         with self._conn(write=False) as conn:
@@ -1763,12 +1808,13 @@ class BuildStore:
         pub["request"] = json.loads(row["request_json"] or "{}")
         return pub
 
-    def _build_public(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _build_public(self, row: sqlite3.Row, *, summary: bool = False) -> dict[str, Any]:
         res = json.loads(row["result_json"] or "{}")
-        # Strip raw manifest/composeContent blobs from list summaries if huge, keep in result
+        if summary and isinstance(res, dict):
+            res = {k: v for k, v in res.items() if k not in {"manifest", "composeContent"}}
         req = json.loads(row["request_json"] or "{}")
         req_public = {
-            k: v for k, v in req.items() if k not in {"manifest", "nodePlatforms", "regionPlatforms"}
+            k: v for k, v in req.items() if k not in {"manifest", "composeContent", "nodePlatforms", "regionPlatforms"}
         }
         return {
             "id": str(row["id"]),

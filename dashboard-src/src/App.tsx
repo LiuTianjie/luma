@@ -62,9 +62,11 @@ export function App() {
   // A one-time enrollment link renders before (and instead of) sign-in.
   const enrolling = router.path === "/enroll";
   const builderLogin = router.path === "/builder-login";
+  const builderThemeParam = builderLogin ? new URLSearchParams(router.search).get("theme") : null;
+  const builderThemeOverride = builderThemeParam === "light" || builderThemeParam === "dark" ? builderThemeParam : null;
   const token = enrolling ? "" : auth.token;
   const { payload, cluster, errors, syncStatus, lastUpdated, loadDashboard } = useDashboardData(dashboardScope, dashboardQuery, builderLogin ? "" : token, auth.expire);
-  const { mode: themeMode, theme, setMode: setThemeMode } = useTheme();
+  const { mode: themeMode, theme, setMode: setThemeMode } = useTheme(builderThemeOverride);
   const vm = useMemo(() => createDashboardViewModel(payload), [payload]);
   // Pages that fetch their own data return no cluster identity; keep the last one seen.
   const [clusterId, setClusterId] = useState("");

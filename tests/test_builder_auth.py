@@ -136,3 +136,37 @@ class BuilderBrowserAuthTests(DashboardAuthBase):
         self.client.cookies.clear()
         response = self.client.post("/v1/auth/builder/authorize", headers=self.bearer(), json={"challenge": "a" * 43})
         self.assertEqual(response.status_code, 401)
+
+    def test_refresh_with_valid_session_renders_shell_directly_and_revocation_reverts(self):
+        anon = self.builder.get("/")
+        self.assertEqual(anon.status_code, 200)
+        self.assertIn('const INITIAL_SESSION_STATE = "check";', anon.text)
+        self.assertIn('<main id="auth-view" class="auth-screen" hidden>', anon.text)
+        self.assertIn('<div id="app-shell" class="shell" hidden>', anon.text)
+
+        self.sign_in_builder()
+        refreshed = self.builder.get("/")
+        self.assertEqual(refreshed.status_code, 200)
+        self.assertIn('const INITIAL_SESSION_STATE = "authenticated";', refreshed.text)
+        self.assertIn('<div id="app-shell" class="shell">', refreshed.text)
+        self.assertIn('<main id="auth-view" class="auth-screen" hidden>', refreshed.text)
+
+        # After Control logout, refreshing Builder immediately sees an expired session.
+        self.client.post("/v1/auth/logout", headers={"Origin": ORIGIN})
+        expired = self.builder.get("/")
+        self.assertEqual(expired.status_code, 200)
+        self.assertIn('const INITIAL_SESSION_STATE = "expired";', expired.text)
+        self.assertIn('<div id="app-shell" class="shell" hidden>', expired.text)
+
+    def test_login_start_forwards_validated_theme_param(self):
+        light = self.builder.get("/auth/login?theme=light", follow_redirects=False)
+        self.assertEqual(light.status_code, 303)
+        self.assertEqual(parse_qs(urlsplit(light.headers["location"]).query).get("theme"), ["light"])
+
+        dark = self.builder.get("/auth/login?theme=dark", follow_redirects=False)
+        self.assertEqual(dark.status_code, 303)
+        self.assertEqual(parse_qs(urlsplit(dark.headers["location"]).query).get("theme"), ["dark"])
+
+        invalid = self.builder.get("/auth/login?theme=sepia", follow_redirects=False)
+        self.assertEqual(invalid.status_code, 303)
+        self.assertNotIn("theme", parse_qs(urlsplit(invalid.headers["location"]).query))

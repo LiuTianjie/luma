@@ -18,7 +18,7 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, R
 from starlette.routing import Route
 
 from . import __version__
-from .browser_auth import BrowserAuth
+from .browser_auth import SESSION_COOKIE, BrowserAuth
 from .dashboard import FAVICON_SVG, render_dashboard_html
 from .deployer import (
     ControlAuthVerifier,
@@ -322,8 +322,24 @@ def create_app(
     async def healthz(_request: Request) -> JSONResponse:
         return _no_store_json({"ok": True, "service": "luma-build", "version": __version__})
 
-    async def dashboard_route(_request: Request) -> HTMLResponse:
-        html_body, nonce = render_dashboard_html(version=__version__, control_sso=auth_verifier.enabled)
+    async def dashboard_route(request: Request) -> HTMLResponse:
+        session_state = "none"
+        if auth_verifier.enabled:
+            if request.query_params.get("login") == "manual":
+                session_state = "manual"
+            elif SESSION_COOKIE in request.cookies:
+                try:
+                    await browser_auth.require_session(request)
+                    session_state = "authenticated"
+                except BuildError as exc:
+                    session_state = "expired" if exc.status_code == 401 else "unavailable"
+            else:
+                session_state = "check"
+        html_body, nonce = render_dashboard_html(
+            version=__version__,
+            control_sso=auth_verifier.enabled,
+            session_state=session_state,
+        )
         csp = "; ".join(
             [
                 "default-src 'self'",
@@ -496,14 +512,29 @@ def create_app(
             if request.method == "GET":
                 q = request.query_params
                 limit = _parse_int(q.get("limit"), field="limit", default=30)
-                runs = await run_in_threadpool(
-                    lambda: store.list_builds(
-                        limit=limit,
+                clean_limit = max(1, min(limit, 200))
+                raw_offset = q.get("offset")
+                raw_page = q.get("page")
+                if raw_offset is not None and raw_offset != "":
+                    offset = _parse_int(raw_offset, field="offset", default=0)
+                    if offset < 0:
+                        raise BuildError("offset must be >= 0")
+                elif raw_page is not None and raw_page != "":
+                    page_num = _parse_int(raw_page, field="page", default=1)
+                    if page_num < 1:
+                        raise BuildError("page must be >= 1")
+                    offset = (page_num - 1) * clean_limit
+                else:
+                    offset = 0
+                page_data = await run_in_threadpool(
+                    lambda: store.list_builds_page(
+                        limit=clean_limit,
+                        offset=offset,
                         status=str(q.get("status") or ""),
                         repo=str(q.get("repo") or ""),
                     )
                 )
-                return _no_store_json({"ok": True, "builds": runs})
+                return _no_store_json({"ok": True, **page_data})
 
             body = await json_body(request)
             if "buildTimeout" in body and body["buildTimeout"] is not None:

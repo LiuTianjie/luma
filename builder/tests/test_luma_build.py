@@ -367,6 +367,91 @@ class DecoupledBuildServiceTests(unittest.TestCase):
         self.assertTrue(hb["cancelRequested"])
         self.assertNotEqual(b_newer, b_next)
 
+    def test_builds_list_pagination_search_and_summary_blob_stripping(self) -> None:
+        rtok = self.create_runner("pager-runner")
+        ids: list[str] = []
+        for idx, (repo, ref) in enumerate(
+            [
+                ("acme/alpha", "main"),
+                ("acme/beta", "release-v1"),
+                ("acme/gamma", "main"),
+                ("acme/delta", "feat-search-ref"),
+                ("acme/epsilon", "main"),
+            ]
+        ):
+            res = self.client.post(
+                "/v1/builds",
+                headers=self.admin_headers,
+                json={"repository": repo, "ref": ref, "platform": "linux/amd64", "deploy": False},
+            )
+            self.assertEqual(res.status_code, 200, res.text)
+            ids.append(res.json()["build"]["id"])
+
+        # Complete the oldest build with large manifest/composeContent blobs in result
+        leased = self.poll(rtok, platform="linux/amd64")["task"]
+        self.assertEqual(leased["buildId"], ids[0])
+        comp = self.client.post(
+            "/v1/runner/complete",
+            headers={"Authorization": f"Bearer {rtok}"},
+            json={
+                "buildId": ids[0],
+                "leaseId": leased["leaseId"],
+                "status": "succeeded",
+                "result": {
+                    "kind": "compose",
+                    "shortSha": "abc1234",
+                    "image": "registry.test/acme-alpha:1",
+                    "manifest": "name: alpha\n" + ("# padding\n" * 200),
+                    "composeContent": "services:\n  web:\n    image: x\n" + ("# compose\n" * 200),
+                },
+            },
+        )
+        self.assertEqual(comp.status_code, 200, comp.text)
+
+        # Page 1 via offset
+        p1 = self.client.get("/v1/builds?limit=2&offset=0", headers=self.admin_headers)
+        self.assertEqual(p1.status_code, 200, p1.text)
+        body1 = p1.json()
+        self.assertEqual(body1["total"], 5)
+        self.assertEqual(body1["limit"], 2)
+        self.assertEqual(body1["offset"], 0)
+        self.assertTrue(body1["hasMore"])
+        self.assertEqual([b["id"] for b in body1["builds"]], [ids[4], ids[3]])
+
+        # Page 2 via page number
+        p2 = self.client.get("/v1/builds?limit=2&page=2", headers=self.admin_headers)
+        self.assertEqual(p2.status_code, 200, p2.text)
+        body2 = p2.json()
+        self.assertEqual(body2["total"], 5)
+        self.assertEqual(body2["offset"], 2)
+        self.assertTrue(body2["hasMore"])
+        self.assertEqual([b["id"] for b in body2["builds"]], [ids[2], ids[1]])
+
+        # Page 3 (last page) strips large blobs in list summary while detail retains them
+        p3 = self.client.get("/v1/builds?limit=2&page=3", headers=self.admin_headers)
+        self.assertEqual(p3.status_code, 200, p3.text)
+        body3 = p3.json()
+        self.assertEqual(body3["total"], 5)
+        self.assertFalse(body3["hasMore"])
+        self.assertEqual([b["id"] for b in body3["builds"]], [ids[0]])
+        list_result = body3["builds"][0]["result"]
+        self.assertEqual(list_result["shortSha"], "abc1234")
+        self.assertNotIn("manifest", list_result)
+        self.assertNotIn("composeContent", list_result)
+
+        detail = self.client.get(f"/v1/builds/{ids[0]}", headers=self.admin_headers).json()["build"]
+        self.assertIn("manifest", detail["result"])
+        self.assertIn("composeContent", detail["result"])
+
+        # Search by branch ref as well as repo slug
+        by_ref = self.client.get("/v1/builds?repo=feat-search-ref", headers=self.admin_headers).json()
+        self.assertEqual(by_ref["total"], 1)
+        self.assertEqual([b["id"] for b in by_ref["builds"]], [ids[3]])
+
+        # Invalid pagination parameters rejected cleanly
+        self.assertEqual(self.client.get("/v1/builds?offset=-1", headers=self.admin_headers).status_code, 400)
+        self.assertEqual(self.client.get("/v1/builds?page=0", headers=self.admin_headers).status_code, 400)
+
 
 class RunnerBuildKitExecutionTests(unittest.TestCase):
     def test_buildkitd_toml_and_two_tier_cache_flags(self) -> None:

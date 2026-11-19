@@ -4,19 +4,27 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#1a1818" />
-    <meta name="color-scheme" content="dark light" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="icon" type="image/png" href="/src/assets/luma-logo-mark.png" />
     <title>Luma · 控制台</title>
     <script>
       // Resolve theme before first paint to avoid a flash of the wrong mode.
       (function () {
+        var override = null;
+        try {
+          if (/^(\/dashboard)?\/builder-login\/?$/.test(window.location.pathname)) {
+            var q = new URLSearchParams(window.location.search).get("theme");
+            if (q === "light" || q === "dark") override = q;
+          }
+        } catch (e) {}
         var stored = null;
         try { stored = localStorage.getItem("luma.dashboard.theme"); } catch (e) {}
-        var theme = stored === "light" || stored === "dark"
-          ? stored
-          : (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+        var pinned = override || (stored === "light" || stored === "dark" ? stored : null);
+        var theme = pinned || (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
         document.documentElement.dataset.theme = theme;
         document.documentElement.classList.toggle("dark", theme === "dark");
+        var schemeMeta = document.querySelector('meta[name="color-scheme"]');
+        if (schemeMeta) schemeMeta.setAttribute("content", pinned || "light dark");
         var meta = document.querySelector('meta[name="theme-color"]');
         if (meta) meta.setAttribute("content", theme === "light" ? "#f5f3f3" : "#0a0a0a");
       })();
