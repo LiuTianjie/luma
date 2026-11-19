@@ -674,12 +674,110 @@ _TEMPLATE = r"""<!doctype html>
       font-size: 0.8125rem;
       outline: none;
       box-shadow: var(--shadow-xs);
-      transition: border-color 0.12s ease, box-shadow 0.12s ease;
+      transition: background-color 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
     }
     .input::placeholder { color: var(--muted-foreground); }
     .input:focus, .select:focus {
       border-color: var(--primary);
       box-shadow: 0 0 0 3px color-mix(in oklch, var(--primary) 20%, transparent);
+    }
+
+    /* SelectTrigger & SelectContent (aligned with Luma Console ui/select.tsx) */
+    .select-wrap {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      flex-shrink: 0;
+      min-width: 0;
+    }
+    .select-wrap.w-full {
+      display: flex;
+      width: 100%;
+    }
+    .select-wrap-sm {
+      min-width: 6.75rem;
+    }
+    .select {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 100%;
+      min-width: 0;
+      padding-inline: 0.625rem 2rem;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .select:hover {
+      background: color-mix(in oklch, var(--accent) 45%, var(--background));
+    }
+    .select-chevron {
+      position: absolute;
+      inset-inline-end: 0.5rem;
+      color: var(--muted-foreground);
+      pointer-events: none;
+    }
+    .select-sm {
+      height: 1.75rem;
+      padding-inline: 0.625rem 1.875rem;
+      border-radius: 0.375rem;
+      border-color: transparent;
+      box-shadow: 0 0 0 1px var(--border), var(--shadow-xs);
+      font-size: 0.8125rem;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+    }
+    .select-sm:focus, .select-sm:focus-visible {
+      border-color: transparent;
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+      box-shadow: 0 0 0 1px var(--border), var(--shadow-xs);
+    }
+    @supports (appearance: base-select) {
+      .select,
+      .select::picker(select) {
+        appearance: base-select;
+      }
+      .select {
+        display: inline-flex;
+        align-items: center;
+      }
+      .select::picker-icon {
+        display: none;
+      }
+      .select::picker(select) {
+        margin-block-start: 0.25rem;
+        padding: 0.25rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--popover);
+        color: var(--foreground);
+        box-shadow: 0 8px 24px -6px var(--shadow-color), 0 2px 6px -2px var(--shadow-color);
+        font-size: 0.8125rem;
+      }
+      .select option {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.375rem 0.5rem;
+        border-radius: 0.375rem;
+        color: var(--foreground);
+        cursor: pointer;
+      }
+      .select option:hover,
+      .select option:focus-visible {
+        background: var(--accent);
+        color: var(--foreground);
+        outline: none;
+      }
+      .select option:checked {
+        font-weight: 500;
+      }
+      .select option::checkmark {
+        order: 1;
+        margin-inline-start: auto;
+        color: var(--primary);
+      }
     }
 
     /* InputGroup for search */
@@ -984,7 +1082,7 @@ _TEMPLATE = r"""<!doctype html>
       justify-content: flex-end;
       gap: 0.5rem;
     }
-    .field { display: flex; flex-direction: column; gap: 0.375rem; }
+    .field { display: flex; flex-direction: column; gap: 0.375rem; min-width: 0; }
     .field label { font-size: 0.75rem; font-weight: 500; color: var(--foreground); }
     .field small { font-size: 0.75rem; color: var(--muted-foreground); }
     .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
@@ -1184,20 +1282,47 @@ _TEMPLATE = r"""<!doctype html>
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 0.375rem;
+      gap: 0.75rem;
     }
-    .select-sm {
-      height: 1.75rem;
+    .pagination-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.125rem;
+    }
+    .pagination-list li {
+      display: inline-flex;
+      align-items: center;
+    }
+    .pagination-nav {
       padding-inline: 0.5rem;
-      border-radius: 0.375rem;
-      font-size: 0.75rem;
+      gap: 0.25rem;
     }
-    .pagination-page {
-      font-size: 0.75rem;
-      color: var(--muted-foreground);
+    .pagination-num {
+      min-width: 1.75rem;
+      padding-inline: 0.375rem;
       font-variant-numeric: tabular-nums;
-      min-width: 5.25rem;
-      text-align: center;
+    }
+    .pagination-num.is-active {
+      background: var(--background);
+      color: var(--foreground);
+      box-shadow: 0 0 0 1px var(--border), var(--shadow-xs);
+      font-weight: 600;
+    }
+    .pagination-num.is-active:hover {
+      background: var(--background);
+    }
+    .pagination-ellipsis {
+      width: 1.75rem;
+      height: 1.75rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted-foreground);
+      user-select: none;
     }
     .w-full { width: 100%; }
     .stat-host { font-size: 0.9375rem; line-height: 1.25rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1454,20 +1579,31 @@ _TEMPLATE = r"""<!doctype html>
             <nav id="builds-pagination" class="table-footer" aria-label="构建记录分页">
               <span id="builds-range" class="pagination-info">正在加载构建记录…</span>
               <div class="pagination-controls">
-                <select id="builds-page-size" class="select select-sm" aria-label="每页显示条数">
-                  <option value="20" selected>20 条/页</option>
-                  <option value="50">50 条/页</option>
-                  <option value="100">100 条/页</option>
-                </select>
-                <button type="button" id="builds-prev-btn" class="btn btn-sm" disabled>
-                  <svg class="icon icon-sm" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M165.66,202.34a8,8,0,0,1-11.32,11.32l-80-80a8,8,0,0,1,0-11.32l80-80a8,8,0,0,1,11.32,11.32L91.31,128Z"/></svg>
-                  <span>上一页</span>
-                </button>
-                <span id="builds-page-info" class="pagination-page">第 1 / 1 页</span>
-                <button type="button" id="builds-next-btn" class="btn btn-sm" disabled>
-                  <span>下一页</span>
-                  <svg class="icon icon-sm" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/></svg>
-                </button>
+                <div class="select-wrap select-wrap-sm">
+                  <select id="builds-page-size" class="select select-sm" aria-label="每页显示条数">
+                    <option value="20" selected>20 条/页</option>
+                    <option value="50">50 条/页</option>
+                    <option value="100">100 条/页</option>
+                  </select>
+                  <svg class="icon icon-sm select-chevron" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z"/></svg>
+                </div>
+                <ul id="builds-pages" class="pagination-list">
+                  <li id="builds-prev-item">
+                    <button type="button" id="builds-prev-btn" class="btn btn-sm btn-ghost pagination-nav" aria-label="上一页" disabled>
+                      <svg class="icon icon-sm" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M165.66,202.34a8,8,0,0,1-11.32,11.32l-80-80a8,8,0,0,1,0-11.32l80-80a8,8,0,0,1,11.32,11.32L91.31,128Z"/></svg>
+                      <span>上一页</span>
+                    </button>
+                  </li>
+                  <li data-page-item>
+                    <button type="button" class="btn btn-sm pagination-num is-active" aria-current="page">1</button>
+                  </li>
+                  <li id="builds-next-item">
+                    <button type="button" id="builds-next-btn" class="btn btn-sm btn-ghost pagination-nav" aria-label="下一页" disabled>
+                      <span>下一页</span>
+                      <svg class="icon icon-sm" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/></svg>
+                    </button>
+                  </li>
+                </ul>
               </div>
             </nav>
           </div>
@@ -1621,11 +1757,14 @@ _TEMPLATE = r"""<!doctype html>
           </div>
           <div class="field">
             <label for="sub-platform">目标架构</label>
-            <select id="sub-platform" class="select">
-              <option value="">自动识别（按目标节点 / 清单 / 历史记录路由）</option>
-              <option value="linux/amd64">linux/amd64 (x86_64)</option>
-              <option value="linux/arm64">linux/arm64 (Apple Silicon / ARM)</option>
-            </select>
+            <div class="select-wrap w-full">
+              <select id="sub-platform" class="select">
+                <option value="">自动识别（按目标节点 / 清单 / 历史记录路由）</option>
+                <option value="linux/amd64">linux/amd64 (x86_64)</option>
+                <option value="linux/arm64">linux/arm64 (Apple Silicon / ARM)</option>
+              </select>
+              <svg class="icon icon-sm select-chevron" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z"/></svg>
+            </div>
           </div>
         </div>
         <div class="field-row">
@@ -1720,11 +1859,14 @@ _TEMPLATE = r"""<!doctype html>
         </div>
         <div class="field">
           <label for="tok-cache">远端 Registry 缓存策略</label>
-          <select id="tok-cache" class="select">
-            <option value="read-write">read-write（推荐云主机：拉取并回推远端缓存）</option>
-            <option value="read-only">read-only（推荐家庭慢上行：本地热缓存 + 只拉远端缓存）</option>
-            <option value="local-only">local-only（仅使用本地磁盘 BuildKit 缓存）</option>
-          </select>
+          <div class="select-wrap w-full">
+            <select id="tok-cache" class="select">
+              <option value="read-write">read-write（推荐云主机：拉取并回推远端缓存）</option>
+              <option value="read-only">read-only（推荐家庭慢上行：本地热缓存 + 只拉远端缓存）</option>
+              <option value="local-only">local-only（仅使用本地磁盘 BuildKit 缓存）</option>
+            </select>
+            <svg class="icon icon-sm select-chevron" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z"/></svg>
+          </div>
         </div>
         <label class="check-row">
           <input id="tok-rotate" type="checkbox">
@@ -1833,6 +1975,18 @@ _TEMPLATE = r"""<!doctype html>
         node.append(typeof child === "string" || typeof child === "number" ? document.createTextNode(String(child)) : child);
       }
       return node;
+    }
+
+    function svgIcon(pathD, className = "icon icon-sm") {
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("class", className);
+      svg.setAttribute("viewBox", "0 0 256 256");
+      svg.setAttribute("fill", "currentColor");
+      svg.setAttribute("aria-hidden", "true");
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", pathD);
+      svg.append(path);
+      return svg;
     }
 
     // Light-dismiss fallback for browsers without native <dialog closedby> (e.g. Safari)
@@ -2134,11 +2288,28 @@ _TEMPLATE = r"""<!doctype html>
       return `/v1/builds?${p}`;
     }
 
+    const DOTS_THREE_PATH = "M144,128a16,16,0,1,1-16-16A16,16,0,0,1,144,128ZM60,112a16,16,0,1,0,16,16A16,16,0,0,0,60,112Zm136,0a16,16,0,1,0,16,16A16,16,0,0,0,196,112Z";
+
+    function computePaginationItems(current, total) {
+      if (total <= 7) {
+        return Array.from({ length: total }, (_, idx) => idx + 1);
+      }
+      if (current <= 4) {
+        return [1, 2, 3, 4, 5, "ellipsis", total];
+      }
+      if (current >= total - 3) {
+        return [1, "ellipsis", total - 4, total - 3, total - 2, total - 1, total];
+      }
+      return [1, "ellipsis", current - 1, current, current + 1, "ellipsis", total];
+    }
+
     function renderBuildsPagination() {
       const total = state.buildsTotal;
       const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
+      const current = Math.min(Math.max(1, state.pageIndex), totalPages);
       const rangeEl = document.getElementById("builds-range");
-      const pageInfoEl = document.getElementById("builds-page-info");
+      const listEl = document.getElementById("builds-pages");
+      const nextItemEl = document.getElementById("builds-next-item");
       const prevBtn = document.getElementById("builds-prev-btn");
       const nextBtn = document.getElementById("builds-next-btn");
       if (!state.buildsLoaded) {
@@ -2146,13 +2317,47 @@ _TEMPLATE = r"""<!doctype html>
       } else if (!total) {
         rangeEl.textContent = "共 0 条记录";
       } else {
-        const start = (state.pageIndex - 1) * state.pageSize + 1;
+        const start = (current - 1) * state.pageSize + 1;
         const end = Math.min(start + state.builds.length - 1, total);
         rangeEl.textContent = `显示第 ${start}–${end} 条，共 ${total} 条`;
       }
-      pageInfoEl.textContent = `第 ${state.pageIndex} / ${totalPages} 页`;
-      prevBtn.disabled = state.pageIndex <= 1;
-      nextBtn.disabled = state.pageIndex >= totalPages;
+      prevBtn.disabled = current <= 1;
+      nextBtn.disabled = current >= totalPages;
+
+      for (const old of listEl.querySelectorAll("li[data-page-item]")) {
+        old.remove();
+      }
+      const frag = document.createDocumentFragment();
+      for (const item of computePaginationItems(current, totalPages)) {
+        if (item === "ellipsis") {
+          frag.append(
+            el("li", { "data-page-item": "" },
+              el("span", { className: "pagination-ellipsis" },
+                svgIcon(DOTS_THREE_PATH, "icon icon-sm"),
+                el("span", { className: "sr-only" }, "更多页")
+              )
+            )
+          );
+        } else {
+          const isActive = item === current;
+          frag.append(
+            el("li", { "data-page-item": "" },
+              el("button", {
+                type: "button",
+                className: isActive ? "btn btn-sm pagination-num is-active" : "btn btn-sm btn-ghost pagination-num",
+                "aria-label": `第 ${item} 页`,
+                "aria-current": isActive ? "page" : null,
+                onclick: () => {
+                  if (item === state.pageIndex) return;
+                  state.pageIndex = item;
+                  refreshBuilds();
+                },
+              }, String(item))
+            )
+          );
+        }
+      }
+      listEl.insertBefore(frag, nextItemEl);
     }
 
     function renderSummary(st) {

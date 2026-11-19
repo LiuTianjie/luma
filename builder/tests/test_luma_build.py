@@ -965,6 +965,10 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
             self.assertIn('id="sub-manifest-path"', r1.text)
             self.assertIn('id="sub-compose-sidecar"', r1.text)
             self.assertIn('id="sub-provider-id"', r1.text)
+            self.assertIn('class="select-wrap select-wrap-sm"', r1.text)
+            self.assertIn("appearance: base-select", r1.text)
+            self.assertIn('id="builds-pages"', r1.text)
+            self.assertIn("computePaginationItems", r1.text)
             self.assertNotIn("style=", r1.text)
 
             csp1 = r1.headers.get("content-security-policy", "")
