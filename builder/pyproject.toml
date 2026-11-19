@@ -32,6 +32,9 @@ luma-build = "luma_build.cli:main"
 [tool.setuptools.packages.find]
 include = ["luma_build*"]
 
+[tool.setuptools.package-data]
+luma_build = ["assets/*.png"]
+
 [tool.ruff]
 target-version = "py39"
 

@@ -974,6 +974,12 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
             self.assertNotEqual(csp1, csp2)  # Fresh per-request cryptographic nonce!
             self.assertEqual(r1.headers.get("x-frame-options"), "DENY")
             self.assertEqual(r1.headers.get("x-content-type-options"), "nosniff")
+            self.assertIn('<link rel="icon" type="image/png" href="/favicon.png">', r1.text)
+            png = client.get("/favicon.png")
+            self.assertEqual(png.status_code, 200)
+            self.assertEqual(png.headers.get("content-type"), "image/png")
+            self.assertTrue(png.content.startswith(b"\x89PNG\r\n\x1a\n"))
+            self.assertEqual(client.get("/favicon.ico").status_code, 200)
             self.assertEqual(client.get("/favicon.svg").status_code, 200)
 
     def test_explicit_manifest_platforms_route_build_deterministically_without_remote_probe(self) -> None:

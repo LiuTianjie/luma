@@ -1,20 +1,25 @@
 """Luma Kumo-styled Web Console for the decoupled luma-build service.
 
-Follows Luma Control's visual design system (Kumo OKLCH semantic tokens, tabular
-numerals, quiet-dot / soft-pill StatePill badges, right-hand DetailDrawer, and
+Follows Luma Control and Luma Eye's shared visual design system (official Luma
+logo mark, Kumo OKLCH semantic tokens, Phosphor icons, tabular numerals,
+quiet-dot / soft-pill StatePill badges, right-hand DetailDrawer, and
 system-aware light/dark theming) with zero external runtime asset dependencies.
 """
 from __future__ import annotations
 
+import base64
+from pathlib import Path
 import secrets
 from typing import Tuple
 
-FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
-  <rect width="32" height="32" rx="8" fill="#2563eb"/>
-  <path d="M9 9h5v10h9v4H9V9z" fill="#ffffff"/>
-  <circle cx="21.5" cy="11.5" r="2.5" fill="#93c5fd"/>
-</svg>
-"""
+_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "luma-logo-mark.png"
+FAVICON_PNG: bytes = _LOGO_PATH.read_bytes()
+_LOGO_B64 = base64.b64encode(FAVICON_PNG).decode("ascii")
+FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">'
+    f'<image href="data:image/png;base64,{_LOGO_B64}" width="96" height="96"/>'
+    "</svg>\n"
+)
 
 
 def render_dashboard_html(
@@ -48,23 +53,29 @@ _TEMPLATE = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f3f3">
   <meta name="color-scheme" content="light dark">
   <script nonce="__CSP_NONCE__">
     try {
       const savedScheme = localStorage.getItem("luma-build-color-scheme");
+      const schemeMeta = document.querySelector('meta[name="color-scheme"]');
       if (savedScheme === "light" || savedScheme === "dark") {
-        document.querySelector('meta[name="color-scheme"]').content = savedScheme;
+        schemeMeta.content = savedScheme;
       }
+      const isDark = savedScheme === "dark" || (savedScheme !== "light" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+      const themeMeta = document.querySelector('meta[name="theme-color"]');
+      if (themeMeta) themeMeta.content = isDark ? "#0a0a0a" : "#f5f3f3";
     } catch {}
   </script>
-  <title>Luma Build · 构建与算力控制台</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <title>Luma Build · 控制台</title>
+  <link rel="icon" type="image/png" href="/favicon.png">
   <style nonce="__CSP_NONCE__">
     :root {
       color-scheme: light dark;
       --font-sans: "Geist Variable", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
+      /* Shared Kumo OKLCH semantic tokens aligned 1:1 with Luma Control & Luma Eye */
       --canvas-light: oklch(0.973 0 0);
       --canvas-dark: oklch(0.145 0 0);
       --bg-light: oklch(1 0 0);
@@ -73,6 +84,10 @@ _TEMPLATE = r"""<!doctype html>
       --fg-dark: oklch(0.97 0 0);
       --card-light: oklch(1 0 0);
       --card-dark: oklch(0.195 0 0);
+      --popover-light: oklch(1 0 0);
+      --popover-dark: oklch(0.225 0 0);
+      --secondary-light: oklch(0.96 0 0);
+      --secondary-dark: oklch(0.25 0 0);
       --muted-light: oklch(0.97 0 0);
       --muted-dark: oklch(0.22 0 0);
       --muted-fg-light: oklch(0.48 0 0);
@@ -81,20 +96,24 @@ _TEMPLATE = r"""<!doctype html>
       --subtle-fg-dark: oklch(0.66 0 0);
       --accent-light: oklch(0.955 0 0);
       --accent-dark: oklch(0.255 0 0);
+      --seg-active-light: oklch(1 0 0);
+      --seg-active-dark: oklch(0.255 0 0);
       --primary-light: oklch(0.5772 0.2324 260);
-      --primary-dark: oklch(0.58 0.2 260);
+      --primary-dark: oklch(0.55 0.2 260);
       --primary-hover-light: oklch(0.488 0.243 264.4);
-      --primary-hover-dark: oklch(0.63 0.19 258);
+      --primary-hover-dark: oklch(0.6 0.19 258);
       --link-light: oklch(0.488 0.243 264.4);
       --link-dark: oklch(0.74 0.15 254.6);
       --border-light: oklch(0.145 0 0 / 0.1);
-      --border-dark: oklch(1 0 0 / 0.11);
+      --border-dark: oklch(1 0 0 / 0.1);
       --hairline-light: oklch(0.935 0 0);
       --hairline-dark: oklch(1 0 0 / 0.07);
       --input-light: oklch(0.145 0 0 / 0.14);
-      --input-dark: oklch(1 0 0 / 0.16);
+      --input-dark: oklch(1 0 0 / 0.14);
       --shadow-light: oklch(0 0 0 / 0.06);
       --shadow-dark: oklch(0 0 0 / 0.35);
+      --scrollbar-thumb-light: oklch(0.66 0 0);
+      --scrollbar-thumb-dark: oklch(0.42 0 0);
 
       --success-light: oklch(0.596 0.145 163.2);
       --success-dark: oklch(0.7 0.16 163);
@@ -110,10 +129,19 @@ _TEMPLATE = r"""<!doctype html>
       --warning-soft-light: oklch(0.975 0.03 85);
       --warning-soft-dark: oklch(0.275 0.05 65);
 
+      --info-light: oklch(0.623 0.214 259.8);
+      --info-dark: oklch(0.66 0.17 255);
+      --info-fg-light: oklch(0.424 0.199 265.6);
+      --info-fg-dark: oklch(0.8 0.11 254.6);
+      --info-soft-light: oklch(0.966 0.018 255.6);
+      --info-soft-dark: oklch(0.26 0.06 262);
+
       --danger-light: oklch(0.637 0.237 25.3);
       --danger-dark: oklch(0.65 0.21 24);
+      --danger-fill-light: oklch(0.54 0.22 26);
+      --danger-fill-dark: oklch(0.54 0.2 25);
       --danger-fg-light: oklch(0.505 0.213 27.5);
-      --danger-fg-dark: oklch(0.78 0.15 22.2);
+      --danger-fg-dark: oklch(0.76 0.15 22.2);
       --danger-soft-light: oklch(0.965 0.018 17.7);
       --danger-soft-dark: oklch(0.27 0.06 25);
 
@@ -121,10 +149,13 @@ _TEMPLATE = r"""<!doctype html>
       --background: var(--bg-light);
       --foreground: var(--fg-light);
       --card: var(--card-light);
+      --popover: var(--popover-light);
+      --secondary: var(--secondary-light);
       --muted: var(--muted-light);
       --muted-foreground: var(--muted-fg-light);
       --subtle-foreground: var(--subtle-fg-light);
       --accent: var(--accent-light);
+      --seg-active: var(--seg-active-light);
       --primary: var(--primary-light);
       --primary-hover: var(--primary-hover-light);
       --link: var(--link-light);
@@ -132,19 +163,28 @@ _TEMPLATE = r"""<!doctype html>
       --hairline: var(--hairline-light);
       --input: var(--input-light);
       --shadow-color: var(--shadow-light);
+      --scrollbar-thumb: var(--scrollbar-thumb-light);
       --success: var(--success-light);
       --success-foreground: var(--success-fg-light);
       --success-soft: var(--success-soft-light);
       --warning: var(--warning-light);
       --warning-foreground: var(--warning-fg-light);
       --warning-soft: var(--warning-soft-light);
+      --info: var(--info-light);
+      --info-foreground: var(--info-fg-light);
+      --info-soft: var(--info-soft-light);
       --danger: var(--danger-light);
+      --danger-fill: var(--danger-fill-light);
       --danger-foreground: var(--danger-fg-light);
       --danger-soft: var(--danger-soft-light);
 
       --radius: 0.5rem;
+      --card-spacing: 1.25rem;
       --header-height: 3.5rem;
+      --shadow-xs: 0 1px 2px 0 var(--shadow-color);
+      --shadow-sm: 0 1px 3px 0 var(--shadow-color), 0 1px 2px -1px var(--shadow-color);
       accent-color: var(--primary);
+      scrollbar-color: var(--scrollbar-thumb) transparent;
     }
 
     @media (prefers-color-scheme: dark) {
@@ -153,10 +193,13 @@ _TEMPLATE = r"""<!doctype html>
         --background: var(--bg-dark);
         --foreground: var(--fg-dark);
         --card: var(--card-dark);
+        --popover: var(--popover-dark);
+        --secondary: var(--secondary-dark);
         --muted: var(--muted-dark);
         --muted-foreground: var(--muted-fg-dark);
         --subtle-foreground: var(--subtle-fg-dark);
         --accent: var(--accent-dark);
+        --seg-active: var(--seg-active-dark);
         --primary: var(--primary-dark);
         --primary-hover: var(--primary-hover-dark);
         --link: var(--link-dark);
@@ -164,13 +207,18 @@ _TEMPLATE = r"""<!doctype html>
         --hairline: var(--hairline-dark);
         --input: var(--input-dark);
         --shadow-color: var(--shadow-dark);
+        --scrollbar-thumb: var(--scrollbar-thumb-dark);
         --success: var(--success-dark);
         --success-foreground: var(--success-fg-dark);
         --success-soft: var(--success-soft-dark);
         --warning: var(--warning-dark);
         --warning-foreground: var(--warning-fg-dark);
         --warning-soft: var(--warning-soft-dark);
+        --info: var(--info-dark);
+        --info-foreground: var(--info-fg-dark);
+        --info-soft: var(--info-soft-dark);
         --danger: var(--danger-dark);
+        --danger-fill: var(--danger-fill-dark);
         --danger-foreground: var(--danger-fg-dark);
         --danger-soft: var(--danger-soft-dark);
       }
@@ -189,10 +237,13 @@ _TEMPLATE = r"""<!doctype html>
         --background: light-dark(var(--bg-light), var(--bg-dark));
         --foreground: light-dark(var(--fg-light), var(--fg-dark));
         --card: light-dark(var(--card-light), var(--card-dark));
+        --popover: light-dark(var(--popover-light), var(--popover-dark));
+        --secondary: light-dark(var(--secondary-light), var(--secondary-dark));
         --muted: light-dark(var(--muted-light), var(--muted-dark));
         --muted-foreground: light-dark(var(--muted-fg-light), var(--muted-fg-dark));
         --subtle-foreground: light-dark(var(--subtle-fg-light), var(--subtle-fg-dark));
         --accent: light-dark(var(--accent-light), var(--accent-dark));
+        --seg-active: light-dark(var(--seg-active-light), var(--seg-active-dark));
         --primary: light-dark(var(--primary-light), var(--primary-dark));
         --primary-hover: light-dark(var(--primary-hover-light), var(--primary-hover-dark));
         --link: light-dark(var(--link-light), var(--link-dark));
@@ -200,16 +251,41 @@ _TEMPLATE = r"""<!doctype html>
         --hairline: light-dark(var(--hairline-light), var(--hairline-dark));
         --input: light-dark(var(--input-light), var(--input-dark));
         --shadow-color: light-dark(var(--shadow-light), var(--shadow-dark));
+        --scrollbar-thumb: light-dark(var(--scrollbar-thumb-light), var(--scrollbar-thumb-dark));
         --success: light-dark(var(--success-light), var(--success-dark));
         --success-foreground: light-dark(var(--success-fg-light), var(--success-fg-dark));
         --success-soft: light-dark(var(--success-soft-light), var(--success-soft-dark));
         --warning: light-dark(var(--warning-light), var(--warning-dark));
         --warning-foreground: light-dark(var(--warning-fg-light), var(--warning-fg-dark));
         --warning-soft: light-dark(var(--warning-soft-light), var(--warning-soft-dark));
+        --info: light-dark(var(--info-light), var(--info-dark));
+        --info-foreground: light-dark(var(--info-fg-light), var(--info-fg-dark));
+        --info-soft: light-dark(var(--info-soft-light), var(--info-soft-dark));
         --danger: light-dark(var(--danger-light), var(--danger-dark));
+        --danger-fill: light-dark(var(--danger-fill-light), var(--danger-fill-dark));
         --danger-foreground: light-dark(var(--danger-fg-light), var(--danger-fg-dark));
         --danger-soft: light-dark(var(--danger-soft-light), var(--danger-soft-dark));
       }
+    }
+
+    /* CSS-only theme toggle icon branching (no JS needed when OS scheme changes) */
+    .theme-opt-light { display: none; }
+    .theme-opt-dark { display: inline-flex; align-items: center; }
+    @media (prefers-color-scheme: dark) {
+      :root:not(:has(> head > meta[name="color-scheme"][content="light"])) .theme-opt-light {
+        display: inline-flex;
+        align-items: center;
+      }
+      :root:not(:has(> head > meta[name="color-scheme"][content="light"])) .theme-opt-dark {
+        display: none;
+      }
+    }
+    :root:has(> head > meta[name="color-scheme"][content="dark"]) .theme-opt-light {
+      display: inline-flex;
+      align-items: center;
+    }
+    :root:has(> head > meta[name="color-scheme"][content="dark"]) .theme-opt-dark {
+      display: none;
     }
 
     *, *::before, *::after { box-sizing: border-box; }
@@ -222,10 +298,35 @@ _TEMPLATE = r"""<!doctype html>
       font-size: 0.875rem;
       line-height: 1.5;
     }
+    ::selection { background: color-mix(in oklch, var(--primary) 22%, transparent); }
     table, [data-numeric] { font-variant-numeric: tabular-nums; }
     code, pre, .mono { font-family: var(--font-mono); }
 
-    /* Shell layout */
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .icon {
+      width: 1rem;
+      height: 1rem;
+      flex-shrink: 0;
+      display: inline-block;
+      pointer-events: none;
+    }
+    .icon-sm {
+      width: 0.875rem;
+      height: 0.875rem;
+    }
+
+    /* Shell layout (aligned with Luma Control Sidebar + Topbar + Console Content) */
     .shell { display: flex; min-height: 100dvh; width: 100%; }
     .sidebar {
       width: 15rem;
@@ -237,232 +338,452 @@ _TEMPLATE = r"""<!doctype html>
       position: sticky;
       inset-block-start: 0;
       height: 100dvh;
+      transition: width 0.15s ease;
     }
-    .shell.collapsed .sidebar { width: 3.75rem; }
+    .shell.collapsed .sidebar { width: 3.5rem; }
     .shell.collapsed .hide-collapsed { display: none !important; }
+    .shell.collapsed .sidebar-header { justify-content: center; padding-inline: 0.5rem; }
+    .shell.collapsed .sidebar-body { padding-inline: 0.5rem; }
+    .shell.collapsed .sidebar-footer { padding: 0.5rem; }
+    .shell.collapsed .nav-btn { justify-content: center; padding-inline: 0; width: 2rem; margin-inline: auto; }
+
     .sidebar-header {
       height: var(--header-height);
+      flex-shrink: 0;
       display: flex;
       align-items: center;
       gap: 0.625rem;
-      padding-inline: 0.875rem;
+      padding-inline: 0.75rem;
       border-block-end: 1px solid var(--border);
+    }
+    .brand-link {
+      display: flex;
+      align-items: center;
+      gap: 0.625rem;
+      min-width: 0;
+      padding: 0.25rem;
+      border-radius: 0.375rem;
+      color: inherit;
+      text-decoration: none;
     }
     .brand-mark {
       width: 2rem;
       height: 2rem;
-      border-radius: 0.5rem;
-      background: var(--primary);
-      color: #fff;
+      border-radius: var(--radius);
+      background: var(--background);
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      font-weight: 700;
-      font-size: 0.95rem;
       flex-shrink: 0;
-      box-shadow: 0 1px 2px var(--shadow-color);
+      box-shadow: 0 0 0 1px var(--border), var(--shadow-xs);
     }
-    .brand-meta { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
-    .brand-meta strong { font-size: 0.9375rem; font-weight: 600; letter-spacing: -0.01em; }
+    .brand-logo {
+      width: 1.25rem;
+      height: 1.25rem;
+      display: block;
+    }
+    .brand-meta { display: flex; flex-direction: column; min-width: 0; gap: 0.2rem; line-height: 1; }
+    .brand-meta strong { font-size: 0.9375rem; font-weight: 600; letter-spacing: -0.01em; color: var(--foreground); }
     .brand-meta span { font-size: 0.6875rem; color: var(--muted-foreground); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-    .sidebar-body { flex: 1; padding: 0.75rem 0.625rem; display: flex; flex-direction: column; gap: 0.875rem; overflow-y: auto; }
+    .sidebar-body {
+      flex: 1;
+      padding: 0.75rem 0.625rem 0.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      overflow-y: auto;
+    }
+    .nav-group { padding-block: 0.25rem; }
     .nav-group-label {
-      padding: 0.25rem 0.625rem;
+      height: 1.75rem;
+      display: flex;
+      align-items: center;
+      padding-inline: 0.625rem;
       font-size: 0.6875rem;
       font-weight: 500;
       color: var(--subtle-foreground);
-      letter-spacing: 0.02em;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
     }
-    .nav-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+    .nav-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
     .nav-btn {
       width: 100%;
+      height: 2rem;
       border: 0;
       background: transparent;
-      color: var(--foreground);
+      color: var(--muted-foreground);
       display: flex;
       align-items: center;
-      gap: 0.625rem;
-      padding: 0.45rem 0.625rem;
-      border-radius: 0.45rem;
+      gap: 0.5rem;
+      padding-inline: 0.625rem;
+      border-radius: 0.375rem;
       font-size: 0.8125rem;
-      font-weight: 500;
+      font-weight: 400;
       cursor: pointer;
       text-align: start;
+      transition: background-color 0.12s ease, color 0.12s ease;
     }
-    .nav-btn:hover { background: var(--accent); }
-    .nav-btn[aria-current="page"] { background: var(--accent); font-weight: 600; }
+    .nav-btn:hover { background: var(--accent); color: var(--foreground); }
+    .nav-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+    .nav-btn[aria-current="page"] {
+      background: var(--accent);
+      color: var(--foreground);
+      font-weight: 500;
+    }
     .nav-badge {
       margin-inline-start: auto;
+      min-width: 1.25rem;
+      height: 1.25rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       font-size: 0.6875rem;
-      padding: 0.05rem 0.4rem;
+      font-weight: 500;
+      padding-inline: 0.375rem;
       border-radius: 999px;
       background: var(--muted);
       color: var(--muted-foreground);
-      border: 1px solid var(--border);
+      font-variant-numeric: tabular-nums;
     }
+    .nav-badge.is-active {
+      background: var(--warning-soft);
+      color: var(--warning-foreground);
+    }
+
     .sidebar-footer {
       padding: 0.625rem;
       border-block-start: 1px solid var(--border);
       display: flex;
       flex-direction: column;
-      gap: 0.25rem;
+      gap: 0.125rem;
     }
+    .fleet-summary {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      height: 2rem;
+      padding-inline: 0.625rem;
+      border-radius: 0.375rem;
+      font-size: 0.75rem;
+      color: var(--muted-foreground);
+      border: 0;
+      background: transparent;
+      cursor: pointer;
+      text-align: start;
+      width: 100%;
+      transition: background-color 0.12s ease, color 0.12s ease;
+    }
+    .fleet-summary:hover { background: var(--accent); color: var(--foreground); }
+    .fleet-dot {
+      width: 0.375rem;
+      height: 0.375rem;
+      border-radius: 999px;
+      background: var(--subtle-foreground);
+      flex-shrink: 0;
+    }
+    .fleet-dot.tone-ok { background: var(--success); }
+    .fleet-dot.tone-warn { background: var(--warning); }
+    .fleet-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     .main-area { flex: 1; min-width: 0; display: flex; flex-direction: column; }
     .topbar {
       height: var(--header-height);
+      flex-shrink: 0;
       background: var(--background);
       border-block-end: 1px solid var(--border);
-      padding-inline: clamp(1rem, 2.5vw, 2rem);
+      padding-inline: 1rem;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 1rem;
+      gap: 0.75rem;
       position: sticky;
       inset-block-start: 0;
       z-index: 5;
     }
-    .topbar-title { font-size: 0.875rem; font-weight: 600; display: flex; align-items: center; gap: 0.5rem; }
-    .topbar-actions { display: flex; align-items: center; gap: 0.5rem; }
+    @media (min-width: 768px) {
+      .topbar { padding-inline: 1.5rem; }
+    }
+    .breadcrumb {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      min-width: 0;
+      font-size: 0.8125rem;
+    }
+    .breadcrumb-root { color: var(--muted-foreground); white-space: nowrap; }
+    .breadcrumb-sep { color: var(--subtle-foreground); user-select: none; }
+    .breadcrumb-current { color: var(--foreground); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .topbar-actions { display: flex; align-items: center; gap: 0.375rem; margin-inline-start: auto; }
+    .sync-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.375rem;
+      margin-inline-end: 0.375rem;
+      font-size: 0.75rem;
+      color: var(--muted-foreground);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .sync-dot {
+      width: 0.375rem;
+      height: 0.375rem;
+      border-radius: 999px;
+      background: var(--success);
+      flex-shrink: 0;
+    }
+    .sync-dot.is-err { background: var(--danger); }
 
     .console-content {
       flex: 1;
-      padding: 1.75rem clamp(1rem, 3vw, 2.5rem) 3rem;
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+      background: var(--canvas);
+      padding: 1.75rem clamp(1.25rem, 3vw, 2.5rem) 3rem;
     }
     .console-page {
-      max-width: 1360px;
+      max-width: 1400px;
+      width: 100%;
+      min-width: 0;
       margin-inline: auto;
       display: flex;
       flex-direction: column;
-      gap: 1.25rem;
+      gap: 1.5rem;
     }
 
-    /* Page header */
+    /* Page header (Kumo ResourceListPage) */
     .page-header {
       display: flex;
       flex-wrap: wrap;
       align-items: flex-start;
       justify-content: space-between;
-      gap: 1rem;
+      gap: 1rem 1.5rem;
     }
-    .page-header h1 { margin: 0; font-size: 1.375rem; font-weight: 650; letter-spacing: -0.015em; }
-    .page-header p { margin: 0.25rem 0 0; color: var(--muted-foreground); font-size: 0.8125rem; }
-    .header-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+    .page-header-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 0.375rem;
+      min-width: 0;
+      flex: 1 1 18rem;
+    }
+    .page-header h1 {
+      margin: 0;
+      font-size: 1.625rem;
+      line-height: 2rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    .page-header p {
+      margin: 0;
+      max-width: 48rem;
+      color: var(--muted-foreground);
+      font-size: 0.875rem;
+      line-height: 1.5rem;
+    }
+    .header-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      padding-block-start: 0.125rem;
+    }
 
-    /* Buttons & controls */
+    /* Buttons & controls (Kumo emphasis treatment) */
     button, input, select { font: inherit; }
     .btn {
+      position: relative;
       display: inline-flex;
+      flex-shrink: 0;
       align-items: center;
       justify-content: center;
-      gap: 0.4rem;
-      height: 2.125rem;
-      padding-inline: 0.8rem;
-      border-radius: 0.45rem;
+      gap: 0.375rem;
+      height: 2rem;
+      padding-inline: 0.75rem;
+      border-radius: var(--radius);
       font-size: 0.8125rem;
       font-weight: 500;
       cursor: pointer;
-      border: 1px solid var(--border);
+      border: 1px solid transparent;
       background: var(--background);
       color: var(--foreground);
-      box-shadow: 0 1px 2px var(--shadow-color);
+      box-shadow: 0 0 0 1px var(--border), var(--shadow-xs);
       white-space: nowrap;
       text-decoration: none;
+      user-select: none;
+      transition: color 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease;
     }
     .btn:hover { background: var(--accent); }
-    .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+    .btn:disabled { opacity: 0.5; pointer-events: none; }
+
     .btn-primary {
-      background: var(--primary);
+      background-color: var(--primary);
+      background-image: linear-gradient(to bottom, var(--primary), color-mix(in oklch, var(--primary), black 9%));
       border-color: transparent;
       color: #fff;
+      box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.16), 0 0 0 1px color-mix(in oklch, var(--primary), black 14%), var(--shadow-xs);
     }
-    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-primary:hover {
+      background-color: var(--primary-hover);
+      background-image: linear-gradient(to bottom, color-mix(in oklch, var(--primary), black 6%), color-mix(in oklch, var(--primary), black 15%));
+    }
+    .btn-primary:active {
+      background-image: linear-gradient(to bottom, color-mix(in oklch, var(--primary), black 12%), color-mix(in oklch, var(--primary), black 12%));
+    }
+
     .btn-danger {
-      background: var(--danger-soft);
-      border-color: color-mix(in oklch, var(--danger) 30%, transparent);
+      background: var(--background);
       color: var(--danger-foreground);
+      box-shadow: 0 0 0 1px var(--border), var(--shadow-xs);
     }
-    .btn-ghost { background: transparent; border-color: transparent; box-shadow: none; }
+    .btn-danger:hover {
+      background: var(--danger-soft);
+      box-shadow: 0 0 0 1px color-mix(in oklch, var(--danger) 30%, transparent), var(--shadow-xs);
+    }
+    .btn-danger:focus-visible { outline-color: var(--danger); }
+
+    .btn-ghost {
+      background: transparent;
+      border-color: transparent;
+      box-shadow: none;
+      color: var(--foreground);
+    }
     .btn-ghost:hover { background: var(--accent); }
-    .btn-sm { height: 1.75rem; padding-inline: 0.6rem; font-size: 0.75rem; }
+
+    .btn-sm {
+      height: 1.75rem;
+      padding-inline: 0.625rem;
+      border-radius: 0.375rem;
+      font-size: 0.8125rem;
+      gap: 0.25rem;
+    }
+    .btn-icon {
+      width: 1.75rem;
+      height: 1.75rem;
+      padding: 0;
+      border-radius: 0.375rem;
+    }
 
     .input, .select {
-      height: 2.125rem;
-      padding-inline: 0.6875rem;
-      border-radius: 0.45rem;
+      height: 2rem;
+      padding-inline: 0.625rem;
+      border-radius: var(--radius);
       border: 1px solid var(--input);
       background: var(--background);
       color: var(--foreground);
       font-size: 0.8125rem;
       outline: none;
+      box-shadow: var(--shadow-xs);
+      transition: border-color 0.12s ease, box-shadow 0.12s ease;
     }
+    .input::placeholder { color: var(--muted-foreground); }
     .input:focus, .select:focus {
       border-color: var(--primary);
-      box-shadow: 0 0 0 2px color-mix(in oklch, var(--primary) 24%, transparent);
+      box-shadow: 0 0 0 3px color-mix(in oklch, var(--primary) 20%, transparent);
     }
 
-    /* Stat tiles */
+    /* InputGroup for search */
+    .search-group {
+      position: relative;
+      display: flex;
+      align-items: center;
+      flex: 1 1 14rem;
+      max-width: 20rem;
+    }
+    .search-group .search-icon {
+      position: absolute;
+      inset-inline-start: 0.625rem;
+      color: var(--muted-foreground);
+      pointer-events: none;
+    }
+    .search-group .input {
+      width: 100%;
+      padding-inline-start: 2rem;
+    }
+
+    /* Stat tiles (aligned with Luma StatTile) */
     .stats-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(13.5rem, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
       gap: 0.75rem;
     }
     .stat-tile {
       background: var(--card);
-      border: 1px solid var(--border);
       border-radius: var(--radius);
       padding: 0.875rem 1rem;
-      box-shadow: 0 1px 2px var(--shadow-color);
+      box-shadow: 0 0 0 1px var(--border), var(--shadow-xs);
       display: flex;
       flex-direction: column;
-      gap: 0.35rem;
+      gap: 0.5rem;
       min-width: 0;
     }
-    .stat-label { font-size: 0.75rem; font-weight: 500; color: var(--muted-foreground); }
-    .stat-value { font-size: 1.25rem; font-weight: 650; letter-spacing: -0.01em; }
-    .stat-sub { font-size: 0.75rem; color: var(--subtle-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .stat-label { font-size: 0.75rem; font-weight: 500; color: var(--muted-foreground); line-height: 1.2; }
+    .stat-value { font-size: 1.25rem; line-height: 1.1; font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+    .stat-sub { font-size: 0.75rem; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-    /* Filter bar */
+    /* Filter toolbar + Kumo segmented ToggleGroup */
     .filter-bar {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       gap: 0.5rem;
     }
-    .search-box { flex: 1 1 14rem; max-width: 20rem; }
     .segmented {
       display: inline-flex;
-      flex-wrap: wrap;
-      padding: 2px;
-      border-radius: 0.5rem;
-      background: var(--muted);
-      border: 1px solid var(--border);
+      align-items: center;
+      height: 2rem;
+      max-width: 100%;
+      overflow-x: auto;
+      padding: 3px;
+      border-radius: var(--radius);
+      background: var(--secondary);
+      box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--border) 70%, transparent);
       gap: 2px;
     }
     .seg-btn {
+      height: 100%;
       border: 0;
       background: transparent;
       color: var(--muted-foreground);
-      font-size: 0.75rem;
+      font-size: 0.8125rem;
       font-weight: 500;
-      padding: 0.28rem 0.65rem;
-      border-radius: 0.35rem;
+      padding-inline: 0.625rem;
+      border-radius: 0.375rem;
       cursor: pointer;
+      white-space: nowrap;
+      transition: color 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease;
     }
+    .seg-btn:hover { color: var(--foreground); }
+    .seg-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
     .seg-btn[aria-pressed="true"] {
-      background: var(--background);
+      background: var(--seg-active);
       color: var(--foreground);
-      box-shadow: 0 1px 2px var(--shadow-color);
+      box-shadow: 0 0 0 1px var(--border), var(--shadow-xs);
     }
 
-    /* Card & Responsive Table */
+    /* Kumo LayerCard & Edge-to-Edge Responsive Table */
     .card {
       background: var(--card);
-      border: 1px solid var(--border);
       border-radius: var(--radius);
-      box-shadow: 0 1px 2px var(--shadow-color);
+      box-shadow: 0 0 0 1px var(--border), var(--shadow-xs);
       overflow: hidden;
+    }
+    .card-header {
+      padding: 1rem var(--card-spacing);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      border-block-end: 1px solid var(--hairline);
+    }
+    .card-title {
+      font-size: 0.9375rem;
+      font-weight: 600;
+      letter-spacing: -0.005em;
+      line-height: 1.35;
     }
     .table-wrapper {
       overflow-x: auto;
@@ -478,34 +799,32 @@ _TEMPLATE = r"""<!doctype html>
       border-collapse: separate;
       border-spacing: 0;
       text-align: start;
-    }
-    caption.sr-only {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      overflow: hidden;
-      clip-path: inset(50%);
-      white-space: nowrap;
+      font-size: 0.8125rem;
     }
     thead {
       position: sticky;
       inset-block-start: 0;
       z-index: 1;
-      background: var(--muted);
+      background: color-mix(in oklch, var(--muted) 70%, var(--card));
     }
     thead th {
-      padding: 0.625rem 1rem;
+      height: 2.25rem;
+      padding: 0 0.75rem;
       font-size: 0.75rem;
       font-weight: 500;
       color: var(--muted-foreground);
-      border-block-end: 1px solid var(--border);
+      border-block-end: 1px solid var(--hairline);
       white-space: nowrap;
+      text-align: start;
     }
+    thead th:first-child, tbody th:first-child, tbody td:first-child { padding-inline-start: var(--card-spacing); }
+    thead th:last-child, tbody th:last-child, tbody td:last-child { padding-inline-end: var(--card-spacing); }
+
     tbody tr { cursor: pointer; transition: background-color 0.12s ease; }
     tbody tr.static-row { cursor: default; }
-    tbody tr:hover { background: color-mix(in oklch, var(--accent) 65%, transparent); }
+    tbody tr:hover { background: color-mix(in oklch, var(--muted) 45%, transparent); }
     tbody th, tbody td {
-      padding: 0.75rem 1rem;
+      padding: 0.625rem 0.75rem;
       border-block-end: 1px solid var(--hairline);
       vertical-align: middle;
       font-weight: 400;
@@ -514,14 +833,15 @@ _TEMPLATE = r"""<!doctype html>
 
     /* Keep long build summaries from pushing the remaining columns off-screen. */
     .resp-table { table-layout: fixed; }
-    .resp-table th { text-align: start; }
     .resp-table thead th:nth-child(2) { width: 6.5rem; }
-    .resp-table thead th:nth-child(3) { width: 13rem; }
-    .resp-table thead th:nth-child(4) { width: 11.5rem; }
+    .resp-table thead th:nth-child(3) { width: 13.5rem; }
+    .resp-table thead th:nth-child(4) { width: 11.5rem; text-align: end; }
+    .resp-table tbody td[data-col="time"] { text-align: end; }
     .resp-table .cell-meta { overflow-wrap: anywhere; }
 
     .record-primary { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
-    .record-title { color: var(--link); font-weight: 600; font-size: 0.875rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .record-title { color: var(--link); font-weight: 500; font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    tbody tr:hover .record-title { text-decoration: underline; text-underline-offset: 3px; }
     .record-sub { color: var(--muted-foreground); font-size: 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     @container (width < 640px) {
@@ -531,47 +851,56 @@ _TEMPLATE = r"""<!doctype html>
       .resp-table thead { display: none; }
       .resp-table tbody tr {
         padding: 0.5rem 0;
-        border-block-end: 1px solid var(--border);
+        border-block-end: 1px solid var(--hairline);
       }
       .resp-table tbody th, .resp-table tbody td {
         border-block-end: 0;
-        padding: 0.35rem 1rem;
+        padding: 0.3rem var(--card-spacing);
+        text-align: start;
       }
+      .resp-table tbody td[data-col="time"] { text-align: start; }
       .resp-table tbody td[data-col="status"]::before { content: "状态："; color: var(--muted-foreground); font-size: 0.75rem; }
       .resp-table tbody td[data-col="meta"]::before { content: "架构 / 产物："; color: var(--muted-foreground); font-size: 0.75rem; }
-      .resp-table tbody td[data-col="time"]::before { content: "时间："; color: var(--muted-foreground); font-size: 0.75rem; }
+      .resp-table tbody td[data-col="time"]::before { content: "创建时间："; color: var(--muted-foreground); font-size: 0.75rem; }
     }
 
-    /* Luma StatePill badges */
+    /* Kumo StatePill badges (aligned with ui/badge.tsx + primitives.tsx) */
     .pill {
       display: inline-flex;
       align-items: center;
+      justify-content: center;
       gap: 0.375rem;
+      height: 1.25rem;
       font-size: 0.75rem;
       font-weight: 500;
-      padding: 0.15rem 0.55rem;
+      padding-inline: 0.5rem;
       border-radius: 999px;
-      line-height: 1.35;
+      line-height: 1;
       white-space: nowrap;
+      border: 1px solid transparent;
+    }
+    .pill-dot {
+      padding-inline-start: 0.375rem;
     }
     .pill-dot::before {
       content: "";
-      width: 0.42rem;
-      height: 0.42rem;
+      width: 0.375rem;
+      height: 0.375rem;
       border-radius: 999px;
       background: currentColor;
+      flex-shrink: 0;
     }
     .pill-success {
-      background: transparent;
-      border: 1px solid var(--border);
+      background: var(--background);
+      border-color: var(--border);
       color: var(--foreground);
     }
     .pill-success::before { background: var(--success); }
     .pill-running {
-      background: var(--success-soft);
-      color: var(--success-foreground);
+      background: var(--info-soft);
+      color: var(--info-foreground);
     }
-    .pill-running::before { background: var(--success); }
+    .pill-running::before { background: var(--info); }
     .pill-warning {
       background: var(--warning-soft);
       color: var(--warning-foreground);
@@ -581,25 +910,27 @@ _TEMPLATE = r"""<!doctype html>
       color: var(--danger-foreground);
     }
     .pill-neutral {
-      background: transparent;
-      border: 1px solid var(--border);
-      color: var(--muted-foreground);
+      background: var(--background);
+      border-color: var(--border);
+      color: var(--foreground);
     }
+    .pill-neutral::before { background: var(--subtle-foreground); }
 
     .empty-state {
       padding: 3rem 1.5rem;
       text-align: center;
       color: var(--muted-foreground);
+      font-size: 0.8125rem;
     }
-    .empty-state strong { display: block; color: var(--foreground); font-size: 0.9375rem; margin-block-end: 0.25rem; }
+    .empty-state strong { display: block; color: var(--foreground); font-size: 0.9375rem; font-weight: 600; margin-block-end: 0.25rem; }
 
-    /* Native <dialog> modals & right-side detail sheet (per modern-web-guidance) */
+    /* Native <dialog> modals & right-side detail sheet */
     dialog {
-      border: 1px solid var(--border);
+      border: 0;
       background: var(--card);
       color: var(--foreground);
       padding: 0;
-      box-shadow: 0 12px 36px var(--shadow-color);
+      box-shadow: 0 0 0 1px var(--border), 0 12px 36px var(--shadow-color);
     }
     dialog:modal {
       overscroll-behavior: contain;
@@ -628,7 +959,7 @@ _TEMPLATE = r"""<!doctype html>
       height: 100dvh;
       max-height: 100dvh;
       border-radius: 0;
-      border-inline-start: 1px solid var(--border);
+      box-shadow: -1px 0 0 0 var(--border), 0 12px 36px var(--shadow-color);
     }
     dialog.drawer-sheet[open] {
       display: flex;
@@ -636,28 +967,29 @@ _TEMPLATE = r"""<!doctype html>
     }
     .dialog-header {
       padding: 1rem 1.25rem;
-      border-block-end: 1px solid var(--border);
+      border-block-end: 1px solid var(--hairline);
       display: flex;
       align-items: flex-start;
       justify-content: space-between;
       gap: 1rem;
     }
-    .dialog-header h2 { margin: 0; font-size: 1rem; font-weight: 600; }
+    .dialog-header h2 { margin: 0; font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
     .dialog-header p { margin: 0.2rem 0 0; font-size: 0.75rem; color: var(--muted-foreground); }
     .dialog-body { padding: 1.25rem; display: flex; flex-direction: column; gap: 0.875rem; overflow-y: auto; }
     .drawer-body { flex: 1; min-height: 0; padding: 1rem 1.25rem; display: flex; flex-direction: column; gap: 1rem; overflow-y: auto; }
     .dialog-footer {
       padding: 0.875rem 1.25rem;
-      border-block-start: 1px solid var(--border);
+      border-block-start: 1px solid var(--hairline);
+      background: color-mix(in oklch, var(--muted) 40%, transparent);
       display: flex;
       justify-content: flex-end;
       gap: 0.5rem;
     }
-    .field { display: flex; flex-direction: column; gap: 0.35rem; }
+    .field { display: flex; flex-direction: column; gap: 0.375rem; }
     .field label { font-size: 0.75rem; font-weight: 500; color: var(--foreground); }
-    .field small { font-size: 0.72rem; color: var(--muted-foreground); }
+    .field small { font-size: 0.75rem; color: var(--muted-foreground); }
     .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
-    .check-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; }
+    .check-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; cursor: pointer; }
     .adv-box {
       border: 1px solid var(--border);
       border-radius: var(--radius);
@@ -666,7 +998,7 @@ _TEMPLATE = r"""<!doctype html>
     }
     .adv-summary {
       cursor: pointer;
-      font-size: 0.78rem;
+      font-size: 0.8125rem;
       font-weight: 500;
       color: var(--foreground);
       user-select: none;
@@ -681,21 +1013,25 @@ _TEMPLATE = r"""<!doctype html>
     .kv-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
-      gap: 0.75rem;
-      padding: 0.875rem;
+      gap: 0.875rem;
+      padding: 1rem 1.25rem;
       border-radius: var(--radius);
-      background: var(--muted);
-      border: 1px solid var(--border);
+      background: var(--card);
+      box-shadow: 0 0 0 1px var(--border), var(--shadow-xs);
     }
-    .kv-item dt { font-size: 0.7rem; color: var(--muted-foreground); }
-    .kv-item dd { margin: 0.15rem 0 0; font-size: 0.8rem; word-break: break-all; }
+    .kv-grid-muted {
+      background: color-mix(in oklch, var(--muted) 65%, var(--card));
+      box-shadow: 0 0 0 1px var(--hairline);
+    }
+    .kv-item dt { font-size: 0.75rem; color: var(--muted-foreground); }
+    .kv-item dd { margin: 0.2rem 0 0; font-size: 0.8125rem; word-break: break-all; }
 
     .log-viewer {
       color-scheme: dark;
-      background: oklch(0.16 0.01 260);
+      background: oklch(0.16 0.005 260);
       color: oklch(0.93 0 0);
       border-radius: var(--radius);
-      border: 1px solid oklch(1 0 0 / 0.12);
+      border: 1px solid oklch(1 0 0 / 0.1);
       padding: 0.875rem 1rem;
       font-family: var(--font-mono);
       font-size: 0.75rem;
@@ -712,7 +1048,7 @@ _TEMPLATE = r"""<!doctype html>
 
     .code-snippet {
       background: var(--muted);
-      border: 1px solid var(--border);
+      border: 1px solid var(--hairline);
       border-radius: var(--radius);
       padding: 0.75rem;
       font-family: var(--font-mono);
@@ -722,38 +1058,101 @@ _TEMPLATE = r"""<!doctype html>
       word-break: break-all;
     }
 
-    /* Login screen */
+    /* Login screen (aligned 1:1 with Luma Control AuthLayout.tsx) */
     .auth-screen {
+      position: relative;
+      isolation: isolate;
       min-height: 100dvh;
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 1.5rem;
+      gap: 2rem;
+      overflow: hidden;
+      background: var(--canvas);
+      padding: 3rem 1rem;
+    }
+    .auth-screen::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      background-image: radial-gradient(var(--border) 1px, transparent 1px);
+      background-size: 20px 20px;
+      mask-image: radial-gradient(ellipse at center, black 20%, transparent 70%);
+    }
+    .auth-hero {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .auth-logo-box {
+      width: 3rem;
+      height: 3rem;
+      border-radius: 0.75rem;
+      background: var(--background);
+      box-shadow: 0 0 0 1px var(--border), var(--shadow-sm);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .auth-logo {
+      width: 1.75rem;
+      height: 1.75rem;
+      display: block;
+    }
+    .auth-title-row {
+      display: flex;
+      align-items: baseline;
+      gap: 0.5rem;
+    }
+    .auth-title-row strong {
+      font-size: 1.25rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    .auth-title-row span {
+      font-size: 0.875rem;
+      color: var(--muted-foreground);
     }
     .auth-card {
-      width: min(25rem, 100%);
+      width: min(24rem, 100%);
       background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: calc(var(--radius) * 1.5);
-      padding: 1.75rem;
-      box-shadow: 0 8px 24px var(--shadow-color);
+      border-radius: var(--radius);
+      padding: 1.5rem;
+      box-shadow: 0 0 0 1px var(--border), var(--shadow-xs);
       display: flex;
       flex-direction: column;
       gap: 1rem;
     }
+    .auth-card-title {
+      margin: 0;
+      font-size: 0.9375rem;
+      font-weight: 600;
+      letter-spacing: -0.005em;
+    }
+    .auth-desc { margin: 0; font-size: 0.8125rem; color: var(--muted-foreground); line-height: 1.5; }
+    .auth-footer {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.75rem;
+      color: var(--muted-foreground);
+    }
     .banner-error {
       padding: 0.625rem 0.75rem;
-      border-radius: 0.45rem;
+      border-radius: 0.375rem;
       background: var(--danger-soft);
       color: var(--danger-foreground);
-      font-size: 0.8rem;
+      font-size: 0.8125rem;
+      border: 1px solid color-mix(in oklch, var(--danger) 25%, transparent);
     }
-    .auth-brand { display: flex; align-items: center; gap: 0.65rem; }
-    .auth-desc { margin: 0; font-size: 0.8125rem; color: var(--muted-foreground); }
     .auth-checking-box {
       display: inline-flex;
       align-items: center;
-      gap: 0.6rem;
+      gap: 0.625rem;
       font-size: 0.8125rem;
       color: var(--muted-foreground);
     }
@@ -766,18 +1165,16 @@ _TEMPLATE = r"""<!doctype html>
       animation: luma-spin 0.75s linear infinite;
     }
     @keyframes luma-spin { to { transform: rotate(360deg); } }
-    @media (prefers-reduced-motion: reduce) {
-      .spinner { animation: none; }
-    }
+
     .table-footer {
-      border-block-start: 1px solid var(--border);
-      padding: 0.75rem 1rem;
+      border-block-start: 1px solid var(--hairline);
+      padding: 0.75rem var(--card-spacing);
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
       gap: 0.75rem;
-      background: var(--card);
+      background: color-mix(in oklch, var(--muted) 40%, var(--card));
     }
     .pagination-info {
       font-size: 0.75rem;
@@ -788,41 +1185,50 @@ _TEMPLATE = r"""<!doctype html>
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 0.5rem;
+      gap: 0.375rem;
     }
     .select-sm {
       height: 1.75rem;
       padding-inline: 0.5rem;
+      border-radius: 0.375rem;
       font-size: 0.75rem;
     }
     .pagination-page {
       font-size: 0.75rem;
       color: var(--muted-foreground);
       font-variant-numeric: tabular-nums;
-      min-width: 5.5rem;
+      min-width: 5.25rem;
       text-align: center;
     }
     .w-full { width: 100%; }
-    .stat-host { font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .section-card { padding: 1.25rem; display: flex; flex-direction: column; gap: 0.75rem; }
+    .stat-host { font-size: 0.9375rem; line-height: 1.25rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .row-between { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
-    .section-title { font-size: 0.9375rem; }
     .min-w-0 { min-width: 0; }
-    .drawer-actions { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; }
+    .drawer-actions { display: flex; align-items: center; gap: 0.375rem; flex-shrink: 0; }
     .m-0 { margin: 0; }
-    .log-heading { font-size: 0.8125rem; }
-    .stream-hint { font-size: 0.72rem; color: var(--muted-foreground); }
-    .stack-sm { display: flex; flex-direction: column; gap: 0.5rem; }
-    .ok-note { font-size: 0.8rem; color: var(--success-foreground); }
+    .log-heading { font-size: 0.8125rem; font-weight: 600; }
+    .stream-hint { font-size: 0.75rem; color: var(--muted-foreground); }
+    .stack-sm { display: flex; flex-direction: column; gap: 0.75rem; }
+    .ok-note { font-size: 0.8125rem; color: var(--success-foreground); }
     .cell-meta { font-size: 0.75rem; color: var(--muted-foreground); }
-    .cell-time { font-size: 0.8rem; color: var(--muted-foreground); white-space: nowrap; }
-    .cell-muted { color: var(--muted-foreground); font-size: 0.8rem; }
-    .fw-semi { font-weight: 600; }
+    .cell-time { font-size: 0.75rem; color: var(--muted-foreground); white-space: nowrap; }
+    .cell-muted { color: var(--muted-foreground); font-size: 0.8125rem; }
+    .fw-semi { font-weight: 500; }
     [hidden] { display: none !important; }
 
     @media (max-width: 820px) {
       .sidebar { display: none; }
+      .console-content { padding: 1.25rem 1rem 2.5rem; }
       .field-row { grid-template-columns: 1fr; }
+      .sync-status { display: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
     }
   </style>
 </head>
@@ -836,72 +1242,86 @@ _TEMPLATE = r"""<!doctype html>
 
   <!-- Browser SSO, with explicit Token sign-in for standalone/recovery use. -->
   <main id="auth-view" class="auth-screen"__AUTH_VIEW_HIDDEN__>
-    <form id="login-form" class="auth-card">
-      <div class="auth-brand">
-        <span class="brand-mark">L</span>
-        <div class="brand-meta">
-          <strong>Luma Build</strong>
-          <span>v__LUMA_BUILD_VERSION__ · 独立构建与算力中心</span>
-        </div>
+    <div class="auth-hero">
+      <span class="auth-logo-box">
+        <img src="/favicon.png" alt="" class="auth-logo" width="28" height="28">
+      </span>
+      <div class="auth-title-row">
+        <strong>Luma</strong>
+        <span>构建控制台</span>
       </div>
-      <p id="login-description" class="auth-desc">
-        使用 Luma 管理 Token 登录构建控制台。
-      </p>
+    </div>
+    <form id="login-form" class="auth-card">
+      <div>
+        <h1 class="auth-card-title">登录 Luma Build</h1>
+        <p id="login-description" class="auth-desc">
+          使用 Luma 管理 Token 登录构建控制台。
+        </p>
+      </div>
       <div id="login-error" class="banner-error" role="alert" hidden></div>
       <a id="control-login" class="btn btn-primary w-full" href="/auth/login" hidden>使用 Luma 控制台登录</a>
-      <button id="manual-login" class="btn btn-ghost" type="button" hidden>使用管理 Token</button>
+      <button id="manual-login" class="btn btn-ghost w-full" type="button" hidden>使用管理 Token</button>
       <div id="token-login-fields" class="stack-sm">
-      <div class="field">
-        <label for="login-token">访问令牌 (Token)</label>
-        <input id="login-token" class="input" type="password" autocomplete="current-password" placeholder="粘贴 LUMA_DEPLOY_TOKEN…" required autofocus>
-      </div>
-      <label class="check-row">
-        <input id="login-remember" type="checkbox" checked>
-        <span>在此浏览器记住登录状态</span>
-      </label>
-      <button type="submit" class="btn btn-primary w-full">进入控制台</button>
+        <div class="field">
+          <label for="login-token">访问令牌 (Token)</label>
+          <input id="login-token" class="input" type="password" autocomplete="current-password" placeholder="粘贴 LUMA_DEPLOY_TOKEN…" required autofocus>
+        </div>
+        <label class="check-row">
+          <input id="login-remember" type="checkbox" checked>
+          <span>在此浏览器记住登录状态</span>
+        </label>
+        <button type="submit" class="btn btn-primary w-full">进入控制台</button>
       </div>
     </form>
+    <footer class="auth-footer">
+      <span id="auth-host" translate="no">luma-build</span>
+      <span aria-hidden="true">·</span>
+      <span class="mono">v__LUMA_BUILD_VERSION__</span>
+    </footer>
   </main>
 
   <!-- Authenticated Console Shell -->
   <div id="app-shell" class="shell"__APP_SHELL_HIDDEN__>
     <aside class="sidebar" aria-label="主导航">
       <div class="sidebar-header">
-        <span class="brand-mark">L</span>
-        <div class="brand-meta hide-collapsed">
-          <strong>Luma Build</strong>
-          <span id="sidebar-subtitle">luma-build v__LUMA_BUILD_VERSION__</span>
-        </div>
+        <a href="/" class="brand-link" aria-label="Luma Build 控制台首页">
+          <span class="brand-mark">
+            <img src="/favicon.png" alt="" class="brand-logo" width="20" height="20">
+          </span>
+          <div class="brand-meta hide-collapsed">
+            <strong>Luma Build</strong>
+            <span id="sidebar-subtitle">v__LUMA_BUILD_VERSION__</span>
+          </div>
+        </a>
       </div>
 
       <div class="sidebar-body">
-        <div>
+        <div class="nav-group">
           <div class="nav-group-label hide-collapsed">工作空间</div>
           <ul class="nav-list">
             <li>
-              <button type="button" class="nav-btn" data-page="builds" aria-current="page">
-                <span>◷</span>
+              <button type="button" class="nav-btn" data-page="builds" aria-current="page" title="构建记录">
+                <svg class="icon" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M136,80v43.47l36.12,21.67a8,8,0,0,1-8.24,13.72l-40-24A8,8,0,0,1,120,128V80a8,8,0,0,1,16,0Zm-8-48A95.44,95.44,0,0,0,60.08,60.15C52.81,67.51,46.35,74.59,40,82V64a8,8,0,0,0-16,0v40a8,8,0,0,0,8,8H72a8,8,0,0,0,0-16H49c7.15-8.42,14.27-16.35,22.39-24.57a80,80,0,1,1,1.66,114.75,8,8,0,1,0-11,11.64A96,96,0,1,0,128,32Z"/></svg>
                 <span class="hide-collapsed">构建记录</span>
                 <span id="nav-active-count" class="nav-badge hide-collapsed">0</span>
               </button>
             </li>
             <li>
-              <button type="button" class="nav-btn" data-page="runners">
-                <span>⚡</span>
+              <button type="button" class="nav-btn" data-page="runners" title="Runner 算力池">
+                <svg class="icon" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M152,96H104a8,8,0,0,0-8,8v48a8,8,0,0,0,8,8h48a8,8,0,0,0,8-8V104A8,8,0,0,0,152,96Zm-8,48H112V112h32Zm88,0H216V112h16a8,8,0,0,0,0-16H216V56a16,16,0,0,0-16-16H160V24a8,8,0,0,0-16,0V40H112V24a8,8,0,0,0-16,0V40H56A16,16,0,0,0,40,56V96H24a8,8,0,0,0,0,16H40v32H24a8,8,0,0,0,0,16H40v40a16,16,0,0,0,16,16H96v16a8,8,0,0,0,16,0V216h32v16a8,8,0,0,0,16,0V216h40a16,16,0,0,0,16-16V160h16a8,8,0,0,0,0-16Zm-32,56H56V56H200v95.87s0,.09,0,.13,0,.09,0,.13V200Z"/></svg>
                 <span class="hide-collapsed">Runner 算力池</span>
-                <span id="nav-runner-count" class="nav-badge hide-collapsed">0</span>
+                <span id="nav-runner-count" class="nav-badge hide-collapsed">0/0</span>
               </button>
             </li>
           </ul>
         </div>
 
-        <div>
+        <div class="nav-group">
           <div class="nav-group-label hide-collapsed">平台管理</div>
           <ul class="nav-list">
             <li>
-              <button type="button" class="nav-btn" data-page="settings">
-                <span>⚙</span>
+              <button type="button" class="nav-btn" data-page="settings" title="凭据与配置">
+                <svg class="icon" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M128,80a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Zm109.94-52.79a8,8,0,0,0-3.89-5.4l-29.83-17-.12-33.62a8,8,0,0,0-2.83-6.08,111.91,111.91,0,0,0-36.72-20.67,8,8,0,0,0-6.46.59L128,41.85,97.88,25a8,8,0,0,0-6.47-.6A112.1,112.1,0,0,0,54.73,45.15a8,8,0,0,0-2.83,6.07l-.15,33.65-29.83,17a8,8,0,0,0-3.89,5.4,106.47,106.47,0,0,0,0,41.56,8,8,0,0,0,3.89,5.4l29.83,17,.12,33.62a8,8,0,0,0,2.83,6.08,111.91,111.91,0,0,0,36.72,20.67,8,8,0,0,0,6.46-.59L128,214.15,158.12,231a7.91,7.91,0,0,0,3.9,1,8.09,8.09,0,0,0,2.57-.42,112.1,112.1,0,0,0,36.68-20.73,8,8,0,0,0,2.83-6.07l.15-33.65,29.83-17a8,8,0,0,0,3.89-5.4A106.47,106.47,0,0,0,237.94,107.21Zm-15,34.91-28.57,16.25a8,8,0,0,0-3,3c-.58,1-1.19,2.06-1.81,3.06a7.94,7.94,0,0,0-1.22,4.21l-.15,32.25a95.89,95.89,0,0,1-25.37,14.3L134,199.13a8,8,0,0,0-3.91-1h-.19c-1.21,0-2.43,0-3.64,0a8.08,8.08,0,0,0-4.1,1l-28.84,16.1A96,96,0,0,1,67.88,201l-.11-32.2a8,8,0,0,0-1.22-4.22c-.62-1-1.23-2-1.8-3.06a8.09,8.09,0,0,0-3-3.06l-28.6-16.29a90.49,90.49,0,0,1,0-28.26L61.67,97.63a8,8,0,0,0,3-3c.58-1,1.19-2.06,1.81-3.06a7.94,7.94,0,0,0,1.22-4.21l.15-32.25a95.89,95.89,0,0,1,25.37-14.3L122,56.87a8,8,0,0,0,4.1,1c1.21,0,2.43,0,3.64,0a8.08,8.08,0,0,0,4.1-1l28.84-16.1A96,96,0,0,1,188.12,55l.11,32.2a8,8,0,0,0,1.22,4.22c.62,1,1.23,2,1.8,3.06a8.09,8.09,0,0,0,3,3.06l28.6,16.29A90.49,90.49,0,0,1,222.9,142.12Z"/></svg>
                 <span class="hide-collapsed">凭据与配置</span>
               </button>
             </li>
@@ -910,8 +1330,12 @@ _TEMPLATE = r"""<!doctype html>
       </div>
 
       <div class="sidebar-footer">
-        <button type="button" id="collapse-btn" class="nav-btn" title="收起或展开侧边栏">
-          <span>⇤</span>
+        <button type="button" id="sidebar-fleet-btn" class="fleet-summary hide-collapsed" title="查看 Runner 算力池">
+          <span id="sidebar-fleet-dot" class="fleet-dot" aria-hidden="true"></span>
+          <span id="sidebar-fleet-text" class="fleet-text">等待 Runner 状态…</span>
+        </button>
+        <button type="button" id="collapse-btn" class="nav-btn" aria-label="收起或展开侧边栏" title="收起侧边栏 (⌘B)">
+          <svg class="icon" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M216,40H40A16,16,0,0,0,24,56V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V56A16,16,0,0,0,216,40ZM40,56H80V200H40ZM216,200H96V56H216V200Z"/></svg>
           <span class="hide-collapsed">收起侧边栏</span>
         </button>
       </div>
@@ -919,13 +1343,34 @@ _TEMPLATE = r"""<!doctype html>
 
     <div class="main-area">
       <header class="topbar">
-        <div class="topbar-title">
-          <span id="topbar-page-name">构建记录</span>
-        </div>
+        <nav class="breadcrumb" aria-label="当前位置">
+          <span class="breadcrumb-root">Luma Build</span>
+          <span class="breadcrumb-sep" aria-hidden="true">/</span>
+          <span id="topbar-page-name" class="breadcrumb-current">构建记录</span>
+        </nav>
         <div class="topbar-actions">
-          <a id="control-link" class="btn btn-sm btn-ghost" href="#" target="_blank" rel="noopener" hidden>↗ Luma 控制台</a>
-          <button type="button" id="theme-toggle" class="btn btn-sm" aria-label="切换亮暗主题">◐ 主题</button>
-          <button type="button" id="logout-btn" class="btn btn-sm">退出</button>
+          <span id="sync-status" class="sync-status" role="status" hidden>
+            <span id="sync-dot" class="sync-dot" aria-hidden="true"></span>
+            <span id="sync-text">已同步</span>
+          </span>
+          <a id="control-link" class="btn btn-sm btn-ghost" href="#" target="_blank" rel="noopener" hidden>
+            <svg class="icon icon-sm" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M224,104a8,8,0,0,1-16,0V59.32l-66.33,66.34a8,8,0,0,1-11.32-11.32L196.68,48H152a8,8,0,0,1,0-16h64a8,8,0,0,1,8,8Zm-40,24a8,8,0,0,0-8,8v72H48V80h72a8,8,0,0,0,0-16H48A16,16,0,0,0,32,80V208a16,16,0,0,0,16,16H176a16,16,0,0,0,16-16V136A8,8,0,0,0,184,128Z"/></svg>
+            <span>Luma 控制台</span>
+          </a>
+          <button type="button" id="theme-toggle" class="btn btn-icon btn-ghost" title="切换浅色 / 深色主题">
+            <span class="theme-opt-light">
+              <svg class="icon" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M120,40V16a8,8,0,0,1,16,0V40a8,8,0,0,1-16,0Zm72,88a64,64,0,1,1-64-64A64.07,64.07,0,0,1,192,128Zm-16,0a48,48,0,1,0-48,48A48.05,48.05,0,0,0,176,128ZM58.34,69.66A8,8,0,0,0,69.66,58.34l-16-16A8,8,0,0,0,42.34,53.66Zm0,116.68-16,16a8,8,0,0,0,11.32,11.32l16-16a8,8,0,0,0-11.32-11.32ZM192,72a8,8,0,0,0,5.66-2.34l16-16a8,8,0,0,0-11.32-11.32l-16,16A8,8,0,0,0,192,72Zm5.66,114.34a8,8,0,0,0-11.32,11.32l16,16a8,8,0,0,0,11.32-11.32ZM48,128a8,8,0,0,0-8-8H16a8,8,0,0,0,0,16H40A8,8,0,0,0,48,128Zm80,80a8,8,0,0,0-8,8v24a8,8,0,0,0,16,0V216A8,8,0,0,0,128,208Zm112-88H216a8,8,0,0,0,0,16h24a8,8,0,0,0,0-16Z"/></svg>
+              <span class="sr-only">切换到浅色主题</span>
+            </span>
+            <span class="theme-opt-dark">
+              <svg class="icon" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M233.54,142.23a8,8,0,0,0-8-2,88.08,88.08,0,0,1-109.8-109.8,8,8,0,0,0-10-10,104.84,104.84,0,0,0-52.91,37A104,104,0,0,0,136,224a103.09,103.09,0,0,0,62.52-20.88,104.84,104.84,0,0,0,37-52.91A8,8,0,0,0,233.54,142.23ZM188.9,190.34A88,88,0,0,1,65.66,67.11a89,89,0,0,1,31.4-26A106,106,0,0,0,96,56,104.11,104.11,0,0,0,200,160a106,106,0,0,0,14.92-1.06A89,89,0,0,1,188.9,190.34Z"/></svg>
+              <span class="sr-only">切换到深色主题</span>
+            </span>
+          </button>
+          <button type="button" id="logout-btn" class="btn btn-sm btn-ghost">
+            <svg class="icon icon-sm" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M120,216a8,8,0,0,1-8,8H48a8,8,0,0,1-8-8V40a8,8,0,0,1,8-8h64a8,8,0,0,1,0,16H56V208h56A8,8,0,0,1,120,216Zm109.66-93.66-40-40a8,8,0,0,0-11.32,11.32L204.69,120H112a8,8,0,0,0,0,16h92.69l-26.35,26.34a8,8,0,0,0,11.32,11.32l40-40A8,8,0,0,0,229.66,122.34Z"/></svg>
+            <span>退出</span>
+          </button>
         </div>
       </header>
 
@@ -933,13 +1378,19 @@ _TEMPLATE = r"""<!doctype html>
         <!-- PAGE 1: Build Timeline -->
         <section id="page-builds" class="console-page">
           <div class="page-header">
-            <div>
+            <div class="page-header-copy">
               <h1>构建与推送时间线</h1>
               <p>按仓库、分支和状态查询；点击任意记录打开抽屉实时查看 BuildKit 日志与部署进度。</p>
             </div>
             <div class="header-actions">
-              <button type="button" id="refresh-builds-btn" class="btn">↻ 刷新</button>
-              <button type="button" id="open-submit-btn" class="btn btn-primary">+ 从 Git 构建</button>
+              <button type="button" id="refresh-builds-btn" class="btn">
+                <svg class="icon icon-sm" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M224,48V96a8,8,0,0,1-8,8H168a8,8,0,0,1,0-16h28.69L182.06,73.37a79.56,79.56,0,0,0-56.13-23.43h-.45A79.52,79.52,0,0,0,69.59,72.71,8,8,0,0,1,58.41,61.27a96,96,0,0,1,135,.79L208,76.69V48a8,8,0,0,1,16,0ZM186.41,183.29a80,80,0,0,1-112.47-.66L59.31,168H88a8,8,0,0,0,0-16H40a8,8,0,0,0-8,8v48a8,8,0,0,0,16,0V179.31l14.63,14.63A95.43,95.43,0,0,0,130,222.06h.53a95.36,95.36,0,0,0,67.07-27.33,8,8,0,0,0-11.18-11.44Z"/></svg>
+                <span>刷新</span>
+              </button>
+              <button type="button" id="open-submit-btn" class="btn btn-primary">
+                <svg class="icon icon-sm" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M224,128a8,8,0,0,1-8,8H136v80a8,8,0,0,1-16,0V136H40a8,8,0,0,1,0-16h80V40a8,8,0,0,1,16,0v80h80A8,8,0,0,1,224,128Z"/></svg>
+                <span>从 Git 构建</span>
+              </button>
             </div>
           </div>
 
@@ -961,13 +1412,16 @@ _TEMPLATE = r"""<!doctype html>
             </div>
             <div class="stat-tile">
               <span class="stat-label">目标镜像仓库 (Registry)</span>
-              <strong id="stat-registry" class="stat-value stat-host">-</strong>
-              <span id="stat-namespace" class="stat-sub">-</span>
+              <strong id="stat-registry" class="stat-value stat-host">—</strong>
+              <span id="stat-namespace" class="stat-sub">—</span>
             </div>
           </div>
 
           <div class="filter-bar" role="search" aria-label="筛选构建记录">
-            <input id="filter-repo" class="input search-box" type="search" placeholder="搜索仓库或分支名称…">
+            <div class="search-group">
+              <svg class="icon icon-sm search-icon" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M229.66,218.34l-50.07-50.06a88.11,88.11,0,1,0-11.31,11.31l50.06,50.07a8,8,0,0,0,11.32-11.32ZM40,112a72,72,0,1,1,72,72A72.08,72.08,0,0,1,40,112Z"/></svg>
+              <input id="filter-repo" class="input" type="search" aria-label="搜索仓库或分支名称" placeholder="搜索仓库或分支名称…">
+            </div>
             <div id="status-segments" class="segmented" role="group" aria-label="构建状态筛选">
               <button type="button" class="seg-btn" data-status="" aria-pressed="true">全部</button>
               <button type="button" class="seg-btn" data-status="queued" aria-pressed="false">排队中</button>
@@ -1006,9 +1460,15 @@ _TEMPLATE = r"""<!doctype html>
                   <option value="50">50 条/页</option>
                   <option value="100">100 条/页</option>
                 </select>
-                <button type="button" id="builds-prev-btn" class="btn btn-sm" disabled>上一页</button>
+                <button type="button" id="builds-prev-btn" class="btn btn-sm" disabled>
+                  <svg class="icon icon-sm" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M165.66,202.34a8,8,0,0,1-11.32,11.32l-80-80a8,8,0,0,1,0-11.32l80-80a8,8,0,0,1,11.32,11.32L91.31,128Z"/></svg>
+                  <span>上一页</span>
+                </button>
                 <span id="builds-page-info" class="pagination-page">第 1 / 1 页</span>
-                <button type="button" id="builds-next-btn" class="btn btn-sm" disabled>下一页</button>
+                <button type="button" id="builds-next-btn" class="btn btn-sm" disabled>
+                  <span>下一页</span>
+                  <svg class="icon icon-sm" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/></svg>
+                </button>
               </div>
             </nav>
           </div>
@@ -1017,13 +1477,19 @@ _TEMPLATE = r"""<!doctype html>
         <!-- PAGE 2: Runners Pool -->
         <section id="page-runners" class="console-page" hidden>
           <div class="page-header">
-            <div>
+            <div class="page-header-copy">
               <h1>Runner 算力池</h1>
               <p>所有算力机通过反向长轮询连接本服务，无需公网入站端口、无需安装 Nomad，与 Luma 控制面完全解耦。</p>
             </div>
             <div class="header-actions">
-              <button type="button" id="refresh-runners-btn" class="btn">↻ 刷新</button>
-              <button type="button" id="open-token-btn" class="btn btn-primary">+ 新建 Runner Token</button>
+              <button type="button" id="refresh-runners-btn" class="btn">
+                <svg class="icon icon-sm" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M224,48V96a8,8,0,0,1-8,8H168a8,8,0,0,1,0-16h28.69L182.06,73.37a79.56,79.56,0,0,0-56.13-23.43h-.45A79.52,79.52,0,0,0,69.59,72.71,8,8,0,0,1,58.41,61.27a96,96,0,0,1,135,.79L208,76.69V48a8,8,0,0,1,16,0ZM186.41,183.29a80,80,0,0,1-112.47-.66L59.31,168H88a8,8,0,0,0,0-16H40a8,8,0,0,0-8,8v48a8,8,0,0,0,16,0V179.31l14.63,14.63A95.43,95.43,0,0,0,130,222.06h.53a95.36,95.36,0,0,0,67.07-27.33,8,8,0,0,0-11.18-11.44Z"/></svg>
+                <span>刷新</span>
+              </button>
+              <button type="button" id="open-token-btn" class="btn btn-primary">
+                <svg class="icon icon-sm" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M224,128a8,8,0,0,1-8,8H136v80a8,8,0,0,1-16,0V136H40a8,8,0,0,1,0-16h80V40a8,8,0,0,1,16,0v80h80A8,8,0,0,1,224,128Z"/></svg>
+                <span>新建 Runner Token</span>
+              </button>
             </div>
           </div>
 
@@ -1050,18 +1516,21 @@ _TEMPLATE = r"""<!doctype html>
         <!-- PAGE 3: Credentials & Config -->
         <section id="page-settings" class="console-page" hidden>
           <div class="page-header">
-            <div>
+            <div class="page-header-copy">
               <h1>凭据与服务配置</h1>
               <p>推荐通过 <code>luma secret set KEY VALUE --scope luma-build</code> 注入环境密钥；也可在此管理动态 Git 与 Registry 凭据。</p>
             </div>
           </div>
 
-          <div id="settings-summary" class="kv-grid"></div>
+          <dl id="settings-summary" class="kv-grid m-0"></dl>
 
-          <div class="card section-card">
-            <div class="row-between">
-              <strong class="section-title">动态 Git 拉取凭据</strong>
-              <button type="button" id="open-git-cred-btn" class="btn btn-sm">+ 添加 Git 凭据</button>
+          <div class="card">
+            <div class="card-header">
+              <strong class="card-title">动态 Git 拉取凭据</strong>
+              <button type="button" id="open-git-cred-btn" class="btn btn-sm">
+                <svg class="icon icon-sm" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M224,128a8,8,0,0,1-8,8H136v80a8,8,0,0,1-16,0V136H40a8,8,0,0,1,0-16h80V40a8,8,0,0,1,16,0v80h80A8,8,0,0,1,224,128Z"/></svg>
+                <span>添加 Git 凭据</span>
+              </button>
             </div>
             <div tabindex="0" role="region" aria-label="Git 凭据列表" class="table-wrapper">
               <table>
@@ -1073,10 +1542,13 @@ _TEMPLATE = r"""<!doctype html>
             </div>
           </div>
 
-          <div class="card section-card">
-            <div class="row-between">
-              <strong class="section-title">动态 OCI Registry Push 凭据</strong>
-              <button type="button" id="open-reg-cred-btn" class="btn btn-sm">+ 添加 Registry 凭据</button>
+          <div class="card">
+            <div class="card-header">
+              <strong class="card-title">动态 OCI Registry Push 凭据</strong>
+              <button type="button" id="open-reg-cred-btn" class="btn btn-sm">
+                <svg class="icon icon-sm" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M224,128a8,8,0,0,1-8,8H136v80a8,8,0,0,1-16,0V136H40a8,8,0,0,1,0-16h80V40a8,8,0,0,1,16,0v80h80A8,8,0,0,1,224,128Z"/></svg>
+                <span>添加 Registry 凭据</span>
+              </button>
             </div>
             <div tabindex="0" role="region" aria-label="Registry 凭据列表" class="table-wrapper">
               <table>
@@ -1096,19 +1568,27 @@ _TEMPLATE = r"""<!doctype html>
   <dialog id="detail-drawer" class="drawer-sheet" closedby="any" aria-labelledby="drawer-title">
     <div class="dialog-header">
       <div class="min-w-0">
-        <h2 id="drawer-title">-</h2>
-        <p id="drawer-subtitle" class="mono">-</p>
+        <h2 id="drawer-title">—</h2>
+        <p id="drawer-subtitle" class="mono">—</p>
       </div>
       <div class="drawer-actions">
-        <button type="button" id="drawer-retry-btn" class="btn btn-sm">↻ 重试</button>
-        <button type="button" id="drawer-cancel-btn" class="btn btn-sm btn-danger" hidden>✕ 取消构建</button>
+        <button type="button" id="drawer-retry-btn" class="btn btn-sm">
+          <svg class="icon icon-sm" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M224,48V96a8,8,0,0,1-8,8H168a8,8,0,0,1,0-16h28.69L182.06,73.37a79.56,79.56,0,0,0-56.13-23.43h-.45A79.52,79.52,0,0,0,69.59,72.71,8,8,0,0,1,58.41,61.27a96,96,0,0,1,135,.79L208,76.69V48a8,8,0,0,1,16,0ZM186.41,183.29a80,80,0,0,1-112.47-.66L59.31,168H88a8,8,0,0,0,0-16H40a8,8,0,0,0-8,8v48a8,8,0,0,0,16,0V179.31l14.63,14.63A95.43,95.43,0,0,0,130,222.06h.53a95.36,95.36,0,0,0,67.07-27.33,8,8,0,0,0-11.18-11.44Z"/></svg>
+          <span>重试</span>
+        </button>
+        <button type="button" id="drawer-cancel-btn" class="btn btn-sm btn-danger" hidden>
+          <svg class="icon icon-sm" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/></svg>
+          <span>取消构建</span>
+        </button>
         <form method="dialog" class="m-0">
-          <button type="submit" class="btn btn-sm btn-ghost" aria-label="关闭详情抽屉">✕</button>
+          <button type="submit" class="btn btn-icon btn-ghost" aria-label="关闭详情抽屉">
+            <svg class="icon" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/></svg>
+          </button>
         </form>
       </div>
     </div>
     <div class="drawer-body">
-      <dl id="drawer-kv" class="kv-grid m-0"></dl>
+      <dl id="drawer-kv" class="kv-grid kv-grid-muted m-0"></dl>
       <div class="row-between">
         <strong class="log-heading">实时构建与部署日志</strong>
         <span id="drawer-stream-state" class="stream-hint"></span>
@@ -1125,7 +1605,9 @@ _TEMPLATE = r"""<!doctype html>
           <h2 id="submit-dialog-title">从 Git 提交构建</h2>
           <p>构建完成后默认自动推送到 Registry 并调用 Luma Control 部署。</p>
         </div>
-        <button type="button" data-close-dialog="submit-dialog" class="btn btn-sm btn-ghost" aria-label="关闭">✕</button>
+        <button type="button" data-close-dialog="submit-dialog" class="btn btn-icon btn-ghost" aria-label="关闭">
+          <svg class="icon" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/></svg>
+        </button>
       </div>
       <div class="dialog-body">
         <div id="submit-error" class="banner-error" role="alert" hidden></div>
@@ -1216,7 +1698,9 @@ _TEMPLATE = r"""<!doctype html>
           <h2 id="token-dialog-title">签发 Runner 接入令牌</h2>
           <p>生成的 <code>lbr_...</code> 令牌仅用于拉取构建任务，无管理员及密钥读取权限。</p>
         </div>
-        <button type="button" data-close-dialog="token-dialog" class="btn btn-sm btn-ghost" aria-label="关闭">✕</button>
+        <button type="button" data-close-dialog="token-dialog" class="btn btn-icon btn-ghost" aria-label="关闭">
+          <svg class="icon" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/></svg>
+        </button>
       </div>
       <div class="dialog-body">
         <div id="token-error" class="banner-error" role="alert" hidden></div>
@@ -1248,7 +1732,7 @@ _TEMPLATE = r"""<!doctype html>
           <span>若同名 Runner 已存在则轮换旧令牌</span>
         </label>
         <div id="token-result-box" class="stack-sm" hidden>
-          <strong class="ok-note">✓ 已生成令牌（仅显示一次，请妥善复制）：</strong>
+          <strong class="ok-note">已生成令牌（仅显示一次，请妥善复制）：</strong>
           <div id="token-cli-snippet" class="code-snippet"></div>
           <div id="token-docker-snippet" class="code-snippet"></div>
         </div>
@@ -1265,7 +1749,9 @@ _TEMPLATE = r"""<!doctype html>
     <form id="git-cred-form">
       <div class="dialog-header">
         <div><h2 id="git-cred-title">保存 Git 拉取凭据</h2></div>
-        <button type="button" data-close-dialog="git-cred-dialog" class="btn btn-sm btn-ghost" aria-label="关闭">✕</button>
+        <button type="button" data-close-dialog="git-cred-dialog" class="btn btn-icon btn-ghost" aria-label="关闭">
+          <svg class="icon" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/></svg>
+        </button>
       </div>
       <div class="dialog-body">
         <div id="git-cred-error" class="banner-error" role="alert" hidden></div>
@@ -1286,7 +1772,9 @@ _TEMPLATE = r"""<!doctype html>
     <form id="reg-cred-form">
       <div class="dialog-header">
         <div><h2 id="reg-cred-title">保存 OCI Registry Push 凭据</h2></div>
-        <button type="button" data-close-dialog="reg-cred-dialog" class="btn btn-sm btn-ghost" aria-label="关闭">✕</button>
+        <button type="button" data-close-dialog="reg-cred-dialog" class="btn btn-icon btn-ghost" aria-label="关闭">
+          <svg class="icon" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/></svg>
+        </button>
       </div>
       <div class="dialog-body">
         <div id="reg-cred-error" class="banner-error" role="alert" hidden></div>
@@ -1325,6 +1813,9 @@ _TEMPLATE = r"""<!doctype html>
       streamAbort: null,
       pollTimer: null,
     };
+
+    const authHostEl = document.getElementById("auth-host");
+    if (authHostEl && window.location.host) authHostEl.textContent = window.location.host;
 
     // Safe DOM construction helper (never uses innerHTML for untrusted data)
     function el(tag, attrs, ...children) {
@@ -1367,8 +1858,9 @@ _TEMPLATE = r"""<!doctype html>
       });
     }
 
-    // Two-state color-scheme toggle synced with <meta name="color-scheme">
+    // Two-state color-scheme toggle synced with <meta name="color-scheme"> and theme-color
     const schemeMeta = document.querySelector('meta[name="color-scheme"]');
+    const themeMeta = document.querySelector('meta[name="theme-color"]');
     const darkMedia = window.matchMedia("(prefers-color-scheme: dark)");
     function currentRenderedScheme() {
       const content = schemeMeta.content;
@@ -1378,7 +1870,9 @@ _TEMPLATE = r"""<!doctype html>
     function loginHref() {
       return `/auth/login?theme=${encodeURIComponent(currentRenderedScheme())}`;
     }
-    function syncLoginLink() {
+    function syncThemeChrome() {
+      const rendered = currentRenderedScheme();
+      if (themeMeta) themeMeta.content = rendered === "dark" ? "#0a0a0a" : "#f5f3f3";
       const link = document.getElementById("control-login");
       if (link) link.href = loginHref();
     }
@@ -1396,22 +1890,37 @@ _TEMPLATE = r"""<!doctype html>
       } catch {
         schemeMeta.content = target;
       }
-      syncLoginLink();
+      syncThemeChrome();
     });
     window.addEventListener("storage", (ev) => {
       if (ev.key === SCHEME_KEY) {
         schemeMeta.content = ev.newValue === "light" || ev.newValue === "dark" ? ev.newValue : "light dark";
-        syncLoginLink();
+        syncThemeChrome();
       }
     });
-    darkMedia.addEventListener("change", syncLoginLink);
-    syncLoginLink();
+    darkMedia.addEventListener("change", syncThemeChrome);
+    syncThemeChrome();
 
     function fmtTime(epoch) {
-      if (!epoch) return "-";
+      if (!epoch) return "—";
       const d = new Date(Number(epoch) * 1000);
       const pad = (n) => String(n).padStart(2, "0");
       return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+
+    function fmtClock(date) {
+      const pad = (n) => String(n).padStart(2, "0");
+      return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+    }
+
+    function updateSyncIndicator(ok) {
+      const wrap = document.getElementById("sync-status");
+      const dot = document.getElementById("sync-dot");
+      const text = document.getElementById("sync-text");
+      if (!wrap || !dot || !text) return;
+      wrap.hidden = false;
+      dot.classList.toggle("is-err", !ok);
+      text.textContent = ok ? `已更新 ${fmtClock(new Date())}` : "同步失败";
     }
 
     function renderStatusPill(status) {
@@ -1424,7 +1933,7 @@ _TEMPLATE = r"""<!doctype html>
         failed: ["失败", "pill pill-danger"],
         canceled: ["已取消", "pill pill-dot pill-neutral"],
       };
-      const [label, cls] = map[status] || [status || "-", "pill pill-neutral"];
+      const [label, cls] = map[status] || [status || "—", "pill pill-dot pill-neutral"];
       return el("span", { className: cls }, label);
     }
 
@@ -1461,7 +1970,7 @@ _TEMPLATE = r"""<!doctype html>
       document.getElementById("auth-checking").hidden = true;
       document.getElementById("app-shell").hidden = true;
       document.getElementById("auth-view").hidden = false;
-      syncLoginLink();
+      syncThemeChrome();
       const errEl = document.getElementById("login-error");
       if (errorMsg) {
         errEl.textContent = errorMsg;
@@ -1502,23 +2011,31 @@ _TEMPLATE = r"""<!doctype html>
     document.getElementById("collapse-btn").addEventListener("click", () => {
       document.getElementById("app-shell").classList.toggle("collapsed");
     });
+    window.addEventListener("keydown", (ev) => {
+      if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "b" && !document.getElementById("app-shell").hidden) {
+        ev.preventDefault();
+        document.getElementById("app-shell").classList.toggle("collapsed");
+      }
+    });
 
     // Navigation
     const pageNames = { builds: "构建记录", runners: "Runner 算力池", settings: "凭据与配置" };
-    for (const btn of document.querySelectorAll(".nav-btn[data-page]")) {
-      btn.addEventListener("click", () => {
-        state.page = btn.getAttribute("data-page");
-        for (const b of document.querySelectorAll(".nav-btn[data-page]")) {
-          if (b === btn) b.setAttribute("aria-current", "page");
-          else b.removeAttribute("aria-current");
-        }
-        document.getElementById("topbar-page-name").textContent = pageNames[state.page] || "";
-        document.getElementById("page-builds").hidden = state.page !== "builds";
-        document.getElementById("page-runners").hidden = state.page !== "runners";
-        document.getElementById("page-settings").hidden = state.page !== "settings";
-        refreshAll();
-      });
+    function navigateTo(targetPage) {
+      state.page = targetPage;
+      for (const b of document.querySelectorAll(".nav-btn[data-page]")) {
+        if (b.getAttribute("data-page") === targetPage) b.setAttribute("aria-current", "page");
+        else b.removeAttribute("aria-current");
+      }
+      document.getElementById("topbar-page-name").textContent = pageNames[state.page] || "";
+      document.getElementById("page-builds").hidden = state.page !== "builds";
+      document.getElementById("page-runners").hidden = state.page !== "runners";
+      document.getElementById("page-settings").hidden = state.page !== "settings";
+      refreshAll();
     }
+    for (const btn of document.querySelectorAll(".nav-btn[data-page]")) {
+      btn.addEventListener("click", () => navigateTo(btn.getAttribute("data-page")));
+    }
+    document.getElementById("sidebar-fleet-btn").addEventListener("click", () => navigateTo("runners"));
 
     // Login handler
     document.getElementById("login-form").addEventListener("submit", async (ev) => {
@@ -1601,7 +2118,10 @@ _TEMPLATE = r"""<!doctype html>
           renderSummary(st);
           renderRunnersTable(st.runners || []);
         }
-      } catch {}
+        updateSyncIndicator(true);
+      } catch {
+        updateSyncIndicator(false);
+      }
     }
 
     function buildListUrl() {
@@ -1643,8 +2163,21 @@ _TEMPLATE = r"""<!doctype html>
       const fail = c.failed || 0;
       const runners = (st.runners || []).filter((r) => !r.revoked);
       const online = runners.filter((r) => r.online);
-      document.getElementById("nav-active-count").textContent = String(active);
+      const activeBadge = document.getElementById("nav-active-count");
+      activeBadge.textContent = String(active);
+      activeBadge.classList.toggle("is-active", active > 0);
       document.getElementById("nav-runner-count").textContent = `${online.length}/${runners.length}`;
+
+      const fleetDot = document.getElementById("sidebar-fleet-dot");
+      const fleetText = document.getElementById("sidebar-fleet-text");
+      fleetDot.classList.remove("tone-ok", "tone-warn");
+      if (!runners.length) {
+        fleetText.textContent = "暂无已注册 Runner";
+      } else {
+        fleetDot.classList.add(online.length === runners.length ? "tone-ok" : "tone-warn");
+        fleetText.textContent = `${online.length}/${runners.length} Runner 就绪`;
+      }
+
       document.getElementById("stat-active").textContent = String(active);
       document.getElementById("stat-oldest").textContent = st.oldestQueuedSeconds > 0 ? `最长排队 ${st.oldestQueuedSeconds}s` : "队列畅通";
       document.getElementById("stat-runners").textContent = `${online.length} / ${runners.length}`;
@@ -1672,7 +2205,7 @@ _TEMPLATE = r"""<!doctype html>
             el("td", { colspan: "4" },
               el("div", { className: "empty-state" },
                 el("strong", null, "暂无匹配的构建记录"),
-                "点击右上角「+ 从 Git 构建」或在终端执行 luma builder submit 发起首次构建。"
+                "点击右上角「从 Git 构建」或在终端执行 luma builder submit 发起首次构建。"
               )
             )
           )
@@ -1708,7 +2241,7 @@ _TEMPLATE = r"""<!doctype html>
             el("td", { colspan: "7" },
               el("div", { className: "empty-state" },
                 el("strong", null, "尚未注册任何 Runner"),
-                "点击右上角「+ 新建 Runner Token」即可把任意 Linux 主机或家里 Mac 接入编译池。"
+                "点击右上角「新建 Runner Token」即可把任意 Linux 主机或家里 Mac 接入编译池。"
               )
             )
           )
@@ -1732,7 +2265,7 @@ _TEMPLATE = r"""<!doctype html>
           el("tr", { className: "static-row" },
             el("th", { scope: "row", className: "mono fw-semi" }, r.name),
             el("td", null, pill),
-            el("td", { className: "mono" }, r.nativePlatform || "-"),
+            el("td", { className: "mono" }, r.nativePlatform || "—"),
             el("td", { "data-numeric": "" }, `${r.activeBuilds || 0} / ${r.maxConcurrency || 1}`),
             el("td", { className: "mono cell-meta" }, `weight=${r.weight} · ${r.cacheMode}`),
             el("td", { "data-numeric": "", className: "cell-time" }, fmtTime(r.lastSeenAt)),
@@ -1746,11 +2279,11 @@ _TEMPLATE = r"""<!doctype html>
       const box = document.getElementById("settings-summary");
       box.replaceChildren();
       const items = [
-        ["认证模式", st.authMode || "-"],
+        ["认证模式", st.authMode || "—"],
         ["Luma Control 部署目标", (st.controlTarget && st.controlTarget.endpoint) || "未启用（仅构建模式）"],
-        ["默认 Pull Registry", (st.registry && st.registry.registryHost) || "-"],
-        ["默认 Push Registry", (st.registry && st.registry.pushHost) || "-"],
-        ["Registry 命名空间", (st.registry && st.registry.namespace) || "-"],
+        ["默认 Pull Registry", (st.registry && st.registry.registryHost) || "—"],
+        ["默认 Push Registry", (st.registry && st.registry.pushHost) || "—"],
+        ["Registry 命名空间", (st.registry && st.registry.namespace) || "—"],
         ["热缓存亲和等待窗口", `${st.affinityWaitSeconds ?? 20} 秒`],
       ];
       for (const [k, v] of items) {
@@ -1829,7 +2362,7 @@ _TEMPLATE = r"""<!doctype html>
       }
 
       // Stream live NDJSON updates while running
-      document.getElementById("drawer-stream-state").textContent = "● 实时日志流连接中…";
+      document.getElementById("drawer-stream-state").textContent = "实时日志流连接中…";
       const ctrl = new AbortController();
       state.streamAbort = ctrl;
       let seenSeq = (b.events || []).reduce((m, e) => Math.max(m, e.seq || 0), 0);
@@ -1888,9 +2421,9 @@ _TEMPLATE = r"""<!doctype html>
       const fields = [
         ["当前状态", renderStatusPill(b.status)],
         ["执行 Runner", b.runner || b.pinnedRunner || "等待调度"],
-        ["目标平台", (b.platforms || []).join(", ")],
+        ["目标平台", (b.platforms || []).join(", ") || "—"],
         ["源码提交", (b.result && b.result.commit) ? b.result.commit.slice(0, 12) : b.ref],
-        ["产物镜像", (b.result && b.result.image) || "-"],
+        ["产物镜像", (b.result && b.result.image) || "—"],
         ["创建时间", fmtTime(b.createdAt)],
       ];
       for (const [k, v] of fields) {
@@ -2106,7 +2639,7 @@ _TEMPLATE = r"""<!doctype html>
         document.getElementById("manual-login").hidden = manual;
         document.getElementById("token-login-fields").hidden = !manual;
         document.getElementById("login-description").textContent = "共用 Luma 控制台登录状态，支持通行密钥登录。";
-        syncLoginLink();
+        syncThemeChrome();
         if (INITIAL_SESSION_STATE === "authenticated") {
           state.session = true;
           enterShell();

@@ -19,7 +19,7 @@ from starlette.routing import Route
 
 from . import __version__
 from .browser_auth import SESSION_COOKIE, BrowserAuth
-from .dashboard import FAVICON_SVG, render_dashboard_html
+from .dashboard import FAVICON_PNG, FAVICON_SVG, render_dashboard_html
 from .deployer import (
     ControlAuthVerifier,
     ControlDeployClient,
@@ -358,10 +358,17 @@ def create_app(
             headers={**_BASE_SECURITY_HEADERS, "Content-Security-Policy": csp},
         )
 
-    async def favicon_route(_request: Request) -> Response:
+    async def favicon_svg_route(_request: Request) -> Response:
         return Response(
             FAVICON_SVG,
             media_type="image/svg+xml",
+            headers={**_BASE_SECURITY_HEADERS, "Cache-Control": "public, max-age=86400"},
+        )
+
+    async def favicon_png_route(_request: Request) -> Response:
+        return Response(
+            FAVICON_PNG,
+            media_type="image/png",
             headers={**_BASE_SECURITY_HEADERS, "Cache-Control": "public, max-age=86400"},
         )
 
@@ -728,7 +735,9 @@ def create_app(
             *browser_auth.routes(),
             Route("/", dashboard_route, methods=["GET"]),
             Route("/dashboard", dashboard_route, methods=["GET"]),
-            Route("/favicon.svg", favicon_route, methods=["GET"]),
+            Route("/favicon.png", favicon_png_route, methods=["GET"]),
+            Route("/favicon.ico", favicon_png_route, methods=["GET"]),
+            Route("/favicon.svg", favicon_svg_route, methods=["GET"]),
             Route("/healthz", healthz, methods=["GET"]),
             Route("/metrics", metrics_endpoint, methods=["GET"]),
             Route("/v1/status", status_endpoint, methods=["GET"]),
