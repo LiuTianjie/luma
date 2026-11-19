@@ -326,8 +326,8 @@ _TEMPLATE = r"""<!doctype html>
       height: 0.875rem;
     }
 
-    /* Shell layout (aligned with Luma Control Sidebar + Topbar + Console Content) */
-    .shell { display: flex; min-height: 100dvh; width: 100%; }
+    /* Shell layout (aligned with Luma Control: fixed 100dvh chrome, scrolling canvas) */
+    .shell { display: flex; height: 100dvh; width: 100%; overflow: hidden; }
     .sidebar {
       width: 15rem;
       flex-shrink: 0;
@@ -335,9 +335,8 @@ _TEMPLATE = r"""<!doctype html>
       border-inline-end: 1px solid var(--border);
       display: flex;
       flex-direction: column;
-      position: sticky;
-      inset-block-start: 0;
-      height: 100dvh;
+      height: 100%;
+      overflow: hidden;
       transition: width 0.15s ease;
     }
     .shell.collapsed .sidebar { width: 3.5rem; }
@@ -486,7 +485,7 @@ _TEMPLATE = r"""<!doctype html>
     .fleet-dot.tone-warn { background: var(--warning); }
     .fleet-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-    .main-area { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    .main-area { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
     .topbar {
       height: var(--header-height);
       flex-shrink: 0;
@@ -497,8 +496,6 @@ _TEMPLATE = r"""<!doctype html>
       align-items: center;
       justify-content: space-between;
       gap: 0.75rem;
-      position: sticky;
-      inset-block-start: 0;
       z-index: 5;
     }
     @media (min-width: 768px) {
@@ -770,6 +767,7 @@ _TEMPLATE = r"""<!doctype html>
       border-radius: var(--radius);
       box-shadow: 0 0 0 1px var(--border), var(--shadow-xs);
       overflow: hidden;
+      flex-shrink: 0;
     }
     .card-header {
       padding: 1rem var(--card-spacing);
@@ -828,6 +826,7 @@ _TEMPLATE = r"""<!doctype html>
       border-block-end: 1px solid var(--hairline);
       vertical-align: middle;
       font-weight: 400;
+      text-align: start;
     }
     tbody tr:last-child th, tbody tr:last-child td { border-block-end: 0; }
 
