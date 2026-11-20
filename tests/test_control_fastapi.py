@@ -366,11 +366,24 @@ class ControlFastApiTests(unittest.TestCase):
             server, "handle_compose_deployment", return_value={"deployment": "luma-eye"}
         ) as mock_deploy:
             apply_resp = self.client.post(
-                "/v1/addons/eye/apply", headers=self._headers(), json={"origin": "dashboard"}
+                "/v1/addons/eye/apply",
+                headers=self._headers(),
+                json={"origin": "dashboard", "rotateSecrets": False},
             )
             self.assertEqual(apply_resp.status_code, 200, apply_resp.text)
             self.assertEqual(apply_resp.json(), {"deployment": "luma-eye"})
             mock_deploy.assert_called_once_with(self.token, compose_body)
+
+            with patch.object(
+                control_addons, "handle_addon_configure", return_value={"addon": {"id": "eye"}}
+            ) as mock_cfg:
+                cfg_resp = self.client.post(
+                    "/v1/addons/eye/configure",
+                    headers=self._headers(),
+                    json={"config": {}, "secrets": {}, "rotateSecrets": False, "requireComplete": True},
+                )
+                self.assertEqual(cfg_resp.status_code, 200, cfg_resp.text)
+                mock_cfg.assert_called_once()
 
             stream_resp = self.client.post(
                 "/v1/addons/eye/apply/stream", headers=self._headers(), json={}

@@ -7,7 +7,7 @@ fields in the authenticated OpenAPI 3.1 schema.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -52,7 +52,9 @@ class AddonConfigureRequest(LumaRequestModel):
     config: Optional[Dict[str, Any]] = Field(default=None, description="Addon configuration fields")
     secrets: Optional[Dict[str, Any]] = Field(default=None, description="Scoped secrets to store for this addon")
     inherit: Optional[Dict[str, Any]] = Field(default=None, description="Saved Control credentials to inherit")
-    rotateSecrets: Optional[List[str]] = Field(default=None, description="Auto-generated secret names to rotate")
+    rotateSecrets: Optional[Union[bool, List[str]]] = Field(
+        default=None, description="Rotate auto-generated secrets (bool or list of secret names)"
+    )
     requireComplete: Optional[bool] = Field(default=None, description="Require all required config fields")
 
 
@@ -66,7 +68,9 @@ class AddonApplyRequest(LumaRequestModel):
     config: Optional[Dict[str, Any]] = Field(default=None, description="Addon configuration fields")
     secrets: Optional[Dict[str, Any]] = Field(default=None, description="Scoped secrets to store before applying")
     inherit: Optional[Dict[str, Any]] = Field(default=None, description="Saved Control credentials to inherit")
-    rotateSecrets: Optional[List[str]] = Field(default=None, description="Auto-generated secret names to rotate")
+    rotateSecrets: Optional[Union[bool, List[str]]] = Field(
+        default=None, description="Rotate auto-generated secrets (bool or list of secret names)"
+    )
     images: Optional[Dict[str, str]] = Field(default=None, description="Per-service container image overrides")
     origin: Optional[str] = Field(default=None, description="Deployment origin ('addon', 'dashboard', or 'cli')")
 
