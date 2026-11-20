@@ -31,6 +31,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Dialog,
@@ -42,8 +43,10 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import { apiGet, apiPost, authHeaders, consumeNdjson } from "../apiClient";
 import { BuilderRunnerOnboardingCard } from "../components/BuilderRunnerOnboardingCard";
 import { fetchBuilderStatus, type BuilderStatus } from "../deploy/deployApi";
@@ -665,8 +668,55 @@ export function AddonsPage({
           String(editing.config.node) !== currentVal,
       );
 
+      const nodeOptions: Array<{ value: string; label: string }> = [];
+      if (!isRequiredPin) {
+        nodeOptions.push({
+          value: "__auto__",
+          label: zh ? "自动调度（不固定节点）" : "Auto-schedule (unpinned)",
+        });
+      } else if (sortedRegionNodes.length === 0 && fallbackNames.length === 0) {
+        nodeOptions.push({
+          value: "__empty__",
+          label: zh ? "当前区域暂无可用节点" : "No nodes available in this region",
+        });
+      }
+      if (currentOutsideRegion) {
+        nodeOptions.push({
+          value: currentVal,
+          label: `${currentVal} (${zh ? "当前不在所选区域" : "outside selected region"})`,
+        });
+      }
+      if (sortedRegionNodes.length > 0) {
+        for (const n of sortedRegionNodes) {
+          const memText =
+            n.memoryTotalMb > 0
+              ? zh
+                ? `${fmtMemory(n.memoryAvailableMb)} / ${fmtMemory(n.memoryTotalMb)} 可用`
+                : `${fmtMemory(n.memoryAvailableMb)} / ${fmtMemory(n.memoryTotalMb)} free`
+              : "";
+          const tags = [
+            memText,
+            n.isManager ? "Manager" : "",
+            n.publicIngressReady ? (zh ? "公网直连就绪" : "node-edge ready") : "",
+            !n.ready ? (zh ? "离线" : "offline") : "",
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          nodeOptions.push({
+            value: n.name,
+            label: tags ? `${n.name} — ${tags}` : n.name,
+          });
+        }
+      } else {
+        for (const opt of fallbackNames) {
+          nodeOptions.push({ value: opt, label: opt });
+        }
+      }
+      const selectNodeValue =
+        currentVal || (!isRequiredPin ? "__auto__" : nodeOptions[0]?.value === "__empty__" ? "__empty__" : "");
+
       return (
-        <Field key={field.key}>
+        <Field key={field.key} className="min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <FieldLabel htmlFor={`field-${field.key}`}>{label}</FieldLabel>
             {isRequiredPin ? (
@@ -679,53 +729,27 @@ export function AddonsPage({
               </Badge>
             ) : null}
           </div>
-          <select
-            id={`field-${field.key}`}
-            required={isRequiredPin}
-            value={currentVal}
-            onChange={(ev) => setFormConfig((prev) => ({ ...prev, [field.key]: ev.target.value }))}
-            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          <Select
+            items={nodeOptions}
+            value={selectNodeValue}
+            onValueChange={(next) => {
+              const resolved = !next || next === "__auto__" || next === "__empty__" ? "" : next;
+              setFormConfig((prev) => ({ ...prev, [field.key]: resolved }));
+            }}
           >
-            {!isRequiredPin ? (
-              <option value="">{zh ? "自动调度（不固定节点）" : "Auto-schedule (unpinned)"}</option>
-            ) : sortedRegionNodes.length === 0 && fallbackNames.length === 0 ? (
-              <option value="">{zh ? "当前区域暂无可用节点" : "No nodes available in this region"}</option>
-            ) : !currentVal ? (
-              <option value="">{zh ? "请选择固定节点…" : "Select a pinned node…"}</option>
-            ) : null}
-            {currentOutsideRegion ? (
-              <option value={currentVal}>
-                {currentVal} ({zh ? "当前不在所选区域" : "outside selected region"})
-              </option>
-            ) : null}
-            {sortedRegionNodes.length > 0
-              ? sortedRegionNodes.map((n) => {
-                  const memText =
-                    n.memoryTotalMb > 0
-                      ? zh
-                        ? `${fmtMemory(n.memoryAvailableMb)} / ${fmtMemory(n.memoryTotalMb)} 可用`
-                        : `${fmtMemory(n.memoryAvailableMb)} / ${fmtMemory(n.memoryTotalMb)} free`
-                      : "";
-                  const tags = [
-                    memText,
-                    n.isManager ? "Manager" : "",
-                    n.publicIngressReady ? (zh ? "公网直连就绪" : "node-edge ready") : "",
-                    !n.ready ? (zh ? "离线" : "offline") : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" · ");
-                  return (
-                    <option key={n.name} value={n.name}>
-                      {tags ? `${n.name} — ${tags}` : n.name}
-                    </option>
-                  );
-                })
-              : fallbackNames.map((opt) => (
-                  <option key={opt} value={opt}>
-                    {opt}
-                  </option>
+            <SelectTrigger id={`field-${field.key}`} className="w-full min-w-0">
+              <SelectValue placeholder={zh ? "请选择固定节点…" : "Select a pinned node…"} />
+            </SelectTrigger>
+            <SelectContent alignItemWithTrigger={false}>
+              <SelectGroup>
+                {nodeOptions.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value} disabled={opt.value === "__empty__"}>
+                    {opt.label}
+                  </SelectItem>
                 ))}
-          </select>
+              </SelectGroup>
+            </SelectContent>
+          </Select>
           {sortedRegionNodes.length === 1 && currentVal === sortedRegionNodes[0].name ? (
             <FieldDescription>
               {zh
@@ -757,14 +781,15 @@ export function AddonsPage({
         field.type === "select"
           ? field.options || []
           : data?.availableRegions || ["cn", "global", "home"];
+      const selectItems = options.map((opt) => ({ value: opt, label: opt }));
       return (
-        <Field key={field.key}>
+        <Field key={field.key} className="min-w-0">
           <FieldLabel htmlFor={`field-${field.key}`}>{label}</FieldLabel>
-          <select
-            id={`field-${field.key}`}
+          <Select
+            items={selectItems}
             value={formConfig[field.key] ?? ""}
-            onChange={(ev) => {
-              const nextVal = ev.target.value;
+            onValueChange={(nextVal) => {
+              if (nextVal === null) return;
               setFormConfig((prev) => {
                 const updated = { ...prev, [field.key]: nextVal };
                 if (field.type === "region") {
@@ -786,14 +811,37 @@ export function AddonsPage({
                 return updated;
               });
             }}
-            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            {options.map((opt) => (
-              <option key={opt} value={opt}>
-                {opt}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger id={`field-${field.key}`} className="w-full min-w-0">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent alignItemWithTrigger={false}>
+              <SelectGroup>
+                {selectItems.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+          {desc ? <FieldDescription>{desc}</FieldDescription> : null}
+        </Field>
+      );
+    }
+
+    if (field.type === "boolean") {
+      const checked = String(formConfig[field.key] ?? "").toLowerCase() === "true";
+      return (
+        <Field key={field.key} className="min-w-0">
+          <div className="flex items-center justify-between gap-3">
+            <FieldLabel htmlFor={`field-${field.key}`}>{label}</FieldLabel>
+            <Switch
+              id={`field-${field.key}`}
+              checked={checked}
+              onCheckedChange={(val) => setFormConfig((prev) => ({ ...prev, [field.key]: val ? "true" : "false" }))}
+            />
+          </div>
           {desc ? <FieldDescription>{desc}</FieldDescription> : null}
         </Field>
       );
@@ -1124,9 +1172,10 @@ export function AddonsPage({
 
       {/* 3-tier Schema-driven Configuration Dialog */}
       <Dialog open={Boolean(editing)} onOpenChange={(open) => { if (!open && !saving) setEditing(null); }}>
-        <DialogContent className="max-h-[86dvh] overflow-y-auto sm:max-w-xl">
+        <DialogContent className="max-h-[86dvh] overflow-x-hidden overflow-y-auto sm:max-w-xl">
           {editing ? (
             <form
+              className="min-w-0"
               onSubmit={(ev: FormEvent) => {
                 ev.preventDefault();
                 if (missingRequiredNode || saving) return;
@@ -1146,7 +1195,7 @@ export function AddonsPage({
                 </DialogDescription>
               </DialogHeader>
 
-              <div className="my-4 flex flex-col gap-4">
+              <div className="my-4 flex min-w-0 flex-col gap-4">
                 {saveError ? (
                   <Alert variant="destructive">
                     <TriangleAlert className="size-4" />
@@ -1156,27 +1205,41 @@ export function AddonsPage({
                 ) : null}
 
                 {/* Zone 1: Basic & Required */}
-                <FieldGroup className="gap-3.5">
-                  {editing.presets.length > 1 ? (
-                    <Field>
-                      <FieldLabel htmlFor="addon-preset">{zh ? "部署拓扑预设" : "Deployment preset"}</FieldLabel>
-                      <select
-                        id="addon-preset"
-                        value={preset}
-                        onChange={(ev) => handlePresetChange(ev.target.value)}
-                        className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        {editing.presets.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {loc(p.label, lang, p.id)} ({p.id})
-                          </option>
-                        ))}
-                      </select>
-                      <FieldDescription>
-                        {loc(editing.presets.find((p) => p.id === preset)?.description, lang)}
-                      </FieldDescription>
-                    </Field>
-                  ) : null}
+                <FieldGroup className="min-w-0 gap-3.5">
+                  {editing.presets.length > 1 ? (() => {
+                    const presetOptions = editing.presets.map((p) => ({
+                      value: p.id,
+                      label: `${loc(p.label, lang, p.id)} (${p.id})`,
+                    }));
+                    return (
+                      <Field className="min-w-0">
+                        <FieldLabel htmlFor="addon-preset">{zh ? "部署拓扑预设" : "Deployment preset"}</FieldLabel>
+                        <Select
+                          items={presetOptions}
+                          value={preset}
+                          onValueChange={(val) => {
+                            if (val) handlePresetChange(val);
+                          }}
+                        >
+                          <SelectTrigger id="addon-preset" className="w-full min-w-0">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent alignItemWithTrigger={false}>
+                            <SelectGroup>
+                              {presetOptions.map((opt) => (
+                                <SelectItem key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                        <FieldDescription>
+                          {loc(editing.presets.find((p) => p.id === preset)?.description, lang)}
+                        </FieldDescription>
+                      </Field>
+                    );
+                  })() : null}
                   {tieredFields.basic.map(renderField)}
                 </FieldGroup>
 
@@ -1251,61 +1314,82 @@ export function AddonsPage({
 
                 {/* Zone 2: Recommended + Control Credential Inheritance (Builder) */}
                 {(tieredFields.recommended.length > 0 || (editing.id === "builder" && (savedRegistries.length > 0 || savedGitProviders.length > 0))) ? (
-                  <div className="flex flex-col gap-3 rounded-lg border border-border bg-muted/20 p-3.5">
+                  <div className="flex min-w-0 flex-col gap-3 rounded-lg border border-border bg-muted/20 p-3.5">
                     <div className="text-xs font-medium text-foreground">
                       {zh ? "推荐配置（镜像仓库与凭据复用）" : "Recommended (Registry & credential reuse)"}
                     </div>
 
-                    {editing.id === "builder" && savedRegistries.length > 0 ? (
-                      <Field>
-                        <FieldLabel htmlFor="inherit-registry">
-                          {zh ? "一键复用 Control 已保存的镜像仓库凭据" : "Reuse saved Control registry credential"}
-                        </FieldLabel>
-                        <select
-                          id="inherit-registry"
-                          value={inheritRegistryHost}
-                          onChange={(ev) => handleSelectInheritedRegistry(ev.target.value)}
-                          className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        >
-                          <option value="">{zh ? "手动填写或保留现有配置" : "Enter manually or keep current"}</option>
-                          {savedRegistries.map((r) => (
-                            <option key={r.host} value={r.host}>
-                              {r.host} ({r.username})
-                            </option>
-                          ))}
-                        </select>
-                        <FieldDescription>
-                          {zh
-                            ? "选择后将自动复用该仓库的地址、用户名和密码，无需重复输入密码。"
-                            : "Automatically inherits the registry host, username, and password from Control."}
-                        </FieldDescription>
-                      </Field>
-                    ) : null}
+                    {editing.id === "builder" && savedRegistries.length > 0 ? (() => {
+                      const registryOptions = [
+                        {
+                          value: "__manual__",
+                          label: zh ? "手动填写或保留现有配置" : "Enter manually or keep current",
+                        },
+                        ...savedRegistries.map((r) => ({
+                          value: r.host,
+                          label: `${r.host} (${r.username})`,
+                        })),
+                      ];
+                      return (
+                        <Field className="min-w-0">
+                          <FieldLabel htmlFor="inherit-registry">
+                            {zh ? "一键复用 Control 已保存的镜像仓库凭据" : "Reuse saved Control registry credential"}
+                          </FieldLabel>
+                          <Select
+                            items={registryOptions}
+                            value={inheritRegistryHost || "__manual__"}
+                            onValueChange={(val) => {
+                              handleSelectInheritedRegistry(!val || val === "__manual__" ? "" : val);
+                            }}
+                          >
+                            <SelectTrigger id="inherit-registry" className="w-full min-w-0">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent alignItemWithTrigger={false}>
+                              <SelectGroup>
+                                {registryOptions.map((opt) => (
+                                  <SelectItem key={opt.value} value={opt.value}>
+                                    <span className="truncate">{opt.label}</span>
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
+                            </SelectContent>
+                          </Select>
+                          <FieldDescription>
+                            {zh
+                              ? "选择后将自动复用该仓库的地址、用户名和密码，无需重复输入密码。"
+                              : "Automatically inherits the registry host, username, and password from Control."}
+                          </FieldDescription>
+                        </Field>
+                      );
+                    })() : null}
 
                     {editing.id === "builder" && savedGitProviders.length > 0 ? (
-                      <div className="flex flex-col gap-1.5">
+                      <div className="flex min-w-0 flex-col gap-1.5">
                         <span className="text-xs font-medium text-foreground">
                           {zh ? "复用 Control 已保存的 Git 凭据（可选）" : "Reuse saved Control Git credentials (optional)"}
                         </span>
                         <div className="flex flex-wrap gap-2">
-                          {savedGitProviders.map((prov) => (
-                            <label
-                              key={prov.id}
-                              className="flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={inheritGitIds.includes(prov.id)}
-                                onChange={() => toggleInheritGit(prov.id)}
-                              />
-                              <span className="font-mono">{prov.type}:{prov.account}</span>
-                            </label>
-                          ))}
+                          {savedGitProviders.map((prov) => {
+                            const checked = inheritGitIds.includes(prov.id);
+                            return (
+                              <label
+                                key={prov.id}
+                                className="flex cursor-pointer items-center gap-2 rounded-lg border border-input bg-background px-2.5 py-1.5 text-xs transition-colors hover:bg-accent/40 has-data-checked:border-primary/60 has-data-checked:bg-primary/5"
+                              >
+                                <Checkbox
+                                  checked={checked}
+                                  onCheckedChange={() => toggleInheritGit(prov.id)}
+                                />
+                                <span className="font-mono">{prov.type}:{prov.account}</span>
+                              </label>
+                            );
+                          })}
                         </div>
                       </div>
                     ) : null}
 
-                    <FieldGroup className="gap-3">
+                    <FieldGroup className="min-w-0 gap-3">
                       {tieredFields.recommended.map(renderField)}
                     </FieldGroup>
                   </div>
@@ -1424,13 +1508,12 @@ export function AddonsPage({
                 : "Stops the addon services and routes, immediately revokes its Control SSO sessions, and hides its UI extension slots. Persistent data volumes are preserved."}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            <input
-              type="checkbox"
+          <label className="flex cursor-pointer items-center gap-2.5 text-xs text-muted-foreground">
+            <Checkbox
               checked={purgeSecrets}
-              onChange={(ev) => setPurgeSecrets(ev.target.checked)}
+              onCheckedChange={(checked) => setPurgeSecrets(Boolean(checked))}
             />
-            {zh ? "同时清除该插件作用域下的 Secrets" : "Also delete scoped secrets for this addon"}
+            <span>{zh ? "同时清除该插件作用域下的 Secrets" : "Also delete scoped secrets for this addon"}</span>
           </label>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={uninstalling}>{zh ? "取消" : "Cancel"}</AlertDialogCancel>
