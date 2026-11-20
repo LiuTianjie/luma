@@ -1111,16 +1111,18 @@ export function AddonsPage({
                   ) : null}
 
                   {!addon.installed ? (
-                    <div className="flex items-center justify-between gap-2 rounded-md border border-dashed border-border bg-background px-2.5 py-1.5 font-mono text-[0.7rem] text-muted-foreground">
+                    <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed border-border bg-background px-2.5 py-1 font-mono text-[0.7rem] text-muted-foreground">
                       <span className="truncate">{installCmd}</span>
-                      <button
+                      <Button
                         type="button"
+                        variant="ghost"
+                        size="icon-xs"
                         onClick={() => void copyCommand(addon.id, installCmd)}
                         className="shrink-0 text-muted-foreground hover:text-foreground"
                         aria-label={zh ? "复制安装命令" : "Copy install command"}
                       >
                         {copiedId === addon.id ? <Check className="size-3.5 text-emerald-600" /> : <Copy className="size-3.5" />}
-                      </button>
+                      </Button>
                     </div>
                   ) : null}
 
@@ -1151,9 +1153,10 @@ export function AddonsPage({
                     </Button>
                     {addon.installed ? (
                       <Button
-                        size="sm"
+                        size="icon-sm"
                         variant="ghost"
                         className="ml-auto text-destructive hover:text-destructive"
+                        aria-label={zh ? `卸载 ${addon.name}` : `Uninstall ${addon.name}`}
                         onClick={() => {
                           setRemoving(addon);
                           setPurgeSecrets(false);
@@ -1172,17 +1175,17 @@ export function AddonsPage({
 
       {/* 3-tier Schema-driven Configuration Dialog */}
       <Dialog open={Boolean(editing)} onOpenChange={(open) => { if (!open && !saving) setEditing(null); }}>
-        <DialogContent className="max-h-[86dvh] overflow-x-hidden overflow-y-auto sm:max-w-xl">
+        <DialogContent className="flex max-h-[86dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
           {editing ? (
             <form
-              className="min-w-0"
+              className="flex min-h-0 min-w-0 flex-1 flex-col"
               onSubmit={(ev: FormEvent) => {
                 ev.preventDefault();
                 if (missingRequiredNode || saving) return;
                 void handleSave(editing.canApplyInPlace && !editing.installed);
               }}
             >
-              <DialogHeader>
+              <DialogHeader className="shrink-0 border-b border-border/60 px-5 py-4 pr-12">
                 <DialogTitle>
                   {editing.installed
                     ? zh ? `配置 ${editing.name}` : `Configure ${editing.name}`
@@ -1195,7 +1198,7 @@ export function AddonsPage({
                 </DialogDescription>
               </DialogHeader>
 
-              <div className="my-4 flex min-w-0 flex-col gap-4">
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto px-5 py-4">
                 {saveError ? (
                   <Alert variant="destructive">
                     <TriangleAlert className="size-4" />
@@ -1430,7 +1433,7 @@ export function AddonsPage({
                   <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
                     <CollapsibleTrigger
                       render={
-                        <Button type="button" variant="ghost" size="sm" className="w-full justify-between border border-border bg-background" />
+                        <Button type="button" variant="outline" size="sm" className="w-full justify-between" />
                       }
                     >
                       <span className="flex items-center gap-1.5 text-xs font-medium">
@@ -1468,7 +1471,7 @@ export function AddonsPage({
                 ) : null}
               </div>
 
-              <DialogFooter className="gap-2">
+              <DialogFooter className="m-0 shrink-0 gap-2 rounded-b-xl border-t border-border/60 bg-muted/40 px-5 py-3.5">
                 <Button type="button" variant="outline" disabled={Boolean(saving)} onClick={() => setEditing(null)}>
                   {zh ? "关闭" : "Close"}
                 </Button>

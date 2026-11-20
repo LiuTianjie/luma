@@ -209,14 +209,16 @@ export function EyeObservabilityPanel({
             <EmptyContent className="flex w-full max-w-xl flex-col gap-3">
               <div className="flex items-start justify-between gap-2 rounded-lg border border-border bg-muted/40 p-3 text-left font-mono text-xs text-muted-foreground">
                 <pre className="m-0 overflow-x-auto">{snippet}</pre>
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
+                  size="icon-xs"
                   onClick={() => void copyText("snippet", snippet)}
                   className="shrink-0 text-muted-foreground hover:text-foreground"
                   aria-label={zh ? "复制 SDK 示例" : "Copy SDK snippet"}
                 >
                   {copiedKey === "snippet" ? <Check className="size-3.5 text-emerald-600" /> : <Copy className="size-3.5" />}
-                </button>
+                </Button>
               </div>
               {appData.consoleUrl ? (
                 <Button size="sm" nativeButton={false} render={<a href={appData.consoleUrl} target="_blank" rel="noreferrer" />}>
@@ -279,14 +281,16 @@ export function EyeObservabilityPanel({
                 <span className="text-xs text-muted-foreground">Public Key</span>
                 <div className="flex items-center gap-2">
                   <code className="font-mono text-xs">{proj.publicKey}</code>
-                  <button
+                  <Button
                     type="button"
+                    variant="ghost"
+                    size="icon-xs"
                     onClick={() => void copyText("pk", proj.publicKey)}
                     className="text-muted-foreground hover:text-foreground"
                     aria-label={zh ? "复制 Public Key" : "Copy public key"}
                   >
                     {copiedKey === "pk" ? <Check className="size-3.5 text-emerald-600" /> : <Copy className="size-3.5" />}
-                  </button>
+                  </Button>
                 </div>
               </div>
             ) : null}

@@ -123,16 +123,18 @@ export function AddonRequiredCard({
             </li>
           ))}
         </ul>
-        <div className="flex items-center justify-between gap-2 rounded-md border border-dashed border-border bg-muted/40 px-3 py-2 font-mono text-xs text-muted-foreground">
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed border-border bg-muted/40 px-3 py-1.5 font-mono text-xs text-muted-foreground">
           <span className="truncate">{meta.cli}</span>
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon-xs"
             onClick={() => void copyCli()}
             className="shrink-0 text-muted-foreground hover:text-foreground"
             aria-label={zh ? "复制命令" : "Copy command"}
           >
             {copied ? <Check className="size-3.5 text-emerald-600" /> : <Copy className="size-3.5" />}
-          </button>
+          </Button>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" nativeButton={false} render={<a {...spaLink(targetPath, navigate)} />}>

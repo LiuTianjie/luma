@@ -52,32 +52,36 @@ export function BuilderRunnerOnboardingCard({
             <Terminal className="size-3.5 text-amber-600 dark:text-amber-400" />
             <span>{zh ? "1. 生成 Runner 接入令牌（在 Builder 控制台或终端运行）" : "1. Create a runner token (in Builder console or CLI)"}</span>
           </div>
-          <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-background/90 px-2.5 py-1.5 font-mono text-[0.7rem] text-foreground">
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-background/90 px-2.5 py-1 font-mono text-[0.7rem] text-foreground">
             <span className="truncate select-all">{tokenCmd}</span>
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="icon-xs"
               onClick={() => void copy("token", tokenCmd)}
               className="shrink-0 text-muted-foreground hover:text-foreground"
               aria-label={zh ? "复制生成令牌命令" : "Copy token creation command"}
             >
               {copiedKey === "token" ? <Check className="size-3.5 text-emerald-600" /> : <Copy className="size-3.5" />}
-            </button>
+            </Button>
           </div>
 
           <div className="mt-1 flex items-center gap-1.5 font-medium text-foreground">
             <Terminal className="size-3.5 text-amber-600 dark:text-amber-400" />
             <span>{zh ? "2. 在构建机（Linux / macOS）上运行接入命令" : "2. Enroll a build machine (Linux / macOS)"}</span>
           </div>
-          <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-background/90 px-2.5 py-1.5 font-mono text-[0.7rem] text-foreground">
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-background/90 px-2.5 py-1 font-mono text-[0.7rem] text-foreground">
             <span className={compact ? "truncate select-all" : "break-all select-all"}>{joinCmd}</span>
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="icon-xs"
               onClick={() => void copy("join", joinCmd)}
               className="shrink-0 text-muted-foreground hover:text-foreground"
               aria-label={zh ? "复制接入命令" : "Copy runner join command"}
             >
               {copiedKey === "join" ? <Check className="size-3.5 text-emerald-600" /> : <Copy className="size-3.5" />}
-            </button>
+            </Button>
           </div>
         </div>
 
