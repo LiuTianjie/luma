@@ -107,7 +107,20 @@ export function StatTile({ label, icon: Icon, value, detail, footer, tone = "nor
   return (
     <div className={cn("flex min-w-0 flex-col gap-2 rounded-lg bg-card px-4 py-3.5 shadow-xs ring-1 ring-border", className)}>
       <span className="flex min-w-0 items-center gap-2 text-xs font-medium text-muted-foreground">
-        {Icon ? <Icon className={cn("size-3.5 shrink-0", tone === "critical" ? "text-destructive" : tone === "warning" ? "text-warning" : "")} aria-hidden={true} /> : null}
+        {Icon ? (
+          <span
+            className={cn(
+              "inline-flex size-6 shrink-0 items-center justify-center rounded-md",
+              tone === "critical"
+                ? "bg-destructive-soft text-destructive"
+                : tone === "warning"
+                  ? "bg-warning-soft text-warning"
+                  : "bg-primary/8 text-primary",
+            )}
+          >
+            <Icon className="size-3.5 shrink-0" aria-hidden={true} />
+          </span>
+        ) : null}
         <span className="truncate">{label}</span>
         {action ? <span className="ml-auto shrink-0">{action}</span> : null}
       </span>

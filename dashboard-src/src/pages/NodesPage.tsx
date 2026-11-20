@@ -10,6 +10,7 @@ import { RegionPanel } from "../components/RegionPanel";
 import { NodeTopology } from "../components/NodeTopology";
 import { TrafficPaths } from "../components/TrafficPaths";
 import { DnsZonesPanel } from "../components/DnsZonesPanel";
+import { nodePath } from "../objectRoutes";
 import { useRouter } from "../router";
 import type { DashboardNode, Lang } from "../types";
 import type { DashboardViewModel } from "../dashboardViewModel";
@@ -94,7 +95,19 @@ export function NodesPage({
         </EmptyHeader>
         <EmptyContent><Button type="button" onClick={() => navigate("/fleet")}>{zh ? "返回节点列表" : "Back to nodes"}</Button></EmptyContent>
       </Empty>}
-      {section === "nodes" && <NodeFleetMap lang={lang} nodes={vm.nodes} services={vm.services} onSelect={onSelectNode} onTerminal={onTerminal} />}
+      {section === "nodes" && (
+        <NodeFleetMap
+          lang={lang}
+          nodes={vm.nodes}
+          services={vm.services}
+          onSelect={onSelectNode}
+          onTerminal={onTerminal}
+          onCleanDisk={(node) => {
+            if (node.name) navigate(`${nodePath(node.name)}?focus=disk-cleanup`);
+            else onSelectNode(node);
+          }}
+        />
+      )}
       {section === "regions" && <RegionPanel lang={lang} token={token} regions={vm.regions} nodes={vm.nodes} onRefresh={onRefresh} />}
       {section === "domains" && <DnsZonesPanel lang={lang} token={token} />}
 

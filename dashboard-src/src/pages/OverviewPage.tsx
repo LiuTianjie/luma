@@ -139,16 +139,23 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
           },
         ] satisfies StatTile[]).map((item) => {
           const Icon = item.icon;
+          const iconBadgeClass = item.tone === "critical"
+            ? "bg-destructive-soft text-destructive"
+            : item.tone === "warning"
+              ? "bg-warning-soft text-warning"
+              : "bg-primary/8 text-primary";
           return (
             <a
               key={item.label}
               {...spaLink(item.href, navigate)}
-              className="group flex min-w-0 flex-col gap-2 rounded-lg bg-card p-3 shadow-xs ring-1 ring-border outline-none transition-[box-shadow,background-color] hover:ring-foreground/20 focus-visible:ring-2 focus-visible:ring-ring @lg:gap-3 @lg:p-5"
+              className="group flex min-w-0 flex-col gap-2 rounded-lg bg-card p-3 shadow-xs ring-1 ring-border outline-none transition-[box-shadow,background-color] hover:shadow-sm hover:ring-primary/25 focus-visible:ring-2 focus-visible:ring-ring @lg:gap-3 @lg:p-5"
             >
               <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground @lg:text-[0.8125rem]">
-                <Icon className={cn("size-4", item.tone === "critical" ? "text-destructive" : item.tone === "warning" ? "text-warning" : "text-muted-foreground")} aria-hidden="true" />
+                <span className={cn("inline-flex size-7 shrink-0 items-center justify-center rounded-md", iconBadgeClass)}>
+                  <Icon className="size-4" aria-hidden="true" />
+                </span>
                 <span className="truncate font-medium">{item.label}</span>
-                <ArrowRight className="ml-auto size-4 -translate-x-1 opacity-0 transition-[opacity,transform] group-hover:translate-x-0 group-hover:opacity-100" aria-hidden="true" />
+                <ArrowRight className="ml-auto size-4 -translate-x-1 text-primary/80 opacity-0 transition-[opacity,transform] group-hover:translate-x-0 group-hover:opacity-100" aria-hidden="true" />
               </span>
               <span className="flex items-baseline gap-1.5 tabular-nums">
                 <strong className={cn("text-2xl/none font-semibold tracking-[-0.02em] @lg:text-[2rem]/none", item.tone === "critical" && "text-destructive-foreground", item.tone === "warning" && "text-warning-foreground")}>{item.value}</strong>

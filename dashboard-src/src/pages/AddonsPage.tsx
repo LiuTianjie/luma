@@ -289,11 +289,24 @@ function fieldTier(field: AddonConfigField): "basic" | "recommended" | "advanced
 }
 
 function AddonIcon({ icon }: { icon?: string }) {
-  if (icon === "dashboard") return <LayoutDashboard className="size-4 text-primary" />;
-  if (icon === "builder") return <Boxes className="size-4 text-primary" />;
-  if (icon === "observe") return <Activity className="size-4 text-primary" />;
-  return <Package className="size-4 text-primary" />;
+  if (icon === "dashboard") return <LayoutDashboard className="size-4" />;
+  if (icon === "builder") return <Boxes className="size-4" />;
+  if (icon === "observe") return <Activity className="size-4" />;
+  return <Package className="size-4" />;
 }
+
+function addonIconTone(icon?: string): string {
+  if (icon === "dashboard") return "bg-primary/10 text-primary ring-primary/20";
+  if (icon === "builder") return "bg-indigo-500/10 text-indigo-600 ring-indigo-500/20 dark:bg-indigo-400/15 dark:text-indigo-400 dark:ring-indigo-400/25";
+  if (icon === "observe") return "bg-emerald-500/10 text-emerald-600 ring-emerald-500/20 dark:bg-emerald-400/15 dark:text-emerald-400 dark:ring-emerald-400/25";
+  return "bg-sky-500/10 text-sky-600 ring-sky-500/20 dark:bg-sky-400/15 dark:text-sky-400 dark:ring-sky-400/25";
+}
+
+type BundleUpdateCheck = {
+  checked?: boolean;
+  updateAvailable?: boolean;
+  latest?: { version?: string; sha256?: string } | null;
+};
 
 export function AddonsPage({
   lang,
@@ -348,9 +361,37 @@ export function AddonsPage({
     logs: string[];
   } | null>(null);
   const [bundleLogOpen, setBundleLogOpen] = useState(false);
+  const [bundleUpdates, setBundleUpdates] = useState<Record<string, { updateAvailable: boolean; latestVersion?: string; latestSha?: string }>>({});
   const bundleResetTimerRef = useRef<number | null>(null);
   const bundleFileInputRef = useRef<HTMLInputElement | null>(null);
   const [uploadTargetAddon, setUploadTargetAddon] = useState<AddonItem | null>(null);
+
+  const checkStaticBundleUpdates = useCallback(async (items: AddonItem[]) => {
+    const targets = items.filter((item) => item.kind === "static-bundle");
+    if (targets.length === 0) return;
+    await Promise.all(
+      targets.map(async (item) => {
+        try {
+          const res = await apiGet<BundleUpdateCheck>(
+            `/v1/addons/${encodeURIComponent(item.id)}/check-update`,
+            token,
+          );
+          if (res?.checked) {
+            setBundleUpdates((prev) => ({
+              ...prev,
+              [item.id]: {
+                updateAvailable: Boolean(res.updateAvailable),
+                latestVersion: res.latest?.version || undefined,
+                latestSha: res.latest?.sha256 ? res.latest.sha256.slice(0, 8) : undefined,
+              },
+            }));
+          }
+        } catch {
+          // Silent background check: never interrupt the page when offline or rate-limited.
+        }
+      }),
+    );
+  }, [token]);
 
   const clearBundleResetTimer = useCallback(() => {
     if (bundleResetTimerRef.current !== null) {
@@ -380,6 +421,7 @@ export function AddonsPage({
     try {
       const payload = await apiGet<AddonsPayload>("/v1/addons", token);
       setData(payload);
+      void checkStaticBundleUpdates(payload.addons);
       const builderItem = payload.addons.find((item) => item.id === "builder");
       if (builderItem?.installed) {
         void loadBuilderStatus();
@@ -395,7 +437,7 @@ export function AddonsPage({
     } finally {
       setLoading(false);
     }
-  }, [token, onUnauthorized, loadBuilderStatus]);
+  }, [token, onUnauthorized, loadBuilderStatus, checkStaticBundleUpdates]);
 
   useEffect(() => {
     void loadAddons();
@@ -654,6 +696,7 @@ export function AddonsPage({
         status: "success",
         logs: collectedLogs,
       });
+      setBundleUpdates((prev) => ({ ...prev, [addon.id]: { updateAvailable: false } }));
       scheduleBundleSuccessReset();
       await loadAddons();
       onAddonsChange?.();
@@ -706,6 +749,7 @@ export function AddonsPage({
         status: "success",
         logs: collectedLogs,
       });
+      setBundleUpdates((prev) => ({ ...prev, [addon.id]: { updateAvailable: false } }));
       scheduleBundleSuccessReset();
       await loadAddons();
       onAddonsChange?.();
@@ -1227,7 +1271,8 @@ export function AddonsPage({
                   : zh
                     ? "待拉取"
                     : "Bootstrap";
-            const statusVariant = addon.installed ? "default" : addon.configured ? "secondary" : "outline";
+            const statusVariant = addon.installed ? "success" : addon.configured ? "secondary" : "outline";
+            const statusAppearance = addon.installed ? "dot" : "filled";
             const statusText = addon.installed
               ? zh
                 ? "运行中"
@@ -1252,12 +1297,16 @@ export function AddonsPage({
                     ? zh ? "建议固定节点" : "Pin recommended"
                     : "";
 
+            const updateInfo = isStaticBundle ? bundleUpdates[addon.id] : undefined;
+            const hasBundleUpdate = Boolean(updateInfo?.updateAvailable);
+            const latestLabel = [updateInfo?.latestVersion, updateInfo?.latestSha].filter(Boolean).join(" · ");
+
             return (
-              <Card key={addon.id} className="flex flex-col justify-between">
+              <Card key={addon.id} className="flex flex-col justify-between transition-shadow hover:shadow-sm">
                 <CardHeader className="gap-2">
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-center gap-2.5">
-                      <span className="flex size-8 items-center justify-center rounded-lg bg-muted ring-1 ring-border">
+                      <span className={`flex size-8 items-center justify-center rounded-lg ring-1 ${addonIconTone(addon.ui.icon)}`}>
                         <AddonIcon icon={addon.ui.icon} />
                       </span>
                       <div>
@@ -1265,13 +1314,22 @@ export function AddonsPage({
                         <div className="font-mono text-xs text-muted-foreground">{addon.stack}</div>
                       </div>
                     </div>
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex flex-wrap items-center justify-end gap-1.5">
+                      {hasBundleUpdate ? (
+                        <Badge
+                          variant="info"
+                          className="text-[0.6875rem]"
+                          title={latestLabel ? (zh ? `最新远端版本：${latestLabel}` : `Latest remote release: ${latestLabel}`) : undefined}
+                        >
+                          {zh ? "有新版本" : "Update available"}
+                        </Badge>
+                      ) : null}
                       {isRequired ? (
                         <Badge variant="secondary" className="text-[0.6875rem]">
                           {zh ? "核心必选" : "Core"}
                         </Badge>
                       ) : null}
-                      <Badge variant={statusVariant}>{statusText}</Badge>
+                      <Badge variant={statusVariant} appearance={statusAppearance}>{statusText}</Badge>
                     </div>
                   </div>
                   <CardDescription className="text-xs/5">{loc(addon.description, lang)}</CardDescription>

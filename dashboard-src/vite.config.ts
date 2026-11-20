@@ -962,6 +962,19 @@ export default defineConfig({
         entryFileNames: "app-[hash].js",
         chunkFileNames: "chunk-[name]-[hash].js",
         assetFileNames: "asset-[name]-[hash][extname]",
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (/[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) {
+            return "vendor-react";
+          }
+          if (/[\\/]node_modules[\\/]@base-ui[\\/]/.test(id)) {
+            return "vendor-ui";
+          }
+          if (/[\\/]node_modules[\\/]@tanstack[\\/]/.test(id)) {
+            return "vendor-query";
+          }
+          return undefined;
+        },
       },
     },
   },

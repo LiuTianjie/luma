@@ -84,7 +84,7 @@ export function Topbar({
   const hasCritical = visibleIssues.some((entry) => entry.severity === "critical");
 
   return (
-    <header className="flex h-(--console-header-height) shrink-0 items-center gap-3 border-b border-border bg-background px-4 md:px-6">
+    <header className="flex h-(--console-header-height) shrink-0 items-center gap-3 border-b border-border bg-background/90 px-4 backdrop-blur-sm md:px-6">
       <SidebarTrigger className="-ml-1 lg:hidden" aria-label={zh ? "打开导航" : "Open navigation"} />
       {path.startsWith("/create/") && <Button variant="ghost" size="sm" onClick={() => navigate("/create")} aria-label={zh ? "返回创建" : "Back to create"}><ArrowLeft data-icon="inline-start" />{zh ? "返回" : "Back"}</Button>}
       <Breadcrumb className="min-w-0" aria-label={zh ? "当前位置" : "Current location"}>

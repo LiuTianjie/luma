@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Activity, Bot, LayoutDashboard, MapPin, Server, SquareTerminal, TerminalSquare } from "@/components/icons";
+import { Activity, Bot, HardDrive, LayoutDashboard, MapPin, Server, SquareTerminal, TerminalSquare } from "@/components/icons";
 import { localizeState } from "../i18n";
 import type { DashboardNode, DashboardService, Lang } from "../types";
 import { Badge } from "@/components/ui/badge";
@@ -120,12 +120,14 @@ export function NodeFleetMap({
   services,
   onSelect,
   onTerminal,
+  onCleanDisk,
 }: {
   lang: Lang;
   nodes: DashboardNode[];
   services?: DashboardService[];
   onSelect: (node: DashboardNode) => void;
   onTerminal?: (node: DashboardNode) => void;
+  onCleanDisk?: (node: DashboardNode) => void;
 }) {
   const zh = lang === "zh";
   const [viewMode, setViewMode] = useState<NodesViewMode>(readInitialViewMode);
@@ -219,10 +221,19 @@ export function NodeFleetMap({
                     const hasTerminal = terminalReady(node);
                     const workload = workloads.get(nodeName) || { services: 0, tasks: 0 };
                     const hasDisk = typeof metrics.diskUsedPercent === "number" && Number.isFinite(metrics.diskUsedPercent);
+                    const diskHigh = hasDisk && (metrics.diskUsedPercent as number) >= 85;
+                    const diskCritical = hasDisk && (metrics.diskUsedPercent as number) >= 92;
                     return (
                       <Card
                         key={`${node.name || "node"}-${index}`}
-                        className="gap-3 p-4 transition-colors hover:border-foreground/20"
+                        className={cn(
+                          "gap-3 p-4 transition-[box-shadow,ring-color] hover:shadow-sm",
+                          diskCritical
+                            ? "ring-destructive/35 hover:ring-destructive/50"
+                            : diskHigh
+                              ? "ring-warning/40 hover:ring-warning/60"
+                              : "hover:ring-primary/25",
+                        )}
                       >
                         <div className="flex items-start justify-between gap-2">
                           <div className="flex min-w-0 flex-col gap-0.5">
@@ -277,7 +288,24 @@ export function NodeFleetMap({
 
                         <div className="flex items-center justify-between gap-2 border-t border-border/60 pt-2.5 text-xs text-muted-foreground tabular-nums">
                           <span>{zh ? `${workload.services} 服务 · ${workload.tasks} 任务` : `${workload.services} svc · ${workload.tasks} tasks`}</span>
-                          <span>{formatBytes(metrics.memoryTotalBytes ?? capacity.memoryBytes)}</span>
+                          {diskHigh && onCleanDisk ? (
+                            <button
+                              type="button"
+                              onClick={() => onCleanDisk(node)}
+                              className={cn(
+                                "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[0.75rem] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                                diskCritical
+                                  ? "bg-destructive-soft text-destructive-foreground hover:bg-destructive/15"
+                                  : "bg-warning-soft text-warning-foreground hover:bg-warning/15",
+                              )}
+                              title={zh ? `前往 ${nodeName} 清理磁盘空间` : `Open disk cleanup for ${nodeName}`}
+                            >
+                              <HardDrive className="size-3" aria-hidden="true" />
+                              {zh ? "清理磁盘" : "Clean disk"}
+                            </button>
+                          ) : (
+                            <span>{formatBytes(metrics.memoryTotalBytes ?? capacity.memoryBytes)}</span>
+                          )}
                         </div>
                       </Card>
                     );

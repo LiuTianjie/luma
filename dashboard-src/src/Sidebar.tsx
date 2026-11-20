@@ -138,7 +138,7 @@ export function AppSidebar({
                         isActive={active && !hasChildren}
                         aria-label={item.label}
                         tooltip={item.label}
-                        className={cn(hasChildren && active && "font-medium text-foreground [&>svg:first-child]:text-foreground")}
+                        className={cn(hasChildren && active && "font-medium text-foreground [&>svg:first-child]:text-primary")}
                         render={
                           <a
                             href={toHref(ROUTE_BY_PAGE[item.id])}
@@ -169,9 +169,10 @@ export function AppSidebar({
                                   size="md"
                                   isActive={current}
                                   title={child.detail}
-                                  className={cn("h-8 pl-[2.375rem] text-[0.8125rem] text-muted-foreground hover:text-foreground", current && "font-medium text-foreground")}
+                                  className={cn("relative h-8 pl-[2.375rem] text-[0.8125rem] text-muted-foreground hover:text-foreground", current && "bg-sidebar-accent font-medium text-primary")}
                                   render={<a {...spaLink(child.href, navigatePath, closeMobile)} aria-current={current ? "page" : undefined} />}
                                 >
+                                  {current ? <span className="absolute left-5 size-1.5 rounded-full bg-primary" aria-hidden="true" /> : null}
                                   <span>{child.label}</span>
                                 </SidebarMenuSubButton>
                               </SidebarMenuSubItem>

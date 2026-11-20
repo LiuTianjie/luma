@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { ArrowLeft, Server, SquareTerminal } from "@/components/icons";
 import { StatePill, StatTile, usageTone } from "../components/primitives";
 import { Button } from "@/components/ui/button";
@@ -7,7 +8,7 @@ import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { localizeState } from "../i18n";
-import { useRouter, spaLink } from "../router";
+import { useRouter, useSearchParams, spaLink } from "../router";
 import { servicePath } from "../objectRoutes";
 import { PageHeader } from "./PageHeader";
 import type { DashboardNode, DashboardService, Lang } from "../types";
@@ -28,6 +29,16 @@ export function ResourceDetailPage({ lang, token, node, service, services, appli
   lang: Lang; token: string; node?: DashboardNode; service?: DashboardService; services: DashboardService[]; applicationNames: string[]; onTerminal: () => void; onRefresh?: () => Promise<void> | void;
 }) {
   const { navigate } = useRouter();
+  const searchParams = useSearchParams();
+  const diskCleanupRef = useRef<HTMLDivElement | null>(null);
+  const focusSection = searchParams.get("focus");
+  useEffect(() => {
+    if (focusSection !== "disk-cleanup" || !node?.name) return;
+    const frame = window.requestAnimationFrame(() => {
+      diskCleanupRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusSection, node?.name]);
   const zh = lang === "zh";
   const back = node ? "/fleet" : service?.stack && applicationNames.includes(service.stack) ? `/apps/${encodeURIComponent(service.stack)}/services` : "/apps";
   const nodeNames = new Set(node ? [node.name, node.hostname, node.displayName].filter((name): name is string => Boolean(name)) : []);
@@ -125,7 +136,11 @@ export function ResourceDetailPage({ lang, token, node, service, services, appli
 
       {node ? <NodePublicIngress key={node.name} lang={lang} token={token} node={node} onChanged={onRefresh} /> : null}
 
-      {node ? <NodeDiskCleanup lang={lang} token={token} node={node} /> : null}
+      {node ? (
+        <div id="disk-cleanup" ref={diskCleanupRef} className="scroll-mt-6">
+          <NodeDiskCleanup lang={lang} token={token} node={node} />
+        </div>
+      ) : null}
 
       {node ? (
         <Card>

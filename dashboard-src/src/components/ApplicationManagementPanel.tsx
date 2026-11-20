@@ -42,6 +42,7 @@ import {
   type DeploymentConfig,
 } from "../deploymentConfigApi";
 import { apiGet } from "../apiClient";
+import { cn } from "@/lib/utils";
 import { localizeState, t } from "../i18n";
 import {
   fetchServiceHistory,
@@ -171,6 +172,38 @@ function versionSubmittedLabel(value: ServiceVersion["submitTime"], lang: Lang) 
   return formatDateTime(new Date(milliseconds), lang);
 }
 
+const PINNED_APPS_KEY = "luma.apps.pinned";
+
+function readPinnedApps(): string[] {
+  try {
+    const raw = localStorage.getItem(PINNED_APPS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string" && item.length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function PinStarIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className="size-3.5"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3.5l2.65 5.37 5.93.86-4.29 4.18 1.01 5.9L12 17.02l-5.3 2.79 1.01-5.9-4.29-4.18 5.93-.86L12 3.5z" />
+    </svg>
+  );
+}
+
 export function ApplicationManagementPanel({
   lang,
   token,
@@ -250,6 +283,19 @@ export function ApplicationManagementPanel({
     window.addEventListener("luma:refresh", refresh);
     return () => window.removeEventListener("luma:refresh", refresh);
   }, []);
+  const [pinnedApps, setPinnedApps] = useState<string[]>(readPinnedApps);
+  const pinnedSet = useMemo(() => new Set(pinnedApps), [pinnedApps]);
+  const togglePin = useCallback((stack: string) => {
+    setPinnedApps((prev) => {
+      const next = prev.includes(stack) ? prev.filter((item) => item !== stack) : [stack, ...prev];
+      try {
+        localStorage.setItem(PINNED_APPS_KEY, JSON.stringify(next));
+      } catch {
+        // ignore storage failures
+      }
+      return next;
+    });
+  }, []);
   const [deploymentConfig, setDeploymentConfig] =
     useState<DeploymentConfig | null>(null);
   const [deploymentConfigFor, setDeploymentConfigFor] = useState("");
@@ -325,30 +371,54 @@ export function ApplicationManagementPanel({
       ].sort(),
     [applicationPage?.regions, applications],
   );
+  const regionCounts = useMemo(() => {
+    if (applicationPage) return null;
+    const counts = new Map<string, number>();
+    for (const app of applications) {
+      for (const region of app.regions) {
+        if (!region) continue;
+        counts.set(region, (counts.get(region) || 0) + 1);
+      }
+    }
+    return counts;
+  }, [applications, applicationPage]);
   const filteredApplications = useMemo(() => {
-    if (applicationPage) return applications;
-    const query = filters.query.trim().toLowerCase();
-    return applications.filter((app) => {
-      const matchesStatus =
-        filters.status === "all" || app.status === filters.status;
-      const matchesRegion =
-        filters.region === "all" || app.regions.includes(filters.region);
-      const haystack = [
-        app.stack,
-        ...app.domains,
-        ...app.nodes,
-        ...app.services.map(
-          (service) =>
-            `${service.name || ""} ${service.fullName || ""} ${service.image || ""}`,
-        ),
-      ]
-        .join(" ")
-        .toLowerCase();
-      return (
-        matchesStatus && matchesRegion && (!query || haystack.includes(query))
-      );
-    });
-  }, [applications, filters, applicationPage]);
+    const base = applicationPage
+      ? applications
+      : (() => {
+          const query = filters.query.trim().toLowerCase();
+          return applications.filter((app) => {
+            const matchesStatus =
+              filters.status === "all" || app.status === filters.status;
+            const matchesRegion =
+              filters.region === "all" || app.regions.includes(filters.region);
+            const haystack = [
+              app.stack,
+              ...app.domains,
+              ...app.nodes,
+              ...app.services.map(
+                (service) =>
+                  `${service.name || ""} ${service.fullName || ""} ${service.image || ""}`,
+              ),
+            ]
+              .join(" ")
+              .toLowerCase();
+            return (
+              matchesStatus &&
+              matchesRegion &&
+              (!query || haystack.includes(query))
+            );
+          });
+        })();
+    if (pinnedSet.size === 0) return base;
+    const pinned: Application[] = [];
+    const rest: Application[] = [];
+    for (const app of base) {
+      if (pinnedSet.has(app.stack)) pinned.push(app);
+      else rest.push(app);
+    }
+    return [...pinned, ...rest];
+  }, [applications, filters, applicationPage, pinnedSet]);
 
   const restart = async (app: Application) => {
     setActionError("");
@@ -1769,6 +1839,45 @@ export function ApplicationManagementPanel({
                 : `${applicationPage?.total ?? filteredApplications.length} of ${applicationPage?.counts.total ?? applications.length} apps`}
             </span>
           </div>
+          {regionOptions.length > 1 ? (
+            <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={lang === "zh" ? "按区域快速筛选" : "Quick region filter"}>
+              <button
+                type="button"
+                onClick={() => setFilters((current) => ({ ...current, region: "all" }))}
+                aria-pressed={filters.region === "all"}
+                className={cn(
+                  "inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  filters.region === "all"
+                    ? "bg-primary/10 font-medium text-primary ring-1 ring-primary/25"
+                    : "bg-card text-muted-foreground ring-1 ring-border hover:bg-accent hover:text-foreground",
+                )}
+              >
+                <span>{lang === "zh" ? "全部区域" : "All regions"}</span>
+                {!applicationPage ? <span className="tabular-nums opacity-75">{applications.length}</span> : null}
+              </button>
+              {regionOptions.map((region) => {
+                const active = filters.region === region;
+                const count = regionCounts?.get(region);
+                return (
+                  <button
+                    key={region}
+                    type="button"
+                    onClick={() => setFilters((current) => ({ ...current, region: active ? "all" : region }))}
+                    aria-pressed={active}
+                    className={cn(
+                      "inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      active
+                        ? "bg-primary/10 font-medium text-primary ring-1 ring-primary/25"
+                        : "bg-card text-muted-foreground ring-1 ring-border hover:bg-accent hover:text-foreground",
+                    )}
+                  >
+                    <span>{region}</span>
+                    {typeof count === "number" ? <span className="tabular-nums opacity-75">{count}</span> : null}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
           {filteredApplications.length ? (
             <>
               <Card className="hidden min-w-0 gap-0 py-0 md:flex">
@@ -1796,14 +1905,41 @@ export function ApplicationManagementPanel({
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {filteredApplications.map((app) => (
-                        <TableRow key={app.stack}>
+                      {filteredApplications.map((app) => {
+                        const isPinned = pinnedSet.has(app.stack);
+                        return (
+                        <TableRow key={app.stack} className={cn("group/row", isPinned && "bg-primary/[0.025]")}>
                           <TableCell className="max-w-72 whitespace-normal">
-                            <div className="flex min-w-0 flex-col gap-1">
-                              {appLink(app)}
-                              <span className="text-xs text-muted-foreground">
-                                {serviceCountLabel(app.services.length)}
-                              </span>
+                            <div className="flex min-w-0 items-start gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => togglePin(app.stack)}
+                                aria-label={
+                                  isPinned
+                                    ? lang === "zh"
+                                      ? `取消置顶 ${app.stack}`
+                                      : `Unpin ${app.stack}`
+                                    : lang === "zh"
+                                      ? `置顶 ${app.stack}`
+                                      : `Pin ${app.stack}`
+                                }
+                                aria-pressed={isPinned}
+                                title={isPinned ? (lang === "zh" ? "取消置顶" : "Unpin") : (lang === "zh" ? "置顶应用" : "Pin to top")}
+                                className={cn(
+                                  "mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded transition-opacity outline-none focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring",
+                                  isPinned
+                                    ? "text-amber-500 opacity-100 hover:text-amber-600"
+                                    : "text-muted-foreground opacity-0 group-hover/row:opacity-70 hover:opacity-100 hover:text-foreground",
+                                )}
+                              >
+                                <PinStarIcon filled={isPinned} />
+                              </button>
+                              <div className="flex min-w-0 flex-col gap-1">
+                                {appLink(app)}
+                                <span className="text-xs text-muted-foreground">
+                                  {serviceCountLabel(app.services.length)}
+                                </span>
+                              </div>
                             </div>
                           </TableCell>
                           <TableCell>
@@ -1849,16 +1985,41 @@ export function ApplicationManagementPanel({
                           </TableCell>
                           <TableCell>{renderActions(app)}</TableCell>
                         </TableRow>
-                      ))}
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </CardContent>
               </Card>
               <div className="flex min-w-0 flex-col gap-4 md:hidden">
-                {filteredApplications.map((app) => (
-                  <Card key={app.stack}>
+                {filteredApplications.map((app) => {
+                  const isPinned = pinnedSet.has(app.stack);
+                  return (
+                  <Card key={app.stack} className={cn(isPinned && "ring-primary/25")}>
                     <CardHeader>
-                      <CardTitle>{appLink(app)}</CardTitle>
+                      <CardTitle className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => togglePin(app.stack)}
+                          aria-label={
+                            isPinned
+                              ? lang === "zh"
+                                ? `取消置顶 ${app.stack}`
+                                : `Unpin ${app.stack}`
+                              : lang === "zh"
+                                ? `置顶 ${app.stack}`
+                                : `Pin ${app.stack}`
+                          }
+                          aria-pressed={isPinned}
+                          className={cn(
+                            "inline-flex size-5 shrink-0 items-center justify-center rounded outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                            isPinned ? "text-amber-500" : "text-muted-foreground/60 hover:text-foreground",
+                          )}
+                        >
+                          <PinStarIcon filled={isPinned} />
+                        </button>
+                        {appLink(app)}
+                      </CardTitle>
                       <CardDescription>
                         {serviceCountLabel(app.services.length)}
                       </CardDescription>
@@ -1918,7 +2079,8 @@ export function ApplicationManagementPanel({
                     </CardContent>
                     <CardFooter>{renderActions(app)}</CardFooter>
                   </Card>
-                ))}
+                  );
+                })}
               </div>
             </>
           ) : (
