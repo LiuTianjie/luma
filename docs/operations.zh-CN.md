@@ -183,9 +183,9 @@ relay：普通公网客户端通过 HTTPS 连接 Control，节点通过 Agent �
 不要求客户端加入 Tailscale，也不要求节点开放入站端口。
 
 ```sh
-luma node exec bd-prod -- uname -a
-luma node exec --timeout 30 bd-prod -- sh -lc 'uptime; df -h'
-luma node exec --stdin bd-prod -- sha256sum < artifact.tar
+luma node exec worker-1 -- uname -a
+luma node exec --timeout 30 worker-1 -- sh -lc 'uptime; df -h'
+luma node exec --stdin worker-1 -- sha256sum < artifact.tar
 ```
 
 Luma 参数放在节点名前，后续参数按原样作为 argv；管道、变量展开等使用显式

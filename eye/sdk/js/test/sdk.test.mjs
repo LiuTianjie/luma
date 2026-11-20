@@ -82,8 +82,8 @@ test("Dual-Track separation & fetchLater coalescing", () => {
 
   const eye = createLumaEye({
     endpoint: "https://eye.example.com",
-    key: "pk_vibecheck_test",
-    project: "vibecheck",
+    key: "pk_demo_test",
+    project: "demo-app",
     batchWindowMs: 3000,
   });
 
@@ -293,7 +293,7 @@ test("Industry-standard Session: cross-tab localStorage sharing, 30m sliding idl
 });
 
 test("Cross-subdomain root cookie shares actor_id and session_id across apex and www origins", () => {
-  // Simulate shared browser cookie jar for *.itool.tech
+  // Simulate shared browser cookie jar for *.example.com
   const jar = new Map();
   const makeDocWithCookieJar = (hostname) => ({
     referrer: "",
@@ -338,21 +338,21 @@ test("Cross-subdomain root cookie shares actor_id and session_id across apex and
   try {
     globalThis.fetchLater = () => ({ activated: false });
 
-    // Visit 1 on https://itool.tech (Origin A localStorage)
+    // Visit 1 on https://example.com (Origin A localStorage)
     globalThis.localStorage = makeMemoryStorage();
     globalThis.sessionStorage = makeMemoryStorage();
     Object.defineProperty(globalThis, "location", {
-      value: { hostname: "itool.tech", protocol: "https:", pathname: "/", search: "", href: "https://itool.tech/" },
+      value: { hostname: "example.com", protocol: "https:", pathname: "/", search: "", href: "https://example.com/" },
       configurable: true,
       writable: true,
     });
     Object.defineProperty(globalThis, "document", {
-      value: makeDocWithCookieJar("itool.tech"),
+      value: makeDocWithCookieJar("example.com"),
       configurable: true,
       writable: true,
     });
     const apexClient = createLumaEye({
-      endpoint: "https://eye.itool.tech",
+      endpoint: "https://eye.example.com",
       key: "pk_itool",
       project: "itool-tech",
       autoPageviews: false,
@@ -362,21 +362,21 @@ test("Cross-subdomain root cookie shares actor_id and session_id across apex and
     const apexActor = apexClient.getActorId();
     const apexSession = apexClient.getSessionId();
 
-    // Visit 2 on https://www.itool.tech (Origin B isolated empty localStorage, shared root cookie!)
+    // Visit 2 on https://www.example.com (Origin B isolated empty localStorage, shared root cookie!)
     globalThis.localStorage = makeMemoryStorage();
     globalThis.sessionStorage = makeMemoryStorage();
     Object.defineProperty(globalThis, "location", {
-      value: { hostname: "www.itool.tech", protocol: "https:", pathname: "/other", search: "", href: "https://www.itool.tech/other" },
+      value: { hostname: "www.example.com", protocol: "https:", pathname: "/other", search: "", href: "https://www.example.com/other" },
       configurable: true,
       writable: true,
     });
     Object.defineProperty(globalThis, "document", {
-      value: makeDocWithCookieJar("www.itool.tech"),
+      value: makeDocWithCookieJar("www.example.com"),
       configurable: true,
       writable: true,
     });
     const wwwClient = createLumaEye({
-      endpoint: "https://eye.itool.tech",
+      endpoint: "https://eye.example.com",
       key: "pk_itool",
       project: "itool-tech",
       autoPageviews: false,

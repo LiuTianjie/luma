@@ -6,18 +6,18 @@ from luma.control import server
 class OrchestratorNodeMatchingTests(unittest.TestCase):
     def test_nomad_id_wins_over_shared_macos_hostnames(self):
         registered = [
-            {"name": "air2", "hostname": "Mac.lan", "nodeId": "id-air2"},
-            {"name": "air3", "hostname": "Mac.lan", "nodeId": "id-air3"},
+            {"name": "arm-2", "hostname": "Mac.lan", "nodeId": "id-arm-2"},
+            {"name": "arm-3", "hostname": "Mac.lan", "nodeId": "id-arm-3"},
             {"name": "lab", "hostname": "lab"},
         ]
         raw = [
-            {"id": "id-air3", "hostname": "Mac.lan"},
-            {"id": "id-air2", "hostname": "Mac.lan"},
+            {"id": "id-arm-3", "hostname": "Mac.lan"},
+            {"id": "id-arm-2", "hostname": "Mac.lan"},
             {"id": "id-lab", "hostname": "lab"},
             {"id": "id-other", "hostname": "ubuntu"},
         ]
         pairs = [(node["id"], name) for node, name in server._match_orchestrator_nodes(registered, raw)]
-        self.assertEqual(pairs, [("id-air3", "air3"), ("id-air2", "air2"), ("id-lab", "lab"), ("id-other", "")])
+        self.assertEqual(pairs, [("id-arm-3", "arm-3"), ("id-arm-2", "arm-2"), ("id-lab", "lab"), ("id-other", "")])
 
 
 class DashboardIssueTests(unittest.TestCase):

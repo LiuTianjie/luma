@@ -29,7 +29,7 @@ class NativeBuildAgentTests(unittest.TestCase):
         return {
             "repoUrl": "https://git.example.com/acme/app.git", "repo": "acme/app",
             "registryHost": "100.64.0.70:5000", "pushHost": "100.64.0.70:5000",
-            "targetPlatformsByNode": {"air3": "linux/arm64"},
+            "targetPlatformsByNode": {"arm-3": "linux/arm64"},
             "targetPlatformsByRegion": {"home": ["linux/amd64"], "render": ["linux/arm64"]},
         }
 
@@ -38,10 +38,10 @@ class NativeBuildAgentTests(unittest.TestCase):
         (root / "Dockerfile").write_text("FROM scratch\n")
         build = {"context": ".", "x-luma-git-contexts": {"extra": {"lock": "extra.lock.json"}}}
         if compose:
-            (root / "luma.compose.yml").write_text("name: app\nregion: home\nservices:\n  web:\n    node: air3\n")
+            (root / "luma.compose.yml").write_text("name: app\nregion: home\nservices:\n  web:\n    node: arm-3\n")
             (root / "docker-compose.yml").write_text(yaml.safe_dump({"services": {"web": {"build": build}, "db": {"image": "postgres:16"}}}))
         else:
-            (root / ".luma.yml").write_text(yaml.safe_dump({"name": "app", "node": "air3", "region": "home", "build": build}))
+            (root / ".luma.yml").write_text(yaml.safe_dump({"name": "app", "node": "arm-3", "region": "home", "build": build}))
 
     def test_plan_resolves_repository_and_compose_placement_without_building_or_fetching_extra_sources(self):
         for compose in (False, True):
@@ -172,20 +172,20 @@ class NativeBuildRoutingTests(unittest.TestCase):
         self.addCleanup(env.stop)
         (root / "luma.yaml").write_text("providers: {}\n")
         state = init_state(domain="luma.example.com", cluster_id="native-test", overwrite=True)
-        state["build"] = {"nodes": ["builder", "air3"], "defaultNode": "builder",
+        state["build"] = {"nodes": ["builder", "arm-3"], "defaultNode": "builder",
                           "registryHost": "100.64.0.70:5000", "pushHost": "100.64.0.70:5000"}
         state["nodes"] = {
             name: {"name": name, "region": region, "nomadStatus": "ready",
                    "agent": {"status": "ready", "os": os_name, "arch": arch, "capabilities": CAPABILITIES}}
-            for name, region, os_name, arch in (("builder", "home", "linux", "amd64"), ("air3", "render", "darwin", "arm64"))
+            for name, region, os_name, arch in (("builder", "home", "linux", "amd64"), ("arm-3", "render", "darwin", "arm64"))
         }
         save_state(state)
         self.token = state["deployToken"]
 
     def test_offline_native_candidate_is_selected_and_undeclared_nodes_are_not(self):
         state = load_state()
-        state["nodes"]["air3"]["agent"]["status"] = "offline"
-        self.assertEqual(srv._select_native_build_node(state, ["linux/arm64"], fallback="builder", required=[PLAN]), ("air3", True))
+        state["nodes"]["arm-3"]["agent"]["status"] = "offline"
+        self.assertEqual(srv._select_native_build_node(state, ["linux/arm64"], fallback="builder", required=[PLAN]), ("arm-3", True))
         state["build"]["nodes"] = ["builder"]
         with self.assertRaisesRegex(LumaError, "no declared native builder"):
             srv._select_native_build_node(state, ["linux/arm64"], fallback="builder", required=[PLAN])
@@ -197,7 +197,7 @@ class NativeBuildRoutingTests(unittest.TestCase):
         self.assertFalse(load_state().get("agentTasks"))
 
     def test_old_local_cli_is_blocked_before_arm_build_and_result_must_confirm_enforcement(self):
-        body = {"repoUrl": "https://git.example.com/acme/local.git", "targetNode": "air3"}
+        body = {"repoUrl": "https://git.example.com/acme/local.git", "targetNode": "arm-3"}
         with self.assertRaisesRegex(LumaError, "update it before building ARM"):
             srv.handle_local_build_prepare(self.token, body)
         self.assertFalse(load_state().get("buildRuns"))
@@ -225,6 +225,6 @@ class NativeBuildRoutingTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 args = build_parser().parse_args(["--no-env", "build", "retry", "build-1"])
                 args._workflow_retry_run = {"request": {"repoUrl": "https://git.example.com/acme/app.git",
-                                                       "buildNode": "air3", "buildNodeMode": mode}}
+                                                       "buildNode": "arm-3", "buildNodeMode": mode}}
                 fields = comparison_fields(validate_recipe(make_recipe(args)))
-                self.assertEqual(fields.get("build_node"), None if mode == "auto" else "air3")
+                self.assertEqual(fields.get("build_node"), None if mode == "auto" else "arm-3")

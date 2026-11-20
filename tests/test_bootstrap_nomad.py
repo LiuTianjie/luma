@@ -532,12 +532,12 @@ class NomadBootstrapTests(unittest.TestCase):
                         {
                             "ID": "node-manager",
                             "Status": "ready",
-                            "Address": "100.106.154.3",
+                            "Address": "100.64.0.11",
                         },
                         {
                             "ID": "node-cn-2",
                             "Status": "ready",
-                            "Address": "100.64.29.91",
+                            "Address": "100.64.0.13",
                         },
                         {
                             "ID": "node-down",
@@ -556,11 +556,11 @@ class NomadBootstrapTests(unittest.TestCase):
         self.assertEqual(result, "Nomad Tailscale service metadata applied to 2 ready node(s)")
         commands = [call.args[0] for call in remote.run_result.call_args_list[1:]]
         self.assertIn(
-            "nomad node meta apply -node-id node-manager luma_tailscale_ip=100.106.154.3",
+            "nomad node meta apply -node-id node-manager luma_tailscale_ip=100.64.0.11",
             commands,
         )
         self.assertIn(
-            "nomad node meta apply -node-id node-cn-2 luma_tailscale_ip=100.64.29.91",
+            "nomad node meta apply -node-id node-cn-2 luma_tailscale_ip=100.64.0.13",
             commands,
         )
 
@@ -574,7 +574,7 @@ class NomadBootstrapTests(unittest.TestCase):
                         {
                             "ID": "node-lab",
                             "Status": "ready",
-                            "Address": "100.69.154.50",
+                            "Address": "100.64.0.14",
                         }
                     ]
                 ),
@@ -590,12 +590,12 @@ class NomadBootstrapTests(unittest.TestCase):
         remote = Mock()
         remote.sudo_result.return_value = Mock(code=0, output="ready\n")
 
-        result = verify_local_nomad_node(remote, http_addrs=["100.69.154.50"])
+        result = verify_local_nomad_node(remote, http_addrs=["100.64.0.14"])
 
         self.assertEqual(result, "Nomad agent ready")
         command = remote.sudo_result.call_args.args[0]
         self.assertIn("luma.nomad_admin local-info --address http://127.0.0.1:4646", command)
-        self.assertIn("luma.nomad_admin local-info --address http://100.69.154.50:4646", command)
+        self.assertIn("luma.nomad_admin local-info --address http://100.64.0.14:4646", command)
 
     def test_install_docker_repairs_known_bad_apt_mirror(self):
         remote = Mock()

@@ -68,11 +68,11 @@ curl -fsS "http://127.0.0.1:${CORE_PORT}/healthz" >/dev/null
 export LUMA_EYE_URL="http://127.0.0.1:${CORE_PORT}"
 export LUMA_EYE_ADMIN_TOKEN="$ADMIN_TOK"
 
-echo "[e2e] Provisioning project vibecheck..."
-PROJ_JSON="$(./bin/luma-eye projects ensure vibecheck --origins https://vibecheck.itool.tech --json)"
+echo "[e2e] Provisioning project demo-app..."
+PROJ_JSON="$(./bin/luma-eye projects ensure demo-app --origins https://demo.example.com --json)"
 PK="$(printf '%s' "$PROJ_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["project"]["public_key"])')"
 DSN_ID="$(printf '%s' "$PROJ_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["project"]["dsn_id"])')"
-echo "[e2e] Project vibecheck provisioned (dsn_id=$DSN_ID, key=$PK)"
+echo "[e2e] Project demo-app provisioned (dsn_id=$DSN_ID, key=$PK)"
 
 echo "[e2e] Uploading SourceMap v3..."
 mkdir -p "${TMP_DIR}/maps"
@@ -86,7 +86,7 @@ cat > "${TMP_DIR}/maps/index-abc.js.map" <<'EOF'
   "mappings": "AAGAA"
 }
 EOF
-./bin/luma-eye sourcemaps upload --project vibecheck --release v1.0.0 --prefix assets/ "${TMP_DIR}/maps"
+./bin/luma-eye sourcemaps upload --project demo-app --release v1.0.0 --prefix assets/ "${TMP_DIR}/maps"
 
 echo "[e2e] Starting luma-eye Edge on :$EDGE_PORT -> relaying Zstd batches to Core..."
 LUMA_EYE_MODE=edge \
@@ -112,16 +112,16 @@ TRACE_ID="0123456789abcdef0123456789abcdef"
 
 curl -fsS -X POST "http://127.0.0.1:${EDGE_PORT}/_e/b" \
   -H "Content-Type: text/plain;charset=UTF-8" \
-  -H "Origin: https://vibecheck.itool.tech" \
+  -H "Origin: https://demo.example.com" \
   -d "{
     \"key\": \"${PK}\",
-    \"project\": \"vibecheck\",
+    \"project\": \"demo-app\",
     \"track\": \"normal\",
     \"env\": \"production\",
     \"release\": \"v1.0.0\",
     \"actor_id\": \"u_e2e_1\",
     \"session_id\": \"s_e2e_1\",
-    \"page_url\": \"https://vibecheck.itool.tech/\",
+    \"page_url\": \"https://demo.example.com/\",
     \"events\": [
       {\"ts\": $((NOW_SEC - 10)), \"type\": \"pageview\", \"name\": \"pageview\", \"page_path\": \"/\", \"duration_ms\": 2100},
       {\"ts\": $((NOW_SEC - 5)), \"type\": \"custom\", \"name\": \"upload_code\", \"page_path\": \"/scan\"},
@@ -138,10 +138,10 @@ curl -fsS -X POST "http://127.0.0.1:${EDGE_PORT}/_e/b" \
 echo "[e2e] Sending Track 2 urgent crash with Ring Buffer breadcrumbs via Edge..."
 curl -fsS -X POST "http://127.0.0.1:${EDGE_PORT}/_e/b" \
   -H "Content-Type: text/plain;charset=UTF-8" \
-  -H "Origin: https://vibecheck.itool.tech" \
+  -H "Origin: https://demo.example.com" \
   -d "{
     \"key\": \"${PK}\",
-    \"project\": \"vibecheck\",
+    \"project\": \"demo-app\",
     \"track\": \"urgent\",
     \"env\": \"production\",
     \"release\": \"v1.0.0\",
@@ -152,7 +152,7 @@ curl -fsS -X POST "http://127.0.0.1:${EDGE_PORT}/_e/b" \
       \"level\": \"error\",
       \"type\": \"RangeError\",
       \"message\": \"Invalid array length\",
-      \"stack\": \"RangeError: Invalid array length\\n    at parseReport (https://vibecheck.itool.tech/assets/other.js:12:4)\",
+      \"stack\": \"RangeError: Invalid array length\\n    at parseReport (https://demo.example.com/assets/other.js:12:4)\",
       \"trace_id\": \"${TRACE_ID}\",
       \"breadcrumbs\": [
         {\"ts\": $((NOW_SEC - 4)), \"category\": \"ui.click\", \"level\": \"info\", \"message\": \"button#upload\"},
@@ -177,7 +177,7 @@ ev = {
             "value": "Cannot read properties of null",
             "stacktrace": {
                 "frames": [{
-                    "filename": "https://vibecheck.itool.tech/assets/index-abc.js",
+                    "filename": "https://demo.example.com/assets/index-abc.js",
                     "function": "t",
                     "lineno": 1,
                     "colno": 1,
@@ -195,12 +195,12 @@ sys.stdout.buffer.write(gzip.compress((hdr + "\n" + item_hdr + "\n" + ev_raw + "
 PY
 
 curl -fsS -X POST "http://127.0.0.1:${EDGE_PORT}/api/${DSN_ID}/envelope/?sentry_key=${PK}" \
-  -H "Origin: https://vibecheck.itool.tech" \
+  -H "Origin: https://demo.example.com" \
   --data-binary "@${TMP_DIR}/sentry.env.gz" >/dev/null
 
 echo "[e2e] Waiting for Edge Zstd Relay -> Core -> ClickHouse flush..."
 for _ in $(seq 1 30); do
-  STATS_JSON="$(./bin/luma-eye stats vibecheck --since 24h --json || true)"
+  STATS_JSON="$(./bin/luma-eye stats demo-app --since 24h --json || true)"
   ERR_CNT="$(printf '%s' "$STATS_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("error_count",0))' 2>/dev/null || echo 0)"
   PV_CNT="$(printf '%s' "$STATS_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("pageviews",0))' 2>/dev/null || echo 0)"
   if [[ "$ERR_CNT" -ge 2 && "$PV_CNT" -ge 1 ]]; then
@@ -210,11 +210,11 @@ for _ in $(seq 1 30); do
 done
 
 echo "[e2e] Verifying stats, funnel, retention, symbolicated issues + breadcrumbs, logs, console, SDK, and Grafana JSON..."
-STATS_JSON="$(./bin/luma-eye stats vibecheck --since 24h --json)"
-FUNNEL_JSON="$(./bin/luma-eye funnel vibecheck --steps "pageview,upload_code,scan_complete" --window 3600 --since 7d --json)"
-RET_JSON="$(./bin/luma-eye retention vibecheck --days 7 --json)"
-ISSUES_JSON="$(./bin/luma-eye issues vibecheck --since 7d --status open --json)"
-LOGS_JSON="$(./bin/luma-eye logs vibecheck --trace "$TRACE_ID" --since 1h --json)"
+STATS_JSON="$(./bin/luma-eye stats demo-app --since 24h --json)"
+FUNNEL_JSON="$(./bin/luma-eye funnel demo-app --steps "pageview,upload_code,scan_complete" --window 3600 --since 7d --json)"
+RET_JSON="$(./bin/luma-eye retention demo-app --days 7 --json)"
+ISSUES_JSON="$(./bin/luma-eye issues demo-app --since 7d --status open --json)"
+LOGS_JSON="$(./bin/luma-eye logs demo-app --trace "$TRACE_ID" --since 1h --json)"
 
 python3 - "$STATS_JSON" "$FUNNEL_JSON" "$RET_JSON" "$ISSUES_JSON" "$LOGS_JSON" <<'PY'
 import json, sys
@@ -244,7 +244,7 @@ PY
 FOUND_SYM=0
 FOUND_BC=0
 for fp in $(printf '%s' "$ISSUES_JSON" | python3 -c 'import sys,json; [print(i["fingerprint"]) for i in json.load(sys.stdin)["issues"]]'); do
-  DETAIL="$(./bin/luma-eye issues vibecheck --detail "$fp" --json)"
+  DETAIL="$(./bin/luma-eye issues demo-app --detail "$fp" --json)"
   CHECK_RES="$(printf '%s' "$DETAIL" | python3 -c '
 import sys, json
 d = json.load(sys.stdin)
@@ -264,6 +264,6 @@ done
 
 curl -fsS "http://127.0.0.1:${CORE_PORT}/console/" | grep -q "Luma Eye"
 curl -fsS "http://127.0.0.1:${EDGE_PORT}/_e/eye.js" | grep -q "LumaEye"
-./bin/luma-eye grafana render --project vibecheck | grep -q '"luma-app:vibecheck"'
+./bin/luma-eye grafana render --project demo-app | grep -q '"luma-app:demo-app"'
 
 echo "[e2e] SUCCESS: Full Split Edge -> Zstd Relay -> Core -> ClickHouse + SourceMap + Ring Buffer E2E passed!"

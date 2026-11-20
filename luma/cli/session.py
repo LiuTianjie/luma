@@ -482,7 +482,7 @@ def _docker_proxy_no_proxy_fix(proxy: Dict[str, Any]) -> str:
     if not http_proxy and not https_proxy:
         return ""
     no_proxy = str(proxy.get("noProxy") or proxy.get("NoProxy") or "").lower()
-    expected = ["localhost", "127.0.0.1", "gcode.gaojiua.com"]
+    expected = ["localhost", "127.0.0.1"]
     missing = [item for item in expected if item not in no_proxy]
     if not missing:
         return ""

@@ -462,7 +462,7 @@ class ProductConfigTests(unittest.TestCase):
                                             {"url": "https://bad.mirror", "ok": False, "message": "DNS lookup failed"},
                                             {"url": "https://ok.mirror", "ok": True, "message": "reachable"},
                                         ],
-                                        "proxy": {"http": "", "https": "", "noProxy": "localhost,gcode.gaojiua.com"},
+                                        "proxy": {"http": "", "https": "", "noProxy": "localhost,git.example.com"},
                                     },
                                     "nomad": {"dockerDriver": {"pullActivityTimeout": "30m"}},
                                     "recentImagePullErrors": ["image pull aborted due to inactivity"],
@@ -580,7 +580,7 @@ class ProductConfigTests(unittest.TestCase):
         completed = Mock(returncode=0, stdout="installer ok\nLuma version: 0.1.222\n")
         with patch("luma.agent.subprocess.run", return_value=completed), patch("luma.agent.LocalExecutor", return_value=executor), patch(
             "luma.agent.node_agent_os", return_value="darwin"
-        ), patch("luma.agent._installed_luma_executable", return_value="/Users/tao/.local/bin/luma"):
+        ), patch("luma.agent._installed_luma_executable", return_value="/Users/alice/.local/bin/luma"):
             result = update_luma_install(install_ref="main", config_path=Path("/opt/luma/node-agent/agent.json"))
 
         self.assertFalse(result["restartAgent"])
@@ -588,7 +588,7 @@ class ProductConfigTests(unittest.TestCase):
         service_command = executor.sudo.call_args_list[0].args[0]
         self.assertIn("sh -c", service_command)
         self.assertIn("( sleep ${LUMA_AGENT_RELOAD_DELAY_SECONDS:-20};", service_command)
-        self.assertIn("/Users/tao/.local/bin/luma", service_command)
+        self.assertIn("/Users/alice/.local/bin/luma", service_command)
         self.assertIn("launchctl bootout system/io.luma.node-agent", service_command)
 
     def test_node_agent_update_reuses_current_user_install_layout_for_root_launchd(self):
@@ -597,26 +597,26 @@ class ProductConfigTests(unittest.TestCase):
         run = Mock(return_value=completed)
         with patch("luma.agent.subprocess.run", run), patch("luma.agent.LocalExecutor", return_value=executor), patch(
             "luma.agent.node_agent_os", return_value="darwin"
-        ), patch("sys.argv", ["/Users/mini/.local/share/luma/venv/bin/luma"]), patch.dict(
+        ), patch("sys.argv", ["/Users/bob/.local/share/luma/venv/bin/luma"]), patch.dict(
             os.environ, {"HOME": "/var/root", "LUMA_AGENT_EXECUTABLE": ""}, clear=False
         ):
             result = update_luma_install(install_ref="main", config_path=Path("/opt/luma/node-agent/agent.json"))
 
         self.assertFalse(result["restartAgent"])
         install_env = run.call_args.kwargs["env"]
-        self.assertEqual(install_env["LUMA_USER_HOME"], "/Users/mini")
-        self.assertEqual(install_env["LUMA_INSTALL_HOME"], "/Users/mini/.local/share/luma")
-        self.assertEqual(install_env["LUMA_BIN_DIR"], "/Users/mini/.local/bin")
+        self.assertEqual(install_env["LUMA_USER_HOME"], "/Users/bob")
+        self.assertEqual(install_env["LUMA_INSTALL_HOME"], "/Users/bob/.local/share/luma")
+        self.assertEqual(install_env["LUMA_BIN_DIR"], "/Users/bob/.local/bin")
         service_command = executor.sudo.call_args_list[0].args[0]
-        self.assertIn("/Users/mini/.local/bin/luma", service_command)
+        self.assertIn("/Users/bob/.local/bin/luma", service_command)
         self.assertNotIn("/var/root/.local/bin/luma", service_command)
 
     def test_install_layout_from_executable_supports_venv_and_shim_paths(self):
-        venv_layout = _install_layout_from_executable("/Users/tao/.local/share/luma/venv/bin/luma")
-        shim_layout = _install_layout_from_executable("/Users/tao/.local/bin/luma")
+        venv_layout = _install_layout_from_executable("/Users/alice/.local/share/luma/venv/bin/luma")
+        shim_layout = _install_layout_from_executable("/Users/alice/.local/bin/luma")
 
-        self.assertEqual(tuple(str(part) for part in venv_layout or ()), ("/Users/tao", "/Users/tao/.local/share/luma", "/Users/tao/.local/bin"))
-        self.assertEqual(tuple(str(part) for part in shim_layout or ()), ("/Users/tao", "/Users/tao/.local/share/luma", "/Users/tao/.local/bin"))
+        self.assertEqual(tuple(str(part) for part in venv_layout or ()), ("/Users/alice", "/Users/alice/.local/share/luma", "/Users/alice/.local/bin"))
+        self.assertEqual(tuple(str(part) for part in shim_layout or ()), ("/Users/alice", "/Users/alice/.local/share/luma", "/Users/alice/.local/bin"))
 
     def test_node_watchdog_script_checks_nomad_server_rpc(self):
         script = _node_tailscale_watchdog_script("linux")
@@ -885,14 +885,14 @@ class ProductConfigTests(unittest.TestCase):
             executor.return_value.sudo.return_value = ""
             update_luma_install(
                 install_ref="v0.1.235",
-                proxy="http://100.106.154.3:7890",
+                proxy="http://100.64.0.11:7890",
             )
 
         env = run.call_args.kwargs["env"]
-        self.assertEqual(env["HTTP_PROXY"], "http://100.106.154.3:7890")
-        self.assertEqual(env["HTTPS_PROXY"], "http://100.106.154.3:7890")
-        self.assertEqual(env["http_proxy"], "http://100.106.154.3:7890")
-        self.assertEqual(env["https_proxy"], "http://100.106.154.3:7890")
+        self.assertEqual(env["HTTP_PROXY"], "http://100.64.0.11:7890")
+        self.assertEqual(env["HTTPS_PROXY"], "http://100.64.0.11:7890")
+        self.assertEqual(env["http_proxy"], "http://100.64.0.11:7890")
+        self.assertEqual(env["https_proxy"], "http://100.64.0.11:7890")
         self.assertIn("100.64.0.0/10", env["NO_PROXY"].split(","))
         self.assertEqual(env["NO_PROXY"], env["no_proxy"])
 
@@ -908,14 +908,14 @@ class ProductConfigTests(unittest.TestCase):
             executor.return_value.sudo.return_value = ""
             result = update_luma_install(
                 install_ref="v0.1.236",
-                proxy="http://100.106.154.3:7890",
+                proxy="http://100.64.0.11:7890",
                 progress=events.append,
             )
 
         self.assertEqual(run.call_count, 2)
         first_env = run.call_args_list[0].kwargs["env"]
         direct_env = run.call_args_list[1].kwargs["env"]
-        self.assertEqual(first_env["HTTPS_PROXY"], "http://100.106.154.3:7890")
+        self.assertEqual(first_env["HTTPS_PROXY"], "http://100.64.0.11:7890")
         for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
             self.assertNotIn(key, direct_env)
         self.assertEqual(result["installedVersion"], "0.1.236")
@@ -933,7 +933,7 @@ class ProductConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(LumaError, "without credentials"):
                 update_luma_install(
                     install_ref="v0.1.235",
-                    proxy="http://user:secret@100.106.154.3:7890",
+                    proxy="http://user:secret@100.64.0.11:7890",
                 )
         run.assert_not_called()
 
@@ -1020,7 +1020,7 @@ class ProductConfigTests(unittest.TestCase):
             Mock(code=0, output='["https://bad.mirror","https://ok.mirror"]\n'),
             Mock(code=0, output='{"url":"https://bad.mirror","ok":false,"message":"DNS lookup failed"}\n'),
             Mock(code=0, output='{"url":"https://ok.mirror","ok":true,"message":"reachable"}\n'),
-            Mock(code=0, output="HTTPProxy=http://proxy:7890 HTTPSProxy=http://proxy:7890 NoProxy=localhost,gcode.gaojiua.com\n"),
+            Mock(code=0, output="HTTPProxy=http://proxy:7890 HTTPSProxy=http://proxy:7890 NoProxy=localhost,git.example.com\n"),
             Mock(code=0, output='pull_activity_timeout = "30m"\n'),
             Mock(code=0, output="Jul 04 nomad[1]: image pull aborted due to inactivity\nJul 04 nomad[1]: context canceled\n"),
             Mock(
@@ -1489,7 +1489,7 @@ class ProductConfigTests(unittest.TestCase):
         remote.sudo.return_value = ""
 
         result = configure_tailscale_watchdog(
-            remote, peers=["100.69.154.50", "not-a-tailnet-address"]
+            remote, peers=["100.64.0.14", "not-a-tailnet-address"]
         )
 
         self.assertEqual(result, "Tailscale watchdog installed")
@@ -1499,7 +1499,7 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("tailscale ping --timeout=3s --c 2", command)
         self.assertIn("port=${LUMA_TAILSCALE_WATCHDOG_PORT:-0}", command)
         self.assertIn(
-            "LUMA_TAILSCALE_WATCHDOG_PEERS=100.69.154.50", command
+            "LUMA_TAILSCALE_WATCHDOG_PEERS=100.64.0.14", command
         )
         self.assertNotIn("not-a-tailnet-address", command)
         self.assertIn('log "tailnet ping failed: $addr"', command)

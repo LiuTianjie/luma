@@ -1844,7 +1844,7 @@ _TEMPLATE = r"""<!doctype html>
         <div id="token-error" class="banner-error" role="alert" hidden></div>
         <div class="field">
           <label for="tok-name">Runner 名称</label>
-          <input id="tok-name" class="input" placeholder="例如 x86-builder、m4、air3" required autofocus>
+          <input id="tok-name" class="input" placeholder="例如 x86-builder、arm64-builder" required autofocus>
         </div>
         <div class="field-row">
           <div class="field">

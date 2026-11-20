@@ -242,7 +242,7 @@ def build_parser() -> argparse.ArgumentParser:
     rt_p = sub.add_parser("runner-token", help="Manage runner registration tokens")
     rt_sub = rt_p.add_subparsers(dest="rt_cmd", required=True)
     rt_create = rt_sub.add_parser("create", help="Issue a token for a new runner")
-    rt_create.add_argument("name", help="Runner name, e.g. m4, air3, cloud-builder-1")
+    rt_create.add_argument("name", help="Runner name, e.g. x86-builder, arm64-builder, cloud-builder-1")
     rt_create.add_argument("--weight", type=int, default=100, help="Scheduling priority weight (higher = preferred when idle)")
     rt_create.add_argument("--concurrency", type=int, default=1, help="Max concurrent builds on this runner")
     rt_create.add_argument("--cache-mode", choices=("read-write", "read-only", "local-only"), default="read-write")

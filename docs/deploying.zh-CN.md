@@ -101,7 +101,7 @@ Luma 会根据目标区域的节点决定镜像架构：ARM 节点得到 `linux/
 先升级 Control 和构建节点 agent，再同时声明 AMD64 与 ARM64 构建节点：
 
 ```bash
-luma build config --node builder --node air3 --default-node builder \
+luma build config --node builder --node arm64-builder --default-node builder \
   --registry-host 100.64.0.70:5000 --push-host 100.64.0.70:5000
 ```
 

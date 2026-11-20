@@ -69,7 +69,7 @@ class RegistryAndCacheNamingTests(unittest.TestCase):
     def test_http_vs_https_registry_detection(self) -> None:
         self.assertTrue(is_http_registry("localhost:5000"))
         self.assertTrue(is_http_registry("127.0.0.1:5000"))
-        self.assertTrue(is_http_registry("100.66.177.70:5000"))
+        self.assertTrue(is_http_registry("100.64.0.10:5000"))
         self.assertTrue(is_http_registry("192.168.1.20:5000"))
         self.assertFalse(is_http_registry("crpi-abc123.cn-beijing.personal.cr.aliyuncs.com"))
         self.assertFalse(is_http_registry("ghcr.io"))
@@ -462,8 +462,8 @@ class RunnerBuildKitExecutionTests(unittest.TestCase):
         self.assertNotIn("http = true", https_toml)
 
         # Tailscale HTTP registry gets explicit http = true stanza
-        http_toml = _render_buildkitd_toml(http_hosts=["100.66.177.70:5000"], cache_keep_gb=10)
-        self.assertIn('[registry."100.66.177.70:5000"]', http_toml)
+        http_toml = _render_buildkitd_toml(http_hosts=["100.64.0.10:5000"], cache_keep_gb=10)
+        self.assertIn('[registry."100.64.0.10:5000"]', http_toml)
         self.assertIn("http = true", http_toml)
         self.assertNotIn('[registry."docker.io"]', http_toml)
 
@@ -641,7 +641,7 @@ class RunnerBuildKitExecutionTests(unittest.TestCase):
                     {
                         "repoUrl": "https://github.com/acme/demo.git",
                         "repoSlug": "acme/demo",
-                        "registryHost": "100.66.177.70:5000",
+                        "registryHost": "100.64.0.10:5000",
                         "platforms": ["linux/arm64"],
                     },
                     docker_bin="docker",
@@ -851,7 +851,7 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
             with self.assertRaises(BuildError):
                 normalize_repo_url(bad_url)
 
-        for bad_host in ('100.66.177.70:5000"\n[evil]', "host/with/slash", "host:99999"):
+        for bad_host in ('100.64.0.10:5000"\n[evil]', "host/with/slash", "host:99999"):
             with self.assertRaises(BuildError):
                 normalize_registry_host(bad_host)
 
@@ -861,7 +861,7 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
             app = create_app(
                 data_dir=data_dir,
                 admin_token=ADMIN_TOKEN,
-                default_registry_host="100.66.177.70:5000",
+                default_registry_host="100.64.0.10:5000",
                 start_worker=False,
             )
             client = TestClient(app)
@@ -908,7 +908,7 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
             done = client.post(
                 "/v1/runner/complete",
                 headers={"Authorization": f"Bearer {rtok}"},
-                json={"buildId": b_dep, "status": "succeeded", "result": {"image": "100.66.177.70:5000/acme/svc:1"}},
+                json={"buildId": b_dep, "status": "succeeded", "result": {"image": "100.64.0.10:5000/acme/svc:1"}},
             )
             self.assertEqual(done.status_code, 200)
             claimed = app.state.store.claim_next_deploy()
@@ -919,7 +919,7 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
             app2 = create_app(
                 data_dir=data_dir,
                 admin_token=ADMIN_TOKEN,
-                default_registry_host="100.66.177.70:5000",
+                default_registry_host="100.64.0.10:5000",
                 start_worker=False,
             )
             after = app2.state.store.get_build(b_dep)
@@ -947,8 +947,8 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
                     builder_name="luma-runner",
                     buildx_state_dir=root / "bx",
                     docker_config=root / "dc",
-                    push_host="100.66.177.70:5000",
-                    pull_host="100.66.177.70:5000",
+                    push_host="100.64.0.10:5000",
+                    pull_host="100.64.0.10:5000",
                     image_repo="acme/app",
                     tag="t1",
                     context_dir=root,
@@ -981,7 +981,7 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
             app = create_app(
                 data_dir=Path(tmp) / "data",
                 admin_token=ADMIN_TOKEN,
-                default_registry_host="100.66.177.70:5000",
+                default_registry_host="100.64.0.10:5000",
                 start_worker=False,
             )
             client = TestClient(app)
@@ -1021,8 +1021,8 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
                     buildx_state_dir=bx_dir,
                     docker_config=dc_dir,
                     proxy="",
-                    no_proxy="localhost,100.66.177.70:5000",
-                    http_hosts=["100.66.177.70:5000"],
+                    no_proxy="localhost,100.64.0.10:5000",
+                    http_hosts=["100.64.0.10:5000"],
                     cache_keep_gb=20,
                     max_parallelism=0,
                 )
@@ -1041,15 +1041,15 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
                 )
                 self.assertTrue(any("--keep-state" in c for c in calls))
 
-                # 3) Switching back to 100.66.177.70:5000 is now a 100% cache-warm no-op (only inspect)!
+                # 3) Switching back to 100.64.0.10:5000 is now a 100% cache-warm no-op (only inspect)!
                 calls.clear()
                 _ensure_runner_buildx(
                     docker_bin="docker",
                     buildx_state_dir=bx_dir,
                     docker_config=dc_dir,
                     proxy="",
-                    no_proxy="localhost,100.66.177.70:5000",
-                    http_hosts=["100.66.177.70:5000"],
+                    no_proxy="localhost,100.64.0.10:5000",
+                    http_hosts=["100.64.0.10:5000"],
                     cache_keep_gb=20,
                     max_parallelism=0,
                 )
@@ -1061,7 +1061,7 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
             app = create_app(
                 data_dir=Path(tmp) / "data",
                 admin_token=ADMIN_TOKEN,
-                default_registry_host="100.66.177.70:5000",
+                default_registry_host="100.64.0.10:5000",
                 start_worker=False,
             )
             client = TestClient(app)
@@ -1332,7 +1332,7 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
                 admin_token=ADMIN_TOKEN,
                 control_url="https://luma.example.com",
                 control_deploy_token="ctl-tok",
-                default_registry_host="100.66.177.70:5000",
+                default_registry_host="100.64.0.10:5000",
                 affinity_wait_seconds=0,
                 start_worker=False,
             )
@@ -1426,7 +1426,7 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
                 admin_token=ADMIN_TOKEN,
                 control_url="https://luma.example.com",
                 control_deploy_token="ctl-tok",
-                default_registry_host="100.66.177.70:5000",
+                default_registry_host="100.64.0.10:5000",
                 start_worker=False,
             )
             client = TestClient(app)
@@ -1514,7 +1514,7 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
         self.assertIn(".aliyuncs.com", acr_entries)
         merged = merge_no_proxy("100.64.0.0/10,git.corp.internal", *acr_entries)
         self.assertTrue(_url_bypasses_proxy("https://bucket.oss-cn-beijing.aliyuncs.com/layer", merged))
-        self.assertTrue(_url_bypasses_proxy("http://100.66.177.70:3000/org/repo.git", merged))
+        self.assertTrue(_url_bypasses_proxy("http://100.64.0.10:3000/org/repo.git", merged))
         self.assertTrue(_url_bypasses_proxy("https://git.corp.internal/org/repo.git", merged))
         self.assertFalse(_url_bypasses_proxy("https://github.com/org/repo.git", merged))
 
@@ -1531,7 +1531,7 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
             "luma_build.runner.subprocess.check_output", side_effect=["abcdef123456\n", "a" * 40 + "\n"]
         ):
             _clone_repo(
-                repo_url="http://100.66.177.70:3000/acme/internal.git",
+                repo_url="http://100.64.0.10:3000/acme/internal.git",
                 ref="main",
                 dest=Path(tmp) / "repo",
                 git_auth=None,
@@ -1643,7 +1643,7 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
             client.post(
                 "/v1/credentials/git",
                 headers=hdr,
-                json={"id": "http-lan", "host": "http://100.66.177.70:3000", "token": "lan-pat"},
+                json={"id": "http-lan", "host": "http://100.64.0.10:3000", "token": "lan-pat"},
             )
             ok_lan = client.post(
                 "/v1/builds",
@@ -1651,12 +1651,12 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
                 json={"providerId": "http-lan", "repository": "acme/lan-svc", "deploy": False},
             )
             self.assertEqual(ok_lan.status_code, 200, ok_lan.text)
-            self.assertEqual(ok_lan.json()["build"]["repoUrl"], "http://100.66.177.70:3000/acme/lan-svc.git")
+            self.assertEqual(ok_lan.json()["build"]["repoUrl"], "http://100.64.0.10:3000/acme/lan-svc.git")
             self.assertEqual(
                 client.post(
                     "/v1/builds",
                     headers=hdr,
-                    json={"providerId": "http-lan", "repoUrl": "https://100.66.177.70:3000/acme/lan-svc.git", "deploy": False},
+                    json={"providerId": "http-lan", "repoUrl": "https://100.64.0.10:3000/acme/lan-svc.git", "deploy": False},
                 ).status_code,
                 400,
             )
@@ -2025,8 +2025,8 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
                                 "repoUrl": "https://github.com/acme/stack.git",
                                 "repoSlug": "acme/stack",
                                 "ref": "main",
-                                "registryHost": "100.66.177.70:5000",
-                                "pushHost": "100.66.177.70:5000",
+                                "registryHost": "100.64.0.10:5000",
+                                "pushHost": "100.64.0.10:5000",
                                 "platforms": ["linux/amd64"],
                             },
                             docker_bin="docker",
@@ -2125,7 +2125,7 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
         from luma_build.store import BuildStore
 
         with tempfile.TemporaryDirectory() as tmp:
-            store = BuildStore(Path(tmp) / "data", default_registry_host="100.66.177.70:5000")
+            store = BuildStore(Path(tmp) / "data", default_registry_host="100.64.0.10:5000")
             rtok = store.create_runner_token(name="idle-r1")["runnerToken"]
             first = store.poll_and_lease(rtok, {"nativePlatform": "linux/amd64"}, now=1000)
             self.assertIsNone(first["task"])

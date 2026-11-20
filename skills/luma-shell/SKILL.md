@@ -19,11 +19,11 @@ pointless direct-port probe for each command. Commands run as the Agent's OS use
 commonly root. Keep commands within the requested operation.
 
 ```sh
-luma node exec bd-prod -- uname -a
-luma node exec --timeout 30 bd-prod -- sh -lc 'uptime; df -h'
-luma node exec --stdin bd-prod -- sha256sum < artifact.tar
-luma node exec --stdin --timeout 60 bd-prod -- sh -s < inspect.sh
-luma node exec --diagnose bd-prod -- id
+luma node exec worker-1 -- uname -a
+luma node exec --timeout 30 worker-1 -- sh -lc 'uptime; df -h'
+luma node exec --stdin worker-1 -- sha256sum < artifact.tar
+luma node exec --stdin --timeout 60 worker-1 -- sh -s < inspect.sh
+luma node exec --diagnose worker-1 -- id
 ```
 
 Put Luma flags **before the node name**. The remainder is literal executable/argv;

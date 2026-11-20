@@ -9,7 +9,7 @@ import (
 )
 
 func TestGrafanaRenderAndOTLPPayload(t *testing.T) {
-	raw, err := RenderGrafanaDashboard("vibecheck", "victoria")
+	raw, err := RenderGrafanaDashboard("demo-app", "victoria")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,14 +21,14 @@ func TestGrafanaRenderAndOTLPPayload(t *testing.T) {
 	if err := json.Unmarshal(raw, &dash); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(dash.Tags, "luma-app:vibecheck") {
-		t.Fatalf("expected luma-app:vibecheck tag, got %+v", dash.Tags)
+	if !slices.Contains(dash.Tags, "luma-app:demo-app") {
+		t.Fatalf("expected luma-app:demo-app tag, got %+v", dash.Tags)
 	}
 
 	m := NewMetrics()
-	m.RecordEvents("vibecheck", 10, 4)
+	m.RecordEvents("demo-app", 10, 4)
 	prom := m.RenderPrometheus()
-	if !strings.Contains(prom, `luma_eye_events_total{project="vibecheck"} 10`) {
+	if !strings.Contains(prom, `luma_eye_events_total{project="demo-app"} 10`) {
 		t.Fatalf("unexpected prometheus output: %s", prom)
 	}
 

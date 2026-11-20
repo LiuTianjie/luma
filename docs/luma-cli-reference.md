@@ -914,7 +914,7 @@ usage: luma builder token create [-h] [--weight WEIGHT] [--concurrency CONCURREN
 Issue a scoped lbr_... token for a runner
 
 arguments:
-  name                        Runner name, for example x86-builder, m4 or air3
+  name                        Runner name, for example x86-builder or arm64-builder
 
 arguments:
   -h, --help                  show this help message and exit

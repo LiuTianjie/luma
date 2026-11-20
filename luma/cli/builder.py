@@ -282,7 +282,7 @@ def add_parser(
     tok_p = command_fn(bsub, "token", "Issue tokens, list runners and delete runners")
     tok_sub = commands_fn(tok_p, "builder_token_command")
     tok_create = command_fn(tok_sub, "create", "Issue a scoped lbr_... token for a runner")
-    tok_create.add_argument("name", help="Runner name, for example x86-builder, m4 or air3")
+    tok_create.add_argument("name", help="Runner name, for example x86-builder or arm64-builder")
     tok_create.add_argument("--weight", type=int, default=100, help="Scheduling weight when idle, 1-1000 (default: 100)")
     tok_create.add_argument("--concurrency", type=int, default=1, help="Max concurrent builds on this runner, 1-16 (default: 1)")
     tok_create.add_argument(

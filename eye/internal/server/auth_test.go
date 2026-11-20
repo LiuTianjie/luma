@@ -20,7 +20,7 @@ func newTestAuthServer(t *testing.T, dataDir string) *Server {
 	cfg := &config.Config{
 		Mode:          config.ModeAll,
 		ListenAddr:    ":8090",
-		PublicURL:     "https://eye.itool.tech",
+		PublicURL:     "https://eye.example.com",
 		DataDir:       dataDir,
 		AdminToken:    "bootstrap-admin-token-123456",
 		IPSalt:        "test-salt",
@@ -84,7 +84,7 @@ func TestPersistentSessionAndCustomPasswordAcrossServerRestart(t *testing.T) {
 		"new_password": "CloudflareGradePassword!99",
 	})
 	reqPw := httptest.NewRequest(http.MethodPost, "/api/v1/auth/password", bytes.NewReader(pwBody))
-	reqPw.Header.Set("Origin", "https://eye.itool.tech")
+	reqPw.Header.Set("Origin", "https://eye.example.com")
 	reqPw.AddCookie(sessCookie)
 	wPw := httptest.NewRecorder()
 	srv1.Handler().ServeHTTP(wPw, reqPw)
@@ -155,7 +155,7 @@ func TestUnknownPasskeyReturnsHTTP404(t *testing.T) {
 	clientData, _ := json.Marshal(map[string]any{
 		"type":      "webauthn.get",
 		"challenge": opts.Challenge,
-		"origin":    "https://eye.itool.tech",
+		"origin":    "https://eye.example.com",
 	})
 	authData := make([]byte, 37)
 	authData[32] = 0x01 // UP flag set

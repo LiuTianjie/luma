@@ -27,7 +27,7 @@ func TestServerRoutesAuthAndIngest(t *testing.T) {
 		IPSalt:                "test-salt",
 		RelaySecret:           "test-relay",
 		AutoProvisionKey:      "auto-vibe-key",
-		AllowedOriginSuffixes: []string{".itool.tech"},
+		AllowedOriginSuffixes: []string{".example.com"},
 		BatchInterval:         50 * time.Millisecond,
 		BatchSize:             100,
 		QueueCapacity:         256,
@@ -75,7 +75,7 @@ func TestServerRoutesAuthAndIngest(t *testing.T) {
 	}
 
 	// 2. Create project using session cookie
-	projReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/projects", strings.NewReader(`{"slug":"vibecheck","allowed_origins":["https://vibecheck.itool.tech"]}`))
+	projReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/projects", strings.NewReader(`{"slug":"demo-app","allowed_origins":["https://demo.example.com"]}`))
 	projReq.Header.Set("Origin", ts.URL)
 	projReq.AddCookie(cookies[0])
 	projResp, err := http.DefaultClient.Do(projReq)
@@ -98,7 +98,7 @@ func TestServerRoutesAuthAndIngest(t *testing.T) {
 	// 3. Track 1 + Track 2 ingest via text/plain POST /_e/b (zero-preflight)
 	ingestPayload := map[string]any{
 		"key":       projOut.Project.PublicKey,
-		"project":   "vibecheck",
+		"project":   "demo-app",
 		"track":     "urgent",
 		"actor_id":  "u_1",
 		"session_id": "s_1",
@@ -109,7 +109,7 @@ func TestServerRoutesAuthAndIngest(t *testing.T) {
 			{
 				"type":    "TypeError",
 				"message": "undefined click",
-				"stack":   "TypeError: undefined click\n    at onClick (https://vibecheck.itool.tech/assets/app.js:1:100)",
+				"stack":   "TypeError: undefined click\n    at onClick (https://demo.example.com/assets/app.js:1:100)",
 				"breadcrumbs": []map[string]any{
 					{"ts": time.Now().UnixMilli(), "category": "ui.click", "level": "info", "message": "button#go"},
 				},
@@ -119,7 +119,7 @@ func TestServerRoutesAuthAndIngest(t *testing.T) {
 	rawIngest, _ := json.Marshal(ingestPayload)
 	ingReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/_e/b", bytes.NewReader(rawIngest))
 	ingReq.Header.Set("Content-Type", "text/plain;charset=UTF-8")
-	ingReq.Header.Set("Origin", "https://vibecheck.itool.tech")
+	ingReq.Header.Set("Origin", "https://demo.example.com")
 	ingResp, err := http.DefaultClient.Do(ingReq)
 	if err != nil || ingResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("ingest failed: resp=%+v err=%v", ingResp, err)
@@ -151,9 +151,9 @@ func TestServerRoutesAuthAndIngest(t *testing.T) {
 	// Deep client-side routed URLs under /console/* must serve SPA index.html (HTTP 200)
 	for _, deepPath := range []string{
 		"/console/portfolio",
-		"/console/projects/vibecheck/overview",
-		"/console/projects/vibecheck/sessions/s_1",
-		"/console/projects/vibecheck/issues/fp_123",
+		"/console/projects/demo-app/overview",
+		"/console/projects/demo-app/sessions/s_1",
+		"/console/projects/demo-app/issues/fp_123",
 	} {
 		dResp, dErr := http.Get(ts.URL + deepPath)
 		if dErr != nil || dResp.StatusCode != http.StatusOK {
@@ -179,7 +179,7 @@ func TestServerRoutesAuthAndIngest(t *testing.T) {
 	}
 
 	// 7. Timeline endpoint validates missing session_id & actor_id
-	tlReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/timeline?project=vibecheck", nil)
+	tlReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/timeline?project=demo-app", nil)
 	tlReq.AddCookie(cookies[0])
 	tlResp, err := http.DefaultClient.Do(tlReq)
 	if err != nil || tlResp.StatusCode != http.StatusBadRequest {
@@ -191,13 +191,13 @@ func TestServerRoutesAuthAndIngest(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		snap, _, _, _, _, _ := metrics.Snapshot()
-		if snap["vibecheck"].Events >= 1 && snap["vibecheck"].Exceptions >= 2 {
+		if snap["demo-app"].Events >= 1 && snap["demo-app"].Exceptions >= 2 {
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
 	snap, _, _, _, _, _ := metrics.Snapshot()
-	t.Fatalf("expected metrics for vibecheck to record events & exceptions, got %+v", snap["vibecheck"])
+	t.Fatalf("expected metrics for demo-app to record events & exceptions, got %+v", snap["demo-app"])
 }
 
 func TestReactNativeIngestMetadataOverridesAndHermesStack(t *testing.T) {

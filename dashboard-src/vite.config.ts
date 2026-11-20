@@ -505,7 +505,7 @@ export default defineConfig({
           response.end(JSON.stringify({
             registries: [
               { host: "ghcr.io", serverAddress: "ghcr.io", username: "liutianjie", configured: true },
-              { host: "gcode.gaojiua.com:3000", serverAddress: "gcode.gaojiua.com:3000", username: "deploy", configured: true },
+              { host: "git.example.com:3000", serverAddress: "git.example.com:3000", username: "deploy", configured: true },
             ],
           }));
         });
@@ -568,7 +568,7 @@ export default defineConfig({
             json({
               providers: [
                 { id: "github-liutianjie", type: "github", account: "liutianjie", username: "liutianjie", configured: true },
-                { id: "gitea-codex", type: "gitea", account: "codex", username: "codex", baseUrl: "https://gcode.gaojiua.com", configured: true },
+                { id: "gitea-codex", type: "gitea", account: "codex", username: "codex", baseUrl: "https://git.example.com", configured: true },
               ],
             });
             return;
@@ -917,8 +917,8 @@ export default defineConfig({
           const body = await readBody(request);
           const dryRun = body.dryRun !== false;
           const candidates = [
-            { id: "sha256:" + "a".repeat(64), refs: ["registry.internal:5000/vibecheck/api:20260901"], sizeBytes: 4_100_000_000, ageDays: 55.2 },
-            { id: "sha256:" + "b".repeat(64), refs: ["vibecheck-worker:backup-0815"], sizeBytes: 3_900_000_000, ageDays: 71.0 },
+            { id: "sha256:" + "a".repeat(64), refs: ["registry.internal:5000/demo-app/api:20260901"], sizeBytes: 4_100_000_000, ageDays: 55.2 },
+            { id: "sha256:" + "b".repeat(64), refs: ["demo-app-worker:backup-0815"], sizeBytes: 3_900_000_000, ageDays: 71.0 },
             { id: "sha256:" + "c".repeat(64), refs: ["ghcr.io/liutianjie/luma-control:v0.2.15"], sizeBytes: 420_000_000, ageDays: 30.4 },
           ];
           response.statusCode = 200;

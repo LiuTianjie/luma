@@ -55,13 +55,13 @@ class RenderConfigTests(unittest.TestCase):
 
     def test_client_config_has_retry_join_no_server_block(self):
         cfg = nn.render_agent_config(
-            os_name="linux", role="client", tailscale_ip="100.69.154.50",
+            os_name="linux", role="client", tailscale_ip="100.64.0.14",
             region="home", node_name="lab",
             server_addrs=["100.64.0.125:4647"],
         )
         self.assertIn("server_join {", cfg)
         self.assertIn('retry_join = ["100.64.0.125:4647"]', cfg)
-        self.assertIn('luma_tailscale_ip = "100.69.154.50"', cfg)
+        self.assertIn('luma_tailscale_ip = "100.64.0.14"', cfg)
         self.assertNotIn("bootstrap_expect", cfg)
 
     def test_darwin_client_includes_cpu_override(self):

@@ -13,7 +13,7 @@ func TestReplayAssetAndGzipSegmentIngest(t *testing.T) {
 	dir := t.TempDir()
 	srv := newTestAuthServer(t, dir)
 
-	proj, _, err := srv.store.EnsureProject("vibecheck", "VibeCheck", []string{"https://vibecheck.example.com"}, 0)
+	proj, _, err := srv.store.EnsureProject("demo-app", "DemoApp", []string{"https://demo-app.example.com"}, 0)
 	if err != nil {
 		t.Fatalf("EnsureProject: %v", err)
 	}
@@ -40,17 +40,17 @@ func TestReplayAssetAndGzipSegmentIngest(t *testing.T) {
 
 	// 2. Gzipped replay segment upload using CORS-simple text/plain without Content-Encoding header
 	segPayload := map[string]any{
-		"project":           "vibecheck",
+		"project":           "demo-app",
 		"session_id":        "ses_replay_test_01",
 		"actor_id":          "act_01",
 		"seq":               0,
 		"has_full_snapshot": 1,
-		"page_url":          "https://vibecheck.example.com/scan?token=secret999",
+		"page_url":          "https://demo-app.example.com/scan?token=secret999",
 		"viewport_w":        1440,
 		"viewport_h":        900,
 		"events": []map[string]any{
-			{"t": 1, "ts": 1700000000000, "href": "https://vibecheck.example.com/scan", "w": 1440, "h": 900},
-			{"t": 2, "ts": 1700000000010, "href": "https://vibecheck.example.com/scan", "w": 1440, "h": 900, "root": map[string]any{"id": 1, "t": 0}},
+			{"t": 1, "ts": 1700000000000, "href": "https://demo-app.example.com/scan", "w": 1440, "h": 900},
+			{"t": 2, "ts": 1700000000010, "href": "https://demo-app.example.com/scan", "w": 1440, "h": 900, "root": map[string]any{"id": 1, "t": 0}},
 			{"t": 5, "ts": 1700000001200, "x": 420, "y": 310, "tag": "button", "label": "Start Scan"},
 		},
 	}
@@ -62,10 +62,10 @@ func TestReplayAssetAndGzipSegmentIngest(t *testing.T) {
 
 	rIngest := httptest.NewRequest(
 		http.MethodPost,
-		"/_e/r?k="+proj.PublicKey+"&p=vibecheck&s=ses_replay_test_01&seq=0",
+		"/_e/r?k="+proj.PublicKey+"&p=demo-app&s=ses_replay_test_01&seq=0",
 		bytes.NewReader(gzBuf.Bytes()),
 	)
-	rIngest.Header.Set("Origin", "https://vibecheck.example.com")
+	rIngest.Header.Set("Origin", "https://demo-app.example.com")
 	rIngest.Header.Set("Content-Type", "text/plain")
 	rIngest.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/134.0.0.0")
 	wIngest := httptest.NewRecorder()
@@ -77,7 +77,7 @@ func TestReplayAssetAndGzipSegmentIngest(t *testing.T) {
 	// 3. Reject invalid key
 	rBadKey := httptest.NewRequest(
 		http.MethodPost,
-		"/_e/r?k=pk_invalid&p=vibecheck&s=ses_replay_test_01",
+		"/_e/r?k=pk_invalid&p=demo-app&s=ses_replay_test_01",
 		bytes.NewReader(rawJSON),
 	)
 	rBadKey.Header.Set("User-Agent", "Mozilla/5.0 Chrome/134.0")
@@ -88,14 +88,14 @@ func TestReplayAssetAndGzipSegmentIngest(t *testing.T) {
 	}
 
 	// 4. Verify /api/v1/replays/{sessionId} requires admin auth
-	rUnauth := httptest.NewRequest(http.MethodGet, "/api/v1/replays/ses_replay_test_01?project=vibecheck", nil)
+	rUnauth := httptest.NewRequest(http.MethodGet, "/api/v1/replays/ses_replay_test_01?project=demo-app", nil)
 	wUnauth := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(wUnauth, rUnauth)
 	if wUnauth.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for unauthenticated replay query, got %d", wUnauth.Code)
 	}
 
-	rAdmin := httptest.NewRequest(http.MethodGet, "/api/v1/replays/ses_replay_test_01?project=vibecheck", nil)
+	rAdmin := httptest.NewRequest(http.MethodGet, "/api/v1/replays/ses_replay_test_01?project=demo-app", nil)
 	rAdmin.Header.Set("Authorization", "Bearer bootstrap-admin-token-123456")
 	wAdmin := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(wAdmin, rAdmin)

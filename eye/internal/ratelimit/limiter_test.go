@@ -40,7 +40,7 @@ func TestStormSampler(t *testing.T) {
 	now := time.Now().UTC()
 
 	for i := 0; i < 10; i++ {
-		admitted := s.Admit("vibecheck", "fp1", now, "sample")
+		admitted := s.Admit("demo-app", "fp1", now, "sample")
 		if i < 3 && !admitted {
 			t.Fatalf("expected first 3 occurrences to be admitted (i=%d)", i)
 		}

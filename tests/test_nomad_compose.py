@@ -31,7 +31,7 @@ def write_deployment_import_mode(sidecar: str, compose: str):
     return load_compose_deployment(sc, allow_build_services=True)
 
 
-GRANARY_COMPOSE = """
+LEDGER_COMPOSE = """
 services:
   mysql:
     image: mysql:8.4.9
@@ -52,7 +52,7 @@ volumes:
   mysql_data:
 """
 
-GRANARY_SIDECAR = """
+LEDGER_SIDECAR = """
 name: ledger
 compose: docker-compose.yml
 region: home
@@ -71,13 +71,13 @@ services:
     publishPort: 8888
 """
 
-REAL_GRANARY_COMPOSE = """
+REAL_LEDGER_COMPOSE = """
 services:
   mysql:
     image: mysql:8.4.9@sha256:c36050afdca850f23cef85703f84c7531a5ae155a11b5ee1c60acb09937c4084
     environment:
       MYSQL_DATABASE: ledger
-      MYSQL_ROOT_PASSWORD: ${GRANARY_MYSQL_ROOT_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${LEDGER_MYSQL_ROOT_PASSWORD}
       TZ: Asia/Shanghai
     volumes:
       - ledger_mysql_data:/var/lib/mysql
@@ -86,15 +86,15 @@ services:
         limits: { cpus: "0.50", memory: 512M }
         reservations: { cpus: "0.10", memory: 256M }
   ledger:
-    image: gcode.gaojiua.com:3000/gaojiuatech/ledger:latest
+    image: git.example.com:3000/acme/ledger:latest
     environment:
-      GRANARY_ADMIN_EMAIL: admin@gaojiua.com
-      GRANARY_ADMIN_PASSWORD: ${GRANARY_ADMIN_PASSWORD}
-      GRANARY_JWT_SECRET: ${GRANARY_JWT_SECRET}
-      GRANARY_MYSQL_DSN: root:${GRANARY_MYSQL_ROOT_PASSWORD}@tcp(mysql:3306)/ledger?charset=utf8mb4&parseTime=true&loc=Local
+      LEDGER_ADMIN_EMAIL: admin@example.com
+      LEDGER_ADMIN_PASSWORD: ${LEDGER_ADMIN_PASSWORD}
+      LEDGER_JWT_SECRET: ${LEDGER_JWT_SECRET}
+      LEDGER_MYSQL_DSN: root:${LEDGER_MYSQL_ROOT_PASSWORD}@tcp(mysql:3306)/ledger?charset=utf8mb4&parseTime=true&loc=Local
       TZ: Asia/Shanghai
   ledger-frontend:
-    image: gcode.gaojiua.com:3000/gaojiuatech/ledger-frontend:latest
+    image: git.example.com:3000/acme/ledger-frontend:latest
   adminer:
     image: adminer:4.8.1
     environment:
@@ -103,7 +103,7 @@ volumes:
   ledger_mysql_data:
 """
 
-REAL_GRANARY_SIDECAR = """
+REAL_LEDGER_SIDECAR = """
 name: ledger
 compose: docker-compose.yml
 region: home
@@ -137,7 +137,7 @@ services:
 
 class ComposeRenderTests(unittest.TestCase):
     def render(self, secrets=None):
-        dep = write_deployment(GRANARY_SIDECAR, GRANARY_COMPOSE)
+        dep = write_deployment(LEDGER_SIDECAR, LEDGER_COMPOSE)
         if secrets is None:
             secrets = {"DB_PW": "s3cr3t"}
         return render_compose_job(cfg(), dep, as_json=False, secrets=secrets)["Job"]
@@ -373,7 +373,7 @@ services:
 """
         dep = write_deployment(sidecar, compose)
         job = render_compose_job(
-            cfg({"nodes": {"cn-2": {"host": "cn-2", "tailscaleIP": "100.64.29.91"}}}),
+            cfg({"nodes": {"cn-2": {"host": "cn-2", "tailscaleIP": "100.64.0.13"}}}),
             dep,
             as_json=False,
         )["Job"]
@@ -391,7 +391,7 @@ services:
         self.assertNotIn("ReservedPorts", network)
         svc = job["TaskGroups"][0]["Services"][0]
         self.assertEqual(svc["Name"], "web-stack-web")
-        self.assertEqual(svc["Address"], "100.64.29.91")
+        self.assertEqual(svc["Address"], "100.64.0.13")
         self.assertNotIn("AddressMode", svc)
         self.assertIn(
             "traefik.http.routers.web-stack-web.rule=Host(`web.example.com`)",
@@ -715,7 +715,7 @@ services:
 
 
     def test_secret_placeholder_can_be_kept_for_validation(self):
-        dep = write_deployment(GRANARY_SIDECAR, GRANARY_COMPOSE)
+        dep = write_deployment(LEDGER_SIDECAR, LEDGER_COMPOSE)
         job = render_compose_job(cfg(), dep, as_json=False, resolve_secrets=False)["Job"]
         mysql = next(t for t in job["TaskGroups"][0]["Tasks"] if t["Name"] == "mysql")
         app = next(t for t in job["TaskGroups"][0]["Tasks"] if t["Name"] == "app")
@@ -726,17 +726,17 @@ services:
         self.assertEqual(_resolve_env_value("plain-value"), "plain-value")
 
     def test_real_ledger_shape_renders_ports_volume_and_private_auth(self):
-        dep = write_deployment(REAL_GRANARY_SIDECAR, REAL_GRANARY_COMPOSE)
-        auth = {"username": "deploy", "password": "token", "serveraddress": "gcode.gaojiua.com:3000"}
+        dep = write_deployment(REAL_LEDGER_SIDECAR, REAL_LEDGER_COMPOSE)
+        auth = {"username": "deploy", "password": "token", "serveraddress": "git.example.com:3000"}
         job = render_compose_job(
             cfg(),
             dep,
             as_json=False,
-            registry_auth_resolver=lambda image: auth if image.startswith("gcode.gaojiua.com:3000/") else None,
+            registry_auth_resolver=lambda image: auth if image.startswith("git.example.com:3000/") else None,
             secrets={
-                "GRANARY_MYSQL_ROOT_PASSWORD": "mysql-secret",
-                "GRANARY_ADMIN_PASSWORD": "admin-secret",
-                "GRANARY_JWT_SECRET": "jwt-secret",
+                "LEDGER_MYSQL_ROOT_PASSWORD": "mysql-secret",
+                "LEDGER_ADMIN_PASSWORD": "admin-secret",
+                "LEDGER_JWT_SECRET": "jwt-secret",
             },
         )["Job"]
 
@@ -756,8 +756,8 @@ services:
         self.assertEqual(mysql["Config"]["mount"][0]["type"], "volume")
         self.assertEqual(mysql["Env"]["MYSQL_ROOT_PASSWORD"], "mysql-secret")
         app = next(t for t in group["Tasks"] if t["Name"] == "ledger")
-        self.assertEqual(app["Config"]["auth"]["server_address"], "gcode.gaojiua.com:3000")
-        self.assertIn("root:mysql-secret@tcp(mysql:3306)", app["Env"]["GRANARY_MYSQL_DSN"])
+        self.assertEqual(app["Config"]["auth"]["server_address"], "git.example.com:3000")
+        self.assertIn("root:mysql-secret@tcp(mysql:3306)", app["Env"]["LEDGER_MYSQL_DSN"])
         frontend = next(t for t in group["Tasks"] if t["Name"] == "ledger-frontend")
         self.assertEqual(frontend["Config"]["auth"]["username"], "deploy")
 

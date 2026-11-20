@@ -86,7 +86,7 @@ luma builder token create m4 --weight 100 --cache-mode read-only
     ghcr.io/liutianjie/luma-build-runner:v0.2.76
   ```
 
-- **macOS 机器（如 `m4` / `air3` 跑 OrbStack 原生 ARM64 构建，直接用 `luma` CLI）**：
+- **macOS 机器（如 Apple Silicon / `arm64-builder` 跑 OrbStack 原生 ARM64 构建，直接用 `luma` CLI）**：
   ```bash
   LUMA_RUNNER_PROXY="http://127.0.0.1:7890" \
   luma runner join --url https://build.example.com --token lbr_xxx --cache-mode read-only --cache-keep-gb 25

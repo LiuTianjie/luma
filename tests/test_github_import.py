@@ -35,7 +35,7 @@ class GithubImportTests(unittest.TestCase):
                     {
                         "type": "gitea",
                         "account": "lin",
-                        "baseUrl": "https://gcode.gaojiua.com:3000",
+                        "baseUrl": "https://git.example.com:3000",
                         "username": "lin",
                         "token": "gitea_secret",
                     },
@@ -84,20 +84,20 @@ class GithubImportTests(unittest.TestCase):
                     {
                         "type": "gitea",
                         "account": "lin",
-                        "baseUrl": "https://gcode.gaojiua.com:3000",
+                        "baseUrl": "https://git.example.com:3000",
                         "username": "lin",
                         "token": "gitea_secret",
                     },
                 )
 
                 def fake_urlopen(request, **_kwargs):
-                    self.assertEqual(request.full_url, "https://gcode.gaojiua.com:3000/api/v1/user/repos?limit=100&page=1")
+                    self.assertEqual(request.full_url, "https://git.example.com:3000/api/v1/user/repos?limit=100&page=1")
                     self.assertEqual(request.headers.get("Authorization"), "token gitea_secret")
                     return _JsonResponse(
                         [
                             {
-                                "full_name": "gaojiuatech/price",
-                                "clone_url": "https://gcode.gaojiua.com:3000/gaojiuatech/price.git",
+                                "full_name": "acme/price",
+                                "clone_url": "https://git.example.com:3000/acme/price.git",
                                 "default_branch": "main",
                                 "private": True,
                             }
@@ -111,8 +111,8 @@ class GithubImportTests(unittest.TestCase):
                     result["repositories"],
                     [
                         {
-                            "fullName": "gaojiuatech/price",
-                            "cloneUrl": "https://gcode.gaojiua.com:3000/gaojiuatech/price.git",
+                            "fullName": "acme/price",
+                            "cloneUrl": "https://git.example.com:3000/acme/price.git",
                             "defaultBranch": "main",
                             "private": True,
                         }
@@ -392,7 +392,7 @@ class GithubImportTests(unittest.TestCase):
             state,
             {
                 "action": "build-image",
-                "payload": {"repoUrl": "https://gcode.gaojiua.com:3000/acme/app", "gitProviderId": "gitea:lin", "pushHost": "build-1:5000", "repo": "acme/app"},
+                "payload": {"repoUrl": "https://git.example.com:3000/acme/app", "gitProviderId": "gitea:lin", "pushHost": "build-1:5000", "repo": "acme/app"},
             },
         )
         self.assertEqual(leased.get("gitToken"), "gitea_secret")
@@ -411,10 +411,10 @@ class GithubImportTests(unittest.TestCase):
             return Mock(returncode=0, stdout="")
 
         with patch("luma.gitops.subprocess.run", side_effect=fake_run):
-            gitops.clone("https://gcode.gaojiua.com:3000/acme/app", Path("/tmp/x"), token="gitea_secret", username="lin")
+            gitops.clone("https://git.example.com:3000/acme/app", Path("/tmp/x"), token="gitea_secret", username="lin")
 
         clone_url = captured["cmd"][-2]
-        self.assertEqual(clone_url, "https://gcode.gaojiua.com:3000/acme/app")
+        self.assertEqual(clone_url, "https://git.example.com:3000/acme/app")
         self.assertEqual(captured["username"], "lin")
         self.assertEqual(captured["password"], "gitea_secret")
         self.assertNotIn("gitea_secret", " ".join(captured["cmd"]))
@@ -442,7 +442,7 @@ class GithubImportTests(unittest.TestCase):
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 handle_git_provider_set(
                     state["deployToken"],
-                    {"type": "gitea", "account": "lin", "baseUrl": "https://gcode.gaojiua.com:3000", "username": "lin", "token": "gitea_secret"},
+                    {"type": "gitea", "account": "lin", "baseUrl": "https://git.example.com:3000", "username": "lin", "token": "gitea_secret"},
                 )
                 calls = []
 
@@ -453,7 +453,7 @@ class GithubImportTests(unittest.TestCase):
                             [
                                 {
                                     "full_name": f"acme/repo-{index}",
-                                    "clone_url": f"https://gcode.gaojiua.com:3000/acme/repo-{index}.git",
+                                    "clone_url": f"https://git.example.com:3000/acme/repo-{index}.git",
                                     "default_branch": "main",
                                     "private": True,
                                 }
@@ -465,7 +465,7 @@ class GithubImportTests(unittest.TestCase):
                             [
                                 {
                                     "full_name": "acme/repo-100",
-                                    "clone_url": "https://gcode.gaojiua.com:3000/acme/repo-100.git",
+                                    "clone_url": "https://git.example.com:3000/acme/repo-100.git",
                                     "default_branch": "main",
                                     "private": True,
                                 }
@@ -523,7 +523,7 @@ class GithubImportTests(unittest.TestCase):
                 with self.assertRaisesRegex(LumaError, "Legacy built-in remote build queue has been retired"):
                     handle_build_deploy(
                         state["deployToken"],
-                        {"providerId": "gitea:lin", "repository": "gaojiuatech/price", "ref": "main"},
+                        {"providerId": "gitea:lin", "repository": "acme/price", "ref": "main"},
                     )
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -565,17 +565,17 @@ class GithubImportTests(unittest.TestCase):
         from luma.control.server import _egress_proxy_for_node
 
         state = {
-            "managerAddr": "100.106.154.3",
+            "managerAddr": "100.64.0.11",
             "build": {"directEgressNodes": ["builder"]},
             "nodes": {
                 "builder": {"name": "builder", "region": "home", "aliases": ["build-1"]},
                 "home-worker": {"name": "home-worker", "region": "home"},
             },
         }
-        config = LumaConfig({"defaults": {"nomadServer": "100.106.154.3:4647"}}, None)
+        config = LumaConfig({"defaults": {"nomadServer": "100.64.0.11:4647"}}, None)
 
         self.assertEqual(_egress_proxy_for_node(config, state, "build-1"), "")
-        self.assertEqual(_egress_proxy_for_node(config, state, "home-worker"), "http://100.106.154.3:7890")
+        self.assertEqual(_egress_proxy_for_node(config, state, "home-worker"), "http://100.64.0.11:7890")
 
     def test_runtime_config_marks_manager_for_local_ingress_addressing(self):
         from luma.control.server import _config_with_state_nodes
@@ -587,7 +587,7 @@ class GithubImportTests(unittest.TestCase):
                     "name": "manager",
                     "status": "manager",
                     "region": "cn",
-                    "tailscaleIP": "100.106.154.3",
+                    "tailscaleIP": "100.64.0.11",
                 }
             }
         }
@@ -1661,7 +1661,7 @@ class GithubImportTests(unittest.TestCase):
                     "cn-2": {
                         "name": "cn-2",
                         "region": "cn",
-                        "tailscaleIP": "100.84.163.118",
+                        "tailscaleIP": "100.64.0.15",
                         "agent": {
                             "status": "online",
                             "lastSeen": now,
@@ -1869,7 +1869,7 @@ class GithubImportTests(unittest.TestCase):
                     "home-2": {
                         "name": "home-2",
                         "region": "cn",
-                        "tailscaleIP": "100.84.163.118",
+                        "tailscaleIP": "100.64.0.15",
                         "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
                     },
                 }
@@ -1901,7 +1901,7 @@ class GithubImportTests(unittest.TestCase):
                     "manager": {
                         "name": "manager",
                         "region": "cn",
-                        "tailscaleIP": "100.106.154.3",
+                        "tailscaleIP": "100.64.0.11",
                         "labels": {"role.nomad-manager": "true"},
                         "agent": {
                             "status": "online",

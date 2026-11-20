@@ -13,7 +13,7 @@ class ObserveQueryTests(unittest.TestCase):
                 "nodes": {
                     "manager": {
                         "status": "manager",
-                        "tailscaleIP": "100.106.154.3",
+                        "tailscaleIP": "100.64.0.11",
                         "labels": {"role.nomad-manager": "true"},
                     }
                 }

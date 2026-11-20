@@ -56,7 +56,7 @@ def is_http_registry(host: str, explicit_insecure: bool | None = None) -> bool:
 
     Public domains (such as Aliyun ACR ``*.aliyuncs.com`` or ``ghcr.io``) always
     use HTTPS unless explicitly overridden. Loopback, RFC1918 private IPs, and
-    Tailscale mesh IPs (such as ``100.66.177.70:5000``) default to plain HTTP.
+    Tailscale mesh IPs (such as ``100.64.0.10:5000``) default to plain HTTP.
     """
     if explicit_insecure is not None:
         return bool(explicit_insecure)

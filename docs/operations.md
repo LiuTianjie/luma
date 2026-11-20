@@ -188,9 +188,9 @@ to Control, while the node only needs its outbound Agent connection. Neither cli
 Tailscale membership nor an open node inbound port is required.
 
 ```sh
-luma node exec bd-prod -- uname -a
-luma node exec --timeout 30 bd-prod -- sh -lc 'uptime; df -h'
-luma node exec --stdin bd-prod -- sha256sum < artifact.tar
+luma node exec worker-1 -- uname -a
+luma node exec --timeout 30 worker-1 -- sh -lc 'uptime; df -h'
+luma node exec --stdin worker-1 -- sha256sum < artifact.tar
 ```
 
 Put Luma flags before NODE. Arguments after NODE/`--` are literal argv; shell

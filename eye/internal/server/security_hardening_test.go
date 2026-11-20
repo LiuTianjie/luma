@@ -280,7 +280,7 @@ func TestLocalSessionCSRFEnforcement(t *testing.T) {
 
 	// 3. Cross-site Sec-Fetch-Site even with matching Origin -> 403
 	rCrossSite := httptest.NewRequest(http.MethodPost, "/api/v1/projects", strings.NewReader(`{"slug":"csrf3"}`))
-	rCrossSite.Header.Set("Origin", "https://eye.itool.tech")
+	rCrossSite.Header.Set("Origin", "https://eye.example.com")
 	rCrossSite.Header.Set("Sec-Fetch-Site", "cross-site")
 	rCrossSite.AddCookie(sessCookie)
 	wCrossSite := httptest.NewRecorder()
@@ -291,7 +291,7 @@ func TestLocalSessionCSRFEnforcement(t *testing.T) {
 
 	// 4. Matching Origin -> 201 Created
 	rGood := httptest.NewRequest(http.MethodPost, "/api/v1/projects", strings.NewReader(`{"slug":"csrfgood"}`))
-	rGood.Header.Set("Origin", "https://eye.itool.tech")
+	rGood.Header.Set("Origin", "https://eye.example.com")
 	rGood.Header.Set("Sec-Fetch-Site", "same-origin")
 	rGood.AddCookie(sessCookie)
 	wGood := httptest.NewRecorder()

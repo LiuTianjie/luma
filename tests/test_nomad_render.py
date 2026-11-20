@@ -165,7 +165,7 @@ port: 3000
                 "nodes": {
                     "cn-2": {
                         "host": "cn-2",
-                        "tailscaleIP": "100.64.29.91",
+                        "tailscaleIP": "100.64.0.13",
                     }
                 },
             },
@@ -173,7 +173,7 @@ port: 3000
         )
         job = render_nomad_job(config, service, as_json=False)["Job"]
         svc = job["TaskGroups"][0]["Services"][0]
-        self.assertEqual(svc["Address"], "100.64.29.91")
+        self.assertEqual(svc["Address"], "100.64.0.13")
         self.assertNotIn("AddressMode", svc)
         # auto_revert is on (the new capability)
         self.assertTrue(job["Update"]["AutoRevert"])
@@ -199,7 +199,7 @@ port: 5000
                     "manager": {
                         "host": "manager",
                         "region": "cn",
-                        "tailscaleIP": "100.106.154.3",
+                        "tailscaleIP": "100.64.0.11",
                         "lumaLocalIngress": True,
                     }
                 }

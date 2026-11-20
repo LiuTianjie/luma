@@ -154,21 +154,21 @@ test("npm bundled luma-eye CLI login, API queries, sourcemaps, and skills instal
     assert.equal(st.retention.retention_days, 7);
 
     const ensured = JSON.parse(
-      await runCLI(["projects", "ensure", "vibecheck", "--origins", "https://vibecheck.itool.tech", "--json"], cleanEnv)
+      await runCLI(["projects", "ensure", "demo-app", "--origins", "https://demo.example.com", "--json"], cleanEnv)
     );
     assert.equal(ensured.created, true);
-    assert.equal(ensured.project.slug, "vibecheck");
+    assert.equal(ensured.project.slug, "demo-app");
 
     const listOut = JSON.parse(await runCLI(["projects", "list", "--json"], cleanEnv));
     assert.equal(listOut.projects.length, 1);
 
-    const statsText = await runCLI(["stats", "vibecheck", "--since", "24h"], cleanEnv);
+    const statsText = await runCLI(["stats", "demo-app", "--since", "24h"], cleanEnv);
     assert.match(statsText, /UV: 42/);
     assert.match(statsText, /LCP=1250\.50/);
 
     const smOut = JSON.parse(
       await runCLI(
-        ["sourcemaps", "upload", "--project", "vibecheck", "--release", "v1", "--prefix", "/assets", "--json", mapDir],
+        ["sourcemaps", "upload", "--project", "demo-app", "--release", "v1", "--prefix", "/assets", "--json", mapDir],
         cleanEnv
       )
     );
@@ -176,8 +176,8 @@ test("npm bundled luma-eye CLI login, API queries, sourcemaps, and skills instal
     assert.equal(smOut.uploaded[0].asset, "/assets/index-abc.js");
     assert.match(uploadedMultipartBody, /"version":3/);
 
-    const delOut = JSON.parse(await runCLI(["projects", "delete", "vibecheck", "--json"], cleanEnv));
-    assert.equal(delOut.deleted, "vibecheck");
+    const delOut = JSON.parse(await runCLI(["projects", "delete", "demo-app", "--json"], cleanEnv));
+    assert.equal(delOut.deleted, "demo-app");
 
     // 4. Skills install writes SKILL.md cleanly
     const skillInstall = JSON.parse(

@@ -23,8 +23,8 @@ import (
 
 func TestParseStackAndFingerprint(t *testing.T) {
 	v8Stack := `TypeError: Cannot read properties of undefined (reading 'id')
-    at handleSubmit (https://vibecheck.itool.tech/assets/index-123.js:1:4096)
-    at onClick (https://vibecheck.itool.tech/assets/index-123.js:1:2048)`
+    at handleSubmit (https://demo.example.com/assets/index-123.js:1:4096)
+    at onClick (https://demo.example.com/assets/index-123.js:1:2048)`
 	frames := ParseStackString(v8Stack)
 	if len(frames) != 2 {
 		t.Fatalf("expected 2 frames, got %d", len(frames))
@@ -69,8 +69,8 @@ func TestParseHermesStackFrames(t *testing.T) {
 }
 
 func TestSentryEnvelopeGzipLengthAndNewline(t *testing.T) {
-	eventJSON := `{"event_id":"abc123def456","timestamp":1700000000.5,"level":"error","environment":"production","release":"sha-1","exception":{"values":[{"type":"ReferenceError","value":"foo is not defined","stacktrace":{"frames":[{"filename":"https://app.itool.tech/main.js","function":"render","lineno":10,"colno":5,"in_app":true}]}}]},"breadcrumbs":[{"category":"ui.click","level":"info","message":"button#submit","timestamp":1700000000.0}]}`
-	envHeader := `{"event_id":"abc123def456","dsn":"https://pk_vibecheck_1234@eye.itool.tech/1"}`
+	eventJSON := `{"event_id":"abc123def456","timestamp":1700000000.5,"level":"error","environment":"production","release":"sha-1","exception":{"values":[{"type":"ReferenceError","value":"foo is not defined","stacktrace":{"frames":[{"filename":"https://app.example.com/main.js","function":"render","lineno":10,"colno":5,"in_app":true}]}}]},"breadcrumbs":[{"category":"ui.click","level":"info","message":"button#submit","timestamp":1700000000.0}]}`
+	envHeader := `{"event_id":"abc123def456","dsn":"https://pk_demo_1234@eye.example.com/1"}`
 	itemHeader := `{"type":"event","length":` + itoa(len(eventJSON)) + `}`
 	rawEnvelope := envHeader + "\n" + itemHeader + "\n" + eventJSON + "\n"
 
@@ -86,11 +86,11 @@ func TestSentryEnvelopeGzipLengthAndNewline(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/1/envelope/", bytes.NewReader(decomp))
-	if gotKey := ExtractSentryKey(req, decomp); gotKey != "pk_vibecheck_1234" {
-		t.Fatalf("expected sentry key pk_vibecheck_1234, got %q", gotKey)
+	if gotKey := ExtractSentryKey(req, decomp); gotKey != "pk_demo_1234" {
+		t.Fatalf("expected sentry key pk_demo_1234, got %q", gotKey)
 	}
 
-	res, err := ParseSentryEnvelope("vibecheck", scrub.UAInfo{Browser: "Chrome", OS: "macOS", DeviceType: "desktop"}, decomp)
+	res, err := ParseSentryEnvelope("demo-app", scrub.UAInfo{Browser: "Chrome", OS: "macOS", DeviceType: "desktop"}, decomp)
 	if err != nil {
 		t.Fatalf("parse envelope failed: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestEdgeToCoreZstdRelayRoundtrip(t *testing.T) {
 		switch r.URL.Path {
 		case "/internal/v1/projects-sync":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"projects": []*model.Project{{DSNID: 1, Slug: "vibecheck", PublicKey: "pk_test", RateLimitRPS: 200}},
+				"projects": []*model.Project{{DSNID: 1, Slug: "demo-app", PublicKey: "pk_test", RateLimitRPS: 200}},
 			})
 		case "/internal/v1/relay":
 			var buf bytes.Buffer
@@ -155,7 +155,7 @@ func TestEdgeToCoreZstdRelayRoundtrip(t *testing.T) {
 	batcher.Enqueue(model.RelayBatch{
 		Events: []model.Event{{
 			TS:        model.FormatTS(time.Now().UTC()),
-			Project:   "vibecheck",
+			Project:   "demo-app",
 			EventType: "pageview",
 			EventName: "pageview",
 			ActorID:   "u1",
@@ -179,7 +179,7 @@ func TestEdgeToCoreZstdRelayRoundtrip(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(received.Events) != 1 || received.Events[0].Project != "vibecheck" {
+	if len(received.Events) != 1 || received.Events[0].Project != "demo-app" {
 		t.Fatalf("expected relayed event, got %+v", received)
 	}
 }

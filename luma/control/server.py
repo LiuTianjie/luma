@@ -1037,7 +1037,7 @@ def _native_build_candidates(
               if (native_arm_build_platform([_container_platform_for_node(record)]) or _container_platform_for_node(record)) == native_platform]
     if not native:
         if arm_platform:
-            raise LumaError(f"no declared native builder for {arm_platform}; register an ARM builder such as air3; ARM emulation is disabled")
+            raise LumaError(f"no declared native builder for {arm_platform}; register an ARM builder such as arm64-builder; ARM emulation is disabled")
         return [fallback], False
     needed = set(["docker-build", *required])
     compatible = [record for record in native if needed.issubset((record.get("agent") or {}).get("capabilities") or [])]

@@ -101,7 +101,7 @@ Luma picks the image architecture from the target region's nodes: an ARM node ge
 Register AMD64 and ARM64 builders to route builds by their target architecture:
 
 ```bash
-luma build config --node builder --node air3 --default-node builder \
+luma build config --node builder --node arm64-builder --default-node builder \
   --registry-host 100.64.0.70:5000 --push-host 100.64.0.70:5000
 ```
 

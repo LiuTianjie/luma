@@ -18,14 +18,14 @@ from luma.registry_access import ensure_managed_registry_access, normalize_manag
 from luma.registry_proxy import proxy_bypasses_registry_hosts
 
 
-HOST = "100.66.177.70:5000"
+HOST = "100.64.0.10:5000"
 
 
 class ManagedRegistryContractTests(unittest.TestCase):
     def test_existing_proxy_bypass_semantics_are_shared_by_both_runtimes(self):
         cases = [
-            (HOST, "100.64.0.0/10", True), (HOST, "100.66.177.70", True),
-            (HOST, HOST, True), (HOST, "100.66.177.70:5001", False),
+            (HOST, "100.64.0.0/10", True), (HOST, "100.64.0.10", True),
+            (HOST, HOST, True), (HOST, "100.64.0.10:5001", False),
             (HOST, "*", True), (HOST, "10.0.0.0/8", False),
             ("registry.example.com:5000", "example.com", True),
             ("registry.example.com:5000", "example.com:5000", True),
@@ -372,9 +372,9 @@ class OrbStackRegistryTests(unittest.TestCase):
     def test_manual_system_proxy_honors_native_and_exact_system_exclusions(self):
         self.set_ready()
         self.containers = "production"
-        self.system_proxy = "<dictionary> {\nSOCKSEnable : 1\nSOCKSProxy : proxy.example.com\nSOCKSPort : 1080\nExceptionsList : <array> {\n0 : 100.66.177.70\n}\n}\n"
+        self.system_proxy = "<dictionary> {\nSOCKSEnable : 1\nSOCKSProxy : proxy.example.com\nSOCKSPort : 1080\nExceptionsList : <array> {\n0 : 100.64.0.10\n}\n}\n"
         self.assertFalse(self.apply()["changed"])
-        self.system_proxy = self.system_proxy.replace("100.66.177.70", "localhost")
+        self.system_proxy = self.system_proxy.replace("100.64.0.10", "localhost")
         self.native_exclusions = "100.64.0.0/10"
         self.assertFalse(self.apply()["changed"])
         self.assertFalse(any("set" in command or "ps" in command for command in self.commands))

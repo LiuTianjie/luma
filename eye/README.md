@@ -140,7 +140,7 @@ luma compose deploy deploy/node-edge/luma.local.compose.yml
 export LUMA_EYE_URL="https://eye.example.com"
 export LUMA_EYE_ADMIN_TOKEN="<your-admin-token>"
 
-luma-eye projects ensure vibecheck --origins https://app.example.com
+luma-eye projects ensure demo-app --origins https://app.example.com
 ```
 
 ### 2. 前端 / React Native 接入（推荐：npm 包 `@nickname4th/luma-eye`）
@@ -154,8 +154,8 @@ import { initLumaEye, track, captureError, flushFlightRecorder } from '@nickname
 
 initLumaEye({
   endpoint: 'https://eye.example.com',
-  key: 'pk_vibecheck_...',
-  project: 'vibecheck',
+  key: 'pk_demo_...',
+  project: 'demo-app',
   env: import.meta.env.MODE,
   release: import.meta.env.VITE_GIT_SHA,
   traceOrigins: ['/api/'], // 自动注入 W3C traceparent 关联后端 Tempo
@@ -185,31 +185,31 @@ initLumaEyeRN({
 
 或者在纯 HTML 原型中直接加一行 `<script>`：
 ```html
-<script src="https://eye.example.com/_e/eye.js" data-key="pk_vibecheck_..." data-project="vibecheck" defer></script>
+<script src="https://eye.example.com/_e/eye.js" data-key="pk_demo_..." data-project="demo-app" defer></script>
 ```
 也可以直接把现有 `@sentry/react` / `@sentry/nextjs` / `@sentry/react-native` 的 `dsn` 指向输出的 `sentry_dsn`。
 
 ### 3. 构建后上传 SourceMap（支持 Web & RN Hermes `.map`，不暴露给公网）
 ```bash
-luma-eye sourcemaps upload --project vibecheck --release "$GIT_SHA" --prefix assets/ ./dist/assets
+luma-eye sourcemaps upload --project demo-app --release "$GIT_SHA" --prefix assets/ ./dist/assets
 # React Native Hermes Bundle:
 luma-eye sourcemaps upload --project rnapp --release "1.0.0+1" ./dist/main.jsbundle.map
 ```
 
 ### 4. 挂载进 Luma 控制台「应用详情 → 看板」
 ```bash
-luma-eye grafana render --project vibecheck \
-  --output /srv/luma/data/luma-observe/extensions/dashboards/vibecheck-eye.json
+luma-eye grafana render --project demo-app \
+  --output /srv/luma/data/luma-observe/extensions/dashboards/demo-app-eye.json
 ```
 
 ### 5. AI Agent 直接查询线上问题（CLI / Skill）
 详见 [skills/luma-eye/SKILL.md](skills/luma-eye/SKILL.md)：
 ```bash
-luma-eye stats vibecheck --since 24h --json
-luma-eye funnel vibecheck --steps "pageview,upload_code,scan_complete" --json
-luma-eye issues vibecheck --since 7d --json
-luma-eye issues vibecheck --detail <fingerprint> --json
-luma-eye logs vibecheck --level error --since 1h --json
+luma-eye stats demo-app --since 24h --json
+luma-eye funnel demo-app --steps "pageview,upload_code,scan_complete" --json
+luma-eye issues demo-app --since 7d --json
+luma-eye issues demo-app --detail <fingerprint> --json
+luma-eye logs demo-app --level error --since 1h --json
 ```
 
 ## 本集群发布入口（ACR）

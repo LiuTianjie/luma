@@ -575,7 +575,7 @@ class GrafanaRouteTests(unittest.TestCase):
         self.assertIn("Host(`luma.example.net`) && PathPrefix(`/grafana`)", text)
         self.assertIn("priority: 1000", text)
         self.assertIn("url: http://127.0.0.1:3100", text)
-        self.assertNotIn("100.106.154.3:3000", text)
+        self.assertNotIn("100.64.0.11:3000", text)
         self.assertNotIn(":3000", text.split("url:")[-1])
 
     def test_grafana_route_requires_control_forward_auth(self):

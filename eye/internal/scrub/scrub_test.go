@@ -13,7 +13,7 @@ func TestScrubMapAndURL(t *testing.T) {
 		"authorization": "Bearer xyz",
 		"nested": map[string]any{
 			"api_key": "k_live_999",
-			"url":     "https://vibecheck.itool.tech/cb?token=secret_tok&page=2",
+			"url":     "https://demo.example.com/cb?token=secret_tok&page=2",
 		},
 	}
 	out := ScrubMap(in)
@@ -28,7 +28,7 @@ func TestScrubMapAndURL(t *testing.T) {
 		t.Fatalf("nested api_key not redacted: %+v", nested)
 	}
 	u := nested["url"].(string)
-	if u != "https://vibecheck.itool.tech/cb?page=2&token=%5BREDACTED%5D" && u != "https://vibecheck.itool.tech/cb?token=%5BREDACTED%5D&page=2" {
+	if u != "https://demo.example.com/cb?page=2&token=%5BREDACTED%5D" && u != "https://demo.example.com/cb?token=%5BREDACTED%5D&page=2" {
 		t.Fatalf("unexpected scrubbed url: %s", u)
 	}
 }

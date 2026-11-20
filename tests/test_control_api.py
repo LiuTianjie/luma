@@ -51,7 +51,7 @@ class ControlApiTests(unittest.TestCase):
                         install_ref="v0.1.173",
                         control_image="ghcr.io/liutianjie/luma-control:v0.1.173",
                         domain="luma.example.com",
-                        watchdog_peers=["100.69.154.50"],
+                        watchdog_peers=["100.64.0.14"],
                     )
                 invocation = run.call_args.args[0]
                 self.assertEqual(invocation[0], "systemd-run")
@@ -59,7 +59,7 @@ class ControlApiTests(unittest.TestCase):
                 self.assertIn(str(executable), invocation)
                 self.assertIn("--setenv=LUMA_USER_HOME=" + str(Path(tmp) / "home" / "tao"), invocation)
                 self.assertIn(
-                    "--setenv=LUMA_TAILSCALE_WATCHDOG_PEERS=100.69.154.50",
+                    "--setenv=LUMA_TAILSCALE_WATCHDOG_PEERS=100.64.0.14",
                     invocation,
                 )
                 self.assertNotIn("management-token", " ".join(invocation))
@@ -87,7 +87,7 @@ class ControlApiTests(unittest.TestCase):
                     "agent": {"status": "online", "lastSeen": int(time.time()), "capabilities": ["manager-update-v1"]},
                 },
                 "lab": {
-                    "tailscaleIP": "100.69.154.50",
+                    "tailscaleIP": "100.64.0.14",
                     "agent": {
                         "status": "online",
                         "lastSeen": int(time.time()),
@@ -130,7 +130,7 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[3]["domain"], "luma.example.com")
         self.assertEqual(
             run.call_args.args[3]["tailscaleWatchdogPeers"],
-            ["100.69.154.50"],
+            ["100.64.0.14"],
         )
 
 
@@ -148,7 +148,7 @@ class ControlApiTests(unittest.TestCase):
                 source_image="ghcr.io/liutianjie/luma-control:v0.1.175",
                 push_image="localhost:5000/luma-control:v0.1.175",
                 destination_image="100.64.0.70:5000/luma-control:v0.1.175",
-                proxy="http://100.106.154.3:7890",
+                proxy="http://100.64.0.11:7890",
                 insecure=True,
                 progress=events.append,
             )
@@ -156,7 +156,7 @@ class ControlApiTests(unittest.TestCase):
         copy_command = run.call_args_list[0].args[0]
         self.assertEqual(copy_command[:2], ["/usr/local/bin/crane", "copy"])
         self.assertIn("--insecure", copy_command)
-        self.assertEqual(run.call_args_list[0].kwargs["env"]["HTTPS_PROXY"], "http://100.106.154.3:7890")
+        self.assertEqual(run.call_args_list[0].kwargs["env"]["HTTPS_PROXY"], "http://100.64.0.11:7890")
         self.assertIn("localhost:5000", run.call_args_list[0].kwargs["env"]["NO_PROXY"])
         self.assertEqual(result["destinationImage"], "100.64.0.70:5000/luma-control:v0.1.175")
         self.assertEqual(result["digest"], digest)
@@ -839,7 +839,7 @@ class ControlApiTests(unittest.TestCase):
                         "registeredName": "m4",
                         "nodeId": "nomad-node-id",
                         "region": "home",
-                        "tailscaleIP": "100.121.94.123",
+                        "tailscaleIP": "100.64.0.12",
                     },
                 )
 
@@ -848,7 +848,7 @@ class ControlApiTests(unittest.TestCase):
                 saved = load_state()
                 self.assertEqual(saved["nodes"]["m4"]["nodeId"], "nomad-node-id")
                 self.assertEqual(saved["nodes"]["m4"]["nomadNodeId"], "nomad-node-id")
-                self.assertEqual(saved["nodes"]["m4"]["tailscaleIP"], "100.121.94.123")
+                self.assertEqual(saved["nodes"]["m4"]["tailscaleIP"], "100.64.0.12")
                 self.assertTrue(saved["nodes"]["m4"]["agent"]["tokenHash"])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -1076,7 +1076,7 @@ class ControlApiTests(unittest.TestCase):
             old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                state["nomadRpcAddr"] = "100.106.154.3:4647"
+                state["nomadRpcAddr"] = "100.64.0.11:4647"
                 state["nodes"] = {
                     "cn-2": {
                         "region": "cn",
@@ -1099,7 +1099,7 @@ class ControlApiTests(unittest.TestCase):
                     self.assertEqual(node_name, "cn-2")
                     self.assertEqual(action, "update-luma")
                     self.assertEqual(payload["installRef"], "v0.1.235")
-                    self.assertEqual(payload["proxy"], "http://100.106.154.3:7890")
+                    self.assertEqual(payload["proxy"], "http://100.64.0.11:7890")
                     self.assertEqual(kwargs["required_capability"], "luma-update")
                     return {
                         "taskId": "task-update",
@@ -1126,7 +1126,7 @@ class ControlApiTests(unittest.TestCase):
             old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                state["nomadRpcAddr"] = "100.106.154.3:4647"
+                state["nomadRpcAddr"] = "100.64.0.11:4647"
                 state["nodes"] = {
                     "cn-2": {
                         "region": "cn",
@@ -2497,22 +2497,22 @@ class ControlApiTests(unittest.TestCase):
         from luma.control.server import _dashboard_nodes
 
         registered = [
-            {"name": "air2", "hostname": "air2", "nodeId": "air2-id"},
-            {"name": "gaojiu", "hostname": "gaojiu", "nodeId": "gaojiu-id", "aliases": ["Mac.lan"]},
+            {"name": "arm-2", "hostname": "arm-2", "nodeId": "arm-2-id"},
+            {"name": "worker-b", "hostname": "worker-b", "nodeId": "worker-b-id", "aliases": ["Mac.lan"]},
         ]
-        for stale_name in ("", "gaojiu"):
+        for stale_name in ("", "worker-b"):
             raw = [
-                {"id": "gaojiu-id", "hostname": "Mac", "state": "down", "availability": "ineligible"},
-                {"id": "air2-id", "hostname": "Mac.lan", "lumaNode": stale_name,
+                {"id": "worker-b-id", "hostname": "Mac", "state": "down", "availability": "ineligible"},
+                {"id": "arm-2-id", "hostname": "Mac.lan", "lumaNode": stale_name,
                  "state": "ready", "availability": "eligible"},
             ]
             for nodes in (raw, list(reversed(raw))):
                 with self.subTest(stale_name=stale_name, first=nodes[0]["id"]):
                     rows = {row["name"]: row for row in _dashboard_nodes(registered, nodes)}
-                    self.assertEqual(rows["air2"]["state"], "ready")
-                    self.assertEqual(rows["air2"]["availability"], "eligible")
-                    self.assertEqual(rows["gaojiu"]["state"], "down")
-                    self.assertEqual(rows["gaojiu"]["availability"], "ineligible")
+                    self.assertEqual(rows["arm-2"]["state"], "ready")
+                    self.assertEqual(rows["arm-2"]["availability"], "eligible")
+                    self.assertEqual(rows["worker-b"]["state"], "down")
+                    self.assertEqual(rows["worker-b"]["availability"], "ineligible")
 
     def test_state_nodes_expands_aliases_for_internal_resolution(self):
         state = {
@@ -2727,7 +2727,7 @@ class ControlApiTests(unittest.TestCase):
                 save_state(state)
                 handle_registry_set(
                     state["deployToken"],
-                    {"host": "gcode.gaojiua.com:3000", "username": "nick", "password": "secret"},
+                    {"host": "git.example.com:3000", "username": "nick", "password": "secret"},
                 )
                 (root / "luma.yaml").write_text(
                     yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}),
@@ -2736,13 +2736,13 @@ class ControlApiTests(unittest.TestCase):
                 manifest = yaml.safe_dump(
                     {
                         "name": "docs",
-                        "image": "gcode.gaojiua.com:3000/acme/docs:latest",
+                        "image": "git.example.com:3000/acme/docs:latest",
                         "region": "home",
                         "node": "lab",
                         "exposure": "none",
                     }
                 )
-                digest = "gcode.gaojiua.com:3000/acme/docs@sha256:58307df1e4f8efcfec29a8f7a6653c65446d6afded7d03caa3329f2c0ac92719"
+                digest = "git.example.com:3000/acme/docs@sha256:58307df1e4f8efcfec29a8f7a6653c65446d6afded7d03caa3329f2c0ac92719"
 
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
                     "luma.control.server.resolve_registry_image_digest",
@@ -2756,14 +2756,14 @@ class ControlApiTests(unittest.TestCase):
                         {"manifest": manifest, "sourceName": "docs.yaml", "skipDns": True, "skipOrchestrator": True},
                     )
                 payload = agent.call_args.args[3]
-                self.assertEqual(payload["image"], "gcode.gaojiua.com:3000/acme/docs:latest")
+                self.assertEqual(payload["image"], "git.example.com:3000/acme/docs:latest")
                 self.assertTrue(payload["forcePull"])
                 self.assertEqual(payload["platform"], "linux/amd64")
                 self.assertEqual(payload["registryAuth"]["password"], "secret")
                 self.assertTrue(result["image"]["registryAuth"])
                 stack = (root / "stacks" / "home" / "docs" / "docs.nomad.json").read_text(encoding="utf-8")
                 self.assertIn(f'"image": "{digest}"', stack)
-                self.assertIn('"server_address": "gcode.gaojiua.com:3000"', stack)
+                self.assertIn('"server_address": "git.example.com:3000"', stack)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -3616,7 +3616,7 @@ class ControlApiTests(unittest.TestCase):
                     "cn-2": {
                         "name": "cn-2",
                         "nodeId": "node-cn-2",
-                        "tailscaleIP": "100.64.29.91",
+                        "tailscaleIP": "100.64.0.13",
                     }
                 }
                 manifest = yaml.safe_dump(
@@ -3701,7 +3701,7 @@ class ControlApiTests(unittest.TestCase):
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 state["nodes"] = {
-                    "cn-2": {"name": "cn-2", "nodeId": "node-cn-2", "tailscaleIP": "100.64.29.91"}
+                    "cn-2": {"name": "cn-2", "nodeId": "node-cn-2", "tailscaleIP": "100.64.0.13"}
                 }
                 compose = yaml.safe_dump(
                     {
@@ -5209,10 +5209,10 @@ class ControlApiTests(unittest.TestCase):
                 }
                 state["deployments"] = {
                     "compose": {
-                        "vibecheck": {
-                            "name": "vibecheck",
+                        "demo-app": {
+                            "name": "demo-app",
                             "manifest": yaml.safe_dump({
-                                "name": "vibecheck",
+                                "name": "demo-app",
                                 "services": {"api": {}, "web": {}, "postgres": {}},
                             }),
                         }
@@ -5222,13 +5222,13 @@ class ControlApiTests(unittest.TestCase):
                 (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"engine": "nomad", "nomadAddr": "http://nomad.example"}}), encoding="utf-8")
 
                 def request(_self, method, path, body=None):
-                    if path == "/v1/job/vibecheck":
+                    if path == "/v1/job/demo-app":
                         return {
-                            "ID": "vibecheck",
+                            "ID": "demo-app",
                             "Meta": {"luma.compose": "true"},
-                            "TaskGroups": [{"Name": "vibecheck", "Tasks": [{"Name": "api", "Config": {"image": "registry.example/api:1"}}]}],
+                            "TaskGroups": [{"Name": "demo-app", "Tasks": [{"Name": "api", "Config": {"image": "registry.example/api:1"}}]}],
                         }
-                    if path == "/v1/job/vibecheck/allocations":
+                    if path == "/v1/job/demo-app/allocations":
                         return [
                             {
                                 "ID": "alloc-running",
@@ -5243,8 +5243,8 @@ class ControlApiTests(unittest.TestCase):
                     raise AssertionError(path)
 
                 with patch("luma.control.server.NomadApi.request", request):
-                    result = _resolve_application_terminal_target(state, "vibecheck_api")
-                self.assertEqual(result["job"], "vibecheck")
+                    result = _resolve_application_terminal_target(state, "demo-app_api")
+                self.assertEqual(result["job"], "demo-app")
                 self.assertEqual(result["task"], "api")
                 self.assertEqual(result["allocId"], "alloc-running")
                 self.assertEqual(result["node"], "cn-edge")
@@ -5288,9 +5288,9 @@ class ControlApiTests(unittest.TestCase):
                 }
                 state["deployments"] = {
                     "compose": {
-                        "vibecheck": {
-                            "name": "vibecheck",
-                            "manifest": yaml.safe_dump({"name": "vibecheck", "services": {"api": {}}}),
+                        "demo-app": {
+                            "name": "demo-app",
+                            "manifest": yaml.safe_dump({"name": "demo-app", "services": {"api": {}}}),
                         }
                     }
                 }
@@ -5301,12 +5301,12 @@ class ControlApiTests(unittest.TestCase):
                 control_server.TERMINAL_BROKER = control_server.TerminalBroker(per_node_limit=2, idle_timeout_seconds=60)
 
                 def request(_self, method, path, body=None):
-                    if path == "/v1/job/vibecheck":
+                    if path == "/v1/job/demo-app":
                         return {
-                            "ID": "vibecheck",
-                            "TaskGroups": [{"Name": "vibecheck", "Tasks": [{"Name": "api", "Config": {"image": "registry.example/api:1"}}]}],
+                            "ID": "demo-app",
+                            "TaskGroups": [{"Name": "demo-app", "Tasks": [{"Name": "api", "Config": {"image": "registry.example/api:1"}}]}],
                         }
-                    if path == "/v1/job/vibecheck/allocations":
+                    if path == "/v1/job/demo-app/allocations":
                         return [
                             {
                                 "ID": "alloc-running",
@@ -5324,7 +5324,7 @@ class ControlApiTests(unittest.TestCase):
                     with client.websocket_connect("/v1/terminal/agent?node=worker-storage&nodeId=worker-node-id") as agent:
                         agent.send_json({"type": "auth", "token": agent_token})
                         self.assertEqual(agent.receive_json()["type"], "ready")
-                        with client.websocket_connect("/v1/terminal/browser?service=vibecheck_api") as browser:
+                        with client.websocket_connect("/v1/terminal/browser?service=demo-app_api") as browser:
                             browser.send_json({"type": "auth", "token": state["deployToken"]})
                             opened = browser.receive_json()
                             self.assertEqual(opened["type"], "open")
@@ -6571,20 +6571,20 @@ class ControlApiTests(unittest.TestCase):
                         "name": "lab",
                         "region": "home",
                         "status": "ready",
-                        "tailscaleIP": "100.69.154.50",
+                        "tailscaleIP": "100.64.0.14",
                     }
                 }
                 state["registries"] = {
-                    "gcode.gaojiua.com:3000": {
+                    "git.example.com:3000": {
                         "username": "deploy",
                         "password": "registry-token",
-                        "serverAddress": "gcode.gaojiua.com:3000",
+                        "serverAddress": "git.example.com:3000",
                     }
                 }
                 save_state(state)
-                handle_secret_set(state["deployToken"], {"name": "GRANARY_MYSQL_ROOT_PASSWORD", "value": "mysql-secret"})
-                handle_secret_set(state["deployToken"], {"name": "GRANARY_ADMIN_PASSWORD", "value": "admin-secret"})
-                handle_secret_set(state["deployToken"], {"name": "GRANARY_JWT_SECRET", "value": "jwt-secret"})
+                handle_secret_set(state["deployToken"], {"name": "LEDGER_MYSQL_ROOT_PASSWORD", "value": "mysql-secret"})
+                handle_secret_set(state["deployToken"], {"name": "LEDGER_ADMIN_PASSWORD", "value": "admin-secret"})
+                handle_secret_set(state["deployToken"], {"name": "LEDGER_JWT_SECRET", "value": "jwt-secret"})
                 (root / "luma.yaml").write_text(
                     yaml.safe_dump({"defaults": {"engine": "nomad", "stackRoot": str(root / "stacks"), "routesRoot": str(root / "routes")}}),
                     encoding="utf-8",
@@ -6596,20 +6596,20 @@ class ControlApiTests(unittest.TestCase):
                                 "image": "mysql:8.4.9",
                                 "environment": {
                                     "MYSQL_DATABASE": "ledger",
-                                    "MYSQL_ROOT_PASSWORD": "${GRANARY_MYSQL_ROOT_PASSWORD}",
+                                    "MYSQL_ROOT_PASSWORD": "${LEDGER_MYSQL_ROOT_PASSWORD}",
                                 },
                                 "volumes": ["ledger_mysql_data:/var/lib/mysql"],
                             },
                             "ledger": {
-                                "image": "gcode.gaojiua.com:3000/gaojiuatech/ledger:latest",
+                                "image": "git.example.com:3000/acme/ledger:latest",
                                 "environment": {
-                                    "GRANARY_ADMIN_PASSWORD": "${GRANARY_ADMIN_PASSWORD}",
-                                    "GRANARY_JWT_SECRET": "${GRANARY_JWT_SECRET}",
-                                    "GRANARY_MYSQL_DSN": "root:${GRANARY_MYSQL_ROOT_PASSWORD}@tcp(mysql:3306)/ledger",
+                                    "LEDGER_ADMIN_PASSWORD": "${LEDGER_ADMIN_PASSWORD}",
+                                    "LEDGER_JWT_SECRET": "${LEDGER_JWT_SECRET}",
+                                    "LEDGER_MYSQL_DSN": "root:${LEDGER_MYSQL_ROOT_PASSWORD}@tcp(mysql:3306)/ledger",
                                 },
                             },
                             "ledger-frontend": {
-                                "image": "gcode.gaojiua.com:3000/gaojiuatech/ledger-frontend:latest",
+                                "image": "git.example.com:3000/acme/ledger-frontend:latest",
                             },
                         },
                         "volumes": {"ledger_mysql_data": {}},
@@ -6642,15 +6642,15 @@ class ControlApiTests(unittest.TestCase):
                 job_text = deploy.call_args.args[1]
                 self.assertIn('"ID": "ledger"', job_text)
                 self.assertIn('"source": "ledger_mysql_data"', job_text)
-                self.assertIn('"server_address": "gcode.gaojiua.com:3000"', job_text)
+                self.assertIn('"server_address": "git.example.com:3000"', job_text)
                 self.assertIn("mysql-secret", job_text)
                 self.assertEqual(result["orchestrator"], "Nomad job registered for ledger")
                 mysql_route = (root / "routes" / "ledger-mysql.yml").read_text(encoding="utf-8")
                 api_route = (root / "routes" / "ledger-ledger.yml").read_text(encoding="utf-8")
                 frontend_route = (root / "routes" / "ledger-ledger-frontend.yml").read_text(encoding="utf-8")
-                self.assertIn("100.69.154.50:3306", mysql_route)
-                self.assertIn("http://100.69.154.50:8888", api_route)
-                self.assertIn("http://100.69.154.50:8081", frontend_route)
+                self.assertIn("100.64.0.14:3306", mysql_route)
+                self.assertIn("http://100.64.0.14:8888", api_route)
+                self.assertIn("http://100.64.0.14:8081", frontend_route)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -6667,7 +6667,7 @@ class ControlApiTests(unittest.TestCase):
                         "name": "home-2",
                         "region": "home",
                         "nodeId": "node-home-2",
-                        "tailscaleIP": "100.84.163.118",
+                        "tailscaleIP": "100.64.0.15",
                         "labels": {"luma.node.id": "node-home-2", "luma.node.name": "home-2", "region": "home"},
                         "agent": {
                             "status": "online",
@@ -7380,7 +7380,7 @@ class ControlApiTests(unittest.TestCase):
                         "region": "cn",
                         "status": "ready",
                         "nodeId": "node-cn-2",
-                        "tailscaleIP": "100.64.29.91",
+                        "tailscaleIP": "100.64.0.13",
                         "labels": {"luma.node.name": "cn-2", "region": "cn"},
                     }
                 }
@@ -7428,7 +7428,7 @@ class ControlApiTests(unittest.TestCase):
                     )
 
                 stack_text = deploy.call_args.args[1]
-                self.assertIn('"Address": "100.64.29.91"', stack_text)
+                self.assertIn('"Address": "100.64.0.13"', stack_text)
                 self.assertNotIn('"AddressMode": "host"', stack_text)
                 self.assertFalse(stale_route.exists())
                 steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
@@ -8078,8 +8078,8 @@ class ControlApiTests(unittest.TestCase):
     def test_private_direct_registry_bypasses_existing_daemon_egress_proxy(self):
         state = {
             "registries": {
-                "gcode.gaojiua.com:3000": {
-                    "serverAddress": "gcode.gaojiua.com:3000",
+                "git.example.com:3000": {
+                    "serverAddress": "git.example.com:3000",
                     "username": "Nickname4th",
                     "password": "secret",
                 }
@@ -8112,7 +8112,7 @@ class ControlApiTests(unittest.TestCase):
                     "Name": "manager-host",
                     "ID": "node-1",
                     "HTTPProxy": "http://127.0.0.1:7890",
-                    "NoProxy": "localhost,127.0.0.1,gcode.gaojiua.com:3000,gcode.gaojiua.com",
+                    "NoProxy": "localhost,127.0.0.1,git.example.com:3000,git.example.com",
                 }
             raise AssertionError(path)
 
@@ -8122,13 +8122,13 @@ class ControlApiTests(unittest.TestCase):
         ) as agent:
             result = ensure_image_pull_network(
                 state,
-                "gcode.gaojiua.com:3000/gaojiuatech/docs-site-journey-preview:latest",
+                "git.example.com:3000/acme/docs-site-journey-preview:latest",
             )
         agent.assert_called_once()
         self.assertEqual(agent.call_args.args[2], "configure-docker-egress-proxy")
         payload = agent.call_args.args[3]
-        self.assertIn("gcode.gaojiua.com:3000", payload["noProxy"])
-        self.assertIn("gcode.gaojiua.com", payload["noProxy"])
+        self.assertIn("git.example.com:3000", payload["noProxy"])
+        self.assertIn("git.example.com", payload["noProxy"])
         self.assertEqual(result, "Docker daemon proxy bypass configured")
 
     def test_latest_service_image_uses_local_digest_cache_when_registry_matches(self):

@@ -702,9 +702,9 @@ class AlertingTest(unittest.TestCase):
         ch = self.channel()
         self.rule(name='构建失败',metric='build.failed',threshold=0,forSeconds=0,repeatSeconds=60,channelIds=[ch['id']])
         run = {'id':'failed-build','projectKey':'traefik/whoami','status':'failed','createdAt':900,'updatedAt':990,
-               'buildNode':'air3','request':{'manifest':'name: native-probe\nbuild:\n  repo: verification/native\n'},
+               'buildNode':'arm-3','request':{'manifest':'name: native-probe\nbuild:\n  repo: verification/native\n'},
                'events':[{'name':'Build image','status':'ok','message':'Built and pushed registry.test/probe:v1'},
-                         {'name':'Verify registry on gaojiu','status':'fail','message':'Cannot interpret system proxy settings','ts':990}]}
+                         {'name':'Verify registry on worker-b','status':'fail','message':'Cannot interpret system proxy settings','ts':990}]}
         state = {'domain':'luma.test','clusterId':'test','buildRuns':{'failed-build':run}}
         save_state(state)
         alerting.tick(alerting.load_evaluation_state(now=1000),now=1000)
@@ -718,7 +718,7 @@ class AlertingTest(unittest.TestCase):
         self.assertEqual(details['service'],'native-probe')
         self.assertEqual(details['image'],'registry.test/probe:v1')
         self.assertEqual(details['imageRepository'],'verification/native')
-        self.assertEqual(details['stage'],'Verify registry on gaojiu')
+        self.assertEqual(details['stage'],'Verify registry on worker-b')
         self.assertEqual(details['failedAt'],990)
         self.assertEqual(details['url'],'https://luma.test/dashboard/deployments/build/failed-build')
         sent=[]

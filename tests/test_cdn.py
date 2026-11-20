@@ -95,7 +95,7 @@ class FakeEsa:
             ready = self.cert_applied and self.cert_polls >= self.cert_after_polls
             status = "configured" if ready else ("applying" if self.cert_applied else "none")
             certs = [{"Type": "free", "Status": "OK", "SAN": params["RecordName"]}] if ready else []
-            # ESA also lists other site certificates (seen: www's for linkshell).
+            # ESA also lists other site certificates (seen: www's for app).
             certs.append({"Type": "free", "Status": "OK", "SAN": "www.unrelated.example"})
             return {"Result": [{"RecordName": params["RecordName"], "Status": status, "Count": len(certs), "Certificates": certs}]}
         if action == "ApplyCertificate":
@@ -773,7 +773,7 @@ class CertificateCoverageTests(unittest.TestCase):
         self.assertEqual(certificate_status(client, site_id=77, domain="app.example.com")[1], 0)
         self.assertTrue(_san_covers("www.example.com,*.example.com", "app.example.com"))
         self.assertFalse(_san_covers("*.example.com", "a.b.example.com"))
-        self.assertFalse(_san_covers("www.example.com", "linkshell.example.com"))
+        self.assertFalse(_san_covers("www.example.com", "app.example.com"))
 
     def test_dns_waits_for_a_successful_edge_handshake(self):
         client = FakeEsa()

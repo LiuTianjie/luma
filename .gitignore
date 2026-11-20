@@ -24,8 +24,10 @@ node_modules/
 # Generated GitHub Pages artifact
 _site/
 
-# Local investigation notes and audit artifacts
+# Local investigation notes, agent scratch, and runtime-only observability configs
 /.local-notes/
+/.local-observe/
+/.agents/
 /docs/research/
 *.local.compose.yml
 docker-compose.local.yml

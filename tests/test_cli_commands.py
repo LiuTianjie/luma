@@ -1475,18 +1475,18 @@ class CliTests(unittest.TestCase):
         from luma.cli.session import _status_node_rows
 
         registered = [
-            {"name": "air2", "region": "render", "status": "labeled", "displayName": "air2", "nodeId": "id-air2"},
-            {"name": "air3", "region": "render", "status": "labeled", "displayName": "air3", "nodeId": "id-air3"},
+            {"name": "arm-2", "region": "render", "status": "labeled", "displayName": "arm-2", "nodeId": "id-arm-2"},
+            {"name": "arm-3", "region": "render", "status": "labeled", "displayName": "arm-3", "nodeId": "id-arm-3"},
         ]
         nomad = [
-            {"id": "id-air2", "hostname": "Mac.lan", "lumaNode": "", "state": "ready", "role": "client", "availability": "eligible"},
-            {"id": "id-air3", "hostname": "Mac.lan", "lumaNode": "", "state": "ready", "role": "client", "availability": "eligible"},
+            {"id": "id-arm-2", "hostname": "Mac.lan", "lumaNode": "", "state": "ready", "role": "client", "availability": "eligible"},
+            {"id": "id-arm-3", "hostname": "Mac.lan", "lumaNode": "", "state": "ready", "role": "client", "availability": "eligible"},
             {"id": "id-stray-1", "hostname": "Mac", "lumaNode": "", "state": "ready", "role": "client", "availability": "eligible"},
             {"id": "id-stray-2", "hostname": "Mac", "lumaNode": "", "state": "down", "role": "client", "availability": "eligible"},
         ]
         rows = {row[0]: row for row in _status_node_rows(registered, nomad)}
-        self.assertEqual(rows["air2"][1:4], ["render", "labeled", "ready"])
-        self.assertEqual(rows["air3"][1:4], ["render", "labeled", "ready"])
+        self.assertEqual(rows["arm-2"][1:4], ["render", "labeled", "ready"])
+        self.assertEqual(rows["arm-3"][1:4], ["render", "labeled", "ready"])
         self.assertEqual(rows["Mac"][3], "ready")
         self.assertEqual(rows["Mac (id-stray)"][3], "down")
 
@@ -1717,16 +1717,16 @@ class CliTests(unittest.TestCase):
 
         payload = {
             "nodes": {"items": [
-                {"name": "air2", "hostname": "air2", "nodeId": "air2-id"},
-                {"name": "gaojiu", "nodeId": "gaojiu-id", "aliases": ["Mac.lan"]},
+                {"name": "arm-2", "hostname": "arm-2", "nodeId": "arm-2-id"},
+                {"name": "worker-b", "nodeId": "worker-b-id", "aliases": ["Mac.lan"]},
             ]},
             "nomad": {"nodes": [
-                {"id": "air2-id", "name": "Mac.lan", "hostname": "Mac.lan", "state": "ready"},
-                {"id": "gaojiu-id", "name": "Mac", "hostname": "Mac", "state": "down"},
+                {"id": "arm-2-id", "name": "Mac.lan", "hostname": "Mac.lan", "state": "ready"},
+                {"id": "worker-b-id", "name": "Mac", "hostname": "Mac", "state": "down"},
             ]},
         }
-        for query, expected_id in (("air2", "air2-id"), ("gaojiu", "gaojiu-id"),
-                                   ("air2-id", "air2-id"), ("Mac.lan", "gaojiu-id")):
+        for query, expected_id in (("arm-2", "arm-2-id"), ("worker-b", "worker-b-id"),
+                                   ("arm-2-id", "arm-2-id"), ("Mac.lan", "worker-b-id")):
             with self.subTest(query=query):
                 result = _filter_node_status_payload(payload, query)
                 self.assertEqual([node["id"] for node in result["nomad"]["nodes"]], [expected_id])

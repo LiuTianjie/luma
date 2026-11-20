@@ -29,7 +29,7 @@ port: 3000
 cdn: esa
 ```
 
-- A root domain cannot be a CNAME, so Cloudflare must "flatten" it: Cloudflare resolves ESA itself and returns IP addresses. ESA then schedules every visitor by Cloudflare's location instead of the visitor's. Measured on itool.tech: a visitor in mainland China was served from US nodes and a page took 10 seconds. Luma therefore refuses `cdn` on the zone apex and explains this fix.
+- A root domain cannot be a CNAME, so Cloudflare must "flatten" it: Cloudflare resolves ESA itself and returns IP addresses. ESA then schedules every visitor by Cloudflare's location instead of the visitor's. In practice, a visitor in mainland China can be served from US nodes with multi-second latency. Luma therefore refuses `cdn` on the zone apex and explains this fix.
 - `www.example.com` is a plain CNAME, so each visitor's own DNS resolver asks ESA and gets a nearby node.
 - `example.com` stays a direct A record to the edge. GET and HEAD get a permanent redirect to `https://www.example.com` with the path and query kept; browsers cache it. Other methods reach the application unchanged, so payment callbacks and webhooks sent to the old address keep working.
 - `except` lists paths served directly on the old host for every method. Use it for APIs other clients call with an `Authorization` header: browsers and most HTTP libraries drop that header when a redirect changes host, so the request would arrive unauthenticated. The short list form `redirectFrom: [example.com]` redirects every GET and HEAD.

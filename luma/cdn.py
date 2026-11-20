@@ -644,7 +644,7 @@ def _san_covers(san: str, domain: str) -> bool:
 def certificate_status(client: AliyunClient, *, site_id: Any, domain: str) -> Tuple[str, int]:
     """Return ``(status, certificates covering domain)`` for the record.
 
-    ESA counted www.itool.tech's certificate for linkshell.itool.tech, so a
+    ESA counted www.example.com's certificate for app.example.com, so a
     certificate only counts when its SAN covers the domain and it is usable.
     """
     result = client.esa("ListCertificatesByRecord", SiteId=site_id, RecordName=domain, ValidOnly=True, Detail=True)

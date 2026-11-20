@@ -73,7 +73,7 @@ func TestBeginWebAuthnOptionsShape(t *testing.T) {
 		t.Fatalf("NewManager: %v", err)
 	}
 
-	regOpts, cid1, err := m.BeginRegistration("https://eye.itool.tech", "eye.itool.tech", "MacBook Touch ID", false)
+	regOpts, cid1, err := m.BeginRegistration("https://eye.example.com", "eye.example.com", "MacBook Touch ID", false)
 	if err != nil {
 		t.Fatalf("BeginRegistration: %v", err)
 	}
@@ -81,8 +81,8 @@ func TestBeginWebAuthnOptionsShape(t *testing.T) {
 		t.Fatalf("expected non-empty ceremony id")
 	}
 	rpMap, _ := regOpts["rp"].(map[string]any)
-	if rpMap["id"] != "eye.itool.tech" {
-		t.Fatalf("expected rp.id=eye.itool.tech, got %v", rpMap["id"])
+	if rpMap["id"] != "eye.example.com" {
+		t.Fatalf("expected rp.id=eye.example.com, got %v", rpMap["id"])
 	}
 	userMap, _ := regOpts["user"].(map[string]any)
 	uidStr, _ := userMap["id"].(string)
@@ -93,7 +93,7 @@ func TestBeginWebAuthnOptionsShape(t *testing.T) {
 		t.Fatalf("expected management flow to omit authenticatorAttachment")
 	}
 
-	promoOpts, _, err := m.BeginRegistration("https://eye.itool.tech", "eye.itool.tech", "", true)
+	promoOpts, _, err := m.BeginRegistration("https://eye.example.com", "eye.example.com", "", true)
 	if err != nil {
 		t.Fatalf("BeginRegistration(promo): %v", err)
 	}
@@ -101,11 +101,11 @@ func TestBeginWebAuthnOptionsShape(t *testing.T) {
 		t.Fatalf("expected promotion flow to set authenticatorAttachment=platform")
 	}
 
-	loginOpts, cid2, err := m.BeginLogin("https://eye.itool.tech", "eye.itool.tech")
+	loginOpts, cid2, err := m.BeginLogin("https://eye.example.com", "eye.example.com")
 	if err != nil {
 		t.Fatalf("BeginLogin: %v", err)
 	}
-	if cid2 == "" || loginOpts["rpId"] != "eye.itool.tech" || loginOpts["userVerification"] != "preferred" {
+	if cid2 == "" || loginOpts["rpId"] != "eye.example.com" || loginOpts["userVerification"] != "preferred" {
 		t.Fatalf("unexpected loginOpts: %#v", loginOpts)
 	}
 	allowList, ok := loginOpts["allowCredentials"].([]any)
