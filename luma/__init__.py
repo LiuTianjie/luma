@@ -1,3 +1,3 @@
 """Luma deployment CLI."""
 
-__version__ = "0.2.92"
+__version__ = "0.2.93"
