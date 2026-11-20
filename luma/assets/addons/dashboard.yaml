@@ -1,0 +1,69 @@
+apiVersion: luma.addon/v1
+id: dashboard
+name: Luma Dashboard
+kind: static-bundle
+required: true
+category: core
+stack: luma-dashboard
+primaryService: dashboard
+sourceDir: dashboard-src
+description:
+  en: Core web console delivered as a hot-swappable static asset bundle under /opt/luma/dashboard. Update UI independently without rebuilding or restarting Luma Control.
+  zh: 平台 Web 控制台（必选核心插件），以静态资产包热更新方式托管在 /opt/luma/dashboard，更新前端界面无需重打或重启 Luma Control 镜像。
+auth:
+  mode: builtin
+  consolePath: /dashboard/
+  cliAuth: control-token
+ui:
+  icon: dashboard
+  openMode: internal
+  dashboardPath: /
+  healthPath: /dashboard/
+uiCapabilities: []
+requirements:
+  minMemoryMb: 0
+  recommendedMemoryMb: 0
+  minCpu: 0
+  stateful: false
+  pinPolicy: manager
+  note:
+    en: Pure static HTML/JS/CSS bundle served directly by Control from /opt/luma/dashboard with atomic symlink hot-swap and instant rollback (zero extra container overhead).
+    zh: 纯静态前端资产包，由 Control 直接从 /opt/luma/dashboard 提供服务，支持原子软链热更新与秒级回滚，零额外容器与内存开销。
+bundle:
+  defaultUrl: https://github.com/LiuTianjie/luma/releases/download/dashboard-latest/luma-dashboard.tar.gz
+  manifestUrl: https://github.com/LiuTianjie/luma/releases/download/dashboard-latest/manifest.json
+presets:
+  - id: static-bundle
+    label:
+      en: Static Bundle Hot-Swap
+      zh: 静态资产包热更新
+    description:
+      en: Pull prebuilt releases or upload a local Vite build directly into /opt/luma/dashboard with zero downtime.
+      zh: 从发布源拉取或本地构建直传静态包到 /opt/luma/dashboard，零停机原子切换。
+configSchema:
+  - key: bundleUrl
+    type: string
+    group: general
+    tier: basic
+    required: false
+    default: https://github.com/LiuTianjie/luma/releases/download/dashboard-latest/luma-dashboard.tar.gz
+    placeholder: https://github.com/LiuTianjie/luma/releases/download/dashboard-latest/luma-dashboard.tar.gz
+    label:
+      en: Bundle Download URL
+      zh: 静态包下载地址
+    description:
+      en: Tarball (.tar.gz) URL fetched on one-click update. Leave default for official GitHub Releases or point to an internal mirror.
+      zh: 一键在线更新时拉取的 .tar.gz 静态包地址；默认使用官方 GitHub Release，也可指向自建内网镜像或对象存储。
+  - key: manifestUrl
+    type: string
+    group: general
+    tier: advanced
+    required: false
+    default: https://github.com/LiuTianjie/luma/releases/download/dashboard-latest/manifest.json
+    placeholder: https://github.com/LiuTianjie/luma/releases/download/dashboard-latest/manifest.json
+    label:
+      en: Release Manifest URL
+      zh: 版本清单地址 (manifest.json)
+    description:
+      en: Optional JSON metadata URL used to check the latest remote version and verify SHA-256 before switching.
+      zh: 可选，用于检查远端最新版本并在切换前校验 SHA-256。

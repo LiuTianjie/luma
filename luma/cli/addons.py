@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -24,14 +26,18 @@ def add_parser(
     addon = _command(
         sub,
         "addon",
-        "Install, configure and remove pluggable Luma addons (builder, eye, observe)",
+        "Install, configure and remove Luma addons (dashboard, builder, eye, observe)",
         description=(
             "Manage official and custom Luma addons with unified Luma Control SSO, "
-            "automatic internal secret generation, and schema-driven configuration."
+            "automatic internal secret generation, hot-swappable Dashboard bundles, "
+            "and schema-driven configuration."
         ),
         epilog=(
             "Examples:\n"
             "  luma addon list\n"
+            "  luma addon install dashboard\n"
+            "  luma addon install dashboard --source ./dashboard-src\n"
+            "  luma addon rollback dashboard\n"
             "  luma addon install eye --preset node-edge --domain eye.example.com --region global --node edge-1\n"
             "  luma addon configure eye --set retentionDays=14 --apply\n"
             "  luma addon uninstall eye"
@@ -44,7 +50,7 @@ def add_parser(
     _add_output_arguments(p_list)
 
     p_show = _command(addon_sub, "show", "Show detailed configuration, secrets status and schema for an addon")
-    p_show.add_argument("addon_id", metavar="addon", help="Addon identifier (for example builder, eye, observe)")
+    p_show.add_argument("addon_id", metavar="addon", help="Addon identifier (for example dashboard, builder, eye, observe)")
     _add_control_arguments(p_show)
     _add_output_arguments(p_show)
 
@@ -53,15 +59,17 @@ def add_parser(
     _add_config_flags(p_cfg)
     p_cfg.add_argument("--interactive", action="store_true", help="Prompt interactively for configuration values")
     p_cfg.add_argument("--rotate-secrets", action="store_true", help="Regenerate auto-managed internal secrets")
-    p_cfg.add_argument("--apply", action="store_true", help="Redeploy the addon immediately using its pinned image")
+    p_cfg.add_argument("--apply", action="store_true", help="Redeploy the addon immediately using its pinned image or bundle")
     p_cfg.add_argument("--timeout", type=int, default=600, help="Deployment timeout in seconds when --apply is set (default: 600)")
     _add_control_arguments(p_cfg)
     _add_output_arguments(p_cfg)
 
-    p_inst = _command(addon_sub, "install", "Configure and deploy an addon with unified Control SSO")
-    p_inst.add_argument("addon_id", metavar="addon", help="Addon identifier (builder, eye, observe)")
+    p_inst = _command(addon_sub, "install", "Configure and deploy an addon (or hot-swap a static-bundle addon)")
+    p_inst.add_argument("addon_id", metavar="addon", help="Addon identifier (dashboard, builder, eye, observe)")
     _add_config_flags(p_inst)
-    p_inst.add_argument("--source", type=Path, default=None, help="Local source checkout to build and push (auto-detected if ./<sourceDir> exists)")
+    p_inst.add_argument("--source", type=Path, default=None, help="Local source checkout to build and deploy (static-bundle addons build locally and upload directly without Docker)")
+    p_inst.add_argument("--bundle", type=Path, default=None, help="Prebuilt .tar.gz static bundle to upload and hot-swap (for static-bundle addons like dashboard)")
+    p_inst.add_argument("--version", default="", help="Optional release version label when uploading a static bundle")
     p_inst.add_argument("--image", action="append", default=[], metavar="SERVICE=IMAGE", help="Pin a prebuilt image instead of building locally (repeatable)")
     p_inst.add_argument("--platform", default="linux/amd64", help="Target container platform when building from source (default: linux/amd64)")
     p_inst.add_argument("--rotate-secrets", action="store_true", help="Regenerate auto-managed internal secrets")
@@ -70,7 +78,13 @@ def add_parser(
     _add_control_arguments(p_inst)
     _add_output_arguments(p_inst)
 
-    p_uninst = _command(addon_sub, "uninstall", "Remove an addon deployment and revoke its Control SSO sessions")
+    p_rb = _command(addon_sub, "rollback", "Roll back a static-bundle addon (such as dashboard) to a previous release")
+    p_rb.add_argument("addon_id", metavar="addon", help="Addon identifier (for example dashboard)")
+    p_rb.add_argument("--release", default="", help="Specific release ID to activate (defaults to previous release)")
+    _add_control_arguments(p_rb)
+    _add_output_arguments(p_rb)
+
+    p_uninst = _command(addon_sub, "uninstall", "Remove an optional addon deployment and revoke its Control SSO sessions")
     p_uninst.add_argument("addon_id", metavar="addon", help="Addon identifier")
     p_uninst.add_argument("--purge-secrets", action="store_true", help="Also delete scoped secrets stored for this addon")
     p_uninst.add_argument("--delete-storage", action="store_true", help="Also delete removable storage volumes (data loss)")
@@ -436,6 +450,85 @@ def _deploy_from_source(
             compose_path.unlink(missing_ok=True)
 
 
+def _deploy_static_bundle_from_source(
+    args: argparse.Namespace,
+    client: common.ControlClient,
+    addon: Mapping[str, Any],
+    source_dir: Path,
+    *,
+    quiet: bool,
+) -> Dict[str, Any]:
+    from ..control.dashboard_bundle import package_dashboard_directory
+
+    addon_id = str(addon["id"])
+    dist_dir = source_dir
+    if not (dist_dir / "index.html").is_file():
+        repo_root = source_dir.parent if (source_dir.parent / "package.json").is_file() else source_dir
+        if not (repo_root / "package.json").is_file():
+            raise LumaError(f"cannot build static bundle from {source_dir}: missing package.json and index.html")
+        if not quiet:
+            print(f"[step] Building dashboard bundle locally in {repo_root} (no Docker image required)...", flush=True)
+        proc = subprocess.run(
+            ["npm", "run", "build:dashboard"],
+            cwd=str(repo_root),
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise LumaError("local `npm run build:dashboard` failed")
+        built_candidate = repo_root / "luma" / "assets" / "dashboard"
+        if not (built_candidate / "index.html").is_file():
+            raise LumaError(f"built dashboard assets not found at {built_candidate}")
+        dist_dir = built_candidate
+
+    version = str(getattr(args, "version", "") or "").strip()
+    if not quiet:
+        print(f"[step] Packaging static bundle from {dist_dir}...", flush=True)
+    archive_bytes, manifest = package_dashboard_directory(dist_dir, version=version)
+    qs = urllib.parse.urlencode(
+        {
+            "version": manifest["version"],
+            "source": "cli-source",
+            "sha256": manifest["sha256"],
+        }
+    )
+    if not quiet:
+        print(
+            f"[step] Uploading {len(archive_bytes) / 1024:.1f} KiB ({manifest['fileCount']} files) to Control...",
+            flush=True,
+        )
+    return client.upload_bytes(
+        f"/v1/addons/{addon_id}/upload?{qs}",
+        archive_bytes,
+        timeout=min(int(getattr(args, "timeout", 300) or 300), 600),
+    )
+
+
+def _upload_static_bundle_file(
+    args: argparse.Namespace,
+    client: common.ControlClient,
+    addon_id: str,
+    bundle_path: Path,
+    *,
+    quiet: bool,
+) -> Dict[str, Any]:
+    resolved = bundle_path.expanduser().resolve()
+    if not resolved.is_file():
+        raise LumaError(f"bundle archive not found: {resolved}")
+    raw_bytes = resolved.read_bytes()
+    version = str(getattr(args, "version", "") or "").strip()
+    params: Dict[str, str] = {"source": "cli-bundle"}
+    if version:
+        params["version"] = version
+    qs = urllib.parse.urlencode(params)
+    if not quiet:
+        print(f"[step] Uploading {resolved.name} ({len(raw_bytes) / 1024:.1f} KiB) to Control...", flush=True)
+    return client.upload_bytes(
+        f"/v1/addons/{addon_id}/upload?{qs}",
+        raw_bytes,
+        timeout=min(int(getattr(args, "timeout", 300) or 300), 600),
+    )
+
+
 def cmd_addon(args: argparse.Namespace) -> int:
     endpoint, token, insecure, resolve_ip = common._control_context(args, require_token=True)
     client = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
@@ -475,6 +568,18 @@ def cmd_addon(args: argparse.Namespace) -> int:
         print(f"  Preset:     {item.get('preset')}")
         print(f"  Auth mode:  {(item.get('auth') or {}).get('mode')} (ssoReady={item.get('ssoReady')})")
         print(f"  Console:    {item.get('consoleUrl') or item.get('url') or '(not configured)'}")
+        bundle_status = item.get("bundleStatus") if isinstance(item.get("bundleStatus"), Mapping) else None
+        if bundle_status:
+            active_rel = bundle_status.get("activeRelease") if isinstance(bundle_status.get("activeRelease"), Mapping) else None
+            print(f"  Bundle mode: {bundle_status.get('mode')} (store={bundle_status.get('storeDir')})")
+            if active_rel:
+                print(
+                    f"  Release:    {active_rel.get('version')} "
+                    f"(id={active_rel.get('id')}, sha256={str(active_rel.get('sha256') or '')[:12]})"
+                )
+            releases = bundle_status.get("releases") or []
+            if releases:
+                print(f"  History:    {len(releases)} release(s) cached for instant rollback")
         eff_req = item.get("effectiveRequirements") or item.get("requirements") or {}
         if eff_req.get("recommendedMemoryMb") or eff_req.get("minMemoryMb"):
             print(
@@ -546,7 +651,12 @@ def cmd_addon(args: argparse.Namespace) -> int:
         prev_node = str((addon_view.get("config") or {}).get("node") or "")
         preset, config, secrets_map = _collect_flag_overrides(args)
         images_map = _parse_kv_list(list(getattr(args, "image", []) or []), flag="--image")
-        if sys.stdin.isatty() and not getattr(args, "yes", False) and output_format == "text":
+        if (
+            str(addon_view.get("kind") or "compose") != "static-bundle"
+            and sys.stdin.isatty()
+            and not getattr(args, "yes", False)
+            and output_format == "text"
+        ):
             preset, config, secrets_map = _interactive_wizard(
                 addon_view,
                 available_regions=list(info.get("availableRegions") or []),
@@ -587,17 +697,36 @@ def cmd_addon(args: argparse.Namespace) -> int:
         if not quiet and configured.get("inheritedCredentials"):
             print(f"[ok] Inherited Control credentials: {', '.join(configured['inheritedCredentials'])}")
 
-        source_dir = _detect_source_dir(getattr(args, "source", None), str(addon_view.get("sourceDir") or ""))
-        if not images_map and source_dir is not None and (getattr(args, "source", None) is not None or not addon_view.get("canApplyInPlace")):
-            deploy_res = _deploy_from_source(args, client, addon_view, source_dir, quiet=quiet)
+        addon_kind = str(addon_view.get("kind") or "compose")
+        explicit_bundle = getattr(args, "bundle", None)
+        explicit_source = getattr(args, "source", None)
+        if addon_kind == "static-bundle":
+            if explicit_bundle is not None:
+                deploy_res = _upload_static_bundle_file(args, client, args.addon_id, explicit_bundle, quiet=quiet)
+            elif explicit_source is not None:
+                source_dir = _detect_source_dir(explicit_source, str(addon_view.get("sourceDir") or ""))
+                assert source_dir is not None
+                deploy_res = _deploy_static_bundle_from_source(args, client, addon_view, source_dir, quiet=quiet)
+            else:
+                deploy_res = _stream_addon_apply(
+                    client,
+                    args.addon_id,
+                    {"origin": "cli"},
+                    timeout=min(int(getattr(args, "timeout", 300) or 300), 600),
+                    quiet=quiet,
+                )
         else:
-            deploy_res = _stream_addon_apply(
-                client,
-                args.addon_id,
-                {"images": images_map, "origin": "cli"},
-                timeout=int(getattr(args, "timeout", 7200) or 7200),
-                quiet=quiet,
-            )
+            source_dir = _detect_source_dir(explicit_source, str(addon_view.get("sourceDir") or ""))
+            if not images_map and source_dir is not None and (explicit_source is not None or not addon_view.get("canApplyInPlace")):
+                deploy_res = _deploy_from_source(args, client, addon_view, source_dir, quiet=quiet)
+            else:
+                deploy_res = _stream_addon_apply(
+                    client,
+                    args.addon_id,
+                    {"images": images_map, "origin": "cli"},
+                    timeout=int(getattr(args, "timeout", 7200) or 7200),
+                    quiet=quiet,
+                )
         final_info = client.request("GET", f"/v1/addons/{args.addon_id}")
         final_addon = final_info.get("addon") or addon_view
         out = {"addon": final_addon, "generatedSecrets": configured.get("generatedSecrets") or [], "deployment": deploy_res}
@@ -624,6 +753,22 @@ def cmd_addon(args: argparse.Namespace) -> int:
                 print("\nNext step: enroll at least one build runner (0 currently online):")
                 print("  1. luma builder token create my-runner")
                 print(f"  2. luma runner join --url {builder_origin} --token <RUNNER_TOKEN>")
+        return 0
+
+    if cmd == "rollback":
+        payload: Dict[str, Any] = {}
+        release_id = str(getattr(args, "release", "") or "").strip()
+        if release_id:
+            payload["releaseId"] = release_id
+        result = client.request("POST", f"/v1/addons/{args.addon_id}/rollback", payload)
+        if output_format != "text":
+            common._print_success(args, result)
+            return 0
+        rel = result.get("release") or {}
+        print(
+            f"[ok] Rolled back {args.addon_id} to {rel.get('version') or rel.get('id')} "
+            f"(sha256={str(rel.get('sha256') or '')[:12]})."
+        )
         return 0
 
     if cmd == "uninstall":

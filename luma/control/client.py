@@ -182,6 +182,50 @@ class ControlClient:
                 return b"".join(chunks)
             chunks.append(chunk)
 
+    def upload_bytes(
+        self,
+        path: str,
+        raw_bytes: bytes,
+        *,
+        content_type: str = "application/gzip",
+        timeout: int = 120,
+    ) -> Dict[str, Any]:
+        request_headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": content_type,
+            "Accept": "application/json",
+        }
+        if self.resolve_ip:
+            request_headers["Host"] = self._host_header
+        req = urllib.request.Request(
+            self._request_url(path),
+            data=raw_bytes,
+            method="POST",
+            headers=request_headers,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=self.ssl_context) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            try:
+                err_payload = json.loads(detail)
+                message = err_payload.get("error") or detail
+            except ValueError:
+                message = detail or f"HTTP {exc.code}"
+            raise LumaError(f"control API error ({exc.code}): {message}") from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise LumaError(f"control API upload failed: {exc}") from exc
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except ValueError as exc:
+            raise LumaError("control API returned non-JSON response") from exc
+        if not isinstance(payload, dict):
+            raise LumaError("control API returned invalid JSON")
+        return payload
+
     def stream(
         self,
         method: str,

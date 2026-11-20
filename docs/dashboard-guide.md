@@ -73,7 +73,7 @@ An application's tabs keep the same object context while switching between overv
 - **Overview** presents runtime status, placement, access addresses, storage and diagnostics (plus pipeline health when Luma Observe is installed).
 - **Logs** defaults to Control-backed **Live logs** (service/instance stdout with filtering, pause, wrap, copy and download) when Luma Observe is not installed. With Luma Observe enabled, it unlocks application-filtered VictoriaLogs search and Tempo traces alongside live logs. Runtime events and pull diagnostics are separate from application output.
 - **Dashboards** (unlocked by **Luma Observe**) lists Grafana dashboards tagged `luma-app:<application-name>` and OTel task boards. See [dashboard configuration and delivery](observe-applications.md#link-dashboards-to-an-application).
-- **Frontend** (unlocked by **Luma Eye**) automatically matches the application to its Luma Eye project by slug or domain, showing live UV/PV, client error counts, crash-free session rate and a one-click SSO link into the full Eye console.
+- **Frontend** (unlocked by **Luma Eye**, shown only on applications matched to an Eye project by slug or domain) displays live UV/PV, client error counts, crash-free session rate and a one-click SSO link into the full Eye console. New frontend projects can always be managed or onboarded from **Observability → Frontend RUM**.
 - **Configuration** shows the registered deployment source and update time, with a copy action. A file switch appears when more than one configuration is available.
 - **Versions** separates loading failures from an empty history and from rollback failures. A rollback requires confirmation and changes the running deployment.
 

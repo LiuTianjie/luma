@@ -120,7 +120,7 @@ def resolve_addon_url(state: Mapping[str, Any], addon_id: str) -> str:
     spec = catalog.get(clean_id)
     saved = _saved_addon_entry(state, clean_id)
 
-    if spec and spec["auth"]["mode"] == "forward-auth":
+    if spec and spec["auth"]["mode"] in {"forward-auth", "builtin"}:
         ctl = _control_url(state)
         console_path = str(spec["auth"].get("consolePath") or "/")
         return f"{ctl}{console_path}" if ctl else ""
@@ -383,15 +383,29 @@ def _addon_view(
     manager_node: Optional[str] = None,
 ) -> Dict[str, Any]:
     addon_id = str(spec["id"])
+    addon_kind = str(spec.get("kind") or "compose")
+    required = bool(spec.get("required", False))
     stack = str(spec["stack"])
     saved = _saved_addon_entry(state, addon_id)
     kind, record = _deployment_record(state, stack)
     installed = _deployment_active(record)
+    bundle_status: Optional[Dict[str, Any]] = None
+
+    if addon_kind == "static-bundle":
+        from . import dashboard_bundle
+
+        bundle_status = dashboard_bundle.dashboard_bundle_status()
+        installed = bundle_status["mode"] != "bootstrap"
+        kind = "static-bundle"
 
     sidecar_yaml = str(record.get("manifest") or "") if isinstance(record, Mapping) else ""
     compose_yaml = str(record.get("composeContent") or "") if isinstance(record, Mapping) else ""
 
-    inferred_preset, inferred_config = infer_config_from_deployment(spec, sidecar_yaml, compose_yaml) if installed else (default_preset_id(spec), default_config_for_preset(spec))
+    inferred_preset, inferred_config = (
+        infer_config_from_deployment(spec, sidecar_yaml, compose_yaml)
+        if (installed and addon_kind != "static-bundle")
+        else (default_preset_id(spec), default_config_for_preset(spec))
+    )
     preset = str(saved.get("preset") or inferred_preset or default_preset_id(spec))
     merged_config = dict(inferred_config)
     saved_cfg = saved.get("config") if isinstance(saved.get("config"), Mapping) else {}
@@ -400,7 +414,7 @@ def _addon_view(
             merged_config[k] = v
 
     has_saved = bool(saved)
-    if not installed and not has_saved:
+    if addon_kind != "static-bundle" and not installed and not has_saved:
         if node_details is None or manager_node is None:
             node_details, manager_node = _cluster_node_details(state)
         merged_config = _apply_cluster_smart_defaults(
@@ -429,7 +443,7 @@ def _addon_view(
         url = ""
 
     console_path = str(spec["auth"].get("consolePath") or "/")
-    if spec["auth"]["mode"] == "forward-auth":
+    if spec["auth"]["mode"] in {"forward-auth", "builtin"}:
         console_url = url
     elif url:
         console_url = url.rstrip("/") + (console_path if console_path.startswith("/") else "/" + console_path)
@@ -440,16 +454,18 @@ def _addon_view(
     if spec["auth"]["mode"] == "control-sso":
         parsed = urlsplit(url)
         sso_ready = bool(url and parsed.scheme == "https" and not parsed.path and parsed.hostname)
-    elif spec["auth"]["mode"] == "forward-auth":
+    elif spec["auth"]["mode"] in {"forward-auth", "builtin"}:
         sso_ready = bool(_control_url(state))
 
     status = "running" if installed else ("configured" if has_saved else "not_installed")
     default_images = spec.get("defaultImages") if isinstance(spec.get("defaultImages"), Mapping) else {}
-    can_apply_in_place = bool((installed and compose_yaml.strip()) or default_images)
+    can_apply_in_place = bool(addon_kind == "static-bundle" or (installed and compose_yaml.strip()) or default_images)
 
-    return {
+    view: Dict[str, Any] = {
         "id": addon_id,
         "name": spec["name"],
+        "kind": addon_kind,
+        "required": required,
         "category": spec["category"],
         "description": spec["description"],
         "stack": stack,
@@ -457,12 +473,12 @@ def _addon_view(
         "sourceDir": spec["sourceDir"],
         "installed": installed,
         "configured": has_saved or installed,
-        "autoDiscovered": installed and not has_saved,
+        "autoDiscovered": installed and not has_saved and addon_kind != "static-bundle",
         "status": status,
         "preset": preset,
         "url": url,
         "consoleUrl": console_url,
-        "suggestedDomain": _suggested_domain_for_addon(state, addon_id),
+        "suggestedDomain": _suggested_domain_for_addon(state, addon_id) if addon_kind != "static-bundle" else "",
         "auth": spec["auth"],
         "ssoReady": sso_ready,
         "ui": spec["ui"],
@@ -470,6 +486,7 @@ def _addon_view(
         "requirements": spec.get("requirements") or {},
         "effectiveRequirements": effective_requirements(spec, preset),
         "defaultImages": dict(default_images),
+        "bundle": dict(spec.get("bundle") or {}),
         "presets": spec["presets"],
         "configSchema": spec["configSchema"],
         "autoSecrets": spec["autoSecrets"],
@@ -479,6 +496,9 @@ def _addon_view(
         "deploymentKind": kind if installed else "",
         "updatedAt": int(saved.get("updatedAt") or 0),
     }
+    if bundle_status is not None:
+        view["bundleStatus"] = bundle_status
+    return view
 
 
 def _cluster_regions_and_nodes(state: Mapping[str, Any]) -> Tuple[set[str], set[str]]:
@@ -533,6 +553,8 @@ def addon_capabilities_summary(state: Mapping[str, Any]) -> Dict[str, Any]:
     urls: Dict[str, str] = {}
     items: Dict[str, Dict[str, Any]] = {}
     for addon_id, spec in catalog.items():
+        if spec.get("required") or spec.get("kind") == "static-bundle":
+            continue
         stack = str(spec["stack"])
         _kind, record = _deployment_record(state, stack)
         installed = _deployment_active(record)
@@ -878,6 +900,135 @@ def prepare_addon_apply_body(token: str, addon_id: str, body: Mapping[str, Any])
     }
 
 
+def is_static_bundle_addon(addon_id: str) -> bool:
+    spec = get_addon_spec(addon_id)
+    return str(spec.get("kind") or "compose") == "static-bundle"
+
+
+def _resolve_static_bundle_urls(
+    state: Mapping[str, Any],
+    spec: Mapping[str, Any],
+    body: Optional[Mapping[str, Any]] = None,
+) -> Tuple[str, str]:
+    from . import dashboard_bundle
+
+    saved_cfg = _saved_addon_entry(state, str(spec["id"])).get("config")
+    saved_map = saved_cfg if isinstance(saved_cfg, Mapping) else {}
+    incoming_cfg = body.get("config") if isinstance(body, Mapping) and isinstance(body.get("config"), Mapping) else {}
+    spec_bundle = spec.get("bundle") if isinstance(spec.get("bundle"), Mapping) else {}
+    bundle_url = str(
+        (body.get("bundleUrl") if isinstance(body, Mapping) else "")
+        or incoming_cfg.get("bundleUrl")
+        or saved_map.get("bundleUrl")
+        or spec_bundle.get("defaultUrl")
+        or dashboard_bundle.DEFAULT_DASHBOARD_BUNDLE_URL
+    ).strip()
+    manifest_url = str(
+        (body.get("manifestUrl") if isinstance(body, Mapping) else "")
+        or incoming_cfg.get("manifestUrl")
+        or saved_map.get("manifestUrl")
+        or spec_bundle.get("manifestUrl")
+        or dashboard_bundle.DEFAULT_DASHBOARD_MANIFEST_URL
+    ).strip()
+    return bundle_url, manifest_url
+
+
+def handle_addon_bundle_apply(
+    token: str,
+    addon_id: str,
+    body: Mapping[str, Any],
+    *,
+    emit: Optional[Any] = None,
+) -> Dict[str, Any]:
+    from . import dashboard_bundle
+
+    spec = get_addon_spec(addon_id)
+    clean_id = spec["id"]
+    if str(spec.get("kind") or "") != "static-bundle":
+        raise LumaError(f"addon {clean_id!r} is not a static-bundle addon")
+    if body.get("config") or body.get("preset"):
+        handle_addon_configure(token, clean_id, {**dict(body), "requireComplete": False})
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    bundle_url, manifest_url = _resolve_static_bundle_urls(state, spec, body)
+    installed = dashboard_bundle.install_dashboard_bundle_from_url(
+        bundle_url,
+        manifest_url=manifest_url,
+        version=str(body.get("version") or "").strip(),
+        expected_sha256=str(body.get("sha256") or "").strip(),
+        emit=emit,
+    )
+    return {
+        "addon": _addon_view(load_state(), spec),
+        "release": installed["release"],
+        "bundleStatus": installed["status"],
+    }
+
+
+def handle_addon_bundle_upload(
+    token: str,
+    addon_id: str,
+    raw_bytes: bytes,
+    *,
+    version: str = "",
+    source: str = "upload",
+    expected_sha256: str = "",
+) -> Dict[str, Any]:
+    from . import dashboard_bundle
+
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    spec = get_addon_spec(addon_id)
+    clean_id = spec["id"]
+    if str(spec.get("kind") or "") != "static-bundle":
+        raise LumaError(f"addon {clean_id!r} does not accept static bundle uploads")
+    installed = dashboard_bundle.install_dashboard_bundle_bytes(
+        raw_bytes,
+        version=version,
+        source=source,
+        expected_sha256=expected_sha256,
+    )
+    return {
+        "addon": _addon_view(load_state(), spec),
+        "release": installed["release"],
+        "bundleStatus": installed["status"],
+    }
+
+
+def handle_addon_bundle_rollback(
+    token: str,
+    addon_id: str,
+    body: Mapping[str, Any],
+) -> Dict[str, Any]:
+    from . import dashboard_bundle
+
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    spec = get_addon_spec(addon_id)
+    clean_id = spec["id"]
+    if str(spec.get("kind") or "") != "static-bundle":
+        raise LumaError(f"addon {clean_id!r} does not support static bundle rollback")
+    rolled = dashboard_bundle.rollback_dashboard_bundle(str(body.get("releaseId") or "").strip())
+    return {
+        "addon": _addon_view(load_state(), spec),
+        "release": rolled["release"],
+        "bundleStatus": rolled["status"],
+    }
+
+
+def handle_addon_bundle_check_update(token: str, addon_id: str) -> Dict[str, Any]:
+    from . import dashboard_bundle
+
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    spec = get_addon_spec(addon_id)
+    clean_id = spec["id"]
+    if str(spec.get("kind") or "") != "static-bundle":
+        raise LumaError(f"addon {clean_id!r} does not support static bundle update checks")
+    bundle_url, manifest_url = _resolve_static_bundle_urls(state, spec)
+    return dashboard_bundle.check_remote_dashboard_update(manifest_url, bundle_url=bundle_url)
+
+
 def handle_addon_uninstall(token: str, addon_id: str, body: Mapping[str, Any]) -> Dict[str, Any]:
     from . import addon_auth, server
 
@@ -885,6 +1036,8 @@ def handle_addon_uninstall(token: str, addon_id: str, body: Mapping[str, Any]) -
     require_token(state, token, token_type="deploy")
     spec = get_addon_spec(addon_id)
     clean_id = spec["id"]
+    if spec.get("required"):
+        raise LumaError(f"{clean_id} is a required core addon and cannot be uninstalled")
     stack = spec["stack"]
     purge_secrets = bool(body.get("purgeSecrets", False))
     delete_storage = bool(body.get("deleteStorage", False))

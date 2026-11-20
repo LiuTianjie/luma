@@ -45,7 +45,6 @@ from starlette.websockets import WebSocket
 import yaml
 
 from ..registry_access import join_insecure_registries, registry_host_allows_http
-from ..assets import asset_path
 from ..build_capabilities import NATIVE_ARM_BUILD_CAPABILITY, REQUIRED_BUILD_CAPABILITY, REPOSITORY_BUILD_PLAN_CAPABILITY, native_arm_build_platform, normalize_build_capabilities, require_build_result_capabilities
 from ..cloudflare import CloudflareClient
 from ..dns import delete_dns, sync_dns, with_dns_runtime
@@ -14919,14 +14918,23 @@ def _dashboard_content_type(path: Path) -> str:
     return guessed or "application/octet-stream"
 
 
-def _dashboard_asset_path(path: str) -> Path:
+def _dashboard_asset_path(path: str, *, dashboard_root: Path | None = None) -> Path:
     if not path.startswith("/dashboard/"):
         raise LumaError("dashboard asset not found")
     relative_path = urllib.parse.unquote(path.removeprefix("/dashboard/"))
-    dashboard_root = asset_path("dashboard").resolve()
-    candidate = (dashboard_root / relative_path).resolve()
+    parts = [part for part in relative_path.split("/") if part]
+    if any(part.startswith(".") for part in parts):
+        raise LumaError("dashboard asset not found")
+    if dashboard_root is None:
+        from .dashboard_bundle import resolve_dashboard_root
+
+        dashboard_root, _mode = resolve_dashboard_root()
+    if dashboard_root is None:
+        raise LumaError("dashboard asset not found")
+    resolved_root = dashboard_root.resolve()
+    candidate = (resolved_root / relative_path).resolve()
     try:
-        candidate.relative_to(dashboard_root)
+        candidate.relative_to(resolved_root)
     except ValueError as exc:
         raise LumaError("dashboard asset not found") from exc
     if not candidate.is_file():
@@ -14935,15 +14943,20 @@ def _dashboard_asset_path(path: str) -> Path:
 
 
 def _dashboard_asset(path: str) -> tuple[bytes, str]:
+    from .dashboard_bundle import bootstrap_html, resolve_dashboard_root
+
+    dashboard_root, _mode = resolve_dashboard_root()
     # A request that looks like a static asset (has a file extension) but is not in the
-    # generated dashboard directory is a genuine miss -> never return HTML for it.
+    # active dashboard directory is a genuine miss -> never return HTML for it.
     if _dashboard_path_looks_like_asset(path):
-        candidate = _dashboard_asset_path(path)
+        candidate = _dashboard_asset_path(path, dashboard_root=dashboard_root)
         return candidate.read_bytes(), _dashboard_content_type(candidate)
     # Otherwise this is a client-side route (e.g. /dashboard/apps/foo) served by the SPA
     # router -> fall back to index.html. index.html references assets with absolute
     # /dashboard/* URLs, so deep routes still load the hashed JS/CSS files correctly.
-    return asset_path(DASHBOARD_INDEX_ASSET).read_bytes(), "text/html; charset=utf-8"
+    if dashboard_root is None:
+        return bootstrap_html(), "text/html; charset=utf-8"
+    return (dashboard_root / "index.html").read_bytes(), "text/html; charset=utf-8"
 
 
 def _dashboard_cache_control(path: str) -> str:
@@ -16561,6 +16574,25 @@ async def _operations_lifespan(app: Starlette):
     registry_thread = _start_registry_automation(registry_stop)
     app.state.registry_automation_stop = registry_stop
     app.state.registry_automation_thread = registry_thread
+    try:
+        from . import dashboard_bundle
+
+        bundle_url = ""
+        manifest_url = ""
+        try:
+            current = load_auth_state()
+            dash_cfg = ((current.get("addons") or {}).get("dashboard") or {}).get("config") or {}
+            if isinstance(dash_cfg, Mapping):
+                bundle_url = str(dash_cfg.get("bundleUrl") or "").strip()
+                manifest_url = str(dash_cfg.get("manifestUrl") or "").strip()
+        except Exception:
+            pass
+        dashboard_bundle.maybe_autofetch_dashboard_bundle_async(
+            bundle_url=bundle_url,
+            manifest_url=manifest_url,
+        )
+    except Exception:
+        pass
     try:
         yield
     finally:

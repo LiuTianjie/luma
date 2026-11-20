@@ -32,7 +32,10 @@ class AddonPlatformTests(DashboardAuthBase):
 
     def test_catalog_loads_all_official_addons(self):
         catalog = addon_specs.load_addon_catalog()
-        self.assertEqual(list(catalog.keys())[:3], ["builder", "eye", "observe"])
+        self.assertEqual(list(catalog.keys())[:4], ["dashboard", "builder", "eye", "observe"])
+        self.assertEqual(catalog["dashboard"]["kind"], "static-bundle")
+        self.assertTrue(catalog["dashboard"]["required"])
+        self.assertEqual(catalog["dashboard"]["auth"]["mode"], "builtin")
         self.assertEqual(catalog["eye"]["auth"]["mode"], "control-sso")
         self.assertEqual(catalog["builder"]["auth"]["mode"], "control-sso")
         self.assertEqual(catalog["observe"]["auth"]["mode"], "forward-auth")

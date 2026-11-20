@@ -78,6 +78,14 @@ async def require_authenticated_token(request: Request) -> str:
     return token
 
 
+def raw_binary_body(max_bytes: int) -> Callable[[Any], Any]:
+    """Mark an AuthenticatedAPIRoute endpoint as accepting bounded raw binary bodies."""
+    def decorator(fn: Any) -> Any:
+        fn._luma_raw_binary_max_bytes = int(max_bytes)
+        return fn
+    return decorator
+
+
 class AuthenticatedAPIRoute(APIRoute):
     """FastAPI route preserving auth-before-parse, streaming body-size limits,
     old CLI Content-Type tolerance, and exact Luma error envelopes."""
@@ -89,6 +97,7 @@ class AuthenticatedAPIRoute(APIRoute):
 
     def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
         original_handler = super().get_route_handler()
+        raw_max_bytes = getattr(self.endpoint, "_luma_raw_binary_max_bytes", None)
 
         async def custom_route_handler(request: Request) -> Response:
             from .. import server
@@ -98,15 +107,29 @@ class AuthenticatedAPIRoute(APIRoute):
                 request.state.luma_token = token
                 if request.method in {"POST", "PUT", "PATCH"}:
                     await run_in_threadpool(server._prevalidate_post_token, request.url.path, token)
-                    body = await server._read_json_body(
-                        request,
-                        max_bytes=server.MAX_AUTHENTICATED_BODY_BYTES,
-                        allow_empty=False,
-                    )
-                    request.state.luma_body = body
-                    request._body = json.dumps(
-                        body, ensure_ascii=False, separators=(",", ":")
-                    ).encode("utf-8")
+                    if isinstance(raw_max_bytes, int) and raw_max_bytes > 0:
+                        chunks = []
+                        total = 0
+                        async for chunk in request.stream():
+                            if not chunk:
+                                continue
+                            total += len(chunk)
+                            if total > raw_max_bytes:
+                                raise LumaError(
+                                    f"request body exceeds maximum size ({raw_max_bytes // (1024 * 1024)} MiB)"
+                                )
+                            chunks.append(chunk)
+                        request._body = b"".join(chunks)
+                    else:
+                        body = await server._read_json_body(
+                            request,
+                            max_bytes=server.MAX_AUTHENTICATED_BODY_BYTES,
+                            allow_empty=False,
+                        )
+                        request.state.luma_body = body
+                        request._body = json.dumps(
+                            body, ensure_ascii=False, separators=(",", ":")
+                        ).encode("utf-8")
                 return await original_handler(request)
             except Exception as exc:
                 return error_response_for_exception(exc)

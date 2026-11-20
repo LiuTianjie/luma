@@ -197,7 +197,6 @@ export function ApplicationManagementPanel({
   onSelectApplication: (stack: string | null) => void;
 }) {
   const effectiveAddons = addons || payload?.addons;
-  const visibleTabs = useMemo(() => visibleApplicationTabs(effectiveAddons), [effectiveAddons]);
   const hasObserveStatus = hasAddonCapability(effectiveAddons, "observe.status");
   const hasObserveLogs = hasAddonCapability(effectiveAddons, "observe.logs");
   const hasObserveTraces = hasAddonCapability(effectiveAddons, "observe.traces");
@@ -211,6 +210,36 @@ export function ApplicationManagementPanel({
   // Resolve against each fresh snapshot; URL state drives selection and browser back.
   const selected =
     applications.find((app) => app.stack === selectedStack) || null;
+  const [eyeMatch, setEyeMatch] = useState<{ stack: string; matched: boolean } | null>(null);
+  useEffect(() => {
+    const stack = selected?.stack;
+    if (!hasEyeRum || !stack) {
+      setEyeMatch(null);
+      return;
+    }
+    const controller = new AbortController();
+    let active = true;
+    apiGet<{ available?: boolean; matched?: boolean }>(
+      `/v1/dashboard/addons/eye/app?${new URLSearchParams({ app: stack, since: "24h" }).toString()}`,
+      token,
+      controller.signal,
+    )
+      .then((res) => {
+        if (active) setEyeMatch({ stack, matched: Boolean(res?.available && res?.matched) });
+      })
+      .catch(() => {
+        if (active) setEyeMatch({ stack, matched: false });
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [hasEyeRum, selected?.stack, token]);
+  const eyeMatched = Boolean(selected && eyeMatch?.stack === selected.stack && eyeMatch.matched);
+  const visibleTabs = useMemo(
+    () => visibleApplicationTabs(effectiveAddons, { eyeMatched, activeTab: tab }),
+    [effectiveAddons, eyeMatched, tab],
+  );
   const setSelected = (app: Application | null) =>
     onSelectApplication(app?.stack || null);
   const configRequest = useRef(0);

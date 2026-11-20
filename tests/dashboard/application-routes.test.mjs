@@ -35,7 +35,26 @@ test('application tabs adapt cleanly to installed addon capabilities', () => {
   assert.ok(observeTabs.includes('dashboards'));
   assert.ok(!observeTabs.includes('eye'));
 
-  const eyeTabs = visibleApplicationTabs({ known: true, active: ['eye'], capabilities: ['eye.rum'], urls: {} }).map((t) => t.id);
-  assert.ok(eyeTabs.includes('eye'));
-  assert.ok(!eyeTabs.includes('dashboards'));
+  const eyeUnmatchedTabs = visibleApplicationTabs({ known: true, active: ['eye'], capabilities: ['eye.rum'], urls: {} }).map((t) => t.id);
+  assert.ok(!eyeUnmatchedTabs.includes('eye'));
+  assert.ok(!eyeUnmatchedTabs.includes('dashboards'));
+
+  const eyeMatchedTabs = visibleApplicationTabs(
+    { known: true, active: ['eye'], capabilities: ['eye.rum'], urls: {} },
+    { eyeMatched: true },
+  ).map((t) => t.id);
+  assert.ok(eyeMatchedTabs.includes('eye'));
+  assert.ok(!eyeMatchedTabs.includes('dashboards'));
+
+  const eyeDirectTabs = visibleApplicationTabs(
+    { known: true, active: ['eye'], capabilities: ['eye.rum'], urls: {} },
+    { eyeMatched: false, activeTab: 'eye' },
+  ).map((t) => t.id);
+  assert.ok(eyeDirectTabs.includes('eye'));
+
+  const eyeWithoutCapability = visibleApplicationTabs(
+    { known: true, active: [], capabilities: [], urls: {} },
+    { eyeMatched: true, activeTab: 'eye' },
+  ).map((t) => t.id);
+  assert.ok(!eyeWithoutCapability.includes('eye'));
 });

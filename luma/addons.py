@@ -19,8 +19,9 @@ ADDON_API_VERSION = "luma.addon/v1"
 ADDON_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 DOMAIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
 ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
-OFFICIAL_ORDER = ("builder", "eye", "observe")
+OFFICIAL_ORDER = ("dashboard", "builder", "eye", "observe")
 VALID_EXPOSURES = frozenset({"cn-edge", "node-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel", "none"})
+VALID_ADDON_KINDS = frozenset({"compose", "static-bundle"})
 
 
 def addons_assets_dir() -> Path:
@@ -80,16 +81,26 @@ def _normalize_spec(raw: Any, *, source: str = "<addon>") -> Dict[str, Any]:
         "note": raw_req.get("note") if isinstance(raw_req.get("note"), dict) else {"en": "", "zh": ""},
         "byPreset": by_preset,
     }
+    raw_bundle = raw.get("bundle") if isinstance(raw.get("bundle"), dict) else {}
+    kind = str(raw.get("kind") or "compose").strip().lower()
+    if kind not in VALID_ADDON_KINDS:
+        raise LumaError(f"unsupported addon kind in {source}: {kind!r}")
     return {
         "apiVersion": ADDON_API_VERSION,
         "id": addon_id,
         "name": name,
+        "kind": kind,
+        "required": bool(raw.get("required", False)),
         "category": str(raw.get("category") or "utility").strip(),
         "stack": stack,
         "primaryService": str(raw.get("primaryService") or addon_id).strip(),
         "sourceDir": str(raw.get("sourceDir") or "").strip(),
         "defaultImage": str(raw.get("defaultImage") or "").strip(),
         "defaultImages": default_images,
+        "bundle": {
+            "defaultUrl": str(raw_bundle.get("defaultUrl") or "").strip(),
+            "manifestUrl": str(raw_bundle.get("manifestUrl") or "").strip(),
+        },
         "uiCapabilities": ui_capabilities,
         "requirements": requirements,
         "description": raw.get("description") if isinstance(raw.get("description"), dict) else {"en": "", "zh": ""},

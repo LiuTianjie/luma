@@ -8,9 +8,12 @@ import {
   ChevronDown,
   Copy,
   Cpu,
+  Download,
   KeyRound,
+  LayoutDashboard,
   Package,
   RefreshCw,
+  RotateCcw,
   Settings,
   ShieldCheck,
   SlidersHorizontal,
@@ -109,9 +112,31 @@ type AddonNodeDetail = {
   publicIngressReady: boolean;
 };
 
+type DashboardBundleRelease = {
+  id: string;
+  version: string;
+  sha256: string;
+  source: string;
+  sourceUrl?: string;
+  installedAt: number;
+  fileCount: number;
+  totalBytes: number;
+  active?: boolean;
+};
+
+type DashboardBundleStatus = {
+  mode: "bundle" | "embedded" | "bootstrap" | string;
+  activeRelease: DashboardBundleRelease | null;
+  embeddedAvailable: boolean;
+  storeDir: string;
+  releases: DashboardBundleRelease[];
+};
+
 type AddonItem = {
   id: string;
   name: string;
+  kind?: "compose" | "static-bundle" | string;
+  required?: boolean;
   category: string;
   description: LocalizedText;
   stack: string;
@@ -125,7 +150,7 @@ type AddonItem = {
   consoleUrl: string;
   suggestedDomain?: string;
   auth: {
-    mode: "control-sso" | "forward-auth" | "none" | string;
+    mode: "control-sso" | "forward-auth" | "builtin" | "none" | string;
     cliAuth?: string;
     controlUrlEnv?: string;
     needsControlDeployToken?: boolean;
@@ -140,6 +165,7 @@ type AddonItem = {
   requirements?: AddonRequirements;
   effectiveRequirements?: AddonRequirements;
   defaultImages?: Record<string, string>;
+  bundleStatus?: DashboardBundleStatus;
   presets: AddonPreset[];
   configSchema: AddonConfigField[];
   autoSecrets: AddonAutoSecret[];
@@ -263,6 +289,7 @@ function fieldTier(field: AddonConfigField): "basic" | "recommended" | "advanced
 }
 
 function AddonIcon({ icon }: { icon?: string }) {
+  if (icon === "dashboard") return <LayoutDashboard className="size-4 text-primary" />;
   if (icon === "builder") return <Boxes className="size-4 text-primary" />;
   if (icon === "observe") return <Activity className="size-4 text-primary" />;
   return <Package className="size-4 text-primary" />;
@@ -310,6 +337,13 @@ export function AddonsPage({
   const [removing, setRemoving] = useState<AddonItem | null>(null);
   const [purgeSecrets, setPurgeSecrets] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
+
+  // Static-bundle hot-swap state (e.g. Luma Dashboard)
+  const [bundleBusy, setBundleBusy] = useState<"" | "update" | "upload" | "rollback">("");
+  const [bundleLogs, setBundleLogs] = useState<string[]>([]);
+  const [reloadPrompt, setReloadPrompt] = useState(false);
+  const bundleFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [uploadTargetAddon, setUploadTargetAddon] = useState<AddonItem | null>(null);
 
   const loadBuilderStatus = useCallback(async () => {
     setRecheckingRunners(true);
@@ -562,6 +596,104 @@ export function AddonsPage({
       setSaveError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving("");
+    }
+  };
+
+  const handleBundleHotSwap = async (addon: AddonItem) => {
+    setBundleBusy("update");
+    setError("");
+    setNotice("");
+    setBundleLogs([]);
+    try {
+      const response = await fetch(`/v1/addons/${encodeURIComponent(addon.id)}/apply/stream`, {
+        method: "POST",
+        headers: authHeaders(token, true),
+        body: JSON.stringify({ origin: "dashboard" }),
+      });
+      await consumeNdjson(response, (ev) => {
+        const name = String(ev.name || ev.stage || "");
+        const msg = String(ev.message || "");
+        if (name || msg) {
+          setBundleLogs((prev) => [...prev, `[${String(ev.status || "step")}] ${name}${msg ? `: ${msg}` : ""}`]);
+        }
+      });
+      setNotice(
+        zh
+          ? `${addon.name} 已完成静态包原子热更新（未重启 Control）。刷新页面即可加载新版界面。`
+          : `${addon.name} hot-swapped atomically without restarting Control. Reload to load the new UI.`,
+      );
+      setReloadPrompt(true);
+      await loadAddons();
+      onAddonsChange?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBundleBusy("");
+    }
+  };
+
+  const handleBundleUpload = async (addon: AddonItem, file: File) => {
+    setBundleBusy("upload");
+    setError("");
+    setNotice("");
+    setBundleLogs([]);
+    try {
+      const buffer = await file.arrayBuffer();
+      const params = new URLSearchParams({ source: "browser" });
+      const response = await fetch(`/v1/addons/${encodeURIComponent(addon.id)}/upload?${params.toString()}`, {
+        method: "POST",
+        headers: {
+          ...authHeaders(token),
+          "Content-Type": "application/gzip",
+        },
+        body: buffer,
+      });
+      const text = await response.text();
+      const parsed = text ? (JSON.parse(text) as { error?: string; release?: DashboardBundleRelease }) : {};
+      if (!response.ok) {
+        throw new Error(parsed.error || `HTTP ${response.status}`);
+      }
+      const ver = parsed.release?.version || file.name;
+      setNotice(
+        zh
+          ? `已上传并热切换 ${addon.name} 到 ${ver}（未重启 Control）。刷新页面即可生效。`
+          : `Uploaded and activated ${addon.name} release ${ver} without restarting Control. Reload to view.`,
+      );
+      setReloadPrompt(true);
+      await loadAddons();
+      onAddonsChange?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBundleBusy("");
+      setUploadTargetAddon(null);
+      if (bundleFileInputRef.current) bundleFileInputRef.current.value = "";
+    }
+  };
+
+  const handleBundleRollback = async (addon: AddonItem, releaseId?: string) => {
+    setBundleBusy("rollback");
+    setError("");
+    setNotice("");
+    try {
+      const res = await apiPost<{ release?: DashboardBundleRelease }>(
+        `/v1/addons/${encodeURIComponent(addon.id)}/rollback`,
+        token,
+        releaseId ? { releaseId } : {},
+      );
+      const ver = res.release?.version || res.release?.id || "";
+      setNotice(
+        zh
+          ? `${addon.name} 已原子回滚至 ${ver}。刷新页面即可生效。`
+          : `Rolled back ${addon.name} to ${ver}. Reload to view.`,
+      );
+      setReloadPrompt(true);
+      await loadAddons();
+      onAddonsChange?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBundleBusy("");
     }
   };
 
@@ -955,12 +1087,39 @@ export function AddonsPage({
         }}
       />
 
+      <input
+        ref={bundleFileInputRef}
+        type="file"
+        accept=".tar.gz,.tgz,.tar,application/gzip,application/x-gzip"
+        className="hidden"
+        onChange={(ev) => {
+          const file = ev.target.files?.[0];
+          if (file && uploadTargetAddon) {
+            void handleBundleUpload(uploadTargetAddon, file);
+          }
+        }}
+      />
+
       {notice ? (
         <Alert>
           <ShieldCheck className="size-4" />
           <AlertTitle>{zh ? "已完成" : "Success"}</AlertTitle>
-          <AlertDescription>{notice}</AlertDescription>
+          <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+            <span>{notice}</span>
+            {reloadPrompt ? (
+              <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
+                <RefreshCw className="mr-1 size-3.5" />
+                {zh ? "立即刷新控制台" : "Reload console"}
+              </Button>
+            ) : null}
+          </AlertDescription>
         </Alert>
+      ) : null}
+
+      {bundleLogs.length > 0 ? (
+        <pre className="max-h-36 overflow-auto rounded-lg border border-border bg-muted/40 p-3 font-mono text-xs text-muted-foreground">
+          {bundleLogs.join("\n")}
+        </pre>
       ) : null}
 
       {error ? (
@@ -980,15 +1139,36 @@ export function AddonsPage({
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {addons.map((addon) => {
+            const isStaticBundle = addon.kind === "static-bundle";
+            const isRequired = Boolean(addon.required);
+            const bundleStatus = addon.bundleStatus;
+            const activeRelease = bundleStatus?.activeRelease || null;
+            const releaseCount = bundleStatus?.releases?.length || 0;
             const installCmd = `luma addon install ${addon.id}`;
             const authLabel =
               addon.auth.mode === "control-sso"
                 ? "Control SSO"
                 : addon.auth.mode === "forward-auth"
                   ? "ForwardAuth"
+                  : addon.auth.mode === "builtin"
+                    ? zh
+                      ? "原生会话"
+                      : "Native session"
+                    : zh
+                      ? "独立认证"
+                      : "Standalone";
+            const bundleModeLabel =
+              bundleStatus?.mode === "bundle"
+                ? zh
+                  ? "静态热更新包"
+                  : "Hot-swapped bundle"
+                : bundleStatus?.mode === "embedded"
+                  ? zh
+                    ? "内置回退"
+                    : "Embedded fallback"
                   : zh
-                    ? "独立认证"
-                    : "Standalone";
+                    ? "待拉取"
+                    : "Bootstrap";
             const statusVariant = addon.installed ? "default" : addon.configured ? "secondary" : "outline";
             const statusText = addon.installed
               ? zh
@@ -1027,7 +1207,14 @@ export function AddonsPage({
                         <div className="font-mono text-xs text-muted-foreground">{addon.stack}</div>
                       </div>
                     </div>
-                    <Badge variant={statusVariant}>{statusText}</Badge>
+                    <div className="flex items-center gap-1.5">
+                      {isRequired ? (
+                        <Badge variant="secondary" className="text-[0.6875rem]">
+                          {zh ? "核心必选" : "Core"}
+                        </Badge>
+                      ) : null}
+                      <Badge variant={statusVariant}>{statusText}</Badge>
+                    </div>
                   </div>
                   <CardDescription className="text-xs/5">{loc(addon.description, lang)}</CardDescription>
                 </CardHeader>
@@ -1056,22 +1243,60 @@ export function AddonsPage({
                         {authLabel}
                       </span>
                     </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-muted-foreground">{zh ? "部署预设" : "Preset"}</span>
-                      <span className="font-mono text-foreground">
-                        {addon.preset}
-                        {addon.config?.node ? ` · ${String(addon.config.node)}` : ""}
-                      </span>
-                    </div>
-                    {cardReqs.recommendedMemoryMb > 0 ? (
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-muted-foreground">{zh ? "建议资源" : "Resources"}</span>
-                        <span className="text-right font-medium text-foreground">
-                          {zh ? `≥ ${fmtMemory(cardReqs.recommendedMemoryMb)} 内存` : `>= ${fmtMemory(cardReqs.recommendedMemoryMb)} RAM`}
-                          {pinBadgeText ? ` · ${pinBadgeText}` : ""}
-                        </span>
-                      </div>
-                    ) : null}
+                    {isStaticBundle ? (
+                      <>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-muted-foreground">{zh ? "交付方式" : "Delivery"}</span>
+                          <span className="font-medium text-foreground">{bundleModeLabel}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-muted-foreground">{zh ? "当前版本" : "Active release"}</span>
+                          <span
+                            className="max-w-[190px] truncate font-mono text-foreground"
+                            title={activeRelease ? `${activeRelease.version} (${activeRelease.sha256})` : bundleModeLabel}
+                          >
+                            {activeRelease
+                              ? `${activeRelease.version} · ${activeRelease.sha256.slice(0, 8)}`
+                              : zh
+                                ? "内置版本"
+                                : "Bundled"}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-muted-foreground">{zh ? "托管目录" : "Store path"}</span>
+                          <span className="max-w-[190px] truncate font-mono text-foreground" title={bundleStatus?.storeDir || "/opt/luma/dashboard"}>
+                            {bundleStatus?.storeDir || "/opt/luma/dashboard"}
+                          </span>
+                        </div>
+                        {releaseCount > 0 ? (
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-muted-foreground">{zh ? "可回滚历史" : "Rollback cache"}</span>
+                            <span className="font-medium text-foreground">
+                              {zh ? `${releaseCount} 个版本` : `${releaseCount} release(s)`}
+                            </span>
+                          </div>
+                        ) : null}
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-muted-foreground">{zh ? "部署预设" : "Preset"}</span>
+                          <span className="font-mono text-foreground">
+                            {addon.preset}
+                            {addon.config?.node ? ` · ${String(addon.config.node)}` : ""}
+                          </span>
+                        </div>
+                        {cardReqs.recommendedMemoryMb > 0 ? (
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-muted-foreground">{zh ? "建议资源" : "Resources"}</span>
+                            <span className="text-right font-medium text-foreground">
+                              {zh ? `≥ ${fmtMemory(cardReqs.recommendedMemoryMb)} 内存` : `>= ${fmtMemory(cardReqs.recommendedMemoryMb)} RAM`}
+                              {pinBadgeText ? ` · ${pinBadgeText}` : ""}
+                            </span>
+                          </div>
+                        ) : null}
+                      </>
+                    )}
                     {addon.id === "builder" && addon.installed && builderStatus ? (
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-muted-foreground">{zh ? "在线 Runner" : "Online runners"}</span>
@@ -1127,44 +1352,90 @@ export function AddonsPage({
                   ) : null}
 
                   <div className="flex flex-wrap items-center gap-2">
-                    {addon.installed && addon.consoleUrl ? (
-                      <Button
-                        size="sm"
-                        nativeButton={false}
-                        render={
-                          <a
-                            href={addon.consoleUrl}
-                            target={addon.ui.openMode === "external" ? "_blank" : undefined}
-                            rel={addon.ui.openMode === "external" ? "noreferrer" : undefined}
-                          />
-                        }
-                      >
-                        {zh ? "打开控制台" : "Open console"}
-                        <ArrowUpRight className="ml-1 size-3.5" />
-                      </Button>
-                    ) : null}
-                    <Button
-                      size="sm"
-                      variant={addon.installed ? "outline" : "default"}
-                      onClick={() => openEditor(addon, data)}
-                    >
-                      <Settings className="mr-1 size-3.5" />
-                      {addon.installed ? (zh ? "配置" : "Configure") : zh ? "一键安装" : "Install"}
-                    </Button>
-                    {addon.installed ? (
-                      <Button
-                        size="icon-sm"
-                        variant="ghost"
-                        className="ml-auto text-destructive hover:text-destructive"
-                        aria-label={zh ? `卸载 ${addon.name}` : `Uninstall ${addon.name}`}
-                        onClick={() => {
-                          setRemoving(addon);
-                          setPurgeSecrets(false);
-                        }}
-                      >
-                        <Trash2 className="size-3.5" />
-                      </Button>
-                    ) : null}
+                    {isStaticBundle ? (
+                      <>
+                        <Button
+                          size="sm"
+                          disabled={Boolean(bundleBusy)}
+                          onClick={() => void handleBundleHotSwap(addon)}
+                        >
+                          {bundleBusy === "update" ? <Spinner className="mr-1 size-3.5" /> : <Download className="mr-1 size-3.5" />}
+                          {zh ? "在线热更新" : "Hot-swap update"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={Boolean(bundleBusy)}
+                          onClick={() => {
+                            setUploadTargetAddon(addon);
+                            bundleFileInputRef.current?.click();
+                          }}
+                        >
+                          {bundleBusy === "upload" ? <Spinner className="mr-1 size-3.5" /> : <Package className="mr-1 size-3.5" />}
+                          {zh ? "上传本地包" : "Upload bundle"}
+                        </Button>
+                        {releaseCount > 1 ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={Boolean(bundleBusy)}
+                            onClick={() => void handleBundleRollback(addon)}
+                          >
+                            {bundleBusy === "rollback" ? <Spinner className="mr-1 size-3.5" /> : <RotateCcw className="mr-1 size-3.5" />}
+                            {zh ? "回滚" : "Rollback"}
+                          </Button>
+                        ) : null}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => openEditor(addon, data)}
+                        >
+                          <Settings className="mr-1 size-3.5" />
+                          {zh ? "配置源" : "Source"}
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        {addon.installed && addon.consoleUrl ? (
+                          <Button
+                            size="sm"
+                            nativeButton={false}
+                            render={
+                              <a
+                                href={addon.consoleUrl}
+                                target={addon.ui.openMode === "external" ? "_blank" : undefined}
+                                rel={addon.ui.openMode === "external" ? "noreferrer" : undefined}
+                              />
+                            }
+                          >
+                            {zh ? "打开控制台" : "Open console"}
+                            <ArrowUpRight className="ml-1 size-3.5" />
+                          </Button>
+                        ) : null}
+                        <Button
+                          size="sm"
+                          variant={addon.installed ? "outline" : "default"}
+                          onClick={() => openEditor(addon, data)}
+                        >
+                          <Settings className="mr-1 size-3.5" />
+                          {addon.installed ? (zh ? "配置" : "Configure") : zh ? "一键安装" : "Install"}
+                        </Button>
+                        {addon.installed && !isRequired ? (
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            className="ml-auto text-destructive hover:text-destructive"
+                            aria-label={zh ? `卸载 ${addon.name}` : `Uninstall ${addon.name}`}
+                            onClick={() => {
+                              setRemoving(addon);
+                              setPurgeSecrets(false);
+                            }}
+                          >
+                            <Trash2 className="size-3.5" />
+                          </Button>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 </CardContent>
               </Card>

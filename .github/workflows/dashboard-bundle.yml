@@ -1,0 +1,82 @@
+name: Publish Dashboard Bundle
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths:
+      - dashboard-src/**
+      - package.json
+      - package-lock.json
+      - scripts/generate-dashboard-icons.mjs
+      - scripts/package-dashboard-bundle.py
+      - .github/workflows/dashboard-bundle.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dashboard-bundle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dashboard dependencies
+        run: npm ci
+
+      - name: Validate and build dashboard
+        run: |
+          npm run typecheck:dashboard
+          npm run build:dashboard
+          node scripts/generate-dashboard-icons.mjs --check
+          node --experimental-strip-types --test tests/dashboard/*.test.mjs
+          node --test dashboard-src/tests/*.cjs
+
+      - name: Package hot-swappable static bundle
+        env:
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          VERSION=""
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          python scripts/package-dashboard-bundle.py \
+            --output dist-dashboard \
+            --commit "${GITHUB_SHA:0:12}" \
+            ${VERSION:+--version "$VERSION"}
+
+      - name: Publish to rolling dashboard-latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view dashboard-latest >/dev/null 2>&1; then
+            gh release upload dashboard-latest dist-dashboard/luma-dashboard.tar.gz dist-dashboard/manifest.json --clobber
+          else
+            gh release create dashboard-latest \
+              dist-dashboard/luma-dashboard.tar.gz \
+              dist-dashboard/manifest.json \
+              --title "Luma Dashboard Bundle (latest)" \
+              --notes "Hot-swappable static asset bundle for Luma Dashboard. Update without rebuilding luma-control via Plugin Center or \`luma addon install dashboard\`."
+          fi

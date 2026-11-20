@@ -8,3 +8,6 @@ stacks
 routes
 docs
 tests
+dashboard-src
+node_modules
+luma/assets/dashboard

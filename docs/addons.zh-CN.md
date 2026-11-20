@@ -8,6 +8,7 @@ Luma Control 本身是一个精简、完整的自托管容器部署控制面：*
 
 | 插件 | 应用栈 | 建议资源与节点固定策略 | 鉴权方式 |
 | --- | --- | --- | --- |
+| **Luma Dashboard** (`dashboard`，核心必选) | `luma-dashboard` | 静态资产包托管在 `/opt/luma/dashboard`（零额外容器与内存开销；原子软链热更新与秒级回滚） | 原生 Control 会话 (`builtin`) |
 | **Luma Build** (`builder`) | `luma-build` | ≥ 0.5 GiB 内存（SQLite 队列，实际编译由外部 Runner 执行；建议固定节点） | Control SSO (`control-sso`) |
 | **Luma Observe** (`observe`) | `luma-observe` | 建议 Manager ≥ 8 GiB 内存（13 个可观测组件；固定部署在 Manager） | Control `forwardAuth` (`/grafana`) |
 | **Luma Eye** (`eye`) | `luma-eye` | ≥ 1.5 GiB（`node-edge`）/ 2 GiB（`all-in-one`）；含 ClickHouse 与 SQLite 卷，**必须固定节点** | Control SSO (`control-sso`) |
@@ -20,7 +21,7 @@ Luma 控制台会根据集群实际运行的插件（`luma.addon/v1` 中的 `uiC
 | --- | --- | --- | --- | --- |
 | **侧边栏监控区** | **监控与告警**（4 个原生页面）：告警事件、资源指标、告警规则、通知渠道 | — | 自动升级为 **可观测**：新增采集状态、应用监控（Grafana/日志/链路）、看板分享 | 新增 **前端监控**（`/observe/eye`）项目总览 |
 | **部署记录与创建应用** | 部署时间线、容器镜像 / YAML / 模板创建 | 解锁从 Git 仓库构建（`/builds`）、远端构建重试及 Builder 控制台入口 | — | — |
-| **应用详情 Tab** | 概览、服务与实例、告警、实时日志、指标、配置、密钥、版本与回滚 | — | 新增概览采集状态条、**看板** Tab（Grafana + 任务板）、**日志**内解锁历史日志检索与 Tempo 链路、合并 Alertmanager 告警 | 新增 **前端监控**（`eye`）Tab，按应用名或域名自动关联 Eye 项目 |
+| **应用详情 Tab** | 概览、服务与实例、告警、实时日志、指标、配置、密钥、版本与回滚 | — | 新增概览采集状态条、**看板** Tab（Grafana + 任务板）、**日志**内解锁历史日志检索与 Tempo 链路、合并 Alertmanager 告警 | 仅对按应用名或域名匹配到 Eye 项目的应用展示 **前端监控**（`eye`）Tab |
 | **告警规则预设** | 7 项原生 Agent/Control 规则（`node.*`、`app.memory`、`task.queue_age`） | 解锁 `build.failed` | 解锁 11 项 HTTP、Nomad、日志匹配及 Taskiq/Celery 规则 | — |
 
 ## 统一 Control 鉴权 {#unified-control-authentication}
@@ -96,6 +97,21 @@ luma addon uninstall eye
 
 卸载操作会停止插件服务与路由、立即吊销其 Control SSO 会话，并自动隐藏控制台中的对应扩展槽。**持久化数据卷（`eye-data`、`clickhouse-data`、`luma-build-data`）默认保留**，只有显式传入 `--delete-storage` 才会删除。
 
+### 免重打控制面镜像热更新 Dashboard {#hot-swapping-the-dashboard-without-rebuilding-control}
+
+Luma Dashboard 作为必选核心 `static-bundle` 插件托管在 `/opt/luma/dashboard`，通过原子软链切换与历史版本回滚独立交付。更新管理端前端界面时无需重打或重启 `luma-control` 镜像：
+
+```bash
+# Pull latest published dashboard bundle from GitHub Releases (or configured mirror)
+luma addon install dashboard
+
+# Build locally from dashboard-src and upload directly (zero Docker build)
+luma addon install dashboard --source ./dashboard-src
+
+# Instant rollback to the previous dashboard bundle
+luma addon rollback dashboard
+```
+
 ## 声明式 `luma.addon/v1` 规范 {#declarative-lumaaddonv1-specification}
 
-官方插件清单位于 `luma/assets/addons/*.yaml`（`builder.yaml`、`eye.yaml`、`observe.yaml`）。每个清单声明自身的 `auth` 协议、`uiCapabilities`、`requirements`（最低/建议内存及有状态节点固定策略）、`defaultImages`、部署拓扑 `presets`、分层 `configSchema`（`basic` / `recommended` / `advanced`）以及 `autoSecrets`。第三方扩展可遵循同一规范接入 Control SSO 与声明式配置界面。
+官方插件清单位于 `luma/assets/addons/*.yaml`（`dashboard.yaml`、`builder.yaml`、`eye.yaml`、`observe.yaml`）。每个清单声明自身的 `kind`（`compose` 或 `static-bundle`）、`auth` 协议、`uiCapabilities`、`requirements`（最低/建议内存及有状态节点固定策略）、`defaultImages` 或 `bundle` 地址、部署拓扑 `presets`、分层 `configSchema`（`basic` / `recommended` / `advanced`）以及 `autoSecrets`。第三方扩展可遵循同一规范接入 Control SSO 与声明式配置界面。

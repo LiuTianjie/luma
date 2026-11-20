@@ -8,6 +8,7 @@ When your cluster needs remote multi-runner Git builds, full-stack observability
 
 | Addon | Stack | Recommended RAM & placement | Auth mode |
 | --- | --- | --- | --- |
+| **Luma Dashboard** (`dashboard`, core required) | `luma-dashboard` | Static asset bundle under `/opt/luma/dashboard` (zero extra container/RAM; atomic hot-swap & rollback) | Native Control session (`builtin`) |
 | **Luma Build** (`builder`) | `luma-build` | >= 0.5 GiB RAM (SQLite queue; builds run on enrolled Runners; pin node recommended) | Control SSO (`control-sso`) |
 | **Luma Observe** (`observe`) | `luma-observe` | >= 8 GiB RAM on Manager (13 observability components; pinned to Manager) | Control `forwardAuth` (`/grafana`) |
 | **Luma Eye** (`eye`) | `luma-eye` | >= 1.5 GiB (`node-edge`) / 2 GiB (`all-in-one`); **pinned node required** for ClickHouse & SQLite volumes | Control SSO (`control-sso`) |
@@ -20,7 +21,7 @@ Luma's console adapts automatically to the addons running in your cluster (`luma
 | --- | --- | --- | --- | --- |
 | **Sidebar monitoring** | **Monitoring** (4 native views): Incidents, Metrics, Rules, Channels | — | Expands to **Observability**: adds Platform health, App monitoring (Grafana/logs/traces), Dashboard sharing | Adds **Frontend RUM** (`/observe/eye`) portfolio summary |
 | **Deployments & Create** | Deployment timeline, image/YAML/template creation | Unlocks Git repository import (`/builds`), remote build retries, and Builder console link | — | — |
-| **Application Detail** | Overview, Services, Alerts, Live Logs, Metrics, Config, Secrets, Versions | — | Adds overview pipeline status, **Dashboards** tab (Grafana + task board), historical log search & Tempo traces in **Logs**, Alertmanager alerts | Adds **Frontend** (`eye`) tab auto-matched by app slug or domain |
+| **Application Detail** | Overview, Services, Alerts, Live Logs, Metrics, Config, Secrets, Versions | — | Adds overview pipeline status, **Dashboards** tab (Grafana + task board), historical log search & Tempo traces in **Logs**, Alertmanager alerts | Adds **Frontend** (`eye`) tab on applications matched to an Eye project by slug or domain |
 | **Alert rule presets** | 7 native Agent/Control presets (`node.*`, `app.memory`, `task.queue_age`) | Adds `build.failed` | Adds 11 HTTP, Nomad, log-match, and Taskiq/Celery presets | — |
 
 ## Unified Control authentication
@@ -96,6 +97,21 @@ luma addon uninstall eye
 
 Uninstalling stops the addon services and routes, revokes its Control SSO sessions, and immediately hides its UI extension slots in the console. **Persistent data volumes (`eye-data`, `clickhouse-data`, `luma-build-data`) are preserved by default** unless `--delete-storage` is explicitly passed.
 
+### Hot-swapping the Dashboard without rebuilding Control
+
+Luma Dashboard is managed as a required core `static-bundle` addon stored under `/opt/luma/dashboard` with atomic symlink switching and instant rollback. Frontend UI updates never require rebuilding or restarting `luma-control`:
+
+```bash
+# Pull latest published dashboard bundle from GitHub Releases (or configured mirror)
+luma addon install dashboard
+
+# Build locally from dashboard-src and upload directly (zero Docker build)
+luma addon install dashboard --source ./dashboard-src
+
+# Instant rollback to the previous dashboard bundle
+luma addon rollback dashboard
+```
+
 ## Declarative `luma.addon/v1` specification
 
-Official addons live under `luma/assets/addons/*.yaml` (`builder.yaml`, `eye.yaml`, `observe.yaml`). Each manifest declares its `auth` contract, `uiCapabilities`, `requirements` (minimum/recommended RAM and stateful node-pinning policy), `defaultImages`, topology `presets`, tiered `configSchema` (`basic`, `recommended`, `advanced`), and `autoSecrets`. External extensions can adopt the exact same schema to participate in Control SSO and schema-driven configuration.
+Official addons live under `luma/assets/addons/*.yaml` (`dashboard.yaml`, `builder.yaml`, `eye.yaml`, `observe.yaml`). Each manifest declares its `kind` (`compose` or `static-bundle`), `auth` contract, `uiCapabilities`, `requirements` (minimum/recommended RAM and stateful node-pinning policy), `defaultImages` or `bundle` URLs, topology `presets`, tiered `configSchema` (`basic`, `recommended`, `advanced`), and `autoSecrets`. External extensions can adopt the exact same schema to participate in Control SSO and schema-driven configuration.

@@ -15,8 +15,17 @@ export const APPLICATION_TABS = [
 
 export type ApplicationTab = typeof APPLICATION_TABS[number]["id"];
 
-export function visibleApplicationTabs(addons?: DashboardAddonsSummary | null) {
-  return APPLICATION_TABS.filter((item) => hasAddonCapability(addons, item.requiresCapability));
+export function visibleApplicationTabs(
+  addons?: DashboardAddonsSummary | null,
+  options?: { eyeMatched?: boolean; activeTab?: ApplicationTab },
+) {
+  return APPLICATION_TABS.filter((item) => {
+    if (!hasAddonCapability(addons, item.requiresCapability)) return false;
+    if (item.id === "eye") {
+      return Boolean(options?.eyeMatched || options?.activeTab === "eye");
+    }
+    return true;
+  });
 }
 
 export function applicationPath(stack: string, tab: ApplicationTab = "overview", service?: string) {

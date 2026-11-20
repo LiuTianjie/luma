@@ -10,9 +10,6 @@ on:
       - Dockerfile.control
       - pyproject.toml
       - README.md
-      - package.json
-      - package-lock.json
-      - dashboard-src/**
       - luma/**
       - tests/**
       - scripts/**

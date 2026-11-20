@@ -80,6 +80,10 @@ class AddonUninstallRequest(LumaRequestModel):
     deleteStorage: Optional[bool] = Field(default=None, description="Also remove persistent volumes for the addon stack")
 
 
+class AddonRollbackRequest(LumaRequestModel):
+    releaseId: Optional[str] = Field(default=None, description="Target release identifier (defaults to previous release)")
+
+
 # ---------------------------------------------------------------------------
 # Independent Builder
 # ---------------------------------------------------------------------------

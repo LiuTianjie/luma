@@ -2050,7 +2050,7 @@ arguments:
 usage: luma addon [-h] <command> ...
 
 Manage official and custom Luma addons with unified Luma Control SSO, automatic internal secret
-generation, and schema-driven configuration.
+generation, hot-swappable Dashboard bundles, and schema-driven configuration.
 
 arguments:
   -h, --help   show this help message and exit
@@ -2060,11 +2060,15 @@ arguments:
     list       List available addons, install status and SSO endpoints
     show       Show detailed configuration, secrets status and schema for an addon
     configure  Configure addon settings and auto-generate missing internal secrets
-    install    Configure and deploy an addon with unified Control SSO
-    uninstall  Remove an addon deployment and revoke its Control SSO sessions
+    install    Configure and deploy an addon (or hot-swap a static-bundle addon)
+    rollback   Roll back a static-bundle addon (such as dashboard) to a previous release
+    uninstall  Remove an optional addon deployment and revoke its Control SSO sessions
 
 Examples:
   luma addon list
+  luma addon install dashboard
+  luma addon install dashboard --source ./dashboard-src
+  luma addon rollback dashboard
   luma addon install eye --preset node-edge --domain eye.example.com --region global --node edge-1
   luma addon configure eye --set retentionDays=14 --apply
   luma addon uninstall eye
@@ -2100,7 +2104,7 @@ usage: luma addon show [-h] [--control-context CONTROL_CONTEXT] [--control-url C
 Show detailed configuration, secrets status and schema for an addon
 
 arguments:
-  addon                       Addon identifier (for example builder, eye, observe)
+  addon                       Addon identifier (for example dashboard, builder, eye, observe)
 
 arguments:
   -h, --help                  show this help message and exit
@@ -2142,7 +2146,7 @@ arguments:
   --use-git-provider ID       Reuse a saved Control Git provider credential (repeatable)
   --interactive               Prompt interactively for configuration values
   --rotate-secrets            Regenerate auto-managed internal secrets
-  --apply                     Redeploy the addon immediately using its pinned image
+  --apply                     Redeploy the addon immediately using its pinned image or bundle
   --timeout TIMEOUT           Deployment timeout in seconds when --apply is set (default: 600)
   --format {text,json,ndjson}
                               Output format (default: text)
@@ -2160,12 +2164,12 @@ arguments:
 ## `luma addon install`
 
 ```text
-usage: luma addon install [-h] [--preset PRESET] [--domain DOMAIN] [--region REGION] [--node NODE] [--exposure EXPOSURE] [--set KEY=VALUE] [--secret NAME=VALUE] [--use-registry HOST] [--use-git-provider ID] [--source SOURCE] [--image SERVICE=IMAGE] [--platform PLATFORM] [--rotate-secrets] [--timeout TIMEOUT] [--yes] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] addon
+usage: luma addon install [-h] [--preset PRESET] [--domain DOMAIN] [--region REGION] [--node NODE] [--exposure EXPOSURE] [--set KEY=VALUE] [--secret NAME=VALUE] [--use-registry HOST] [--use-git-provider ID] [--source SOURCE] [--bundle BUNDLE] [--version VERSION] [--image SERVICE=IMAGE] [--platform PLATFORM] [--rotate-secrets] [--timeout TIMEOUT] [--yes] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] addon
 
-Configure and deploy an addon with unified Control SSO
+Configure and deploy an addon (or hot-swap a static-bundle addon)
 
 arguments:
-  addon                       Addon identifier (builder, eye, observe)
+  addon                       Addon identifier (dashboard, builder, eye, observe)
 
 arguments:
   -h, --help                  show this help message and exit
@@ -2180,8 +2184,11 @@ arguments:
   --use-registry HOST         Reuse a saved Control registry credential (host) instead of retyping
                               credentials
   --use-git-provider ID       Reuse a saved Control Git provider credential (repeatable)
-  --source SOURCE             Local source checkout to build and push (auto-detected if
-                              ./<sourceDir> exists)
+  --source SOURCE             Local source checkout to build and deploy (static-bundle addons build
+                              locally and upload directly without Docker)
+  --bundle BUNDLE             Prebuilt .tar.gz static bundle to upload and hot-swap (for static-
+                              bundle addons like dashboard)
+  --version VERSION           Optional release version label when uploading a static bundle
   --image SERVICE=IMAGE       Pin a prebuilt image instead of building locally (repeatable)
   --platform PLATFORM         Target container platform when building from source (default:
                               linux/amd64)
@@ -2201,12 +2208,38 @@ arguments:
   --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
 ```
 
+## `luma addon rollback`
+
+```text
+usage: luma addon rollback [-h] [--release RELEASE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] addon
+
+Roll back a static-bundle addon (such as dashboard) to a previous release
+
+arguments:
+  addon                       Addon identifier (for example dashboard)
+
+arguments:
+  -h, --help                  show this help message and exit
+  --release RELEASE           Specific release ID to activate (defaults to previous release)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
 ## `luma addon uninstall`
 
 ```text
 usage: luma addon uninstall [-h] [--purge-secrets] [--delete-storage] [--yes] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] addon
 
-Remove an addon deployment and revoke its Control SSO sessions
+Remove an optional addon deployment and revoke its Control SSO sessions
 
 arguments:
   addon                       Addon identifier
