@@ -213,11 +213,10 @@ def _run_post_bootstrap_wizard(
                     "--yes",
                     "--control-url",
                     control_url,
-                    "--token",
-                    management_token,
                 ]
                 try:
                     addon_args = build_parser().parse_args(addon_argv)
+                    addon_args.token = management_token
                     addon_args._raw_argv = addon_argv
                     cmd_addon(addon_args)
                 except (LumaError, OSError) as exc:
