@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
+import sys
 from typing import Any, Dict
 from ..bootstrap import _is_tailscale_manager_addr, configure_dns, configure_journald_limit, install_docker, install_nomad_node, local_host_name, setup_tailscale
 from ..build_prerequisites import prepare_build_dependencies
@@ -16,6 +18,49 @@ from ..userconfig import ensure_interactive_config
 from . import common
 from .common import _control_context, _format_epoch, _output_format, _print_success, _print_table, _run_with_wait_heartbeat, log
 from .manager import _host_from_hostport, _install_node_agent_from_token, _local_agent_config, _local_node, _safe_local_nomad_node_info, local_nomad_node_info
+
+
+def _prompt_node_join_options(args: argparse.Namespace) -> None:
+    interactive = sys.stdin.isatty()
+    raw_argv = list(getattr(args, "_raw_argv", ()) or ())
+    name_explicit = any(item == "--name" or item.startswith("--name=") for item in raw_argv)
+    missing_primary = not args.endpoint or not args.token
+
+    if not args.endpoint:
+        if not interactive:
+            raise LumaError("node join requires Control endpoint (e.g. https://luma.example.com) when running non-interactively")
+        while not args.endpoint:
+            value = input("Control URL (e.g. https://luma.example.com): ").strip()
+            if value.startswith("https://"):
+                args.endpoint = value.rstrip("/")
+            else:
+                print("Invalid Control URL; enter an https:// URL such as https://luma.example.com.")
+
+    if not args.token:
+        if not interactive:
+            raise LumaError("node join requires --token when running non-interactively")
+        while not args.token:
+            value = getpass.getpass("Node join token: ").strip()
+            if value:
+                args.token = value
+            else:
+                print("Node join token is required.")
+
+    if not args.region:
+        if not interactive:
+            raise LumaError("node join requires --region")
+        while not args.region:
+            value = input("Region (cn / global / home) [global]: ").strip() or "global"
+            try:
+                args.region = parse_region_name(value)
+            except LumaError as exc:
+                print(f"Invalid region: {exc}")
+
+    if missing_primary and interactive and not name_explicit:
+        default_name = str(args.name or os.uname().nodename).strip() or os.uname().nodename
+        value = input(f"Node name [{default_name}]: ").strip()
+        if value:
+            args.name = value
 
 
 def cmd_node(args: argparse.Namespace) -> int:
@@ -51,8 +96,7 @@ def cmd_node(args: argparse.Namespace) -> int:
             print(f"Tailscale IP: {result['tailscaleIP']}")
         return 0
     if args.node_command == "join":
-        if not args.region:
-            raise LumaError("node join requires --region")
+        _prompt_node_join_options(args)
         args.region = parse_region_name(args.region)
         required_worker_keys = ["TAILSCALE_AUTHKEY"] if args.region == "home" and not _local_tailscale_connected() else []
         ensure_interactive_config("worker", required_keys=required_worker_keys)

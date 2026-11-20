@@ -745,6 +745,93 @@ class BootstrapAndEgressHardeningTests(unittest.TestCase):
         with self.assertRaisesRegex(LumaError, "deployment failed"):
             _wait_nomad_job(remote, "luma-control", timeout=30)
 
+    def test_apply_docker_mirror_and_core_image_defaults_and_precedence(self):
+        import os
+        from luma.bootstrap import (
+            DEFAULT_CONTROL_IMAGE,
+            DEFAULT_EGRESS_IMAGE,
+            DEFAULT_TRAEFIK_IMAGE,
+            _apply_docker_mirror,
+            _control_image,
+            _core_image,
+            _egress_image,
+            _traefik_image,
+        )
+
+        self.assertEqual(DEFAULT_TRAEFIK_IMAGE, "traefik:v3.6")
+        self.assertEqual(DEFAULT_EGRESS_IMAGE, "metacubex/mihomo:latest")
+
+        # Empty mirror leaves upstream image unchanged.
+        self.assertEqual(_apply_docker_mirror("traefik:v3.6", ""), "traefik:v3.6")
+        self.assertEqual(_apply_docker_mirror("metacubex/mihomo:latest", "   "), "metacubex/mihomo:latest")
+
+        # Scheme and trailing slash are stripped; single-segment adds library/.
+        self.assertEqual(
+            _apply_docker_mirror("traefik:v3.6", "https://docker.1panel.live/"),
+            "docker.1panel.live/library/traefik:v3.6",
+        )
+        self.assertEqual(
+            _apply_docker_mirror("metacubex/mihomo:latest", "http://docker.1panel.live///"),
+            "docker.1panel.live/metacubex/mihomo:latest",
+        )
+
+        # Images with explicit registry hosts are untouched.
+        for explicit in (
+            DEFAULT_CONTROL_IMAGE,
+            "localhost:5000/my-app:v1",
+            "localhost/my-app:v1",
+            "registry.example.com/my-app:v1",
+            "docker.1panel.live/library/traefik:v3.6",
+        ):
+            self.assertEqual(_apply_docker_mirror(explicit, "docker.1panel.live"), explicit)
+
+        # Invalid mirror values with whitespace or control chars are rejected.
+        for bad in ("docker.1panel.live bad", "docker.1panel.live\nfoo", "docker.1panel.live\x00"):
+            with self.assertRaises(LumaError):
+                _apply_docker_mirror("traefik:v3.6", bad)
+
+        clean_env = {
+            "LUMA_TRAEFIK_IMAGE": "",
+            "LUMA_EGRESS_IMAGE": "",
+            "LUMA_CONTROL_IMAGE": "",
+            "LUMA_DOCKER_MIRROR": "",
+        }
+        empty_cfg = LumaConfig({}, None)
+        with patch.dict(os.environ, clean_env, clear=False):
+            self.assertEqual(_traefik_image(empty_cfg), "traefik:v3.6")
+            self.assertEqual(_egress_image(empty_cfg), "metacubex/mihomo:latest")
+            self.assertEqual(_control_image(empty_cfg), DEFAULT_CONTROL_IMAGE)
+
+        # LUMA_DOCKER_MIRROR rewrites Docker Hub defaults, leaves ghcr.io untouched.
+        with patch.dict(os.environ, {**clean_env, "LUMA_DOCKER_MIRROR": "https://docker.1panel.live/"}, clear=False):
+            self.assertEqual(_traefik_image(empty_cfg), "docker.1panel.live/library/traefik:v3.6")
+            self.assertEqual(_egress_image(empty_cfg), "docker.1panel.live/metacubex/mihomo:latest")
+            self.assertEqual(_control_image(empty_cfg), DEFAULT_CONTROL_IMAGE)
+
+        # Precedence: config.defaults.images[key] > env_name > defaults.images.dockerMirror > LUMA_DOCKER_MIRROR.
+        mirror_cfg = LumaConfig({"defaults": {"images": {"dockerMirror": "mirror.corp.local"}}}, None)
+        with patch.dict(os.environ, {**clean_env, "LUMA_DOCKER_MIRROR": "docker.1panel.live"}, clear=False):
+            self.assertEqual(_traefik_image(mirror_cfg), "mirror.corp.local/library/traefik:v3.6")
+            self.assertEqual(_egress_image(mirror_cfg), "mirror.corp.local/metacubex/mihomo:latest")
+
+        with patch.dict(
+            os.environ,
+            {**clean_env, "LUMA_DOCKER_MIRROR": "docker.1panel.live", "LUMA_TRAEFIK_IMAGE": "custom/traefik:3.7"},
+            clear=False,
+        ):
+            self.assertEqual(_core_image(mirror_cfg, "traefik", "LUMA_TRAEFIK_IMAGE", DEFAULT_TRAEFIK_IMAGE), "custom/traefik:3.7")
+
+        explicit_cfg = LumaConfig(
+            {"defaults": {"images": {"traefik": "corp.io/traefik:pinned", "dockerMirror": "mirror.corp.local"}}},
+            None,
+        )
+        with patch.dict(
+            os.environ,
+            {**clean_env, "LUMA_TRAEFIK_IMAGE": "custom/traefik:3.7", "LUMA_DOCKER_MIRROR": "docker.1panel.live"},
+            clear=False,
+        ):
+            self.assertEqual(_traefik_image(explicit_cfg), "corp.io/traefik:pinned")
+
 
 
 if __name__ == "__main__":

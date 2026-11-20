@@ -704,6 +704,7 @@ class CliTests(unittest.TestCase):
             old_email = _set_env("TRAEFIK_ACME_EMAIL", "")
             old_ts = _set_env("TAILSCALE_AUTHKEY", "")
             old_egress = _set_env("EGRESS_SUBSCRIPTION_URL", "")
+            old_mirror = _set_env("LUMA_DOCKER_MIRROR", "")
             old_sudo = _set_env("LUMA_SUDO_PASSWORD", "")
             try:
                 secret_values = iter(["cf-token", "ts-key", "sub-url", "sudo-pass"])
@@ -713,7 +714,7 @@ class CliTests(unittest.TestCase):
                     state["portainerAdminPassword"] = "portainer-secret"
                     return []
 
-                input_values = iter(["203.0.113.10", "ops@example.com"])
+                input_values = iter(["203.0.113.10", "ops@example.com", "", "n", "", ""])
                 with patch("sys.stdin.isatty", return_value=True), patch(
                     "luma.userconfig.getpass.getpass", side_effect=lambda _prompt: next(secret_values)
                 ), patch("builtins.input", side_effect=lambda _prompt: next(input_values)), patch(
@@ -739,6 +740,7 @@ class CliTests(unittest.TestCase):
                 self.assertIn("Zone Read and DNS Edit", printed_text)
                 self.assertIn("LUMA_DNS_EDGE_TARGET [optional", printed_text)
                 self.assertIn("EGRESS_SUBSCRIPTION_URL [optional", printed_text)
+                self.assertIn("LUMA_DOCKER_MIRROR [optional", printed_text)
                 self.assertNotIn("portainer-secret", printed_text)
                 self.assertIn(
                     "cn worker: luma node join https://luma.example.com --token",
@@ -754,6 +756,7 @@ class CliTests(unittest.TestCase):
                 _restore_env("TRAEFIK_ACME_EMAIL", old_email)
                 _restore_env("TAILSCALE_AUTHKEY", old_ts)
                 _restore_env("EGRESS_SUBSCRIPTION_URL", old_egress)
+                _restore_env("LUMA_DOCKER_MIRROR", old_mirror)
                 _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
 
     def test_bootstrap_infers_cloudflare_dns_from_interactive_config(self):
@@ -795,7 +798,9 @@ class CliTests(unittest.TestCase):
                         return {"id": "zone-itool"}
                     raise LumaError("not found")
 
-                with patch("luma.cli.manager.find_zone", side_effect=find_zone_side_effect), patch(
+                with patch("sys.stdin.isatty", return_value=False), patch(
+                    "luma.cli.manager.find_zone", side_effect=find_zone_side_effect
+                ), patch(
                     "luma.cli.manager.bootstrap_manager_local", side_effect=bootstrap_side_effect
                 ), patch("builtins.print"):
                     code = main(
@@ -2464,6 +2469,210 @@ class CliTests(unittest.TestCase):
                 client_cls.return_value.set_secret.assert_not_called()
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
+
+    def test_bootstrap_requires_domain_non_interactively(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_config = Path(tmp) / "luma.yaml"
+            project_config.write_text("{}\n", encoding="utf-8")
+            err = io.StringIO()
+            with patch("sys.stdin.isatty", return_value=False), patch("sys.stderr", err), patch(
+                "luma.cli.manager.bootstrap_manager_local"
+            ) as bootstrap_fn:
+                code = main(["--no-env", "--config", str(project_config), "bootstrap"])
+            self.assertEqual(code, 1)
+            self.assertIn("--domain is required when running luma bootstrap non-interactively", err.getvalue())
+            bootstrap_fn.assert_not_called()
+
+    def test_bootstrap_interactive_wizard_prompts_domain_profile_login_addons_and_skills(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_home = Path(tmp) / "config-home"
+            user_cfg = Path(tmp) / ".luma.config.json"
+            project_config = Path(tmp) / "luma.yaml"
+            project_config.write_text("{}\n", encoding="utf-8")
+            old_home = _set_env("LUMA_CONFIG_HOME", str(cfg_home))
+            old_user_cfg = _set_env("LUMA_USER_CONFIG", str(user_cfg))
+            old_cf = _set_env("CLOUDFLARE_API_TOKEN", "cf-token")
+            old_target = _set_env("LUMA_DNS_EDGE_TARGET", "203.0.113.10")
+            old_email = _set_env("TRAEFIK_ACME_EMAIL", "ops@example.com")
+            old_ts = _set_env("TAILSCALE_AUTHKEY", "ts-key")
+            old_mirror = _set_env("LUMA_DOCKER_MIRROR", "docker.1panel.live")
+            try:
+                # Prompts: invalid domain -> valid domain -> profile -> save login -> addons -> skills
+                answers = iter([
+                    "https://bad.example.com",
+                    "luma.example.com",
+                    "cn-edge",
+                    "",
+                    "builder, eye",
+                    "codex",
+                ])
+                addon_calls = []
+
+                def fake_cmd_addon(addon_args):
+                    addon_calls.append((addon_args.addon_command, addon_args.addon_id, addon_args.region, addon_args.yes))
+                    if addon_args.addon_id == "eye":
+                        raise LumaError("eye install transient failure")
+                    return 0
+
+                with patch("sys.stdin.isatty", return_value=True), patch(
+                    "builtins.input", side_effect=lambda _prompt: next(answers)
+                ), patch(
+                    "luma.cli.manager.find_zone", return_value={"id": "zone-example"}
+                ), patch(
+                    "luma.cli.manager.bootstrap_manager_local", return_value=[]
+                ) as bootstrap_fn, patch(
+                    "luma.cli.addons.cmd_addon", side_effect=fake_cmd_addon
+                ), patch(
+                    "luma.skills.sync_skills", return_value={"version": __version__, "items": [], "warnings": []}
+                ) as sync_skills_fn, patch("luma.skills.report_sync"), patch("builtins.print") as printed:
+                    code = main(["--config", str(project_config), "bootstrap"])
+
+                self.assertEqual(code, 0)
+                bootstrap_fn.assert_called_once()
+                self.assertEqual(bootstrap_fn.call_args.args[2].name, "cn-edge")
+                self.assertEqual(bootstrap_fn.call_args.args[3], "luma.example.com")
+
+                # Login context was saved locally and made current.
+                ctx = load_current_context()
+                self.assertEqual(ctx["endpoint"], "https://luma.example.com")
+                self.assertTrue(ctx["token"])
+
+                # Both addons were attempted with region=cn (from cn-edge) and --yes; eye error did not crash bootstrap.
+                self.assertEqual(
+                    addon_calls,
+                    [
+                        ("install", "builder", "cn", True),
+                        ("install", "eye", "cn", True),
+                    ],
+                )
+                sync_skills_fn.assert_called_once()
+                printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+                self.assertIn("Retry later: luma addon install eye --region cn", printed_text)
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+                _restore_env("LUMA_USER_CONFIG", old_user_cfg)
+                _restore_env("CLOUDFLARE_API_TOKEN", old_cf)
+                _restore_env("LUMA_DNS_EDGE_TARGET", old_target)
+                _restore_env("TRAEFIK_ACME_EMAIL", old_email)
+                _restore_env("TAILSCALE_AUTHKEY", old_ts)
+                _restore_env("LUMA_DOCKER_MIRROR", old_mirror)
+
+    def test_bootstrap_no_wizard_skips_post_bootstrap_prompts_in_tty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_config = Path(tmp) / "luma.yaml"
+            project_config.write_text("{}\n", encoding="utf-8")
+            old_cf = _set_env("CLOUDFLARE_API_TOKEN", "cf-token")
+            old_target = _set_env("LUMA_DNS_EDGE_TARGET", "203.0.113.10")
+            old_email = _set_env("TRAEFIK_ACME_EMAIL", "ops@example.com")
+            old_ts = _set_env("TAILSCALE_AUTHKEY", "ts-key")
+            old_mirror = _set_env("LUMA_DOCKER_MIRROR", "docker.1panel.live")
+            try:
+                with patch("sys.stdin.isatty", return_value=True), patch(
+                    "luma.cli.manager.find_zone", return_value={"id": "zone-example"}
+                ), patch(
+                    "luma.cli.manager.bootstrap_manager_local", return_value=[]
+                ), patch(
+                    "luma.cli.manager._run_post_bootstrap_wizard"
+                ) as wizard_fn, patch("builtins.print"):
+                    code = main(
+                        [
+                            "--config",
+                            str(project_config),
+                            "bootstrap",
+                            "--domain",
+                            "luma.example.com",
+                            "--skip-egress",
+                            "--no-wizard",
+                        ]
+                    )
+                self.assertEqual(code, 0)
+                wizard_fn.assert_not_called()
+            finally:
+                _restore_env("CLOUDFLARE_API_TOKEN", old_cf)
+                _restore_env("LUMA_DNS_EDGE_TARGET", old_target)
+                _restore_env("TRAEFIK_ACME_EMAIL", old_email)
+                _restore_env("TAILSCALE_AUTHKEY", old_ts)
+                _restore_env("LUMA_DOCKER_MIRROR", old_mirror)
+
+    def test_node_join_requires_endpoint_and_token_non_interactively(self):
+        err = io.StringIO()
+        with patch("sys.stdin.isatty", return_value=False), patch("sys.stderr", err):
+            code = main(["--no-env", "node", "join"])
+        self.assertEqual(code, 1)
+        self.assertIn("Control endpoint", err.getvalue())
+
+        err2 = io.StringIO()
+        with patch("sys.stdin.isatty", return_value=False), patch("sys.stderr", err2):
+            code2 = main(["--no-env", "node", "join", "https://luma.example.com"])
+        self.assertEqual(code2, 1)
+        self.assertIn("--token", err2.getvalue())
+
+    def test_node_join_interactive_prompts_for_missing_arguments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".luma.config.json"
+            old_config = _set_env("LUMA_USER_CONFIG", str(config_path))
+            old_ts = _set_env("TAILSCALE_AUTHKEY", "ts-key")
+            try:
+                client = Mock()
+                client.register_node.return_value = {
+                    "nodeName": "sg-edge-1",
+                    "region": "global",
+                    "nomadRpcAddr": "100.64.0.125:4647",
+                }
+                client.label_node.return_value = {
+                    "message": "labels applied",
+                    "agentToken": "agent-tok",
+                    "nodeName": "sg-edge-1",
+                }
+                # Prompts: invalid URL -> valid URL -> region (Enter -> global) -> node name
+                answers = iter(["http://insecure.example.com", "https://luma.example.com/", "", "sg-edge-1"])
+                with patch("sys.stdin.isatty", return_value=True), patch(
+                    "builtins.input", side_effect=lambda _prompt: next(answers)
+                ), patch(
+                    "luma.cli.nodes.getpass.getpass", return_value="join-secret-token"
+                ), patch("luma.cli.nodes.configure_dns", return_value="DNS ok"), patch(
+                    "luma.cli.nodes.configure_journald_limit", return_value="journald ok"
+                ), patch("luma.cli.nodes.install_docker", return_value="Docker available"), patch(
+                    "luma.cli.common.ControlClient", return_value=client
+                ) as client_cls, patch(
+                    "luma.cli.nodes.install_nomad_node", return_value=[]
+                ), patch(
+                    "luma.cli.nodes.local_nomad_node_info", return_value=("sg-host", "nomad-id-1")
+                ), patch(
+                    "luma.cli.nodes._local_tailscale_ip", return_value="100.80.0.20"
+                ), patch("luma.cli.nodes._install_node_agent_from_token"), patch(
+                    "luma.cli.nodes.wait_for_node_readiness", return_value={"agentVersion": "test"}
+                ), patch("builtins.print"):
+                    code = main(["--no-env", "node", "join"])
+
+                self.assertEqual(code, 0)
+                client_cls.assert_any_call("https://luma.example.com", "join-secret-token", insecure=False, resolve_ip=None)
+                client.register_node.assert_called_once_with(
+                    node_name="sg-edge-1",
+                    region="global",
+                    tailscale_ip="100.80.0.20",
+                )
+            finally:
+                _restore_env("LUMA_USER_CONFIG", old_config)
+                _restore_env("TAILSCALE_AUTHKEY", old_ts)
+
+    def test_retired_commands_marked_and_eye_examples_cleaned(self):
+        parser = build_parser()
+        top_help = parser.format_help()
+        self.assertIn("[retired; use 'luma builder submit|retry|cancel']", top_help)
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), self.assertRaises(SystemExit) as raised:
+            parser.parse_args(["build", "--help"])
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn("[retired; use 'luma builder submit|retry|cancel']", out.getvalue())
+
+        eye_out = io.StringIO()
+        with patch("sys.stdout", eye_out), self.assertRaises(SystemExit) as eye_raised:
+            parser.parse_args(["eye", "--help"])
+        self.assertEqual(eye_raised.exception.code, 0)
+        self.assertIn("demo-app", eye_out.getvalue())
+        self.assertNotIn("itool-tech", eye_out.getvalue())
 
 
 

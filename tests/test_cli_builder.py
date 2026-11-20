@@ -355,6 +355,65 @@ class CliBuilderTests(unittest.TestCase):
         self.assertEqual(summary[0]["agentArch"], "arm64")
         self.assertEqual(summary[0]["nativePlatform"], "linux/arm64")
 
+    def test_luma_builder_auto_discovers_url_from_control_addon_endpoint(self) -> None:
+        from unittest.mock import Mock
+
+        builder_requests: list[tuple[str, str, str]] = []
+
+        class FakeBuildServer(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                builder_requests.append(("GET", self.path, self.headers.get("Authorization", "")))
+                raw = json.dumps({"ok": True, "version": "0.2.0", "authMode": "control-sso", "runners": []}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        build_server = ThreadingHTTPServer(("127.0.0.1", 0), FakeBuildServer)
+        build_thread = threading.Thread(target=build_server.serve_forever, daemon=True)
+        build_thread.start()
+        self.addCleanup(build_server.server_close)
+        self.addCleanup(build_server.shutdown)
+        discovered_builder_url = f"http://127.0.0.1:{build_server.server_port}"
+
+        fake_control_client = Mock()
+        fake_control_client.request.return_value = {
+            "ok": True,
+            "addon": {"id": "builder", "url": discovered_builder_url},
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_home = Path(tmp)
+            ctx_dir = cfg_home / "contexts"
+            ctx_dir.mkdir(parents=True)
+            (cfg_home / "current-context").write_text("luma-auto\n", encoding="utf-8")
+            (ctx_dir / "luma-auto.json").write_text(
+                json.dumps({"clusterId": "luma-auto", "endpoint": "https://luma.example.com", "token": "ctl-sso-token"}),
+                encoding="utf-8",
+            )
+
+            # No `luma builder use`, no LUMA_BUILD_URL, no --url: auto-discovers from Control!
+            with patch("luma.cli.common.ControlClient", return_value=fake_control_client) as ctl_cls:
+                rc, out, err = self._run_cli(["builder", "status", "--format", "json"], config_home=cfg_home)
+            self.assertEqual(rc, 0, err)
+            parsed = json.loads(out)
+            self.assertTrue(parsed["ok"])
+            self.assertEqual(parsed["result"]["version"], "0.2.0")
+
+        ctl_cls.assert_called_once_with("https://luma.example.com", "ctl-sso-token", insecure=False, resolve_ip=None)
+        fake_control_client.request.assert_called_once_with("GET", "/v1/addons/builder")
+        self.assertEqual(builder_requests, [("GET", "/v1/status", "Bearer ctl-sso-token")])
+
+    def test_luma_builder_reports_clear_error_when_unauthenticated_and_unconfigured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, _out, err = self._run_cli(["builder", "status"], config_home=Path(tmp))
+            self.assertEqual(rc, 1)
+            self.assertIn("No luma-build endpoint configured", err)
+
 
 if __name__ == "__main__":
     unittest.main()

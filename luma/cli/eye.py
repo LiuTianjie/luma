@@ -38,8 +38,8 @@ def add_parser(
             "  luma eye status\n"
             "  luma eye projects list\n"
             "  luma eye portfolio --since 24h\n"
-            "  luma eye stats itool-tech --since 7d\n"
-            "  luma eye issues itool-tech --status open"
+            "  luma eye stats demo-app --since 7d\n"
+            "  luma eye issues demo-app --status open"
         ),
     )
     eye_sub = _commands(eye, "eye_command")
@@ -57,7 +57,7 @@ def add_parser(
     p_proj_list = _command(p_proj_sub, "list", "List registered projects")
     _add_eye_flags(p_proj_list)
     p_proj_ensure = _command(p_proj_sub, "ensure", "Create or update a project and return its public key / DSN")
-    p_proj_ensure.add_argument("slug", help="Project slug (for example itool-tech)")
+    p_proj_ensure.add_argument("slug", help="Project slug (for example demo-app)")
     p_proj_ensure.add_argument("--name", default="", help="Display name")
     p_proj_ensure.add_argument("--origins", default="", help="Comma-separated allowed HTTPS origins")
     p_proj_ensure.add_argument("--rps", type=int, default=200, help="Ingest rate limit per second (default: 200)")

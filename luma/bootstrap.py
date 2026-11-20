@@ -35,8 +35,8 @@ from .nomad_security import nomad_token
 
 ROOT = "/opt/luma"
 TRAEFIK_DNS_TOKEN_FILE = f"{ROOT}/traefik/cloudflare-dns-token"
-DEFAULT_TRAEFIK_IMAGE = "docker.1panel.live/library/traefik:v3.6"
-DEFAULT_EGRESS_IMAGE = "docker.1panel.live/metacubex/mihomo:latest"
+DEFAULT_TRAEFIK_IMAGE = "traefik:v3.6"
+DEFAULT_EGRESS_IMAGE = "metacubex/mihomo:latest"
 DEFAULT_CONTROL_IMAGE = "ghcr.io/liutianjie/luma-control:latest"
 CONTROL_IMAGE_PULL_RETRY_DELAYS = (2, 4, 8, 12, 20)
 EGRESS_PROXY_URL = "http://127.0.0.1:7890"
@@ -87,11 +87,34 @@ def _step(results: list[str], emit: Progress | None, title: str, action: Callabl
 Executor = Union[RemoteExecutor, LocalExecutor]
 
 
+def _apply_docker_mirror(image: str, mirror: str) -> str:
+    raw_mirror = str(mirror or "").strip(" ")
+    if not raw_mirror:
+        return image
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in raw_mirror):
+        raise LumaError(f"invalid Docker mirror value: {mirror!r}")
+    cleaned = re.sub(r"^https?://", "", raw_mirror, flags=re.IGNORECASE).rstrip("/")
+    if not cleaned:
+        return image
+    if "/" not in image:
+        return f"{cleaned}/library/{image}"
+    if image.count("/") == 1:
+        first, _rest = image.split("/", 1)
+        if "." not in first and ":" not in first and first.lower() != "localhost":
+            return f"{cleaned}/{image}"
+    return image
+
+
 def _core_image(config: LumaConfig, key: str, env_name: str, default: str) -> str:
     images = config.defaults.get("images") or {}
     if isinstance(images, dict) and images.get(key):
         return str(images[key])
-    return os.environ.get(env_name, default)
+    env_value = (os.environ.get(env_name) or "").strip()
+    if env_value:
+        return env_value
+    mirror_raw = images.get("dockerMirror") if isinstance(images, dict) else ""
+    mirror = str(mirror_raw or os.environ.get("LUMA_DOCKER_MIRROR") or "").strip()
+    return _apply_docker_mirror(default, mirror)
 
 
 def _egress_image(config: LumaConfig) -> str:
@@ -2183,7 +2206,7 @@ def setup_egress(config: LumaConfig, node: NodeConfig, subscription_url: str, *,
         emit,
         "Pull egress image without Docker daemon proxy",
         lambda: _pull_image(remote, _egress_image(config)),
-        fix="Check defaults.images.egressGateway points to a domestic mirror image",
+        fix="Check defaults.images.egressGateway or LUMA_DOCKER_MIRROR points to a reachable image",
     )
     _step(
         results,

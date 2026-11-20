@@ -71,6 +71,14 @@ ROLE_KEYS = {
             False,
             "Used by egress setup to build the Mihomo proxy config for Docker image pulls and services with proxy: true. Leave empty when using --skip-egress.",
         ),
+        ConfigPrompt(
+            "LUMA_DOCKER_MIRROR",
+            "Docker Hub mirror prefix",
+            False,
+            False,
+            "Optional registry mirror host/prefix for pulling default system images (Traefik/Mihomo), e.g. docker.1panel.live. Leave empty to use upstream Docker Hub.",
+            "docker.1panel.live",
+        ),
     ],
     "worker": [
         ConfigPrompt(

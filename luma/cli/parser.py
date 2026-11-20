@@ -31,7 +31,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("validate", "Check a service manifest without contacting Control"),
         ("deploy", "Deploy a service manifest"),
         ("compose", "Deploy a Docker Compose application with a Luma sidecar"),
-        ("import", "Build a Git repository on a builder node and deploy it"),
+        ("import", "[retired; use 'luma builder submit|retry|cancel'] Build a Git repository on a builder node and deploy it"),
         ("build", "Build a local checkout, or inspect and retry build runs"),
         ("builder", "Submit remote builds and manage decoupled luma-build runners"),
         ("workflow", "Show or record how an application is built and deployed"),
@@ -267,11 +267,12 @@ def _add_deploy_commands(sub: argparse._SubParsersAction) -> None:
     import_cmd = _command(
         sub, "import",
         description=(
+            "[retired; use 'luma builder submit|retry|cancel'] "
             "Build and deploy a Git repository on a builder node. Luma looks for a .luma.yml "
             "service manifest or a luma.compose.yml sidecar; Compose services with build: are "
             "built, pushed to the internal registry and deployed."
         ),
-        epilog="Examples:\n  luma import acme/web\n  luma import https://gitea.example.com/acme/web.git --ref v1.2.0",
+        epilog="Examples:\n  luma builder submit acme/web\n  luma builder submit https://gitea.example.com/acme/web.git --ref v1.2.0",
     )
     import_cmd.add_argument("repo", nargs="?", default="", help="Repository URL or owner/name (GitHub); omit with --provider-id and --repository")
     import_cmd.add_argument("--ref", default="", help="Branch or tag to build (default: the repository's default branch)")
@@ -330,14 +331,14 @@ def _add_deploy_commands(sub: argparse._SubParsersAction) -> None:
     _add_pagination_arguments(build_logs)
     _add_control_arguments(build_logs)
     _add_output_arguments(build_logs)
-    build_retry = _command(build_sub, "retry", "Run a recorded build again")
+    build_retry = _command(build_sub, "retry", "[retired; use 'luma builder submit|retry|cancel'] Run a recorded build again")
     build_retry.add_argument("id", help="Build run ID from 'luma build list'")
     build_retry.add_argument("--env", dest="deploy_env_file", type=Path, help="Store variables from this .env file as application secrets")
     build_retry.add_argument("--timeout", type=int, default=3600, help="Seconds to wait for build and deploy (default: 3600)")
     _add_workflow_arguments(build_retry)
     _add_control_arguments(build_retry)
     _add_output_arguments(build_retry)
-    build_cancel = _command(build_sub, "cancel", "Cancel a running build")
+    build_cancel = _command(build_sub, "cancel", "[retired; use 'luma builder submit|retry|cancel'] Cancel a running build")
     build_cancel.add_argument("id", help="Build run ID from 'luma build list'")
     _add_control_arguments(build_cancel)
     _add_output_arguments(build_cancel)
@@ -534,15 +535,20 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
             "when EGRESS_SUBSCRIPTION_URL is set, the egress proxy. Prompts for missing settings. "
             "Safe to rerun to repair a layer."
         ),
-        epilog="Example: luma bootstrap --domain luma.example.com",
+        epilog=(
+            "Examples:\n"
+            "  luma bootstrap\n"
+            "  luma bootstrap --domain luma.example.com"
+        ),
     )
-    bootstrap.add_argument("--domain", required=True, help="Hostname for the Control API and dashboard")
+    bootstrap.add_argument("--domain", default=None, help="Hostname for the Control API and dashboard (prompted interactively if omitted)")
     bootstrap.add_argument("--node", help="Manager node name from the cluster config (default: this host)")
     bootstrap.add_argument("--profile", choices=sorted(PROFILES), default="single-node", help="Roles installed on this host (default: single-node)")
     bootstrap.add_argument("--http-port", type=int, help="Public HTTP port for Traefik (default: 80)")
     bootstrap.add_argument("--https-port", type=int, help="Public HTTPS port for Traefik (default: 443)")
     bootstrap.add_argument("--skip-egress", action="store_true", help="Do not install the egress proxy")
     bootstrap.add_argument("--overwrite-control-state", action="store_true", help="Create new Control state and tokens instead of reusing the existing ones")
+    bootstrap.add_argument("--no-wizard", action="store_true", help="Skip interactive post-bootstrap login, addon and skills prompts")
 
     update = _command(
         sub, "update",
@@ -580,10 +586,14 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
     node_exec.epilog = "Put Luma options before NODE. Example: luma node exec --timeout 30 NODE -- uname -a. No TTY or Tailscale required; defaults to relay."
     node_join = _command(
         node_sub, "join", "Join this machine to the cluster",
-        epilog="Example: luma node join https://luma.example.com --token <node-join-token> --region global --name sg-1",
+        epilog=(
+            "Examples:\n"
+            "  luma node join\n"
+            "  luma node join https://luma.example.com --token <node-join-token> --region global --name sg-1"
+        ),
     )
-    node_join.add_argument("endpoint", help="Control URL")
-    node_join.add_argument("--token", required=True, help="Node join token printed by 'luma bootstrap'")
+    node_join.add_argument("endpoint", nargs="?", default=None, help="Control URL (prompted interactively if omitted)")
+    node_join.add_argument("--token", default=None, help="Node join token printed by 'luma bootstrap' (prompted interactively if omitted)")
     node_join.add_argument("--region", help="cn, global, home or a region from 'luma region create'")
     node_join.add_argument("--name", default=os.uname().nodename, help="Node name used by manifests' node field (default: hostname)")
     node_join.add_argument("--insecure", action="store_true", help="Skip TLS verification for self-signed endpoints")

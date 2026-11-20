@@ -26,7 +26,7 @@ Deploy:
   validate      Check a service manifest without contacting Control
   deploy        Deploy a service manifest
   compose       Deploy a Docker Compose application with a Luma sidecar
-  import        Build a Git repository on a builder node and deploy it
+  import        [retired; use 'luma builder submit|retry|cancel'] Build a Git repository on a builder node and deploy it
   build         Build a local checkout, or inspect and retry build runs
   builder       Submit remote builds and manage decoupled luma-build runners
   workflow      Show or record how an application is built and deployed
@@ -361,9 +361,9 @@ arguments:
 ```text
 usage: luma import [-h] [--ref REF] [--provider-id PROVIDER_ID] [--repository REPOSITORY] [--manifest MANIFEST] [--compose-sidecar COMPOSE_SIDECAR] [--region REGION] [--exposure EXPOSURE] [--domain DOMAIN] [--port PORT] [--env DEPLOY_ENV_FILE] [--build-node BUILD_NODE] [--platform PLATFORM] [--context BUILD_CONTEXT] [--dockerfile DOCKERFILE] [--registry-host REGISTRY_HOST] [--require-build-capability REQUIRE_BUILD_CAPABILITIES] [--proxy-mode {auto,direct}] [--timeout TIMEOUT] [--workflow-app WORKFLOW_APP] [--accept-workflow-change] [--workflow-note WORKFLOW_NOTE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] [repo]
 
-Build and deploy a Git repository on a builder node. Luma looks for a .luma.yml service manifest or
-a luma.compose.yml sidecar; Compose services with build: are built, pushed to the internal registry
-and deployed.
+[retired; use 'luma builder submit|retry|cancel'] Build and deploy a Git repository on a builder
+node. Luma looks for a .luma.yml service manifest or a luma.compose.yml sidecar; Compose services
+with build: are built, pushed to the internal registry and deployed.
 
 arguments:
   repo                        Repository URL or owner/name (GitHub); omit with --provider-id and
@@ -414,8 +414,8 @@ arguments:
   --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
 
 Examples:
-  luma import acme/web
-  luma import https://gitea.example.com/acme/web.git --ref v1.2.0
+  luma builder submit acme/web
+  luma builder submit https://gitea.example.com/acme/web.git --ref v1.2.0
 ```
 
 ## `luma build`
@@ -433,8 +433,8 @@ arguments:
     local     Build a local checkout with Docker Buildx, push it and deploy it
     list      List recent build runs
     logs      Show the step log of a build run
-    retry     Run a recorded build again
-    cancel    Cancel a running build
+    retry     [retired; use 'luma builder submit|retry|cancel'] Run a recorded build again
+    cancel    [retired; use 'luma builder submit|retry|cancel'] Cancel a running build
     config    Show or set builder nodes and the internal registry
 ```
 
@@ -552,7 +552,7 @@ arguments:
 ```text
 usage: luma build retry [-h] [--env DEPLOY_ENV_FILE] [--timeout TIMEOUT] [--workflow-app WORKFLOW_APP] [--accept-workflow-change] [--workflow-note WORKFLOW_NOTE] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] id
 
-Run a recorded build again
+[retired; use 'luma builder submit|retry|cancel'] Run a recorded build again
 
 arguments:
   id                          Build run ID from 'luma build list'
@@ -586,7 +586,7 @@ arguments:
 ```text
 usage: luma build cancel [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] id
 
-Cancel a running build
+[retired; use 'luma builder submit|retry|cancel'] Cancel a running build
 
 arguments:
   id                          Build run ID from 'luma build list'
@@ -705,8 +705,8 @@ Show luma-build service health, registry target and online runners
 
 arguments:
   -h, --help                  show this help message and exit
-  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
-                              LUMA_BUILD_URL)
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use',
+                              LUMA_BUILD_URL, or auto-discovered from Control)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -754,8 +754,8 @@ arguments:
   --no-deploy                 Build and push image only without deploying to Luma Control
   --no-cache                  Disable BuildKit cache for this build
   --detach                    Return immediately after queueing the build
-  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
-                              LUMA_BUILD_URL)
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use',
+                              LUMA_BUILD_URL, or auto-discovered from Control)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -789,8 +789,8 @@ arguments:
                               canceled)
   --repo REPO                 Filter by repository substring
   --limit LIMIT               Maximum records to return, 1-200 (default: 25)
-  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
-                              LUMA_BUILD_URL)
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use',
+                              LUMA_BUILD_URL, or auto-discovered from Control)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -817,8 +817,8 @@ arguments:
 arguments:
   -h, --help                  show this help message and exit
   --follow, -f                Stream live logs until the build finishes
-  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
-                              LUMA_BUILD_URL)
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use',
+                              LUMA_BUILD_URL, or auto-discovered from Control)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -844,8 +844,8 @@ arguments:
 
 arguments:
   -h, --help                  show this help message and exit
-  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
-                              LUMA_BUILD_URL)
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use',
+                              LUMA_BUILD_URL, or auto-discovered from Control)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -873,8 +873,8 @@ arguments:
   -h, --help                  show this help message and exit
   --env DEPLOY_ENV_FILE       Updated runtime .env for Luma Control deployment
   --detach                    Return immediately after queueing the retry
-  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
-                              LUMA_BUILD_URL)
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use',
+                              LUMA_BUILD_URL, or auto-discovered from Control)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -923,8 +923,8 @@ arguments:
                               Remote OCI cache policy; use read-only on low-upload home runners
                               (default: read-write)
   --rotate                    Rotate token if the runner name already exists
-  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
-                              LUMA_BUILD_URL)
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use',
+                              LUMA_BUILD_URL, or auto-discovered from Control)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -947,8 +947,8 @@ List registered runners and their heartbeat status
 
 arguments:
   -h, --help                  show this help message and exit
-  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
-                              LUMA_BUILD_URL)
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use',
+                              LUMA_BUILD_URL, or auto-discovered from Control)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -974,8 +974,8 @@ arguments:
 
 arguments:
   -h, --help                  show this help message and exit
-  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
-                              LUMA_BUILD_URL)
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use',
+                              LUMA_BUILD_URL, or auto-discovered from Control)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -1050,8 +1050,8 @@ arguments:
   --username USERNAME         Git HTTP username (default: x-access-token)
   --path-prefix PATH_PREFIX   Optional organization/owner prefix filter
   --token-stdin               Read the Git token from stdin
-  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
-                              LUMA_BUILD_URL)
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use',
+                              LUMA_BUILD_URL, or auto-discovered from Control)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -1074,8 +1074,8 @@ List dynamic Git credentials on luma-build
 
 arguments:
   -h, --help                  show this help message and exit
-  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
-                              LUMA_BUILD_URL)
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use',
+                              LUMA_BUILD_URL, or auto-discovered from Control)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -1101,8 +1101,8 @@ arguments:
 
 arguments:
   -h, --help                  show this help message and exit
-  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
-                              LUMA_BUILD_URL)
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use',
+                              LUMA_BUILD_URL, or auto-discovered from Control)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -1149,8 +1149,8 @@ arguments:
   --username USERNAME         Registry push username
   --password-stdin            Read registry password from stdin
   --http                      Force plain HTTP for an internal registry
-  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
-                              LUMA_BUILD_URL)
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use',
+                              LUMA_BUILD_URL, or auto-discovered from Control)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -1173,8 +1173,8 @@ List dynamic OCI registry credentials on luma-build
 
 arguments:
   -h, --help                  show this help message and exit
-  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
-                              LUMA_BUILD_URL)
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use',
+                              LUMA_BUILD_URL, or auto-discovered from Control)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -1200,8 +1200,8 @@ arguments:
 
 arguments:
   -h, --help                  show this help message and exit
-  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use' or
-                              LUMA_BUILD_URL)
+  --url BUILDER_URL           luma-build URL override (default: saved via 'luma builder use',
+                              LUMA_BUILD_URL, or auto-discovered from Control)
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
@@ -2252,8 +2252,8 @@ Examples:
   luma eye status
   luma eye projects list
   luma eye portfolio --since 24h
-  luma eye stats itool-tech --since 7d
-  luma eye issues itool-tech --status open
+  luma eye stats demo-app --since 7d
+  luma eye issues demo-app --status open
 ```
 
 ## `luma eye status`
@@ -2327,7 +2327,7 @@ usage: luma eye projects ensure [-h] [--name NAME] [--origins ORIGINS] [--rps RP
 Create or update a project and return its public key / DSN
 
 arguments:
-  slug                        Project slug (for example itool-tech)
+  slug                        Project slug (for example demo-app)
 
 arguments:
   -h, --help                  show this help message and exit
@@ -2641,7 +2641,7 @@ arguments:
 ## `luma bootstrap`
 
 ```text
-usage: luma bootstrap [-h] --domain DOMAIN [--node NODE] [--profile {cn-edge,egress-gateway,global-worker,home-node,single-node}] [--http-port HTTP_PORT] [--https-port HTTPS_PORT] [--skip-egress] [--overwrite-control-state]
+usage: luma bootstrap [-h] [--domain DOMAIN] [--node NODE] [--profile {cn-edge,egress-gateway,global-worker,home-node,single-node}] [--http-port HTTP_PORT] [--https-port HTTPS_PORT] [--skip-egress] [--overwrite-control-state] [--no-wizard]
 
 Install the Luma manager on this Linux server: Docker, Nomad, Traefik, Luma Control and, when
 EGRESS_SUBSCRIPTION_URL is set, the egress proxy. Prompts for missing settings. Safe to rerun to
@@ -2649,7 +2649,8 @@ repair a layer.
 
 arguments:
   -h, --help                  show this help message and exit
-  --domain DOMAIN             Hostname for the Control API and dashboard
+  --domain DOMAIN             Hostname for the Control API and dashboard (prompted interactively if
+                              omitted)
   --node NODE                 Manager node name from the cluster config (default: this host)
   --profile {cn-edge,egress-gateway,global-worker,home-node,single-node}
                               Roles installed on this host (default: single-node)
@@ -2658,8 +2659,11 @@ arguments:
   --skip-egress               Do not install the egress proxy
   --overwrite-control-state   Create new Control state and tokens instead of reusing the existing
                               ones
+  --no-wizard                 Skip interactive post-bootstrap login, addon and skills prompts
 
-Example: luma bootstrap --domain luma.example.com
+Examples:
+  luma bootstrap
+  luma bootstrap --domain luma.example.com
 ```
 
 ## `luma update`
@@ -2830,23 +2834,25 @@ Tailscale required; defaults to relay.
 ## `luma node join`
 
 ```text
-usage: luma node join [-h] --token TOKEN [--region REGION] [--name NAME] [--insecure] [--resolve-ip RESOLVE_IP] endpoint
+usage: luma node join [-h] [--token TOKEN] [--region REGION] [--name NAME] [--insecure] [--resolve-ip RESOLVE_IP] [endpoint]
 
 Join this machine to the cluster
 
 arguments:
-  endpoint                 Control URL
+  endpoint                 Control URL (prompted interactively if omitted)
 
 arguments:
   -h, --help               show this help message and exit
-  --token TOKEN            Node join token printed by 'luma bootstrap'
+  --token TOKEN            Node join token printed by 'luma bootstrap' (prompted interactively if
+                           omitted)
   --region REGION          cn, global, home or a region from 'luma region create'
   --name NAME              Node name used by manifests' node field (default: hostname)
   --insecure               Skip TLS verification for self-signed endpoints
   --resolve-ip RESOLVE_IP  Connect to this IP while keeping the endpoint hostname as Host
 
-Example: luma node join https://luma.example.com --token <node-join-token> --region global --name
-sg-1
+Examples:
+  luma node join
+  luma node join https://luma.example.com --token <node-join-token> --region global --name sg-1
 ```
 
 ## `luma node list`

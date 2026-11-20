@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -14,6 +15,7 @@ from typing import Any, Dict
 from ..bootstrap import bootstrap_manager_local, refresh_manager_control_local, setup_egress
 from ..cloudflare import find_zone
 from ..config import LumaConfig, load_config, save_config
+from ..control.context import save_context
 from ..control.state import is_initialized as control_state_is_initialized, load_state, new_state, state_path
 from ..agent import DEFAULT_AGENT_CONFIG, _current_install_layout, install_node_agent
 from ..errors import LumaError
@@ -116,7 +118,132 @@ def _install_node_agent_from_token(
     )
 
 
+_WIZARD_ADDONS = ("builder", "observe", "eye")
+_WIZARD_SKILL_TARGETS = ("codex", "claude", "all")
+
+
+def _validate_control_domain(raw: str) -> str:
+    value = str(raw or "").strip()
+    if not value or "://" in value or "/" in value or any(ch.isspace() for ch in value):
+        return ""
+    if ".." in value or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", value):
+        return ""
+    return value
+
+
+def _prompt_bootstrap_inputs(args: argparse.Namespace) -> None:
+    if args.domain:
+        return
+    if not sys.stdin.isatty():
+        raise LumaError("--domain is required when running luma bootstrap non-interactively")
+    while not args.domain:
+        entered = input("Control domain (e.g. luma.example.com): ")
+        valid = _validate_control_domain(entered)
+        if valid:
+            args.domain = valid
+        else:
+            print("Invalid domain; enter a hostname such as luma.example.com without http:// or spaces.")
+    raw_argv = list(getattr(args, "_raw_argv", ()) or ())
+    profile_explicit = any(item == "--profile" or item.startswith("--profile=") for item in raw_argv)
+    if args.profile == "single-node" and not profile_explicit:
+        while True:
+            choice = input("Profile (single-node / cn-edge) [single-node]: ").strip()
+            if not choice:
+                break
+            if choice in PROFILES:
+                args.profile = choice
+                break
+            print(f"Unknown profile {choice!r}; choose single-node or cn-edge.")
+
+
+def _run_post_bootstrap_wizard(
+    *,
+    control_url: str,
+    management_token: str,
+    domain: str,
+    profile_name: str,
+    cluster_id: str = "",
+) -> None:
+    save_answer = input("Save this Control login locally so luma CLI works immediately? [Y/n]: ").strip().lower()
+    if save_answer in {"", "y", "yes"}:
+        try:
+            resolved_cluster_id = str(cluster_id or "").strip()
+            if not resolved_cluster_id:
+                try:
+                    verified = common.ControlClient(control_url, management_token).verify_login()
+                    resolved_cluster_id = str(verified.get("clusterId") or "").strip()
+                except (LumaError, OSError):
+                    resolved_cluster_id = ""
+            resolved_cluster_id = resolved_cluster_id or domain
+            save_context(
+                endpoint=control_url,
+                cluster_id=resolved_cluster_id,
+                token=management_token,
+            )
+            print(f"[ok] Saved Control login context: {resolved_cluster_id} ({control_url})")
+        except (LumaError, OSError) as exc:
+            print(f"[warn] Could not save Control login locally: {exc}")
+            print(f"  Retry later: luma login {control_url} --token <management-token>")
+
+    addon_answer = input("Install optional addons now? (builder, observe, eye — comma-separated, Enter to skip): ").strip()
+    if addon_answer:
+        selected: list[str] = []
+        for raw_item in addon_answer.split(","):
+            item = raw_item.strip().lower()
+            if not item:
+                continue
+            if item not in _WIZARD_ADDONS:
+                print(f"[skip] Unknown addon {item!r}; valid options are: {', '.join(_WIZARD_ADDONS)}")
+                continue
+            if item not in selected:
+                selected.append(item)
+        if selected:
+            from .addons import cmd_addon
+            from .parser import build_parser
+
+            region = "cn" if profile_name == "cn-edge" else "global"
+            for addon_id in selected:
+                print(f"[start] Install addon {addon_id} (region={region})")
+                addon_argv = [
+                    "addon",
+                    "install",
+                    addon_id,
+                    "--region",
+                    region,
+                    "--yes",
+                    "--control-url",
+                    control_url,
+                    "--token",
+                    management_token,
+                ]
+                try:
+                    addon_args = build_parser().parse_args(addon_argv)
+                    addon_args._raw_argv = addon_argv
+                    cmd_addon(addon_args)
+                except (LumaError, OSError) as exc:
+                    print(f"[warn] Addon {addon_id} install failed: {exc}")
+                    print(f"  Retry later: luma addon install {addon_id} --region {region}")
+
+    skills_answer = input("Install AI agent skills on this machine? (codex, claude, all — Enter to skip): ").strip().lower()
+    if skills_answer:
+        if skills_answer in _WIZARD_SKILL_TARGETS:
+            try:
+                from ..skills import agent_roots, report_sync, sync_skills
+
+                defaults = agent_roots()
+                roots = list(defaults.values()) if skills_answer == "all" else [defaults[skills_answer]]
+                result = sync_skills(roots, register=True)
+                report_sync(result)
+                print(f"[ok] Installed Luma skills for {skills_answer}")
+            except (LumaError, OSError) as exc:
+                print(f"[warn] Skills install failed: {exc}")
+                print(f"  Retry later: luma skills install --agent {skills_answer}")
+        else:
+            print(f"[skip] Unknown skills target {skills_answer!r}; valid options are: {', '.join(_WIZARD_SKILL_TARGETS)}")
+
+
 def cmd_bootstrap(args: argparse.Namespace) -> int:
+    _prompt_bootstrap_inputs(args)
     config = load_config(args.config)
     _apply_bootstrap_port_overrides(config, http_port=args.http_port, https_port=args.https_port)
     node = config.get_node(args.node) if args.node else (config.default_manager() or _local_node(args.profile))
@@ -124,6 +251,8 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
         raise LumaError("no manager node configured. Add a node or pass --node.")
     profile = PROFILES[args.profile]
     keys = ["CLOUDFLARE_API_TOKEN", "TRAEFIK_ACME_EMAIL", "TAILSCALE_AUTHKEY"]
+    if sys.stdin.isatty():
+        keys.append("LUMA_DOCKER_MIRROR")
     if not _dns_target_for_bootstrap(config, node) and sys.stdin.isatty():
         keys.append("LUMA_DNS_EDGE_TARGET")
     if not args.skip_egress and "egress" in profile.roles:
@@ -154,6 +283,14 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
     print("Join additional nodes:")
     for label, command in _node_join_examples(control_url, str(state["joinToken"])):
         print(f"  {label}: {command}")
+    if sys.stdin.isatty() and not getattr(args, "no_wizard", False):
+        _run_post_bootstrap_wizard(
+            control_url=control_url,
+            management_token=str(state["deployToken"]),
+            domain=args.domain,
+            profile_name=args.profile,
+            cluster_id=str(state.get("clusterId") or ""),
+        )
     return 0
 
 

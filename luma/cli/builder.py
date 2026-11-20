@@ -72,16 +72,35 @@ def _save_builder_url(url: str, *, context_name: Optional[str] = None) -> Path:
     return target
 
 
-def _resolve_builder_connection(args: argparse.Namespace) -> Tuple[str, str, bool]:
+def _discover_builder_url_from_control(args: argparse.Namespace) -> str:
+    try:
+        ctl_url, ctl_token, ctl_insecure, resolve_ip = common._control_context(args, require_token=True)
+        client = common.ControlClient(ctl_url, ctl_token, insecure=ctl_insecure, resolve_ip=resolve_ip)
+        info = client.request("GET", "/v1/addons/builder")
+    except (LumaError, OSError):
+        return ""
+    addon = info.get("addon") if isinstance(info, dict) and isinstance(info.get("addon"), dict) else {}
+    return str(addon.get("url") or "").strip().rstrip("/")
+
+
+def _resolve_builder_url(args: argparse.Namespace) -> str:
     ctx_name = common._arg_text(args, "control_context") or common._env_text("LUMA_CONTROL_CONTEXT")
     url = (
         common._arg_text(args, "builder_url")
         or common._env_text("LUMA_BUILD_URL")
         or _load_saved_builder_url(ctx_name)
     )
+    if url:
+        return url.rstrip("/")
+    return _discover_builder_url_from_control(args)
+
+
+def _resolve_builder_connection(args: argparse.Namespace) -> Tuple[str, str, bool]:
+    url = _resolve_builder_url(args)
     if not url:
         raise LumaError(
-            "luma-build URL is not set; run 'luma builder use https://build.example.com' or pass --url"
+            "No luma-build endpoint configured; run 'luma addon install builder', "
+            "'luma builder use https://build.example.com', or pass --url"
         )
 
     explicit_token = (
@@ -195,7 +214,7 @@ def _add_builder_client_options(
         "--url",
         dest="builder_url",
         default="",
-        help="luma-build URL override (default: saved via 'luma builder use' or LUMA_BUILD_URL)",
+        help="luma-build URL override (default: saved via 'luma builder use', LUMA_BUILD_URL, or auto-discovered from Control)",
     )
     add_control_arguments(parser)
     add_output_arguments(parser)
