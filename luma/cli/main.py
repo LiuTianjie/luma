@@ -13,8 +13,10 @@ from ..envfile import load_env_file, load_luma_settings
 from ..errors import LumaError
 from ..userconfig import load_user_config
 from .observe import cmd_observe
+from .addons import cmd_addon
 from .apps import cmd_app
 from .builder import cmd_builder
+from .eye import cmd_eye
 from .runner import cmd_runner
 from .builds import cmd_build, cmd_import, cmd_workflow
 from .common import _print_structured_error
@@ -48,6 +50,8 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "status": cmd_status,
     "app": cmd_app,
     "observe": cmd_observe,
+    "eye": cmd_eye,
+    "addon": cmd_addon,
     "skills": cmd_skills,
     "secret": cmd_secret,
     "bootstrap": cmd_bootstrap,

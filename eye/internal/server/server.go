@@ -30,6 +30,7 @@ type Server struct {
 	metrics         *observe.Metrics
 	retentionStatus func() retention.Status
 	auth            *auth.Manager
+	controlSSO      *auth.ControlClient
 
 	ipLimiter   *ratelimit.TokenLimiter
 	projLimiter *ratelimit.TokenLimiter
@@ -51,8 +52,14 @@ func New(
 	metrics *observe.Metrics,
 ) *Server {
 	var dataDir string
+	var controlClient *auth.ControlClient
 	if cfg != nil {
 		dataDir = cfg.DataDir
+		if cfg.ControlURL != "" {
+			if c, err := auth.NewControlClient(cfg.ControlURL, cfg.AddonID, cfg.ControlInsecure, cfg.ControlAuthCacheTTL); err == nil {
+				controlClient = c
+			}
+		}
 	}
 	s := &Server{
 		cfg:          cfg,
@@ -62,6 +69,7 @@ func New(
 		symbolicator: symbolicator,
 		metrics:      metrics,
 		auth:         initAuthManagerFallback(dataDir),
+		controlSSO:   controlClient,
 		ipLimiter:    ratelimit.NewTokenLimiter(60, 180),
 		projLimiter:  ratelimit.NewTokenLimiter(200, 600),
 		authLimiter:  ratelimit.NewTokenLimiter(1, 15),
@@ -105,6 +113,10 @@ func (s *Server) registerRoutes() {
 	if s.cfg.Mode != config.ModeEdge {
 		s.mux.HandleFunc("POST /internal/v1/relay", s.handleRelayIngest)
 		s.mux.HandleFunc("GET /internal/v1/projects-sync", s.handleProjectsSync)
+
+		// Unified Luma Control Browser SSO handoff endpoints
+		s.mux.HandleFunc("GET /auth/login", s.handleSSOLoginStart)
+		s.mux.HandleFunc("GET /auth/callback", s.handleSSOCallback)
 
 		// Auth, Password, Passkey (WebAuthn), & Browser Session API
 		s.mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
@@ -175,20 +187,44 @@ func (s *Server) handlePrometheusMetrics(w http.ResponseWriter, r *http.Request)
 	_, _ = w.Write([]byte(s.metrics.RenderPrometheus()))
 }
 
-func (s *Server) authorizeRequest(w http.ResponseWriter, r *http.Request) bool {
+func (s *Server) authorizeRequestInfo(w http.ResponseWriter, r *http.Request) (bool, string, int) {
 	if tok := extractBearer(r); tok != "" {
-		return subtle.ConstantTimeCompare([]byte(tok), []byte(s.cfg.AdminToken)) == 1
+		if s.cfg != nil && s.cfg.AdminToken != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(s.cfg.AdminToken)) == 1 {
+			return true, "token", http.StatusOK
+		}
+		if s.controlSSO != nil {
+			if ok, err := s.controlSSO.VerifyToken(r.Context(), tok); err == nil && ok {
+				return true, "control-token", http.StatusOK
+			}
+		}
+		return false, "", http.StatusUnauthorized
+	}
+	if s.controlSSO != nil && readSSOSessionCookie(r) != "" {
+		if _, status := s.verifyControlSSOCookie(r); status == http.StatusOK {
+			return true, "control-sso", http.StatusOK
+		} else if status == http.StatusForbidden {
+			return false, "", http.StatusForbidden
+		}
 	}
 	if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
-		_, renewed, ok := s.auth.VerifySession(c.Value)
+		rec, renewed, ok := s.auth.VerifySession(c.Value)
 		if ok {
 			if renewed != "" && w != nil {
 				setSessionCookie(w, r, renewed)
 			}
-			return true
+			method := "local"
+			if rec.Method != "" {
+				method = rec.Method
+			}
+			return true, method, http.StatusOK
 		}
 	}
-	return false
+	return false, "", http.StatusUnauthorized
+}
+
+func (s *Server) authorizeRequest(w http.ResponseWriter, r *http.Request) bool {
+	ok, _, _ := s.authorizeRequestInfo(w, r)
+	return ok
 }
 
 func (s *Server) isAdminAuthorized(r *http.Request) bool {
@@ -197,7 +233,12 @@ func (s *Server) isAdminAuthorized(r *http.Request) bool {
 
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.authorizeRequest(w, r) {
+		ok, _, status := s.authorizeRequestInfo(w, r)
+		if !ok {
+			if status == http.StatusForbidden {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "request origin does not match Luma Eye console"})
+				return
+			}
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}

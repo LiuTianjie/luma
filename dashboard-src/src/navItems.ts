@@ -2,7 +2,7 @@ import type { DashboardViewModel, NavPage } from "./dashboardViewModel";
 import type { Lang } from "./types";
 
 /** Icon names resolve to components in the sidebar; nav data stays plain so Node tests can import it. */
-export type NavIconName = "overview" | "applications" | "deployments" | "observability" | "infrastructure" | "settings" | "setup";
+export type NavIconName = "overview" | "applications" | "deployments" | "observability" | "infrastructure" | "addons" | "settings" | "setup";
 
 export type NavItem = {
   id: NavPage;
@@ -80,6 +80,7 @@ export function buildNavGroups(lang: Lang, vm: DashboardViewModel): NavGroup[] {
       ] },
     ] },
     { key: "platform", label: zh ? "平台管理" : "Platform", items: [
+      { id: "addons", icon: "addons", label: zh ? "插件中心" : "Addons", detail: zh ? "安装、配置与统一单点登录扩展插件" : "Install, configure and sign in to extensions" },
       { id: "credentials", icon: "settings", label: zh ? "设置" : "Settings", detail: zh ? "凭据与控制面维护" : "Credentials and control-plane maintenance", children: [
         { href: "/settings/secrets", label: zh ? "密钥" : "Secrets", detail: zh ? "管理控制面密钥" : "Manage control-plane secrets" },
         { href: "/settings/registries", label: zh ? "镜像仓库凭据" : "Registry credentials", detail: zh ? "私有镜像拉取凭据" : "Private image pull credentials" },

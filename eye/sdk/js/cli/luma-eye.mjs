@@ -80,6 +80,23 @@ function saveCLIConfig(cfg) {
   return p;
 }
 
+function loadLumaContextToken() {
+  try {
+    const cfgHome =
+      (process.env.LUMA_CONFIG_HOME || "").trim() ||
+      (homedir() ? join(homedir(), ".config", "luma") : "");
+    if (!cfgHome) return "";
+    const ctxName =
+      (process.env.LUMA_CONTROL_CONTEXT || "").trim() ||
+      readFileSync(join(cfgHome, "current-context"), "utf8").trim();
+    if (!ctxName) return "";
+    const parsed = JSON.parse(readFileSync(join(cfgHome, "contexts", `${ctxName}.json`), "utf8"));
+    return typeof parsed?.token === "string" ? parsed.token.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
 function resolveClient(urlFlag, tokenFlag, timeoutMs = 30000) {
   const saved = loadSavedCLIConfig();
   const baseURL = (
@@ -91,7 +108,9 @@ function resolveClient(urlFlag, tokenFlag, timeoutMs = 30000) {
   const token =
     (tokenFlag || "").trim() ||
     (process.env.LUMA_EYE_ADMIN_TOKEN || "").trim() ||
-    (saved.token || "").trim();
+    (saved.token || "").trim() ||
+    (process.env.LUMA_DEPLOY_TOKEN || "").trim() ||
+    loadLumaContextToken();
   return { baseURL, token, timeoutMs };
 }
 

@@ -28,7 +28,10 @@ export function PortfolioView() {
   const navigate = useNavigate();
 
   const needsSecuritySetup =
-    authStatus && !authStatus.has_password && (authStatus.passkey_count || 0) === 0;
+    authStatus &&
+    authStatus.auth_mode !== "control-sso" &&
+    !authStatus.has_password &&
+    (authStatus.passkey_count || 0) === 0;
 
   if (!portfolio) {
     return (

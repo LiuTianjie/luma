@@ -66,6 +66,7 @@ include = ["luma*"]
 luma = [
   "assets/dashboard/*",
   "assets/observe-grafana-public.yml",
+  "assets/addons/*.yaml",
 ]
 
 [tool.ruff]

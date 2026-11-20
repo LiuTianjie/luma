@@ -306,6 +306,39 @@ type apiClient struct {
 	http    *http.Client
 }
 
+func loadLumaContextToken() string {
+	cfgHome := strings.TrimSpace(os.Getenv("LUMA_CONFIG_HOME"))
+	if cfgHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return ""
+		}
+		cfgHome = filepath.Join(home, ".config", "luma")
+	}
+	ctxName := strings.TrimSpace(os.Getenv("LUMA_CONTROL_CONTEXT"))
+	if ctxName == "" {
+		raw, err := os.ReadFile(filepath.Join(cfgHome, "current-context"))
+		if err != nil {
+			return ""
+		}
+		ctxName = strings.TrimSpace(string(raw))
+	}
+	if ctxName == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(filepath.Join(cfgHome, "contexts", ctxName+".json"))
+	if err != nil {
+		return ""
+	}
+	var ctxData struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(raw, &ctxData); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(ctxData.Token)
+}
+
 func newAPIClient(baseURL, token string) *apiClient {
 	saved := loadSavedCLIConfig()
 	if baseURL == "" {
@@ -322,6 +355,12 @@ func newAPIClient(baseURL, token string) *apiClient {
 	}
 	if token == "" {
 		token = strings.TrimSpace(saved.Token)
+	}
+	if token == "" {
+		token = strings.TrimSpace(os.Getenv("LUMA_DEPLOY_TOKEN"))
+	}
+	if token == "" {
+		token = loadLumaContextToken()
 	}
 	return &apiClient{
 		baseURL: strings.TrimRight(baseURL, "/"),

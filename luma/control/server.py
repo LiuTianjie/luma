@@ -16282,6 +16282,8 @@ async def _asgi_health(_: Request) -> JSONResponse:
                 "route-sentinel-v1",
                 "registry-management-v1",
                 "dashboard-sessions-v1",
+                "addons-v1",
+                "addon-sso-v1",
             ],
         },
     )
@@ -16377,6 +16379,21 @@ async def _asgi_auth(request: Request) -> Response:
             if not isinstance(body, dict):
                 raise LumaError("request body must be a JSON object")
         # Public: what the sign-in screen needs, and the sign-in ceremonies themselves.
+        addon_info_match = re.fullmatch(r"/v1/auth/addon/([a-z][a-z0-9-]{0,31})/info", path)
+        if method == "GET" and addon_info_match:
+            from . import addons as control_addons
+            return _auth_json(await run_in_threadpool(control_addons.addon_login_info, addon_info_match.group(1)))
+        addon_auth_match = re.fullmatch(r"/v1/auth/addon/([a-z][a-z0-9-]{0,31})/(authorize|exchange|verify|logout)", path)
+        if method == "POST" and addon_auth_match:
+            from . import addon_auth
+            addon_id, action = addon_auth_match.group(1), addon_auth_match.group(2)
+            if action == "authorize":
+                return _auth_json(await run_in_threadpool(addon_auth.authorize, addon_id, session_id, request.headers, body))
+            if action == "exchange":
+                return _auth_json(await run_in_threadpool(addon_auth.exchange, addon_id, body))
+            if action == "verify":
+                return _auth_json(await run_in_threadpool(addon_auth.verify, addon_id, bearer_token(request.headers)))
+            return _auth_json(await run_in_threadpool(addon_auth.logout, addon_id, bearer_token(request.headers)))
         if method == "POST" and path.startswith("/v1/auth/builder/"):
             from . import builder_auth
             if path == "/v1/auth/builder/authorize":
@@ -16455,6 +16472,13 @@ async def _asgi_authenticated_get(request: Request) -> Response:
     parsed_path = request.url.path
     try:
         token = await _request_credential(request)
+        if parsed_path == "/v1/addons":
+            from . import addons as control_addons
+            return _json_response(200, await run_in_threadpool(control_addons.handle_addons_list, token))
+        addon_get_match = re.fullmatch(r"/v1/addons/([a-z][a-z0-9-]{0,31})", parsed_path)
+        if addon_get_match:
+            from . import addons as control_addons
+            return _json_response(200, await run_in_threadpool(control_addons.handle_addon_get, token, addon_get_match.group(1)))
         if parsed_path == "/v1/builder/status":
             return _json_response(200, await run_in_threadpool(independent_builder.status, token))
         builder_match = re.fullmatch(r"/v1/builder/builds/([A-Za-z0-9_-]+)", parsed_path)
@@ -16654,6 +16678,20 @@ async def _asgi_authenticated_post(request: Request) -> Response:
         if not isinstance(body, dict):
             raise LumaError("request body must be a JSON object")
         token = await _request_credential(request)
+        addon_action_match = re.fullmatch(r"/v1/addons/([a-z][a-z0-9-]{0,31})/(configure|render|apply|apply/stream|uninstall)", path)
+        if addon_action_match:
+            from . import addons as control_addons
+            addon_id, action = addon_action_match.group(1), addon_action_match.group(2)
+            if action == "configure":
+                return _json_response(200, await run_in_threadpool(control_addons.handle_addon_configure, token, addon_id, body))
+            if action == "render":
+                return _json_response(200, await run_in_threadpool(control_addons.handle_addon_render, token, addon_id, body))
+            if action == "uninstall":
+                return _json_response(200, await run_in_threadpool(control_addons.handle_addon_uninstall, token, addon_id, body))
+            compose_body = await run_in_threadpool(control_addons.prepare_addon_apply_body, token, addon_id, body)
+            if action == "apply/stream":
+                return _asgi_stream_deployment(token, compose_body, compose=True)
+            return _json_response(200, await run_in_threadpool(handle_compose_deployment, token, compose_body))
         if path == "/v1/builder/builds":
             return _json_response(200, await run_in_threadpool(independent_builder.submit, token, body))
         if operations_api.handles(path):

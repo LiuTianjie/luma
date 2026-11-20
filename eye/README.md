@@ -59,7 +59,33 @@ make e2e
 
 ## 在 Luma 上部署
 
-### 方式一：单机一体部署（All-in-One）
+### 推荐方式：通过 Luma Addon 一键插拔安装（统一 Control SSO，零手改 YAML）
+
+无需手改 compose 文件、无需手工生成和逐个填写内部密钥，也无需再配置第二套 Passkey / 登录密码：
+
+```bash
+# 交互式向导安装（自动生成内部密钥、注入 LUMA_CONTROL_URL 并接入 Control 统一单点登录）
+luma addon install eye --source ./eye
+
+# 或非交互指定参数（例如 node-edge 独立公网节点直连模式）
+luma addon install eye \
+  --preset node-edge \
+  --domain eye.example.com \
+  --region global \
+  --node public-node \
+  --source ./eye \
+  --yes
+
+# 后续修改保留天数/存储上限/告警 Webhook（也可在 Control 控制台「插件中心」可视化配置并热更新）
+luma addon configure eye --set retentionDays=14 --apply
+
+# CLI 直接复用 `luma login` 凭据与自动发现地址，无需单独 `luma-eye login`
+luma eye status
+luma eye projects list
+luma eye portfolio --since 24h
+```
+
+### 方式一：单机一体部署（All-in-One 手动模板）
 
 ```bash
 # 1. 设置管理令牌与内部中继密钥

@@ -222,7 +222,7 @@ function WorkspaceShell({
   const handleLogout = useCallback(async () => {
     await api.logout().catch(() => {});
     onLoggedOut();
-    navigate("/login", { replace: true });
+    navigate("/login?signedOut=1", { replace: true });
   }, [navigate, onLoggedOut]);
 
   const retentionStatus = authStatus?.retention;
@@ -475,6 +475,10 @@ export default function App() {
     return (
       <LoginView
         authHint={authStatus}
+        redirectTarget={searchParams.get("redirect") || ""}
+        ssoFailed={searchParams.get("sso") === "failed"}
+        signedOut={searchParams.get("signedOut") === "1"}
+        manualLogin={searchParams.get("login") === "manual"}
         onPasswordOrTokenLogin={async (username, secret) => {
           await api.login({ username, password: secret });
           await finishLoginRedirect();

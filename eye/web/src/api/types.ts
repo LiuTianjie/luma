@@ -13,6 +13,12 @@ export interface RetentionStatus {
 
 export interface AuthStatus {
   authenticated: boolean;
+  auth_mode?: "control-sso" | "local";
+  auth_method?: string;
+  control_url?: string;
+  control_security_url?: string;
+  sso_login_url?: string;
+  token_login_enabled?: boolean;
   mode: string;
   username?: string;
   display_name?: string;

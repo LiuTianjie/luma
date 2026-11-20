@@ -37,6 +37,8 @@ Operate:
   app           Inspect, restart, roll back or remove deployed applications
   runner        Join and manage this machine's persistent build runner
   observe       Read platform health, application telemetry and alert evidence
+  eye           Query Luma Eye analytics, crashes and logs using your Luma login
+  addon         Install, configure and remove pluggable Luma addons (builder, eye, observe)
   secret        Manage application secrets
 
 Cluster administration:
@@ -2032,6 +2034,444 @@ arguments:
 arguments:
   -h, --help                  show this help message and exit
   --scope SCOPE               Application name the secret belongs to
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma addon`
+
+```text
+usage: luma addon [-h] <command> ...
+
+Manage official and custom Luma addons with unified Luma Control SSO, automatic internal secret
+generation, and schema-driven configuration.
+
+arguments:
+  -h, --help   show this help message and exit
+
+arguments:
+  <command>
+    list       List available addons, install status and SSO endpoints
+    show       Show detailed configuration, secrets status and schema for an addon
+    configure  Configure addon settings and auto-generate missing internal secrets
+    install    Configure and deploy an addon with unified Control SSO
+    uninstall  Remove an addon deployment and revoke its Control SSO sessions
+
+Examples:
+  luma addon list
+  luma addon install eye --preset node-edge --domain eye.example.com --region global --node edge-1
+  luma addon configure eye --set retentionDays=14 --apply
+  luma addon uninstall eye
+```
+
+## `luma addon list`
+
+```text
+usage: luma addon list [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List available addons, install status and SSO endpoints
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma addon show`
+
+```text
+usage: luma addon show [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] addon
+
+Show detailed configuration, secrets status and schema for an addon
+
+arguments:
+  addon                       Addon identifier (for example builder, eye, observe)
+
+arguments:
+  -h, --help                  show this help message and exit
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma addon configure`
+
+```text
+usage: luma addon configure [-h] [--preset PRESET] [--domain DOMAIN] [--region REGION] [--node NODE] [--exposure EXPOSURE] [--set KEY=VALUE] [--secret NAME=VALUE] [--interactive] [--rotate-secrets] [--apply] [--timeout TIMEOUT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] addon
+
+Configure addon settings and auto-generate missing internal secrets
+
+arguments:
+  addon                       Addon identifier
+
+arguments:
+  -h, --help                  show this help message and exit
+  --preset PRESET             Deployment topology preset (see 'luma addon show <addon>')
+  --domain DOMAIN             Public HTTPS hostname for the addon
+  --region REGION             Target scheduling region
+  --node NODE                 Optional pinned node name
+  --exposure EXPOSURE         Traffic exposure mode (cn-edge, node-edge, external-edge, tailscale-
+                              relay, cloudflare-tunnel, none)
+  --set KEY=VALUE             Set a schema config field (repeatable)
+  --secret NAME=VALUE         Set an addon secret value (repeatable)
+  --interactive               Prompt interactively for configuration values
+  --rotate-secrets            Regenerate auto-managed internal secrets
+  --apply                     Redeploy the addon immediately using its pinned image
+  --timeout TIMEOUT           Deployment timeout in seconds when --apply is set (default: 600)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma addon install`
+
+```text
+usage: luma addon install [-h] [--preset PRESET] [--domain DOMAIN] [--region REGION] [--node NODE] [--exposure EXPOSURE] [--set KEY=VALUE] [--secret NAME=VALUE] [--source SOURCE] [--image SERVICE=IMAGE] [--platform PLATFORM] [--rotate-secrets] [--timeout TIMEOUT] [--yes] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] addon
+
+Configure and deploy an addon with unified Control SSO
+
+arguments:
+  addon                       Addon identifier (builder, eye, observe)
+
+arguments:
+  -h, --help                  show this help message and exit
+  --preset PRESET             Deployment topology preset (see 'luma addon show <addon>')
+  --domain DOMAIN             Public HTTPS hostname for the addon
+  --region REGION             Target scheduling region
+  --node NODE                 Optional pinned node name
+  --exposure EXPOSURE         Traffic exposure mode (cn-edge, node-edge, external-edge, tailscale-
+                              relay, cloudflare-tunnel, none)
+  --set KEY=VALUE             Set a schema config field (repeatable)
+  --secret NAME=VALUE         Set an addon secret value (repeatable)
+  --source SOURCE             Local source checkout to build and push (auto-detected if
+                              ./<sourceDir> exists)
+  --image SERVICE=IMAGE       Pin a prebuilt image instead of building locally (repeatable)
+  --platform PLATFORM         Target container platform when building from source (default:
+                              linux/amd64)
+  --rotate-secrets            Regenerate auto-managed internal secrets
+  --timeout TIMEOUT           Build/deploy timeout in seconds (default: 7200)
+  --yes, -y                   Skip interactive prompts and use flags/defaults
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma addon uninstall`
+
+```text
+usage: luma addon uninstall [-h] [--purge-secrets] [--delete-storage] [--yes] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] addon
+
+Remove an addon deployment and revoke its Control SSO sessions
+
+arguments:
+  addon                       Addon identifier
+
+arguments:
+  -h, --help                  show this help message and exit
+  --purge-secrets             Also delete scoped secrets stored for this addon
+  --delete-storage            Also delete removable storage volumes (data loss)
+  --yes, -y                   Confirm without prompting
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma eye`
+
+```text
+usage: luma eye [-h] <command> ...
+
+Operate Luma Eye directly through your active `luma login` identity. The Eye endpoint is auto-
+discovered from Control unless `--url` or `LUMA_EYE_URL` is provided.
+
+arguments:
+  -h, --help   show this help message and exit
+
+arguments:
+  <command>
+    status     Check Luma Eye connectivity, auth mode and storage usage
+    projects   List, create or delete monitored projects
+    portfolio  Show cross-project traffic, crash-free rate and Web Vitals
+    stats      Show overview metrics for a single project
+    issues     List or resolve production crash issues
+    logs       Search client error and warning logs
+
+Examples:
+  luma eye status
+  luma eye projects list
+  luma eye portfolio --since 24h
+  luma eye stats itool-tech --since 7d
+  luma eye issues itool-tech --status open
+```
+
+## `luma eye status`
+
+```text
+usage: luma eye status [-h] [--url EYE_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+Check Luma Eye connectivity, auth mode and storage usage
+
+arguments:
+  -h, --help                  show this help message and exit
+  --url EYE_URL               Override Luma Eye URL (default: auto-discovered from Control)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma eye projects`
+
+```text
+usage: luma eye projects [-h] <command> ...
+
+List, create or delete monitored projects
+
+arguments:
+  -h, --help  show this help message and exit
+
+arguments:
+  <command>
+    list      List registered projects
+    ensure    Create or update a project and return its public key / DSN
+    delete    Delete a registered project
+```
+
+## `luma eye projects list`
+
+```text
+usage: luma eye projects list [-h] [--url EYE_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+List registered projects
+
+arguments:
+  -h, --help                  show this help message and exit
+  --url EYE_URL               Override Luma Eye URL (default: auto-discovered from Control)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma eye projects ensure`
+
+```text
+usage: luma eye projects ensure [-h] [--name NAME] [--origins ORIGINS] [--rps RPS] [--url EYE_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] slug
+
+Create or update a project and return its public key / DSN
+
+arguments:
+  slug                        Project slug (for example itool-tech)
+
+arguments:
+  -h, --help                  show this help message and exit
+  --name NAME                 Display name
+  --origins ORIGINS           Comma-separated allowed HTTPS origins
+  --rps RPS                   Ingest rate limit per second (default: 200)
+  --url EYE_URL               Override Luma Eye URL (default: auto-discovered from Control)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma eye projects delete`
+
+```text
+usage: luma eye projects delete [-h] [--url EYE_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] slug
+
+Delete a registered project
+
+arguments:
+  slug                        Project slug
+
+arguments:
+  -h, --help                  show this help message and exit
+  --url EYE_URL               Override Luma Eye URL (default: auto-discovered from Control)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma eye portfolio`
+
+```text
+usage: luma eye portfolio [-h] [--since SINCE] [--url EYE_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+
+Show cross-project traffic, crash-free rate and Web Vitals
+
+arguments:
+  -h, --help                  show this help message and exit
+  --since SINCE               Lookback window such as 1h, 24h, 7d (default: 24h)
+  --url EYE_URL               Override Luma Eye URL (default: auto-discovered from Control)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma eye stats`
+
+```text
+usage: luma eye stats [-h] [--since SINCE] [--url EYE_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] project
+
+Show overview metrics for a single project
+
+arguments:
+  project                     Project slug
+
+arguments:
+  -h, --help                  show this help message and exit
+  --since SINCE               Lookback window (default: 24h)
+  --url EYE_URL               Override Luma Eye URL (default: auto-discovered from Control)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma eye issues`
+
+```text
+usage: luma eye issues [-h] [--since SINCE] [--status {open,resolved,ignored,all}] [--detail FINGERPRINT] [--resolve FINGERPRINT] [--url EYE_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] project
+
+List or resolve production crash issues
+
+arguments:
+  project                     Project slug
+
+arguments:
+  -h, --help                  show this help message and exit
+  --since SINCE               Lookback window (default: 7d)
+  --status {open,resolved,ignored,all}
+                              Issue status filter (default: open)
+  --detail FINGERPRINT        Inspect symbolicated stack trace and breadcrumbs for one issue
+  --resolve FINGERPRINT       Mark an issue resolved
+  --url EYE_URL               Override Luma Eye URL (default: auto-discovered from Control)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
+
+arguments:
+  --control-context CONTROL_CONTEXT
+                              Use this saved login without switching to it
+  --control-url CONTROL_URL   Control URL to use instead of the current login
+  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
+  --insecure                  Skip TLS verification for Control
+  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
+```
+
+## `luma eye logs`
+
+```text
+usage: luma eye logs [-h] [--level LEVEL] [--search SEARCH] [--trace TRACE] [--since SINCE] [--limit LIMIT] [--url EYE_URL] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] project
+
+Search client error and warning logs
+
+arguments:
+  project                     Project slug
+
+arguments:
+  -h, --help                  show this help message and exit
+  --level LEVEL               Filter by log level (error, warn, info)
+  --search SEARCH             Substring search
+  --trace TRACE               Correlated W3C trace_id
+  --since SINCE               Lookback window (default: 1h)
+  --limit LIMIT               Maximum rows (default: 100)
+  --url EYE_URL               Override Luma Eye URL (default: auto-discovered from Control)
+  --format {text,json,ndjson}
+                              Output format (default: text)
+  --quiet                     Only print the final result or error
 
 arguments:
   --control-context CONTROL_CONTEXT

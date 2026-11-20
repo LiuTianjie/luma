@@ -1,0 +1,156 @@
+apiVersion: luma.addon/v1
+id: eye
+name: Luma Eye
+category: analytics
+stack: luma-eye
+primaryService: eye
+sourceDir: eye
+description:
+  en: Lightweight product analytics, Sentry-compatible crash tracking, SourceMaps, and 1:1 DOM session replay.
+  zh: 轻量级前端埋点、异常监控（兼容 Sentry SDK）、SourceMap 源码还原与 1:1 DOM 会话回放。
+auth:
+  mode: control-sso
+  callbackPath: /auth/callback
+  consolePath: /console/
+  cliAuth: control-token
+  controlUrlEnv: LUMA_CONTROL_URL
+  publicUrlEnv: LUMA_EYE_PUBLIC_URL
+ui:
+  icon: eye
+  openMode: external
+  healthPath: /healthz
+presets:
+  - id: all-in-one
+    label:
+      en: All-in-One (Single Node)
+      zh: 单机一体部署
+    description:
+      en: Runs Eye + ClickHouse together on one node behind standard cluster ingress.
+      zh: 在单个节点上同时运行 Eye 与 ClickHouse，适合标准集群快速启用。
+    defaultRegion: cn
+    defaultExposure: cn-edge
+    defaultNode: ""
+  - id: node-edge
+    label:
+      en: Dedicated Public Node (node-edge)
+      zh: 独立公网节点直连 (node-edge)
+    description:
+      en: Public telemetry enters directly through the node's own public IP and Traefik, bypassing Manager bandwidth.
+      zh: 埋点流量直连独立公网节点 Traefik，不消耗 Manager 带宽，带低内存调优配置。
+    defaultRegion: global
+    defaultExposure: node-edge
+    defaultNode: ""
+configSchema:
+  - key: domain
+    type: domain
+    group: placement
+    required: true
+    placeholder: eye.example.com
+    label:
+      en: Console & Ingest Domain
+      zh: 控制台与上报域名
+    description:
+      en: HTTPS domain used for the web console and SDK event ingestion.
+      zh: 用于访问控制台及客户端 SDK 数据上报的 HTTPS 域名。
+  - key: region
+    type: region
+    group: placement
+    required: true
+    default: cn
+    label:
+      en: Scheduling Region
+      zh: 调度区域
+    description:
+      en: Region where Eye and ClickHouse run.
+      zh: Eye 与 ClickHouse 所在的调度区域。
+  - key: node
+    type: node
+    group: placement
+    required: false
+    default: ""
+    label:
+      en: Pinned Node
+      zh: 固定节点
+    description:
+      en: Required for node-edge; recommended so ClickHouse and metadata volumes remain local to one machine.
+      zh: node-edge 模式下必填；建议固定到单个节点以保留本地 ClickHouse 与元数据卷。
+  - key: exposure
+    type: select
+    group: placement
+    required: true
+    default: cn-edge
+    options:
+      - cn-edge
+      - node-edge
+      - external-edge
+      - tailscale-relay
+      - cloudflare-tunnel
+    label:
+      en: Exposure Mode
+      zh: 流量入口模式
+  - key: autoOriginSuffixes
+    type: string
+    group: general
+    required: false
+    default: ""
+    env: LUMA_EYE_AUTO_ORIGIN_SUFFIXES
+    placeholder: .example.com,localhost,127.0.0.1
+    label:
+      en: Auto-Provision Origin Suffixes
+      zh: 自动建档允许的域名后缀
+    description:
+      en: Comma-separated host suffixes allowed for auto-provisioning; defaults to the root domain of Console Domain.
+      zh: 逗号分隔的允许自动注册来源后缀；留空将按控制台域名的主域自动推导。
+  - key: retentionDays
+    type: integer
+    group: storage
+    required: false
+    default: 7
+    min: 1
+    max: 365
+    env: LUMA_EYE_RETENTION_DAYS
+    label:
+      en: Data Retention (Days)
+      zh: 数据保留天数
+    description:
+      en: Automatic TTL for analytics events, sessions, replays, and logs in ClickHouse.
+      zh: ClickHouse 中埋点、会话回放与日志的自动过期天数。
+  - key: maxStorageGb
+    type: integer
+    group: storage
+    required: false
+    default: 15
+    min: 1
+    max: 2048
+    env: LUMA_EYE_MAX_STORAGE_GB
+    label:
+      en: Max Storage Cap (GiB)
+      zh: 存储空间上限 (GiB)
+    description:
+      en: Oldest partitions are rotated automatically once storage reaches this cap.
+      zh: 存储达到上限时自动淘汰最旧分区，防止打满磁盘。
+  - key: feishuWebhook
+    type: secret
+    group: integrations
+    required: false
+    env: LUMA_EYE_FEISHU_WEBHOOK
+    label:
+      en: Feishu Alert Webhook
+      zh: 飞书异常告警 Webhook
+    description:
+      en: Optional Feishu bot webhook for instant crash and regression alert cards.
+      zh: 可选，用于新异常或回归异常的飞书卡片推送。
+autoSecrets:
+  - name: LUMA_EYE_ADMIN_TOKEN
+    bytes: 24
+    format: hex
+    description: Fallback break-glass admin token (Luma Control tokens work automatically).
+  - name: LUMA_EYE_RELAY_SECRET
+    bytes: 24
+    format: hex
+    description: Internal relay authentication secret for split Edge/Core deployments.
+  - name: LUMA_EYE_AUTO_KEY
+    bytes: 16
+    format: hex
+    prefix: eye_auto_
+    description: Shared key for auto-provisioning new projects from trusted origin suffixes.

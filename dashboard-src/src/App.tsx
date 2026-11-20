@@ -5,7 +5,7 @@ import { appToComposeDraft, serviceToDraft } from "./components/applicationModel
 import { EnrollPanel } from "./components/EnrollPanel";
 import { AuthLayout } from "./components/AuthLayout";
 import { LoginPanel } from "./components/LoginPanel";
-import { BuilderSignIn } from "./components/BuilderSignIn";
+import { AddonSignIn } from "./components/AddonSignIn";
 import { Topbar } from "./components/Topbar";
 import { AppRoutes, preloadPage } from "./AppRoutes";
 import { AppSidebar } from "./Sidebar";
@@ -61,12 +61,12 @@ export function App() {
   const auth = useDashboardAuth();
   // A one-time enrollment link renders before (and instead of) sign-in.
   const enrolling = router.path === "/enroll";
-  const builderLogin = router.path === "/builder-login";
-  const builderThemeParam = builderLogin ? new URLSearchParams(router.search).get("theme") : null;
-  const builderThemeOverride = builderThemeParam === "light" || builderThemeParam === "dark" ? builderThemeParam : null;
+  const addonLogin = router.path === "/addon-login" || router.path === "/builder-login";
+  const addonThemeParam = addonLogin ? new URLSearchParams(router.search).get("theme") : null;
+  const addonThemeOverride = addonThemeParam === "light" || addonThemeParam === "dark" ? addonThemeParam : null;
   const token = enrolling ? "" : auth.token;
-  const { payload, cluster, errors, syncStatus, lastUpdated, loadDashboard } = useDashboardData(dashboardScope, dashboardQuery, builderLogin ? "" : token, auth.expire);
-  const { mode: themeMode, theme, setMode: setThemeMode } = useTheme(builderThemeOverride);
+  const { payload, cluster, errors, syncStatus, lastUpdated, loadDashboard } = useDashboardData(dashboardScope, dashboardQuery, addonLogin ? "" : token, auth.expire);
+  const { mode: themeMode, theme, setMode: setThemeMode } = useTheme(addonThemeOverride);
   const vm = useMemo(() => createDashboardViewModel(payload), [payload]);
   // Pages that fetch their own data return no cluster identity; keep the last one seen.
   const [clusterId, setClusterId] = useState("");
@@ -218,9 +218,15 @@ export function App() {
     );
   }
 
-  if (builderLogin) {
-    const challenge = new URLSearchParams(router.search).get("challenge") || "";
-    return <AuthLayout lang={lang} onLangChange={setLang}><BuilderSignIn key={challenge} token={token} challenge={challenge} lang={lang} /></AuthLayout>;
+  if (addonLogin) {
+    const params = new URLSearchParams(router.search);
+    const challenge = params.get("challenge") || "";
+    const addonId = router.path === "/builder-login" ? "builder" : (params.get("addon") || "builder");
+    return (
+      <AuthLayout lang={lang} onLangChange={setLang}>
+        <AddonSignIn key={`${addonId}:${challenge}`} addonId={addonId} token={token} challenge={challenge} lang={lang} />
+      </AuthLayout>
+    );
   }
 
   return (

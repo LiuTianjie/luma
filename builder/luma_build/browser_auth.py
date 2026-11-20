@@ -4,12 +4,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
 import secrets
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
@@ -22,13 +23,18 @@ from .errors import BuildError
 SESSION_COOKIE = "__Host-luma-build-session"
 LOGIN_COOKIE = "__Host-luma-build-login"
 PROOF = re.compile(r"[A-Za-z0-9_-]{43}")
-SESSION = re.compile(r"lbs_[A-Za-z0-9_-]{43}")
+SESSION = re.compile(r"l[ab]s_[A-Za-z0-9_-]{43}")
+ADDON_ID = re.compile(r"[a-z][a-z0-9-]{0,31}")
 HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff"}
 
 
 class BrowserAuth:
-    def __init__(self, control: ControlAuthVerifier) -> None:
+    def __init__(self, control: ControlAuthVerifier, *, addon_id: str | None = None) -> None:
         self.control = control
+        raw_id = str(addon_id if addon_id is not None else os.environ.get("LUMA_ADDON_ID", "builder")).strip().lower() or "builder"
+        if not ADDON_ID.fullmatch(raw_id):
+            raise BuildError(f"invalid LUMA_ADDON_ID: {raw_id!r}")
+        self.addon_id = raw_id
 
     def _request(self, action: str, body=None, token: str = "") -> dict:
         if not self.control.enabled:
@@ -37,7 +43,7 @@ class BrowserAuth:
         if token:
             headers["Authorization"] = f"Bearer {token}"
         request = urllib.request.Request(
-            f"{self.control.endpoint}/v1/auth/builder/{action}",
+            f"{self.control.endpoint}/v1/auth/addon/{self.addon_id}/{action}",
             data=json.dumps(body or {}).encode(), method="POST", headers=headers,
         )
         try:
@@ -74,10 +80,10 @@ class BrowserAuth:
         verifier = secrets.token_urlsafe(32)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
         theme = request.query_params.get("theme", "").strip().lower()
-        query = f"challenge={challenge}"
+        params = {"addon": self.addon_id, "challenge": challenge}
         if theme in {"light", "dark"}:
-            query += f"&theme={theme}"
-        response = RedirectResponse(f"{self.control.endpoint}/dashboard/builder-login?{query}", status_code=303, headers=HEADERS)
+            params["theme"] = theme
+        response = RedirectResponse(f"{self.control.endpoint}/dashboard/addon-login?{urlencode(params)}", status_code=303, headers=HEADERS)
         response.set_cookie(LOGIN_COOKIE, verifier, max_age=300, path="/", secure=True, httponly=True, samesite="lax")
         return response
 

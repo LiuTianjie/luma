@@ -1,0 +1,193 @@
+apiVersion: luma.addon/v1
+id: builder
+name: Luma Build
+category: build
+stack: luma-build
+primaryService: server
+sourceDir: builder
+description:
+  en: Independent multi-runner container build service with GitHub/Gitea webhooks, BuildKit caching, and ACR/OCI push.
+  zh: 独立多 Runner 容器构建队列服务，支持 Git 仓库导入、BuildKit 缓存与自动推送部署。
+auth:
+  mode: control-sso
+  callbackPath: /auth/callback
+  consolePath: /
+  cliAuth: control-token
+  controlUrlEnv: LUMA_CONTROL_URL
+  needsControlDeployToken: true
+ui:
+  icon: builder
+  openMode: external
+  dashboardPath: /builds
+  healthPath: /healthz
+presets:
+  - id: default
+    label:
+      en: Standard Build Server
+      zh: 标准构建控制节点
+    description:
+      en: Runs luma-build server with SQLite build queue; enroll Linux or macOS build runners with `luma runner join`.
+      zh: 部署独立 luma-build 服务端并持久化构建队列，可用 `luma runner join` 接入任意 Linux/macOS 构建机。
+    defaultRegion: cn
+    defaultExposure: cn-edge
+    defaultNode: manager
+configSchema:
+  - key: domain
+    type: domain
+    group: placement
+    required: true
+    placeholder: build.example.com
+    label:
+      en: Console & API Domain
+      zh: 控制台与接口域名
+    description:
+      en: HTTPS domain for the Luma Build console and runner API.
+      zh: 用于访问 Luma Build 控制台与 Runner 通信的 HTTPS 域名。
+  - key: region
+    type: region
+    group: placement
+    required: true
+    default: cn
+    label:
+      en: Scheduling Region
+      zh: 调度区域
+    description:
+      en: Region where the build server runs.
+      zh: 构建服务端运行的调度区域。
+  - key: node
+    type: node
+    group: placement
+    required: false
+    default: manager
+    label:
+      en: Pinned Node
+      zh: 固定节点
+    description:
+      en: Recommended to pin so the local SQLite build queue volume stays attached to one node.
+      zh: 建议固定到单个节点，以保证 SQLite 构建队列数据卷持久挂载。
+  - key: exposure
+    type: select
+    group: placement
+    required: true
+    default: cn-edge
+    options:
+      - cn-edge
+      - node-edge
+      - external-edge
+      - tailscale-relay
+      - cloudflare-tunnel
+    label:
+      en: Exposure Mode
+      zh: 流量入口模式
+    description:
+      en: How browsers and build runners reach the build server.
+      zh: 浏览器和外部构建 Runner 访问该服务的方式。
+  - key: registryHost
+    type: string
+    group: integrations
+    required: false
+    default: ""
+    env: LUMA_BUILD_REGISTRY_HOST
+    placeholder: registry.example.com
+    label:
+      en: Registry Pull Host
+      zh: 镜像拉取仓库地址
+    description:
+      en: Default container registry host used by target nodes when pulling built images.
+      zh: 目标节点拉取构建镜像时使用的默认镜像仓库域名。
+  - key: pushHost
+    type: string
+    group: integrations
+    required: false
+    default: ""
+    env: LUMA_BUILD_PUSH_HOST
+    placeholder: registry.example.com
+    label:
+      en: Registry Push Host
+      zh: 镜像推送仓库地址
+    description:
+      en: Defaults to Registry Pull Host when left blank.
+      zh: 留空时默认与拉取仓库地址相同。
+  - key: registryNamespace
+    type: string
+    group: integrations
+    required: false
+    default: ""
+    env: LUMA_BUILD_REGISTRY_NAMESPACE
+    placeholder: luma-apps
+    label:
+      en: Registry Namespace
+      zh: 镜像命名空间
+    description:
+      en: Namespace or project prefix under the container registry.
+      zh: 镜像仓库中的命名空间前缀。
+  - key: registryUsername
+    type: string
+    group: integrations
+    required: false
+    default: ""
+    env: LUMA_BUILD_REGISTRY_USERNAME
+    label:
+      en: Registry Username
+      zh: 镜像仓库用户名
+  - key: registryPassword
+    type: secret
+    group: integrations
+    required: false
+    env: LUMA_BUILD_REGISTRY_PASSWORD
+    label:
+      en: Registry Password / Token
+      zh: 镜像仓库密码 / Token
+  - key: githubToken
+    type: secret
+    group: integrations
+    required: false
+    env: GITHUB_TOKEN
+    label:
+      en: GitHub Clone Token
+      zh: GitHub 克隆令牌
+    description:
+      en: Optional PAT used by runners to clone private GitHub repositories.
+      zh: 可选，用于构建机拉取私有 GitHub 仓库。
+  - key: giteaHost
+    type: string
+    group: integrations
+    required: false
+    default: ""
+    env: GITEA_HOST
+    placeholder: git.example.com
+    label:
+      en: Gitea Host
+      zh: Gitea 域名
+  - key: giteaUsername
+    type: string
+    group: integrations
+    required: false
+    default: ""
+    env: GITEA_USERNAME
+    label:
+      en: Gitea Username
+      zh: Gitea 用户名
+  - key: giteaToken
+    type: secret
+    group: integrations
+    required: false
+    env: GITEA_TOKEN
+    label:
+      en: Gitea Access Token
+      zh: Gitea 访问令牌
+  - key: affinitySeconds
+    type: integer
+    group: general
+    required: false
+    default: 3
+    min: 0
+    max: 60
+    env: LUMA_BUILD_AFFINITY_SECONDS
+    label:
+      en: Runner Affinity Window (s)
+      zh: Runner 亲和等待（秒）
+    description:
+      en: Brief wait before falling back from a warm cache runner to another runner.
+      zh: 优先等待命中缓存的构建机空闲的秒数。
+autoSecrets: []

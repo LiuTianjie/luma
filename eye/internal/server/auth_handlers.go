@@ -78,21 +78,40 @@ func (s *Server) resolveRPInfo(r *http.Request) (origin string, rpID string, ava
 }
 
 func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
-	authorized := s.authorizeRequest(w, r)
+	authorized, authMethod, _ := s.authorizeRequestInfo(w, r)
 	snap := s.auth.Snapshot()
 	_, rpID, rpAvailable := s.resolveRPInfo(r)
 
+	authMode := "local"
+	controlURL := ""
+	controlSecurityURL := ""
+	ssoLoginURL := ""
+	tokenLoginEnabled := true
+	if s.controlSSO != nil {
+		authMode = "control-sso"
+		controlURL = s.controlSSO.Endpoint()
+		controlSecurityURL = s.controlSSO.SecuritySettingsURL()
+		ssoLoginURL = "/auth/login"
+		tokenLoginEnabled = true
+	}
+
 	payload := map[string]any{
-		"authenticated":      authorized,
-		"mode":               string(s.cfg.Mode),
-		"username":           snap.Username,
-		"has_password":       snap.HasPassword,
-		"passkey_count":      snap.PasskeyCount,
-		"passkeys_available": rpAvailable,
-		"rp_id":              rpID,
-		"session_ttl_days":   int(auth.SessionTTL / (24 * time.Hour)),
+		"authenticated":        authorized,
+		"auth_mode":            authMode,
+		"control_url":          controlURL,
+		"control_security_url": controlSecurityURL,
+		"sso_login_url":        ssoLoginURL,
+		"token_login_enabled":  tokenLoginEnabled,
+		"mode":                 string(s.cfg.Mode),
+		"username":             snap.Username,
+		"has_password":         snap.HasPassword,
+		"passkey_count":        snap.PasskeyCount,
+		"passkeys_available":   rpAvailable && authMode == "local",
+		"rp_id":                rpID,
+		"session_ttl_days":     int(auth.SessionTTL / (24 * time.Hour)),
 	}
 	if authorized {
+		payload["auth_method"] = authMethod
 		payload["display_name"] = snap.DisplayName
 		payload["user_id"] = snap.UserID
 		if s.retentionStatus != nil {
@@ -133,13 +152,19 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	trimmedCandidate := strings.TrimSpace(candidateSecret)
 
 	var loginMethod string
-	if trimmedCandidate != "" && subtle.ConstantTimeCompare([]byte(trimmedCandidate), []byte(s.cfg.AdminToken)) == 1 {
+	if trimmedCandidate != "" && s.cfg.AdminToken != "" && subtle.ConstantTimeCompare([]byte(trimmedCandidate), []byte(s.cfg.AdminToken)) == 1 {
 		loginMethod = "token"
-	} else if rawPassword != "" && s.auth.VerifyPassword(body.Username, rawPassword) {
+	} else if trimmedCandidate != "" && s.controlSSO != nil {
+		if ok, err := s.controlSSO.VerifyToken(r.Context(), trimmedCandidate); err == nil && ok {
+			loginMethod = "control-token"
+		}
+	}
+	if loginMethod == "" && rawPassword != "" && s.controlSSO == nil && s.auth.VerifyPassword(body.Username, rawPassword) {
 		loginMethod = "password"
-	} else {
+	}
+	if loginMethod == "" {
 		errMsg := "管理 Token 不正确"
-		if s.auth.HasPassword() {
+		if s.controlSSO == nil && s.auth.HasPassword() {
 			errMsg = "用户名、密码或管理 Token 不正确"
 		}
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": errMsg})
@@ -165,6 +190,18 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if s.controlSSO != nil {
+		if tok := readSSOSessionCookie(r); tok != "" {
+			if info, status := s.verifyControlSSOCookie(r); status == http.StatusForbidden {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "request origin does not match Luma Eye console"})
+				return
+			} else if status == http.StatusOK && info != nil {
+				_ = s.controlSSO.LogoutSession(r.Context(), tok)
+			}
+		}
+		clearSSOSessionCookies(w, r)
+		clearSSOLoginCookies(w, r)
+	}
 	if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
 		s.auth.RevokeSessionByCookie(c.Value)
 	}

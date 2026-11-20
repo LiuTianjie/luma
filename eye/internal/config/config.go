@@ -25,8 +25,14 @@ type Config struct {
 	PublicURL  string
 	DataDir    string
 
-	AdminToken string
-	IPSalt     string
+	AdminToken         string
+	AdminTokenExplicit bool
+	IPSalt             string
+
+	ControlURL          string
+	ControlInsecure     bool
+	ControlAuthCacheTTL time.Duration
+	AddonID             string
 
 	ClickHouseURL      string
 	ClickHouseDB       string
@@ -64,7 +70,24 @@ func LoadFromEnv() (*Config, error) {
 		return nil, fmt.Errorf("invalid LUMA_EYE_MODE %q: must be all, edge, or core", modeStr)
 	}
 
+	controlURL := strings.TrimRight(strings.TrimSpace(os.Getenv("LUMA_CONTROL_URL")), "/")
+	if controlURL != "" && !strings.HasPrefix(controlURL, "https://") && !strings.HasPrefix(controlURL, "http://") {
+		return nil, fmt.Errorf("invalid LUMA_CONTROL_URL %q: must start with https:// or http://", controlURL)
+	}
+	controlInsecure := parseBoolEnv(os.Getenv("LUMA_CONTROL_INSECURE"))
+	addonID := strings.ToLower(strings.TrimSpace(getenv("LUMA_ADDON_ID", "eye")))
+	if addonID == "" {
+		addonID = "eye"
+	}
+	controlAuthCacheTTL := 60 * time.Second
+	if raw := strings.TrimSpace(os.Getenv("LUMA_CONTROL_AUTH_CACHE_SECONDS")); raw != "" {
+		if secs, err := strconv.ParseFloat(raw, 64); err == nil && secs >= 0 {
+			controlAuthCacheTTL = time.Duration(secs * float64(time.Second))
+		}
+	}
+
 	adminToken := strings.TrimSpace(os.Getenv("LUMA_EYE_ADMIN_TOKEN"))
+	adminTokenExplicit := adminToken != ""
 	ephemeralAdmin := false
 	if adminToken == "" {
 		adminToken = randomHex(24)
@@ -112,7 +135,12 @@ func LoadFromEnv() (*Config, error) {
 		PublicURL:               strings.TrimRight(strings.TrimSpace(os.Getenv("LUMA_EYE_PUBLIC_URL")), "/"),
 		DataDir:                 getenv("LUMA_EYE_DATA_DIR", "./data"),
 		AdminToken:              adminToken,
+		AdminTokenExplicit:      adminTokenExplicit,
 		IPSalt:                  ipSalt,
+		ControlURL:              controlURL,
+		ControlInsecure:         controlInsecure,
+		ControlAuthCacheTTL:     controlAuthCacheTTL,
+		AddonID:                 addonID,
 		ClickHouseURL:           strings.TrimRight(getenv("LUMA_EYE_CLICKHOUSE_URL", "http://127.0.0.1:8123"), "/"),
 		ClickHouseDB:            getenv("LUMA_EYE_CLICKHOUSE_DB", "luma_eye"),
 		ClickHouseUser:          getenv("LUMA_EYE_CLICKHOUSE_USER", "default"),
@@ -138,11 +166,20 @@ func LoadFromEnv() (*Config, error) {
 		return nil, fmt.Errorf("LUMA_EYE_CORE_URL is required when LUMA_EYE_MODE=edge")
 	}
 
-	if ephemeralAdmin {
+	if ephemeralAdmin && cfg.ControlURL == "" {
 		fmt.Fprintf(os.Stderr, "[luma-eye] WARNING: LUMA_EYE_ADMIN_TOKEN not set; generated ephemeral dev token: %s\n", adminToken)
 	}
 
 	return cfg, nil
+}
+
+func parseBoolEnv(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func getenv(key, fallback string) string {

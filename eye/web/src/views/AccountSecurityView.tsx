@@ -14,7 +14,7 @@ import {
   Trash2,
   UserCircle,
 } from "@/components/icons";
-import { Eye, EyeOff } from "lucide-react";
+import { ArrowUpRight, Eye, EyeOff } from "lucide-react";
 import { api } from "@/api/client";
 import {
   detectPasskeyCapabilities,
@@ -88,7 +88,7 @@ function formatEpochMs(ms?: number): string {
 }
 
 export function AccountSecurityView() {
-  const { authStatus, refreshAuthStatus, themeMode, setThemeMode } = useWorkspace();
+  const { authStatus, refreshAuthStatus, themeMode, setThemeMode, logout } = useWorkspace();
 
   const [loading, setLoading] = useState(true);
   const [rpId, setRpId] = useState("");
@@ -153,9 +153,15 @@ export function AccountSecurityView() {
     }
   }, []);
 
+  const isControlSSO = authStatus?.auth_mode === "control-sso";
+
   useEffect(() => {
+    if (isControlSSO) {
+      setLoading(false);
+      return;
+    }
     void loadSecurityData(true);
-  }, [loadSecurityData]);
+  }, [isControlSSO, loadSecurityData]);
 
   const runAction = async (key: string, fn: () => Promise<string>) => {
     setBusy(key);
@@ -248,6 +254,95 @@ export function AccountSecurityView() {
   };
 
   const hasPassword = Boolean(authStatus?.has_password);
+
+  if (isControlSSO) {
+    return (
+      <div className="flex min-w-0 flex-col gap-6">
+        <PageHeader
+          title="身份与安全"
+          description="当前 Luma Eye 已接入 Luma Control 统一身份认证，Passkey、登录策略与会话吊销由控制面集中管理。"
+        />
+
+        <Card>
+          <CardHeader>
+            <CardTitle role="heading" aria-level={2} className="flex items-center gap-2">
+              <ShieldCheck className="size-4 text-emerald-600 dark:text-emerald-400" />
+              由 Luma Control 统一管理登录与安全
+            </CardTitle>
+            <CardDescription>
+              无需在 Luma Eye 中重复配置密码或注册 Passkey；在 Luma Control 退出登录或吊销 Passkey 后，本控制台会话会立即失效。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <div className="grid gap-3 rounded-lg border border-border bg-muted/40 p-4 text-sm sm:grid-cols-2">
+              <div>
+                <div className="text-xs text-muted-foreground">身份提供方 (IdP)</div>
+                <div className="mt-1 font-mono text-xs text-foreground">{authStatus?.control_url || "Luma Control"}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">当前登录方式</div>
+                <div className="mt-1 flex items-center gap-2">
+                  <Badge variant="secondary">{authStatus?.auth_method || "control-sso"}</Badge>
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              {authStatus?.control_security_url ? (
+                <Button
+                  nativeButton={false}
+                  render={<a href={authStatus.control_security_url} target="_blank" rel="noreferrer" />}
+                >
+                  前往 Luma Control 管理 Passkey 与会话
+                  <ArrowUpRight className="ml-1 size-4" />
+                </Button>
+              ) : null}
+              <Button variant="outline" onClick={() => void logout()}>
+                <LogOut data-icon="inline-start" />
+                退出当前 Luma Eye 会话
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle role="heading" aria-level={2}>
+              界面外观
+            </CardTitle>
+            <CardDescription>仅影响当前浏览器的配色方案偏好。</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid max-w-md grid-cols-3 gap-2" role="radiogroup" aria-label="界面配色方案">
+              {(
+                [
+                  { mode: "system", label: "跟随系统", icon: Monitor },
+                  { mode: "light", label: "浅色模式", icon: Sun },
+                  { mode: "dark", label: "深色模式", icon: Moon },
+                ] as const
+              ).map(({ mode, label, icon: Icon }) => (
+                <button
+                  key={mode}
+                  type="button"
+                  role="radio"
+                  aria-checked={themeMode === mode}
+                  onClick={() => setThemeMode(mode)}
+                  className={cn(
+                    "flex items-center justify-center gap-2 rounded-md px-3 py-2 text-xs font-medium ring-1 ring-border transition-colors outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring",
+                    themeMode === mode
+                      ? "bg-accent text-foreground ring-foreground/30"
+                      : "text-muted-foreground",
+                  )}
+                >
+                  <Icon className="size-3.5" />
+                  <span>{label}</span>
+                </button>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-w-0 flex-col gap-6">

@@ -1,0 +1,62 @@
+apiVersion: luma.addon/v1
+id: observe
+name: Luma Observe
+category: observability
+stack: luma-observe
+primaryService: grafana
+sourceDir: observe
+description:
+  en: Unified metrics (VictoriaMetrics), logs (VictoriaLogs), traces (Tempo), alerts, and Grafana dashboards on Manager.
+  zh: 基于 VictoriaMetrics、VictoriaLogs、Tempo 与 Grafana 的全栈指标、日志、链路追踪与告警套件。
+auth:
+  mode: forward-auth
+  consolePath: /grafana
+  cliAuth: control-proxy
+ui:
+  icon: observe
+  openMode: internal
+  dashboardPath: /observe
+  healthPath: /v1/dashboard/observe/status
+presets:
+  - id: manager
+    label:
+      en: Manager Host-Network Stack
+      zh: Manager 节点全栈部署
+    description:
+      en: Deploys the full observability stack pinned to the Manager node with zero-config /grafana forwardAuth SSO.
+      zh: 固定部署在 Manager 节点，自动注入 OTel 链路采集并通过 Control forwardAuth 保护 /grafana。
+    defaultRegion: cn
+    defaultExposure: none
+    defaultNode: manager
+configSchema:
+  - key: region
+    type: region
+    group: placement
+    required: true
+    default: cn
+    label:
+      en: Manager Region
+      zh: Manager 区域
+    description:
+      en: Matches the Manager node's scheduling region.
+      zh: 需与 Manager 节点所属区域一致。
+  - key: feishuWebhookUrl
+    type: secret
+    group: integrations
+    required: false
+    env: FEISHU_WEBHOOK_URL
+    label:
+      en: Alertmanager Feishu Webhook
+      zh: Alertmanager 飞书 Webhook
+    description:
+      en: Optional webhook used by the observe feishu-webhook relay.
+      zh: 可选，用于 Observe 告警转发至飞书群。
+autoSecrets:
+  - name: LUMA_OBSERVE_READ_TOKEN
+    bytes: 32
+    format: urlsafe
+    description: Bearer token for authenticated external read access via observe-access (vmauth).
+  - name: LUMA_OBSERVE_INGEST_TOKEN
+    bytes: 32
+    format: urlsafe
+    description: Bearer token for external OTLP metrics/traces ingestion via observe-access.

@@ -13,6 +13,7 @@ const loadDeploymentsPage = () => import("./pages/DeploymentsPage").then((module
 const loadDeployPage = () => import("./pages/DeployPage").then((module) => ({ default: module.DeployPage }));
 const loadCredentialsPage = () => import("./pages/CredentialsPage").then((module) => ({ default: module.CredentialsPage }));
 const loadSetupPage = () => import("./pages/SetupPage").then((module) => ({ default: module.SetupPage }));
+const loadAddonsPage = () => import("./pages/AddonsPage").then((module) => ({ default: module.AddonsPage }));
 const loadNodesPage = () => import("./pages/NodesPage").then((module) => ({ default: module.NodesPage }));
 const loadObservabilityPage = () => import("./pages/ObservabilityPage").then((module) => ({ default: module.ObservabilityPage }));
 const loadStoragePage = () => import("./pages/StoragePage").then((module) => ({ default: module.StoragePage }));
@@ -25,6 +26,7 @@ const DeploymentsPage = lazy(loadDeploymentsPage);
 const DeployPage = lazy(loadDeployPage);
 const CredentialsPage = lazy(loadCredentialsPage);
 const SetupPage = lazy(loadSetupPage);
+const AddonsPage = lazy(loadAddonsPage);
 const NodesPage = lazy(loadNodesPage);
 const NotFound = lazy(() => import("./pages/NotFound").then((module) => ({ default: module.NotFound })));
 const ObservabilityPage = lazy(loadObservabilityPage);
@@ -66,6 +68,7 @@ export function preloadPage(page: NavPage): void {
   const loader = page === "deployments" ? loadDeploymentsPage
     : page === "credentials" ? loadCredentialsPage
     : page === "setup" ? loadSetupPage
+    : page === "addons" ? loadAddonsPage
     : page === "applications" ? loadApplicationsPage
     : page === "builder" ? loadBuilderPage
     : page === "deploy" ? loadDeployPage
@@ -161,6 +164,9 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
       break;
     case "security":
       content = <SecurityPage lang={lang} token={token} onUnauthorized={props.onUnauthorized} />;
+      break;
+    case "addons":
+      content = <AddonsPage lang={lang} token={token} onUnauthorized={props.onUnauthorized} />;
       break;
     case "setup":
       content = <SetupPage lang={lang} token={token} readiness={payload.readiness} onRefresh={props.onRefresh} />;

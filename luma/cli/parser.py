@@ -42,6 +42,8 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("app", "Inspect, restart, roll back or remove deployed applications"),
         ("runner", "Join and manage this machine's persistent build runner"),
         ("observe", "Read platform health, application telemetry and alert evidence"),
+        ("eye", "Query Luma Eye analytics, crashes and logs using your Luma login"),
+        ("addon", "Install, configure and remove pluggable Luma addons (builder, eye, observe)"),
         ("secret", "Manage application secrets"),
     )),
     ("Cluster administration", (
@@ -150,6 +152,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_get_started_commands(sub)
     _add_deploy_commands(sub)
     _add_operate_commands(sub)
+    from .addons import add_parser as add_addon_parser
+    add_addon_parser(sub, _command, _commands, _add_control_arguments, _add_output_arguments)
+    from .eye import add_parser as add_eye_parser
+    add_eye_parser(sub, _command, _commands, _add_control_arguments, _add_output_arguments)
     from .runner import add_parser as add_runner_parser
     add_runner_parser(sub, _command, _commands, _add_output_arguments)
     _add_cluster_commands(sub)

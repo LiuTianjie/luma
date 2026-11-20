@@ -1,7 +1,6 @@
 """Dashboard adapter for the independent Builder's public API."""
 from __future__ import annotations
 
-import os
 import re
 import urllib.parse
 from typing import Any
@@ -11,11 +10,11 @@ from .state import load_auth_state, require_token
 
 
 def service_url(state: dict[str, Any]) -> str:
-    from . import server
-    url = str(os.environ.get("LUMA_BUILD_URL") or server._builder_service_url(state)).strip().rstrip("/")
+    from . import addons
+    url = addons.resolve_addon_url(state, "builder")
     parsed = urllib.parse.urlsplit(url)
     if not url:
-        raise LumaError("独立 Builder 尚未配置：请部署 luma-build 应用，或在 Control 设置 LUMA_BUILD_URL")
+        raise LumaError("独立 Builder 尚未配置：请运行 `luma addon install builder` 部署 luma-build，或在 Control 设置 LUMA_BUILD_URL")
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise LumaError("invalid configured Builder URL")
     return url

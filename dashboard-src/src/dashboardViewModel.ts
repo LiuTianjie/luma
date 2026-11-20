@@ -13,6 +13,7 @@ export type PageId =
   | "registry"
   | "nodes"
   | "setup"
+  | "addons"
   | "credentials"
   | "maintenance"
   | "security"

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { FingerprintPattern, KeyRound, TriangleAlert } from "@/components/icons";
+import { FingerprintPattern, KeyRound, ShieldCheck, TriangleAlert } from "@/components/icons";
 import { Eye, EyeOff } from "lucide-react";
 import lumaLogoMark from "@/assets/luma-logo-mark.png";
 import {
@@ -24,27 +24,55 @@ import { Spinner } from "@/components/ui/spinner";
 
 interface LoginViewProps {
   authHint: AuthStatus | null;
+  redirectTarget?: string;
+  ssoFailed?: boolean;
+  signedOut?: boolean;
+  manualLogin?: boolean;
   onPasswordOrTokenLogin: (username: string, secret: string) => Promise<void>;
   onPasskeyAuthenticated: () => Promise<void>;
 }
 
+function buildSSOLoginHref(basePath: string, redirectTarget: string): string {
+  const sp = new URLSearchParams();
+  if (redirectTarget && redirectTarget.startsWith("/") && !redirectTarget.startsWith("//")) {
+    sp.set("redirect", redirectTarget);
+  }
+  const theme = document.documentElement.classList.contains("dark") ? "dark" : "light";
+  sp.set("theme", theme);
+  const qs = sp.toString();
+  return qs ? `${basePath}?${qs}` : basePath;
+}
+
 export function LoginView({
   authHint,
+  redirectTarget = "",
+  ssoFailed = false,
+  signedOut = false,
+  manualLogin = false,
   onPasswordOrTokenLogin,
   onPasskeyAuthenticated,
 }: LoginViewProps) {
+  const isControlSSO = authHint?.auth_mode === "control-sso";
+  const ssoLoginPath = authHint?.sso_login_url || "/auth/login";
   const defaultUser = authHint?.username || "admin";
   const hasPassword = Boolean(authHint?.has_password);
   const hasRegisteredPasskeys = (authHint?.passkey_count || 0) > 0;
-  const serverPasskeysAvailable = authHint?.passkeys_available !== false;
+  const serverPasskeysAvailable = !isControlSSO && authHint?.passkeys_available !== false;
 
   const [username, setUsername] = useState(defaultUser);
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [showCredentialForm, setShowCredentialForm] = useState(!hasRegisteredPasskeys);
+  const [showCredentialForm, setShowCredentialForm] = useState(
+    isControlSSO ? manualLogin : !hasRegisteredPasskeys,
+  );
+  const [redirectingSSO, setRedirectingSSO] = useState(
+    Boolean(isControlSSO && !ssoFailed && !signedOut && !manualLogin),
+  );
   const [submitted, setSubmitted] = useState(false);
   const [busy, setBusy] = useState<"" | "password" | "passkey">("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(
+    ssoFailed ? "Luma Control 单点登录未能完成，请重试或检查控制面会话状态。" : "",
+  );
   const [clientPasskeyReady, setClientPasskeyReady] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
@@ -55,13 +83,23 @@ export function LoginView({
   }, []);
 
   useEffect(() => {
+    if (!isControlSSO) return;
+    if (ssoFailed || signedOut || manualLogin) {
+      setRedirectingSSO(false);
+      return;
+    }
+    setRedirectingSSO(true);
+    window.location.replace(buildSSOLoginHref(ssoLoginPath, redirectTarget));
+  }, [isControlSSO, ssoFailed, signedOut, manualLogin, ssoLoginPath, redirectTarget]);
+
+  useEffect(() => {
     if (authHint?.username) {
       setUsername(authHint.username);
     }
-    if ((authHint?.passkey_count || 0) === 0) {
+    if (!isControlSSO && (authHint?.passkey_count || 0) === 0) {
       setShowCredentialForm(true);
     }
-  }, [authHint?.username, authHint?.passkey_count]);
+  }, [authHint?.username, authHint?.passkey_count, isControlSSO]);
 
   const armConditionalAutofill = useCallback(() => {
     if (!serverPasskeysAvailable) return;
@@ -92,8 +130,8 @@ export function LoginView({
     };
   }, [serverPasskeysAvailable, armConditionalAutofill]);
 
-  const passkeyPrimary = clientPasskeyReady && hasRegisteredPasskeys;
-  const credentialFormVisible = !passkeyPrimary || showCredentialForm;
+  const passkeyPrimary = !isControlSSO && clientPasskeyReady && hasRegisteredPasskeys;
+  const credentialFormVisible = isControlSSO ? showCredentialForm : (!passkeyPrimary || showCredentialForm);
 
   const handlePasskeyButton = async () => {
     setBusy("passkey");
@@ -165,15 +203,25 @@ export function LoginView({
               登录控制台
             </CardTitle>
             <CardDescription>
-              {passkeyPrimary
-                ? "使用此设备或手机上的 Passkey 一键验证登录。"
-                : hasPassword
-                  ? "输入管理员密码或应急管理 Token 登录（会话持久化保存 30 天）。"
-                  : "粘贴管理 Token 登录；进入后可设置登录密码或添加 Passkey。"}
+              {isControlSSO
+                ? "已接入 Luma Control 统一身份认证，无需重复设置密码或 Passkey。"
+                : passkeyPrimary
+                  ? "使用此设备或手机上的 Passkey 一键验证登录。"
+                  : hasPassword
+                    ? "输入管理员密码或应急管理 Token 登录（会话持久化保存 30 天）。"
+                    : "粘贴管理 Token 登录；进入后可设置登录密码或添加 Passkey。"}
             </CardDescription>
           </CardHeader>
 
           <CardContent className="flex flex-col gap-4">
+            {signedOut && !error ? (
+              <Alert>
+                <ShieldCheck aria-hidden="true" />
+                <AlertTitle>已退出 Luma Eye 会话</AlertTitle>
+                <AlertDescription>你可以随时使用 Luma Control 再次单点登录。</AlertDescription>
+              </Alert>
+            ) : null}
+
             {error ? (
               <Alert variant="destructive" aria-live="assertive">
                 <TriangleAlert aria-hidden="true" />
@@ -183,7 +231,43 @@ export function LoginView({
             ) : null}
 
             <FieldGroup className="gap-4">
-              {clientPasskeyReady ? (
+              {isControlSSO ? (
+                redirectingSSO ? (
+                  <div role="status" className="flex items-center gap-2.5 rounded-lg border border-border bg-muted/50 px-3.5 py-3 text-sm text-muted-foreground">
+                    <Spinner aria-hidden="true" />
+                    <span>正在跳转 Luma Control 完成单点登录…</span>
+                  </div>
+                ) : (
+                  <>
+                    <Button
+                      size="lg"
+                      className="w-full"
+                      nativeButton={false}
+                      render={<a href={buildSSOLoginHref(ssoLoginPath, redirectTarget)} />}
+                    >
+                      <ShieldCheck data-icon="inline-start" />
+                      使用 Luma Control 单点登录
+                    </Button>
+                    {!showCredentialForm ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="self-center text-muted-foreground"
+                        onClick={() => {
+                          setShowCredentialForm(true);
+                          window.setTimeout(() => passwordInputRef.current?.focus(), 0);
+                        }}
+                      >
+                        <KeyRound data-icon="inline-start" />
+                        改用管理 Token 登录
+                      </Button>
+                    ) : null}
+                  </>
+                )
+              ) : null}
+
+              {!isControlSSO && clientPasskeyReady ? (
                 <Button
                   type="button"
                   size="lg"
@@ -217,34 +301,40 @@ export function LoginView({
                 </Button>
               ) : null}
 
-              {clientPasskeyReady && credentialFormVisible ? <FieldSeparator>或</FieldSeparator> : null}
+              {((!isControlSSO && clientPasskeyReady) || isControlSSO) && credentialFormVisible ? <FieldSeparator>或</FieldSeparator> : null}
 
               {credentialFormVisible ? (
                 <form onSubmit={(ev) => void handleFormSubmit(ev)}>
                   <FieldGroup className="gap-4">
-                    <Field>
-                      <FieldLabel htmlFor="login-username">管理员账号</FieldLabel>
-                      <Input
-                        id="login-username"
-                        name="username"
-                        type="text"
-                        className="h-9"
-                        value={username}
-                        onChange={(ev) => setUsername(ev.target.value)}
-                        autoComplete="username webauthn"
-                        spellCheck={false}
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        enterKeyHint="next"
-                        aria-describedby="signin-heading"
-                        autoFocus={!passkeyPrimary}
-                        required
-                      />
-                    </Field>
+                    {!isControlSSO ? (
+                      <Field>
+                        <FieldLabel htmlFor="login-username">管理员账号</FieldLabel>
+                        <Input
+                          id="login-username"
+                          name="username"
+                          type="text"
+                          className="h-9"
+                          value={username}
+                          onChange={(ev) => setUsername(ev.target.value)}
+                          autoComplete="username webauthn"
+                          spellCheck={false}
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          enterKeyHint="next"
+                          aria-describedby="signin-heading"
+                          autoFocus={!passkeyPrimary}
+                          required
+                        />
+                      </Field>
+                    ) : null}
 
                     <Field data-invalid={passwordInvalid}>
                       <FieldLabel htmlFor="login-password">
-                        {hasPassword ? "登录密码 / 管理 Token" : "管理 Token (LUMA_EYE_ADMIN_TOKEN)"}
+                        {isControlSSO
+                          ? "管理 Token（Luma Control / 备用 Token）"
+                          : hasPassword
+                            ? "登录密码 / 管理 Token"
+                            : "管理 Token (LUMA_EYE_ADMIN_TOKEN)"}
                       </FieldLabel>
                       <div className="relative flex items-center">
                         <Input

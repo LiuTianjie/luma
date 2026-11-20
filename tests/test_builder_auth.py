@@ -63,8 +63,9 @@ class BuilderBrowserAuthTests(DashboardAuthBase):
         self.assertIn("HttpOnly", start.headers["set-cookie"])
         self.assertIn("SameSite=lax", start.headers["set-cookie"])
         challenge = parse_qs(urlsplit(start.headers["location"]).query)["challenge"][0]
-        self.assertEqual(urlsplit(start.headers["location"]).path, "/dashboard/builder-login")
-        authorization = self.client.post("/v1/auth/builder/authorize", json={"challenge": challenge}, headers={"Origin": ORIGIN})
+        self.assertEqual(urlsplit(start.headers["location"]).path, "/dashboard/addon-login")
+        self.assertEqual(parse_qs(urlsplit(start.headers["location"]).query).get("addon"), ["builder"])
+        authorization = self.client.post("/v1/auth/addon/builder/authorize", json={"challenge": challenge}, headers={"Origin": ORIGIN})
         self.assertEqual(authorization.status_code, 200, authorization.text)
         callback = self.builder.get(authorization.json()["redirectUrl"], follow_redirects=False)
         self.assertEqual(callback.headers["location"], "/")
@@ -101,7 +102,7 @@ class BuilderBrowserAuthTests(DashboardAuthBase):
         self.assertEqual(self.client.post("/v1/auth/builder/exchange", json={"code": code, "verifier": verifier}).status_code, 401)
         self.assertEqual(self.client.get("/v1/secrets", headers={"Authorization": f"Bearer {token}"}).status_code, 401)
         with database.transaction(immediate=False) as conn:
-            stored = conn.execute("SELECT id_hash,session_hash FROM dashboard_builder_sessions").fetchone()
+            stored = conn.execute("SELECT id_hash,session_hash FROM dashboard_addon_sessions WHERE addon_id='builder'").fetchone()
         self.assertEqual(tuple(stored), (dashboard_auth._hash(token), dashboard_auth._hash(self.parent)))
 
     def test_tickets_expire_and_revoked_or_idle_parent_cannot_be_reused(self):

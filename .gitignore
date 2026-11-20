@@ -29,6 +29,8 @@ _site/
 /docs/research/
 *.local.compose.yml
 docker-compose.local.yml
+.luma.addon.compose.yml
+.luma.addon.docker-compose.yml
 
 # Python packaging output
 /build/
