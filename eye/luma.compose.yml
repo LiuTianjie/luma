@@ -1,0 +1,24 @@
+# Luma All-in-One sidecar manifest for luma-eye + ClickHouse.
+# Deploy with:
+#   luma secret set LUMA_EYE_ADMIN_TOKEN --scope luma-eye
+#   luma secret set LUMA_EYE_RELAY_SECRET --scope luma-eye
+#   luma compose deploy luma.compose.yml
+name: luma-eye
+compose: docker-compose.yml
+region: cn
+
+volumes:
+  eye-data:
+    initialize: empty
+  clickhouse-data:
+    initialize: empty
+
+services:
+  eye:
+    exposure: cn-edge
+    domain: eye.example.com
+    port: 8090
+    replicas: 1
+  clickhouse:
+    exposure: none
+    replicas: 1

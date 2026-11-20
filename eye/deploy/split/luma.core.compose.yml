@@ -1,0 +1,22 @@
+# Split Core + ClickHouse stack for home / render / high-RAM worker nodes.
+# Expose eye-core privately over Tailscale or tailscale-relay so cn-edge relays Zstd batches.
+name: luma-eye-core
+compose: docker-compose.core.yml
+region: home
+
+volumes:
+  eye-core-data:
+    initialize: empty
+  eye-clickhouse-data:
+    initialize: empty
+
+services:
+  eye-core:
+    exposure: tailscale-relay
+    domain: eye-console.example.com
+    port: 8090
+    publishPort: 18090
+    replicas: 1
+  clickhouse:
+    exposure: none
+    replicas: 1

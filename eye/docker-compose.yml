@@ -1,0 +1,111 @@
+services:
+  eye:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: luma-eye:local
+    restart: unless-stopped
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      LUMA_EYE_MODE: all
+      LUMA_EYE_LISTEN: ":8090"
+      LUMA_EYE_DATA_DIR: /var/lib/luma-eye
+      LUMA_EYE_PUBLIC_URL: ${LUMA_EYE_PUBLIC_URL}
+      LUMA_EYE_ADMIN_TOKEN: ${LUMA_EYE_ADMIN_TOKEN}
+      LUMA_EYE_RELAY_SECRET: ${LUMA_EYE_RELAY_SECRET}
+      LUMA_EYE_AUTO_KEY: ${LUMA_EYE_AUTO_KEY}
+      LUMA_EYE_AUTO_ORIGIN_SUFFIXES: ".example.com,localhost,127.0.0.1"
+      LUMA_EYE_FEISHU_WEBHOOK: ${LUMA_EYE_FEISHU_WEBHOOK}
+      LUMA_EYE_CLICKHOUSE_URL: "http://clickhouse:8123"
+      LUMA_EYE_CLICKHOUSE_DB: luma_eye
+      LUMA_EYE_CLICKHOUSE_USER: default
+      LUMA_EYE_CLICKHOUSE_PASSWORD: ""
+      GOMEMLIMIT: 512MiB
+    volumes:
+      - eye-data:/var/lib/luma-eye
+    healthcheck:
+      test: ["CMD", "luma-eye", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.20"
+          memory: 128M
+        limits:
+          memory: 768M
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mkdir -p /etc/clickhouse-server/config.d /etc/clickhouse-server/users.d
+        cat > /etc/clickhouse-server/config.d/luma-eye.xml <<'EOF'
+        <clickhouse>
+          <max_server_memory_usage_to_ram_ratio>0.75</max_server_memory_usage_to_ram_ratio>
+          <mark_cache_size>268435456</mark_cache_size>
+          <uncompressed_cache_size>134217728</uncompressed_cache_size>
+          <trace_log remove="1"/>
+          <text_log remove="1"/>
+          <metric_log remove="1"/>
+          <asynchronous_metric_log remove="1"/>
+          <opentelemetry_span_log remove="1"/>
+          <processors_profile_log remove="1"/>
+          <query_views_log remove="1"/>
+          <session_log remove="1"/>
+          <part_log remove="1"/>
+          <error_log remove="1"/>
+          <query_log>
+            <database>system</database>
+            <table>query_log</table>
+            <partition_by>toYYYYMM(event_date)</partition_by>
+            <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+            <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+          </query_log>
+        </clickhouse>
+        EOF
+        cat > /etc/clickhouse-server/users.d/luma-eye.xml <<'EOF'
+        <clickhouse>
+          <profiles>
+            <default>
+              <max_memory_usage>1073741824</max_memory_usage>
+              <max_execution_time>15</max_execution_time>
+              <output_format_json_quote_64bit_integers>0</output_format_json_quote_64bit_integers>
+            </default>
+          </profiles>
+        </clickhouse>
+        EOF
+        exec /entrypoint.sh
+    environment:
+      CLICKHOUSE_DB: luma_eye
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 10
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.25"
+          memory: 512M
+        limits:
+          memory: 2560M
+
+volumes:
+  eye-data:
+  clickhouse-data:

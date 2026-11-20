@@ -1,0 +1,9 @@
+<clickhouse>
+  <profiles>
+    <default>
+      <max_memory_usage>402653184</max_memory_usage>
+      <max_execution_time>15</max_execution_time>
+      <output_format_json_quote_64bit_integers>0</output_format_json_quote_64bit_integers>
+    </default>
+  </profiles>
+</clickhouse>

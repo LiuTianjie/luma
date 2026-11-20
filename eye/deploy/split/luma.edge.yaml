@@ -1,0 +1,31 @@
+# Stateless 64MB CN-Edge collector gateway that Zstd-batches telemetry to Core.
+# Deploy with:
+#   luma deploy deploy/split/luma.edge.yaml
+name: luma-eye-edge
+image: ghcr.io/your-org/luma-eye:latest
+region: cn
+exposure: cn-edge
+domain: eye.example.com
+port: 8090
+replicas: 1
+env:
+  LUMA_EYE_MODE: edge
+  LUMA_EYE_LISTEN: ":8090"
+  LUMA_EYE_CORE_URL: ${LUMA_EYE_CORE_URL}
+  LUMA_EYE_RELAY_SECRET: ${LUMA_EYE_RELAY_SECRET}
+  LUMA_EYE_AUTO_KEY: ${LUMA_EYE_AUTO_KEY}
+  LUMA_EYE_AUTO_ORIGIN_SUFFIXES: ".example.com,localhost,127.0.0.1"
+  LUMA_EYE_BATCH_INTERVAL: 3s
+  GOMEMLIMIT: 64MiB
+resources:
+  reservations:
+    cpus: "0.10"
+    memory: 64M
+  limits:
+    memory: 128M
+healthcheck:
+  test: ["CMD", "luma-eye", "healthcheck"]
+  interval: 15s
+  timeout: 5s
+  start_period: 15s
+  retries: 3

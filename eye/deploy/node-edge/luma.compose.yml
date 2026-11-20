@@ -1,0 +1,23 @@
+# Luma standalone public-node sidecar manifest for luma-eye + ClickHouse.
+# Public traffic enters directly through your public node's IP and node Traefik,
+# bypassing the Luma Manager node completely.
+name: luma-eye
+compose: docker-compose.yml
+region: global
+
+volumes:
+  eye-data:
+    initialize: empty
+  clickhouse-data:
+    initialize: empty
+
+services:
+  eye:
+    node: public-node # Replace with your public node name
+    exposure: node-edge
+    domain: eye.example.com
+    port: 8090
+    replicas: 1
+  clickhouse:
+    exposure: none
+    replicas: 1

@@ -1,0 +1,3 @@
+FROM clickhouse/clickhouse-server:24.8-alpine
+COPY clickhouse/config.d/luma-eye.xml /etc/clickhouse-server/config.d/luma-eye.xml
+COPY clickhouse/users.d/luma-eye.xml /etc/clickhouse-server/users.d/luma-eye.xml

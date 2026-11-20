@@ -1,0 +1,7 @@
+.git
+**/node_modules
+data
+tmp
+coverage
+*.log
+.DS_Store

@@ -1,0 +1,33 @@
+# Build outputs
+bin/
+dist/
+!internal/console/
+!internal/console/dist/
+!internal/console/dist/**
+*.tgz
+*.exe
+*.out
+*.test
+
+# Node
+node_modules/
+npm-debug.log*
+.npm/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Runtime / Local data
+data/
+tmp/
+.env
+.env.local
+coverage/
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
