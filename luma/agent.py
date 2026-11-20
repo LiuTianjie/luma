@@ -2584,6 +2584,7 @@ def _execute_agent_task_impl(
             install_ref=str(payload.get("installRef") or ""),
             control_image=str(payload.get("controlImage") or ""),
             domain=str(payload.get("domain") or ""),
+            proxy=str(payload.get("proxy") or ""),
             watchdog_peers=[
                 str(value)
                 for value in payload.get("tailscaleWatchdogPeers") or []
@@ -5316,6 +5317,7 @@ def start_manager_control_update(
     install_ref: str,
     control_image: str,
     domain: str,
+    proxy: str = "",
     watchdog_peers: list[str] | tuple[str, ...] = (),
 ) -> Dict[str, Any]:
     if node_agent_os() != "linux" or not shutil.which("systemd-run"):
@@ -5323,6 +5325,20 @@ def start_manager_control_update(
     safe_ref = _manager_update_ref(install_ref)
     safe_image = _safe_docker_image_ref(control_image)
     safe_domain = _manager_update_domain(domain)
+    proxy_value = str(proxy or "").strip()
+    if proxy_value:
+        if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in proxy_value):
+            raise LumaError("manager update proxy contains invalid characters")
+        parsed_proxy = urllib.parse.urlparse(proxy_value)
+        if (
+            parsed_proxy.scheme not in {"http", "https"}
+            or not parsed_proxy.hostname
+            or parsed_proxy.username is not None
+            or parsed_proxy.password is not None
+            or parsed_proxy.query
+            or parsed_proxy.fragment
+        ):
+            raise LumaError("manager update proxy must be an HTTP(S) URL without credentials")
     executable = _installed_luma_executable()
     if not executable or not Path(executable).exists():
         raise LumaError("installed Luma executable is unavailable")
@@ -5358,6 +5374,45 @@ def start_manager_control_update(
         "LUMA_MANAGER_UPDATE_LOG_PATH": str(log_path),
         "LUMA_MANAGER_UPDATE_STATUS_PATH": str(status_path),
     }
+    if proxy_value:
+        existing_no_proxy = str(os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or "")
+        no_proxy_entries = [
+            *existing_no_proxy.split(","),
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "100.64.0.0/10",
+        ]
+        no_proxy_value = ",".join(
+            dict.fromkeys(entry.strip() for entry in no_proxy_entries if entry.strip())
+        )
+        environment.update(
+            {
+                "HTTP_PROXY": proxy_value,
+                "HTTPS_PROXY": proxy_value,
+                "http_proxy": proxy_value,
+                "https_proxy": proxy_value,
+                "NO_PROXY": no_proxy_value,
+                "no_proxy": no_proxy_value,
+            }
+        )
+    else:
+        for proxy_key in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "NO_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "no_proxy",
+            "all_proxy",
+        ):
+            env_val = os.environ.get(proxy_key)
+            if env_val is not None and env_val.strip():
+                environment[proxy_key] = env_val.strip()
     safe_watchdog_peers = sorted(
         {
             str(value).strip()

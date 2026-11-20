@@ -26,7 +26,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 import yaml
 
@@ -49,6 +49,8 @@ CLOUD_REGISTRY_NO_PROXY_SUFFIXES = (
     ".myhuaweicloud.com",
 )
 DEFAULT_BASE_NO_PROXY = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10"
+_DOCKER_DAEMON_JSON_PATH = Path("/etc/docker/daemon.json")
+_DOCKER_HUB_HOSTS = frozenset({"docker.io", "registry-1.docker.io", "index.docker.io"})
 
 _BUILDX_COND = threading.Condition()
 _ACTIVE_BUILDER_JOBS: Dict[str, int] = {}
@@ -790,7 +792,52 @@ def _clone_repo(
     return short_sha, full_sha
 
 
-def _render_buildkitd_toml(*, http_hosts: List[str], cache_keep_gb: int = 20, max_parallelism: int = 0) -> str:
+def _normalize_docker_mirrors(raw_mirrors: Optional[Iterable[str]]) -> List[str]:
+    mirrors: List[str] = []
+    seen = set()
+    for item in raw_mirrors or ():
+        candidate = str(item or "").strip()
+        if not candidate:
+            continue
+        try:
+            host = normalize_registry_host(candidate)
+        except LumaError:
+            continue
+        if host in _DOCKER_HUB_HOSTS or host in seen:
+            continue
+        seen.add(host)
+        mirrors.append(host)
+    return mirrors
+
+
+def _configured_docker_mirrors(
+    explicit: Optional[Sequence[str]] = None,
+    *,
+    daemon_json_path: Path = _DOCKER_DAEMON_JSON_PATH,
+) -> List[str]:
+    candidates: List[str] = []
+    if explicit is not None:
+        candidates.extend(str(item) for item in explicit if item)
+    env_mirrors = str(os.environ.get("LUMA_RUNNER_DOCKER_MIRRORS") or "").strip()
+    if env_mirrors:
+        candidates.extend(part.strip() for part in env_mirrors.split(",") if part.strip())
+    if daemon_json_path.is_file():
+        with contextlib.suppress(OSError, ValueError):
+            data = json.loads(daemon_json_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                daemon_mirrors = data.get("registry-mirrors")
+                if isinstance(daemon_mirrors, list):
+                    candidates.extend(str(item) for item in daemon_mirrors if isinstance(item, str) and item.strip())
+    return _normalize_docker_mirrors(candidates)
+
+
+def _render_buildkitd_toml(
+    *,
+    http_hosts: List[str],
+    cache_keep_gb: int = 20,
+    max_parallelism: int = 0,
+    docker_mirrors: Sequence[str] = (),
+) -> str:
     keep_bytes = max(int(cache_keep_gb), 2) * 1024 * 1024 * 1024
     lines = ["[worker.oci]", "  enabled = true", "  gc = true"]
     if max_parallelism > 0:
@@ -808,6 +855,10 @@ def _render_buildkitd_toml(*, http_hosts: List[str], cache_keep_gb: int = 20, ma
             "  all = true",
         ]
     )
+    mirrors = _normalize_docker_mirrors(docker_mirrors)
+    if mirrors:
+        mirrors_toml = ", ".join(json.dumps(m) for m in mirrors)
+        lines.extend(["", '[registry."docker.io"]', f"  mirrors = [{mirrors_toml}]"])
     for host in sorted({h for h in http_hosts if h}):
         lines.extend(["", f'[registry."{host}"]', "  http = true", "  insecure = true"])
     return "\n".join(lines) + "\n"
@@ -825,6 +876,7 @@ def _use_runner_buildx(
     cache_keep_gb: int,
     max_parallelism: int,
     docker_runtime: Optional[Mapping[str, Any]] = None,
+    docker_mirrors: Optional[Sequence[str]] = None,
 ) -> Iterator[str]:
     with _BUILDX_COND:
         builder_name = _ensure_runner_buildx(
@@ -837,6 +889,7 @@ def _use_runner_buildx(
             cache_keep_gb=cache_keep_gb,
             max_parallelism=max_parallelism,
             docker_runtime=docker_runtime,
+            docker_mirrors=docker_mirrors,
         )
         _ACTIVE_BUILDER_JOBS[builder_name] = _ACTIVE_BUILDER_JOBS.get(builder_name, 0) + 1
     try:
@@ -862,6 +915,7 @@ def _ensure_runner_buildx(
     cache_keep_gb: int,
     max_parallelism: int,
     docker_runtime: Optional[Mapping[str, Any]] = None,
+    docker_mirrors: Optional[Sequence[str]] = None,
 ) -> str:
     with _BUILDX_COND:
         return _ensure_runner_buildx_locked(
@@ -874,6 +928,7 @@ def _ensure_runner_buildx(
             cache_keep_gb=cache_keep_gb,
             max_parallelism=max_parallelism,
             docker_runtime=docker_runtime,
+            docker_mirrors=docker_mirrors,
         )
 
 
@@ -888,6 +943,7 @@ def _ensure_runner_buildx_locked(
     cache_keep_gb: int,
     max_parallelism: int,
     docker_runtime: Optional[Mapping[str, Any]] = None,
+    docker_mirrors: Optional[Sequence[str]] = None,
 ) -> str:
     name = "luma-runner-egress" if proxy else "luma-runner"
     buildx_state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -905,11 +961,21 @@ def _ensure_runner_buildx_locked(
     prev_no_proxy = [p.strip() for p in str(prev_spec.get("noProxy") or "").split(",") if p.strip()]
     curr_no_proxy = [p.strip() for p in str(no_proxy or "").split(",") if p.strip()]
     merged_no_proxy = ",".join(dict.fromkeys([*prev_no_proxy, *curr_no_proxy]))
+    resolved_docker_mirrors = _configured_docker_mirrors(docker_mirrors)
+    mirror_no_proxy: List[str] = []
+    for mirror in resolved_docker_mirrors:
+        host = urllib.parse.urlsplit("http://" + mirror).hostname
+        if host:
+            mirror_no_proxy.append(host)
+    effective_no_proxy = ",".join(
+        dict.fromkeys([*(merged_no_proxy.split(",") if merged_no_proxy else []), *mirror_no_proxy])
+    )
 
     toml_body = _render_buildkitd_toml(
         http_hosts=merged_http_hosts,
         cache_keep_gb=cache_keep_gb,
         max_parallelism=max_parallelism,
+        docker_mirrors=resolved_docker_mirrors,
     )
     desired_spec: Dict[str, Any] = {
         "toml": toml_body,
@@ -917,6 +983,8 @@ def _ensure_runner_buildx_locked(
         "noProxy": merged_no_proxy,
         "httpHosts": merged_http_hosts,
     }
+    if resolved_docker_mirrors:
+        desired_spec["dockerMirrors"] = resolved_docker_mirrors
     if docker_runtime is not None:
         ep_key = str(
             docker_runtime.get("resolvedEndpoint")
@@ -993,7 +1061,9 @@ def _ensure_runner_buildx_locked(
         str(toml_path),
     ]
     if proxy:
-        no_proxy_opt = f'"env.NO_PROXY={merged_no_proxy}"' if "," in merged_no_proxy else f"env.NO_PROXY={merged_no_proxy}"
+        no_proxy_opt = (
+            f'"env.NO_PROXY={effective_no_proxy}"' if "," in effective_no_proxy else f"env.NO_PROXY={effective_no_proxy}"
+        )
         create_cmd.extend(
             [
                 "--driver-opt",

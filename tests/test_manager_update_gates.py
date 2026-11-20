@@ -1,8 +1,13 @@
 """Manager update is a Control operation with a maintenance lease."""
+import contextlib
+import io
+import os
+import subprocess
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from luma.errors import LumaError
@@ -209,3 +214,179 @@ class PreparedControlImageTests(unittest.TestCase):
             }), patch("luma.control.server._control_image_prepare_dir", return_value=root):
                 with self.assertRaisesRegex(LumaError, "not cached"):
                     _prepared_control_image(state, "v0.1.320", "ghcr.io/liutianjie/luma-control:v0.1.320")
+
+
+class ManagerUpdateProxyForwardingTests(unittest.TestCase):
+    def test_start_forwards_egress_proxy_when_configured_and_omits_when_disabled(self):
+        from luma.control import server
+
+        for proxy_value, expect_key in (("http://127.0.0.1:7890", True), ("", False)):
+            with self.subTest(proxy=proxy_value):
+                state = _manager_state()
+                captured_payloads = []
+
+                def fake_run_task(_state, _node, _action, payload, **_kwargs):
+                    captured_payloads.append(dict(payload))
+                    return {
+                        "taskId": "task-1",
+                        "updateId": "manager-1783835000000-aabbccdd",
+                        "status": "running",
+                        "installRef": "v0.2.88",
+                        "controlImage": "ghcr.io/liutianjie/luma-control:v0.2.88",
+                        "message": "started",
+                    }
+
+                with patch.object(server, "load_state", return_value=state), patch.object(
+                    server, "load_config", return_value={}
+                ), patch.object(
+                    server, "_egress_proxy_for_node", return_value=proxy_value
+                ), patch.object(
+                    server, "_run_node_agent_task", side_effect=fake_run_task
+                ), patch.object(
+                    server, "_prepared_control_image", return_value="ghcr.io/liutianjie/luma-control:v0.2.88"
+                ), patch.object(
+                    server, "_manager_update_baseline", return_value={"routeOk": True, "agentVersion": "0.2.87"}
+                ), patch.object(server, "_set_control_maintenance"), patch.object(
+                    server, "_manager_update_operation_write"
+                ):
+                    server.handle_manager_update_start("management-token", {"installRef": "v0.2.88"})
+
+                self.assertEqual(len(captured_payloads), 1)
+                if expect_key:
+                    self.assertEqual(captured_payloads[0].get("proxy"), proxy_value)
+                else:
+                    self.assertNotIn("proxy", captured_payloads[0])
+
+    def test_start_manager_control_update_proxy_handling(self):
+        from luma import agent
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_luma = root / "luma"
+            fake_luma.write_text("#!/bin/sh\n", encoding="utf-8")
+            fake_luma.chmod(0o755)
+            captured_cmds = []
+
+            def fake_run(cmd, **_kwargs):
+                if cmd and cmd[0] == "systemctl":
+                    return subprocess.CompletedProcess(cmd, 3, stdout="", stderr="")
+                captured_cmds.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            common_patches = (
+                patch.object(agent, "node_agent_os", return_value="linux"),
+                patch.object(agent.shutil, "which", return_value="/usr/bin/systemd-run"),
+                patch.object(agent, "_installed_luma_executable", return_value=str(fake_luma)),
+                patch.object(agent, "_manager_update_root", return_value=root / "updates"),
+                patch.object(agent.subprocess, "run", side_effect=fake_run),
+            )
+
+            # 1) Explicit proxy from Control egress config is injected into systemd-run
+            with contextlib.ExitStack() as stack:
+                for cm in common_patches:
+                    stack.enter_context(cm)
+                stack.enter_context(patch.dict(os.environ, {}, clear=True))
+                agent.start_manager_control_update(
+                    install_ref="v0.2.88",
+                    control_image="ghcr.io/liutianjie/luma-control:v0.2.88",
+                    domain="luma.example.com",
+                    proxy="http://127.0.0.1:7890",
+                )
+            cmd = captured_cmds[-1]
+            self.assertIn("--setenv=HTTP_PROXY=http://127.0.0.1:7890", cmd)
+            self.assertIn("--setenv=HTTPS_PROXY=http://127.0.0.1:7890", cmd)
+            self.assertTrue(any(arg.startswith("--setenv=NO_PROXY=") and "127.0.0.1" in arg for arg in cmd))
+
+            # 2) No egress proxy and no env proxy -> zero proxy env vars injected
+            with contextlib.ExitStack() as stack:
+                for cm in common_patches:
+                    stack.enter_context(cm)
+                stack.enter_context(patch.dict(os.environ, {}, clear=True))
+                agent.start_manager_control_update(
+                    install_ref="v0.2.88",
+                    control_image="ghcr.io/liutianjie/luma-control:v0.2.88",
+                    domain="luma.example.com",
+                    proxy="",
+                )
+            cmd = captured_cmds[-1]
+            self.assertFalse(any("PROXY=" in arg.upper() for arg in cmd))
+
+            # 3) No explicit proxy, but operator set HTTPS_PROXY in environment -> forwarded
+            with contextlib.ExitStack() as stack:
+                for cm in common_patches:
+                    stack.enter_context(cm)
+                stack.enter_context(patch.dict(os.environ, {"HTTPS_PROXY": "http://10.0.0.2:7890"}, clear=True))
+                agent.start_manager_control_update(
+                    install_ref="v0.2.88",
+                    control_image="ghcr.io/liutianjie/luma-control:v0.2.88",
+                    domain="luma.example.com",
+                    proxy="",
+                )
+            cmd = captured_cmds[-1]
+            self.assertIn("--setenv=HTTPS_PROXY=http://10.0.0.2:7890", cmd)
+            self.assertNotIn("--setenv=HTTP_PROXY=http://10.0.0.2:7890", cmd)
+
+            # 4) Malformed or credentialed proxies are rejected
+            for bad_proxy in (
+                "http://user:pass@127.0.0.1:7890",
+                "socks5://127.0.0.1:7890",
+                "http://127.0.0.1:7890\nINJECT=1",
+                "http://127.0.0.1:7890 extra",
+            ):
+                with self.subTest(bad_proxy=bad_proxy):
+                    with contextlib.ExitStack() as stack:
+                        for cm in common_patches:
+                            stack.enter_context(cm)
+                        with self.assertRaises(LumaError):
+                            agent.start_manager_control_update(
+                                install_ref="v0.2.88",
+                                control_image="ghcr.io/liutianjie/luma-control:v0.2.88",
+                                domain="luma.example.com",
+                                proxy=bad_proxy,
+                            )
+
+    def test_detached_manager_update_forwards_proxy_env_only_when_set(self):
+        from luma.cli import manager as cli_manager
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_home = Path(tmp) / "state"
+            captured = []
+
+            def fake_run(cmd, **_kwargs):
+                captured.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            args = SimpleNamespace(_raw_argv=["update", "manager", "--ref", "v0.2.88", "--detach"])
+            # Case A: proxy and pip mirror set -> forwarded to systemd-run
+            with patch.object(cli_manager, "_current_luma_command", return_value=["/usr/local/bin/luma"]), patch.object(
+                cli_manager, "_manager_update_needs_transient_unit", return_value=True
+            ), patch.object(cli_manager.subprocess, "run", side_effect=fake_run), patch.object(
+                cli_manager.time, "strftime", return_value="20261120-120001"
+            ), patch.dict(
+                os.environ,
+                {
+                    "XDG_STATE_HOME": str(state_home),
+                    "HTTPS_PROXY": "http://127.0.0.1:7890",
+                    "NO_PROXY": "localhost,127.0.0.1",
+                    "PIP_INDEX_URL": "https://mirrors.aliyun.com/pypi/simple/",
+                },
+                clear=True,
+            ), contextlib.redirect_stdout(io.StringIO()):
+                rc = cli_manager._start_detached_manager_update(args)
+            self.assertEqual(rc, 0)
+            self.assertIn("--setenv=HTTPS_PROXY=http://127.0.0.1:7890", captured[-1])
+            self.assertIn("--setenv=NO_PROXY=localhost,127.0.0.1", captured[-1])
+            self.assertIn("--setenv=PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/", captured[-1])
+
+            # Case B: no proxy set -> nothing proxy-related injected
+            with patch.object(cli_manager, "_current_luma_command", return_value=["/usr/local/bin/luma"]), patch.object(
+                cli_manager, "_manager_update_needs_transient_unit", return_value=True
+            ), patch.object(cli_manager.subprocess, "run", side_effect=fake_run), patch.object(
+                cli_manager.time, "strftime", return_value="20261120-120002"
+            ), patch.dict(os.environ, {"XDG_STATE_HOME": str(state_home)}, clear=True), contextlib.redirect_stdout(
+                io.StringIO()
+            ):
+                rc = cli_manager._start_detached_manager_update(args)
+            self.assertEqual(rc, 0)
+            self.assertFalse(any("PROXY=" in arg.upper() for arg in captured[-1]))
+            self.assertFalse(any("PIP_INDEX_URL=" in arg for arg in captured[-1]))

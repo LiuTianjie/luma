@@ -511,6 +511,16 @@ def _start_detached_manager_update(args: argparse.Namespace) -> int:
             "LUMA_PIP_INDEX_URL",
             "LUMA_PIP_WHEELHOUSE",
             "LUMA_PIP_CA_BUNDLE",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "NO_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "no_proxy",
+            "all_proxy",
+            "PIP_INDEX_URL",
+            "PIP_TRUSTED_HOST",
         )
         invocation = [
             "systemd-run",

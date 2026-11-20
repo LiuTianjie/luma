@@ -9675,6 +9675,19 @@ def handle_manager_update_start(token: str, body: Dict[str, Any]) -> Dict[str, A
         "baseline": baseline,
         "createdAt": int(time.time()),
     }
+    install_proxy = ""
+    try:
+        install_proxy = _egress_proxy_for_node(load_config(_control_config_path()), state, node_name)
+    except Exception:
+        install_proxy = ""
+    start_payload: Dict[str, Any] = {
+        "installRef": install_ref,
+        "controlImage": control_image,
+        "domain": domain,
+        "tailscaleWatchdogPeers": watchdog_peers,
+    }
+    if install_proxy:
+        start_payload["proxy"] = install_proxy
     _set_control_maintenance(kind="manager-update", operation_id=operation_id, install_ref=install_ref)
     try:
         _manager_update_operation_write(operation)
@@ -9682,12 +9695,7 @@ def handle_manager_update_start(token: str, body: Dict[str, Any]) -> Dict[str, A
             state,
             node_name,
             "start-manager-update",
-            {
-                "installRef": install_ref,
-                "controlImage": control_image,
-                "domain": domain,
-                "tailscaleWatchdogPeers": watchdog_peers,
-            },
+            start_payload,
             timeout=90,
             required_capability="manager-update-v1",
         )

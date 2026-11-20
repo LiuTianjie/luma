@@ -465,6 +465,118 @@ class RunnerBuildKitExecutionTests(unittest.TestCase):
         http_toml = _render_buildkitd_toml(http_hosts=["100.66.177.70:5000"], cache_keep_gb=10)
         self.assertIn('[registry."100.66.177.70:5000"]', http_toml)
         self.assertIn("http = true", http_toml)
+        self.assertNotIn('[registry."docker.io"]', http_toml)
+
+        # Explicit docker.io mirrors are normalized, deduplicated, and rendered safely
+        mirror_toml = _render_buildkitd_toml(
+            http_hosts=[],
+            docker_mirrors=[
+                "https://docker.m.daocloud.io/",
+                "docker.1ms.run",
+                "docker.m.daocloud.io",
+                "docker.io",
+                "bad mirror/path",
+            ],
+        )
+        self.assertIn('[registry."docker.io"]', mirror_toml)
+        self.assertIn('mirrors = ["docker.m.daocloud.io", "docker.1ms.run"]', mirror_toml)
+
+    def test_configured_docker_mirrors_opt_in_and_buildx_no_proxy(self) -> None:
+        import os
+        import subprocess as sp
+
+        from luma import builder_runner as canonical_runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            missing_daemon_json = root / "missing-daemon.json"
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(
+                    canonical_runner._configured_docker_mirrors(daemon_json_path=missing_daemon_json),
+                    [],
+                )
+
+            daemon_json = root / "daemon.json"
+            daemon_json.write_text(
+                json.dumps(
+                    {
+                        "registry-mirrors": [
+                            "https://mirror.ccs.tencentyun.com",
+                            "https://docker.m.daocloud.io/",
+                            "invalid/with/path",
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {"LUMA_RUNNER_DOCKER_MIRRORS": "https://docker.m.daocloud.io, docker.1ms.run:443"},
+                clear=True,
+            ):
+                self.assertEqual(
+                    canonical_runner._configured_docker_mirrors(daemon_json_path=daemon_json),
+                    ["docker.m.daocloud.io", "docker.1ms.run:443", "mirror.ccs.tencentyun.com"],
+                )
+
+            bx_dir = root / "bx"
+            dc_dir = root / "dc"
+            dc_dir.mkdir()
+            calls: list[list[str]] = []
+            exists = False
+
+            def fake_run(cmd, **kwargs):
+                nonlocal exists
+                calls.append(list(cmd))
+                if cmd[1:3] == ["buildx", "inspect"]:
+                    return sp.CompletedProcess(cmd, 0 if exists else 1, stdout="", stderr="")
+                if cmd[1:3] == ["buildx", "create"]:
+                    exists = True
+                    return sp.CompletedProcess(cmd, 0, stdout="luma-runner-egress\n", stderr="")
+                return sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            with patch.object(canonical_runner, "_DOCKER_DAEMON_JSON_PATH", missing_daemon_json), patch(
+                "luma.builder_runner.subprocess.run", side_effect=fake_run
+            ):
+                with patch.dict(os.environ, {}, clear=True):
+                    _ensure_runner_buildx(
+                        docker_bin="docker",
+                        buildx_state_dir=bx_dir,
+                        docker_config=dc_dir,
+                        proxy="http://127.0.0.1:7890",
+                        no_proxy="localhost,127.0.0.1",
+                        http_hosts=[],
+                        cache_keep_gb=20,
+                        max_parallelism=0,
+                    )
+                toml_without = (bx_dir / "luma-runner-egress.buildkitd.toml").read_text(encoding="utf-8")
+                self.assertNotIn('[registry."docker.io"]', toml_without)
+
+                calls.clear()
+                with patch.dict(
+                    os.environ,
+                    {"LUMA_RUNNER_DOCKER_MIRRORS": "https://docker.m.daocloud.io,mirror.internal:5000"},
+                    clear=True,
+                ):
+                    _ensure_runner_buildx(
+                        docker_bin="docker",
+                        buildx_state_dir=bx_dir,
+                        docker_config=dc_dir,
+                        proxy="http://127.0.0.1:7890",
+                        no_proxy="localhost,127.0.0.1",
+                        http_hosts=[],
+                        cache_keep_gb=20,
+                        max_parallelism=0,
+                    )
+                self.assertTrue(any("--keep-state" in c for c in calls))
+                create_cmd = [c for c in calls if c[1:3] == ["buildx", "create"]][-1]
+                no_proxy_args = [arg for arg in create_cmd if "env.NO_PROXY=" in arg]
+                self.assertEqual(len(no_proxy_args), 1)
+                self.assertIn("docker.m.daocloud.io", no_proxy_args[0])
+                self.assertIn("mirror.internal", no_proxy_args[0])
+                toml_with = (bx_dir / "luma-runner-egress.buildkitd.toml").read_text(encoding="utf-8")
+                self.assertIn('[registry."docker.io"]', toml_with)
+                self.assertIn('mirrors = ["docker.m.daocloud.io", "mirror.internal:5000"]', toml_with)
 
     def test_execute_build_task_injects_remote_cache_and_pins_digest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

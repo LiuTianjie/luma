@@ -152,6 +152,14 @@ class RunnerServiceTests(unittest.TestCase):
              patch.dict(os.environ, {"PATH": "/root/stale/bin"}):
             self.assertEqual(service._executable(), ([str(shim)], {}))
 
+    def test_environment_forwards_docker_mirrors_only_when_set(self):
+        with patch.dict(os.environ, {"LUMA_RUNNER_DOCKER_MIRRORS": "docker.m.daocloud.io"}, clear=True):
+            env = service._environment(self.owner)
+        self.assertEqual(env.get("LUMA_RUNNER_DOCKER_MIRRORS"), "docker.m.daocloud.io")
+        with patch.dict(os.environ, {}, clear=True):
+            env = service._environment(self.owner)
+        self.assertNotIn("LUMA_RUNNER_DOCKER_MIRRORS", env)
+
     def test_join_verifies_token_before_installing_and_reuses_saved_options(self):
         service.CONFIG.write_text(json.dumps(self.config))
         daemon = Mock()
