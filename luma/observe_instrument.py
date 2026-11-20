@@ -124,6 +124,7 @@ def app_env(
         ),
         "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
         "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+        "OTEL_EXPORTER_OTLP_COMPRESSION": "gzip",
         "OTEL_EXPORTER_OTLP_HEADERS": f"Authorization=Bearer {token}",
         "OTEL_TRACES_EXPORTER": "otlp",
         "OTEL_METRICS_EXPORTER": "none",

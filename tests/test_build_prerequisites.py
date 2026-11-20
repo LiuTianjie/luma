@@ -135,6 +135,10 @@ class BuildPrerequisiteTests(unittest.TestCase):
             self.assertIn("git.internal", builder.call_args.kwargs["no_proxy"])
             self.assertEqual(builder.call_args.kwargs["buildx_state_dir"], Path(directory) / "buildx")
             self.assertEqual(warm.call_args.args[1], "luma-runner-egress")
+            warm_env = warm.call_args.args[2]
+            self.assertEqual(warm_env["HTTP_PROXY"], "http://proxy:7890")
+            self.assertEqual(warm_env["HTTPS_PROXY"], "http://proxy:7890")
+            self.assertIn("git.internal", warm_env["NO_PROXY"])
             self.assertEqual(warm.call_args.args[3], "linux/arm64")
 
 

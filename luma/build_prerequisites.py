@@ -180,6 +180,19 @@ def _warm_frontend(docker: str, builder: str, env: dict, native_platform: str) -
     print("BuildKit and Dockerfile frontend ready", file=sys.stderr, flush=True)
 
 
+def _apply_proxy_env(env: dict[str, str], *, proxy: str, no_proxy: str) -> dict[str, str]:
+    if not proxy:
+        return env
+    env["HTTP_PROXY"] = proxy
+    env["HTTPS_PROXY"] = proxy
+    env["http_proxy"] = proxy
+    env["https_proxy"] = proxy
+    if no_proxy:
+        env["NO_PROXY"] = no_proxy
+        env["no_proxy"] = no_proxy
+    return env
+
+
 def prepare_runner_buildkit(daemon) -> None:
     state_dir = daemon.state_dir / "buildx"
     no_proxy = merge_no_proxy(DEFAULT_BASE_NO_PROXY, daemon.local_no_proxy)
@@ -188,6 +201,7 @@ def prepare_runner_buildkit(daemon) -> None:
         _write_docker_config(config, [], docker_runtime=daemon.docker_runtime)
         env = _apply_docker_runtime_env(dict(os.environ), docker_config=config,
                                         buildx_state_dir=state_dir, docker_runtime=daemon.docker_runtime)
+        _apply_proxy_env(env, proxy=daemon.local_proxy, no_proxy=no_proxy)
         with _use_runner_buildx(docker_bin=daemon.docker_bin, buildx_state_dir=state_dir,
                                docker_config=config, proxy=daemon.local_proxy, no_proxy=no_proxy,
                                http_hosts=[], cache_keep_gb=daemon.cache_keep_gb,
@@ -209,5 +223,6 @@ def prepare_node_buildkit(*, proxy: str = "") -> None:
         _write_docker_config(config, [], docker_runtime=runtime)
         env = _apply_docker_runtime_env(dict(os.environ), docker_config=config,
                                         buildx_state_dir=state_dir, docker_runtime=runtime)
+        _apply_proxy_env(env, proxy=proxy, no_proxy=DEFAULT_BASE_NO_PROXY)
         builder = _ensure_buildx_builder(docker, proxy=proxy, no_proxy=DEFAULT_BASE_NO_PROXY, env=env)
         _warm_frontend(docker, builder, env, native_platform)

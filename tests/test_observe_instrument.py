@@ -67,6 +67,7 @@ class ObserveInstrumentTests(unittest.TestCase):
             },
         )
         self.assertEqual(env["OTEL_EXPORTER_OTLP_ENDPOINT"], "http://127.0.0.1:4318")
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_COMPRESSION"], "gzip")
         self.assertIn("Authorization=Bearer ", env["OTEL_EXPORTER_OTLP_HEADERS"])
 
     def test_apply_env_merges_resource_keys_preserving_app_parser_semantics(self):
