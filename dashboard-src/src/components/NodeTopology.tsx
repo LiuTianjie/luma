@@ -8,7 +8,7 @@ import { Maximize, Minus, Network, Plus } from "@/components/icons";
 import { useTopologyTheme, type TopologyTheme } from "./topologyTheme";
 import { TopologyFullscreenButton } from "./TopologyFullscreenButton";
 
-import CytoscapeComponent from "react-cytoscapejs";
+import { LazyCytoscape as CytoscapeComponent } from "./LazyCytoscape";
 import type cytoscape from "cytoscape";
 import { t } from "../i18n";
 import type { DashboardNode, DashboardService, Lang } from "../types";

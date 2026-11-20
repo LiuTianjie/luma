@@ -188,29 +188,31 @@ export function AppSidebar({
         ))}
       </SidebarContent>
 
-      <SidebarFooter className="gap-0.5 border-t border-sidebar-border p-2.5 group-data-[collapsible=icon]:p-2">
-        {showFleetSummary && vm.nodes.length ? (
-          <a
-            {...spaLink("/fleet", navigatePath, closeMobile)}
-            className="flex h-8 items-center gap-2 rounded-md px-2.5 text-xs text-muted-foreground outline-none hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
+      <SidebarFooter className="border-t border-sidebar-border p-2.5 group-data-[collapsible=icon]:p-2">
+        <div className="flex items-center justify-between gap-1 group-data-[collapsible=icon]:justify-center">
+          {showFleetSummary && vm.nodes.length ? (
+            <a
+              {...spaLink("/fleet", navigatePath, closeMobile)}
+              className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-xs text-muted-foreground outline-none hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
+            >
+              <span className={cn("size-1.5 shrink-0 rounded-full", fleetTone)} aria-hidden="true" />
+              <span className="truncate">
+                {zh ? `${vm.activeNodes}/${vm.nodes.length} 节点就绪` : `${vm.activeNodes}/${vm.nodes.length} nodes ready`}
+                {unhealthy ? (zh ? ` · ${unhealthy} 个服务异常` : ` · ${unhealthy} unhealthy`) : ""}
+              </span>
+            </a>
+          ) : null}
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            className="hidden size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring lg:flex"
+            aria-label={collapseLabel}
+            aria-expanded={open}
+            title={`${collapseLabel} (${isMac ? "⌘B" : "Ctrl+B"})`}
           >
-            <span className={cn("size-1.5 shrink-0 rounded-full", fleetTone)} aria-hidden="true" />
-            <span className="truncate">
-              {zh ? `${vm.activeNodes}/${vm.nodes.length} 节点就绪` : `${vm.activeNodes}/${vm.nodes.length} nodes ready`}
-              {unhealthy ? (zh ? ` · ${unhealthy} 个服务异常` : ` · ${unhealthy} unhealthy`) : ""}
-            </span>
-          </a>
-        ) : null}
-        <button
-          type="button"
-          onClick={toggleSidebar}
-          className="hidden size-8 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring lg:flex"
-          aria-label={collapseLabel}
-          aria-expanded={open}
-          title={`${collapseLabel} (${isMac ? "⌘B" : "Ctrl+B"})`}
-        >
-          <PanelLeftIcon className="size-4 shrink-0" />
-        </button>
+            <PanelLeftIcon className="size-4 shrink-0" />
+          </button>
+        </div>
       </SidebarFooter>
     </Sidebar>
   );

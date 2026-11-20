@@ -194,7 +194,22 @@ export function ObservationStatus({
   const signals = snapshot?.signals || {},
     freshness = signals.freshness;
   const stale = freshness?.state === "ok" && (freshness.value || 0) > 120;
-  const definitions = app ? APPLICATION : PLATFORM;
+  const definitions = useMemo(() => {
+    if (!app) return PLATFORM;
+    const isEmpty = (key: string) => !signals[key] || signals[key].state === "empty";
+    const isOk = (key: string) => signals[key]?.state === "ok";
+    const httpKeys = ["http_error_ratio", "http_p95"];
+    const taskKeys = ["task_error_ratio", "task_p95", "active", "heartbeat_age"];
+    const hasHttp = httpKeys.some(isOk);
+    const allHttpEmpty = httpKeys.every(isEmpty);
+    const hasTask = taskKeys.some(isOk);
+    const allTaskEmpty = taskKeys.every(isEmpty);
+    // Pure worker apps with task telemetry shouldn't be cluttered with empty HTTP tiles,
+    // and pure HTTP web apps shouldn't be cluttered with empty Taskiq/Celery tiles.
+    if (allHttpEmpty && hasTask) return APPLICATION.filter(([key]) => !httpKeys.includes(key));
+    if (allTaskEmpty && hasHttp) return APPLICATION.filter(([key]) => !taskKeys.includes(key));
+    return APPLICATION;
+  }, [app, signals]);
   const coverage = snapshot?.coverage;
   const coverageRows = coverage?.items || [];
   const rowState = (row: { at: number; gapAt?: number }) =>
@@ -240,7 +255,16 @@ export function ObservationStatus({
       ? "0 仅表示已观测值为零；没有采样不代表正常。日志覆盖显示当前状态，不能据此证明历史数据完整。"
       : "Zero is an observed value; missing samples do not establish health. Current log coverage does not establish historical completeness.";
   const tiles = (
-    <dl className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 [&>div]:border-hairline max-sm:[&>div+div]:border-t sm:max-xl:[&>div:nth-child(n+3)]:border-t sm:max-xl:[&>div:nth-child(even)]:border-l xl:[&>div:nth-child(n+4)]:border-t xl:[&>div:not(:nth-child(3n+1))]:border-l">
+    <dl
+      className={cn(
+        "grid grid-cols-1 [&>div]:border-hairline max-sm:[&>div+div]:border-t",
+        definitions.length === 2
+          ? "sm:grid-cols-2 sm:[&>div:nth-child(even)]:border-l"
+          : definitions.length === 4
+            ? "sm:grid-cols-2 xl:grid-cols-4 sm:max-xl:[&>div:nth-child(n+3)]:border-t sm:max-xl:[&>div:nth-child(even)]:border-l xl:[&>div+div]:border-l"
+            : "sm:grid-cols-2 xl:grid-cols-3 sm:max-xl:[&>div:nth-child(n+3)]:border-t sm:max-xl:[&>div:nth-child(even)]:border-l xl:[&>div:nth-child(n+4)]:border-t xl:[&>div:not(:nth-child(3n+1))]:border-l",
+      )}
+    >
       {definitions.map(([key, zhLabel, en, unit, threshold]) => {
         const signal = signals[key],
           warning = signal?.value != null && threshold != null && signal.value > threshold,

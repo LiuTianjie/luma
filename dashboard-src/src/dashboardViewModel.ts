@@ -73,13 +73,46 @@ function healthScore(activeNodes: number, totalNodes: number, healthyServices: n
   return Math.max(0, Math.round((nodeRatio * 0.38 + serviceRatio * 0.62 - issuePenalty) * 100));
 }
 
+const NODE_DISK_WARNING_PERCENT = 85;
+const NODE_DISK_CRITICAL_PERCENT = 92;
+
+function augmentNodeDiskIssues(nodes: DashboardNode[], baseIssues: DashboardIssue[]): DashboardIssue[] {
+  const existingDiskTargets = new Set(
+    baseIssues
+      .filter((item) => item.kind === "node-disk" && item.target)
+      .map((item) => item.target as string),
+  );
+  const extra: DashboardIssue[] = [];
+  for (const node of nodes) {
+    const name = (node.name || "").trim();
+    const disk = node.metrics?.diskUsedPercent;
+    if (!name || typeof disk !== "number" || !Number.isFinite(disk) || existingDiskTargets.has(name)) continue;
+    if (disk >= NODE_DISK_CRITICAL_PERCENT) {
+      extra.push({
+        severity: "critical",
+        kind: "node-disk",
+        target: name,
+        message: `Node ${name} disk usage is ${Math.round(disk)}% (>= ${NODE_DISK_CRITICAL_PERCENT}%)`,
+      });
+    } else if (disk >= NODE_DISK_WARNING_PERCENT) {
+      extra.push({
+        severity: "warning",
+        kind: "node-disk",
+        target: name,
+        message: `Node ${name} disk usage is ${Math.round(disk)}% (>= ${NODE_DISK_WARNING_PERCENT}%)`,
+      });
+    }
+  }
+  return extra.length ? [...baseIssues, ...extra] : baseIssues;
+}
+
 export function createDashboardViewModel(
   payload: DashboardPayload | null,
   addonsOverride?: DashboardAddonsSummary,
 ): DashboardViewModel {
   const nodes = payload?.nodes || [];
   const services = payload?.services || [];
-  const issues = payload?.issues || [];
+  const issues = augmentNodeDiskIssues(nodes, payload?.issues || []);
   const trafficPaths = payload?.trafficPaths || [];
   const storageVolumes = payload?.storage?.volumes || [];
   const storageWarnings = payload?.storage?.warnings || [];

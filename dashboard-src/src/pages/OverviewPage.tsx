@@ -302,32 +302,83 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
       ) : null}
 
       <section className="grid items-start gap-6 @3xl:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)]" aria-label={zh ? "控制面与容量" : "Control plane and capacity"}>
-        <Card className="min-w-0">
-          <CardHeader>
-            <CardTitle>{zh ? "控制面" : "Control plane"}</CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-4">
-            <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-6 gap-y-3 text-[0.8125rem]">
-              <dt className="text-muted-foreground">{zh ? "调度器" : "Scheduler"}</dt>
-              <dd className="flex min-w-0 flex-wrap items-center gap-2">
-                <StatePill
-                  value={readiness.nomad?.available === undefined ? "unknown" : readiness.nomad.available ? "ready" : "failed"}
-                  label={readiness.nomad?.available === undefined ? (zh ? "未检查" : "Not checked") : readiness.nomad.available ? (zh ? "可连接" : "Reachable") : (zh ? "无法连接" : "Unreachable")}
-                />
-                {readiness.nomad?.leader ? <code className="min-w-0 font-mono text-xs wrap-anywhere text-muted-foreground">{readiness.nomad.leader}</code> : null}
-              </dd>
-              <dt className="text-muted-foreground">DNS</dt>
-              <dd className="flex min-w-0 flex-wrap items-center gap-2">
-                <StatePill
-                  value={readiness.dns?.ready === undefined ? "unknown" : readiness.dns.ready ? "ready" : "pending"}
-                  label={readiness.dns?.ready === undefined ? (zh ? "未检查" : "Not checked") : readiness.dns.ready ? (zh ? "配置就绪" : "Configured") : (zh ? "配置不完整" : "Configuration incomplete")}
-                />
-                {readiness.dns?.zone ? <code className="min-w-0 font-mono text-xs wrap-anywhere text-muted-foreground">{readiness.dns.zone}</code> : null}
-              </dd>
-            </dl>
-            <p className="flex gap-1.5 text-xs text-muted-foreground"><Info className="mt-px size-3.5 shrink-0" aria-hidden="true" />{zh ? "DNS 仅检查凭据和区域配置，不验证解析或公网可达。" : "DNS checks credentials and zone configuration only, not resolution or public reachability."}</p>
-          </CardContent>
-        </Card>
+        <div className="flex min-w-0 flex-col gap-6">
+          <Card className="min-w-0">
+            <CardHeader>
+              <CardTitle>{zh ? "控制面" : "Control plane"}</CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-4">
+              <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-6 gap-y-3 text-[0.8125rem]">
+                <dt className="text-muted-foreground">{zh ? "调度器" : "Scheduler"}</dt>
+                <dd className="flex min-w-0 flex-wrap items-center gap-2">
+                  <StatePill
+                    value={readiness.nomad?.available === undefined ? "unknown" : readiness.nomad.available ? "ready" : "failed"}
+                    label={readiness.nomad?.available === undefined ? (zh ? "未检查" : "Not checked") : readiness.nomad.available ? (zh ? "可连接" : "Reachable") : (zh ? "无法连接" : "Unreachable")}
+                  />
+                  {readiness.nomad?.leader ? <code className="min-w-0 font-mono text-xs wrap-anywhere text-muted-foreground">{readiness.nomad.leader}</code> : null}
+                </dd>
+                <dt className="text-muted-foreground">DNS</dt>
+                <dd className="flex min-w-0 flex-wrap items-center gap-2">
+                  <StatePill
+                    value={readiness.dns?.ready === undefined ? "unknown" : readiness.dns.ready ? "ready" : "pending"}
+                    label={readiness.dns?.ready === undefined ? (zh ? "未检查" : "Not checked") : readiness.dns.ready ? (zh ? "配置就绪" : "Configured") : (zh ? "配置不完整" : "Configuration incomplete")}
+                  />
+                  {readiness.dns?.zone ? <code className="min-w-0 font-mono text-xs wrap-anywhere text-muted-foreground">{readiness.dns.zone}</code> : null}
+                </dd>
+              </dl>
+              <p className="flex gap-1.5 text-xs text-muted-foreground"><Info className="mt-px size-3.5 shrink-0" aria-hidden="true" />{zh ? "DNS 仅检查凭据和区域配置，不验证解析或公网可达。" : "DNS checks credentials and zone configuration only, not resolution or public reachability."}</p>
+            </CardContent>
+          </Card>
+
+          {vm.addons?.known ? (() => {
+            const addonItems = Object.values(vm.addons.items || {});
+            const activeCount = addonItems.filter((item) => item.installed).length;
+            return (
+              <Card className="min-w-0">
+                <CardHeader>
+                  <CardTitle>{zh ? "平台扩展" : "Platform addons"}</CardTitle>
+                  <CardAction>
+                    <span className="text-xs text-muted-foreground tabular-nums">
+                      {zh ? `${activeCount}/${addonItems.length} 运行中` : `${activeCount}/${addonItems.length} active`}
+                    </span>
+                  </CardAction>
+                </CardHeader>
+                <CardContent>
+                  <ul className="flex flex-col gap-2.5 text-[0.8125rem]">
+                    {addonItems.map((addon) => (
+                      <li key={addon.id} className="flex items-center justify-between gap-2">
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span className={cn("size-1.5 shrink-0 rounded-full", addon.installed ? "bg-success" : "bg-muted-foreground/40")} aria-hidden="true" />
+                          <span className="truncate font-medium">{addon.name}</span>
+                        </span>
+                        {addon.installed && addon.consoleUrl ? (
+                          <a
+                            href={addon.consoleUrl}
+                            target={addon.id === "observe" ? undefined : "_blank"}
+                            rel={addon.id === "observe" ? undefined : "noreferrer"}
+                            className="shrink-0 text-xs text-link hover:underline"
+                          >
+                            {zh ? "打开" : "Open"}
+                          </a>
+                        ) : (
+                          <span className="shrink-0 text-xs text-muted-foreground">
+                            {addon.installed ? (zh ? "运行中" : "Running") : (zh ? "未启用" : "Not installed")}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </CardContent>
+                <CardFooter>
+                  <a {...spaLink("/addons", navigate)} className="inline-flex items-center gap-1 text-[0.8125rem] font-medium text-link outline-none hover:underline focus-visible:underline">
+                    {zh ? "管理插件与热更新" : "Manage addons"}
+                    <ArrowRight className="size-3.5" aria-hidden="true" />
+                  </a>
+                </CardFooter>
+              </Card>
+            );
+          })() : null}
+        </div>
 
         <Card className="min-w-0">
           <CardHeader>

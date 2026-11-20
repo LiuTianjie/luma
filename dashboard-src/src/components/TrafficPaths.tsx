@@ -16,7 +16,7 @@ import { buildTopology, normalizePathSegments, routeElementIds } from "./traffic
 const NODE_WIDTH = 190;
 const NODE_HEIGHT = 44;
 const DESTINATION_WIDTH = 220;
-import CytoscapeComponent from "react-cytoscapejs";
+import { LazyCytoscape as CytoscapeComponent } from "./LazyCytoscape";
 import type cytoscape from "cytoscape";
 import { t } from "../i18n";
 import { retryCertificate } from "../lifecycleApi";

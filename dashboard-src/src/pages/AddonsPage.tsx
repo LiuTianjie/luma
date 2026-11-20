@@ -620,7 +620,7 @@ export function AddonsPage({
     bundleResetTimerRef.current = window.setTimeout(() => {
       bundleResetTimerRef.current = null;
       setBundleOp((prev) => (prev?.status === "success" ? null : prev));
-    }, 3000);
+    }, 8000);
   }, [clearBundleResetTimer]);
 
   const handleBundleHotSwap = async (addon: AddonItem) => {
@@ -1188,13 +1188,14 @@ export function AddonsPage({
       ) : null}
 
       {loading && addons.length === 0 ? (
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-2">
+          <Skeleton className="h-60 w-full rounded-xl" />
           <Skeleton className="h-60 w-full rounded-xl" />
           <Skeleton className="h-60 w-full rounded-xl" />
           <Skeleton className="h-60 w-full rounded-xl" />
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-2">
           {addons.map((addon) => {
             const isStaticBundle = addon.kind === "static-bundle";
             const isRequired = Boolean(addon.required);
@@ -1426,6 +1427,10 @@ export function AddonsPage({
                                 setBundleLogOpen(true);
                                 return;
                               }
+                              if (updateState === "success") {
+                                window.location.reload();
+                                return;
+                              }
                               void handleBundleHotSwap(addon);
                             }}
                           >
@@ -1441,7 +1446,7 @@ export function AddonsPage({
                             {updateState === "running"
                               ? zh ? "更新中…" : "Updating…"
                               : updateState === "success"
-                                ? zh ? "已更新" : "Updated"
+                                ? zh ? "已更新 · 刷新" : "Updated · Reload"
                                 : updateState === "error"
                                   ? zh ? "查看日志" : "View logs"
                                   : zh ? "在线热更新" : "Hot-swap update"}
@@ -1453,6 +1458,10 @@ export function AddonsPage({
                             onClick={() => {
                               if (uploadState === "error") {
                                 setBundleLogOpen(true);
+                                return;
+                              }
+                              if (uploadState === "success") {
+                                window.location.reload();
                                 return;
                               }
                               setUploadTargetAddon(addon);
@@ -1471,7 +1480,7 @@ export function AddonsPage({
                             {uploadState === "running"
                               ? zh ? "上传中…" : "Uploading…"
                               : uploadState === "success"
-                                ? zh ? "已上传" : "Uploaded"
+                                ? zh ? "已上传 · 刷新" : "Uploaded · Reload"
                                 : uploadState === "error"
                                   ? zh ? "查看日志" : "View logs"
                                   : zh ? "上传本地包" : "Upload bundle"}
@@ -1484,6 +1493,10 @@ export function AddonsPage({
                               onClick={() => {
                                 if (rollbackState === "error") {
                                   setBundleLogOpen(true);
+                                  return;
+                                }
+                                if (rollbackState === "success") {
+                                  window.location.reload();
                                   return;
                                 }
                                 void handleBundleRollback(addon);
@@ -1501,7 +1514,7 @@ export function AddonsPage({
                               {rollbackState === "running"
                                 ? zh ? "回滚中…" : "Rolling back…"
                                 : rollbackState === "success"
-                                  ? zh ? "已回滚" : "Rolled back"
+                                  ? zh ? "已回滚 · 刷新" : "Rolled back · Reload"
                                   : rollbackState === "error"
                                     ? zh ? "查看日志" : "View logs"
                                     : zh ? "回滚" : "Rollback"}
