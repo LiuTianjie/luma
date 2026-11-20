@@ -1,5 +1,5 @@
-import { ArrowRight, Boxes, CheckCircle2, CircleAlert, Info, Plus, Server, ServerCog, TriangleAlert, X, type Icon } from "@/components/icons";
-import { useMemo } from "react";
+import { ArrowRight, Boxes, ChevronDown, ChevronLeftIcon, ChevronRightIcon, CircleAlert, Info, Plus, Server, ServerCog, TriangleAlert, X, type Icon } from "@/components/icons";
+import { useEffect, useMemo, useState } from "react";
 import { StatePill, UsageMeter } from "../components/primitives";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -45,6 +45,23 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
   const visibleIssues = useMemo(() => vm.issues.filter((issue) => !isDismissed(issueKey(issue))), [vm.issues, isDismissed]);
   const groups = useMemo(() => groupOverviewIssues(visibleIssues, vm.applications, vm.nodes, vm.services), [visibleIssues, vm.applications, vm.nodes, vm.services]);
   const hiddenCount = vm.issues.length - visibleIssues.length;
+  const [tickerIndex, setTickerIndex] = useState(0);
+  const [issuesExpanded, setIssuesExpanded] = useState(false);
+  useEffect(() => {
+    setTickerIndex((prev) => (visibleIssues.length ? prev % visibleIssues.length : 0));
+  }, [visibleIssues.length]);
+  useEffect(() => {
+    if (visibleIssues.length <= 1 || issuesExpanded) return;
+    const timer = window.setInterval(() => {
+      setTickerIndex((prev) => (prev + 1) % visibleIssues.length);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [visibleIssues.length, issuesExpanded]);
+  const currentIssue = visibleIssues.length ? visibleIssues[tickerIndex % visibleIssues.length] : null;
+  const currentGroup = useMemo(() => {
+    if (!currentIssue) return null;
+    return groups.find((g) => g.issues.includes(currentIssue)) || null;
+  }, [groups, currentIssue]);
   const visibleCounts = useMemo(() => visibleIssues.reduce((counts, issue) => {
     if (issue.severity === "critical") counts.critical += 1;
     else if (issue.severity === "warning") counts.warning += 1;
@@ -143,7 +160,88 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
         })}
       </section>
 
-      {groups.length ? (
+      {/* Lightweight rotating top alert bar — silent when cluster has zero diagnostic issues */}
+      {currentIssue ? (
+        <div
+          role="region"
+          aria-label={zh ? "集群诊断提示" : "Cluster diagnostics bar"}
+          className={cn(
+            "flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2 text-xs shadow-2xs",
+            currentIssue.severity === "critical"
+              ? "border-destructive/35 bg-destructive/8 text-foreground"
+              : currentIssue.severity === "warning"
+                ? "border-warning/40 bg-warning/10 text-foreground"
+                : "border-border bg-muted/40 text-foreground",
+          )}
+        >
+          <SeverityIcon severity={currentIssue.severity || "info"} />
+          {currentGroup?.target ? (
+            <Badge variant={severityVariant(currentIssue.severity || "info")} className="shrink-0 font-mono text-[0.6875rem]">
+              {currentGroup.target}
+            </Badge>
+          ) : null}
+          <span className="min-w-0 flex-1 truncate font-medium" title={currentIssue.message || ""}>
+            {currentIssue.message || (zh ? "未提供诊断信息" : "No diagnostic message provided")}
+          </span>
+          <div className="flex shrink-0 items-center gap-1">
+            {currentGroup?.app || currentGroup?.node ? (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => currentGroup.node ? onSelectNode(currentGroup.node) : onNavigate("applications", { selectApp: currentGroup.app!.stack })}
+              >
+                {zh ? "查看" : "Inspect"}
+                <ArrowRight className="ml-0.5 size-3" aria-hidden="true" />
+              </Button>
+            ) : null}
+            {visibleIssues.length > 1 ? (
+              <div className="flex items-center gap-0.5 text-muted-foreground tabular-nums">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={zh ? "上一条诊断" : "Previous diagnostic"}
+                  onClick={() => setTickerIndex((prev) => (prev - 1 + visibleIssues.length) % visibleIssues.length)}
+                >
+                  <ChevronLeftIcon className="size-3.5" />
+                </Button>
+                <span>{(tickerIndex % visibleIssues.length) + 1}/{visibleIssues.length}</span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={zh ? "下一条诊断" : "Next diagnostic"}
+                  onClick={() => setTickerIndex((prev) => (prev + 1) % visibleIssues.length)}
+                >
+                  <ChevronRightIcon className="size-3.5" />
+                </Button>
+              </div>
+            ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              onClick={() => setIssuesExpanded((v) => !v)}
+            >
+              {issuesExpanded ? (zh ? "收起" : "Hide") : (zh ? `全部 (${visibleIssues.length})` : `All (${visibleIssues.length})`)}
+              <ChevronDown className={cn("ml-0.5 size-3 transition-transform", issuesExpanded && "rotate-180")} aria-hidden="true" />
+            </Button>
+            <Tooltip>
+              <TooltipTrigger render={<Button variant="ghost" size="icon-xs" className="text-muted-foreground" aria-label={zh ? "仅在此浏览器隐藏 1 小时" : "Hide in this browser for 1 hour"} onClick={() => dismiss(issueKey(currentIssue))} />}>
+                <X className="size-3.5" />
+              </TooltipTrigger>
+              <TooltipContent>{zh ? "仅在此浏览器隐藏 1 小时" : "Hide in this browser for 1 hour"}</TooltipContent>
+            </Tooltip>
+          </div>
+        </div>
+      ) : hiddenCount > 0 ? (
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-border/70 bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground">
+          <span>{zh ? `${hiddenCount} 条诊断已在此浏览器临时隐藏` : `${hiddenCount} diagnostic(s) hidden in this browser`}</span>
+          <Button variant="ghost" size="xs" onClick={clear}>{zh ? "全部恢复" : "Restore all"}</Button>
+        </div>
+      ) : null}
+
+      {issuesExpanded && groups.length ? (
         <Card className="min-w-0">
           <CardHeader>
             <CardTitle>{zh ? "需要关注" : "Needs attention"}</CardTitle>
@@ -201,22 +299,7 @@ export function OverviewPage({ lang, payload, vm, onNavigate, onSelectNode }: {
             </CardFooter>
           ) : null}
         </Card>
-      ) : (
-        <Alert variant={hiddenCount ? "neutral" : "success"}>
-          <CheckCircle2 />
-          <AlertTitle>{hiddenCount ? (zh ? "诊断已临时隐藏" : "Diagnostics hidden") : (zh ? "当前未报告诊断问题" : "No diagnostic issues currently reported")}</AlertTitle>
-          <AlertDescription>
-            {hiddenCount
-              ? (zh ? "当前诊断已在此浏览器临时隐藏，并未解决。" : "Current diagnostics are temporarily hidden in this browser, not resolved.")
-              : (zh ? "集群当前没有需要立即处理的诊断项。" : "The cluster has no diagnostics that need immediate attention.")}
-          </AlertDescription>
-          {hiddenCount ? (
-            <AlertAction>
-              <Button variant="ghost" size="sm" onClick={clear}>{zh ? "全部恢复" : "Restore all"}</Button>
-            </AlertAction>
-          ) : null}
-        </Alert>
-      )}
+      ) : null}
 
       <section className="grid items-start gap-6 @3xl:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)]" aria-label={zh ? "控制面与容量" : "Control plane and capacity"}>
         <Card className="min-w-0">

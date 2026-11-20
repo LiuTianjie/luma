@@ -204,13 +204,12 @@ export function AppSidebar({
         <button
           type="button"
           onClick={toggleSidebar}
-          className="hidden h-8 items-center gap-2 rounded-md px-2.5 text-[0.8125rem] text-muted-foreground outline-none hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring lg:flex group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
+          className="hidden size-8 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring lg:flex"
           aria-label={collapseLabel}
           aria-expanded={open}
           title={`${collapseLabel} (${isMac ? "⌘B" : "Ctrl+B"})`}
         >
           <PanelLeftIcon className="size-4 shrink-0" />
-          <span className="group-data-[collapsible=icon]:hidden">{zh ? "收起侧边栏" : "Collapse"}</span>
         </button>
       </SidebarFooter>
     </Sidebar>

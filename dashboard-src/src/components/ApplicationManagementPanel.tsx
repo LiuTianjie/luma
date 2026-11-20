@@ -1813,15 +1813,34 @@ export function ApplicationManagementPanel({
                             />
                           </TableCell>
                           <TableCell className="max-w-64 whitespace-normal">
-                            {app.domains.length ? (
-                              <div className="flex min-w-0 flex-col gap-1">
-                                {app.domains.map((domain) => (
-                                  <CodeCell key={domain} value={domain} />
-                                ))}
-                              </div>
-                            ) : (
-                              <span className="text-muted-foreground">{t(lang, "internalOnly")}</span>
-                            )}
+                            {(() => {
+                              const endpoints = applicationEndpoints(app.services);
+                              if (!endpoints.length) {
+                                return <span className="text-muted-foreground">{t(lang, "internalOnly")}</span>;
+                              }
+                              return (
+                                <div className="flex min-w-0 flex-col gap-1">
+                                  {endpoints.map((endpoint) =>
+                                    endpoint.href ? (
+                                      <a
+                                        key={`${endpoint.protocol}:${endpoint.address}`}
+                                        href={endpoint.href}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        onClick={(event) => event.stopPropagation()}
+                                        className="group/url inline-flex max-w-full items-center gap-1 font-mono text-xs text-link hover:underline focus-visible:underline"
+                                        title={endpoint.href}
+                                      >
+                                        <span className="truncate">{endpoint.address}</span>
+                                        <ExternalLink className="size-3 shrink-0 opacity-60 transition-opacity group-hover/url:opacity-100" aria-hidden="true" />
+                                      </a>
+                                    ) : (
+                                      <CodeCell key={`${endpoint.protocol}:${endpoint.address}`} value={endpoint.address} />
+                                    ),
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </TableCell>
                           <TableCell className="text-muted-foreground">{app.regions.join(" · ") || "—"}</TableCell>
                           <TableCell className="text-muted-foreground">{app.nodes.join(" · ") || "—"}</TableCell>
@@ -1855,15 +1874,32 @@ export function ApplicationManagementPanel({
                         items={[
                           {
                             label: t(lang, "accessAddress"),
-                            value: app.domains.length ? (
-                              <div className="flex min-w-0 flex-col gap-1">
-                                {app.domains.map((domain) => (
-                                  <CodeCell key={domain} value={domain} />
-                                ))}
-                              </div>
-                            ) : (
-                              t(lang, "internalOnly")
-                            ),
+                            value: (() => {
+                              const endpoints = applicationEndpoints(app.services);
+                              if (!endpoints.length) return t(lang, "internalOnly");
+                              return (
+                                <div className="flex min-w-0 flex-col gap-1">
+                                  {endpoints.map((endpoint) =>
+                                    endpoint.href ? (
+                                      <a
+                                        key={`${endpoint.protocol}:${endpoint.address}`}
+                                        href={endpoint.href}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        onClick={(event) => event.stopPropagation()}
+                                        className="inline-flex max-w-full items-center gap-1 font-mono text-xs text-link hover:underline"
+                                        title={endpoint.href}
+                                      >
+                                        <span className="truncate">{endpoint.address}</span>
+                                        <ExternalLink className="size-3 shrink-0 opacity-60" aria-hidden="true" />
+                                      </a>
+                                    ) : (
+                                      <CodeCell key={`${endpoint.protocol}:${endpoint.address}`} value={endpoint.address} />
+                                    ),
+                                  )}
+                                </div>
+                              );
+                            })(),
                           },
                           {
                             label: t(lang, "region"),

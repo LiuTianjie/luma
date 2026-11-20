@@ -1,4 +1,5 @@
-import { Activity, Bot, MapPin, Server, SquareTerminal, TerminalSquare } from "@/components/icons";
+import { useState } from "react";
+import { Activity, Bot, LayoutDashboard, MapPin, Server, SquareTerminal, TerminalSquare } from "@/components/icons";
 import { localizeState } from "../i18n";
 import type { DashboardNode, DashboardService, Lang } from "../types";
 import { Badge } from "@/components/ui/badge";
@@ -6,10 +7,22 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { StatTile, UsageMeter } from "./primitives";
 import { formatBytes, formatPercent } from "../format";
+
+const VIEW_MODE_KEY = "luma.nodes.viewMode";
+type NodesViewMode = "cards" | "table";
+
+function readInitialViewMode(): NodesViewMode {
+  try {
+    return localStorage.getItem(VIEW_MODE_KEY) === "table" ? "table" : "cards";
+  } catch {
+    return "cards";
+  }
+}
 
 function clampPercent(value?: number) {
   if (typeof value !== "number" || !Number.isFinite(value)) return 0;
@@ -115,6 +128,15 @@ export function NodeFleetMap({
   onTerminal?: (node: DashboardNode) => void;
 }) {
   const zh = lang === "zh";
+  const [viewMode, setViewMode] = useState<NodesViewMode>(readInitialViewMode);
+  const updateViewMode = (next: NodesViewMode) => {
+    setViewMode(next);
+    try {
+      localStorage.setItem(VIEW_MODE_KEY, next);
+    } catch {
+      // ignore storage failure
+    }
+  };
   const regions = regionsFor(nodes);
   const workloads = workloadCounts(services || []);
   const readyNodes = nodes.filter((node) => nodeHealth(node) === "good").length;
@@ -145,6 +167,127 @@ export function NodeFleetMap({
         <StatTile icon={Activity} label={zh ? "高负载节点" : "High load"} value={pressuredNodes} detail={hasAnyPressure ? (zh ? `峰值 ${formatPercent(maxPressure)}` : `peak ${formatPercent(maxPressure)}`) : (zh ? "无指标" : "no metrics")} tone={pressuredNodes ? "critical" : "normal"} />
       </div>
 
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-xs text-muted-foreground tabular-nums">
+          {zh ? `共 ${regions.length} 个区域 · ${nodes.length} 台节点` : `${regions.length} regions · ${nodes.length} nodes`}
+        </span>
+        <ToggleGroup
+          variant="segmented"
+          size="sm"
+          value={[viewMode]}
+          onValueChange={(values) => {
+            const next = values[0] as NodesViewMode | undefined;
+            if (next === "cards" || next === "table") updateViewMode(next);
+          }}
+          aria-label={zh ? "节点视图模式" : "Node view mode"}
+        >
+          <ToggleGroupItem value="cards">
+            <LayoutDashboard className="mr-1 size-3.5" aria-hidden="true" />
+            {zh ? "卡片" : "Cards"}
+          </ToggleGroupItem>
+          <ToggleGroupItem value="table">
+            {zh ? "列表" : "List"}
+          </ToggleGroupItem>
+        </ToggleGroup>
+      </div>
+
+      {viewMode === "cards" ? (
+        <div className="flex flex-col gap-5">
+          {regions.map((group) => {
+            const groupReady = group.nodes.filter((node) => nodeHealth(node) === "good").length;
+            const groupPressure = group.nodes.reduce((max, node) => Math.max(max, pressureOf(node)), 0);
+            const hasPressure = group.nodes.some(pressureAvailable);
+            const pressureTone = !hasPressure ? "outline" : groupPressure >= 85 ? "destructive" : groupPressure >= 65 ? "warning" : "success";
+            return (
+              <div key={group.region} className="flex flex-col gap-2.5">
+                <div className="flex items-center gap-2 px-0.5 text-xs">
+                  <MapPin className="size-3.5 text-muted-foreground" aria-hidden="true" />
+                  <span className="font-semibold text-foreground">{group.region}</span>
+                  <span className="text-muted-foreground tabular-nums">
+                    {zh ? `${groupReady}/${group.nodes.length} 在线` : `${groupReady}/${group.nodes.length} online`}
+                  </span>
+                  <Badge variant={pressureTone} appearance={pressureTone === "success" || pressureTone === "outline" ? "dot" : "filled"} className="ml-auto">
+                    {pressureLabel(groupPressure, lang, hasPressure)}
+                  </Badge>
+                </div>
+                <div className="grid grid-cols-1 gap-3 @xl:grid-cols-2 @4xl:grid-cols-3">
+                  {group.nodes.map((node, index) => {
+                    const metrics = node.metrics || {};
+                    const capacity = node.capacity || {};
+                    const nodeName = node.name || "-";
+                    const health = nodeHealth(node);
+                    const hasTerminal = terminalReady(node);
+                    const workload = workloads.get(nodeName) || { services: 0, tasks: 0 };
+                    const hasDisk = typeof metrics.diskUsedPercent === "number" && Number.isFinite(metrics.diskUsedPercent);
+                    return (
+                      <Card
+                        key={`${node.name || "node"}-${index}`}
+                        className="gap-3 p-4 transition-colors hover:border-foreground/20"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex min-w-0 flex-col gap-0.5">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span className={cn("size-2 shrink-0 rounded-full", HEALTH_DOT[health])} aria-hidden="true" />
+                              <button
+                                type="button"
+                                className="truncate text-left text-sm font-semibold text-link outline-none hover:underline focus-visible:underline"
+                                title={zh ? `查看节点 ${nodeName}` : `View node ${nodeName}`}
+                                onClick={() => onSelect(node)}
+                              >
+                                {nodeName}
+                              </button>
+                            </div>
+                            <span className="truncate pl-4 text-[0.75rem] text-muted-foreground">
+                              {[nodeStateLabel(node, lang), node.agentOs, node.availability].filter(Boolean).join(" · ") || "—"}
+                            </span>
+                          </div>
+                          <Tooltip>
+                            <TooltipTrigger render={<span tabIndex={hasTerminal && onTerminal ? undefined : 0} className="inline-flex shrink-0" />}>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon-xs"
+                                disabled={!hasTerminal || !onTerminal}
+                                aria-label={hasTerminal ? `Terminal ${nodeName}` : terminalUnavailableLabel(node, lang)}
+                                onClick={() => onTerminal?.(node)}
+                              >
+                                <SquareTerminal className="size-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-xs break-all">{hasTerminal ? `Terminal ${nodeName}` : terminalUnavailableLabel(node, lang)}</TooltipContent>
+                          </Tooltip>
+                        </div>
+
+                        <div className="flex flex-col gap-2 text-xs">
+                          <div className="grid grid-cols-[2.5rem_minmax(0,1fr)] items-center gap-2">
+                            <span className="text-muted-foreground">CPU</span>
+                            <UsageMeter value={metrics.cpuPercent ?? metrics.loadPercent} label={`${nodeName} CPU`} />
+                          </div>
+                          <div className="grid grid-cols-[2.5rem_minmax(0,1fr)] items-center gap-2">
+                            <span className="text-muted-foreground">{zh ? "内存" : "RAM"}</span>
+                            <UsageMeter value={metrics.memoryUsedPercent} label={`${nodeName} ${zh ? "内存" : "memory"}`} />
+                          </div>
+                          {hasDisk ? (
+                            <div className="grid grid-cols-[2.5rem_minmax(0,1fr)] items-center gap-2">
+                              <span className="text-muted-foreground">{zh ? "磁盘" : "Disk"}</span>
+                              <UsageMeter value={metrics.diskUsedPercent} label={`${nodeName} ${zh ? "磁盘" : "disk"}`} />
+                            </div>
+                          ) : null}
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2 border-t border-border/60 pt-2.5 text-xs text-muted-foreground tabular-nums">
+                          <span>{zh ? `${workload.services} 服务 · ${workload.tasks} 任务` : `${workload.services} svc · ${workload.tasks} tasks`}</span>
+                          <span>{formatBytes(metrics.memoryTotalBytes ?? capacity.memoryBytes)}</span>
+                        </div>
+                      </Card>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
       <Card className="gap-0 py-0">
         <CardContent>
           <Table className="min-w-3xl" containerProps={{ tabIndex: 0, role: "region", "aria-label": zh ? "节点列表，可横向滚动" : "Nodes, horizontally scrollable" }}>
@@ -230,6 +373,7 @@ export function NodeFleetMap({
           </Table>
         </CardContent>
       </Card>
+      )}
     </section>
   );
 }

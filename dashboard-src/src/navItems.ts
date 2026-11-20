@@ -64,6 +64,7 @@ export function buildNavGroups(lang: Lang, vm: DashboardViewModel): NavGroup[] {
   const hasEyeRum = hasAddonCapability(addons, "eye.rum");
   const hasBuilderRuns = hasAddonCapability(addons, "builder.runs");
   const hasRichObserve = hasAnyAddonCapability(addons, ["observe.status", "observe.apps", "eye.rum"]);
+  const showManagedRegistry = vm.hasManagedRegistry !== false;
 
   const observeChildren: NavChild[] = [
     { href: "/observe", label: zh ? "告警事件" : "Incidents", detail: zh ? "当前触发与历史告警" : "Active and historical incidents" },
@@ -82,13 +83,13 @@ export function buildNavGroups(lang: Lang, vm: DashboardViewModel): NavGroup[] {
       { id: "applications", icon: "applications", label: zh ? "应用" : "Applications", detail: zh ? "服务、实例、终端与生命周期" : "Services, instances, terminal and lifecycle" },
       { id: "deployments", icon: "deployments", label: zh ? "部署记录" : "Deployments", detail: hasBuilderRuns ? (zh ? "构建、部署与任务记录" : "Builds, deployments and tasks") : (zh ? "部署历史与发布记录" : "Deployment history and releases") },
       { id: "observability", icon: "observability", label: hasRichObserve ? (zh ? "可观测" : "Observability") : (zh ? "监控与告警" : "Monitoring"), detail: hasRichObserve ? (zh ? "指标、日志、前端与告警" : "Metrics, logs, RUM and alerts") : (zh ? "资源指标与告警" : "Resource metrics and alerts"), children: observeChildren },
-      { id: "nodes", icon: "infrastructure", label: zh ? "基础设施" : "Infrastructure", detail: zh ? "节点、网络、存储与镜像" : "Nodes, networking, storage and images", children: [
+      { id: "nodes", icon: "infrastructure", label: zh ? "基础设施" : "Infrastructure", detail: showManagedRegistry ? (zh ? "节点、网络、存储与镜像" : "Nodes, networking, storage and images") : (zh ? "节点、区域、网络与存储" : "Nodes, regions, networking and storage"), children: [
         { href: "/fleet", label: zh ? "节点" : "Nodes", detail: zh ? "节点资源、调度状态与加入新节点" : "Node resources, scheduling and joining", exact: true, also: ["/fleet/join", "/fleet/nodes", "/terminal/node"] },
         { href: "/fleet/regions", label: zh ? "区域" : "Regions", detail: zh ? "调度区域与出口策略" : "Scheduling regions and egress" },
         { href: "/fleet/network", label: zh ? "网络" : "Network", detail: zh ? "入口路径与节点拓扑" : "Ingress paths and topology" },
         { href: "/fleet/domains", label: zh ? "域名" : "Domains", detail: zh ? "DNS 域名与服务商凭据" : "DNS zones and provider keys" },
         { href: "/storage", label: zh ? "存储" : "Storage", detail: zh ? "存储卷、容量与回收" : "Volumes, capacity and cleanup" },
-        { href: "/registry", label: zh ? "镜像" : "Registry", detail: zh ? "镜像生命周期与清理" : "Image lifecycle and cleanup" },
+        ...(showManagedRegistry ? [{ href: "/registry", label: zh ? "镜像" : "Registry", detail: zh ? "镜像生命周期与清理" : "Image lifecycle and cleanup" }] : []),
       ] },
     ] },
     { key: "platform", label: zh ? "平台管理" : "Platform", items: [

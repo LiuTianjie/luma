@@ -286,6 +286,38 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
   const invalidPolicyField = (field: typeof policyFields[number]) => !Number.isInteger(policy[field.key]) || policy[field.key] < field.min || ("max" in field && policy[field.key] > field.max);
   const policyInvalid = policyFields.some(invalidPolicyField);
   const protectionBadge = (status?: string) => <Badge variant={status === "protected" ? "secondary" : "outline"}>{statusLabel(status, zh)}</Badge>;
+  const isExternalRegistryOnly = Boolean(error && /registry host is required/i.test(error));
+
+  if (isExternalRegistryOnly) {
+    return (
+      <div className="registry-workspace flex min-w-0 flex-col gap-6">
+        <PageHeader
+          meta={{
+            eyebrow: zh ? "镜像生命周期" : "Image lifecycle",
+            title: zh ? "Registry 镜像管理" : "Registry image management",
+            description: zh ? "当前集群未启用自建托管 Registry。" : "This cluster does not run a self-hosted managed Registry.",
+            metrics: [],
+          }}
+        />
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon"><Boxes /></EmptyMedia>
+            <EmptyTitle>{zh ? "当前使用外部镜像仓库" : "Using external container registry"}</EmptyTitle>
+            <EmptyDescription>
+              {zh
+                ? "此页面仅用于管理集群自建托管 Registry。当前集群已切换至外部镜像仓库（如阿里云 ACR / GHCR），镜像清理请前往对应云厂商控制台，仓库凭据可在设置中管理。"
+                : "This page manages a self-hosted Luma Registry. Your cluster currently uses an external registry (such as Aliyun ACR or GHCR); manage credentials in Settings."}
+            </EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
+            <Button variant="outline" onClick={() => navigate("/settings/registries")}>
+              {zh ? "前往镜像仓库凭据" : "Open registry credentials"}
+            </Button>
+          </EmptyContent>
+        </Empty>
+      </div>
+    );
+  }
 
   return (
     <div className="registry-workspace flex min-w-0 flex-col gap-6">

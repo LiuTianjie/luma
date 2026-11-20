@@ -43,6 +43,7 @@ export type DashboardViewModel = {
   issueCounts: IssueCounts;
   metricNodes: number;
   builderNodes: number;
+  hasManagedRegistry?: boolean;
   templateCount: number;
   deployServiceTemplates: number;
   deployComposeTemplates: number;
@@ -102,6 +103,7 @@ export function createDashboardViewModel(
     issueCounts: counts,
     metricNodes: nodes.filter((node) => node.metrics?.cpuPercent || node.metrics?.memoryUsedPercent).length,
     builderNodes: (payload?.build?.nodes || []).length,
+    hasManagedRegistry: payload ? Boolean(payload.build?.registryHost?.trim()) : undefined,
     templateCount: DEPLOY_TEMPLATES.length,
     deployServiceTemplates: DEPLOY_TEMPLATES.filter((template) => template.mode === "service").length,
     deployComposeTemplates: DEPLOY_TEMPLATES.filter((template) => template.mode === "compose").length,

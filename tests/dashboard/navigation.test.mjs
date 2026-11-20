@@ -97,3 +97,12 @@ test('installed addons dynamically mount observe and eye navigation entries with
   const allLabels = fullItems.flatMap((entry) => [entry.label, ...(entry.children || []).map((c) => c.label)]);
   assert.equal(new Set(allLabels).size, allLabels.length);
 });
+
+test('external-only registry clusters hide self-hosted Registry nav item', () => {
+  const externalVm = {
+    issueCounts: { critical: 0, warning: 0, info: 0 },
+    hasManagedRegistry: false,
+  };
+  const infra = buildNavGroups('zh', externalVm).flatMap((g) => g.items).find((e) => e.id === 'nodes');
+  assert.ok(!infra.children.some((c) => c.href === '/registry'));
+});

@@ -1,9 +1,12 @@
-import { parseObjectRoute } from "../objectRoutes";
+import { useMemo } from "react";
+import { nodePath, parseObjectRoute } from "../objectRoutes";
 import { parseApplicationPath, applicationPath } from "./applicationRoutes";
-import { ArrowLeft, BookOpen, Check, Contrast, Languages, LogOut, Monitor, Moon, Sun, UserCircle } from "@/components/icons";
+import { ArrowLeft, ArrowRight, Bell, BookOpen, Check, CheckCircle2, CircleAlert, Contrast, Info, Languages, LogOut, Monitor, Moon, Sun, TriangleAlert, UserCircle, X } from "@/components/icons";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Breadcrumb, BreadcrumbList, BreadcrumbItem, BreadcrumbLink, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { activeNavChild, buildNavGroups, navWorkspace } from "../navItems";
@@ -11,6 +14,8 @@ import { ROUTE_BY_PAGE } from "../routes";
 import { useRouter, spaLink } from "../router";
 import type { DashboardViewModel, NavPage } from "../dashboardViewModel";
 import { SidebarTrigger } from "@/components/ui/sidebar";
+import { issueKey, useDismissedIssues } from "../useDismissedIssues";
+import { groupOverviewIssues } from "../pages/overviewModel";
 import type { ThemeMode } from "../useTheme";
 import { t } from "../i18n";
 import type { Lang, SyncStatus } from "../types";
@@ -66,6 +71,17 @@ export function Topbar({
     { mode: "light" as const, icon: Sun, label: zh ? "浅色" : "Light" },
     { mode: "dark" as const, icon: Moon, label: zh ? "深色" : "Dark" },
   ];
+  const { dismiss, clear, isDismissed } = useDismissedIssues(clusterId || "", vm.issues);
+  const visibleIssues = useMemo(
+    () => vm.issues.filter((entry) => !isDismissed(issueKey(entry))),
+    [vm.issues, isDismissed],
+  );
+  const hiddenCount = vm.issues.length - visibleIssues.length;
+  const issueGroups = useMemo(
+    () => groupOverviewIssues(visibleIssues, vm.applications, vm.nodes, vm.services),
+    [visibleIssues, vm.applications, vm.nodes, vm.services],
+  );
+  const hasCritical = visibleIssues.some((entry) => entry.severity === "critical");
 
   return (
     <header className="flex h-(--console-header-height) shrink-0 items-center gap-3 border-b border-border bg-background px-4 md:px-6">
@@ -95,6 +111,104 @@ export function Topbar({
             {statusText}
           </span>
         ) : null}
+        <Popover>
+          <PopoverTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="relative"
+                aria-label={zh ? "通知与诊断中心" : "Notifications and diagnostics"}
+              />
+            }
+          >
+            <Bell className="size-4" />
+            {visibleIssues.length > 0 ? (
+              <span
+                className={cn(
+                  "absolute top-1 right-1 flex size-2 rounded-full ring-2 ring-background",
+                  hasCritical ? "bg-destructive" : "bg-warning",
+                )}
+                aria-hidden="true"
+              />
+            ) : null}
+          </PopoverTrigger>
+          <PopoverContent align="end" sideOffset={6} className="w-80 p-0 sm:w-96">
+            <div className="flex items-center justify-between gap-2 border-b border-border px-3.5 py-2.5">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-foreground">{zh ? "通知中心" : "Notifications"}</span>
+                {visibleIssues.length > 0 ? (
+                  <Badge variant={hasCritical ? "destructive" : "warning"} className="h-4.5 px-1.5 text-[0.6875rem] tabular-nums">
+                    {visibleIssues.length}
+                  </Badge>
+                ) : null}
+              </div>
+              {hiddenCount > 0 ? (
+                <Button variant="ghost" size="xs" onClick={clear}>
+                  {zh ? `恢复隐藏 (${hiddenCount})` : `Restore (${hiddenCount})`}
+                </Button>
+              ) : null}
+            </div>
+            {issueGroups.length > 0 ? (
+              <ul className="max-h-80 divide-y divide-border overflow-y-auto">
+                {issueGroups.map((group) => (
+                  <li key={group.key} className="flex flex-col gap-1.5 px-3.5 py-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate font-mono text-xs font-medium text-foreground">{group.target}</span>
+                      {group.node || group.app ? (
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          onClick={() =>
+                            navigate(
+                              group.node
+                                ? nodePath(group.node.name || "")
+                                : applicationPath(group.app!.stack),
+                            )
+                          }
+                        >
+                          {zh ? "查看" : "Open"}
+                          <ArrowRight className="ml-0.5 size-3" aria-hidden="true" />
+                        </Button>
+                      ) : null}
+                    </div>
+                    {group.issues.map((issue, idx) => (
+                      <div key={`${issueKey(issue)}:${idx}`} className="flex items-start gap-2 text-xs">
+                        {issue.severity === "critical" ? (
+                          <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-destructive" aria-hidden="true" />
+                        ) : issue.severity === "warning" ? (
+                          <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />
+                        ) : (
+                          <Info className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                        )}
+                        <span className="min-w-0 flex-1 wrap-anywhere text-muted-foreground">
+                          {issue.message || (zh ? "未提供诊断信息" : "No diagnostic message")}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          className="shrink-0 text-muted-foreground"
+                          aria-label={zh ? "隐藏 1 小时" : "Dismiss for 1 hour"}
+                          onClick={() => dismiss(issueKey(issue))}
+                        >
+                          <X className="size-3" />
+                        </Button>
+                      </div>
+                    ))}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="flex flex-col items-center justify-center gap-1.5 px-4 py-8 text-center">
+                <CheckCircle2 className="size-5 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+                <p className="text-xs font-medium text-foreground">{zh ? "当前无待处理诊断" : "All clear"}</p>
+                <p className="text-[0.75rem] text-muted-foreground">
+                  {zh ? "集群运行正常，发现异常时会在此处与总览顶部通知。" : "No active cluster diagnostics right now."}
+                </p>
+              </div>
+            )}
+          </PopoverContent>
+        </Popover>
         <Tooltip>
           <TooltipTrigger render={<Button variant="ghost" size="icon-sm" nativeButton={false} render={<a href={`${DOCS_BASE}${zh ? "dashboard-guide.zh-CN.html" : "dashboard-guide.html"}`} target="_blank" rel="noreferrer" />} aria-label={zh ? "控制台文档（新窗口）" : "Console docs (new window)"} />}>
             <BookOpen />
