@@ -4,8 +4,10 @@ import {
   ArrowUpRight,
   Boxes,
   Check,
+  CheckCircle2,
   ChevronDown,
   Copy,
+  Cpu,
   KeyRound,
   Package,
   RefreshCw,
@@ -43,6 +45,8 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { apiGet, apiPost, authHeaders, consumeNdjson } from "../apiClient";
+import { BuilderRunnerOnboardingCard } from "../components/BuilderRunnerOnboardingCard";
+import { fetchBuilderStatus, type BuilderStatus } from "../deploy/deployApi";
 import { useRouter, useSearchParams } from "../router";
 import type { Lang } from "../types";
 import { PageHeader } from "./PageHeader";
@@ -79,6 +83,29 @@ type AddonAutoSecret = {
   description?: string;
 };
 
+type AddonRequirements = {
+  minMemoryMb?: number;
+  recommendedMemoryMb?: number;
+  minCpu?: number;
+  stateful?: boolean;
+  pinPolicy?: "required" | "recommended" | "manager" | "optional" | string;
+  note?: LocalizedText;
+  byPreset?: Record<string, { minMemoryMb?: number; recommendedMemoryMb?: number; minCpu?: number }>;
+};
+
+type AddonNodeDetail = {
+  name: string;
+  displayName: string;
+  region: string;
+  isManager: boolean;
+  agentStatus: string;
+  ready: boolean;
+  memoryTotalMb: number;
+  memoryAvailableMb: number;
+  cpuCount: number;
+  publicIngressReady: boolean;
+};
+
 type AddonItem = {
   id: string;
   name: string;
@@ -93,6 +120,7 @@ type AddonItem = {
   preset: string;
   url: string;
   consoleUrl: string;
+  suggestedDomain?: string;
   auth: {
     mode: "control-sso" | "forward-auth" | "none" | string;
     cliAuth?: string;
@@ -106,6 +134,8 @@ type AddonItem = {
     dashboardPath?: string;
   };
   uiCapabilities?: string[];
+  requirements?: AddonRequirements;
+  effectiveRequirements?: AddonRequirements;
   defaultImages?: Record<string, string>;
   presets: AddonPreset[];
   configSchema: AddonConfigField[];
@@ -133,14 +163,75 @@ type SavedGitProviderSummary = {
 type AddonsPayload = {
   addons: AddonItem[];
   controlUrl: string;
+  managerNode?: string;
   availableRegions: string[];
   availableNodes: string[];
+  nodeDetails?: AddonNodeDetail[];
   availableCredentials?: {
     registries: SavedRegistrySummary[];
     gitProviders: SavedGitProviderSummary[];
     defaultBuildRegistry?: { registryHost: string; pushHost: string };
   };
 };
+
+function fmtMemory(mb: number): string {
+  if (!mb || mb <= 0) return "0 GiB";
+  if (mb < 1024) return `${Math.round(mb)} MiB`;
+  const gib = mb / 1024;
+  const rounded = Math.round(gib * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)} GiB`;
+}
+
+function resolveEffectiveRequirements(addon: AddonItem, presetId: string): {
+  minMemoryMb: number;
+  recommendedMemoryMb: number;
+  minCpu: number;
+  stateful: boolean;
+  pinPolicy: string;
+  note?: LocalizedText;
+} {
+  const base = addon.requirements || addon.effectiveRequirements || {};
+  const override = base.byPreset?.[presetId];
+  return {
+    minMemoryMb: override?.minMemoryMb ?? base.minMemoryMb ?? 0,
+    recommendedMemoryMb: override?.recommendedMemoryMb ?? base.recommendedMemoryMb ?? 0,
+    minCpu: override?.minCpu ?? base.minCpu ?? 0,
+    stateful: Boolean(base.stateful),
+    pinPolicy: base.pinPolicy || "optional",
+    note: base.note,
+  };
+}
+
+function sortNodesForAddon(
+  nodes: AddonNodeDetail[],
+  opts: { addonId: string; presetId: string; exposure: string; managerNode: string },
+): AddonNodeDetail[] {
+  const preferIngress = opts.addonId === "eye" && (opts.presetId === "node-edge" || opts.exposure === "node-edge");
+  return [...nodes].sort((a, b) => {
+    if (a.ready !== b.ready) return a.ready ? -1 : 1;
+    if (preferIngress && a.publicIngressReady !== b.publicIngressReady) {
+      return a.publicIngressReady ? -1 : 1;
+    }
+    if (opts.addonId === "builder" && opts.managerNode) {
+      if (a.name === opts.managerNode && b.name !== opts.managerNode) return -1;
+      if (b.name === opts.managerNode && a.name !== opts.managerNode) return 1;
+    }
+    if (a.memoryAvailableMb !== b.memoryAvailableMb) return b.memoryAvailableMb - a.memoryAvailableMb;
+    if (a.memoryTotalMb !== b.memoryTotalMb) return b.memoryTotalMb - a.memoryTotalMb;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function pickBestNode(
+  nodeDetails: AddonNodeDetail[],
+  opts: { region: string; addonId: string; presetId: string; exposure: string; managerNode: string },
+): string {
+  const inRegion = nodeDetails.filter((n) => n.region === opts.region);
+  if (inRegion.length === 0) return "";
+  if (inRegion.length === 1) return inRegion[0].name;
+  const sorted = sortNodesForAddon(inRegion, opts);
+  return sorted[0]?.name || "";
+}
 
 const CAPABILITY_LABELS: Record<string, [string, string]> = {
   "builder.git_import": ["从 Git 构建", "Git import"],
@@ -194,6 +285,10 @@ export function AddonsPage({
   const [notice, setNotice] = useState("");
   const [copiedId, setCopiedId] = useState("");
 
+  // Live builder runner check (non-blocking, only when Luma Build is installed)
+  const [builderStatus, setBuilderStatus] = useState<BuilderStatus | null>(null);
+  const [recheckingRunners, setRecheckingRunners] = useState(false);
+
   // Configuration dialog state
   const [editing, setEditing] = useState<AddonItem | null>(null);
   const [preset, setPreset] = useState("");
@@ -205,6 +300,7 @@ export function AddonsPage({
   const [saving, setSaving] = useState<"" | "save" | "apply">("");
   const [saveError, setSaveError] = useState("");
   const [deployLogs, setDeployLogs] = useState<string[]>([]);
+  const [justDeployedAddonId, setJustDeployedAddonId] = useState("");
   const handledInstallParam = useRef("");
 
   // Uninstall confirmation dialog state
@@ -212,12 +308,31 @@ export function AddonsPage({
   const [purgeSecrets, setPurgeSecrets] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
 
+  const loadBuilderStatus = useCallback(async () => {
+    setRecheckingRunners(true);
+    try {
+      const next = await fetchBuilderStatus(token);
+      setBuilderStatus(next);
+    } catch {
+      // Builder may still be starting or temporarily unreachable; stay non-blocking.
+      setBuilderStatus(null);
+    } finally {
+      setRecheckingRunners(false);
+    }
+  }, [token]);
+
   const loadAddons = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
       const payload = await apiGet<AddonsPayload>("/v1/addons", token);
       setData(payload);
+      const builderItem = payload.addons.find((item) => item.id === "builder");
+      if (builderItem?.installed) {
+        void loadBuilderStatus();
+      } else {
+        setBuilderStatus(null);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.toLowerCase().includes("unauthorized") || msg.includes("401")) {
@@ -227,20 +342,42 @@ export function AddonsPage({
     } finally {
       setLoading(false);
     }
-  }, [token, onUnauthorized]);
+  }, [token, onUnauthorized, loadBuilderStatus]);
 
   useEffect(() => {
     void loadAddons();
   }, [loadAddons]);
 
-  const openEditor = useCallback((addon: AddonItem, creds?: AddonsPayload["availableCredentials"]) => {
+  const openEditor = useCallback((addon: AddonItem, payload?: AddonsPayload | null) => {
+    const creds = payload?.availableCredentials;
+    const nodeDetails = payload?.nodeDetails || [];
+    const managerNode = payload?.managerNode || "";
+    const initialPreset = addon.preset || addon.presets[0]?.id || "default";
     setEditing(addon);
-    setPreset(addon.preset || addon.presets[0]?.id || "default");
+    setPreset(initialPreset);
     const nextCfg: Record<string, string> = {};
     for (const field of addon.configSchema) {
       if (field.type === "secret") continue;
       const val = addon.config?.[field.key];
       nextCfg[field.key] = val !== undefined && val !== null ? String(val) : String(field.default ?? "");
+    }
+    if (!addon.installed && !addon.configured && !nextCfg.domain && addon.suggestedDomain) {
+      nextCfg.domain = addon.suggestedDomain;
+    }
+    // Smart stateful node pre-selection when installing fresh or when current node does not match region.
+    const hasNodeField = addon.configSchema.some((f) => f.type === "node");
+    if (hasNodeField && nodeDetails.length > 0 && nextCfg.region) {
+      const nodeInRegion = nodeDetails.some((n) => n.name === nextCfg.node && n.region === nextCfg.region);
+      if (!nextCfg.node || (!addon.installed && !nodeInRegion)) {
+        const picked = pickBestNode(nodeDetails, {
+          region: nextCfg.region,
+          addonId: addon.id,
+          presetId: initialPreset,
+          exposure: nextCfg.exposure || "",
+          managerNode,
+        });
+        if (picked) nextCfg.node = picked;
+      }
     }
     // For fresh builder setup, pre-select Control's default saved registry if available.
     let initialInheritReg = "";
@@ -260,6 +397,7 @@ export function AddonsPage({
     setAdvancedOpen(false);
     setSaveError("");
     setDeployLogs([]);
+    setJustDeployedAddonId("");
   }, []);
 
   // Auto-open the install modal when navigated via /addons?install=<id>
@@ -269,7 +407,7 @@ export function AddonsPage({
     const found = data.addons.find((item) => item.id === installParam);
     if (found) {
       handledInstallParam.current = installParam;
-      openEditor(found, data.availableCredentials);
+      openEditor(found, data);
       navigate(path, { replace: true });
     }
   }, [installParam, data, openEditor, navigate, path]);
@@ -279,12 +417,48 @@ export function AddonsPage({
     if (!editing) return;
     const found = editing.presets.find((item) => item.id === nextPreset);
     if (!found) return;
-    setFormConfig((prev) => ({
-      ...prev,
-      ...(found.defaultRegion ? { region: found.defaultRegion } : {}),
-      ...(found.defaultExposure ? { exposure: found.defaultExposure } : {}),
-      ...(found.defaultNode !== undefined && !prev.node ? { node: found.defaultNode } : {}),
-    }));
+    const nodeDetails = data?.nodeDetails || [];
+    const managerNode = data?.managerNode || "";
+    setFormConfig((prev) => {
+      let nextRegion = found.defaultRegion || prev.region || "";
+      let nextExposure = found.defaultExposure || prev.exposure || "";
+      if (nodeDetails.length > 0 && nextRegion) {
+        const hasNodesInDefault = nodeDetails.some((n) => n.region === nextRegion);
+        if (!hasNodesInDefault) {
+          if (editing.id === "eye" && nextPreset === "node-edge") {
+            const pubNode = nodeDetails.find((n) => n.publicIngressReady && n.region);
+            if (pubNode) nextRegion = pubNode.region;
+          }
+          if (!nodeDetails.some((n) => n.region === nextRegion)) {
+            const mgr = nodeDetails.find((n) => n.isManager && n.region);
+            nextRegion = mgr?.region || nodeDetails[0]?.region || nextRegion;
+          }
+        }
+        if (nextRegion !== "cn" && nextExposure === "cn-edge") {
+          nextExposure = "external-edge";
+        }
+      }
+      let nextNode = prev.node || found.defaultNode || "";
+      const hasNodeField = editing.configSchema.some((f) => f.type === "node");
+      if (hasNodeField && nodeDetails.length > 0 && nextRegion) {
+        const stillValid = nodeDetails.some((n) => n.name === nextNode && n.region === nextRegion);
+        if (!nextNode || !stillValid) {
+          nextNode = pickBestNode(nodeDetails, {
+            region: nextRegion,
+            addonId: editing.id,
+            presetId: nextPreset,
+            exposure: nextExposure,
+            managerNode,
+          });
+        }
+      }
+      return {
+        ...prev,
+        ...(nextRegion ? { region: nextRegion } : {}),
+        ...(nextExposure ? { exposure: nextExposure } : {}),
+        ...(hasNodeField ? { node: nextNode } : {}),
+      };
+    });
   };
 
   const handleSelectInheritedRegistry = (host: string) => {
@@ -361,6 +535,7 @@ export function AddonsPage({
           }
         });
         setNotice(zh ? `${editing.name} 配置已保存并完成部署，对应控制台能力已激活。` : `${editing.name} configured and deployed. Its console capabilities are now active.`);
+        setJustDeployedAddonId(editing.id);
       } else {
         const res = await apiPost<{ generatedSecrets?: string[]; inheritedCredentials?: string[] }>(
           `/v1/addons/${encodeURIComponent(editing.id)}/configure`,
@@ -461,25 +636,161 @@ export function AddonsPage({
       );
     }
 
-    if (field.type === "select" || field.type === "region" || field.type === "node") {
+    if (field.type === "node") {
+      const nodeDetails = data?.nodeDetails || [];
+      const selectedRegion = formConfig.region || "";
+      const managerNode = data?.managerNode || "";
+      const rawInRegion = selectedRegion
+        ? nodeDetails.filter((n) => n.region === selectedRegion)
+        : nodeDetails;
+      const sortedRegionNodes = sortNodesForAddon(rawInRegion, {
+        addonId: editing.id,
+        presetId: preset,
+        exposure: formConfig.exposure || "",
+        managerNode,
+      });
+      const currentVal = formConfig[field.key] ?? "";
+      const reqs = resolveEffectiveRequirements(editing, preset);
+      const isRequiredPin = Boolean(field.required || reqs.pinPolicy === "required");
+      const isRecommendedPin = !isRequiredPin && Boolean(reqs.stateful || reqs.pinPolicy === "recommended");
+      const currentOutsideRegion = Boolean(
+        currentVal && nodeDetails.length > 0 && !sortedRegionNodes.some((n) => n.name === currentVal),
+      );
+      const fallbackNames = data?.availableNodes || [];
+      const movingStatefulNode = Boolean(
+        editing.installed &&
+          reqs.stateful &&
+          editing.config?.node &&
+          currentVal &&
+          String(editing.config.node) !== currentVal,
+      );
+
+      return (
+        <Field key={field.key}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <FieldLabel htmlFor={`field-${field.key}`}>{label}</FieldLabel>
+            {isRequiredPin ? (
+              <Badge variant="secondary" className="text-[0.6875rem]">
+                {zh ? "有状态数据卷 · 必须固定节点" : "Stateful volumes · Pin required"}
+              </Badge>
+            ) : isRecommendedPin ? (
+              <Badge variant="outline" className="text-[0.6875rem]">
+                {zh ? "有状态数据卷 · 建议固定节点" : "Stateful volume · Pin recommended"}
+              </Badge>
+            ) : null}
+          </div>
+          <select
+            id={`field-${field.key}`}
+            required={isRequiredPin}
+            value={currentVal}
+            onChange={(ev) => setFormConfig((prev) => ({ ...prev, [field.key]: ev.target.value }))}
+            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {!isRequiredPin ? (
+              <option value="">{zh ? "自动调度（不固定节点）" : "Auto-schedule (unpinned)"}</option>
+            ) : sortedRegionNodes.length === 0 && fallbackNames.length === 0 ? (
+              <option value="">{zh ? "当前区域暂无可用节点" : "No nodes available in this region"}</option>
+            ) : !currentVal ? (
+              <option value="">{zh ? "请选择固定节点…" : "Select a pinned node…"}</option>
+            ) : null}
+            {currentOutsideRegion ? (
+              <option value={currentVal}>
+                {currentVal} ({zh ? "当前不在所选区域" : "outside selected region"})
+              </option>
+            ) : null}
+            {sortedRegionNodes.length > 0
+              ? sortedRegionNodes.map((n) => {
+                  const memText =
+                    n.memoryTotalMb > 0
+                      ? zh
+                        ? `${fmtMemory(n.memoryAvailableMb)} / ${fmtMemory(n.memoryTotalMb)} 可用`
+                        : `${fmtMemory(n.memoryAvailableMb)} / ${fmtMemory(n.memoryTotalMb)} free`
+                      : "";
+                  const tags = [
+                    memText,
+                    n.isManager ? "Manager" : "",
+                    n.publicIngressReady ? (zh ? "公网直连就绪" : "node-edge ready") : "",
+                    !n.ready ? (zh ? "离线" : "offline") : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ");
+                  return (
+                    <option key={n.name} value={n.name}>
+                      {tags ? `${n.name} — ${tags}` : n.name}
+                    </option>
+                  );
+                })
+              : fallbackNames.map((opt) => (
+                  <option key={opt} value={opt}>
+                    {opt}
+                  </option>
+                ))}
+          </select>
+          {sortedRegionNodes.length === 1 && currentVal === sortedRegionNodes[0].name ? (
+            <FieldDescription>
+              {zh
+                ? `目标区域 ${selectedRegion || ""} 仅有 1 台节点，已自动选中 ${sortedRegionNodes[0].name}。`
+                : `Only 1 node exists in region ${selectedRegion || ""}; automatically selected ${sortedRegionNodes[0].name}.`}
+            </FieldDescription>
+          ) : sortedRegionNodes.length > 1 && (isRequiredPin || isRecommendedPin) ? (
+            <FieldDescription>
+              {zh
+                ? `目标区域有 ${sortedRegionNodes.length} 台节点。${isRequiredPin ? "该插件包含本地有状态卷，必须固定节点；已按资源与入口自动预选最合适节点。" : "该插件含本地有状态卷，建议固定节点；已自动预选最合适节点。"}`
+                : `${sortedRegionNodes.length} nodes in target region. ${isRequiredPin ? "Stateful local volumes require a pinned node; best candidate pre-selected." : "Pinning is recommended for local volumes; best candidate pre-selected."}`}
+            </FieldDescription>
+          ) : desc ? (
+            <FieldDescription>{desc}</FieldDescription>
+          ) : null}
+          {movingStatefulNode ? (
+            <p className="text-xs font-medium text-amber-600 dark:text-amber-400">
+              {zh
+                ? `注意：原数据卷位于节点 ${String(editing.config.node)}，切换到 ${currentVal} 不会自动迁移旧节点上的本地历史数据。`
+                : `Warning: existing local volumes live on ${String(editing.config.node)}. Switching to ${currentVal} does not migrate old local data.`}
+            </p>
+          ) : null}
+        </Field>
+      );
+    }
+
+    if (field.type === "select" || field.type === "region") {
       const options =
         field.type === "select"
           ? field.options || []
-          : field.type === "region"
-            ? data?.availableRegions || ["cn", "global", "home"]
-            : ["", ...(data?.availableNodes || [])];
+          : data?.availableRegions || ["cn", "global", "home"];
       return (
         <Field key={field.key}>
           <FieldLabel htmlFor={`field-${field.key}`}>{label}</FieldLabel>
           <select
             id={`field-${field.key}`}
             value={formConfig[field.key] ?? ""}
-            onChange={(ev) => setFormConfig((prev) => ({ ...prev, [field.key]: ev.target.value }))}
+            onChange={(ev) => {
+              const nextVal = ev.target.value;
+              setFormConfig((prev) => {
+                const updated = { ...prev, [field.key]: nextVal };
+                if (field.type === "region") {
+                  const hasNodeField = editing.configSchema.some((f) => f.type === "node");
+                  const nodeDetails = data?.nodeDetails || [];
+                  if (hasNodeField && nodeDetails.length > 0) {
+                    const stillInRegion = nodeDetails.some((n) => n.name === prev.node && n.region === nextVal);
+                    if (!prev.node || !stillInRegion) {
+                      updated.node = pickBestNode(nodeDetails, {
+                        region: nextVal,
+                        addonId: editing.id,
+                        presetId: preset,
+                        exposure: prev.exposure || "",
+                        managerNode: data?.managerNode || "",
+                      });
+                    }
+                  }
+                }
+                return updated;
+              });
+            }}
             className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {options.map((opt) => (
-              <option key={opt || "__auto__"} value={opt}>
-                {opt || (zh ? "自动调度（不固定节点）" : "Auto-schedule (unpinned)")}
+              <option key={opt} value={opt}>
+                {opt}
               </option>
             ))}
           </select>
@@ -525,6 +836,54 @@ export function AddonsPage({
   const ssoCount = addons.filter((a) => a.ssoReady && a.installed).length;
   const savedRegistries = (data?.availableCredentials?.registries || []).filter((r) => r.configured);
   const savedGitProviders = (data?.availableCredentials?.gitProviders || []).filter((g) => g.configured);
+  const onlineBuilderRunners = useMemo(
+    () => (builderStatus?.runners || []).filter((r) => Boolean(r.online) && !r.revoked),
+    [builderStatus],
+  );
+
+  const resourcePrecheck = useMemo(() => {
+    if (!editing) return null;
+    const reqs = resolveEffectiveRequirements(editing, preset);
+    if (!reqs.minMemoryMb && !reqs.recommendedMemoryMb) return null;
+    const nodeDetails = data?.nodeDetails || [];
+    const targetNode =
+      reqs.pinPolicy === "manager"
+        ? nodeDetails.find((n) => n.isManager) || nodeDetails.find((n) => n.name === data?.managerNode)
+        : nodeDetails.find((n) => n.name === formConfig.node);
+    if (!targetNode) {
+      return {
+        level: "info" as const,
+        reqs,
+        targetNode: null,
+        sameNodeRedeploy: false,
+      };
+    }
+    const sameNodeRedeploy = Boolean(
+      editing.installed &&
+        (reqs.pinPolicy === "manager" || String(editing.config?.node || "") === targetNode.name),
+    );
+    const total = targetNode.memoryTotalMb;
+    const avail = targetNode.memoryAvailableMb;
+    let level: "ok" | "warn" | "danger" | "info" = "info";
+    if (total > 0) {
+      if (sameNodeRedeploy) {
+        if (reqs.minMemoryMb && total < reqs.minMemoryMb) level = "danger";
+        else if (reqs.recommendedMemoryMb && total < reqs.recommendedMemoryMb) level = "warn";
+        else level = "ok";
+      } else {
+        if (reqs.minMemoryMb && (avail < reqs.minMemoryMb || total < reqs.minMemoryMb)) level = "danger";
+        else if (reqs.recommendedMemoryMb && (avail < reqs.recommendedMemoryMb || total < reqs.recommendedMemoryMb)) level = "warn";
+        else level = "ok";
+      }
+    }
+    return { level, reqs, targetNode, sameNodeRedeploy };
+  }, [editing, preset, data, formConfig.node]);
+
+  const missingRequiredNode = Boolean(
+    editing &&
+      editing.configSchema.some((f) => f.type === "node" && (f.required || editing.requirements?.pinPolicy === "required")) &&
+      !(formConfig.node || "").trim(),
+  );
 
   return (
     <div className="flex min-w-0 flex-col gap-6">
@@ -597,6 +956,15 @@ export function AddonsPage({
             const capLabels = (addon.uiCapabilities || [])
               .map((cap) => CAPABILITY_LABELS[cap]?.[zh ? 0 : 1])
               .filter(Boolean);
+            const cardReqs = resolveEffectiveRequirements(addon, addon.preset);
+            const pinBadgeText =
+              cardReqs.pinPolicy === "required"
+                ? zh ? "必须固定节点" : "Pin required"
+                : cardReqs.pinPolicy === "manager"
+                  ? zh ? "固定 Manager" : "Pinned to Manager"
+                  : cardReqs.pinPolicy === "recommended"
+                    ? zh ? "建议固定节点" : "Pin recommended"
+                    : "";
 
             return (
               <Card key={addon.id} className="flex flex-col justify-between">
@@ -642,8 +1010,40 @@ export function AddonsPage({
                     </div>
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-muted-foreground">{zh ? "部署预设" : "Preset"}</span>
-                      <span className="font-mono text-foreground">{addon.preset}</span>
+                      <span className="font-mono text-foreground">
+                        {addon.preset}
+                        {addon.config?.node ? ` · ${String(addon.config.node)}` : ""}
+                      </span>
                     </div>
+                    {cardReqs.recommendedMemoryMb > 0 ? (
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-muted-foreground">{zh ? "建议资源" : "Resources"}</span>
+                        <span className="text-right font-medium text-foreground">
+                          {zh ? `≥ ${fmtMemory(cardReqs.recommendedMemoryMb)} 内存` : `>= ${fmtMemory(cardReqs.recommendedMemoryMb)} RAM`}
+                          {pinBadgeText ? ` · ${pinBadgeText}` : ""}
+                        </span>
+                      </div>
+                    ) : null}
+                    {addon.id === "builder" && addon.installed && builderStatus ? (
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-muted-foreground">{zh ? "在线 Runner" : "Online runners"}</span>
+                        <span
+                          className={
+                            onlineBuilderRunners.length > 0
+                              ? "font-medium text-emerald-600 dark:text-emerald-400"
+                              : "font-medium text-amber-600 dark:text-amber-400"
+                          }
+                        >
+                          {onlineBuilderRunners.length > 0
+                            ? zh
+                              ? `${onlineBuilderRunners.length} 台在线`
+                              : `${onlineBuilderRunners.length} online`
+                            : zh
+                              ? "0 台（待接入）"
+                              : "0 (action needed)"}
+                        </span>
+                      </div>
+                    ) : null}
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-muted-foreground">{zh ? "访问入口" : "Endpoint"}</span>
                       <span className="max-w-[190px] truncate font-mono text-foreground" title={addon.consoleUrl || addon.url || "-"}>
@@ -651,6 +1051,16 @@ export function AddonsPage({
                       </span>
                     </div>
                   </div>
+
+                  {addon.id === "builder" && addon.installed && builderStatus && onlineBuilderRunners.length === 0 ? (
+                    <BuilderRunnerOnboardingCard
+                      compact
+                      lang={lang}
+                      builderUrl={addon.url || addon.consoleUrl}
+                      rechecking={recheckingRunners}
+                      onRecheck={() => void loadBuilderStatus()}
+                    />
+                  ) : null}
 
                   {!addon.installed ? (
                     <div className="flex items-center justify-between gap-2 rounded-md border border-dashed border-border bg-background px-2.5 py-1.5 font-mono text-[0.7rem] text-muted-foreground">
@@ -686,7 +1096,7 @@ export function AddonsPage({
                     <Button
                       size="sm"
                       variant={addon.installed ? "outline" : "default"}
-                      onClick={() => openEditor(addon, data?.availableCredentials)}
+                      onClick={() => openEditor(addon, data)}
                     >
                       <Settings className="mr-1 size-3.5" />
                       {addon.installed ? (zh ? "配置" : "Configure") : zh ? "一键安装" : "Install"}
@@ -719,6 +1129,7 @@ export function AddonsPage({
             <form
               onSubmit={(ev: FormEvent) => {
                 ev.preventDefault();
+                if (missingRequiredNode || saving) return;
                 void handleSave(editing.canApplyInPlace && !editing.installed);
               }}
             >
@@ -768,6 +1179,75 @@ export function AddonsPage({
                   ) : null}
                   {tieredFields.basic.map(renderField)}
                 </FieldGroup>
+
+                {/* Live Resource & Memory Precheck Banner */}
+                {resourcePrecheck ? (
+                  resourcePrecheck.level === "danger" ? (
+                    <Alert variant="destructive">
+                      <TriangleAlert className="size-4" />
+                      <AlertTitle>
+                        {zh ? "目标节点内存不足，部署可能失败或触发 OOM" : "Insufficient memory on target node"}
+                      </AlertTitle>
+                      <AlertDescription className="text-xs">
+                        {resourcePrecheck.targetNode ? (
+                          <p>
+                            {zh
+                              ? `${editing.name} 至少需要 ${fmtMemory(resourcePrecheck.reqs.minMemoryMb)} 内存（建议 ≥ ${fmtMemory(resourcePrecheck.reqs.recommendedMemoryMb)}）。当前目标节点 ${resourcePrecheck.targetNode.name} 剩余 ${fmtMemory(resourcePrecheck.targetNode.memoryAvailableMb)} / 总计 ${fmtMemory(resourcePrecheck.targetNode.memoryTotalMb)}。建议切换到内存更充裕的节点或扩容后再安装。`
+                              : `${editing.name} needs at least ${fmtMemory(resourcePrecheck.reqs.minMemoryMb)} RAM (recommended >= ${fmtMemory(resourcePrecheck.reqs.recommendedMemoryMb)}). Target node ${resourcePrecheck.targetNode.name} currently has ${fmtMemory(resourcePrecheck.targetNode.memoryAvailableMb)} free / ${fmtMemory(resourcePrecheck.targetNode.memoryTotalMb)} total.`}
+                          </p>
+                        ) : null}
+                        {loc(resourcePrecheck.reqs.note, lang) ? (
+                          <p className="mt-1 opacity-90">{loc(resourcePrecheck.reqs.note, lang)}</p>
+                        ) : null}
+                      </AlertDescription>
+                    </Alert>
+                  ) : resourcePrecheck.level === "warn" ? (
+                    <Alert className="border-amber-500/40 bg-amber-500/5 text-foreground [&>svg]:text-amber-600 dark:[&>svg]:text-amber-400">
+                      <TriangleAlert className="size-4" />
+                      <AlertTitle>
+                        {zh ? "目标节点内存偏紧（低于建议配置）" : "Target node memory is below recommended"}
+                      </AlertTitle>
+                      <AlertDescription className="text-xs text-muted-foreground">
+                        {resourcePrecheck.targetNode ? (
+                          <p>
+                            {zh
+                              ? `${editing.name} 建议至少 ${fmtMemory(resourcePrecheck.reqs.recommendedMemoryMb)} 内存。当前节点 ${resourcePrecheck.targetNode.name} 剩余 ${fmtMemory(resourcePrecheck.targetNode.memoryAvailableMb)} / 总计 ${fmtMemory(resourcePrecheck.targetNode.memoryTotalMb)}，可继续部署但高负载下可能受限。`
+                              : `${editing.name} recommends >= ${fmtMemory(resourcePrecheck.reqs.recommendedMemoryMb)} RAM. Target node ${resourcePrecheck.targetNode.name} has ${fmtMemory(resourcePrecheck.targetNode.memoryAvailableMb)} free / ${fmtMemory(resourcePrecheck.targetNode.memoryTotalMb)} total.`}
+                          </p>
+                        ) : null}
+                        {loc(resourcePrecheck.reqs.note, lang) ? (
+                          <p className="mt-1">{loc(resourcePrecheck.reqs.note, lang)}</p>
+                        ) : null}
+                      </AlertDescription>
+                    </Alert>
+                  ) : (
+                    <div className="flex items-start gap-2.5 rounded-lg border border-border bg-muted/25 p-3 text-xs">
+                      {resourcePrecheck.level === "ok" ? (
+                        <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                      ) : (
+                        <Cpu className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                      )}
+                      <div className="flex flex-col gap-0.5">
+                        <div className="font-medium text-foreground">
+                          {resourcePrecheck.targetNode
+                            ? zh
+                              ? `资源预检通过 · 目标节点 ${resourcePrecheck.targetNode.name}`
+                              : `Resource precheck passed · Target node ${resourcePrecheck.targetNode.name}`
+                            : zh
+                              ? `建议资源：≥ ${fmtMemory(resourcePrecheck.reqs.recommendedMemoryMb)} 内存`
+                              : `Recommended resources: >= ${fmtMemory(resourcePrecheck.reqs.recommendedMemoryMb)} RAM`}
+                        </div>
+                        <div className="text-muted-foreground">
+                          {resourcePrecheck.targetNode && resourcePrecheck.targetNode.memoryTotalMb > 0
+                            ? zh
+                              ? `剩余 ${fmtMemory(resourcePrecheck.targetNode.memoryAvailableMb)} / 总内存 ${fmtMemory(resourcePrecheck.targetNode.memoryTotalMb)}（建议 ≥ ${fmtMemory(resourcePrecheck.reqs.recommendedMemoryMb)}${resourcePrecheck.sameNodeRedeploy ? "；当前插件已运行在该节点" : ""}）`
+                              : `${fmtMemory(resourcePrecheck.targetNode.memoryAvailableMb)} free / ${fmtMemory(resourcePrecheck.targetNode.memoryTotalMb)} total (recommended >= ${fmtMemory(resourcePrecheck.reqs.recommendedMemoryMb)}${resourcePrecheck.sameNodeRedeploy ? "; addon already running on this node" : ""})`
+                            : loc(resourcePrecheck.reqs.note, lang)}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                ) : null}
 
                 {/* Zone 2: Recommended + Control Credential Inheritance (Builder) */}
                 {(tieredFields.recommended.length > 0 || (editing.id === "builder" && (savedRegistries.length > 0 || savedGitProviders.length > 0))) ? (
@@ -892,6 +1372,16 @@ export function AddonsPage({
                     {deployLogs.join("\n")}
                   </pre>
                 ) : null}
+
+                {justDeployedAddonId === "builder" && (!builderStatus || onlineBuilderRunners.length === 0) ? (
+                  <BuilderRunnerOnboardingCard
+                    compact
+                    lang={lang}
+                    builderUrl={formConfig.domain ? `https://${formConfig.domain}` : editing.url}
+                    rechecking={recheckingRunners}
+                    onRecheck={() => void loadBuilderStatus()}
+                  />
+                ) : null}
               </div>
 
               <DialogFooter className="gap-2">
@@ -901,14 +1391,14 @@ export function AddonsPage({
                 <Button
                   type="button"
                   variant={editing.canApplyInPlace ? "outline" : "default"}
-                  disabled={Boolean(saving)}
+                  disabled={Boolean(saving) || missingRequiredNode}
                   onClick={() => void handleSave(false)}
                 >
                   {saving === "save" ? <Spinner className="mr-1.5 size-3.5" /> : null}
                   {zh ? "仅保存配置" : "Save config"}
                 </Button>
                 {editing.canApplyInPlace ? (
-                  <Button type="button" disabled={Boolean(saving)} onClick={() => void handleSave(true)}>
+                  <Button type="button" disabled={Boolean(saving) || missingRequiredNode} onClick={() => void handleSave(true)}>
                     {saving === "apply" ? <Spinner className="mr-1.5 size-3.5" /> : null}
                     {editing.installed
                       ? zh ? "保存并热更新部署" : "Save & redeploy"

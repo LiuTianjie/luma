@@ -25,6 +25,15 @@ uiCapabilities:
   - observe.dashboards
   - observe.alerts
   - observe.settings
+requirements:
+  minMemoryMb: 4096
+  recommendedMemoryMb: 8192
+  minCpu: 2
+  stateful: true
+  pinPolicy: manager
+  note:
+    en: Runs 13 observability components (VictoriaMetrics, VictoriaLogs, Tempo, Grafana, OTel Collector) pinned to the Manager node; >= 8 GiB RAM on Manager is recommended.
+    zh: 包含 13 个可观测组件（VictoriaMetrics、VictoriaLogs、Tempo、Grafana、OTel Collector），固定运行在 Manager 节点，建议 Manager 至少 8 GiB 可用/总内存。
 defaultImages:
   log-alerts: ghcr.io/liutianjie/luma-observe-log-alerts:latest
   collector: ghcr.io/liutianjie/luma-observe-collector:latest

@@ -19,5 +19,6 @@ services:
     port: 8090
     replicas: 1
   clickhouse:
+    node: public-node # Must match eye.node so clickhouse-data stays pinned to the same node
     exposure: none
     replicas: 1

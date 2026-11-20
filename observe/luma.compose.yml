@@ -19,6 +19,7 @@ volumes:
     local:
       node: manager
       path: /srv/luma/data/luma-observe/victoria
+    initialize: empty
   tempo-data:
     local:
       node: manager

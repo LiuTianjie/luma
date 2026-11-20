@@ -15,10 +15,12 @@ volumes:
 
 services:
   eye:
+    node: manager # Pin both Eye and ClickHouse to the same node for local stateful volumes
     exposure: cn-edge
     domain: eye.example.com
     port: 8090
     replicas: 1
   clickhouse:
+    node: manager # Must match eye.node so clickhouse-data stays on the same machine
     exposure: none
     replicas: 1

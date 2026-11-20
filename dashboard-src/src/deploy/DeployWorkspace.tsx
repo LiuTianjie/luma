@@ -443,7 +443,7 @@ export function DeployWorkspace({
 
   return <Tabs value={editorMode} onValueChange={(value) => { if (value === "form" || value === "yaml") setEditorMode(value); }} className="min-w-0 gap-6">
     <section className="flex min-w-0 flex-col gap-6">
-      {importView ? <GithubImportPanel lang={lang} token={token} nodes={nodes} regions={regions} regionCatalog={payload?.regions} onBack={showTemplates ? () => setImportView(false) : undefined} onRefresh={onRefresh} /> : <>
+      {importView ? <GithubImportPanel lang={lang} token={token} nodes={nodes} regions={regions} regionCatalog={payload?.regions} builderUrl={payload?.addons?.urls?.builder || payload?.addons?.items?.builder?.consoleUrl || ""} onBack={showTemplates ? () => setImportView(false) : undefined} onRefresh={onRefresh} /> : <>
         {!templateLanding ? <>
           {onClose || showTemplates ? <Button variant="outline" type="button" className="w-fit" disabled={status !== "idle"} onClick={() => onClose ? onClose() : showTemplates ? backToTemplates() : router.navigate("/create")}>
             <ArrowLeft data-icon="inline-start" />{onClose ? (lang === "zh" ? "返回应用" : "Back to application") : showTemplates ? (lang === "zh" ? "返回模板" : "Back to templates") : (lang === "zh" ? "返回创建" : "Back to create")}

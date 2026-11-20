@@ -56,6 +56,30 @@ def _normalize_spec(raw: Any, *, source: str = "<addon>") -> Dict[str, Any]:
         for k, v in raw_defaults.items()
         if str(k or "").strip() and str(v or "").strip()
     }
+    raw_req = raw.get("requirements") if isinstance(raw.get("requirements"), dict) else {}
+    raw_by_preset = raw_req.get("byPreset") if isinstance(raw_req.get("byPreset"), dict) else {}
+    by_preset: Dict[str, Dict[str, int]] = {}
+    for pid, pval in raw_by_preset.items():
+        if isinstance(pval, dict):
+            entry: Dict[str, int] = {}
+            for metric in ("minMemoryMb", "recommendedMemoryMb", "minCpu"):
+                if pval.get(metric) not in (None, ""):
+                    entry[metric] = int(pval[metric])
+            if entry:
+                by_preset[str(pid).strip()] = entry
+    has_required_node = any(
+        isinstance(f, dict) and str(f.get("key") or "") == "node" and bool(f.get("required"))
+        for f in schema
+    )
+    requirements = {
+        "minMemoryMb": int(raw_req.get("minMemoryMb") or 0),
+        "recommendedMemoryMb": int(raw_req.get("recommendedMemoryMb") or 0),
+        "minCpu": int(raw_req.get("minCpu") or 0),
+        "stateful": bool(raw_req.get("stateful", False)),
+        "pinPolicy": str(raw_req.get("pinPolicy") or ("required" if has_required_node else "optional")).strip(),
+        "note": raw_req.get("note") if isinstance(raw_req.get("note"), dict) else {"en": "", "zh": ""},
+        "byPreset": by_preset,
+    }
     return {
         "apiVersion": ADDON_API_VERSION,
         "id": addon_id,
@@ -67,6 +91,7 @@ def _normalize_spec(raw: Any, *, source: str = "<addon>") -> Dict[str, Any]:
         "defaultImage": str(raw.get("defaultImage") or "").strip(),
         "defaultImages": default_images,
         "uiCapabilities": ui_capabilities,
+        "requirements": requirements,
         "description": raw.get("description") if isinstance(raw.get("description"), dict) else {"en": "", "zh": ""},
         "auth": {
             "mode": str(auth.get("mode") or "none").strip(),
@@ -162,6 +187,27 @@ def default_config_for_preset(spec: Mapping[str, Any], preset_id: str = "") -> D
     return defaults
 
 
+def effective_requirements(spec: Mapping[str, Any], preset_id: str = "") -> Dict[str, Any]:
+    """Return effective resource requirements for ``spec`` and ``preset_id``."""
+    raw = spec.get("requirements") if isinstance(spec.get("requirements"), Mapping) else {}
+    out = {
+        "minMemoryMb": int(raw.get("minMemoryMb") or 0),
+        "recommendedMemoryMb": int(raw.get("recommendedMemoryMb") or 0),
+        "minCpu": int(raw.get("minCpu") or 0),
+        "stateful": bool(raw.get("stateful", False)),
+        "pinPolicy": str(raw.get("pinPolicy") or "optional").strip(),
+        "note": dict(raw.get("note") or {}) if isinstance(raw.get("note"), Mapping) else {"en": "", "zh": ""},
+    }
+    by_preset = raw.get("byPreset") if isinstance(raw.get("byPreset"), Mapping) else {}
+    resolved = str(preset_id or "").strip() or default_preset_id(spec)
+    override = by_preset.get(resolved) if isinstance(by_preset.get(resolved), Mapping) else None
+    if override:
+        for metric in ("minMemoryMb", "recommendedMemoryMb", "minCpu"):
+            if override.get(metric) not in (None, ""):
+                out[metric] = int(override[metric])
+    return out
+
+
 def derive_origin_suffixes(domain: str) -> str:
     """Derive sensible default allowed origin suffixes from an Eye domain."""
     clean = str(domain or "").strip().lower().rstrip(".")
@@ -239,13 +285,15 @@ def validate_addon_config(
         val = clean_config.get(key)
         if val not in (None, ""):
             clean_config[key] = _coerce_field_value(key, ftype, val, field, regions=regions, nodes=nodes)
-        elif require_complete and field.get("required"):
+        elif field.get("required") and (require_complete or key in (incoming_config or {})):
+            if str(spec.get("id")) == "eye" and key == "node":
+                raise LumaError("addon 'eye' requires a pinned 'node' because ClickHouse and Eye use local stateful volumes")
             raise LumaError(f"addon {spec.get('id')} requires config field {key!r}")
 
     # Preset-specific ergonomic checks
-    if str(spec.get("id")) == "eye" and clean_config.get("exposure") == "node-edge":
+    if str(spec.get("id")) == "eye":
         if require_complete and not str(clean_config.get("node") or "").strip():
-            raise LumaError("addon 'eye' with exposure 'node-edge' requires a pinned 'node'")
+            raise LumaError("addon 'eye' requires a pinned 'node' because ClickHouse and Eye use local stateful volumes")
     if preset.get("defaultNode") and not clean_config.get("node") and str(spec.get("id")) == "observe":
         clean_config["node"] = str(preset["defaultNode"])
 
@@ -542,24 +590,26 @@ def _render_eye(
     region = str(config.get("region") or ("global" if preset_id == "node-edge" else "cn")).strip()
     exposure = str(config.get("exposure") or ("node-edge" if preset_id == "node-edge" else "cn-edge")).strip()
     node = str(config.get("node") or "").strip()
+    if not node:
+        raise LumaError("addon 'eye' requires a pinned 'node' before rendering manifests")
     retention_days = int(config.get("retentionDays") or 7)
     max_storage_gb = int(config.get("maxStorageGb") or 15)
     suffixes = str(config.get("autoOriginSuffixes") or "").strip() or derive_origin_suffixes(domain)
     public_url = f"https://{domain}"
     node_edge = preset_id == "node-edge" or exposure == "node-edge"
 
-    eye_svc_sidecar: Dict[str, Any] = {}
-    if node:
-        eye_svc_sidecar["node"] = node
-    eye_svc_sidecar.update({
+    eye_svc_sidecar: Dict[str, Any] = {
+        "node": node,
         "exposure": exposure,
         "domain": domain,
         "port": 8090,
         "replicas": 1,
-    })
-    ch_svc_sidecar: Dict[str, Any] = {"exposure": "none", "replicas": 1}
-    if node:
-        ch_svc_sidecar["node"] = node
+    }
+    ch_svc_sidecar: Dict[str, Any] = {
+        "node": node,
+        "exposure": "none",
+        "replicas": 1,
+    }
 
     sidecar_doc: Dict[str, Any] = {
         "name": stack,

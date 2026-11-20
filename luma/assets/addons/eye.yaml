@@ -22,6 +22,19 @@ ui:
   healthPath: /healthz
 uiCapabilities:
   - eye.rum
+requirements:
+  minMemoryMb: 1024
+  recommendedMemoryMb: 2048
+  minCpu: 1
+  stateful: true
+  pinPolicy: required
+  byPreset:
+    node-edge:
+      minMemoryMb: 768
+      recommendedMemoryMb: 1536
+  note:
+    en: Runs Eye + ClickHouse with local stateful volumes (eye-data, clickhouse-data) and must be pinned to a single node (~1.5 GiB RAM in node-edge mode, ~2 GiB in all-in-one mode).
+    zh: 包含 Eye 与 ClickHouse 本地有状态卷（eye-data、clickhouse-data），必须固定到单台节点（node-edge 模式约需 1.5 GiB，单机一体模式建议 2 GiB）。
 defaultImages:
   eye: ghcr.io/liutianjie/luma-eye:latest
   clickhouse: ghcr.io/liutianjie/luma-eye-clickhouse:latest
@@ -75,14 +88,14 @@ configSchema:
     type: node
     group: placement
     tier: basic
-    required: false
+    required: true
     default: ""
     label:
       en: Pinned Node
       zh: 固定节点
     description:
-      en: Required for node-edge; recommended so ClickHouse and metadata volumes remain local to one machine.
-      zh: node-edge 模式下必填；建议固定到单个节点以保留本地 ClickHouse 与元数据卷。
+      en: Required. ClickHouse and Eye store local persistent volumes (eye-data, clickhouse-data) and must stay pinned to one node.
+      zh: 必填。ClickHouse 与 Eye 使用本地有状态数据卷（eye-data、clickhouse-data），必须固定到单台节点以防调度漂移丢失数据。
   - key: exposure
     type: select
     group: placement

@@ -87,7 +87,7 @@ export type BuildRun = {
 
 export type BuilderStatus = {
   registry?: { registryHost?: string; namespace?: string };
-  runners?: { name?: string; online?: boolean }[];
+  runners?: { name?: string; online?: boolean; revoked?: boolean; nativePlatform?: string }[];
 };
 
 type BuilderBuild = {

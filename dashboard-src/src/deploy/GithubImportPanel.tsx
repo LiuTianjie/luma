@@ -1,5 +1,6 @@
 import { AlertCircle, ArrowLeft, ArrowRight, ChevronDown, ChevronUp, GitBranch, Rocket, Server, Settings2 } from "@/components/icons";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BuilderRunnerOnboardingCard } from "../components/BuilderRunnerOnboardingCard";
 import {
   fetchGitProviderRefs,
   fetchGitProviderRepositories,
@@ -74,6 +75,7 @@ export function GithubImportPanel({
   nodes,
   regions,
   regionCatalog,
+  builderUrl,
   onBack,
   onRefresh,
   onImported,
@@ -83,6 +85,7 @@ export function GithubImportPanel({
   nodes: DashboardNode[];
   regions?: Region[];
   regionCatalog?: DashboardRegion[];
+  builderUrl?: string;
   onBack?: () => void;
   onRefresh: () => Promise<void> | void;
   onImported?: () => void;
@@ -92,13 +95,35 @@ export function GithubImportPanel({
   const router = useRouter();
   const [builderStatus, setBuilderStatus] = useState<BuilderStatus | null>(null);
   const [builderError, setBuilderError] = useState("");
+  const [recheckingRunners, setRecheckingRunners] = useState(false);
+
+  const loadBuilderStatus = useCallback(async (signal?: AbortSignal) => {
+    setRecheckingRunners(true);
+    setBuilderError("");
+    try {
+      const next = await fetchBuilderStatus(token, signal);
+      if (!signal?.aborted) setBuilderStatus(next);
+    } catch (err) {
+      if (!signal?.aborted) setBuilderError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (!signal?.aborted) setRecheckingRunners(false);
+    }
+  }, [token]);
+
   useEffect(() => {
     const controller = new AbortController();
-    fetchBuilderStatus(token, controller.signal).then(setBuilderStatus).catch((error) => {
-      if (!controller.signal.aborted) setBuilderError(error instanceof Error ? error.message : String(error));
-    });
+    void loadBuilderStatus(controller.signal);
     return () => controller.abort();
-  }, [token]);
+  }, [loadBuilderStatus]);
+
+  const onlineRunners = useMemo(
+    () => (builderStatus?.runners || []).filter((r) => Boolean(r.online) && !r.revoked),
+    [builderStatus],
+  );
+  const onlinePlatforms = useMemo(
+    () => Array.from(new Set(onlineRunners.map((r) => r.nativePlatform).filter(Boolean) as string[])),
+    [onlineRunners],
+  );
 
   const [mode, setMode] = useState<"provider" | "manual">("provider");
   const [providerType, setProviderType] = useState<(typeof PROVIDER_TYPES)[number]>("github");
@@ -266,8 +291,18 @@ export function GithubImportPanel({
       eyebrow: zh ? "应用 / 从 Git 构建" : "Applications / Build from Git",
       title: zh ? "从 Git 构建并部署" : "Build and deploy from Git",
       description: zh ? "选择代码来源并提交，空闲 Runner 会按目标架构自动领取构建任务，镜像使用 Builder 配置的镜像仓库。" : "Choose a source and submit. An idle Runner compatible with the target architecture claims the build, using the registry configured in Builder.",
-      metrics: [],
+      metrics: builderStatus
+        ? [{ label: zh ? "在线 Runner" : "Online runners", value: onlineRunners.length }]
+        : [],
     }} />
+    {builderStatus && onlineRunners.length === 0 ? (
+      <BuilderRunnerOnboardingCard
+        lang={lang}
+        builderUrl={builderUrl}
+        rechecking={recheckingRunners}
+        onRecheck={() => void loadBuilderStatus()}
+      />
+    ) : null}
     <DeployFormSection title={zh ? "01 代码来源" : "01 Source repository"}>
       <FieldGroup>
         <Field>
@@ -301,6 +336,13 @@ export function GithubImportPanel({
     </DeployFormSection>
     <Alert><Server /><AlertTitle>{zh ? "自动调度构建" : "Automatic build scheduling"}</AlertTitle><AlertDescription>
       {zh ? "无需选择构建节点或 Registry。任务进入 Builder 队列，匹配架构的空闲 Runner 自动领取；全部忙碌时继续排队。" : "No build node or registry selection is needed. A compatible idle Runner claims the task from Builder; tasks wait in the queue while Runners are busy."}
+      {onlineRunners.length > 0 ? (
+        <p>
+          {zh
+            ? `当前 ${onlineRunners.length} 台在线 Runner 待命${onlinePlatforms.length ? `（${onlinePlatforms.join(" / ")}）` : ""}。`
+            : `${onlineRunners.length} online runner${onlineRunners.length === 1 ? "" : "s"} ready${onlinePlatforms.length ? ` (${onlinePlatforms.join(" / ")})` : ""}.`}
+        </p>
+      ) : null}
       {builderStatus?.registry?.registryHost ? <p>{zh ? "镜像仓库：" : "Registry: "}<code>{builderStatus.registry.registryHost}{builderStatus.registry.namespace ? `/${builderStatus.registry.namespace}` : ""}</code></p> : null}
     </AlertDescription></Alert>
     {builderError ? <Alert variant="destructive"><AlertCircle /><AlertTitle>{zh ? "Builder 暂时无法读取" : "Builder status unavailable"}</AlertTitle><AlertDescription>{builderError}</AlertDescription></Alert> : null}

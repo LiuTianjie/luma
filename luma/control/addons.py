@@ -20,6 +20,7 @@ from ..addons import (
     default_config_for_preset,
     default_preset_id,
     derive_origin_suffixes,
+    effective_requirements,
     ensure_auto_secrets,
     get_addon_spec,
     infer_config_from_deployment,
@@ -29,6 +30,7 @@ from ..addons import (
     validate_addon_id,
 )
 from ..errors import LumaError
+from ..observe_instrument import manager_placement
 from .state import load_auth_state, load_state, mutate_state, require_token
 
 _PUBLIC_EXPOSURES = frozenset({"cn-edge", "node-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel"})
@@ -174,7 +176,212 @@ def resolve_addon_sso_target(state: Mapping[str, Any], addon_id: str) -> Dict[st
     }
 
 
-def _addon_view(state: Mapping[str, Any], spec: Mapping[str, Any]) -> Dict[str, Any]:
+_AGENT_STALE_SECONDS = 180
+
+
+def _safe_int(value: Any) -> int:
+    if isinstance(value, bool) or value is None:
+        return 0
+    try:
+        num = int(float(value))
+        return num if num > 0 else 0
+    except (ValueError, TypeError):
+        return 0
+
+
+def _node_agent_status(record: Mapping[str, Any]) -> str:
+    agent = record.get("agent") if isinstance(record.get("agent"), Mapping) else {}
+    status = str(agent.get("status") or "").strip().lower()
+    if status == "ready":
+        return "ready"
+    last_seen = _safe_int(agent.get("lastSeen"))
+    if status == "online" and last_seen and int(time.time()) - last_seen <= _AGENT_STALE_SECONDS:
+        return "ready"
+    if status == "provisioned":
+        return "provisioned"
+    if status:
+        return "offline"
+    if agent.get("tokenHash"):
+        return "provisioned"
+    return "missing"
+
+
+def _cluster_node_details(state: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
+    nodes_map = state.get("nodes") if isinstance(state.get("nodes"), Mapping) else {}
+    manager_node, _manager_region = manager_placement(nodes_map)
+    details: List[Dict[str, Any]] = []
+    for name in sorted(str(k) for k in nodes_map.keys()):
+        raw = nodes_map.get(name)
+        if not isinstance(raw, Mapping):
+            raw = {}
+        labels = raw.get("labels") if isinstance(raw.get("labels"), Mapping) else {}
+        agent = raw.get("agent") if isinstance(raw.get("agent"), Mapping) else {}
+        metrics = agent.get("metrics") if isinstance(agent.get("metrics"), Mapping) else {}
+        pub = raw.get("publicIngress") if isinstance(raw.get("publicIngress"), Mapping) else {}
+        region = str(raw.get("region") or labels.get("region") or "").strip()
+        agent_status = _node_agent_status(raw)
+        mem_total_bytes = _safe_int(metrics.get("memoryTotalBytes"))
+        mem_avail_bytes = _safe_int(metrics.get("memoryAvailableBytes"))
+        details.append({
+            "name": name,
+            "displayName": str(raw.get("displayName") or name),
+            "region": region,
+            "isManager": bool(manager_node and name == manager_node),
+            "agentStatus": agent_status,
+            "ready": agent_status == "ready",
+            "memoryTotalMb": round(mem_total_bytes / 1048576) if mem_total_bytes else 0,
+            "memoryAvailableMb": round(mem_avail_bytes / 1048576) if mem_avail_bytes else 0,
+            "cpuCount": _safe_int(metrics.get("cpuCount")),
+            "publicIngressReady": bool(pub.get("enabled")),
+        })
+    return details, manager_node
+
+
+def _suggested_domain_for_addon(state: Mapping[str, Any], addon_id: str) -> str:
+    if addon_id not in {"builder", "eye"}:
+        return ""
+    ctl_domain = str(state.get("domain") or "").strip().lower().rstrip(".")
+    if not ctl_domain or not DOMAIN_RE.fullmatch(ctl_domain):
+        return ""
+    if ctl_domain in {"localhost", "127.0.0.1"} or all(p.isdigit() for p in ctl_domain.split(".")):
+        return ""
+    parts = [p for p in ctl_domain.split(".") if p]
+    if len(parts) < 2:
+        return ""
+    root = ".".join(parts[-2:]) if len(parts) >= 3 else ctl_domain
+    prefix = "build" if addon_id == "builder" else "eye"
+    candidate = f"{prefix}.{root}"
+    return candidate if candidate != ctl_domain else ""
+
+
+def _choose_smart_node(
+    node_details: List[Dict[str, Any]],
+    *,
+    region: str,
+    addon_id: str,
+    preset_id: str,
+    exposure: str,
+    manager_node: str,
+) -> str:
+    in_region = [n for n in node_details if str(n.get("region") or "") == region]
+    if not in_region:
+        return ""
+    if len(in_region) == 1:
+        return str(in_region[0]["name"])
+    ready = [n for n in in_region if n.get("ready")]
+    pool = ready if ready else in_region
+    if addon_id == "eye" and (preset_id == "node-edge" or exposure == "node-edge"):
+        best = sorted(
+            pool,
+            key=lambda n: (
+                1 if n.get("publicIngressReady") else 0,
+                int(n.get("memoryAvailableMb") or 0),
+                int(n.get("memoryTotalMb") or 0),
+            ),
+            reverse=True,
+        )[0]
+        return str(best["name"])
+    if addon_id == "builder" and manager_node:
+        for n in pool:
+            if n["name"] == manager_node:
+                return manager_node
+    best = sorted(
+        pool,
+        key=lambda n: (
+            int(n.get("memoryAvailableMb") or 0),
+            int(n.get("memoryTotalMb") or 0),
+        ),
+        reverse=True,
+    )[0]
+    return str(best["name"])
+
+
+def _apply_cluster_smart_defaults(
+    state: Mapping[str, Any],
+    spec: Mapping[str, Any],
+    preset_id: str,
+    config: Dict[str, Any],
+    node_details: List[Dict[str, Any]],
+    manager_node: str,
+) -> Dict[str, Any]:
+    """Adapt fresh unconfigured addon defaults to the live cluster's nodes & regions."""
+    if not node_details:
+        return config
+    addon_id = str(spec["id"])
+    updated = dict(config)
+    regions_with_nodes = {str(n.get("region") or "") for n in node_details if str(n.get("region") or "")}
+    manager_region = next((str(n.get("region") or "") for n in node_details if n.get("name") == manager_node), "")
+
+    if addon_id == "observe":
+        if manager_region:
+            updated["region"] = manager_region
+        return updated
+
+    region = str(updated.get("region") or "").strip()
+    exposure = str(updated.get("exposure") or "").strip()
+
+    if addon_id == "builder":
+        if manager_region and (not region or region not in regions_with_nodes or manager_region != "cn"):
+            region = manager_region
+        elif region not in regions_with_nodes and regions_with_nodes:
+            region = sorted(regions_with_nodes)[0]
+        if region:
+            updated["region"] = region
+            if region != "cn" and exposure == "cn-edge":
+                updated["exposure"] = "external-edge"
+                exposure = "external-edge"
+        current_node = str(updated.get("node") or "").strip()
+        node_in_region = any(n["name"] == current_node and n["region"] == region for n in node_details)
+        if not current_node or not node_in_region:
+            picked = _choose_smart_node(
+                node_details,
+                region=region,
+                addon_id=addon_id,
+                preset_id=preset_id,
+                exposure=exposure,
+                manager_node=manager_node,
+            )
+            if picked:
+                updated["node"] = picked
+        return updated
+
+    if addon_id == "eye":
+        if preset_id == "node-edge":
+            pub_regions = [str(n.get("region") or "") for n in node_details if n.get("publicIngressReady") and n.get("region")]
+            if pub_regions and region not in pub_regions:
+                region = pub_regions[0]
+        if region not in regions_with_nodes:
+            region = manager_region or (sorted(regions_with_nodes)[0] if regions_with_nodes else region)
+        if region:
+            updated["region"] = region
+            if region != "cn" and exposure == "cn-edge":
+                updated["exposure"] = "external-edge"
+                exposure = "external-edge"
+        current_node = str(updated.get("node") or "").strip()
+        node_in_region = any(n["name"] == current_node and n["region"] == region for n in node_details)
+        if not current_node or not node_in_region:
+            picked = _choose_smart_node(
+                node_details,
+                region=region,
+                addon_id=addon_id,
+                preset_id=preset_id,
+                exposure=exposure,
+                manager_node=manager_node,
+            )
+            if picked:
+                updated["node"] = picked
+        return updated
+
+    return updated
+
+
+def _addon_view(
+    state: Mapping[str, Any],
+    spec: Mapping[str, Any],
+    *,
+    node_details: Optional[List[Dict[str, Any]]] = None,
+    manager_node: Optional[str] = None,
+) -> Dict[str, Any]:
     addon_id = str(spec["id"])
     stack = str(spec["stack"])
     saved = _saved_addon_entry(state, addon_id)
@@ -191,6 +398,14 @@ def _addon_view(state: Mapping[str, Any], spec: Mapping[str, Any]) -> Dict[str, 
     for k, v in saved_cfg.items():
         if v is not None:
             merged_config[k] = v
+
+    has_saved = bool(saved)
+    if not installed and not has_saved:
+        if node_details is None or manager_node is None:
+            node_details, manager_node = _cluster_node_details(state)
+        merged_config = _apply_cluster_smart_defaults(
+            state, spec, preset, merged_config, node_details, manager_node
+        )
 
     scoped_all = state.get("scopedSecrets") if isinstance(state.get("scopedSecrets"), Mapping) else {}
     scoped = scoped_all.get(stack) if isinstance(scoped_all.get(stack), Mapping) else {}
@@ -228,7 +443,6 @@ def _addon_view(state: Mapping[str, Any], spec: Mapping[str, Any]) -> Dict[str, 
     elif spec["auth"]["mode"] == "forward-auth":
         sso_ready = bool(_control_url(state))
 
-    has_saved = bool(saved)
     status = "running" if installed else ("configured" if has_saved else "not_installed")
     default_images = spec.get("defaultImages") if isinstance(spec.get("defaultImages"), Mapping) else {}
     can_apply_in_place = bool((installed and compose_yaml.strip()) or default_images)
@@ -248,10 +462,13 @@ def _addon_view(state: Mapping[str, Any], spec: Mapping[str, Any]) -> Dict[str, 
         "preset": preset,
         "url": url,
         "consoleUrl": console_url,
+        "suggestedDomain": _suggested_domain_for_addon(state, addon_id),
         "auth": spec["auth"],
         "ssoReady": sso_ready,
         "ui": spec["ui"],
         "uiCapabilities": list(spec.get("uiCapabilities") or []),
+        "requirements": spec.get("requirements") or {},
+        "effectiveRequirements": effective_requirements(spec, preset),
         "defaultImages": dict(default_images),
         "presets": spec["presets"],
         "configSchema": spec["configSchema"],
@@ -364,13 +581,16 @@ def handle_addons_list(token: str) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
     catalog = load_addon_catalog()
-    items = [_addon_view(state, spec) for spec in catalog.values()]
+    node_details, manager_node = _cluster_node_details(state)
+    items = [_addon_view(state, spec, node_details=node_details, manager_node=manager_node) for spec in catalog.values()]
     regions, nodes = _cluster_regions_and_nodes(state)
     return {
         "addons": items,
         "controlUrl": _control_url(state),
+        "managerNode": manager_node,
         "availableRegions": sorted(regions),
         "availableNodes": sorted(nodes),
+        "nodeDetails": node_details,
         "availableCredentials": _available_credentials(state),
     }
 
@@ -379,12 +599,15 @@ def handle_addon_get(token: str, addon_id: str) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
     spec = get_addon_spec(addon_id)
+    node_details, manager_node = _cluster_node_details(state)
     regions, nodes = _cluster_regions_and_nodes(state)
     return {
-        "addon": _addon_view(state, spec),
+        "addon": _addon_view(state, spec, node_details=node_details, manager_node=manager_node),
         "controlUrl": _control_url(state),
+        "managerNode": manager_node,
         "availableRegions": sorted(regions),
         "availableNodes": sorted(nodes),
+        "nodeDetails": node_details,
         "availableCredentials": _available_credentials(state),
     }
 
@@ -397,24 +620,52 @@ def handle_addon_configure(token: str, addon_id: str, body: Mapping[str, Any]) -
     clean_id = spec["id"]
     stack = spec["stack"]
 
+    node_details, manager_node = _cluster_node_details(state)
     regions, nodes = _cluster_regions_and_nodes(state)
-    current_view = _addon_view(state, spec)
-    raw_config = body.get("config") if isinstance(body.get("config"), Mapping) else {}
+    current_view = _addon_view(state, spec, node_details=node_details, manager_node=manager_node)
+    raw_config = dict(body.get("config")) if isinstance(body.get("config"), Mapping) else {}
     raw_secrets = body.get("secrets") if isinstance(body.get("secrets"), Mapping) else {}
     preset_req = str(body.get("preset") or current_view["preset"] or default_preset_id(spec)).strip()
     rotate_secrets = bool(body.get("rotateSecrets", False))
     require_complete = bool(body.get("requireComplete", False))
 
+    # If the caller switches region without passing a new node and the previous
+    # default node belongs to a different region, auto-select only when the target
+    # region has a single unambiguous node; otherwise clear stale cross-region default
+    # so required-node validation prompts an explicit choice.
+    existing_cfg = dict(current_view["config"])
+    target_region = str(raw_config.get("region") or existing_cfg.get("region") or "").strip()
+    if target_region and "node" not in raw_config:
+        node_region_map = {n["name"]: n["region"] for n in node_details if n.get("region")}
+        existing_node = str(existing_cfg.get("node") or "").strip()
+        if existing_node and existing_node in node_region_map and node_region_map[existing_node] != target_region:
+            existing_cfg["node"] = ""
+        if not str(existing_cfg.get("node") or "").strip() and clean_id in {"eye", "builder"}:
+            region_nodes = [n["name"] for n in node_details if n.get("region") == target_region]
+            if len(region_nodes) == 1:
+                existing_cfg["node"] = region_nodes[0]
+
     resolved_preset, clean_config, secret_updates = validate_addon_config(
         spec,
         raw_config,
         incoming_secrets=raw_secrets,
-        existing_config=current_view["config"],
+        existing_config=existing_cfg,
         preset_id=preset_req,
         regions=regions if regions else None,
         nodes=nodes if nodes else None,
         require_complete=require_complete,
     )
+
+    # Guard against pinning a node that belongs to a different region than configured.
+    pinned_node = str(clean_config.get("node") or "").strip()
+    cfg_region = str(clean_config.get("region") or "").strip()
+    if pinned_node and cfg_region:
+        matched_node = next((n for n in node_details if n["name"] == pinned_node), None)
+        if matched_node and matched_node.get("region") and matched_node["region"] != cfg_region:
+            raise LumaError(
+                f"node {pinned_node!r} is in region {matched_node['region']!r}, not {cfg_region!r}; "
+                "choose a node in the target region or update 'region'"
+            )
 
     scoped_all = state.get("scopedSecrets") if isinstance(state.get("scopedSecrets"), Mapping) else {}
     existing_scoped = dict(scoped_all.get(stack) if isinstance(scoped_all.get(stack), Mapping) else {})

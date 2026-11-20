@@ -134,15 +134,100 @@ def _prompt_line(label: str, default: str = "", *, secret: bool = False) -> str:
     return val if val else ("" if secret else default)
 
 
+def _fmt_gb(mb: int) -> str:
+    if mb <= 0:
+        return "0 GiB"
+    gb = mb / 1024.0
+    return f"{gb:.1f} GiB" if gb >= 1.0 else f"{mb} MiB"
+
+
+def _pick_cli_default_node(
+    node_details: List[Mapping[str, Any]],
+    *,
+    region: str,
+    addon_id: str,
+    preset_id: str,
+    exposure: str,
+    manager_node: str,
+) -> str:
+    in_region = [n for n in node_details if str(n.get("region") or "") == region]
+    if not in_region:
+        return ""
+    if len(in_region) == 1:
+        return str(in_region[0].get("name") or "")
+    ready = [n for n in in_region if n.get("ready")]
+    pool = ready if ready else in_region
+    if addon_id == "eye" and (preset_id == "node-edge" or exposure == "node-edge"):
+        best = sorted(
+            pool,
+            key=lambda n: (1 if n.get("publicIngressReady") else 0, int(n.get("memoryAvailableMb") or 0), int(n.get("memoryTotalMb") or 0)),
+            reverse=True,
+        )[0]
+        return str(best.get("name") or "")
+    if addon_id == "builder" and manager_node:
+        for n in pool:
+            if str(n.get("name") or "") == manager_node:
+                return manager_node
+    best = sorted(pool, key=lambda n: (int(n.get("memoryAvailableMb") or 0), int(n.get("memoryTotalMb") or 0)), reverse=True)[0]
+    return str(best.get("name") or "")
+
+
+def _resource_warning_text(
+    addon: Mapping[str, Any],
+    node_details: List[Mapping[str, Any]],
+    *,
+    manager_node: str,
+    target_node_name: str,
+    preset_id: str,
+    same_node_redeploy: bool = False,
+) -> str:
+    reqs = dict(addon.get("requirements") or {})
+    by_preset = reqs.get("byPreset") if isinstance(reqs.get("byPreset"), Mapping) else {}
+    override = by_preset.get(preset_id) if isinstance(by_preset.get(preset_id), Mapping) else {}
+    min_mb = int(override.get("minMemoryMb") or reqs.get("minMemoryMb") or 0)
+    rec_mb = int(override.get("recommendedMemoryMb") or reqs.get("recommendedMemoryMb") or 0)
+    if not min_mb and not rec_mb:
+        return ""
+    resolved_node = manager_node if reqs.get("pinPolicy") == "manager" else target_node_name
+    node = next((n for n in node_details if str(n.get("name") or "") == resolved_node), None)
+    if not node:
+        return ""
+    total_mb = int(node.get("memoryTotalMb") or 0)
+    avail_mb = int(node.get("memoryAvailableMb") or 0)
+    if total_mb <= 0:
+        return ""
+    if same_node_redeploy:
+        if min_mb and total_mb < min_mb:
+            return (
+                f"[warn] Target node {resolved_node} has {_fmt_gb(total_mb)} total RAM, "
+                f"below {addon.get('name')} minimum ({_fmt_gb(min_mb)})."
+            )
+        return ""
+    if min_mb and (avail_mb < min_mb or total_mb < min_mb):
+        return (
+            f"[warn] Target node {resolved_node} has {_fmt_gb(avail_mb)} free / {_fmt_gb(total_mb)} total RAM; "
+            f"{addon.get('name')} requires at least {_fmt_gb(min_mb)} (recommended >= {_fmt_gb(rec_mb or min_mb)})."
+        )
+    if rec_mb and (avail_mb < rec_mb or total_mb < rec_mb):
+        return (
+            f"[note] Target node {resolved_node} has {_fmt_gb(avail_mb)} free / {_fmt_gb(total_mb)} total RAM; "
+            f"{addon.get('name')} recommends >= {_fmt_gb(rec_mb)}."
+        )
+    return ""
+
+
 def _interactive_wizard(
     addon: Mapping[str, Any],
     *,
     available_regions: List[str],
     available_nodes: List[str],
+    node_details: Optional[List[Mapping[str, Any]]] = None,
+    manager_node: str = "",
     preset: str,
     config: Dict[str, Any],
     secrets_map: Dict[str, str],
 ) -> Tuple[str, Dict[str, Any], Dict[str, str]]:
+    details = list(node_details or [])
     presets = [p for p in (addon.get("presets") or []) if isinstance(p, Mapping)]
     current_preset = preset or str(addon.get("preset") or default_preset_id(addon))
     if len(presets) > 1 and not preset:
@@ -170,7 +255,15 @@ def _interactive_wizard(
     print(f"\nConfiguring {addon.get('name')} (preset: {current_preset}):")
     if available_regions:
         print(f"  Regions: {', '.join(available_regions)}")
-    if available_nodes:
+    if details:
+        formatted_nodes = [
+            f"{n.get('name')} ({n.get('region') or '?'}"
+            + (f", {_fmt_gb(int(n.get('memoryAvailableMb') or 0))}/{_fmt_gb(int(n.get('memoryTotalMb') or 0))} free" if int(n.get("memoryTotalMb") or 0) > 0 else "")
+            + ")"
+            for n in details
+        ]
+        print(f"  Nodes:   {', '.join(formatted_nodes)}")
+    elif available_nodes:
         print(f"  Nodes:   {', '.join(available_nodes)}")
 
     for field in addon.get("configSchema") or []:
@@ -193,9 +286,30 @@ def _interactive_wizard(
         if not field.get("required") and field.get("group") != "placement":
             continue
         default_val = str(merged_cfg.get(key) if merged_cfg.get(key) is not None else field.get("default") or "")
+        if key == "domain" and not default_val and addon.get("suggestedDomain"):
+            default_val = str(addon["suggestedDomain"])
+        if key == "node" and details:
+            chosen_region = str(config.get("region") or merged_cfg.get("region") or "").strip()
+            chosen_exposure = str(config.get("exposure") or merged_cfg.get("exposure") or "").strip()
+            node_in_region = any(str(n.get("name")) == default_val and str(n.get("region")) == chosen_region for n in details)
+            if not default_val or not node_in_region:
+                default_val = _pick_cli_default_node(
+                    details,
+                    region=chosen_region,
+                    addon_id=str(addon.get("id") or ""),
+                    preset_id=current_preset,
+                    exposure=chosen_exposure,
+                    manager_node=manager_node,
+                )
+            if field.get("required"):
+                label = f"{label} (required, stateful volumes)"
         entered = _prompt_line(label, default_val)
+        while field.get("required") and not entered:
+            print(f"  {key} is required.")
+            entered = _prompt_line(label, default_val)
         if entered != "":
             config[key] = entered
+            merged_cfg[key] = entered
     return current_preset, config, secrets_map
 
 
@@ -361,6 +475,13 @@ def cmd_addon(args: argparse.Namespace) -> int:
         print(f"  Preset:     {item.get('preset')}")
         print(f"  Auth mode:  {(item.get('auth') or {}).get('mode')} (ssoReady={item.get('ssoReady')})")
         print(f"  Console:    {item.get('consoleUrl') or item.get('url') or '(not configured)'}")
+        eff_req = item.get("effectiveRequirements") or item.get("requirements") or {}
+        if eff_req.get("recommendedMemoryMb") or eff_req.get("minMemoryMb"):
+            print(
+                f"  Resources:  min {_fmt_gb(int(eff_req.get('minMemoryMb') or 0))}, "
+                f"recommended >= {_fmt_gb(int(eff_req.get('recommendedMemoryMb') or 0))} "
+                f"(pinPolicy={eff_req.get('pinPolicy') or 'optional'})"
+            )
         cfg = item.get("config") or {}
         if cfg:
             print("  Config:")
@@ -381,6 +502,8 @@ def cmd_addon(args: argparse.Namespace) -> int:
                 info.get("addon") or {},
                 available_regions=list(info.get("availableRegions") or []),
                 available_nodes=list(info.get("availableNodes") or []),
+                node_details=list(info.get("nodeDetails") or []),
+                manager_node=str(info.get("managerNode") or ""),
                 preset=preset,
                 config=config,
                 secrets_map=secrets_map,
@@ -417,6 +540,10 @@ def cmd_addon(args: argparse.Namespace) -> int:
     if cmd == "install":
         info = client.request("GET", f"/v1/addons/{args.addon_id}")
         addon_view = info.get("addon") or {}
+        node_details = list(info.get("nodeDetails") or [])
+        manager_node = str(info.get("managerNode") or "")
+        was_installed = bool(addon_view.get("installed"))
+        prev_node = str((addon_view.get("config") or {}).get("node") or "")
         preset, config, secrets_map = _collect_flag_overrides(args)
         images_map = _parse_kv_list(list(getattr(args, "image", []) or []), flag="--image")
         if sys.stdin.isatty() and not getattr(args, "yes", False) and output_format == "text":
@@ -424,6 +551,8 @@ def cmd_addon(args: argparse.Namespace) -> int:
                 addon_view,
                 available_regions=list(info.get("availableRegions") or []),
                 available_nodes=list(info.get("availableNodes") or []),
+                node_details=node_details,
+                manager_node=manager_node,
                 preset=preset,
                 config=config,
                 secrets_map=secrets_map,
@@ -441,6 +570,18 @@ def cmd_addon(args: argparse.Namespace) -> int:
             cfg_payload["preset"] = preset
         configured = client.request("POST", f"/v1/addons/{args.addon_id}/configure", cfg_payload)
         addon_view = configured.get("addon") or addon_view
+        if not quiet:
+            chosen_node = str((addon_view.get("config") or {}).get("node") or "")
+            warn_text = _resource_warning_text(
+                addon_view,
+                node_details,
+                manager_node=manager_node,
+                target_node_name=chosen_node,
+                preset_id=str(addon_view.get("preset") or ""),
+                same_node_redeploy=bool(was_installed and prev_node and prev_node == chosen_node),
+            )
+            if warn_text:
+                print(warn_text)
         if not quiet and configured.get("generatedSecrets"):
             print(f"[ok] Auto-generated internal secrets: {', '.join(configured['generatedSecrets'])}")
         if not quiet and configured.get("inheritedCredentials"):
@@ -471,6 +612,18 @@ def cmd_addon(args: argparse.Namespace) -> int:
             print("  Sign-in: Unified Luma Control SSO (reuses your Control Passkey/session and `luma login` token)")
         elif auth_mode == "forward-auth":
             print("  Sign-in: Luma Control forwardAuth (reuses your Control session)")
+        if str(final_addon.get("id") or "") == "builder":
+            online_runners = -1
+            try:
+                bstatus = client.request("GET", "/v1/builder/status")
+                online_runners = sum(1 for r in (bstatus.get("runners") or []) if isinstance(r, dict) and r.get("online") and not r.get("revoked"))
+            except Exception:
+                online_runners = 0
+            if online_runners == 0:
+                builder_origin = str(final_addon.get("url") or "https://build.example.com").rstrip("/")
+                print("\nNext step: enroll at least one build runner (0 currently online):")
+                print("  1. luma builder token create my-runner")
+                print(f"  2. luma runner join --url {builder_origin} --token <RUNNER_TOKEN>")
         return 0
 
     if cmd == "uninstall":

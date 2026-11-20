@@ -6,11 +6,11 @@ When your cluster needs remote multi-runner Git builds, full-stack observability
 
 ## Official addons
 
-| Addon | Stack | What it provides | Auth mode |
+| Addon | Stack | Recommended RAM & placement | Auth mode |
 | --- | --- | --- | --- |
-| **Luma Build** (`builder`) | `luma-build` | Independent multi-runner container build queue, GitHub/Gitea repository imports, BuildKit cache | Control SSO (`control-sso`) |
-| **Luma Observe** (`observe`) | `luma-observe` | VictoriaMetrics, VictoriaLogs, Tempo traces, Alertmanager, Grafana dashboards | Control `forwardAuth` (`/grafana`) |
-| **Luma Eye** (`eye`) | `luma-eye` | Frontend analytics (UV/PV), Web Vitals, Sentry-compatible crash tracking, SourceMaps, DOM replay | Control SSO (`control-sso`) |
+| **Luma Build** (`builder`) | `luma-build` | >= 0.5 GiB RAM (SQLite queue; builds run on enrolled Runners; pin node recommended) | Control SSO (`control-sso`) |
+| **Luma Observe** (`observe`) | `luma-observe` | >= 8 GiB RAM on Manager (13 observability components; pinned to Manager) | Control `forwardAuth` (`/grafana`) |
+| **Luma Eye** (`eye`) | `luma-eye` | >= 1.5 GiB (`node-edge`) / 2 GiB (`all-in-one`); **pinned node required** for ClickHouse & SQLite volumes | Control SSO (`control-sso`) |
 
 ## Core vs addon UI capabilities
 
@@ -48,22 +48,24 @@ You never need to hand-edit YAML files or manually invent internal tokens when i
   - `LUMA_EYE_AUTO_ORIGIN_SUFFIXES` is derived automatically from your Eye domain (for example `eye.example.com` → `.example.com,localhost,127.0.0.1`).
 - **Credential reuse (zero duplicate entry)**:
   - When configuring **Luma Build** in **Addons Hub** or via CLI, select an already-saved Control container registry or Git provider instead of retyping passwords or PATs.
-- **Minimal required inputs**:
-  - **Luma Eye**: 1 domain (plus region/node selection).
-  - **Luma Observe**: 1 Manager region (pre-filled).
-  - **Luma Build**: 1 domain + registry (or inherit from Control).
+- **Minimal required inputs & live prechecks**:
+  - **Luma Eye**: 1 domain + region + **mandatory pinned node** (auto-selected when the target region has 1 node; best candidate pre-selected when multiple nodes exist).
+  - **Luma Observe**: 1 Manager region (auto-detected from the registered Manager node).
+  - **Luma Build**: 1 domain + registry (inherited from Control when available) + recommended pinned node.
+  - Before deploying, the install dialog checks the target node's real available and total RAM against the addon's `requirements` and warns clearly if memory is tight or insufficient.
+  - After installing **Luma Build**, if 0 build runners are online, both **Addons Hub** and **Build from Git** show an inline runner enrollment guide (`luma builder token create` + `luma runner join`).
 
 ## Installing, configuring and uninstalling
 
 ### One-click install from the browser
 
-Open **Platform → Addons**, click **Install** on any official addon, fill in the required basics (usually just a domain), and click **Save & install**. Control pulls the official prebuilt GHCR images declared in the addon spec and deploys the stack in place.
+Open **Platform → Addons**, click **Install** on any official addon, verify the pre-selected pinned node and live memory precheck, fill in the domain (if not pre-filled), and click **Save & install**. Control pulls the official prebuilt GHCR images declared in the addon spec and deploys the stack in place.
 
 ### Installing via CLI
 
 ```bash
 # One-click install using official prebuilt GHCR images
-luma addon install eye --domain eye.example.com --region cn --yes
+luma addon install eye --domain eye.example.com --region cn --node manager --yes
 luma addon install observe --region cn --yes
 luma addon install builder --domain build.example.com --use-registry ghcr.io --use-git-provider github:my-account --yes
 ```
@@ -96,4 +98,4 @@ Uninstalling stops the addon services and routes, revokes its Control SSO sessio
 
 ## Declarative `luma.addon/v1` specification
 
-Official addons live under `luma/assets/addons/*.yaml` (`builder.yaml`, `eye.yaml`, `observe.yaml`). Each manifest declares its `auth` contract, `uiCapabilities`, `defaultImages`, topology `presets`, tiered `configSchema` (`basic`, `recommended`, `advanced`), and `autoSecrets`. External extensions can adopt the exact same schema to participate in Control SSO and schema-driven configuration.
+Official addons live under `luma/assets/addons/*.yaml` (`builder.yaml`, `eye.yaml`, `observe.yaml`). Each manifest declares its `auth` contract, `uiCapabilities`, `requirements` (minimum/recommended RAM and stateful node-pinning policy), `defaultImages`, topology `presets`, tiered `configSchema` (`basic`, `recommended`, `advanced`), and `autoSecrets`. External extensions can adopt the exact same schema to participate in Control SSO and schema-driven configuration.

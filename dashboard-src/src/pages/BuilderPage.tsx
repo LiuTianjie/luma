@@ -37,6 +37,7 @@ export function BuilderPage({
       </div>
     );
   }
+  const builderUrl = effectiveAddons?.urls?.builder || effectiveAddons?.items?.builder?.consoleUrl || "";
   return (
     <section className="min-w-0">
       <GithubImportPanel
@@ -44,6 +45,7 @@ export function BuilderPage({
         token={token}
         nodes={payload.nodes || []}
         regionCatalog={payload.regions}
+        builderUrl={builderUrl}
         onRefresh={onRefresh}
       />
     </section>

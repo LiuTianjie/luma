@@ -6,11 +6,11 @@ Luma Control 本身是一个精简、完整的自托管容器部署控制面：*
 
 ## 官方插件 {#official-addons}
 
-| 插件 | 应用栈 | 核心能力 | 鉴权方式 |
+| 插件 | 应用栈 | 建议资源与节点固定策略 | 鉴权方式 |
 | --- | --- | --- | --- |
-| **Luma Build** (`builder`) | `luma-build` | 独立多 Runner 容器构建队列、GitHub/Gitea 仓库导入、BuildKit 缓存 | Control SSO (`control-sso`) |
-| **Luma Observe** (`observe`) | `luma-observe` | VictoriaMetrics、VictoriaLogs、Tempo 链路追踪、Alertmanager、Grafana 看板 | Control `forwardAuth` (`/grafana`) |
-| **Luma Eye** (`eye`) | `luma-eye` | 前端访问统计（UV/PV）、Web Vitals、兼容 Sentry 崩溃追踪、SourceMap 与会话回放 | Control SSO (`control-sso`) |
+| **Luma Build** (`builder`) | `luma-build` | ≥ 0.5 GiB 内存（SQLite 队列，实际编译由外部 Runner 执行；建议固定节点） | Control SSO (`control-sso`) |
+| **Luma Observe** (`observe`) | `luma-observe` | 建议 Manager ≥ 8 GiB 内存（13 个可观测组件；固定部署在 Manager） | Control `forwardAuth` (`/grafana`) |
+| **Luma Eye** (`eye`) | `luma-eye` | ≥ 1.5 GiB（`node-edge`）/ 2 GiB（`all-in-one`）；含 ClickHouse 与 SQLite 卷，**必须固定节点** | Control SSO (`control-sso`) |
 
 ## 核心底座与插件扩展槽（按能力动态显隐） {#core-vs-addon-ui-capabilities}
 
@@ -48,22 +48,24 @@ luma eye portfolio --since 24h
   - `LUMA_EYE_AUTO_ORIGIN_SUFFIXES` 留空时自动根据 Eye 域名推导根域后缀（例如 `eye.example.com` → `.example.com,localhost,127.0.0.1`）。
 - **凭据一处录入、全平台复用（零重复输入）**：
   - 在 **插件中心** 或 CLI 配置 **Luma Build** 时，可直接选择复用 Control 已保存的镜像仓库凭据与 Git 凭据，无需重复填写密码或 Token。
-- **最少必填输入**：
-  - **Luma Eye**：只需 1 个域名（以及区域/节点）。
-  - **Luma Observe**：确认 1 个 Manager 区域（自动预填）。
-  - **Luma Build**：只需 1 个域名 + 镜像仓库（可直接从 Control 继承）。
+- **最少必填输入与实时预检**：
+  - **Luma Eye**：1 个域名 + 区域 + **必填固定节点**（目标区域仅有 1 台节点时自动选中；多节点时自动预选最合适节点并标注有状态卷提示）。
+  - **Luma Observe**：确认 1 个 Manager 区域（自动按已注册 Manager 节点推导）。
+  - **Luma Build**：1 个域名 + 镜像仓库（可直接继承 Control 凭据）+ 建议固定节点。
+  - 安装弹窗会实时对比插件声明的 `requirements` 与目标节点的真实剩余/总内存，内存偏紧或不足时在部署前给出醒目提醒。
+  - 安装完 **Luma Build** 后，若在线构建 Runner 为 0，**插件中心**与 **从 Git 构建** 页面均会直接展示接入引导卡（`luma builder token create` + `luma runner join`）。
 
 ## 安装、配置与安全卸载 {#installing-configuring-and-uninstalling}
 
 ### 在浏览器中一键安装 {#one-click-install-from-the-browser}
 
-进入控制台 **平台管理 → 插件中心**，点击对应官方插件的 **一键安装**，填写基础必填项（通常只需一个域名）后点击 **保存并一键部署**。Control 会直接使用插件清单中声明的官方 GHCR 预构建镜像完成原地部署，无需克隆源码。
+进入控制台 **平台管理 → 插件中心**，点击对应官方插件的 **一键安装**，确认自动预选的固定节点与实时内存预检结果，填写或确认域名后点击 **保存并一键部署**。Control 会直接使用插件清单中声明的官方 GHCR 预构建镜像完成原地部署，无需克隆源码。
 
 ### 通过 CLI 安装 {#installing-via-cli}
 
 ```bash
 # One-click install using official prebuilt GHCR images
-luma addon install eye --domain eye.example.com --region cn --yes
+luma addon install eye --domain eye.example.com --region cn --node manager --yes
 luma addon install observe --region cn --yes
 luma addon install builder --domain build.example.com --use-registry ghcr.io --use-git-provider github:my-account --yes
 ```
@@ -96,4 +98,4 @@ luma addon uninstall eye
 
 ## 声明式 `luma.addon/v1` 规范 {#declarative-lumaaddonv1-specification}
 
-官方插件清单位于 `luma/assets/addons/*.yaml`（`builder.yaml`、`eye.yaml`、`observe.yaml`）。每个清单声明自身的 `auth` 协议、`uiCapabilities`、`defaultImages`、部署拓扑 `presets`、分层 `configSchema`（`basic` / `recommended` / `advanced`）以及 `autoSecrets`。第三方扩展可遵循同一规范接入 Control SSO 与声明式配置界面。
+官方插件清单位于 `luma/assets/addons/*.yaml`（`builder.yaml`、`eye.yaml`、`observe.yaml`）。每个清单声明自身的 `auth` 协议、`uiCapabilities`、`requirements`（最低/建议内存及有状态节点固定策略）、`defaultImages`、部署拓扑 `presets`、分层 `configSchema`（`basic` / `recommended` / `advanced`）以及 `autoSecrets`。第三方扩展可遵循同一规范接入 Control SSO 与声明式配置界面。

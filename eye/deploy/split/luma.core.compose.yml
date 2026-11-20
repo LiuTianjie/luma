@@ -12,11 +12,13 @@ volumes:
 
 services:
   eye-core:
+    node: worker-node # Replace with your stateful core node name
     exposure: tailscale-relay
     domain: eye-console.example.com
     port: 8090
     publishPort: 18090
     replicas: 1
   clickhouse:
+    node: worker-node # Must match eye-core.node for local clickhouse-data persistence
     exposure: none
     replicas: 1

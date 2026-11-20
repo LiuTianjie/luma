@@ -23,6 +23,15 @@ ui:
 uiCapabilities:
   - builder.git_import
   - builder.runs
+requirements:
+  minMemoryMb: 256
+  recommendedMemoryMb: 512
+  minCpu: 1
+  stateful: true
+  pinPolicy: recommended
+  note:
+    en: Lightweight SQLite build queue (~0.5 GiB RAM). Container builds run on enrolled Runners rather than this server; pinning one node keeps build history persistent.
+    zh: 轻量级 SQLite 构建队列服务（约需 0.5 GiB 内存，实际构建由外部 Runner 执行）。因含本地有状态数据卷，建议固定到单台节点。
 defaultImages:
   server: ghcr.io/liutianjie/luma-build-server:latest
 presets:

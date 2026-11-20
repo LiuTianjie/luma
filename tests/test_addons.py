@@ -467,3 +467,171 @@ class AddonPlatformTests(DashboardAuthBase):
             self.assertEqual(captured["ns"].workflow_app, "luma-eye")
             self.assertFalse((src / ".luma.addon.compose.yml").exists())
             self.assertFalse((src / ".luma.addon.docker-compose.yml").exists())
+
+    def test_observe_volumes_all_initialize_empty_and_match_bundled(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        src_sidecar = yaml.safe_load((repo_root / "observe" / "luma.compose.yml").read_text(encoding="utf-8"))
+        bundled_sidecar = yaml.safe_load(
+            (repo_root / "luma" / "assets" / "addons" / "observe" / "luma.compose.yml").read_text(encoding="utf-8")
+        )
+        self.assertEqual(src_sidecar, bundled_sidecar)
+        volumes = src_sidecar.get("volumes") or {}
+        self.assertIn("victoria-data", volumes)
+        for vol_name, vol_cfg in volumes.items():
+            self.assertEqual(
+                vol_cfg.get("initialize"),
+                "empty",
+                f"observe volume {vol_name!r} must declare initialize: empty for fresh installs",
+            )
+
+    def test_eye_mandatory_node_pinning_and_cross_region_guard(self):
+        catalog = addon_specs.load_addon_catalog()
+        eye_spec = catalog["eye"]
+        node_field = next(f for f in eye_spec["configSchema"] if f["key"] == "node")
+        self.assertTrue(node_field.get("required"))
+        self.assertEqual(eye_spec["requirements"]["pinPolicy"], "required")
+
+        # Empty cluster + requireComplete=True without node must fail
+        resp = self.client.post(
+            "/v1/addons/eye/configure",
+            headers=self.bearer(),
+            json={
+                "preset": "all-in-one",
+                "config": {"domain": EYE_DOMAIN, "region": "cn", "exposure": "cn-edge"},
+                "requireComplete": True,
+            },
+        )
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertIn("node", resp.text.lower())
+
+        # Rendering eye without a pinned node must raise LumaError
+        with self.assertRaises(addon_specs.LumaError):
+            addon_specs.render_addon_manifests(
+                eye_spec,
+                {"domain": EYE_DOMAIN, "region": "cn", "exposure": "cn-edge", "node": ""},
+                control_url=ORIGIN,
+                scoped_secrets={"LUMA_EYE_ADMIN_TOKEN": "a"},
+                for_source_build=False,
+            )
+
+        # Rendering with a pinned node pins BOTH eye and clickhouse services
+        rendered = addon_specs.render_addon_manifests(
+            eye_spec,
+            {"domain": EYE_DOMAIN, "region": "global", "exposure": "node-edge", "node": "edge-1"},
+            preset_id="node-edge",
+            control_url=ORIGIN,
+            scoped_secrets={"LUMA_EYE_ADMIN_TOKEN": "a"},
+            for_source_build=False,
+        )
+        sidecar = yaml.safe_load(rendered["sidecarYaml"])
+        self.assertEqual(sidecar["services"]["eye"]["node"], "edge-1")
+        self.assertEqual(sidecar["services"]["clickhouse"]["node"], "edge-1")
+
+        # Cross-region mismatch (node in cn, region global) must be rejected
+        control_state.mutate_state(lambda s: s.setdefault("nodes", {}).update({
+            "cn-node": {"name": "cn-node", "region": "cn", "agent": {"status": "ready"}},
+            "eu-node": {"name": "eu-node", "region": "global", "agent": {"status": "ready"}},
+        }))
+        mismatch = self.client.post(
+            "/v1/addons/eye/configure",
+            headers=self.bearer(),
+            json={
+                "config": {"domain": EYE_DOMAIN, "region": "global", "node": "cn-node", "exposure": "node-edge"},
+                "requireComplete": True,
+            },
+        )
+        self.assertEqual(mismatch.status_code, 400, mismatch.text)
+        self.assertIn("region", mismatch.text.lower())
+
+        # Explicitly clearing node to "" must also be rejected
+        cleared = self.client.post(
+            "/v1/addons/eye/configure",
+            headers=self.bearer(),
+            json={"config": {"domain": EYE_DOMAIN, "region": "global", "node": ""}},
+        )
+        self.assertEqual(cleared.status_code, 400, cleared.text)
+
+    def test_addon_requirements_node_details_and_smart_cluster_defaults(self):
+        gib = 1024 * 1024 * 1024
+        control_state.mutate_state(lambda s: s.update({
+            "nodes": {
+                "eu-ctrl": {
+                    "name": "eu-ctrl",
+                    "region": "global",
+                    "status": "manager",
+                    "agent": {
+                        "status": "ready",
+                        "metrics": {
+                            "memoryTotalBytes": 16 * gib,
+                            "memoryAvailableBytes": 10 * gib,
+                            "cpuCount": 4,
+                        },
+                    },
+                },
+                "edge-small": {
+                    "name": "edge-small",
+                    "region": "global",
+                    "publicIngress": {"enabled": True},
+                    "agent": {
+                        "status": "ready",
+                        "metrics": {
+                            "memoryTotalBytes": 2 * gib,
+                            "memoryAvailableBytes": 1 * gib,
+                            "cpuCount": 1,
+                        },
+                    },
+                },
+                "solo-home": {
+                    "name": "solo-home",
+                    "region": "home",
+                    "agent": {
+                        "status": "ready",
+                        "metrics": {
+                            "memoryTotalBytes": 8 * gib,
+                            "memoryAvailableBytes": 6 * gib,
+                            "cpuCount": 4,
+                        },
+                    },
+                },
+            },
+        }))
+
+        resp = self.client.get("/v1/addons", headers=self.bearer())
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["managerNode"], "eu-ctrl")
+        details = {n["name"]: n for n in body["nodeDetails"]}
+        self.assertEqual(details["eu-ctrl"]["memoryTotalMb"], 16384)
+        self.assertEqual(details["eu-ctrl"]["memoryAvailableMb"], 10240)
+        self.assertTrue(details["eu-ctrl"]["isManager"])
+        self.assertTrue(details["edge-small"]["publicIngressReady"])
+
+        by_id = {item["id"]: item for item in body["addons"]}
+        # Non-China cluster: observe & builder automatically adapt region to Manager's region ("global")
+        self.assertEqual(by_id["observe"]["requirements"]["recommendedMemoryMb"], 8192)
+        self.assertEqual(by_id["observe"]["requirements"]["pinPolicy"], "manager")
+        self.assertEqual(by_id["observe"]["config"]["region"], "global")
+
+        self.assertEqual(by_id["builder"]["requirements"]["recommendedMemoryMb"], 512)
+        self.assertEqual(by_id["builder"]["requirements"]["pinPolicy"], "recommended")
+        self.assertEqual(by_id["builder"]["config"]["region"], "global")
+        self.assertEqual(by_id["builder"]["config"]["exposure"], "external-edge")
+        self.assertEqual(by_id["builder"]["config"]["node"], "eu-ctrl")
+
+        self.assertEqual(by_id["eye"]["requirements"]["pinPolicy"], "required")
+        self.assertEqual(by_id["eye"]["requirements"]["byPreset"]["node-edge"]["recommendedMemoryMb"], 1536)
+        self.assertEqual(by_id["eye"]["config"]["region"], "global")
+        # Default preset all-in-one picks the roomiest ready node in target region ("eu-ctrl")
+        self.assertEqual(by_id["eye"]["config"]["node"], "eu-ctrl")
+
+        # Switching to single-node region ("home") auto-selects "solo-home" cleanly
+        solo_cfg = self.client.post(
+            "/v1/addons/eye/configure",
+            headers=self.bearer(),
+            json={
+                "config": {"domain": EYE_DOMAIN, "region": "home", "exposure": "tailscale-relay"},
+                "requireComplete": True,
+            },
+        )
+        self.assertEqual(solo_cfg.status_code, 200, solo_cfg.text)
+        self.assertEqual(solo_cfg.json()["addon"]["config"]["node"], "solo-home")
