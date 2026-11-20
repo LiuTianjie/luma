@@ -336,7 +336,7 @@ def _stream_addon_apply(
     quiet: bool,
 ) -> Dict[str, Any]:
     try:
-        for event in client.stream_post(f"/v1/addons/{addon_id}/apply/stream", body, timeout=timeout):
+        for event in client.stream("POST", f"/v1/addons/{addon_id}/apply/stream", body, timeout=timeout):
             status = str(event.get("status") or "")
             if status == "done":
                 return event.get("result") if isinstance(event.get("result"), dict) else {}

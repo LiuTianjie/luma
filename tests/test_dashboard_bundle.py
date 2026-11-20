@@ -291,3 +291,24 @@ class DashboardAddonApiTests(unittest.TestCase):
         self.assertEqual(rb.addon_command, "rollback")
         self.assertEqual(rb.addon_id, "dashboard")
         self.assertEqual(rb.release, "rel-1")
+
+    def test_cli_stream_addon_apply_uses_control_client_stream_post(self):
+        from luma.cli import addons as cli_addons
+
+        seen = []
+
+        class FakeClient:
+            def stream(self, method, path, body, *, timeout=30):
+                seen.append((method, path, body, timeout))
+                yield {"status": "ok", "name": "Verify and activate bundle", "message": "done"}
+                yield {"status": "done", "result": {"release": {"version": "0.2.93"}}}
+
+        result = cli_addons._stream_addon_apply(
+            FakeClient(),
+            "dashboard",
+            {"origin": "cli"},
+            timeout=120,
+            quiet=True,
+        )
+        self.assertEqual(result, {"release": {"version": "0.2.93"}})
+        self.assertEqual(seen, [("POST", "/v1/addons/dashboard/apply/stream", {"origin": "cli"}, 120)])
