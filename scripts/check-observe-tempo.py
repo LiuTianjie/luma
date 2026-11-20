@@ -75,7 +75,10 @@ def main() -> None:
     def start(name: str) -> None:
         service = compose["services"][name]
         resources = _resource_values(service["deploy"]["resources"])
-        env = [item for key, value in service.get("environment", {}).items() for item in ("-e", f"{key}={value}")]
+        env_map = dict(service.get("environment", {}))
+        if name == "collector" and not env_map.get("LUMA_OTLP_TOKEN"):
+            env_map["LUMA_OTLP_TOKEN"] = "tempo-check-token"
+        env = [item for key, value in env_map.items() for item in ("-e", f"{key}={value}")]
         mounts = (["-v", f"{volume}:/data"] if name == "tempo" else
                   ["--mount", f"type=volume,src={collector_volume},dst=/var/lib/otelcol,volume-nocopy"])
         docker("run", "-d", "--name", names[name], *platform,
