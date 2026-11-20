@@ -8,9 +8,9 @@
 | `observe/luma.compose.yml` | Local-render fallback (`region: cn`, `node: manager`). Control rewrites node/region to the registered manager and injects Grafana's public URL. |
 | `luma/nomad_render.py` | Traefik loopback Prometheus + OTLP flags |
 
-## Loopback ports on manager
+## Loopback and host ports on manager
 
-8082 Traefik metrics · 4318/4317 OTLP loopback · 4319 OTLP mesh (Tailscale, bearer) · 3200 Tempo · 8428 VictoriaMetrics · 9428 VictoriaLogs · 8880 vmalert · 9093 Alertmanager · 9107 nomad-exporter · 9108 log-shipper · 9095 Feishu webhook · 3100 Grafana loopback only
+8082 Traefik metrics · 4318/4317 OTLP loopback · 4319 OTLP mesh (Tailscale, bearer) · 3200 Tempo · 8428 VictoriaMetrics (plus `host-gateway` on `nomad`/`docker0`:8428) · 8427/8429 `observe-access` (`127.0.0.1:8427` external / `127.0.0.1:8429` internal loopback) · 9428 VictoriaLogs · 8880 vmalert · 9093 Alertmanager · 9107 nomad-exporter · 9108 log-shipper · 9095 Feishu webhook · 3100 Grafana loopback only
 
 Open Dashboard → Observability → App monitoring after signing in to the console with a passkey or management token. `/grafana` requires a valid console session or management token on every request; unauthenticated requests return 401. Grafana uses anonymous Viewer internally, so no second login is needed. Control must be available for this route; manager-local `127.0.0.1:3100` remains the debugging endpoint. Do not publish Grafana directly.
 
@@ -37,9 +37,7 @@ services; query buffer and retention concurrency settings do not cap compaction
 memory. File-page reclaim/refault thrashing can saturate disk reads without OOM
 or a full disk. Check actual runtime limits and I/O through recovery/compaction.
 
-Upgrade the independent stack by rebuilding and redeploying the current
-`observe/` source through its recorded workflow. CLI/Control upgrades and old-job
-restarts do not refresh observe. When restoring a manually disabled Tempo,
+Install or upgrade the independent stack with `luma addon install observe --region <region> --yes` (or Dashboard **Platform → Addons**, pulling prebuilt GHCR images). For custom-source development, use `luma addon install observe --source ./observe` or rebuild and redeploy `observe/` with `luma build local` through its recorded workflow. CLI/Control upgrades and old-job restarts do not refresh observe. When restoring a manually disabled Tempo,
 include the collector's `otlphttp/tempo` exporter/pipeline and preserve existing
 volume paths. Retention deletion is asynchronous; do not clear the WAL/blocks.
 First installs prepare empty local directories automatically. The Tempo image
@@ -61,8 +59,7 @@ OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <control-issued-token>
 Traefik keeps using loopback `http://127.0.0.1:4318` without a bearer token.
 Apps that already include an OpenTelemetry distro emit spans; export is
 fail-open. The collector keeps HTTP 5xx, OTel errors, traces slower than 1s,
-and a 10% baseline. Long-lived `/v1/node-agent/` and `/v1/terminal/` traffic is excluded from stored traces but remains in Traefik metrics. Memory limits and bounded queues can refuse or drop telemetry under pressure; they do not guarantee the process can never run out of memory. Do not create a Luma
-SDK. Redeploy existing apps after enabling observe. Restart is not a redeploy.
+and a 10% baseline. Long-lived `/v1/node-agent/` and `/v1/terminal/` traffic is excluded from stored traces but remains in Traefik metrics. Memory limits and bounded queues can refuse or drop telemetry under pressure; they do not guarantee the process can never run out of memory. Use standard OpenTelemetry APIs or the optional Python `luma-observe-sdk` (`sdk/python/`) documented in [instrumentation.md](instrumentation.md). Redeploy existing apps after enabling observe. Restart is not a redeploy.
 Cross-node OTLP uses the manager Tailscale IP, never a public listener.
-Manual spans: official OpenTelemetry API only, never set the OTLP endpoint.
+Manual spans: use the official OpenTelemetry API (or the optional `luma-observe-sdk` wrappers in Python), never hardcode the OTLP endpoint.
 See docs/observability.md § Application integration.

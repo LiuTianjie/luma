@@ -1,9 +1,9 @@
 # Deployment Workflow Records
 
 Luma Control stores one workflow per application, shared across agents and machines.
-The CLI automatically checks it before `import`, `build local`, `build retry`,
-`deploy`, or `compose deploy` starts build/deploy work. There is no repository
-workflow file to create and no `--remember` flag to add.
+The CLI automatically checks it before `builder submit` (`builder-submit`), `import`,
+`build local`, `build retry`, `deploy`, or `compose deploy` starts build/deploy work.
+There is no repository workflow file to create and no `--remember` flag to add.
 
 ## Choosing And Confirming A Path
 

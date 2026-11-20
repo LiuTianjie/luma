@@ -26,7 +26,9 @@
 | `healthcheck` | no | map | For native edge services, renders a Nomad HTTP check from an extractable URL, otherwise TCP. It does not execute an arbitrary container shell command; inspect rendered checks for other exposure modes. |
 | `relay.host` | relay override | string | Optional advanced upstream host override. Usually omit. |
 | `relay.url` | relay override | string | Optional full upstream URL override. Usually omit. |
+| `tcp` | tcp-relay override | map | Optional TCP upstream override for `tcp-relay`: `address` (`host:port`), `addresses` (list), or `host`/`port`. Usually omit. |
 | `tunnel.tokenEnv` | tunnel | string | Env var name for Cloudflare Tunnel token. Defaults to `CLOUDFLARE_TUNNEL_TOKEN`. |
+| `requirements` | no | map | Optional declarative prerequisite contract: `capabilities` (`cloudflare`, `tailscale`, `egress`, `registry`), `secrets`, `init` (`cloudflare-dns`, `cloudflare-tunnel`, `tailscale-node`, `egress`, `registry`, `secrets`), and `notes` (each a list of non-empty strings). |
 | `dns.target` | no | string | Optional DNS target override. Rejected for `node-edge`, whose record always points at the node's public ingress address. |
 | `dns.type` | no | string | Optional DNS record type override. |
 | `dns.proxied` | no | boolean | Optional Cloudflare proxied flag. Rejected for domains in Alibaba Cloud DNS or DNSPod zones. |
@@ -225,7 +227,7 @@ Control derives project identity from Git `origin` and the repository deployment
 
 Platform selection is target-driven. Control returns the target platform from the ready pinned node or target region; an explicit `--platform` is a constraint and must cover the resolved architecture. Never build for the caller's native architecture merely because Docker defaults to it.
 
-For an internal HTTP Registry, the default local workflow must use Luma's managed docker-container Buildx builder with an explicit Registry HTTP/insecure stanza. Do not default to the current Docker context's `docker` driver. Luma 0.1.271 and later enforce this behavior while still honoring an explicitly selected compatible `--builder`.
+For an internal HTTP Registry, the default local workflow must use Luma's managed docker-container Buildx builder with an explicit Registry HTTP/insecure stanza. Do not default to the current Docker context's `docker` driver. Current Luma CLI releases enforce this behavior while still honoring an explicitly selected compatible `--builder`.
 
 For a stateful Compose stack before completion:
 
@@ -246,7 +248,7 @@ luma app restart luma-registry --mode recreate
 - Target-node pull from the internal registry fails with `502 Bad Gateway`: check reachability and the actual proxy owner before concluding that a proxy captured traffic. Linux Docker JSON uses `HttpProxy`, `HttpsProxy` and `NoProxy`; an active proxy needs a matching host, port, domain or CIDR bypass. Direct access does not require inventing exclusions, and missing facts are an error. On OrbStack, inspect native `network_proxy` and `network.proxy.exclude`, plus the effective macOS proxy in `auto` mode. Its internal Docker broker may be present with no external proxy. Preserve existing settings, append only required managed hosts through the runtime owner, and refuse unknown modes or inspection failures.
 
 - Build fails before push with `invalid value "127.0.0.1", expecting k=v`: suspect Buildx CSV parsing of comma-separated `NO_PROXY`. Update Luma so the entire `env.NO_PROXY=...` driver option is CSV-quoted. Backslash-comma escaping is not reliable; this is not a registry health failure.
-- Local Build reaches the push step but fails with `server gave HTTP response to HTTPS client`: the current Docker-context builder handled the exporter and upgraded Builder Registry to HTTPS. Use Luma 0.1.271 or newer so the default path creates the managed docker-container builder. Do not switch to Docker Hub, request a Docker Hub token, or bypass the one-command workflow with an ad hoc push.
+- Local Build reaches the push step but fails with `server gave HTTP response to HTTPS client`: the current Docker-context builder handled the exporter and upgraded Builder Registry to HTTPS. Upgrade to a current Luma CLI release so the default path creates the managed docker-container builder. Do not switch to Docker Hub, request a Docker Hub token, or bypass the one-command workflow with an ad hoc push.
 - A resource increase renders correctly but the rollout is blocked with `DimensionExhausted: memory`: inspect all existing allocations on the pinned node and account for old/new overlap during rolling placement. `limits.memory` maps to `MemoryMaxMB`, which is ineffective without Nomad memory oversubscription; verify the live cgroup/container limit before diagnosing the application.
 
 ### Repository Import Semantics
@@ -258,7 +260,7 @@ Repository import should:
 3. Clone/build on the default builder node.
 4. Push to the builder registry using the reachable `pushHost: <builder-tailscale-ip>:5000`.
 5. Use the repository's Luma manifest if present. For single-service import, scan root `.luma.yml`, `.luma.yaml`, `luma.yml`, `luma.yaml`, then nested `*.luma.yml` / `*.luma.yaml`, excluding Compose sidecar names such as `*.compose.luma.yml`, `*.luma.compose.yml`, and `docker-compose.luma.yml`. For Compose import, scan `luma.compose.yml`, `luma.compose.yaml`, `.luma.compose.yml`, `.luma.compose.yaml`, `*.luma.compose.yml`, `*.compose.luma.yml`, and `docker-compose.luma.yml`; the sidecar's `compose:` path points to the Docker Compose file.
-6. If no manifest exists, allow manual single-service manifest input. Do not invent AI-filled manifests unless the user explicitly asks for that future workflow.
+6. If no manifest exists, supply a manifest explicitly with `--manifest` or manual single-service manifest input.
 7. Inject the built deploy image after the build succeeds.
 8. Accept runtime environment values through Dashboard's Environment input or CLI `--env .env`. These values are not build-time env and are not exposed to the builder. They are passed to the final deploy request as scoped deployment secrets, filtered by the resolved `.luma.yml` / `luma.compose.yml` plus Compose content, and saved under the service or stack scope.
 
@@ -276,7 +278,7 @@ If refs return GitHub/Gitea `404`, treat it as a provider credential or reposito
 CLI and Dashboard imports use the same remote build lane, but only the updated CLI participates in the automatic workflow checks described in [Deployment Workflow Records](deployment-workflow.md). Do not switch to Dashboard to bypass a CLI mismatch:
 
 ```bash
-luma import --provider-id gitea:lin --repository acme/app --ref main --build-node builder --env .env
+luma import --provider-id gitea:team --repository acme/app --ref main --build-node builder --env .env
 ```
 
 For an unregistered source, use the positional URL:
@@ -337,7 +339,7 @@ If the default `<owner>/<repo>` path is not desired, set `build.repo`:
 name: app
 region: cn
 build:
-  repo: apps/price
+  repo: apps/web
 ```
 
 Do not add a second top-level field for this unless the Luma manifest schema changes. `image` remains for prebuilt external images; `build:` marks an image that Luma will produce and inject.
@@ -422,7 +424,7 @@ services:
     build:
       context: ./api
       dockerfile: Dockerfile
-      repo: apps/price-api
+      repo: apps/web-api
 ```
 
 The final Compose deployment still follows normal `luma compose deploy` rules: every runtime service must have an `image`, but Repository Import is allowed to produce that image before handing the Compose content to Control.
@@ -497,14 +499,17 @@ Control records the first deployment node and preserves it on updates. Keep the 
 | `volumes.<name>.local.path` | no | Local host path; use a distinct path per application/volume. |
 | `services.<name>.region` | no | Per-service region override. |
 | `services.<name>.node` | no | Explicit Luma node pin for that service. |
-| `services.<name>.exposure` | no | `none`, `cn-edge`, `external-edge`, `tailscale-relay`, `tcp-relay`, or `cloudflare-tunnel`. |
+| `services.<name>.exposure` | no | `none`, `cn-edge`, `external-edge`, `node-edge`, `tailscale-relay`, or `tcp-relay`. (`cloudflare-tunnel` is supported only on native single-service manifests, not Compose.) |
 | `services.<name>.domain` | public only | Public hostname. |
 | `services.<name>.port` | public only | Container internal port. |
 | `services.<name>.publishPort` | relay only | Host-to-container mapping for `tailscale-relay` or `tcp-relay`: Nomad CNI on Linux, allocation-owned Docker publication on Mac/OrbStack. Public Mac Compose requires one replica and one group node pin; only declared ports are published. |
 | `services.<name>.replicas` | no | Replica count; must be at least `1`. |
 | `services.<name>.proxy` | no | Adds Luma egress env/network for runtime outbound traffic. |
 | `services.<name>.relay` | relay only | Optional relay override. Usually omit. |
-| `services.<name>.tunnel` | tunnel only | Optional Cloudflare Tunnel settings. |
+| `services.<name>.tcp` | tcp-relay only | Optional TCP upstream override (`address`, `addresses`, or `host`/`port`). Usually omit. |
+| `services.<name>.cdn` | no | Optional Alibaba Cloud ESA CDN configuration (`esa` or `{provider, scope, purge, cache}`, same shape as single-service `cdn`). |
+| `services.<name>.redirectFrom` | no | Optional list of redirect hostnames or `{hosts, except}` (same shape as single-service `redirectFrom`). |
+| `services.<name>.requirements` | no | Optional declarative prerequisite contract (`capabilities`, `secrets`, `init`, `notes`, same shape as single-service `requirements`). |
 
 ### Compose Example
 

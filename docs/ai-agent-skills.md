@@ -1,6 +1,6 @@
 # AI Agent Skills
 
-Luma includes four skills for AI coding assistants. They cover deployment, observability, log investigation, remote commands and interactive terminals. They are installed in the assistant, not in the running cluster.
+Luma provides five official skills for AI coding assistants: four bundled in `luma-infra` (`luma-deployment-yaml`, `luma-observe`, `luma-logs`, and `luma-shell`, installed via `luma skills install`) covering deployment, observability, log investigation, remote commands, and interactive terminals, plus [`luma-eye`](../eye/skills/luma-eye/) (installed via `luma-eye skills install`) covering product analytics, crash tracking, and SourceMaps. They are installed in the assistant, not in the running cluster.
 
 ## Deployment workflows
 
@@ -49,9 +49,19 @@ Example request:
 > Connect to this Luma node from my terminal without SSH. Prefer direct transport,
 > but use Control relay if the node's inbound ports are closed.
 
+## Product analytics and crash tracking {#product-analytics-and-crash-tracking}
+
+[`luma-eye`](../eye/skills/luma-eye/) covers frontend product analytics, Sentry-compatible crash tracking, 1:1 DOM session replay, SourceMap uploads, and client log search for Web/React/Next.js and React Native/Expo applications.
+
+Provision Luma Eye on a cluster with `luma addon install eye` (or Dashboard → Platform → Addons). Day-to-day queries work zero-config via the bundled `luma eye` CLI (reusing `luma login`), while full analytics (`pages`, `events`, `sessions`, `timeline`, `funnel`, `retention`) and SourceMap uploads use the standalone `luma-eye` CLI (`@nickname4th/luma-eye`). Unlike the four skills bundled in `luma-infra`, `luma-eye` is installed separately via `luma-eye skills install`.
+
+Example request:
+
+> Integrate this React app with Luma Eye, inspect open production crashes over the last 7 days with symbolicated stack traces, and summarize UV, PV, and Web Vitals P75.
+
 ## Installation and automatic updates
 
-Install the suite bundled with the currently installed CLI:
+Install the four-skill suite bundled with the currently installed `luma-infra` CLI:
 
 ```sh
 luma skills install --agent codex
@@ -59,6 +69,14 @@ luma skills install --agent claude
 # Other assistants, with a remembered custom destination:
 luma skills install --path /absolute/path/to/assistant/skills
 luma skills status --format json
+```
+
+Install the fifth official skill (`luma-eye`) via the `luma-eye` CLI:
+
+```sh
+npm install -g @nickname4th/luma-eye
+luma-eye skills install
+luma-eye skills status --json
 ```
 
 `luma update` and the installer refresh existing suites from the **same release**.
@@ -125,6 +143,8 @@ local-edit backups. Failure blocks distribution upload in that release job.
 
 - [Deployment YAML](deployment-yaml.md)
 - [Compose and local storage](compose-storage.md)
+- [Addons & SSO](addons.md)
 - [Observability](observability.md)
 - [Deployment workflow records](../skills/luma-deployment-yaml/references/deployment-workflow.md)
 - [CDN (Alibaba Cloud ESA) for agents](../skills/luma-deployment-yaml/references/cdn.md)
+- [Luma Eye skill](../eye/skills/luma-eye/SKILL.md)

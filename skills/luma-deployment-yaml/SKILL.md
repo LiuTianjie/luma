@@ -64,7 +64,7 @@ For actual deployments, recorded commands, or workflow-change prompts, read [Dep
 
 ## Automatic Deployment Workflow Checks
 
-- Updated CLI commands `import`, `build local`, `build retry`, `deploy`, and `compose deploy` automatically check the application's record on Luma Control before building, uploading, or deploying. A separate `workflow show` call is useful for orientation, not a prerequisite for first deployment.
+- Updated CLI commands `builder submit`, `import`, `build local`, `build retry`, `deploy`, and `compose deploy` automatically check the application's record on Luma Control before building, uploading, or deploying. A separate `workflow show` call is useful for orientation, not a prerequisite for first deployment.
 - No record: proceed normally and let a successful deployment create it. Matching record: continue. Different workflow: show the differences and obtain the user's explicit approval before continuing.
 - Non-interactive, JSON/NDJSON and quiet calls stop on differences. Use `--accept-workflow-change` only for the specific change the user has approved; an existing specific approval remains valid. A generic request to deploy does not authorize silently switching between remote build, local build and prebuilt-image deployment.
 - Do not bypass confirmation by overwriting the record with `workflow record`, changing application identity, downgrading the CLI, calling raw APIs, or switching to Dashboard/SSH. Do not commit/push code solely to force a different build lane.
@@ -83,7 +83,8 @@ luma build local . --platform linux/amd64
 ```
 
 - For Compose, keep `build:` in the repository Compose file. Local Build replaces it with the pushed internal `image:` only in the deployment payload; it does not rewrite the repository Compose source.
-- The default path must use Luma's managed docker-container Buildx builder because Builder Registry may intentionally use HTTP over Tailscale. Reusing the current Docker-context `docker` driver can upgrade the push to HTTPS and fail with `server gave HTTP response to HTTPS client`. Use Luma 0.1.271 or newer; an explicit `--builder` is only valid when that builder is already compatible with the internal Registry transport.
+- The default path must use Luma's managed docker-container Buildx builder because Builder Registry may intentionally use HTTP over Tailscale. Reusing the current Docker-context `docker` driver can upgrade the push to HTTPS and fail with `server gave HTTP response to HTTPS client`. Use a current Luma CLI release; an explicit `--builder` is only valid when that builder is already compatible with the internal Registry transport.
+- When pushing local builds to an external OCI registry (such as ACR or GHCR) or overriding the cluster default, pass `--registry-host` and `--registry-namespace` to `luma build local`, or save cluster defaults with `luma build config --local-registry-host <host> --registry-namespace <namespace>` (and `--clear-registry` when disabling the internal Builder Registry).
 - First deployment may pass `--env <file>` to save only referenced scoped secrets. Later local builds reuse the same service/stack secret scope unless the user explicitly supplies replacements.
 - Keep the entire build, upload, and deploy flow inside `luma build local`. If the command exposes an infrastructure gap, fix Luma's workflow rather than finishing with SSH or unrelated registry commands.
 
@@ -116,7 +117,7 @@ luma build local . --platform linux/amd64
 - For native `cn-edge` / `external-edge` services, `healthcheck` becomes a Nomad service check: an extractable HTTP URL supplies its path; otherwise it falls back to TCP. It does not execute an arbitrary shell health command inside the container. Inspect rendered checks for other exposure modes before claiming rollout readiness.
 - `engine` is optional. Omit it to inherit the cluster default. Set `engine: nomad` only when you need an explicit override.
 - Native services use named volumes or bind mounts in `volumes`; persistent writable mounts require `replicas: 1`. Preserve existing sources.
-- `build` is for source-to-image builds via `luma import` / Dashboard Repository Import, not plain `luma deploy`. Subfields: `context` (default `.`), `dockerfile` (default `Dockerfile`), `platform` (default `linux/amd64`), and optional `repo` to override the internal image repository path.
+- `build` is for source-to-image builds (via `luma builder submit`, `luma build local`, or legacy `luma import`), not plain `luma deploy`. Subfields: `context` (default `.`), `dockerfile` (default `Dockerfile`), `platform` (default `linux/amd64`), optional `repo` to override the internal image repository path, optional `target` (literal Dockerfile multi-stage target), and remote-only `x-luma-git-contexts` for locked additional Git contexts.
 
 ## Node Edge
 
@@ -139,13 +140,17 @@ Use `node-edge` when the user wants public traffic to skip the Manager, usually 
 - Hostnames in any added zone (Alibaba Cloud DNS, DNSPod, or a secondary Cloudflare zone) get certificates over HTTP-01 instead of the Cloudflare DNS-01 wildcard, which also needs a refreshed Manager Traefik after upgrading.
 - A deploy prerequisite `dns-zone` lists the missing key secrets when a zone's credentials were removed.
 
-## Builder Registry Workflow
+## Remote Builds (Luma Build Addon) And Builder Registry
 
-- ARM builds are native-only. Declare an ARM builder alongside the AMD64 builder. Any import containing ARM64, including mixed AMD64/ARM64 builds, must run on the ARM builder. Busy/offline native builders wait; a missing native builder or an incompatible explicit pin fails instead of using emulation.
-- Upgrade Control and all declared builders before using this policy. Repository agents must advertise `native-arm-build-v1`; automatic planning also requires `repository-build-plan-v1`. Local ARM builds require an updated CLI and an actual native ARM Docker engine for every selected Buildx worker. Never bypass these checks with an older client, another API or a QEMU-advertised platform list.
+- **Decoupled Luma Build addon (current remote build path)**: Legacy in-Control `luma import` / `build_queue` is retired. Remote Git repository builds now run through the independent Luma Build addon (`luma-build`):
+  - Install and configure the build server with `luma addon install builder` (or Dashboard → Platform → Addons), then point the CLI with `luma builder use <url>` and check status with `luma builder status`.
+  - Submit and manage remote Git builds with `luma builder submit`, `luma builder list`, `luma builder logs`, `luma builder retry`, and `luma builder cancel`.
+  - Issue runner tokens (`luma builder token create|list|delete`) and enroll/manage stateless Linux or macOS BuildKit runners with `luma runner join`, `luma runner start`, `luma runner stop`, `luma runner restart`, `luma runner status`, and `luma runner logs`.
+- **Local checkouts**: Use `luma build local` to build locally and upload/deploy in one transaction. Override the target registry with `--registry-host` / `--registry-namespace`, or configure defaults via `luma build config --local-registry-host <host> --registry-namespace <namespace>` (and `--clear-registry` to disable the internal Builder Registry so nodes pull directly).
+- ARM builds are native-only. Declare or enroll an ARM runner/builder alongside AMD64. Any build containing ARM64, including mixed AMD64/ARM64 builds, must run on a native ARM builder/runner. Local ARM builds require an updated CLI and an actual native ARM Docker engine for every selected Buildx worker. Never bypass these checks with an older client, another API or a QEMU-advertised platform list.
 - Mixed AMD64/ARM64 requests run on the ARM builder and may emulate the AMD64 portion. Different ARM architectures require separate requests. This does not split builds across machines.
 
-- Treat `luma import` / Dashboard Repository Import as a build pipeline, not just a manifest deploy: Git provider -> builder node clone/buildx -> internal registry push -> target node pull -> normal Luma deploy.
+- Treat remote Git builds (`luma builder submit`, or legacy `luma import` on pre-migration clusters) as a build pipeline, not just a manifest deploy: Git provider -> builder/runner clone & buildx -> registry push -> target node pull -> normal Luma deploy.
 - Treat ordinary `luma deploy` and `luma compose deploy` prebuilt images as a
   cache pipeline: external/private registry -> Builder `crane copy` -> Builder
   Registry digest -> target node. Do not dynamically edit a target node's
@@ -183,7 +188,7 @@ luma app restart luma-registry --mode recreate
 - Before recommending Dashboard repository selection, verify the selected provider account can list or fetch refs for that repository. If `luma git-provider refs <provider-id> owner/repo` returns 404, the PAT probably lacks access to that private repo or the repo is not under that provider account; use a full public URL only for truly public repos.
 - Runtime env for repository import is not a shell export. In Dashboard Repository Import, paste `.env` values into the Environment section. In CLI, pass `luma import ... --env .env`. The values are submitted to Luma Control as scoped deployment secrets, filtered by the final repository manifest/Compose content, and persisted under the service or stack scope for later redeploys.
 - When reviewing a repo before import, list `${ENV_NAME}` placeholders in both the Luma manifest and Compose content. Ensure those names already exist in Luma secrets or are supplied through Dashboard Environment / CLI `--env`; local `.env` values are not automatically read by Dashboard.
-- Repository import should scan for `.luma.yml`, `.luma.yaml`, `luma.yml`, `luma.yaml`, and nested `*.luma.yml` / `*.luma.yaml`; service manifest matching must exclude Compose sidecar names such as `*.compose.luma.yml`, `*.luma.compose.yml`, and `docker-compose.luma.yml`. If no manifest exists, support a manually entered single-service manifest first. AI-generated manifests are a later enhancement.
+- Repository builds should scan for `.luma.yml`, `.luma.yaml`, `luma.yml`, `luma.yaml`, and nested `*.luma.yml` / `*.luma.yaml`; service manifest matching must exclude Compose sidecar names such as `*.compose.luma.yml`, `*.luma.compose.yml`, and `docker-compose.luma.yml`. If no manifest exists in the repository, supply one explicitly via `--manifest` or manual single-service manifest input.
 - Compose repository import should scan for `luma.compose.yml`, `luma.compose.yaml`, `.luma.compose.yml`, `.luma.compose.yaml`, `*.luma.compose.yml`, `*.compose.luma.yml`, and `docker-compose.luma.yml`. The sidecar's `compose:` path points to the Docker Compose file inside the repository.
 - For local validation of a repository Compose sidecar that still has Compose `build:` blocks, use `luma compose validate --import-mode luma.compose.yml`. Plain `luma compose validate` / `luma compose deploy` still require runtime `image:` values because they do not build.
 - In CLI import, bare `owner/repo` is a GitHub shortcut and should expand to `https://github.com/owner/repo.git`; use a full URL or a saved Git provider account for Gitea/self-hosted sources.
@@ -191,7 +196,7 @@ luma app restart luma-registry --mode recreate
 - The default internal image path is predictable before the build: `registryHost/<owner>/<repo>:latest`, with `<owner>/<repo>` derived from the Git repository URL. The builder also pushes `registryHost/<owner>/<repo>:<git-sha>`, and deployment should use the immutable sha tag that build returns. Use `:latest` as the human-readable rolling alias, not as the preferred deployed reference.
 - If the default `<owner>/<repo>` path is not desired, set `build.repo` in the repository manifest to the internal repository path to push under; keep `registryHost` and `pushHost` owned by Luma build configuration.
 - For Compose imports, services with `build:` but no `image:` are valid. Luma injects `image:` after build. Services that already have only `image:` are not rebuilt. If multiple Compose services are built, default image repos are `registryHost/<owner>/<repo>/<service>:latest` and `:<git-sha>`; a single built service may use `registryHost/<owner>/<repo>:...`. A Compose service may set `build.repo` to override its internal image repository path.
-- Build/import runs are operational objects. Use `luma build list`, `luma build logs <id>`, and `luma build retry <id>` to inspect or retry repository imports. Build runs must not persist Git tokens, registry auth, or raw runtime env secret values; credentials are re-injected from Git Provider / Registry credentials when tasks are leased.
+- Build runs are operational objects. On the decoupled Luma Build addon, use `luma builder list`, `luma builder logs <id>`, `luma builder retry <id>`, and `luma builder cancel <id>` (legacy Control builds used `luma build list|logs|retry|cancel`). Build runs must not persist Git tokens, registry auth, or raw runtime env secret values; credentials are re-injected only when tasks are leased.
 
 ## Compose And Storage Rules
 
@@ -239,13 +244,13 @@ replicas: 1
 
 On Linux, if host `8080` is occupied, keep container `port: 8080` and choose a free `publishPort`, such as `18080`. Native Mac services must omit `publishPort` and change their actual listening port instead. Mac Compose supports this remapping through a private allocation-owned Docker namespace; pin the group to one node. Internal single-service worker pools can remain region-scheduled. `publishPort` is the task node host port, not the container port.
 
-Node with its own public IP (`luma node ingress enable tx-sh-1` first):
+Node with its own public IP (`luma node ingress enable edge-1` first):
 
 ```yaml
 name: downloads
 image: ghcr.io/acme/downloads:1.0.0
 region: cn
-node: tx-sh-1
+node: edge-1
 exposure: node-edge
 domain: dl.example.cn
 port: 8080
@@ -323,7 +328,7 @@ luma app rollback <app> --to-version <N>
 
 The dashboard exposes the same Nomad job-version rollback from Applications -> Versions. Treat rollback as a running Nomad job revert; it does not rewrite Git, update the stored manifest, reverse migrations, or restore volume data. Compose rollback reverts the whole stack.
 
-Direct `compose render` with local paths requires an explicit node. Control dry-run resolves saved ownership or initial candidates; actual deployment also inspects legacy runtime placement.
+Use `luma compose deploy <sidecar> --dry-run` to preview Compose deployments with local paths. Control dry-run resolves saved ownership or initial candidates; actual deployment also inspects legacy runtime placement.
 
 ## CI Usage
 

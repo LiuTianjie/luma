@@ -1,6 +1,6 @@
 # AI Agent Skills {#ai-agent-skills}
 
-Luma 提供四个面向 AI 编码助手的 Skill，覆盖部署、可观测、日志分析和交互终端。Skill 安装在助手中，不安装到运行中的集群。
+Luma 提供五个面向 AI 编码助手的官方 Skill：其中四个随 `luma-infra` 打包发布（`luma-deployment-yaml`、`luma-observe`、`luma-logs`、`luma-shell`，通过 `luma skills install` 安装），覆盖部署、可观测、日志分析、远程命令与交互终端；另有一个 [`luma-eye`](../eye/skills/luma-eye/)（通过 `luma-eye skills install` 安装），覆盖产品分析、异常监控与 SourceMap 还原。Skill 安装在助手中，不安装到运行中的集群。
 
 ## 部署工作流 {#deployment-workflows}
 
@@ -40,9 +40,19 @@ Luma 提供四个面向 AI 编码助手的 Skill，覆盖部署、可观测、�
 
 > 从本地终端连接这个 Luma 节点，不使用 SSH。优先直连，节点入站端口关闭时使用 Control 中转。
 
+## 产品分析与异常监控 {#product-analytics-and-crash-tracking}
+
+[`luma-eye`](../eye/skills/luma-eye/) 覆盖 Web/React/Next.js 与 React Native/Expo 应用的前端产品分析、兼容 Sentry SDK 的异常监控、1:1 DOM 会话回放、SourceMap 源码还原与客户端日志检索。
+
+可通过 `luma addon install eye`（或控制台 **Platform → Addons**）在集群中部署 Luma Eye。日常查询可直接使用 `luma-infra` 内置的零配置 `luma eye` 命令（自动复用 `luma login`），完整的产品分析（`pages`、`events`、`sessions`、`timeline`、`funnel`、`retention`）与 SourceMap 上传则使用独立的 `luma-eye` CLI（`@nickname4th/luma-eye`）。与随 `luma-infra` 打包的四个 Skill 不同，`luma-eye` 通过 `luma-eye skills install` 单独安装。
+
+示例指令：
+
+> 为这个 React 应用接入 Luma Eye，查看最近 7 天未解决的线上崩溃及还原后的源码堆栈，并汇总 UV、PV 与 Web Vitals P75。
+
 ## 安装与自动升级 {#installation-and-automatic-updates}
 
-直接安装当前 CLI 自带的完整 Skill 套件：
+直接安装当前 `luma-infra` CLI 自带的四个 Skill 套件：
 
 ```sh
 luma skills install --agent codex
@@ -50,6 +60,14 @@ luma skills install --agent claude
 # Other assistants, with a remembered custom destination:
 luma skills install --path /absolute/path/to/assistant/skills
 luma skills status --format json
+```
+
+通过 `luma-eye` CLI 安装第五个官方 Skill（`luma-eye`）：
+
+```sh
+npm install -g @nickname4th/luma-eye
+luma-eye skills install
+luma-eye skills status --json
 ```
 
 `luma update` 和安装脚本会自动刷新已安装的套件；通过 pip／uv 升级后，下一次运行普通 Luma 命令也会补齐同步。Skill 与 CLI 来自同一个安装包和版本，不再另外下载可能超前的 `main`。
@@ -90,6 +108,8 @@ CLI 和 Skill 升级只改变客户端。共享查询需要集群管理员升级
 
 - [部署 YAML](deployment-yaml.zh-CN.md)
 - [Compose 与本地存储](compose-storage.zh-CN.md)
+- [插件与统一登录](addons.zh-CN.md)
 - [可观测](observability.zh-CN.md)
 - [部署工作流记录](../skills/luma-deployment-yaml/references/deployment-workflow.md)
 - [CDN（阿里云 ESA）技能参考](../skills/luma-deployment-yaml/references/cdn.md)
+- [Luma Eye Skill](../eye/skills/luma-eye/SKILL.md)

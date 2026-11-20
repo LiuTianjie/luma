@@ -21,16 +21,13 @@ suspected overloaded collector/store, start with the read-only workflow in
 [platform diagnosis](references/diagnosis.md). It separates query, authentication,
 ingestion and resource evidence before selecting a fix.
 
-Application telemetry collection and storage live in the optional `observe/` Compose stack. Control also has built-in application alert presets that read its metrics; these are separate from the stack's vmalert/Alertmanager rules.
-Deploy from that directory through the application's recorded workflow. Control's resource monitoring and alerting keep working if observe is absent.
+Application telemetry collection and storage live in the optional `luma-observe` Compose stack (`observe/`). Control also has built-in application alert presets that read its metrics; these are separate from the stack's vmalert/Alertmanager rules.
+Control's resource monitoring and alerting keep working if observe is absent.
 Keep log shipping, OTLP receivers and telemetry storage in observe; use the existing Control alert presets for dashboard-managed application alerts.
 
-The current release does not have an "enable observability" toggle that installs
-this stack by itself. A new cluster still needs the Builder/Registry path and a
-Compose deployment (the Dashboard can run that path without an SSH session).
-Do not tell an operator that merely selecting the Observability page deploys the
-stack. Application monitoring needs `luma-observe`; resource metrics, incidents,
-rules and notification channels remain available without it.
+Install or upgrade the stack through the official Luma Addon flow:
+`luma addon install observe --region <region> --yes` (or Dashboard **Platform → Addons**), which pulls prebuilt GHCR images and pins the stack to the Manager node. For custom-source development from a local checkout, use `luma addon install observe --source ./observe` or `luma build local` from `observe/`.
+Do not tell an operator that merely opening the Observability page installs the stack. Application monitoring needs `luma-observe`; resource metrics, incidents, rules and notification channels remain available without it.
 
 ## Read platform and application health
 
@@ -128,14 +125,21 @@ add labels, sidecars, or an application SDK for this infrastructure view.
 
 ## Deploy
 
-Work from `observe/` and follow its recorded deployment workflow. For a first deployment from a local checkout, use Local Build and resolve the manager's container architecture. On an AMD64 manager:
+The primary install and upgrade path uses the official Luma Addon with prebuilt GHCR images (or Dashboard **Platform → Addons**):
 
 ```bash
+luma addon install observe --region <region> --yes
+```
+
+For custom-source development from a local checkout (preserving the application's recorded deployment workflow when already deployed from source):
+
+```bash
+luma addon install observe --source ./observe
+# Or directly from observe/ for an AMD64 manager:
 luma build local . --platform linux/amd64
 ```
 
-First deploy does not require notification secrets. Nomad HTTP on the manager is used
-without a token. For the stack's Alertmanager path, add scoped secrets and matching
+First deploy does not require notification secrets. Nomad HTTP authentication on the manager is wired automatically by Control (`NOMAD_TOKEN_FILE` and mTLS when Nomad security is enabled; unauthenticated loopback HTTP is used only on legacy pre-security clusters). For the stack's Alertmanager path, add scoped secrets and matching
 Compose environment references to the Feishu webhook service. A saved secret alone
 does not inject an environment variable; redeploy to apply it. Control's built-in
 Feishu channels instead use App ID, App Secret and chat ID in the Dashboard.

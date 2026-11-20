@@ -1,10 +1,11 @@
 # Find one execution
 
-Use the existing `luma app log-query` command. The current CLI has no native
-`trace` or `trace-query` subcommand. This flow retrieves lifecycle and error logs;
-Grafana/Tempo provides the retained span waterfall. Application code that needs
-programmatic reads can use the optional `luma-observe-sdk[query]` client, with its
-own configured read endpoints and scope.
+Use `luma observe tasks APP --view trace --trace-id ID` (or `--view traces` to
+search traces in a window) for native CLI trace lookup on current Control + Observe
+installs. Use `luma app log-query` together with `log_summary.py` for retained
+lifecycle/error logs and older installs; Grafana/Tempo provides the full retained
+span waterfall. Application code that needs programmatic reads can use the optional
+`luma-observe-sdk[query]` client, with its own configured read endpoints and scope.
 
 ## Task or business reference to Trace ID
 

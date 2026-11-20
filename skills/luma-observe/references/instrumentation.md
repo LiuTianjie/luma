@@ -92,7 +92,7 @@ Python example:
 ```python
 from opentelemetry import trace
 
-tracer = trace.get_tracer("word2pdf")
+tracer = trace.get_tracer("document-worker")
 
 def convert_document(document_id: str):
     with tracer.start_as_current_span("document.convert") as span:
@@ -109,7 +109,7 @@ Node example:
 
 ```javascript
 const { trace, SpanStatusCode } = require("@opentelemetry/api");
-const tracer = trace.getTracer("word2pdf");
+const tracer = trace.getTracer("document-worker");
 
 async function convertDocument() {
   return tracer.startActiveSpan("document.convert", async (span) => {

@@ -25,7 +25,7 @@ CDN, when `cdn:` appears in a manifest, or when a deploy fails or warns at
   record; renewals use it.
 - Each `cdn.cache` path is one cache rule on the site. The per-site quota is
   shared by every app on the root domain: Free 5, Basic 10, Standard 50.
-- Only `cn-edge`, `external-edge` and `tailscale-relay` accept `cdn`.
+- Only `cn-edge`, `external-edge`, `node-edge`, and `tailscale-relay` accept `cdn`.
 - Never put `cdn` on the zone apex (Luma refuses it): Cloudflare flattens apex
   CNAMEs, so ESA schedules visitors by Cloudflare's location (China visitors got
   US nodes, 10 s pages). Use `domain: www.<zone>` plus `redirectFrom: [<zone>]`;

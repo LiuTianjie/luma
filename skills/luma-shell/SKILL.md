@@ -6,10 +6,10 @@ description: Execute remote node commands for AI agents and scripts, or open int
 # Luma commands and terminals
 
 Use the installed CLI and its saved Control login. Check help outside a source
-checkout: imports can hide an older installed CLI. Interactive shells first shipped
-in 0.2.40. `node exec` first ships in 0.2.42 and needs CLI, Control and target Agent support for `exec-v1`;
-upgrade the component named in a capability error. Do not emulate exec by injecting
-commands into an interactive shell.
+checkout: imports can hide an older installed CLI. `node exec` requires an upgraded
+CLI, Control, and node agent with `exec-v1` capability (and interactive shells require
+terminal-capable components); upgrade the component named in a capability error. Do
+not emulate exec by injecting commands into an interactive shell.
 
 ## Commands for agents and scripts
 

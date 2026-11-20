@@ -5,27 +5,54 @@ description: Integrate Web/React/Next.js and React Native/Expo apps with Luma Ey
 
 # Luma Eye Agent Skill
 
-Control `luma-eye` directly via the `luma-eye` CLI with `--json` when fulfilling natural-language requests.
+Control `luma-eye` via the zero-config `luma eye` CLI (reusing `luma login`) or the standalone `luma-eye` CLI with `--json` when fulfilling natural-language requests.
 
-## 1. Authentication & Server Connection
+## 1. Provisioning, Authentication & CLI Options
 
-If `luma-eye` CLI is not installed yet on a machine with Node.js:
+### Provision Luma Eye (if not deployed yet)
+Deploy Luma Eye on a Luma cluster with unified Control SSO:
+```bash
+luma addon install eye --preset node-edge --domain eye.example.com --region global --node edge-1
+# Or interactive / all-in-one (also available in Dashboard → Platform → Addons):
+luma addon install eye
+```
+
+### Zero-Config Native `luma eye` CLI (bundled with `luma-infra`)
+When `luma` is already logged in, prefer `luma eye` for common queries — it auto-discovers the deployed Luma Eye URL via Control (`/v1/addons/eye`) and reuses your active `luma login` token with no separate `luma-eye login`:
+- `luma eye status`
+- `luma eye projects list|ensure|delete`
+- `luma eye portfolio --since 24h`
+- `luma eye stats <app-slug> --since 24h`
+- `luma eye issues <app-slug> --status open` (`--detail <fp>`, `--resolve <fp>`)
+- `luma eye logs <app-slug> --level error --search "..." --trace <id>`
+
+Append `--format json` on `luma eye` commands for machine-readable output.
+
+### Standalone `luma-eye` CLI (npm vs Go binary)
+For full product analytics (`pages`, `events`, `sessions`, `timeline`, `funnel`, `retention`), SourceMap uploads, and Grafana dashboard rendering, install the npm CLI on a machine with Node.js:
 ```bash
 npm install -g @nickname4th/luma-eye
 luma-eye skills install
 ```
 
+Command coverage note:
+- **`@nickname4th/luma-eye` (npm CLI)** supports all `luma-eye` subcommands, including `portfolio`, `pages`, `events`, `sessions`, and `timeline`.
+- **Standalone Go `luma-eye` binary** covers `login`, `logout`, `status`, `projects`, `stats`, `funnel`, `retention`, `issues`, `logs`, `sourcemaps`, `grafana`, and `skills`. It does not include `portfolio`, `pages`, `events`, `sessions`, or `timeline` (use the npm CLI `@nickname4th/luma-eye`, or `luma eye portfolio` for cross-project portfolio).
+
 `luma-eye` automatically resolves credentials in priority order:
-1. Flags: `--url https://eye.example.com --token <admin-token>`
+1. Flags: `--url https://eye.example.com --token <token>`
 2. Environment variables: `LUMA_EYE_URL` and `LUMA_EYE_ADMIN_TOKEN`
-3. Saved config file: `~/.config/luma-eye/config.json` (set once with `luma-eye login`)
+3. Saved config file: `~/.config/luma-eye/config.json` (or `$LUMA_EYE_CONFIG`, set once with `luma-eye login`)
+4. Automatic Luma token fallback (when no Eye-specific token is set): `LUMA_DEPLOY_TOKEN`, then the active `~/.config/luma` context token (`$LUMA_CONFIG_HOME` / `~/.config/luma/contexts/<current>.json` from `luma login`)
 
 Verify connectivity first when unsure:
 ```bash
+luma eye status --format json
+# Or with standalone luma-eye:
 luma-eye status --json
 luma-eye projects list --json
 ```
-If unauthenticated, tell the user to run once:
+If unauthenticated, tell the user to run `luma login` (for `luma eye` and automatic token fallback) or run once:
 ```bash
 luma-eye login --url https://<your-eye-domain> --token <ADMIN_TOKEN>
 ```
@@ -82,21 +109,23 @@ luma-eye login --url https://<your-eye-domain> --token <ADMIN_TOKEN>
    - **Existing Sentry SDK**: Keep `@sentry/react` / `@sentry/nextjs` / `@sentry/react-native` and set `dsn: '<SENTRY_DSN>'`.
 
 ### B. "看看最近访问量 / 在线人数 / 国家分布 / 性能" / Portfolio, Traffic & Web Vitals
+> **CLI note**: `portfolio`, `pages`, `events`, `sessions`, and `timeline` require the npm CLI (`@nickname4th/luma-eye`), with `luma eye portfolio` also available natively via `luma-infra`. The standalone Go `luma-eye` binary covers `login`, `projects`, `stats`, `funnel`, `retention`, `issues`, `logs`, `sourcemaps`, `grafana`, and `skills` (not those 5 commands).
+
 ```bash
-# 多项目全局总览：
+# 多项目全局总览（requires npm @nickname4th/luma-eye, or use `luma eye portfolio --since 24h --format json`）：
 luma-eye portfolio --since 24h --json
 
-# 单项目流量、国家/地区 (top_countries)、渠道/UTM、终端与性能概览：
+# 单项目流量、国家/地区 (top_countries)、渠道/UTM、终端与性能概览（also `luma eye stats <app-slug> --since 24h --format json`）：
 luma-eye stats <app-slug> --since 24h --json
 
-# 分页面 PV/UV、真实前台停留时长与 Web Vitals P75：
+# 分页面 PV/UV、真实前台停留时长与 Web Vitals P75（requires npm @nickname4th/luma-eye）：
 luma-eye pages <app-slug> --since 24h --json
 
-# 查看实时埋点事件流 (pageview / custom) 或用户会话列表：
+# 查看实时埋点事件流 (pageview / custom) 或用户会话列表（requires npm @nickname4th/luma-eye）：
 luma-eye events <app-slug> --since 24h --json
 luma-eye sessions <app-slug> --since 7d --json
 
-# 回放单个用户或单次会话的完整操作时间线（含崩溃前 50 步点击面包屑）：
+# 回放单个用户或单次会话的完整操作时间线，含崩溃前 50 步点击面包屑（requires npm @nickname4th/luma-eye）：
 luma-eye timeline <app-slug> --session <session_id> --json
 ```
 Summarizes `active_users_5m`, `unique_visitors`, `pageviews`, `custom_events`, `sessions` (industry-standard 30m idle sliding window + cross-tab shared), `top_countries` (offline DB-IP resolved), `error_count`, `crash_free_rate`, `vitals_p75` (`LCP`, `INP`, `CLS`, `FCP`, `TTFB`), `top_pages`, and `top_events`.
