@@ -3,8 +3,11 @@ package server
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/liutianjie/luma-eye/internal/auth"
@@ -15,7 +18,6 @@ import (
 	"github.com/liutianjie/luma-eye/internal/project"
 	"github.com/liutianjie/luma-eye/internal/ratelimit"
 	"github.com/liutianjie/luma-eye/internal/retention"
-	"github.com/liutianjie/luma-eye/internal/scrub"
 	"github.com/liutianjie/luma-eye/internal/sourcemap"
 )
 
@@ -50,15 +52,18 @@ func New(
 	batcher *pipeline.Batcher,
 	symbolicator *sourcemap.Symbolicator,
 	metrics *observe.Metrics,
-) *Server {
+) (*Server, error) {
 	var dataDir string
 	var controlClient *auth.ControlClient
 	if cfg != nil {
 		dataDir = cfg.DataDir
-		if cfg.ControlURL != "" {
-			if c, err := auth.NewControlClient(cfg.ControlURL, cfg.AddonID, cfg.ControlInsecure, cfg.ControlAuthCacheTTL); err == nil {
-				controlClient = c
+		if strings.TrimSpace(cfg.ControlURL) != "" {
+			c, err := auth.NewControlClient(cfg.ControlURL, cfg.AddonID, cfg.ControlInsecure, cfg.ControlAuthCacheTTL)
+			if err != nil {
+				log.Printf("[luma-eye] ERROR: failed to initialize Luma Control SSO client (control_url=%q): %v", cfg.ControlURL, err)
+				return nil, fmt.Errorf("init Luma Control SSO client: %w", err)
 			}
+			controlClient = c
 		}
 	}
 	s := &Server{
@@ -76,7 +81,7 @@ func New(
 		mux:          http.NewServeMux(),
 	}
 	s.registerRoutes()
-	return s
+	return s, nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -209,6 +214,14 @@ func (s *Server) authorizeRequestInfo(w http.ResponseWriter, r *http.Request) (b
 	if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
 		rec, renewed, ok := s.auth.VerifySession(c.Value)
 		if ok {
+			// When Control SSO is enabled, only allow break-glass emergency local AdminToken sessions
+			// (never pre-SSO local password/passkey or unrevocable control-token cookies).
+			if s.controlSSO != nil && rec.Method != "token" {
+				return false, "", http.StatusUnauthorized
+			}
+			if !s.verifyLocalSessionCSRF(r) {
+				return false, "", http.StatusForbidden
+			}
 			if renewed != "" && w != nil {
 				setSessionCookie(w, r, renewed)
 			}
@@ -220,6 +233,46 @@ func (s *Server) authorizeRequestInfo(w http.ResponseWriter, r *http.Request) (b
 		}
 	}
 	return false, "", http.StatusUnauthorized
+}
+
+func (s *Server) verifyLocalSessionCSRF(r *http.Request) bool {
+	if isSafeHTTPMethod(r.Method) {
+		return true
+	}
+	if sfs := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site"))); sfs != "" {
+		if sfs != "same-origin" && sfs != "none" {
+			return false
+		}
+	}
+	expectedOrigin := strings.TrimRight(s.resolvePublicURL(r), "/")
+	origin := strings.TrimRight(strings.TrimSpace(r.Header.Get("Origin")), "/")
+	if origin != "" {
+		u, err := url.Parse(origin)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return false
+		}
+		if expectedOrigin != "" && strings.EqualFold(origin, expectedOrigin) {
+			return true
+		}
+		if s.cfg == nil || s.cfg.PublicURL == "" {
+			if strings.EqualFold(u.Host, s.requestHost(r)) {
+				return true
+			}
+		}
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")), "same-origin") {
+		return true
+	}
+	if ref := strings.TrimSpace(r.Header.Get("Referer")); ref != "" {
+		if ru, err := url.Parse(ref); err == nil && (ru.Scheme == "http" || ru.Scheme == "https") && ru.Host != "" {
+			refOrigin := ru.Scheme + "://" + ru.Host
+			if expectedOrigin != "" && strings.EqualFold(refOrigin, expectedOrigin) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *Server) authorizeRequest(w http.ResponseWriter, r *http.Request) bool {
@@ -255,14 +308,19 @@ func extractBearer(r *http.Request) string {
 }
 
 func isLoopbackRequest(r *http.Request) bool {
-	if r.Header.Get("X-Forwarded-For") != "" || r.Header.Get("Ali-Real-Client-IP") != "" || r.Header.Get("CF-Connecting-IP") != "" {
-		ip := net.ParseIP(scrub.ExtractClientIP(r))
-		return ip != nil && ip.IsLoopback()
+	if r == nil {
+		return false
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	for _, hdr := range []string{"X-Forwarded-For", "Ali-Real-Client-IP", "CF-Connecting-IP", "X-Real-IP", "Forwarded"} {
+		if strings.TrimSpace(r.Header.Get(hdr)) != "" {
+			return false
+		}
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
 	if err != nil {
-		host = r.RemoteAddr
+		host = strings.TrimSpace(r.RemoteAddr)
 	}
+	host = strings.Trim(host, "[]")
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
 }

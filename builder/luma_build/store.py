@@ -41,6 +41,7 @@ from .scheduler import (
 TERMINAL_STATUSES = {"succeeded", "failed", "canceled"}
 ACTIVE_STATUSES = {"queued", "building", "queued_deploy", "deploying"}
 STALE_LEASE_SECONDS = 180
+RUNNER_HEARTBEAT_WRITE_INTERVAL_SECONDS = 15
 
 
 def _sha256_hex(value: str) -> str:
@@ -178,10 +179,10 @@ class BuildStore:
     def _conn(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
         if write:
             self._write_lock.acquire()
-        conn = sqlite3.connect(str(self.db_path), timeout=15.0, isolation_level=None)
+        conn = sqlite3.connect(str(self.db_path), timeout=30.0, isolation_level=None)
         conn.row_factory = sqlite3.Row
         try:
-            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA busy_timeout = 30000;")
             conn.execute("PRAGMA synchronous=NORMAL;")
             conn.execute("PRAGMA foreign_keys=ON;")
             if write:
@@ -199,6 +200,9 @@ class BuildStore:
                 self._write_lock.release()
 
     def _init_schema(self) -> None:
+        with self._write_lock:
+            with self._conn(write=False) as conn:
+                conn.execute("PRAGMA journal_mode=WAL;")
         with self._conn(write=True) as conn:
             conn.executescript(
                 """
@@ -424,7 +428,7 @@ class BuildStore:
         message = f"Runner {name} was deleted"
         for build in affected:
             conn.execute(
-                "UPDATE builds SET status = 'canceled', cancel_requested = 1, lease_id = '', completed_at = ?, updated_at = ?, message = ? WHERE id = ?",
+                "UPDATE builds SET status = 'canceled', cancel_requested = 1, lease_id = '', encrypted_env_secrets = '', completed_at = ?, updated_at = ?, message = ? WHERE id = ?",
                 (now, now, message, build["id"]),
             )
             self._insert_event(conn, build["id"], "build", "status", message, now)
@@ -983,7 +987,7 @@ class BuildStore:
                         conn.execute(
                             """
                             UPDATE builds
-                            SET status = 'canceled', superseded_by = ?, completed_at = ?, updated_at = ?,
+                            SET status = 'canceled', superseded_by = ?, encrypted_env_secrets = '', completed_at = ?, updated_at = ?,
                                 message = ?
                             WHERE id = ?
                             """,
@@ -1065,7 +1069,7 @@ class BuildStore:
                 conn.execute(
                     """
                     UPDATE builds
-                    SET status = 'failed', message = ?,
+                    SET status = 'failed', encrypted_env_secrets = '', message = ?,
                         completed_at = ?, updated_at = ?
                     WHERE id = ?
                     """,
@@ -1120,7 +1124,7 @@ class BuildStore:
                 conn.execute(
                     """
                     UPDATE builds
-                    SET status = 'failed', lease_id = '', message = ?, completed_at = ?, updated_at = ?
+                    SET status = 'failed', lease_id = '', encrypted_env_secrets = '', message = ?, completed_at = ?, updated_at = ?
                     WHERE id = ?
                     """,
                     (msg, current, current, bid),
@@ -1137,6 +1141,41 @@ class BuildStore:
         version = str(runner_info.get("version") or "").strip()
         cache_mode_override = str(runner_info.get("cacheMode") or "").strip()
 
+        def _needs_runner_update(row: sqlite3.Row, eff_cache_mode: str) -> bool:
+            last_seen = int(row["last_seen_at"] or 0)
+            if last_seen <= 0 or (current - last_seen) >= RUNNER_HEARTBEAT_WRITE_INTERVAL_SECONDS:
+                return True
+            return (
+                str(row["native_platform"] or "") != native_platform
+                or str(row["os_name"] or "") != os_name
+                or str(row["arch"] or "") != arch
+                or str(row["version"] or "") != version
+                or str(row["cache_mode"] or "read-write") != eff_cache_mode
+            )
+
+        # Read-only fast path: avoid opening a SQLite write transaction every 1.5s
+        # when the runner's heartbeat is fresh and no queued build can be leased.
+        with self._conn(write=False) as conn:
+            runner_row = self._authenticate_runner(conn, token)
+            runner_name = str(runner_row["name"])
+            effective_cache_mode = (
+                cache_mode_override
+                if cache_mode_override in {"read-write", "read-only", "local-only"}
+                else str(runner_row["cache_mode"] or "read-write")
+            )
+            if not _needs_runner_update(runner_row, effective_cache_mode):
+                queued_probe = conn.execute(
+                    "SELECT 1 FROM builds WHERE status = 'queued' LIMIT 1"
+                ).fetchone()
+                if queued_probe is None:
+                    active_counts = self._active_runner_counts(conn)
+                    me = self._runner_public(
+                        runner_row,
+                        now=current,
+                        active_slots=active_counts.get(runner_name, 0),
+                    )
+                    return {"runner": me, "task": None}
+
         with self._conn(write=True) as conn:
             runner_row = self._authenticate_runner(conn, token)
             runner_id = str(runner_row["id"])
@@ -1146,16 +1185,17 @@ class BuildStore:
                 if cache_mode_override in {"read-write", "read-only", "local-only"}
                 else str(runner_row["cache_mode"] or "read-write")
             )
-            conn.execute(
-                """
-                UPDATE runners
-                SET native_platform = ?, os_name = ?, arch = ?, version = ?,
-                    cache_mode = ?, last_seen_at = ?
-                WHERE id = ?
-                """,
-                (native_platform, os_name, arch, version, effective_cache_mode, current, runner_id),
-            )
-            runner_row = conn.execute("SELECT * FROM runners WHERE id = ?", (runner_id,)).fetchone()
+            if _needs_runner_update(runner_row, effective_cache_mode):
+                conn.execute(
+                    """
+                    UPDATE runners
+                    SET native_platform = ?, os_name = ?, arch = ?, version = ?,
+                        cache_mode = ?, last_seen_at = ?
+                    WHERE id = ?
+                    """,
+                    (native_platform, os_name, arch, version, effective_cache_mode, current, runner_id),
+                )
+                runner_row = conn.execute("SELECT * FROM runners WHERE id = ?", (runner_id,)).fetchone()
             all_runner_rows = conn.execute("SELECT * FROM runners WHERE revoked = 0").fetchall()
             active_counts = self._active_runner_counts(conn)
             all_runners = [
@@ -1192,7 +1232,7 @@ class BuildStore:
                             conn.execute(
                                 """
                                 UPDATE builds
-                                SET status = 'failed', message = ?, completed_at = ?, updated_at = ?
+                                SET status = 'failed', encrypted_env_secrets = '', message = ?, completed_at = ?, updated_at = ?
                                 WHERE id = ?
                                 """,
                                 (fail_msg, current, current, build_dict["id"]),
@@ -1492,10 +1532,12 @@ class BuildStore:
                 next_msg = message or ("Build canceled" if next_status == "canceled" else "Build failed")
                 completed_at = current
 
+            clear_secrets = next_status in TERMINAL_STATUSES
             conn.execute(
                 """
                 UPDATE builds
                 SET status = ?, lease_id = '', deploy_target_key = ?, result_json = ?,
+                    encrypted_env_secrets = CASE WHEN ? THEN '' ELSE encrypted_env_secrets END,
                     message = ?, built_at = ?, completed_at = ?, updated_at = ?
                 WHERE id = ?
                 """,
@@ -1503,6 +1545,7 @@ class BuildStore:
                     next_status,
                     resolved_deploy_key,
                     json.dumps(res, sort_keys=True),
+                    int(clear_secrets),
                     next_msg[:2000],
                     current,
                     completed_at,
@@ -1564,7 +1607,7 @@ class BuildStore:
                 bid = str(row["id"])
                 if row["cancel_requested"]:
                     conn.execute(
-                        "UPDATE builds SET status = 'canceled', completed_at = ?, updated_at = ?, message = 'Canceled before deploy' WHERE id = ?",
+                        "UPDATE builds SET status = 'canceled', encrypted_env_secrets = '', completed_at = ?, updated_at = ?, message = 'Canceled before deploy' WHERE id = ?",
                         (now, now, bid),
                     )
                     continue
@@ -1602,7 +1645,7 @@ class BuildStore:
                     conn.execute(
                         """
                         UPDATE builds
-                        SET status = 'canceled', superseded_by = ?, completed_at = ?, updated_at = ?,
+                        SET status = 'canceled', superseded_by = ?, encrypted_env_secrets = '', completed_at = ?, updated_at = ?,
                             message = ?
                         WHERE id = ?
                         """,
@@ -1640,11 +1683,11 @@ class BuildStore:
                 """
                 UPDATE builds
                 SET status = ?, result_json = ?, message = ?,
-                    encrypted_env_secrets = CASE WHEN ? THEN '' ELSE encrypted_env_secrets END,
+                    encrypted_env_secrets = '',
                     completed_at = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (status, json.dumps(merged_result, sort_keys=True), final_msg[:2000], int(bool(succeeded)), now, now, build_id),
+                (status, json.dumps(merged_result, sort_keys=True), final_msg[:2000], now, now, build_id),
             )
             self._insert_event(
                 conn, build_id, "deploy", "status" if succeeded else "error", final_msg, now
@@ -1667,7 +1710,7 @@ class BuildStore:
                 return self._build_public(row)
             if st in {"queued", "queued_deploy"}:
                 conn.execute(
-                    "UPDATE builds SET status = 'canceled', cancel_requested = 1, completed_at = ?, updated_at = ?, message = 'Canceled by user' WHERE id = ?",
+                    "UPDATE builds SET status = 'canceled', cancel_requested = 1, encrypted_env_secrets = '', completed_at = ?, updated_at = ?, message = 'Canceled by user' WHERE id = ?",
                     (now, now, build_id),
                 )
                 self._insert_event(conn, build_id, "queue", "status", "Canceled by user", now)

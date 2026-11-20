@@ -95,6 +95,40 @@ class StorageGovernanceTests(unittest.TestCase):
         self.assertNotIn('secret', json.dumps(second))
         self.assertFalse(second['policy']['automaticDeletion'])
 
+    def test_inventory_measures_sqlite_metrics_sidecars_and_legacy_json(self):
+        root = Path(self.temp.name)
+        baseline = governance.storage_inventory(now=self.now)
+        base_metrics = {item['id']: item for item in baseline['components']}['metrics']
+        self.assertEqual(base_metrics['status'], 'measured')
+        self.assertEqual(base_metrics['bytes'], 0)
+
+        (root / 'metrics-history.sqlite3').write_bytes(b's' * 4096)
+        (root / 'metrics-history.sqlite3-wal').write_bytes(b'w' * 512)
+        (root / 'metrics-history.sqlite3-shm').write_bytes(b'm' * 256)
+        sqlite_only = governance.storage_inventory(now=self.now + 3600)
+        sqlite_metrics = {item['id']: item for item in sqlite_only['components']}['metrics']
+        self.assertEqual(sqlite_metrics['status'], 'measured')
+        self.assertEqual(sqlite_metrics['bytes'], 4096 + 512 + 256)
+        self.assertEqual(sqlite_metrics['growthBytes'], 4096 + 512 + 256)
+
+        # Legacy metrics-history.json alongside SQLite is counted in total bytes too.
+        (root / 'metrics-history.json').write_bytes(b'j' * 128)
+        combined = governance.storage_inventory(now=self.now + 7200)
+        combined_metrics = {item['id']: item for item in combined['components']}['metrics']
+        self.assertEqual(combined_metrics['status'], 'measured')
+        self.assertEqual(combined_metrics['bytes'], 4096 + 512 + 256 + 128)
+        self.assertEqual(combined_metrics['growthBytes'], 128)
+
+        # Symlinked metrics sidecar refuses to follow and reports unknown.
+        target = root / 'outside.bin'
+        target.write_bytes(b'x' * 64)
+        (root / 'metrics-history.sqlite3-wal').unlink()
+        (root / 'metrics-history.sqlite3-wal').symlink_to(target)
+        symlinked = governance.storage_inventory(now=self.now + 10800)
+        symlinked_metrics = {item['id']: item for item in symlinked['components']}['metrics']
+        self.assertEqual(symlinked_metrics['status'], 'unknown')
+        self.assertIsNone(symlinked_metrics['bytes'])
+
 
 
 

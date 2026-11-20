@@ -86,9 +86,10 @@ def fetch_bytes(addr: str, path: str, token: str, limit: int, timeout: float = R
 
 
 def sources_from_allocations(allocations: Any) -> list[Source]:
-    rows: list[Source] = []
+    running_rows: list[Source] = []
+    terminal_rows: list[Source] = []
     if not isinstance(allocations, list):
-        return rows
+        return running_rows
     for alloc in allocations:
         if not isinstance(alloc, dict):
             continue
@@ -101,10 +102,11 @@ def sources_from_allocations(allocations: Any) -> list[Source]:
         names = list(tasks) or [str(alloc.get("TaskGroup") or job)]
         group = str(alloc.get("TaskGroup") or "")
         node = str(alloc.get("NodeName") or "")
+        target = running_rows if status == "running" else terminal_rows
         for task in names:
             for stream in STREAMS:
-                rows.append(Source(alloc=alloc_id, job=job, task=str(task), task_group=group, stream=stream, node=node))
-    return rows
+                target.append(Source(alloc=alloc_id, job=job, task=str(task), task_group=group, stream=stream, node=node))
+    return running_rows + terminal_rows
 
 
 def round_robin(sources: list[Source], start: int, cap: int = MAX_SOURCES) -> list[Source]:
@@ -219,21 +221,31 @@ def encode_jsonline(rows: list[dict[str, str]]) -> bytes:
 
 
 def post_jsonline(url: str, rows: list[dict[str, str]], timeout: float = INSERT_TIMEOUT) -> None:
-    payload = encode_jsonline(rows)
-    if not payload:
+    if not rows:
         return
-    offset = 0
-    while offset < len(payload):
-        chunk = payload[offset : offset + INSERT_MAX_BYTES]
-        newline = chunk.rfind(b"\n")
-        if newline < 0 and offset + INSERT_MAX_BYTES < len(payload):
-            raise OSError("log line exceeds VictoriaLogs insert batch")
-        if newline >= 0 and offset + INSERT_MAX_BYTES < len(payload):
-            chunk = chunk[: newline + 1]
-        request = urllib.request.Request(url, data=chunk, method="POST", headers={"Content-Type": "application/json"})
+    buf = bytearray()
+
+    def _flush() -> None:
+        if not buf:
+            return
+        request = urllib.request.Request(
+            url,
+            data=bytes(buf),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
         with urllib.request.urlopen(request, timeout=timeout) as response:
             response.read()
-        offset += len(chunk)
+        buf.clear()
+
+    for row in rows:
+        encoded = (json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+        if len(encoded) > INSERT_MAX_BYTES:
+            raise OSError("log line exceeds VictoriaLogs insert batch")
+        if buf and len(buf) + len(encoded) > INSERT_MAX_BYTES:
+            _flush()
+        buf.extend(encoded)
+    _flush()
 
 
 class Shipper:
@@ -249,8 +261,10 @@ class Shipper:
         self.list_files = list_files
         self.readat = readat
         self.insert = insert
+        self._lock = threading.Lock()
         self.cursors: dict[str, Cursor] = {}
         self.round = 0
+        self.terminal_round = 0
         self.exported = 0
         self.dropped = 0
         self.nomad_up = 1
@@ -284,18 +298,20 @@ class Shipper:
             temporary.write_text(json.dumps({"cursors": data}))
             os.replace(temporary, path)
         except OSError:
-            self.gaps.update({key: time.time() for key in self.cursors})
-
+            stamp = time.time()
+            with self._lock:
+                self.gaps.update({key: stamp for key in self.cursors})
 
     def poll(self) -> None:
         try:
             allocations = self.list_allocs()
-            self.nomad_up = 1
+            with self._lock:
+                self.nomad_up = 1
         except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, ValueError):
-            self.nomad_up = 0
+            with self._lock:
+                self.nomad_up = 0
             return
         sources = sources_from_allocations(allocations)
-        self.last_sources = len(sources)
         running = {str(a.get('ID')) for a in allocations if isinstance(a, dict) and a.get('ClientStatus') == 'running'}
         monitored = {source.key for source in sources if source.alloc in running}
         if len(monitored) > 2048:
@@ -305,25 +321,47 @@ class Shipper:
             if source.key in monitored:
                 pair = (source.job, source.task)
                 counts[pair] = counts.get(pair, 0) + 1
-        self.source_counts = counts
+        live = {source.key for source in sources}
+        with self._lock:
+            self.last_sources = len(sources)
+            self.source_counts = counts
+            self.backlogs = {key: size for key, size in self.backlogs.items() if key in live}
+            backlogs = dict(self.backlogs)
+        # Prioritize running allocations over terminal allocations when capping to MAX_SOURCES.
+        running_sources = [source for source in sources if source.alloc in running]
+        terminal_sources = [source for source in sources if source.alloc not in running]
+        selected_running = round_robin(running_sources, self.round, cap=MAX_SOURCES)
+        remaining_cap = max(0, MAX_SOURCES - len(selected_running))
+        selected_terminal = (
+            round_robin(terminal_sources, self.terminal_round, cap=remaining_cap)
+            if remaining_cap > 0
+            else []
+        )
+        selected_sources = selected_running + selected_terminal
         # Commit offsets only after storage accepted the complete batch. A crash
         # may replay a batch (at-least-once), but must not silently skip it.
         previous_cursors = dict(self.cursors)
         batch: list[dict[str, str]] = []
         caught_up = set()
-        visited = []
-        live = {source.key for source in sources}
-        self.backlogs = {key: size for key, size in self.backlogs.items() if key in live}
-        backlogs = dict(self.backlogs)
+        visited: list[Source] = []
+        visited_running = 0
+        visited_terminal = 0
+        dropped_rotated = 0
+        gap_updates: dict[str, float] = {}
         read_bytes: dict[str, int] = {}
         listings: dict[str, Any] = {}
         remaining = POLL_READ_LIMIT
         observed = rfc3339()
-        for source in round_robin(sources, self.round):
+        for source in selected_sources:
             if remaining <= 0:
                 break
             visited.append(source)
-            self.coverage.pop(source.key, None)
+            if source.alloc in running:
+                visited_running += 1
+            else:
+                visited_terminal += 1
+            with self._lock:
+                self.coverage.pop(source.key, None)
             try:
                 # An allocation's tasks and both streams share one directory.
                 # Cache failures too, so an unreachable allocation is tried once per poll.
@@ -351,7 +389,8 @@ class Shipper:
                 files = [item for item in files if item[0] > prior]
                 if not files:
                     continue
-                self.gaps[source.key] = time.time()
+                dropped_rotated += max(1, files[0][0] - prior) if prior >= 0 else 1
+                gap_updates[source.key] = time.time()
                 cursor = Cursor(file=files[0][1], offset=0)
             else:
                 files = [item for item in files if item[0] >= matching[0][0]]
@@ -368,7 +407,7 @@ class Shipper:
                 try:
                     data = self.readat(source.alloc, path, start, min(size - start, source_remaining, remaining))
                 except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
-                    self.gaps[source.key] = time.time()
+                    gap_updates[source.key] = time.time()
                     break
                 lines, leftover = split_lines(data, leftover)
                 cursor = Cursor(file=path, offset=start + len(data), leftover=leftover)
@@ -387,33 +426,45 @@ class Shipper:
                 caught_up.add(source.key)
         # Advance only past visited sources when the shared byte budget runs out.
         # This lets quiet sources and later allocations run on the following poll.
-        self.round += len(visited)
+        self.round += visited_running
+        self.terminal_round += visited_terminal
         self.cursors = {key: value for key, value in self.cursors.items() if key in live}
+        if dropped_rotated or gap_updates:
+            with self._lock:
+                self.dropped += dropped_rotated
+                self.gaps.update(gap_updates)
         try:
             if batch:
                 self.insert(batch)
-            self.exported += len(batch)
-            self.tempo_poll_errors += sum(row["task"] == "tempo" and 'level=error' in row["_msg"]
-                                          and 'failed to poll' in row["_msg"] for row in batch)
+            tempo_errors = sum(
+                row["task"] == "tempo" and 'level=error' in row["_msg"] and 'failed to poll' in row["_msg"]
+                for row in batch
+            )
             self.save_checkpoint()
             stamp = time.time()
             fresh = {source.key: (source.job, source.task, stamp) for source in visited if source.key in caught_up and source.key in monitored}
-            self.coverage = {key: value for key, value in self.coverage.items() if key in monitored and stamp-value[2] < 120}
-            self.coverage.update(fresh)
-            self.gaps = {key: value for key, value in self.gaps.items() if key in monitored and stamp-value < 900}
+            with self._lock:
+                self.exported += len(batch)
+                self.tempo_poll_errors += tempo_errors
+                self.coverage = {key: value for key, value in self.coverage.items() if key in monitored and stamp - value[2] < 120}
+                self.coverage.update(fresh)
+                self.gaps = {key: value for key, value in self.gaps.items() if key in monitored and stamp - value < 900}
         except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
-            self.export_retries += 1
             self.cursors = previous_cursors
             self.save_checkpoint()
-            self.gaps.update({source.key: time.time() for source in visited if source.key in monitored})
+            fail_stamp = time.time()
             for key, size in read_bytes.items():
                 backlogs[key] += size
+            with self._lock:
+                self.export_retries += 1
+                self.gaps.update({source.key: fail_stamp for source in visited if source.key in monitored})
         # Keep unvisited sources in the estimate instead of reporting a false zero
         # whenever a different part of the round-robin is being read.
-        self.backlogs = backlogs
-        self.backlog_bytes = sum(backlogs.values())
+        with self._lock:
+            self.backlogs = backlogs
+            self.backlog_bytes = sum(backlogs.values())
 
-    def coverage_snapshot(self):
+    def _coverage_snapshot_locked(self):
         # Both stdout/stderr and every discovered allocation must be caught up.
         if not self.nomad_up:
             return []
@@ -426,30 +477,43 @@ class Shipper:
                  'gapAt': gap_times.get((app, task), 0)}
                 for (app, task), count in list(self.source_counts.items())[:512]]
 
+    def coverage_snapshot(self):
+        with self._lock:
+            return self._coverage_snapshot_locked()
+
     def metrics(self) -> str:
+        with self._lock:
+            backlog_bytes = self.backlog_bytes
+            export_retries = self.export_retries
+            tempo_poll_errors = self.tempo_poll_errors
+            last_sources = self.last_sources
+            exported = self.exported
+            dropped = self.dropped
+            nomad_up = self.nomad_up
+            coverage = self._coverage_snapshot_locked()
         return "".join(
             [
                 "# HELP luma_observe_log_backlog_bytes Last observed unread bytes across discovered log sources.\n",
                 "# TYPE luma_observe_log_backlog_bytes gauge\n",
-                f"luma_observe_log_backlog_bytes {self.backlog_bytes}\n",
-                f"luma_observe_log_export_retries_total {self.export_retries}\n",
-                f"luma_observe_tempo_poll_errors_total {self.tempo_poll_errors}\n",
-                *[f'luma_observe_log_coverage_timestamp_seconds{{app={json.dumps(r["app"])},task={json.dumps(r["task"])}}} {r["at"]}\n' for r in self.coverage_snapshot()],
+                f"luma_observe_log_backlog_bytes {backlog_bytes}\n",
+                f"luma_observe_log_export_retries_total {export_retries}\n",
+                f"luma_observe_tempo_poll_errors_total {tempo_poll_errors}\n",
+                *[f'luma_observe_log_coverage_timestamp_seconds{{app={json.dumps(r["app"])},task={json.dumps(r["task"])}}} {r["at"]}\n' for r in coverage],
                 "# HELP luma_observe_log_shipper_up 1 if the shipper process is running.\n",
                 "# TYPE luma_observe_log_shipper_up gauge\n",
                 "luma_observe_log_shipper_up 1\n",
                 "# HELP luma_observe_log_shipper_sources Allocation log sources discovered this poll.\n",
                 "# TYPE luma_observe_log_shipper_sources gauge\n",
-                f"luma_observe_log_shipper_sources {self.last_sources}\n",
+                f"luma_observe_log_shipper_sources {last_sources}\n",
                 "# HELP luma_observe_log_shipper_exported_lines_total Lines accepted by VictoriaLogs.\n",
                 "# TYPE luma_observe_log_shipper_exported_lines_total counter\n",
-                f"luma_observe_log_shipper_exported_lines_total {self.exported}\n",
+                f"luma_observe_log_shipper_exported_lines_total {exported}\n",
                 "# HELP luma_observe_log_shipper_dropped_lines_total Lines dropped because VictoriaLogs was unavailable.\n",
                 "# TYPE luma_observe_log_shipper_dropped_lines_total counter\n",
-                f"luma_observe_log_shipper_dropped_lines_total {self.dropped}\n",
+                f"luma_observe_log_shipper_dropped_lines_total {dropped}\n",
                 "# HELP luma_observe_log_shipper_nomad_up 1 if the last Nomad list succeeded.\n",
                 "# TYPE luma_observe_log_shipper_nomad_up gauge\n",
-                f"luma_observe_log_shipper_nomad_up {self.nomad_up}\n",
+                f"luma_observe_log_shipper_nomad_up {nomad_up}\n",
             ]
         )
 

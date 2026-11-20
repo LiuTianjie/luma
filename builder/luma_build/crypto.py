@@ -13,22 +13,41 @@ from pathlib import Path
 from .errors import BuildError
 
 
-def _derive_fernet_key(raw_secret: str) -> bytes:
+_PBKDF2_SALT = b"luma-build:secret-box:v2"
+_PBKDF2_ITERATIONS = 200_000
+
+
+def _derive_legacy_fernet_key(raw_secret: str) -> bytes:
     digest = hashlib.sha256(raw_secret.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest)
+
+
+def _derive_fernet_key(raw_secret: str) -> bytes:
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        raw_secret.encode("utf-8"),
+        _PBKDF2_SALT,
+        _PBKDF2_ITERATIONS,
+        dklen=32,
+    )
     return base64.urlsafe_b64encode(digest)
 
 
 class SecretBox:
     """Encrypt and decrypt secrets stored in the luma-build database."""
 
-    def __init__(self, key_bytes: bytes) -> None:
+    def __init__(self, key_bytes: bytes, *, fallback_keys: tuple[bytes, ...] = ()) -> None:
         try:
-            from cryptography.fernet import Fernet
+            from cryptography.fernet import Fernet, MultiFernet
         except ImportError as exc:
             raise BuildError(
                 "cryptography is required on the luma-build server; install 'luma-build[server]'"
             ) from exc
-        self._fernet = Fernet(key_bytes)
+        primary = Fernet(key_bytes)
+        if fallback_keys:
+            self._fernet: Fernet | MultiFernet = MultiFernet([primary, *(Fernet(k) for k in fallback_keys)])
+        else:
+            self._fernet = primary
 
     @classmethod
     def from_env_or_file(cls, data_dir: Path) -> SecretBox:
@@ -36,7 +55,10 @@ class SecretBox:
         if raw_env:
             if len(raw_env) < 16:
                 raise BuildError("LUMA_BUILD_MASTER_KEY must be at least 16 characters")
-            return cls(_derive_fernet_key(raw_env))
+            return cls(
+                _derive_fernet_key(raw_env),
+                fallback_keys=(_derive_legacy_fernet_key(raw_env),),
+            )
 
         data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:

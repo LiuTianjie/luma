@@ -1,4 +1,3 @@
-import type { DashboardStorageClass } from "./types";
 import { apiGet, apiPost } from "./apiClient";
 
 export type SecretsPayload = {
@@ -51,11 +50,7 @@ export type GitRefsPayload = {
   refs?: GitRef[];
 };
 
-export type StorageClassesPayload = {
-  storageClasses?: DashboardStorageClass[];
-};
-
-export type ControlResourcesPayload = SecretsPayload & RegistriesPayload & GitProvidersPayload & StorageClassesPayload;
+export type ControlResourcesPayload = SecretsPayload & RegistriesPayload & GitProvidersPayload;
 
 export async function fetchControlResources({ token, signal }: { token: string; signal?: AbortSignal }): Promise<ControlResourcesPayload> {
   return apiGet<ControlResourcesPayload>("/v1/control-resources", token, signal);
@@ -94,10 +89,6 @@ export async function fetchGitProviderRefs({
     token,
     signal,
   );
-}
-
-export async function fetchStorageClasses({ token, signal }: { token: string; signal?: AbortSignal }): Promise<StorageClassesPayload> {
-  return apiGet<StorageClassesPayload>("/v1/storage", token, signal);
 }
 
 export async function setSecret({ token, name, value, scope }: { token: string; name: string; value: string; scope?: string }) {

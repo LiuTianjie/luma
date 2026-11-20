@@ -10,6 +10,7 @@ import json
 import hashlib
 import math
 import secrets
+import threading
 import time
 from typing import Any, Callable
 
@@ -45,6 +46,35 @@ OBSERVE_ALERTS = {
     'app.nomad_failed': ('sum by (app) (luma_observe_job_failed)', 'app'),
     'observe.metrics_age': ('label_replace(clamp_min(time()-max(timestamp(otelcol_process_uptime_seconds_total)),0),"app","metrics","","")', 'app'),
 }
+
+
+_SCHEMA_LOCK = threading.Lock()
+_SCHEMA_INITIALIZED: set[tuple[str, int, int]] = set()
+
+
+def _db_identity() -> tuple[str, int, int] | None:
+    path = database.database_path().resolve()
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (str(path), st.st_dev, st.st_ino)
+
+
+def _ensure_schema() -> None:
+    ident = _db_identity()
+    if ident is not None:
+        with _SCHEMA_LOCK:
+            if ident in _SCHEMA_INITIALIZED:
+                return
+    with database.transaction(immediate=True, owner='alerting.schema') as conn:
+        _schema(conn)
+    ident = _db_identity()
+    if ident is not None:
+        with _SCHEMA_LOCK:
+            if len(_SCHEMA_INITIALIZED) >= 256:
+                _SCHEMA_INITIALIZED.clear()
+            _SCHEMA_INITIALIZED.add(ident)
 
 
 def _schema(conn):
@@ -172,8 +202,8 @@ def _setting(conn, key, default='0'):
 
 def save_rule(body, *, now=None):
     now = _now(now)
+    _ensure_schema()
     with database.transaction(immediate=True) as conn:
-        _schema(conn)
         identifier = _text(body['id'],'id',128) if body.get('id') is not None else _id('rule_')
         existing = conn.execute('SELECT * FROM alert_rules WHERE id=?',(identifier,)).fetchone()
         data = {**(_rule(conn,existing) if existing else dict(enabled=True,target='*',repeatSeconds=3600,noData='keep',silencedUntil=0,channelIds=[],severity='warning',forSeconds=300)),**body}
@@ -230,8 +260,8 @@ def save_rule(body, *, now=None):
 
 def save_channel(body, *, now=None):
     now = _now(now)
+    _ensure_schema()
     with database.transaction(immediate=True) as conn:
-        _schema(conn)
         identifier = _text(body['id'],'id',128) if body.get('id') is not None else _id('channel_')
         old = conn.execute('SELECT * FROM alert_channels WHERE id=?',(identifier,)).fetchone()
         name = _text(body.get('name',old['name'] if old else None),'name')
@@ -430,8 +460,8 @@ def _observations(state,metric,now, *, threshold=float('inf')):
 def tick(state: dict[str,Any], *, now=None, services=None):
     """Evaluate once; no network. Call every 15 seconds independently of browser state."""
     now = _now(now)
+    _ensure_schema()
     with database.transaction(immediate=True) as conn:
-        _schema(conn)
         conn.execute('DELETE FROM alert_source_silences WHERE until_at<?', (now - 86400,))
         previous = float(_setting(conn,'last_evaluated_at'))
         rules = conn.execute('SELECT * FROM alert_rules WHERE enabled=1').fetchall()
@@ -533,11 +563,11 @@ def tick(state: dict[str,Any], *, now=None, services=None):
 def deliver_pending(*, now=None, transport: Callable = send_feishu, limit=10):
     """Claim durable leases, send outside transaction, retry up to eight attempts."""
     now = _now(now)
+    _ensure_schema()
     count = 0
     for _ in range(min(max(int(limit),0),100)):
         lease = secrets.token_hex(16)
         with database.transaction(immediate=True) as conn:
-            _schema(conn)
             row = conn.execute("SELECT * FROM alert_outbox WHERE ((status IN ('pending','retry') AND next_attempt_at<=?) OR (status='sending' AND lease_until<=?)) ORDER BY id LIMIT 1",(now,now)).fetchone()
             if not row: break
             if row['attempts']>=8:
@@ -586,7 +616,6 @@ def deliver_pending(*, now=None, transport: Callable = send_feishu, limit=10):
             # Even HTTP/server errors can contain echoed secrets. Persist a fixed diagnostic only.
             error = 'Notification failed; check Feishu application credentials, group access, network, and rate limits'
         with database.transaction(immediate=True) as conn:
-            _schema(conn)
             claimed = conn.execute('SELECT * FROM alert_outbox WHERE id=? AND lease_token=?',(row['id'],lease)).fetchone()
             if not claimed: continue
             status = ('failed' if claimed['attempts']>=8 or not retryable else 'retry') if error else 'sent'
@@ -701,11 +730,10 @@ def dispatch(method: str, resource: str, body=None, query=None):
         return preview(body)
     if method=='POST' and name=='rules' and not identifier: return save_rule(body)
     if method=='POST' and name=='channels' and not identifier: return save_channel(body)
-    # Once the schema exists, dashboard GETs only read SQLite. Do not make
-    # them queue for a RESERVED lock behind active writers or other GETs.
-    # Keep write operations immediate and let readers use the WAL snapshot.
+    # Initialize schema once per DB inside an immediate write transaction so
+    # subsequent dashboard GETs only read SQLite and never trigger DDL lock upgrades.
+    _ensure_schema()
     with database.transaction(immediate=method != 'GET') as conn:
-        _schema(conn)
         if method=='GET' and name=='applications':
             rows = conn.execute("SELECT application AS app FROM alert_incidents WHERE application!='' UNION SELECT target AS app FROM alert_rules WHERE metric LIKE 'app.%' AND target!='*' ORDER BY app LIMIT 1000")
             return {'items':[r['app'] for r in rows]}

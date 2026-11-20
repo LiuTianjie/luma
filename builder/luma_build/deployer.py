@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import ssl
 import threading
 import time
@@ -20,6 +21,56 @@ import yaml
 
 from .errors import BuildError
 from .scheduler import normalize_platform, parse_platforms
+
+
+def _normalize_app_slug(value: str) -> str:
+    return re.sub(r"[^a-z0-9-]+", "-", str(value or "").strip().lower()).strip("-")
+
+
+def _extract_manifest_name(manifest_text: str) -> str:
+    if not manifest_text or not manifest_text.strip():
+        return ""
+    try:
+        data = yaml.safe_load(manifest_text)
+    except yaml.YAMLError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("name") or "").strip()
+
+
+def _authorized_app_names(build_record: dict[str, Any], request: dict[str, Any]) -> list[str]:
+    expected: list[str] = []
+    for raw in (
+        build_record.get("appName"),
+        build_record.get("app_name"),
+        request.get("appName"),
+        request.get("app_name"),
+        _extract_manifest_name(str(request.get("manifest") or "")),
+    ):
+        clean = str(raw or "").strip()
+        if clean and _normalize_app_slug(clean) not in {_normalize_app_slug(item) for item in expected}:
+            expected.append(clean)
+    return expected
+
+
+def _validate_manifest_app_name(manifest_data: dict[str, Any], authorized_names: list[str]) -> None:
+    if not authorized_names:
+        return
+    actual = str(manifest_data.get("name") or "").strip()
+    actual_slug = _normalize_app_slug(actual)
+    for expected in authorized_names:
+        expected_slug = _normalize_app_slug(expected)
+        if not expected_slug:
+            continue
+        if not actual_slug:
+            raise BuildError(
+                f"deployment manifest is missing required name matching authorized app {expected!r}"
+            )
+        if actual_slug != expected_slug:
+            raise BuildError(
+                f"deployment manifest name {actual!r} does not match authorized app {expected!r}"
+            )
 
 
 def extract_manifest_target_hints(manifest_text: str) -> dict[str, list[str]]:
@@ -320,6 +371,7 @@ class ControlDeployClient:
         manifest_text = str(result.get("manifest") or request.get("manifest") or "").strip()
         if not manifest_text:
             raise BuildError("no Luma deployment manifest (.luma.yml or luma.compose.yml) produced by build")
+        authorized_apps = _authorized_app_names(build_record, request)
 
         source_name = f"{build_record.get('repoUrl')}@{result.get('commit') or build_record.get('ref')}"
 
@@ -330,6 +382,7 @@ class ControlDeployClient:
             sidecar = yaml.safe_load(manifest_text) or {}
             if not isinstance(sidecar, dict):
                 raise BuildError("luma.compose.yml must be a YAML mapping")
+            _validate_manifest_app_name(sidecar, authorized_apps)
             if request.get("region"):
                 sidecar["region"] = request["region"]
             if request.get("node") and isinstance(sidecar.get("services"), dict):
@@ -357,6 +410,7 @@ class ControlDeployClient:
         manifest_data = yaml.safe_load(manifest_text) or {}
         if not isinstance(manifest_data, dict):
             raise BuildError(".luma.yml must be a YAML mapping")
+        _validate_manifest_app_name(manifest_data, authorized_apps)
         manifest_data.pop("build", None)
         manifest_data["image"] = built_image
         for override_key in ("region", "node", "exposure", "domain"):

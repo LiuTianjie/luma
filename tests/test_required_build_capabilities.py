@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import io
-import json
 import unittest
 from unittest.mock import Mock, patch
 
@@ -141,9 +140,9 @@ class BuildCapabilityControlTests(unittest.TestCase):
         self.state = builder_state()
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
-        self.stack.enter_context(patch("luma.control.build_queue.scheduling_state", return_value=self.state))
         for name, kwargs in {
             "load_state": {"return_value": self.state},
+            "load_auth_state": {"return_value": self.state},
             "load_entity": {"side_effect": lambda kind, identifier: self.state.get(kind, {}).get(identifier)},
             "require_token": {}, "_reject_control_maintenance": {}, "_apply_state_secrets": {},
             "load_config": {}, "_build_proxy_for_request": {"return_value": ""},
@@ -154,99 +153,6 @@ class BuildCapabilityControlTests(unittest.TestCase):
         }.items():
             self.stack.enter_context(patch.object(server, name, **kwargs))
         self.body = {"repoUrl": "https://github.com/acme/web.git", "requireBuildCapabilities": [CAPABILITY]}
-        self.build_result = {"image": "registry.internal/acme/web:abc", "manifest": "name: web\nregion: home\nexposure: none\n", "buildCapabilities": [CAPABILITY, NATIVE]}
-
-    def test_old_builder_is_rejected_before_build_or_enqueue(self):
-        self.state["nodes"]["builder"]["agent"]["capabilities"] = ["docker-build"]
-        with patch.object(server, "_run_node_agent_task") as task:
-            for queued in (False, True):
-                with self.assertRaisesRegex(LumaError, "builder builder.*" + CAPABILITY):
-                    server.handle_build_deploy("test", {**self.body, "queue": queued})
-            task.assert_not_called()
-            server._create_build_run.assert_not_called()
-
-    def test_missing_result_ack_never_deploys(self):
-        for acknowledgement in (None, [], CAPABILITY, ["other-v1"]):
-            with self.subTest(acknowledgement=acknowledgement), patch.object(server, "_run_node_agent_task", return_value={**self.build_result, "buildCapabilities": acknowledgement}), patch.object(server, "handle_deployment") as deploy, patch.object(server, "handle_compose_deployment") as compose:
-                with self.assertRaisesRegex(LumaError, "Builder did not confirm"):
-                    server.handle_build_deploy("test", self.body)
-                deploy.assert_not_called()
-                compose.assert_not_called()
-                self.assertEqual(server._complete_build_run.call_args.args[1], "failed")
-
-    def test_requirement_reaches_agent_and_success_evidence(self):
-        with patch.object(server, "_run_node_agent_task", return_value=self.build_result) as task, patch.object(server, "handle_deployment", return_value={"service": "web"}) as deploy:
-            result = server.handle_build_deploy("test", self.body)
-            self.assertEqual(task.call_args.args[3]["requireBuildCapabilities"], [NATIVE, CAPABILITY])
-            self.assertEqual(result["buildCapabilities"], [NATIVE, CAPABILITY])
-            self.assertEqual(deploy.call_args.args[1]["gitSource"]["requireBuildCapabilities"], [CAPABILITY])
-
-    def test_external_manifest_sends_validated_build_and_placement_only(self):
-        manifest = """name: worker
-region: home
-node: arm-worker
-build:
-  context: app
-  dockerfile: deploy/Dockerfile
-  target: worker
-  x-luma-git-contexts:
-    teachvideo:
-      lock: deploy/teachvideo.lock.json
-env:
-  DATABASE_PASSWORD: runtime-secret-never-on-builder
-  API_KEY: ${RUNTIME_API_KEY}
-labels:
-  - runtime-sensitive-label
-"""
-        body = {"repoUrl": self.body["repoUrl"], "manifest": manifest}
-        returned = {**self.build_result, "manifest": "", "fallbackManifestUsed": True}
-        with patch.object(server, "_run_node_agent_task", return_value=returned) as task, patch.object(server, "handle_deployment", return_value={"service": "worker"}) as deploy:
-            result = server.handle_build_deploy("test", body)
-        payload = task.call_args.args[3]
-        self.assertEqual(payload["fallbackBuild"], {"context": "app", "dockerfile": "deploy/Dockerfile", "target": "worker", "x-luma-git-contexts": {"teachvideo": {"lock": "deploy/teachvideo.lock.json"}}})
-        self.assertEqual(payload["fallbackPlacement"], {"region": "home", "node": "arm-worker"})
-        self.assertNotIn("platform", payload["fallbackBuild"])
-        for secret in ("runtime-secret-never-on-builder", "RUNTIME_API_KEY", "runtime-sensitive-label", "DATABASE_PASSWORD"):
-            self.assertNotIn(secret, json.dumps(payload))
-        self.assertNotIn("manifest", payload)
-        self.assertEqual(payload["requireBuildCapabilities"], [NATIVE, CAPABILITY])
-        self.assertEqual(result["buildCapabilities"], [NATIVE, CAPABILITY])
-        self.assertIn("runtime-secret-never-on-builder", deploy.call_args.args[1]["manifest"])
-        self.assertEqual(server._create_build_run.call_args.args[0]["requireBuildCapabilities"], [CAPABILITY])
-
-    def test_external_manifest_build_fields_are_validated_before_builder_dispatch(self):
-        for build in ("target: '${STAGE}'", "secrets: [runtime-secret]", "x-luma-git-contexts: {extra: {lock: ../outside}}"):
-            with self.subTest(build=build), patch.object(server, "_run_node_agent_task") as task:
-                with self.assertRaises(LumaError):
-                    server.handle_build_deploy("test", {"repoUrl": self.body["repoUrl"], "manifest": "name: worker\nregion: home\nbuild:\n  " + build + "\n"})
-                task.assert_not_called()
-
-    def test_external_manifest_requires_builder_support_without_explicit_flag(self):
-        self.state["nodes"]["builder"]["agent"]["capabilities"] = ["docker-build"]
-        with patch.object(server, "_run_node_agent_task") as task:
-            with self.assertRaisesRegex(LumaError, CAPABILITY):
-                server.handle_build_deploy("test", {"repoUrl": self.body["repoUrl"], "manifest": "name: worker\nregion: home\nbuild:\n  target: worker\n"})
-            task.assert_not_called()
-
-    def test_generic_capability_ack_does_not_confirm_external_input_was_applied(self):
-        with patch.object(server, "_run_node_agent_task", return_value={**self.build_result, "manifest": ""}), patch.object(server, "handle_deployment") as deploy:
-            with self.assertRaisesRegex(LumaError, "fallback manifest build inputs"):
-                server.handle_build_deploy("test", {"repoUrl": self.body["repoUrl"], "manifest": "name: worker\nregion: home\nbuild:\n  target: worker\n"})
-            deploy.assert_not_called()
-
-    def test_repository_manifest_owns_build_and_deploy_when_external_fallback_exists(self):
-        with patch.object(server, "_run_node_agent_task", return_value=self.build_result), patch.object(server, "handle_deployment", return_value={"service": "web"}) as deploy:
-            server.handle_build_deploy("test", {"repoUrl": self.body["repoUrl"], "manifest": "name: external-worker\nregion: home\nbuild:\n  target: worker\n"})
-        self.assertIn("name: web", deploy.call_args.args[1]["manifest"])
-        self.assertNotIn("external-worker", deploy.call_args.args[1]["manifest"])
-
-    def test_omitting_requirements_cannot_use_a_pre_policy_builder(self):
-        self.state["nodes"]["builder"]["agent"]["capabilities"] = ["docker-build"]
-        self.build_result.pop("buildCapabilities")
-        with patch.object(server, "_run_node_agent_task", return_value=self.build_result) as task, patch.object(server, "handle_deployment", return_value={"service": "web"}):
-            with self.assertRaisesRegex(LumaError, NATIVE):
-                server.handle_build_deploy("test", {"repoUrl": self.body["repoUrl"]})
-            task.assert_not_called()
 
     def test_fresh_queue_state_rechecks_agent_before_creating_task(self):
         live = builder_state(["docker-build"])
@@ -265,11 +171,11 @@ labels:
         self.assertIn(CAPABILITY, state["agentTasks"]["task-1"]["message"])
         payload.assert_not_called()
 
-    def test_retry_cannot_drop_original_requirements(self):
-        self.state["buildRuns"] = {"build-1": {"request": self.body}}
-        with patch.object(server, "handle_build_deploy", return_value={}) as build:
+    def test_legacy_remote_build_and_retry_return_retirement_error(self):
+        with self.assertRaisesRegex(LumaError, "Legacy built-in remote build queue has been retired"):
+            server.handle_build_deploy("test", self.body)
+        with self.assertRaisesRegex(LumaError, "Legacy built-in remote build queue has been retired"):
             server.handle_build_run_retry("test", "build-1", {"requireBuildCapabilities": []})
-            self.assertEqual(build.call_args.args[1]["requireBuildCapabilities"], [CAPABILITY])
 
     def test_local_request_does_not_silently_accept_remote_requirement(self):
         with self.assertRaisesRegex(LumaError, "only for remote"):

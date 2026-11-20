@@ -211,12 +211,12 @@ export async function retryBuildRunStream(token: string, id: string, onStep: (st
 }
 
 export async function registryServeStream(
-  request: { token: string; node: string; port?: string; image?: string; name?: string; storageClass?: string },
+  request: { token: string; node: string; port?: string; image?: string; name?: string },
   onStep: (step: DeployStep) => void,
 ): Promise<unknown> {
   const body: Record<string, unknown> = { node: request.node };
   if (request.port && request.port.trim()) body.port = Number(request.port);
-  for (const [src, dst] of [["image", "image"], ["name", "name"], ["storageClass", "storageClass"]] as const) {
+  for (const [src, dst] of [["image", "image"], ["name", "name"]] as const) {
     const value = request[src];
     if (value && value.trim()) body[dst] = value.trim();
   }

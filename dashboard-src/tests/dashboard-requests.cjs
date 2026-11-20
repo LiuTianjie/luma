@@ -5,10 +5,10 @@ const Module = require('node:module');
 const test = require('node:test');
 const ts = require('typescript');
 function load(name, imports = {}) {
-  const filename = path.resolve(__dirname, '../src', name + '.ts');
+  const filename = path.resolve(__dirname, '../src', name.replace(/\.ts$/, '') + '.ts');
   const mod = new Module(filename, module);
   mod.paths = module.paths;
-  mod.require = (id) => imports[id] || require(id);
+  mod.require = (id) => imports[id] || imports[id.replace(/\.ts$/, '')] || require(id);
   mod._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, filename);
   return mod.exports;
 }
@@ -47,18 +47,75 @@ test('alert tabs fetch only displayed resources, preserving auth and cancellatio
   }
 });
 
-// Small hook runner: exercises effects, cleanup and pending network responses
-// without a browser or real timers; no production hook logic is reproduced.
+// Small hook runner backed by real TanStack Query QueryClient + QueryObserver:
+// exercises effects, cleanup, caching and pending network responses without a browser.
+const rq = require('@tanstack/react-query');
+let activeManagedTimers = new Map();
+let nextManagedTimerId = 0;
+rq.timeoutManager.setTimeoutProvider({
+  setTimeout(fn, delay) { const id = ++nextManagedTimerId; activeManagedTimers.set(id, { fn, delay }); return id; },
+  clearTimeout(id) { activeManagedTimers.delete(id); },
+  setInterval(fn, delay) { const id = ++nextManagedTimerId; activeManagedTimers.set(id, { fn, delay, interval: true }); return id; },
+  clearInterval(id) { activeManagedTimers.delete(id); },
+});
+
 function hookRunner() {
+  const managedTimers = new Map();
+  activeManagedTimers = managedTimers;
   const slots = []; let cursor = 0; const effects = [];
   const react = {
+    useContext() { return undefined; },
     useState(initial) { const i = cursor++; if (!(i in slots)) slots[i] = typeof initial === 'function' ? initial() : initial; return [slots[i], v => { slots[i] = typeof v === 'function' ? v(slots[i]) : v; }]; },
     useRef(initial) { const i = cursor++; return slots[i] ||= { current: initial }; },
+    useMemo(fn, deps) { const i = cursor++; const old = slots[i]; if (!old || deps.some((v, n) => v !== old.deps[n])) slots[i] = { deps, value: fn() }; return slots[i].value; },
     useCallback(fn, deps) { const i = cursor++; const old = slots[i]; if (!old || deps.some((v, n) => v !== old.deps[n])) slots[i] = { deps, fn }; return slots[i].fn; },
-    useEffect(fn, deps) { const i = cursor++; const old = slots[i]; if (!old || deps.some((v, n) => v !== old.deps[n])) effects.push(() => { old?.cleanup?.(); slots[i] = { deps, cleanup: fn() }; }); },
+    useEffect(fn, deps) { const i = cursor++; const old = slots[i]; if (!old || !deps || deps.some((v, n) => v !== old.deps[n])) effects.push(() => { old?.cleanup?.(); slots[i] = { deps, cleanup: fn() }; }); },
   };
-  const { useDashboardData } = load('useDashboardData', { react, './apiClient': load('apiClient') });
-  return { render(scope, query, token = 'token', onUnauthorized) { cursor = 0; const value = useDashboardData(scope, query, token, onUnauthorized); effects.splice(0).forEach(fn => fn()); return value; }, close() { slots.forEach(s => s?.cleanup?.()); } };
+  const apiClient = load('apiClient');
+  const queryClientModule = load('queryClient', { react, '@tanstack/react-query': rq, './apiClient': apiClient });
+  const testClient = queryClientModule.createDashboardQueryClient();
+  const observers = [];
+  const reactQuery = {
+    ...rq,
+    useQuery(options, client) {
+      const activeClient = client || testClient;
+      const defaulted = activeClient.defaultQueryOptions(options);
+      const [observer] = react.useState(() => {
+        const created = new rq.QueryObserver(activeClient, defaulted);
+        observers.push(created);
+        return created;
+      });
+      const result = observer.getOptimisticResult(defaulted);
+      react.useEffect(() => {
+        observer.setOptions(defaulted);
+      }, [defaulted, observer]);
+      react.useEffect(() => {
+        const unsub = observer.subscribe(() => {});
+        return () => unsub();
+      }, [observer]);
+      return result;
+    },
+  };
+  const { useDashboardData } = load('useDashboardData', {
+    react,
+    '@tanstack/react-query': reactQuery,
+    './apiClient': apiClient,
+    './queryClient': { ...queryClientModule, queryClient: testClient, useDashboardQueryClient: () => testClient },
+  });
+  return {
+    render(scope, query, token = 'token', onUnauthorized) {
+      cursor = 0;
+      const value = useDashboardData(scope, query, token, onUnauthorized);
+      effects.splice(0).forEach(fn => fn());
+      return value;
+    },
+    close() {
+      slots.forEach(s => s?.cleanup?.());
+      observers.forEach(o => { o.destroy(); o.getCurrentQuery()?.destroy(); });
+      testClient.clear();
+      managedTimers.clear();
+    },
+  };
 }
 test('dashboard deduplicates refreshes, aborts old scope, ignores stale responses, skips independent pages', async () => {
   const previous = { window: global.window, document: global.document, localStorage: global.localStorage, fetch: global.fetch };

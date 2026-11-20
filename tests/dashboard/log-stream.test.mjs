@@ -99,3 +99,22 @@ test('rotation cannot join a fragment from a different file of the same source',
   state = appendLogFrame(state.lines, { ...source, file: 'stdout.1', line: 'new', continued: true }, 100);
   assert.deepEqual(state.lines.map(formatLogLine), ['[a / web / stdout] old', '[a / web / stdout] …new']);
 });
+
+test('appendLogFrames batches continuations and caps ring buffer in one pass', async () => {
+  const { appendLogFrames, formatLogLine } = await import('../../dashboard-src/src/logStream.ts');
+  const source = { allocationId: 'a', task: 'web', stream: 'stdout', file: 'stdout.0' };
+  const batch = [
+    { ...source, line: 'one' },
+    { ...source, line: 'two' },
+    { ...source, line: 'hel', partial: true },
+    { ...source, line: 'lo', continued: true, partial: false },
+    { ...source, line: 'four' },
+  ];
+  const result = appendLogFrames([], batch, 3);
+  assert.equal(result.dropped, 1);
+  assert.deepEqual(result.lines.map(formatLogLine), [
+    '[a / web / stdout] two',
+    '[a / web / stdout] hello',
+    '[a / web / stdout] four',
+  ]);
+});

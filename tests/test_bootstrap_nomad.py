@@ -635,6 +635,117 @@ class NomadBootstrapTests(unittest.TestCase):
             install_docker(remote)
 
 
+class BootstrapAndEgressHardeningTests(unittest.TestCase):
+    def test_egress_config_sets_secret_and_loopback_dns(self):
+        from luma.egress import minimal_mihomo_config_from_bytes
+
+        subscription = yaml.safe_dump(
+            {"proxies": [{"name": "p1", "type": "trojan", "server": "example.com", "port": 443, "password": "x"}]}
+        ).encode("utf-8")
+        generated = yaml.safe_load(minimal_mihomo_config_from_bytes(subscription))
+        self.assertEqual(generated["external-controller"], "127.0.0.1:9090")
+        self.assertTrue(isinstance(generated.get("secret"), str) and len(generated["secret"]) >= 32)
+        self.assertEqual(generated["dns"]["listen"], "127.0.0.1:1053")
+
+        with patch.dict("os.environ", {"LUMA_EGRESS_SECRET": "explicit-secret-token"}):
+            generated_env = yaml.safe_load(minimal_mihomo_config_from_bytes(subscription))
+        self.assertEqual(generated_env["secret"], "explicit-secret-token")
+
+    def test_egress_url_config_uses_proxy_providers_with_failover_and_hardening(self):
+        from unittest.mock import MagicMock
+        from luma.egress import minimal_mihomo_config_from_url
+
+        subscription = yaml.safe_dump(
+            {"proxies": [{"name": "p1", "type": "trojan", "server": "example.com", "port": 443, "password": "x"}]}
+        ).encode("utf-8")
+        response = MagicMock()
+        response.read.return_value = subscription
+        cm = MagicMock()
+        cm.__enter__.return_value = response
+        cm.__exit__.return_value = False
+
+        with patch("luma.egress.urllib.request.urlopen", return_value=cm):
+            generated = yaml.safe_load(minimal_mihomo_config_from_url("https://sub.example.com/mihomo"))
+
+        self.assertEqual(generated["external-controller"], "127.0.0.1:9090")
+        self.assertTrue(isinstance(generated.get("secret"), str) and len(generated["secret"]) >= 32)
+        self.assertEqual(generated["dns"]["listen"], "127.0.0.1:1053")
+        self.assertNotIn("proxies", generated)
+        provider = generated["proxy-providers"]["egress-sub"]
+        self.assertEqual(provider["type"], "http")
+        self.assertEqual(provider["url"], "https://sub.example.com/mihomo")
+        self.assertEqual(provider["path"], "./providers/egress-sub.yaml")
+        self.assertTrue(provider["health-check"]["enable"])
+        groups = {group["name"]: group for group in generated["proxy-groups"]}
+        self.assertEqual(groups["EGRESS-AUTO"]["type"], "url-test")
+        self.assertEqual(groups["EGRESS-AUTO"]["use"], ["egress-sub"])
+        self.assertEqual(groups["EGRESS"]["type"], "fallback")
+        self.assertEqual(groups["EGRESS"]["proxies"], ["EGRESS-AUTO"])
+        self.assertEqual(groups["EGRESS"]["use"], ["egress-sub"])
+        self.assertEqual(generated["rules"], ["MATCH,EGRESS"])
+
+    def test_write_control_route_stages_and_renames_atomically(self):
+        from luma.bootstrap import _write_control_route
+        from luma.config import NodeConfig
+
+        remote = Mock()
+        config = LumaConfig({}, None)
+        node = NodeConfig(name="manager", host="localhost", public_ip="127.0.0.1", region="cn", roles=["nomad-manager"])
+        _write_control_route(remote, config, "luma.example.com", node)
+        self.assertEqual(remote.sudo.call_count, 2)
+        for call in remote.sudo.call_args_list:
+            cmd = call.args[0]
+            self.assertIn("/opt/luma/.luma-route-staging", cmd)
+            self.assertIn("mktemp", cmd)
+            self.assertIn("mv -f", cmd)
+            self.assertNotIn("base64 -d > /opt/luma/routes/", cmd)
+
+    def test_wait_nomad_job_waits_for_deployment_and_fails_fast_on_failed_deployment(self):
+        from luma.bootstrap import _wait_nomad_job
+
+        remote = Mock()
+        in_progress = (
+            "ID = luma-control\n"
+            "Status = running\n"
+            "Version = 3\n\n"
+            "Latest Deployment\n"
+            "ID = dep-1\n"
+            "Status = running\n"
+            "Description = Deployment is running\n"
+        )
+        succeeded = (
+            "ID = luma-control\n"
+            "Status = running\n"
+            "Version = 3\n\n"
+            "Latest Deployment\n"
+            "ID = dep-1\n"
+            "Status = successful\n"
+            "Description = Deployment completed successfully\n"
+        )
+        remote.sudo_result.side_effect = [
+            Mock(code=0, output=in_progress),
+            Mock(code=0, output=succeeded),
+        ]
+        with patch("luma.bootstrap.time.sleep") as sleep:
+            msg = _wait_nomad_job(remote, "luma-control", timeout=30, expected_version=3)
+        self.assertEqual(msg, "Nomad job running: luma-control")
+        self.assertEqual(remote.sudo_result.call_count, 2)
+        sleep.assert_called_once_with(4)
+
+        failed = (
+            "ID = luma-control\n"
+            "Status = running\n"
+            "Version = 4\n\n"
+            "Latest Deployment\n"
+            "ID = dep-2\n"
+            "Status = failed\n"
+            "Description = Failed due to unhealthy allocations - reverting to job version 3\n"
+        )
+        remote.sudo_result.side_effect = [Mock(code=0, output=failed)]
+        with self.assertRaisesRegex(LumaError, "deployment failed"):
+            _wait_nomad_job(remote, "luma-control", timeout=30)
+
+
 
 if __name__ == "__main__":
     unittest.main()

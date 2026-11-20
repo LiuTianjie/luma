@@ -121,7 +121,7 @@ def validate_mounts(mounts: list[dict[str, Any]], *, system: bool = False, allow
                 raise LumaError("Docker volume driver options have no verifiable storage device")
             if device.startswith("/") and not system:
                 deny_host_root({"TaskGroups": [{"Tasks": [{"Config": {"mount": [{"type": "bind", "source": os.path.realpath(device), "readonly": bool(mount.get("readonly"))}]}}]}]})
-            elif options and str(options.get("type") or "") not in {"nfs", "nfs4", "cifs"}:
+            elif options and str(options.get("type") or "") not in {"cifs"}:
                 raise LumaError("Docker volume device is not a verifiable local or network data source")
 
 

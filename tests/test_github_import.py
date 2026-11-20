@@ -512,103 +512,21 @@ class GithubImportTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_build_deploy_accepts_provider_repository_mode(self):
-        from luma.control.server import handle_build_deploy
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
-            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
-            try:
-                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
-                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                state["nodes"] = {
-                    "builder": {
-                        "name": "builder",
-                        "region": "home",
-                        "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "ready", "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
-                    }
-                }
-                state["gitProviders"] = {
-                    "gitea:lin": {
-                        "type": "gitea",
-                        "account": "lin",
-                        "baseUrl": "https://gcode.gaojiua.com:3000",
-                        "cloneBaseUrl": "https://gcode.gaojiua.com:3000",
-                        "username": "lin",
-                        "token": "gitea_secret",
-                    }
-                }
-                state["build"] = {"defaultNode": "builder", "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
-                save_state(state)
-                captured = {}
-
-                def fake_run_task(_state, node_name, action, payload, **_kwargs):
-                    captured.update({"node": node_name, "action": action, "payload": payload})
-                    return {
-                        "buildCapabilities": ["native-arm-build-v1"],
-                        "image": "100.64.0.70:5000/gaojiuatech/price:abc123",
-                        "manifest": "name: price\nimage: placeholder\nregion: cn\nexposure: none\n",
-                    }
-
-                with patch("luma.control.server._run_node_agent_task", side_effect=fake_run_task), patch(
-                    "luma.control.server.handle_deployment", return_value={"service": "price", "steps": []}
-                ) as deploy:
-                    result = handle_build_deploy(
-                        state["deployToken"],
-                        {"providerId": "gitea:lin", "repository": "gaojiuatech/price", "ref": "main"},
-                    )
-
-                self.assertEqual(captured["node"], "builder")
-                self.assertEqual(captured["action"], "build-image")
-                self.assertEqual(captured["payload"]["repoUrl"], "https://gcode.gaojiua.com:3000/gaojiuatech/price.git")
-                self.assertEqual(captured["payload"]["gitProviderId"], "gitea:lin")
-                self.assertEqual(captured["payload"]["registryHost"], "100.64.0.70:5000")
-                self.assertEqual(captured["payload"]["pushHost"], "localhost:5000")
-                self.assertEqual(captured["payload"]["repo"], "gaojiuatech/price")
-                self.assertEqual(captured["payload"]["ref"], "main")
-                deployed_manifest = deploy.call_args.args[1]["manifest"]
-                self.assertIn("image: 100.64.0.70:5000/gaojiuatech/price:abc123", deployed_manifest)
-                self.assertEqual(result["image"], "100.64.0.70:5000/gaojiuatech/price:abc123")
-            finally:
-                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
-                _restore_env("LUMA_CONTROL_CONFIG", old_config)
-
-    def test_build_deploy_requires_declared_builder_node(self):
+    def test_legacy_build_deploy_returns_retirement_error(self):
         from luma.control.server import handle_build_deploy
         from luma.errors import LumaError
 
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
-            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
             try:
-                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                now = int(time.time())
-                state["nodes"] = {
-                    "builder": {
-                        "name": "builder",
-                        "region": "home",
-                        "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build", "docker-image"]},
-                    },
-                    "home-2": {
-                        "name": "home-2",
-                        "region": "cn",
-                        "tailscaleIP": "100.84.163.118",
-                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build", "docker-image"]},
-                    },
-                }
-                state["build"] = {"defaultNode": "builder", "nodes": ["builder"], "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
-                save_state(state)
-
-                with self.assertRaisesRegex(LumaError, "declared, ready builder node"):
-                    handle_build_deploy(state["deployToken"], {"repoUrl": "https://github.com/acme/app", "buildNode": "home-2"})
+                with self.assertRaisesRegex(LumaError, "Legacy built-in remote build queue has been retired"):
+                    handle_build_deploy(
+                        state["deployToken"],
+                        {"providerId": "gitea:lin", "repository": "gaojiuatech/price", "ref": "main"},
+                    )
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
-                _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
     def test_build_config_declares_builder_nodes(self):
         from luma.control.server import handle_build_config_set, handle_control_status
@@ -677,47 +595,6 @@ class GithubImportTests(unittest.TestCase):
         runtime = _config_with_state_nodes(config, state)
 
         self.assertTrue(runtime.nodes["manager"].raw["lumaLocalIngress"])
-
-    def test_build_run_records_failed_import_events(self):
-        from luma.control.server import handle_build_deploy, handle_build_run_list, handle_build_run_get
-        from luma.errors import LumaError
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
-            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
-            try:
-                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
-                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                now = int(time.time())
-                state["nodes"] = {
-                    "builder": {
-                        "name": "builder",
-                        "region": "home",
-                        "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
-                    }
-                }
-                state["build"] = {"defaultNode": "builder", "nodes": ["builder"], "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
-                save_state(state)
-
-                def fake_run_task(*_args, **_kwargs):
-                    raise LumaError("git clone failed: 403")
-
-                with patch("luma.control.server._run_node_agent_task", side_effect=fake_run_task):
-                    with self.assertRaisesRegex(LumaError, "git clone failed"):
-                        handle_build_deploy(state["deployToken"], {"repoUrl": "https://github.com/acme/app"})
-
-                listed = handle_build_run_list(state["deployToken"])["runs"]
-                self.assertEqual(len(listed), 1)
-                self.assertEqual(listed[0]["status"], "failed")
-                detail = handle_build_run_get(state["deployToken"], listed[0]["id"])["run"]
-                self.assertEqual(detail["request"]["buildNode"], "builder")
-                self.assertNotIn("envSecrets", detail["request"])
-                self.assertIn("git clone failed: 403", detail["events"][-1]["message"])
-            finally:
-                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
-                _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
     def test_build_run_event_history_is_retained_and_paginated(self):
         from luma.control.server import (
@@ -846,8 +723,28 @@ class GithubImportTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_build_run_retry_creates_linked_attempt_and_preserves_failure(self):
-        from luma.control.server import handle_build_deploy, handle_build_run_get, handle_build_run_list, handle_build_run_retry
+    def test_legacy_build_run_retry_and_cancel_return_retirement_error(self):
+        from luma.control.server import handle_build_run_cancel, handle_build_run_retry
+        from luma.errors import LumaError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                with self.assertRaisesRegex(LumaError, "Legacy built-in remote build queue has been retired"):
+                    handle_build_run_retry(state["deployToken"], "build-1")
+                with self.assertRaisesRegex(LumaError, "Legacy built-in remote build queue has been retired"):
+                    handle_build_run_cancel(state["deployToken"], "build-1", {})
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_application_update_routes_git_source_to_standalone_builder(self):
+        from luma.control.server import (
+            _load_service_manifest,
+            _mark_service_deployment,
+            handle_application_update,
+            handle_deployment_config,
+        )
         from luma.errors import LumaError
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -857,276 +754,41 @@ class GithubImportTests(unittest.TestCase):
             try:
                 (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                now = int(time.time())
-                state["nodes"] = {
-                    "builder": {
-                        "name": "builder",
-                        "region": "home",
-                        "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
-                    }
-                }
-                state["build"] = {"defaultNode": "builder", "nodes": ["builder"], "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
-                save_state(state)
-
-                def fail_task(*_args, **_kwargs):
-                    raise LumaError("docker buildx build failed")
-
-                with patch("luma.control.server._run_node_agent_task", side_effect=fail_task):
-                    with self.assertRaisesRegex(LumaError, "docker buildx build failed"):
-                        handle_build_deploy(state["deployToken"], {"repoUrl": "https://github.com/acme/app"})
-
-                failed = handle_build_run_list(state["deployToken"])["runs"][0]
-                original_detail = handle_build_run_get(state["deployToken"], failed["id"])["run"]
-
-                with patch(
-                    "luma.control.server._run_node_agent_task",
-                    return_value={
-                        "buildCapabilities": ["native-arm-build-v1"],
-                        "image": "100.64.0.70:5000/acme/app:abc123",
-                        "manifest": "name: app\nimage: placeholder\nregion: cn\nexposure: none\n",
+                manifest = "name: app\nimage: 100.64.0.70:5000/acme/app:first\nregion: cn\nexposure: none\n"
+                service = _load_service_manifest(manifest)
+                _mark_service_deployment(
+                    service,
+                    manifest,
+                    "https://github.com/acme/app",
+                    status="active",
+                    steps=[],
+                    git_source={
+                        "repoUrl": "https://github.com/acme/app",
+                        "ref": "main",
+                        "buildNode": "builder",
+                        "proxyMode": "direct",
+                        "buildRunId": "build-1",
                     },
-                ), patch("luma.control.server.handle_deployment", return_value={"service": "app", "steps": []}):
-                    result = handle_build_run_retry(state["deployToken"], failed["id"])
-
-                listed = handle_build_run_list(state["deployToken"])["runs"]
-                self.assertEqual(len(listed), 2)
-                self.assertNotEqual(result["buildRunId"], failed["id"])
-                self.assertEqual(handle_build_run_get(state["deployToken"], failed["id"])["run"], original_detail)
-                detail = handle_build_run_get(state["deployToken"], result["buildRunId"])["run"]
-                self.assertEqual(detail["status"], "succeeded")
-                self.assertEqual(detail["retryOf"], failed["id"])
-                self.assertEqual(detail["retryRootId"], failed["id"])
-                self.assertEqual(detail["events"][0]["name"], "Build image")
-
-                retry_progress = []
-                with patch("luma.control.server._run_node_agent_task", side_effect=fail_task):
-                    with self.assertRaisesRegex(LumaError, "docker buildx build failed"):
-                        handle_build_run_retry(state["deployToken"], failed["id"], progress=retry_progress.append)
-                failed_retry_id = retry_progress[0]["buildRunId"]
-                self.assertNotEqual(failed_retry_id, failed["id"])
-                self.assertNotEqual(failed_retry_id, result["buildRunId"])
-                self.assertEqual(handle_build_run_get(state["deployToken"], failed_retry_id)["run"]["status"], "failed")
-                self.assertEqual(handle_build_run_get(state["deployToken"], failed["id"])["run"], original_detail)
-            finally:
-                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
-                _restore_env("LUMA_CONTROL_CONFIG", old_config)
-
-    def test_build_run_cancel_signals_legacy_agent_task_and_fences_success(self):
-        from luma.control.server import (
-            _complete_build_run,
-            _create_build_run,
-            handle_build_run_cancel,
-            handle_build_run_get,
-        )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
-            try:
-                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                run_id = _create_build_run(
-                    {"repoUrl": "https://github.com/acme/app"},
-                    source="https://github.com/acme/app",
-                    build_node="builder",
                 )
-                current = load_state()
-                created_at = current["buildRuns"][run_id]["createdAt"]
-                current["agentTasks"] = {
-                    "task-legacy": {
-                        "id": "task-legacy",
-                        "nodeName": "builder",
-                        "action": "build-image",
-                        "payload": {"repoUrl": "https://github.com/acme/app"},
-                        "status": "running",
-                        "createdAt": created_at,
-                        "updatedAt": created_at,
-                    }
-                }
-                save_state(current)
-
-                canceled = handle_build_run_cancel(state["deployToken"], run_id, {})
-
-                self.assertFalse(canceled["replayed"])
-                self.assertEqual(canceled["run"]["status"], "canceling")
-                persisted = load_state()
-                self.assertEqual(persisted["buildRuns"][run_id]["agentTaskId"], "task-legacy")
-                self.assertEqual(persisted["agentTasks"]["task-legacy"]["buildRunId"], run_id)
-                self.assertTrue(persisted["agentTasks"]["task-legacy"]["cancelRequestedAt"])
-
-                # A late success response cannot revive a run after the user
-                # requested cancellation.
-                _complete_build_run(run_id, "succeeded", result={"service": "app"})
-                detail = handle_build_run_get(state["deployToken"], run_id)["run"]
-                self.assertEqual(detail["status"], "canceled")
-                self.assertEqual(detail["message"], "build canceled")
-                self.assertEqual(detail["result"], {})
-            finally:
-                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
-
-    def test_build_run_cancel_stops_queued_task_immediately(self):
-        from luma.control.server import _create_build_run, handle_build_run_cancel
-
-        with tempfile.TemporaryDirectory() as tmp:
-            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
-            try:
-                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                run_id = _create_build_run(
-                    {"repoUrl": "https://github.com/acme/app"},
-                    source="https://github.com/acme/app",
-                    build_node="builder",
-                )
-                current = load_state()
-                created_at = current["buildRuns"][run_id]["createdAt"]
-                current["buildRuns"][run_id]["agentTaskId"] = "task-queued"
-                current["agentTasks"] = {
-                    "task-queued": {
-                        "id": "task-queued",
-                        "nodeName": "builder",
-                        "action": "build-image",
-                        "payload": {"repoUrl": "https://github.com/acme/app"},
-                        "status": "queued",
-                        "createdAt": created_at,
-                        "updatedAt": created_at,
-                        "buildRunId": run_id,
-                    }
-                }
-                save_state(current)
-
-                result = handle_build_run_cancel(state["deployToken"], run_id, {})
-
-                self.assertEqual(result["run"]["status"], "canceled")
-                self.assertEqual(load_state()["agentTasks"]["task-queued"]["status"], "canceled")
-            finally:
-                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
-
-    def test_git_import_records_source_and_application_update_rebuilds_it(self):
-        from luma.control.server import handle_application_update, handle_build_deploy, handle_deployment_config
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
-            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
-            try:
-                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
-                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                state["nodes"] = {
-                    "builder": {
-                        "name": "builder",
-                        "region": "home",
-                        "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "online", "lastSeen": int(time.time()), "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
-                    }
-                }
-                state["build"] = {"defaultNode": "builder", "nodes": ["builder"], "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
-                save_state(state)
-
-                build_images = iter([
-                    "100.64.0.70:5000/acme/app:first",
-                    "100.64.0.70:5000/acme/app:second",
-                ])
-
-                def fake_build(*_args, **_kwargs):
-                    return {
-                        "buildCapabilities": ["native-arm-build-v1"],
-                        "image": next(build_images),
-                        "manifest": "name: app\nimage: placeholder\nregion: cn\nexposure: none\n",
-                    }
-
-                def fake_deploy(token, body, **_kwargs):
-                    from luma.control.server import _load_service_manifest, _mark_service_deployment
-
-                    service = _load_service_manifest(body["manifest"])
-                    _mark_service_deployment(
-                        service,
-                        body["manifest"],
-                        str(body.get("sourceName") or ""),
-                        status="active",
-                        steps=[],
-                        git_source=body.get("gitSource"),
-                    )
-                    return {"service": service.name, "steps": []}
-
-                with patch("luma.control.server._run_node_agent_task", side_effect=fake_build), patch("luma.control.server.handle_deployment", side_effect=fake_deploy):
-                    result = handle_build_deploy(
-                        state["deployToken"],
-                        {
-                            "repoUrl": "https://github.com/acme/app",
-                            "ref": "main",
-                            "buildNode": "builder",
-                            "proxyMode": "direct",
-                        },
-                    )
 
                 config = handle_deployment_config(state["deployToken"], "app")
                 self.assertEqual(config["gitSource"]["repoUrl"], "https://github.com/acme/app")
                 self.assertEqual(config["gitSource"]["ref"], "main")
-                self.assertEqual(config["gitSource"]["buildNode"], "builder")
-                self.assertEqual(config["gitSource"]["proxyMode"], "direct")
-                self.assertEqual(config["gitSource"]["buildRunId"], result["buildRunId"])
+                self.assertEqual(config["gitSource"]["buildRunId"], "build-1")
 
-                with patch("luma.control.server._run_node_agent_task", side_effect=fake_build), patch("luma.control.server.handle_deployment", side_effect=fake_deploy) as deploy:
+                with self.assertRaisesRegex(LumaError, "luma addon install builder"):
+                    handle_application_update(state["deployToken"], {"name": "app"})
+
+                with patch(
+                    "luma.control.server.independent_builder.submit",
+                    return_value={"build": {"id": "bld-99", "status": "queued"}},
+                ) as submit:
                     update = handle_application_update(state["deployToken"], {"name": "app"})
 
                 self.assertEqual(update["service"], "app")
-                self.assertNotEqual(update["buildRunId"], result["buildRunId"])
-                update_body = deploy.call_args.args[1]
-                self.assertEqual(update_body["gitSource"]["repoUrl"], "https://github.com/acme/app")
-                self.assertEqual(update_body["gitSource"]["ref"], "main")
-                self.assertEqual(update_body["gitSource"]["proxyMode"], "direct")
-                self.assertIn("image: 100.64.0.70:5000/acme/app:second", update_body["manifest"])
-            finally:
-                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
-                _restore_env("LUMA_CONTROL_CONFIG", old_config)
-
-    def test_build_run_retry_accepts_env_secret_overrides_without_storing_values(self):
-        from luma.control.server import handle_build_deploy, handle_build_run_get, handle_build_run_list, handle_build_run_retry
-        from luma.errors import LumaError
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
-            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
-            try:
-                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
-                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                now = int(time.time())
-                state["nodes"] = {
-                    "builder": {
-                        "name": "builder",
-                        "region": "home",
-                        "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
-                    }
-                }
-                state["build"] = {"defaultNode": "builder", "nodes": ["builder"], "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
-                save_state(state)
-
-                with patch("luma.control.server._run_node_agent_task", side_effect=LumaError("missing deployment secret")):
-                    with self.assertRaisesRegex(LumaError, "missing deployment secret"):
-                        handle_build_deploy(state["deployToken"], {"repoUrl": "https://github.com/acme/app"})
-
-                failed = handle_build_run_list(state["deployToken"])["runs"][0]
-
-                with patch(
-                    "luma.control.server._run_node_agent_task",
-                    return_value={
-                        "buildCapabilities": ["native-arm-build-v1"],
-                        "image": "100.64.0.70:5000/acme/app:abc123",
-                        "manifest": "name: app\nimage: placeholder\nregion: cn\nexposure: none\nenv:\n  DATABASE_URL: ${DATABASE_URL}\n",
-                    },
-                ), patch("luma.control.server.handle_deployment", return_value={"service": "app", "steps": []}) as deploy:
-                    result = handle_build_run_retry(
-                        state["deployToken"],
-                        failed["id"],
-                        {"envSecrets": {"DATABASE_URL": "postgres://secret"}},
-                    )
-
-                deploy_body = deploy.call_args.args[1]
-                self.assertEqual(deploy_body["envSecrets"], {"DATABASE_URL": "postgres://secret"})
-                self.assertNotEqual(result["buildRunId"], failed["id"])
-                detail = handle_build_run_get(state["deployToken"], result["buildRunId"])["run"]
-                self.assertEqual(detail["request"]["envSecretNames"], ["DATABASE_URL"])
-                self.assertNotIn("postgres://secret", json.dumps(detail))
+                self.assertEqual(update["build"]["id"], "bld-99")
+                self.assertEqual(submit.call_args.args[1]["repoUrl"], "https://github.com/acme/app")
+                self.assertEqual(submit.call_args.args[1]["ref"], "main")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -1194,221 +856,6 @@ class GithubImportTests(unittest.TestCase):
 
         self.assertEqual(result["image"], "100.64.0.70:5000/acme/app:abc123")
         self.assertEqual([event["message"] for event in events], [f"line-{index}" for index in range(301)])
-
-    def test_build_deploy_expands_owner_repo_shortcut_to_github_url(self):
-        from luma.control.server import handle_build_deploy
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
-            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
-            try:
-                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
-                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                state["nodes"] = {
-                    "builder": {
-                        "name": "builder",
-                        "region": "home",
-                        "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "ready", "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
-                    }
-                }
-                state["build"] = {"defaultNode": "builder", "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
-                save_state(state)
-                captured = {}
-
-                def fake_run_task(_state, node_name, action, payload, **_kwargs):
-                    captured.update({"node": node_name, "action": action, "payload": payload})
-                    return {
-                        "buildCapabilities": ["native-arm-build-v1"],
-                        "image": "100.64.0.70:5000/liutianjie/luxe-monitor:abc123",
-                        "manifest": "name: luxe-monitor\nimage: placeholder\nregion: cn\nexposure: none\n",
-                    }
-
-                with patch("luma.control.server._run_node_agent_task", side_effect=fake_run_task), patch(
-                    "luma.control.server.handle_deployment", return_value={"service": "luxe-monitor", "steps": []}
-                ) as deploy:
-                    result = handle_build_deploy(state["deployToken"], {"repoUrl": "LiuTianjie/luxe-monitor"})
-
-                self.assertEqual(captured["payload"]["repoUrl"], "https://github.com/LiuTianjie/luxe-monitor.git")
-                self.assertEqual(captured["payload"]["repo"], "liutianjie/luxe-monitor")
-                self.assertEqual(deploy.call_args.args[1]["sourceName"], "https://github.com/LiuTianjie/luxe-monitor.git")
-                self.assertEqual(result["image"], "100.64.0.70:5000/liutianjie/luxe-monitor:abc123")
-            finally:
-                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
-                _restore_env("LUMA_CONTROL_CONFIG", old_config)
-
-    def test_build_deploy_accepts_manual_manifest_when_repo_has_none(self):
-        from luma.control.server import handle_build_deploy
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
-            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
-            try:
-                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
-                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                state["nodes"] = {
-                    "builder": {
-                        "name": "builder",
-                        "region": "home",
-                        "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "ready", "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build", "repository-build-inputs-v1"]},
-                    }
-                }
-                state["build"] = {"defaultNode": "builder", "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
-                save_state(state)
-                manual_manifest = "name: price\nimage: placeholder\nregion: cn\nexposure: none\n"
-
-                with patch(
-                    "luma.control.server._run_node_agent_task",
-                    return_value={"image": "100.64.0.70:5000/gaojiuatech/price:abc123", "manifest": "", "buildCapabilities": ["repository-build-inputs-v1", "native-arm-build-v1"], "fallbackManifestUsed": True},
-                ), patch("luma.control.server.handle_deployment", return_value={"service": "price", "steps": []}) as deploy:
-                    result = handle_build_deploy(
-                        state["deployToken"],
-                        {"repoUrl": "https://github.com/gaojiuatech/price", "manifest": manual_manifest},
-                    )
-
-                deployed_manifest = deploy.call_args.args[1]["manifest"]
-                self.assertIn("name: price", deployed_manifest)
-                self.assertIn("image: 100.64.0.70:5000/gaojiuatech/price:abc123", deployed_manifest)
-                self.assertEqual(result["image"], "100.64.0.70:5000/gaojiuatech/price:abc123")
-            finally:
-                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
-                _restore_env("LUMA_CONTROL_CONFIG", old_config)
-
-    def test_build_deploy_routes_compose_import_to_compose_handler(self):
-        from luma.control.server import handle_build_deploy
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
-            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
-            try:
-                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
-                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                state["nodes"] = {
-                    "builder": {
-                        "name": "builder",
-                        "region": "home",
-                        "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "ready", "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
-                    }
-                }
-                state["build"] = {"defaultNode": "builder", "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
-                save_state(state)
-                sidecar = "name: app-stack\ncompose: docker-compose.yml\nregion: cn\nservices:\n  web:\n    exposure: none\n"
-                compose = (
-                    "services:\n"
-                    "  web:\n"
-                    "    image: 100.64.0.70:5000/acme/app/web:abc123\n"
-                    "  worker:\n"
-                    "    image: acme/app:local\n"
-                )
-                source_compose = (
-                    "services:\n"
-                    "  web:\n"
-                    "    image: acme/app:local\n"
-                    "    build: .\n"
-                    "  worker:\n"
-                    "    image: acme/app:local\n"
-                )
-
-                with patch(
-                    "luma.control.server._run_node_agent_task",
-                    return_value={
-                        "buildCapabilities": ["native-arm-build-v1"],
-                        "kind": "compose",
-                        "manifest": sidecar,
-                        "composeContent": compose,
-                        "images": {"web": "100.64.0.70:5000/acme/app/web:abc123"},
-                        "imageAliases": {
-                            "acme/app:local": "100.64.0.70:5000/acme/app/web:abc123"
-                        },
-                        "image": "100.64.0.70:5000/acme/app/web:abc123",
-                    },
-                ), patch("luma.control.server.handle_compose_deployment", return_value={"deployment": "app-stack", "steps": []}) as deploy:
-                    result = handle_build_deploy(
-                        state["deployToken"],
-                        {
-                            "repoUrl": "https://github.com/acme/app",
-                            "ref": "main",
-                            "domain": "ignored.example.com",
-                            "exposure": "cn-edge",
-                            "port": 3000,
-                            # Repository-import callers may submit the source
-                            # Compose for preview, but the Builder copy has the
-                            # immutable image rewrites and must win.
-                            "composeContent": source_compose,
-                        },
-                    )
-
-                deploy_body = deploy.call_args.args[1]
-                self.assertEqual(deploy_body["manifest"], sidecar)
-                deployed_compose = yaml.safe_load(deploy_body["composeContent"])
-                self.assertEqual(
-                    deployed_compose["services"]["web"]["image"],
-                    "100.64.0.70:5000/acme/app/web:abc123",
-                )
-                self.assertEqual(
-                    deployed_compose["services"]["worker"]["image"],
-                    "100.64.0.70:5000/acme/app/web:abc123",
-                )
-                self.assertEqual(deploy_body["sourceName"], "https://github.com/acme/app")
-                self.assertNotIn("envSecrets", deploy_body)
-                self.assertEqual(result["deployment"], "app-stack")
-                self.assertEqual(result["images"]["web"], "100.64.0.70:5000/acme/app/web:abc123")
-                self.assertIn("Compose import ignores service-level override(s): exposure, domain, port", result["steps"][1]["message"])
-            finally:
-                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
-                _restore_env("LUMA_CONTROL_CONFIG", old_config)
-
-    def test_build_deploy_passes_env_secrets_to_final_service_deploy(self):
-        from luma.control.server import handle_build_deploy
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
-            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
-            try:
-                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
-                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                state["nodes"] = {
-                    "builder": {
-                        "name": "builder",
-                        "region": "home",
-                        "tailscaleIP": "100.64.0.70",
-                        "agent": {"status": "ready", "os": "linux", "capabilities": ["native-arm-build-v1", "docker-build"]},
-                    }
-                }
-                state["build"] = {"defaultNode": "builder", "registryHost": "100.64.0.70:5000", "pushHost": "localhost:5000"}
-                save_state(state)
-                repo_manifest = "name: api\nregion: cn\nexposure: none\nenv:\n  DATABASE_URL: ${DATABASE_URL}\n"
-
-                with patch(
-                    "luma.control.server._run_node_agent_task",
-                    return_value={
-                        "buildCapabilities": ["native-arm-build-v1"],
-                        "kind": "service",
-                        "manifest": repo_manifest,
-                        "image": "100.64.0.70:5000/acme/app:abc123",
-                    },
-                ), patch("luma.control.server.handle_deployment", return_value={"service": "api", "steps": []}) as deploy:
-                    result = handle_build_deploy(
-                        state["deployToken"],
-                        {
-                            "repoUrl": "https://github.com/acme/app",
-                            "envSecrets": {"DATABASE_URL": "postgres://secret"},
-                        },
-                    )
-
-                deploy_body = deploy.call_args.args[1]
-                self.assertEqual(deploy_body["envSecrets"], {"DATABASE_URL": "postgres://secret"})
-                self.assertIn("image: 100.64.0.70:5000/acme/app:abc123", deploy_body["manifest"])
-                self.assertEqual(result["service"], "api")
-            finally:
-                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
-                _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
     def test_build_image_lease_without_secrets(self):
         from luma.control.server import _agent_task_lease_payload

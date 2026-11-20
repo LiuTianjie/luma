@@ -47,7 +47,7 @@ const { StoragePage } = load("pages/StoragePage.tsx");
 const { MaintenancePage } = load("pages/MaintenancePage.tsx");
 const { DetailDrawer } = load("DetailDrawer.tsx");
 const { TerminalDrawer } = load("components/TerminalDrawer.tsx");
-const props = { lang: "en", token: "test", theme: "light", controlVersion: "1", vm: { nodes: [], services: [], regions: [], trafficPaths: [], storageClasses: [], storageVolumes: [], storageWarnings: [] }, onSelectNode() {}, onTerminal() {}, onRefresh() {} };
+const props = { lang: "en", token: "test", theme: "light", controlVersion: "1", vm: { nodes: [], services: [], regions: [], trafficPaths: [], storageVolumes: [], storageWarnings: [] }, onSelectNode() {}, onTerminal() {}, onRefresh() {} };
 
 test("fleet opens at inventory and preserves independent region and network destinations", () => {
   for (const [url, expected] of [["/fleet", ["NodeFleetMap"]], ["/fleet/regions", ["RegionPanel"]], ["/fleet/network", ["TrafficPaths"]], ["/fleet/maintenance", []], ["/fleet/join", []]]) {
@@ -78,6 +78,8 @@ test("storage governance has a dedicated destination without hiding volume inven
   route = "/storage";
   const inventory = renderToStaticMarkup(React.createElement(StoragePage, props));
   assert.match(inventory, /data-capability="StoragePanel"/);
+  assert.match(inventory, /<h1[^>]*>Volumes<\/h1>/);
+  assert.doesNotMatch(inventory, /Storage Class|storage classes/i);
   assert.match(inventory, /<a[^>]*href="\/dashboard\/storage\/governance"[^>]*>Capacity and cleanup<\/a>/);
   route = "/storage/governance";
   const html = renderToStaticMarkup(React.createElement(StoragePage, props));

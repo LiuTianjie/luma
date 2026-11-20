@@ -304,3 +304,71 @@ class StructuredLogsAndCheckpointTests(unittest.TestCase):
             second=m.Shipper(**args)
             self.assertEqual(second.cursors['alloc/task/stdout'].offset,42)
             self.assertEqual(second.cursors['alloc/task/stdout'].leftover,b'partial')
+
+    def test_skipped_rotated_files_increment_dropped_counter(self):
+        mod = load_observe("log_shipper.py", "log_shipper_rotated")
+        shipper = mod.Shipper(
+            list_allocs=lambda: [
+                {"ID": "a1", "JobID": "app", "ClientStatus": "running", "TaskStates": {"web": {}}}
+            ],
+            list_files=lambda _alloc: [{"Name": "web.stdout.3", "Size": 4, "IsDir": False}],
+            readat=lambda _alloc, _path, _off, _lim: b"ok!\n",
+            insert=lambda _rows: None,
+        )
+        shipper.cursors["a1/web/stdout"] = mod.Cursor("alloc/logs/web.stdout.0", 0)
+        shipper.poll()
+        self.assertEqual(shipper.dropped, 3)
+
+    def test_running_allocations_are_prioritized_over_terminal_allocations(self):
+        mod = load_observe("log_shipper.py", "log_shipper_priority")
+        allocs = [
+            {"ID": f"term-{i}", "JobID": "old", "ClientStatus": "complete", "TaskStates": {"web": {}}}
+            for i in range(50)
+        ] + [
+            {"ID": "run-1", "JobID": "live", "ClientStatus": "running", "TaskStates": {"web": {}}}
+        ]
+        visited_allocs = []
+
+        def list_files(alloc):
+            visited_allocs.append(alloc)
+            return []
+
+        shipper = mod.Shipper(
+            list_allocs=lambda: allocs,
+            list_files=list_files,
+            readat=lambda *_: b"",
+            insert=lambda _rows: None,
+        )
+        with patch.object(mod, "MAX_SOURCES", 4):
+            shipper.poll()
+            self.assertIn("run-1", visited_allocs)
+            visited_allocs.clear()
+            shipper.poll()
+            self.assertIn("run-1", visited_allocs)
+
+    def test_post_jsonline_stream_chunks_within_max_bytes(self):
+        mod = load_observe("log_shipper.py", "log_shipper_chunks")
+        chunks = []
+
+        class FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b""
+
+        def fake_urlopen(req, timeout=4.0):
+            chunks.append(req.data)
+            return FakeResp()
+
+        rows = [{"_msg": f"line-{i}-" + ("x" * 40)} for i in range(10)]
+        with patch.object(mod, "INSERT_MAX_BYTES", 150), patch.object(mod.urllib.request, "urlopen", side_effect=fake_urlopen):
+            mod.post_jsonline("http://127.0.0.1:9428/insert/jsonline", rows)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk), 150)
+        reconstructed = b"".join(chunks).decode("utf-8").splitlines()
+        self.assertEqual(len(reconstructed), 10)

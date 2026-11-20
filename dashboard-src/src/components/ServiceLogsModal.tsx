@@ -18,9 +18,9 @@ import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableRow } from "@/components/ui/table";
 import { Toggle } from "@/components/ui/toggle";
 import { cn } from "@/lib/utils";
-import { authHeaders } from "../apiClient";
+import { authHeaders, notifyUnauthorized } from "../apiClient";
 import { t } from "../i18n";
-import { appendLogFrame, formatLogLine, logRetryDelay, readLogFrames, waitForLogRetry, type DisplayLogLine } from "../logStream";
+import { appendLogFrames, formatLogLine, logRetryDelay, readLogFrames, waitForLogRetry, type DisplayLogLine } from "../logStream";
 import type { DashboardService, Lang } from "../types";
 import "./serviceLogs.css";
 
@@ -246,8 +246,8 @@ export function ServiceLogsModal({
     if (tail && followBottomRef.current) tail.scrollTop = tail.scrollHeight;
   }, [filteredLogs, wrapLines]);
 
-  const loadRuntimeEvents = useCallback(async (signal?: AbortSignal) => {
-    if (!selectedService) return;
+  const loadRuntimeEvents = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
+    if (!selectedService) return false;
     setRuntimeLoading(true);
     try {
       const params = new URLSearchParams({ service: selectedService });
@@ -255,14 +255,23 @@ export function ServiceLogsModal({
         headers: authHeaders(token),
         signal,
       });
+      if (response.status === 401) {
+        notifyUnauthorized();
+        if (!signal?.aborted && currentServiceRef.current === selectedService) {
+          setRuntimeError("Unauthorized (HTTP 401)");
+        }
+        return false;
+      }
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-      if (signal?.aborted || currentServiceRef.current !== selectedService) return;
+      if (signal?.aborted || currentServiceRef.current !== selectedService) return false;
       setRuntimeEvents(payload as RuntimeEventsState);
       setRuntimeError("");
+      return true;
     } catch (error) {
-      if ((error as Error)?.name === "AbortError") return;
+      if ((error as Error)?.name === "AbortError") return false;
       if (!signal?.aborted && currentServiceRef.current === selectedService) setRuntimeError(String(error instanceof Error ? error.message : error));
+      return true;
     } finally {
       if (!signal?.aborted && currentServiceRef.current === selectedService) setRuntimeLoading(false);
     }
@@ -272,12 +281,38 @@ export function ServiceLogsModal({
     if (!selectedService) return;
     const controller = new AbortController();
     let timer: number | undefined;
-    const poll = async () => {
-      await loadRuntimeEvents(controller.signal);
-      if (!controller.signal.aborted) timer = window.setTimeout(() => void poll(), 5000);
+    let stopped = false;
+    let polling = false;
+    const schedule = () => {
+      window.clearTimeout(timer);
+      if (stopped || controller.signal.aborted || document.visibilityState === "hidden") return;
+      timer = window.setTimeout(() => void poll(), 5000);
     };
+    const poll = async () => {
+      if (stopped || controller.signal.aborted || polling || document.visibilityState === "hidden") return;
+      polling = true;
+      window.clearTimeout(timer);
+      const shouldContinue = await loadRuntimeEvents(controller.signal);
+      polling = false;
+      if (!shouldContinue) {
+        stopped = true;
+        return;
+      }
+      schedule();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        window.clearTimeout(timer);
+        timer = undefined;
+      } else if (!stopped && !controller.signal.aborted) {
+        void poll();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     void poll();
     return () => {
+      stopped = true;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       window.clearTimeout(timer);
       controller.abort();
     };
@@ -304,6 +339,43 @@ export function ServiceLogsModal({
     const { signal } = controller;
     const session = sessionRef.current;
     const active = () => !signal.aborted && sessionRef.current === session && currentSelectionRef.current === key;
+    const pendingFrames: Record<string, unknown>[] = [];
+    let flushTimer: number | undefined;
+    const flushPendingFrames = () => {
+      if (flushTimer !== undefined) {
+        window.clearTimeout(flushTimer);
+        flushTimer = undefined;
+      }
+      if (!pendingFrames.length || !active()) {
+        pendingFrames.length = 0;
+        return;
+      }
+      const batch = pendingFrames.splice(0, pendingFrames.length);
+      let latestUpdatedAt = Date.now() / 1000;
+      for (let i = batch.length - 1; i >= 0; i -= 1) {
+        if (typeof batch[i].observedAt === "number") {
+          latestUpdatedAt = batch[i].observedAt as number;
+          break;
+        }
+      }
+      setLogsState((previous) => {
+        const { lines, dropped } = appendLogFrames(
+          previous?.service === selectedService ? previous.logs : [],
+          batch,
+          MAX_LINES,
+        );
+        return {
+          service: selectedService,
+          logs: lines,
+          droppedLines: (previous?.droppedLines || 0) + dropped,
+          updatedAt: latestUpdatedAt,
+        };
+      });
+    };
+    const scheduleFlush = () => {
+      if (flushTimer !== undefined) return;
+      flushTimer = window.setTimeout(flushPendingFrames, 80);
+    };
     let attempt = 0;
     const addWarning = (message: string) => {
       if (!active() || !message) return;
@@ -332,6 +404,7 @@ export function ServiceLogsModal({
           });
           if (!active()) return;
           if (!response.ok || !response.body) {
+            if (response.status === 401) notifyUnauthorized();
             fatal = [400, 401, 403, 404].includes(response.status);
             let message = `HTTP ${response.status}`;
             try { const payload = await response.json(); message = payload.error || message; } catch { /* non-JSON proxy error */ }
@@ -356,21 +429,17 @@ export function ServiceLogsModal({
             if (event.status === "warning") addWarning(String(event.message || ""));
             if (event.status === "error") throw new Error(String(event.message || "Log stream failed"));
             if (typeof event.line === "string") {
-              setLogsState((previous) => {
-                const { lines, dropped } = appendLogFrame(previous?.service === selectedService ? previous.logs : [], event, MAX_LINES);
-                return {
-                  service: selectedService, logs: lines,
-                  droppedLines: (previous?.droppedLines || 0) + dropped,
-                  updatedAt: typeof event.observedAt === "number" ? event.observedAt : Date.now() / 1000,
-                };
-              });
+              pendingFrames.push(event);
+              scheduleFlush();
             }
           }, requestController.signal);
+          flushPendingFrames();
           if (timedOut) throw new Error("Log stream timed out");
           if (Date.now() - connectedAt > 10000) attempt = 0;
           // A clean EOF is also a disconnection. Never leave a frozen view
           // marked live just because the server closed without an HTTP error.
         } catch (error) {
+          flushPendingFrames();
           if (!active()) return;
           setLogsError(timedOut ? "Log stream timed out" : error instanceof Error ? error.message : String(error));
         } finally {
@@ -388,7 +457,11 @@ export function ServiceLogsModal({
       }
     };
     void run();
-    return () => controller.abort();
+    return () => {
+      if (flushTimer !== undefined) window.clearTimeout(flushTimer);
+      pendingFrames.length = 0;
+      controller.abort();
+    };
   }, [selectedService, allocation, paused, token, refreshVersion]);
 
   const copyLogs = async () => {

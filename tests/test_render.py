@@ -9,7 +9,6 @@ from luma.compose import load_compose_deployment, render_compose_routes
 from luma.errors import LumaError
 from luma.render import render_tailscale_route, render_tcp_route, route_path, stack_path
 from luma.service import load_service
-from luma.storage import storage_check_plan
 
 
 class RenderRouteTests(unittest.TestCase):
@@ -179,7 +178,15 @@ region: cn
             [{"url": "http://100.64.0.20:8080"}, {"url": "http://100.64.0.21:8080"}],
         )
 
-    def test_storage_check_plan_uses_nomad_sidecar_storage_model(self):
+    def test_storage_classes_and_service_storage_are_rejected(self):
+        from luma.agent import node_agent_capabilities
+
+        for os_name in ("linux", "darwin"):
+            caps = node_agent_capabilities(os_name)
+            self.assertNotIn("nfs-host", caps)
+            self.assertNotIn("nfs-client", caps)
+            self.assertIn("managed-volume-path", caps)
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "docker-compose.yml").write_text(
@@ -191,33 +198,53 @@ region: cn
                 ),
                 encoding="utf-8",
             )
-            (root / "luma.compose.yml").write_text(
+            (root / "with-classes.yml").write_text(
                 yaml.safe_dump(
                     {
                         "name": "app",
                         "compose": "docker-compose.yml",
                         "region": "cn",
                         "storageClasses": {
-                            "cn-nfs": {
-                                "provider": "nfs",
-                                "mode": "managed",
-                                "node": "aly",
-                                "path": "/srv/luma",
-                                "regions": ["cn"],
-                            }
+                            "cn-shared": {"provider": "nfs", "mode": "managed", "node": "aly", "path": "/srv/luma"}
                         },
-                        "volumes": {"data": {"storageClass": "cn-nfs", "path": "app/data"}},
                         "services": {"app": {"region": "cn", "exposure": "none"}},
                     }
                 ),
                 encoding="utf-8",
             )
-            deployment = load_compose_deployment(root / "luma.compose.yml")
-        plan = storage_check_plan(
-            deployment,
-            node_records={"aly": {"region": "cn", "hostname": "aly.internal"}},
-        )
-        self.assertEqual(plan["mounts"][0]["endpoint"], "aly.internal:/srv/luma")
+            with self.assertRaisesRegex(LumaError, "storageClasses are not supported"):
+                load_compose_deployment(root / "with-classes.yml")
+
+            (root / "with-vol-class.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "app",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "volumes": {"data": {"storageClass": "cn-shared", "path": "app/data"}},
+                        "services": {"app": {"region": "cn", "exposure": "none"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(LumaError, "storageClasses are not supported"):
+                load_compose_deployment(root / "with-vol-class.yml")
+
+            (root / "service.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "db",
+                        "image": "postgres:17",
+                        "region": "cn",
+                        "exposure": "none",
+                        "volumes": ["pg-data:/var/lib/postgresql/data"],
+                        "storage": {"pg-data": {"storageClass": "cn-shared"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(LumaError, "storage classes are not supported"):
+                load_service(root / "service.yml")
 
 
 class BuildBlockTests(unittest.TestCase):

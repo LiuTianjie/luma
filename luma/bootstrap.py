@@ -304,15 +304,68 @@ def _parse_kernel_version(output: str) -> tuple[int, int] | None:
     return int(match.group(1)), int(match.group(2))
 
 
-def _wait_nomad_job(remote: Executor, job_id: str, *, timeout: int = 120) -> str:
-    """Poll until the Nomad job reports a running allocation."""
+def _parse_nomad_job_status(output: str) -> tuple[str, str, str, int | None]:
+    """Parse (job_status, deployment_status, deployment_description, job_version) from `nomad job status`."""
+    job_status = ""
+    deployment_status = ""
+    deployment_description = ""
+    job_version: int | None = None
+    in_deployment = False
+    for raw_line in (output or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line == "Latest Deployment":
+            in_deployment = True
+            continue
+        if line in {"Summary", "Allocations", "Deployed", "Evaluations"}:
+            in_deployment = False
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip().lower()
+        value = value.strip()
+        if in_deployment:
+            if key == "status":
+                deployment_status = value.lower()
+            elif key == "description":
+                deployment_description = value
+            elif key == "job version" and value.isdigit():
+                job_version = int(value)
+        else:
+            if key == "status" and not job_status:
+                job_status = value.lower()
+            elif key == "version" and job_version is None and value.isdigit():
+                job_version = int(value)
+    return job_status, deployment_status, deployment_description, job_version
+
+
+def _wait_nomad_job(
+    remote: Executor,
+    job_id: str,
+    *,
+    timeout: int = 120,
+    expected_version: int | None = None,
+) -> str:
+    """Poll until the Nomad job is running with no active or failed deployment."""
     deadline = time.monotonic() + timeout
     while True:
         result = remote.sudo_result(
-            f"{shlex.quote(sys.executable)} -m luma.nomad_admin exec -- job status -short {shlex.quote(job_id)} 2>/dev/null | grep -iE 'Status' | head -1"
+            f"{shlex.quote(sys.executable)} -m luma.nomad_admin exec -- job status {shlex.quote(job_id)} 2>/dev/null"
         )
-        if "running" in result.output.lower():
-            return f"Nomad job running: {job_id}"
+        if result.code == 0 and result.output:
+            job_status, deployment_status, deployment_desc, job_version = _parse_nomad_job_status(result.output)
+            if deployment_status in {"failed", "cancelled"}:
+                detail = f": {deployment_desc}" if deployment_desc else ""
+                raise LumaError(
+                    f"Nomad job {job_id} deployment {deployment_status}{detail}. "
+                    f"Check `nomad job status {job_id}` and alloc logs."
+                )
+            version_ok = expected_version is None or (job_version is not None and job_version >= expected_version)
+            deployment_ok = deployment_status not in {"running", "pending", "paused", "initializing"}
+            if job_status == "running" and version_ok and deployment_ok:
+                return f"Nomad job running: {job_id}"
         if time.monotonic() >= deadline:
             break
         time.sleep(4)
@@ -883,7 +936,7 @@ def install_docker(remote: Executor) -> str:
         "\"$file\"; "
         "done; "
         "apt-get update; "
-        "apt-get install -y docker.io docker-compose-v2 curl ca-certificates ufw python3-yaml nfs-common; "
+        "apt-get install -y docker.io docker-compose-v2 curl ca-certificates ufw python3-yaml; "
         "systemctl enable --now containerd || true; "
         "systemctl enable --now docker.socket || true; "
         "systemctl reset-failed docker || true; "
@@ -1459,8 +1512,6 @@ def _write_control_route(remote: Executor, config: LumaConfig, domain: str, node
     manager's Tailscale IP. Without this route the control domain is unreachable
     (the job has no nomad-provider tags), so this closes the bootstrap gap.
     """
-    import base64
-
     # Traefik and Control share the manager host; keep the raw HTTP API local.
     target = "127.0.0.1"
     entrypoint = config.entrypoint
@@ -1481,19 +1532,28 @@ def _write_control_route(remote: Executor, config: LumaConfig, domain: str, node
         "        servers:\n"
         f"        - url: http://{target}:8080\n"
     )
-    b64 = base64.b64encode(route_yaml.encode("utf-8")).decode("ascii")
-    remote.sudo(
-        f"set -e; install -d -m 755 {ROOT}/routes; "
-        f"echo {b64} | base64 -d > {ROOT}/routes/luma-control.yml"
-    )
+    _atomic_write_route(remote, "luma-control.yml", route_yaml)
     from .observe_grafana import grafana_route_yaml
     grafana_yaml = grafana_route_yaml(domain, entrypoint=entrypoint, cert_resolver=cert_resolver)
-    grafana_b64 = base64.b64encode(grafana_yaml.encode("utf-8")).decode("ascii")
-    remote.sudo(
-        f"set -e; install -d -m 755 {ROOT}/routes; "
-        f"echo {grafana_b64} | base64 -d > {ROOT}/routes/luma-observe-grafana.yml"
-    )
+    _atomic_write_route(remote, "luma-observe-grafana.yml", grafana_yaml)
     return f"Control route written: {domain} -> {target}:8080"
+
+
+def _atomic_write_route(remote: Executor, filename: str, content: str) -> None:
+    """Decode a Traefik route file in a sibling staging directory and rename atomically."""
+    b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+    routes_dir = f"{ROOT}/routes"
+    staging_dir = f"{ROOT}/.luma-route-staging"
+    target = f"{routes_dir}/{filename}"
+    remote.sudo(
+        f"set -e; install -d -m 755 {shlex.quote(routes_dir)}; "
+        f"install -d -m 700 {shlex.quote(staging_dir)}; "
+        f"tmp=$(mktemp {shlex.quote(staging_dir)}/{shlex.quote(filename)}.XXXXXX); "
+        'trap \'rm -f "$tmp"\' EXIT; '
+        f"printf '%s' {shlex.quote(b64)} | base64 -d > \"$tmp\"; "
+        'chmod 0644 "$tmp"; '
+        f"mv -f \"$tmp\" {shlex.quote(target)}"
+    )
 
 
 def _state_tcp_relay_ports(state: dict[str, object]) -> list[int]:

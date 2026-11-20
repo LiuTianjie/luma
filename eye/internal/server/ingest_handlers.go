@@ -108,6 +108,12 @@ func (s *Server) handleUnifiedIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clientIP := scrub.ExtractClientIP(r)
+	if !s.allowIPRateLimit(clientIP) {
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
 	raw, err := io.ReadAll(io.LimitReader(r.Body, maxIngestBodyBytes+1))
 	if err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
@@ -148,8 +154,7 @@ func (s *Server) handleUnifiedIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientIP := scrub.ExtractClientIP(r)
-	if !s.allowRateLimit(proj, clientIP) {
+	if !s.allowProjectRateLimit(proj) {
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
@@ -356,7 +361,11 @@ func (s *Server) handleUnifiedIngest(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	s.batcher.Enqueue(batch)
+	if s.batcher != nil && !s.batcher.Enqueue(batch) {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "ingest queue overloaded, retry later", http.StatusServiceUnavailable)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -366,6 +375,12 @@ func (s *Server) handleSentryEnvelope(w http.ResponseWriter, r *http.Request) {
 	idOrSlug := strings.TrimSpace(r.PathValue("id"))
 	if idOrSlug == "" {
 		http.Error(w, "missing project id", http.StatusBadRequest)
+		return
+	}
+
+	clientIP := scrub.ExtractClientIP(r)
+	if !s.allowIPRateLimit(clientIP) {
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
 
@@ -392,8 +407,7 @@ func (s *Server) handleSentryEnvelope(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientIP := scrub.ExtractClientIP(r)
-	if !s.allowRateLimit(proj, clientIP) {
+	if !s.allowProjectRateLimit(proj) {
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
@@ -415,11 +429,15 @@ func (s *Server) handleSentryEnvelope(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.batcher.Enqueue(model.RelayBatch{
+	if s.batcher != nil && !s.batcher.Enqueue(model.RelayBatch{
 		Events:     parsed.Events,
 		Exceptions: parsed.Exceptions,
 		Logs:       parsed.Logs,
-	})
+	}) {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "ingest queue overloaded, retry later", http.StatusServiceUnavailable)
+		return
+	}
 
 	eventID := parsed.EventID
 	if eventID == "" {
@@ -428,16 +446,31 @@ func (s *Server) handleSentryEnvelope(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"id": eventID})
 }
 
-func (s *Server) allowRateLimit(proj *model.Project, clientIP string) bool {
-	if clientIP != "" && !s.ipLimiter.Allow("ip:"+clientIP, 0) {
-		s.metrics.AddRateLimited(1)
-		return false
-	}
-	if !s.projLimiter.Allow("proj:"+proj.Slug, float64(proj.RateLimitRPS)) {
-		s.metrics.AddRateLimited(1)
+func (s *Server) allowIPRateLimit(clientIP string) bool {
+	if clientIP != "" && s.ipLimiter != nil && !s.ipLimiter.Allow("ip:"+clientIP, 0) {
+		if s.metrics != nil {
+			s.metrics.AddRateLimited(1)
+		}
 		return false
 	}
 	return true
+}
+
+func (s *Server) allowProjectRateLimit(proj *model.Project) bool {
+	if proj != nil && s.projLimiter != nil && !s.projLimiter.Allow("proj:"+proj.Slug, float64(proj.RateLimitRPS)) {
+		if s.metrics != nil {
+			s.metrics.AddRateLimited(1)
+		}
+		return false
+	}
+	return true
+}
+
+func (s *Server) allowRateLimit(proj *model.Project, clientIP string) bool {
+	if !s.allowIPRateLimit(clientIP) {
+		return false
+	}
+	return s.allowProjectRateLimit(proj)
 }
 
 func (s *Server) writeResolveError(w http.ResponseWriter, err error) {

@@ -827,7 +827,7 @@ def _use_runner_buildx(
     docker_runtime: Optional[Mapping[str, Any]] = None,
 ) -> Iterator[str]:
     with _BUILDX_COND:
-        builder_name = _ensure_runner_buildx_locked(
+        builder_name = _ensure_runner_buildx(
             docker_bin=docker_bin,
             buildx_state_dir=buildx_state_dir,
             docker_config=docker_config,
@@ -849,6 +849,32 @@ def _use_runner_buildx(
             else:
                 _ACTIVE_BUILDER_JOBS.pop(builder_name, None)
             _BUILDX_COND.notify_all()
+
+
+def _ensure_runner_buildx(
+    *,
+    docker_bin: str,
+    buildx_state_dir: Path,
+    docker_config: Path,
+    proxy: str,
+    no_proxy: str,
+    http_hosts: List[str],
+    cache_keep_gb: int,
+    max_parallelism: int,
+    docker_runtime: Optional[Mapping[str, Any]] = None,
+) -> str:
+    with _BUILDX_COND:
+        return _ensure_runner_buildx_locked(
+            docker_bin=docker_bin,
+            buildx_state_dir=buildx_state_dir,
+            docker_config=docker_config,
+            proxy=proxy,
+            no_proxy=no_proxy,
+            http_hosts=http_hosts,
+            cache_keep_gb=cache_keep_gb,
+            max_parallelism=max_parallelism,
+            docker_runtime=docker_runtime,
+        )
 
 
 def _ensure_runner_buildx_locked(
@@ -1380,7 +1406,8 @@ def _build_compose_project(
         if src_dir.resolve() not in ctx_dir.parents and ctx_dir != src_dir.resolve():
             raise LumaError(f"service {svc_name} build context escapes repository")
         df_rel = str(spec.get("dockerfile") or "Dockerfile")
-        df_path = (ctx_dir / df_rel).resolve()
+        ctx_rel = ctx_dir.relative_to(src_dir.resolve())
+        df_path = _safe_subpath(src_dir, str(ctx_rel / df_rel))
         if not df_path.is_file():
             raise LumaError(f"Dockerfile not found for compose service {svc_name}: {df_rel}")
 

@@ -6,8 +6,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from luma.control import build_queue as queue
-from luma.control import database
 from luma.control import server as srv
 from luma.control.state import init_state, load_state, save_state
 from luma.errors import LumaError
@@ -101,14 +99,6 @@ class BuildPoolTests(unittest.TestCase):
         self.assertEqual(load_state()["agentTasks"][task_id]["status"], "queued")
         self.assertEqual(self.lease("builder")["id"], task_id)
 
-    def test_builder_promised_by_admission_never_takes_pooled_work(self):
-        pinned = srv._create_build_run({"ref": "main"}, source="https://git.example.com/acme/pinned.git", build_node="bd-prod",
-                                       project_key="acme/pinned", queued_work={"ref": "main"})
-        self.assertEqual(queue.claim()[0], pinned)  # Admitted; its task is not queued yet.
-        task_id = self.pooled_task(["bd-prod", "builder"])
-        self.assertIsNone(self.lease("bd-prod"))
-        self.assertEqual(self.lease("builder")["id"], task_id)
-
     def test_lease_records_the_builder_on_the_build_run(self):
         run = srv._create_build_run({"ref": "main"}, source="https://git.example.com/acme/app.git", build_node="builder",
                                     project_key="acme/app", build_candidates=["builder", "bd-prod"])
@@ -141,115 +131,11 @@ class BuildPoolTests(unittest.TestCase):
         self.assertEqual(results["build"]["image"], "x")
         self.assertIn("Leased by builder bd-prod", [event.get("message") for event in results["events"]])
 
-    def test_pool_admits_one_run_per_idle_candidate(self):
-        runs = [srv._create_build_run({"ref": "main"}, source=f"https://git.example.com/acme/app-{i}.git", build_node="builder",
-                                      project_key=f"acme/app-{i}", queued_work={"ref": "main"},
-                                      build_candidates=["builder", "bd-prod", "lab"]) for i in range(4)]
-        self.busy("lab")
-        claimed = [queue.claim() for _ in range(4)]
-        self.assertEqual([item[0] if item else None for item in claimed], [runs[0], runs[1], None, None])
-        position = queue.position(runs[2])
-        self.assertEqual((position["waitReason"], position["waitingForNode"]), ("builder", "builder"))
-
-    def test_offline_pool_waits_and_reports_its_first_candidate(self):
-        run = srv._create_build_run({"ref": "main"}, source="https://git.example.com/acme/app.git", build_node="builder",
-                                    project_key="acme/app", queued_work={"ref": "main"}, build_candidates=["builder", "bd-prod"])
-        srv._mutate_control_state(lambda state: [state["nodes"][name]["agent"].update(status="offline") for name in ("builder", "bd-prod")])
-        self.assertEqual(queue.position(run)["waitReason"], "builder-offline")
-        self.assertIsNone(queue.claim())
-        srv._mutate_control_state(lambda state: state["nodes"]["bd-prod"]["agent"].update(status="ready"))
-        self.assertEqual(queue.claim()[0], run)
-
-    def test_import_pools_same_platform_builders_and_remembers_the_warm_one(self):
-        calls = []
-
-        def task(state, node, action, payload, **kwargs):
-            calls.append((node, kwargs.get("pool"), kwargs.get("payload_by_node"), kwargs.get("affinity_seconds")))
-            return {"kind": "service", "image": "100.64.0.70:5000/acme/app:abc", "agentNode": "bd-prod",
-                    "buildCapabilities": ["native-arm-build-v1"], "manifest": "name: app\nregion: cn\nexposure: none\n"}
-
-        build_id = srv.handle_build_deploy(self.token, {"repoUrl": "https://git.example.com/acme/app.git", "ref": "main", "queue": True})["buildRunId"]
-        self.assertEqual(load_state()["buildRuns"][build_id]["buildCandidates"], ["builder", "bd-prod", "lab"])
-        with patch.object(srv, "_run_node_agent_task", side_effect=task), \
-             patch.object(srv, "handle_deployment", return_value={"service": "app"}) as deploy:
-            while (item := queue.claim()):
-                queue.execute(item)
-        node, pool, payloads, affinity = calls[0]
-        self.assertEqual(pool, ["builder", "bd-prod", "lab"])
-        self.assertEqual(payloads["bd-prod"], {"proxy": "http://egress-bd-prod:3128"})
-        self.assertEqual(affinity, srv._build_affinity_seconds())
-        self.assertEqual(deploy.call_args.args[1]["gitSource"]["buildNode"], "bd-prod")
+    def test_busy_build_nodes_tracks_active_agent_tasks(self):
+        self.busy("builder")
         state = load_state()
-        self.assertEqual(state["buildRuns"][build_id]["status"], "succeeded")
-        self.assertEqual(state["buildAffinity"]["acme/app"]["node"], "bd-prod")
-        # The next build of the project prefers its warm builder.
-        self.assertEqual(srv._rank_build_candidates(state, srv._compatible_build_records(state, []),
-                                                    project_key="acme/app", prefer_idle=False)[0], "bd-prod")
-
-    def test_pinned_import_and_loopback_push_host_never_pool(self):
-        for body, build in (({"buildNode": "lab"}, {}), ({}, {"pushHost": "localhost:5000"})):
-            with self.subTest(body=body, build=build):
-                srv._mutate_control_state(lambda state: state["build"].update(build))
-                response = srv.handle_build_deploy(self.token, {"repoUrl": "https://git.example.com/acme/app.git", "queue": True, **body})
-                self.assertNotIn("buildCandidates", load_state()["buildRuns"][response["buildRunId"]])
-                srv.handle_build_run_cancel(self.token, response["buildRunId"])
-
-    def test_unplanned_pool_excludes_builders_with_an_unknown_engine_platform(self):
-        srv._mutate_control_state(lambda state: [state["nodes"]["lab"]["agent"].pop(key) for key in ("os", "arch")])
-        self.assertFalse(srv._has_native_builder_choices(load_state()))
-        response = srv.handle_build_deploy(self.token, {"repoUrl": "https://git.example.com/acme/app.git", "queue": True})
-        self.assertEqual(load_state()["buildRuns"][response["buildRunId"]]["buildCandidates"], ["builder", "bd-prod"])
-
-    def test_import_admission_and_planning_never_hydrate_historical_logs(self):
-        srv._mutate_control_state(lambda state: state.setdefault("buildRuns", {}).update({
-            "old-history": {"id": "old-history", "status": "succeeded", "events": [{"message": "old log"}]},
-        }))
-        decode = database.decode_payload
-
-        def guard(conn, payload, *identity):
-            if "old-history" in identity:
-                raise AssertionError("builder selection read unrelated build history")
-            return decode(conn, payload, *identity)
-
-        with patch.object(database, "decode_payload", side_effect=guard):
-            accepted = srv.handle_build_deploy(self.token, {
-                "repoUrl": "https://git.example.com/acme/app.git", "queue": True,
-            })
-            build_id = accepted["buildRunId"]
-            self.assertEqual(accepted["run"]["status"], "queued")
-            srv._mutate_control_state(lambda state: state["nodes"]["lab"]["agent"].update(arch="arm64"))
-            with patch.object(srv, "_run_node_agent_task", return_value={
-                    "kind": "build-plan", "commit": "a" * 40, "platforms": ["linux/arm64"],
-                    "buildCapabilities": CAPABILITIES,
-            }):
-                planned = srv.handle_build_deploy(self.token, {
-                    "repoUrl": "https://git.example.com/acme/app.git", "queue": True,
-                }, _queued_run_id=build_id)
-            self.assertEqual(planned["requeueBuild"]["candidates"], ["lab"])
-
-    def test_scheduling_snapshot_retains_live_owners_and_completed_child_receipts(self):
-        def prepare(state):
-            state["buildRuns"] = {
-                "unwinding": {"id": "unwinding", "status": "failed", "queueExecuting": True,
-                              "buildNode": "builder", "agentTaskId": "child-running"},
-                "finishing": {"id": "finishing", "status": "running", "queueExecuting": True,
-                              "buildNode": "bd-prod", "agentTaskId": "child-done"},
-            }
-            state["buildQueue"] = {"unwinding": {"kind": "remote"}, "finishing": {"kind": "remote"}}
-            state["agentTasks"] = {
-                "child-running": {"id": "child-running", "status": "running", "nodeName": "builder",
-                                  "buildRunId": "unwinding", "progress": [{"line": "still stopping"}]},
-                "child-done": {"id": "child-done", "status": "succeeded", "nodeName": "bd-prod",
-                               "buildRunId": "finishing", "progress": [{"line": "done"}]},
-            }
-
-        srv._mutate_control_state(prepare)
-        with patch.object(database, "read_entity", side_effect=AssertionError("scheduling read a log stream")):
-            state = queue.scheduling_state()
         self.assertEqual(srv._busy_build_nodes(state), {"builder"})
-        self.assertEqual(srv._busy_build_nodes(state, exclude_run="unwinding"), set())
-        self.assertEqual(state["agentTasks"]["child-done"]["status"], "succeeded")
-        self.assertNotIn("progress", state["agentTasks"]["child-running"])
+        self.assertEqual(srv._busy_build_nodes(state, exclude_run="busy-builder"), set())
 
     def test_no_ready_candidate_rejects_pooled_dispatch(self):
         srv._mutate_control_state(lambda state: [state["nodes"][name]["agent"].update(status="offline") for name in ("builder", "bd-prod")])

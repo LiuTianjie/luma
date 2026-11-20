@@ -14,6 +14,7 @@ import json
 import math
 import mimetypes
 import os
+import posixpath
 import re
 import secrets
 import shlex
@@ -28,6 +29,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict, deque
 from dataclasses import replace
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -38,13 +40,13 @@ from starlette.middleware import Middleware
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
-from starlette.routing import Route, WebSocketRoute
+from starlette.routing import WebSocketRoute
 from starlette.websockets import WebSocket
 import yaml
 
 from ..registry_access import join_insecure_registries, registry_host_allows_http
 from ..assets import asset_path
-from ..build_capabilities import NATIVE_ARM_BUILD_CAPABILITY, REQUIRED_BUILD_CAPABILITY, REPOSITORY_BUILD_PLAN_CAPABILITY, native_arm_build_platform, normalize_build_capabilities, repository_build_requirements, require_build_result_capabilities
+from ..build_capabilities import NATIVE_ARM_BUILD_CAPABILITY, REQUIRED_BUILD_CAPABILITY, REPOSITORY_BUILD_PLAN_CAPABILITY, native_arm_build_platform, normalize_build_capabilities, require_build_result_capabilities
 from ..cloudflare import CloudflareClient
 from ..dns import delete_dns, sync_dns, with_dns_runtime
 from . import dns_zones, node_ingress
@@ -54,14 +56,11 @@ from ..compose import (
     ComposeDeploymentSpec,
     ComposeServiceSpec,
     ComposeVolumeSpec,
-    DEFAULT_NFS_MOUNT_OPTIONS,
-    StorageClassSpec,
     compose_public_services,
     compose_replica_count,
     compose_route_path,
     compose_stack_path,
     load_compose_deployment,
-    resolve_storage_mounts,
     storage_summary,
 )
 from ..config import LumaConfig, load_config, save_config
@@ -111,7 +110,6 @@ from ..registry_management import (
     validate_repository,
 )
 from ..render import named_volume_sources, render_tailscale_route, render_tcp_route, route_path, stack_path
-from ..repo_paths import normalize_repo_relative_path
 from ..regions import (
     custom_region_record,
     ensure_regions_state,
@@ -138,7 +136,12 @@ from .monitoring import CONTENT_TYPE as METRICS_CONTENT_TYPE, peer_is_loopback, 
 from . import dashboard_auth
 from . import builder as independent_builder
 from . import operations as operations_api
-from .workflows import handle_workflow_check, handle_workflow_get, handle_workflow_list, handle_workflow_record
+from .workflows import (
+    handle_workflow_check as handle_workflow_check,
+    handle_workflow_get as handle_workflow_get,
+    handle_workflow_list as handle_workflow_list,
+    handle_workflow_record as handle_workflow_record,
+)
 from . import history as control_history
 
 from .cdn import (
@@ -252,17 +255,116 @@ _CONTROL_IMAGE_PREPARE_LOCK = threading.RLock()
 _CONTROL_IMAGE_PREPARE_THREADS: dict[str, threading.Thread] = {}
 _REGISTRY_SCAN_LOCK = threading.RLock()
 _REGISTRY_CACHE_LOCK = threading.RLock()
-_REGISTRY_SCAN_CACHE: dict[str, Any] = {}
-_REGISTRY_SCAN_EPOCHS: dict[str, int] = {}
+_REGISTRY_SCAN_CACHE_MAX_ENTRIES = 256
+_REGISTRY_SCAN_CACHE: "OrderedDict[str, Any]" = OrderedDict()
+_REGISTRY_SCAN_EPOCHS: "OrderedDict[str, int]" = OrderedDict()
 _REGISTRY_BACKGROUND_SCAN_THREADS: dict[str, threading.Thread] = {}
 _REGISTRY_MAINTENANCE_LOCK = threading.RLock()
 _REGISTRY_AUTOMATION_LOCK = threading.RLock()
 _REGISTRY_AUTOMATION_THREAD: threading.Thread | None = None
 _REGISTRY_AUTOMATION_WAKE = threading.Event()
+_REGISTRY_AUTOMATION_STOP = threading.Event()
 # Active build/deploy execution cannot be blindly replayed after restart.
 # Persist its owning Control process so a replacement can close interrupted
 # attempts. Unstarted management queue entries are durable and resume separately.
 _CONTROL_PROCESS_INSTANCE_ID = f"control-{secrets.token_hex(16)}"
+
+
+def _set_registry_scan_cache(cache_key: str, value: Any) -> None:
+    key = str(cache_key)
+    _REGISTRY_SCAN_CACHE.pop(key, None)
+    _REGISTRY_SCAN_CACHE[key] = value
+    while len(_REGISTRY_SCAN_CACHE) > _REGISTRY_SCAN_CACHE_MAX_ENTRIES:
+        oldest = next(iter(_REGISTRY_SCAN_CACHE))
+        _REGISTRY_SCAN_CACHE.pop(oldest, None)
+
+
+def _bump_registry_scan_epoch(cache_key: str) -> int:
+    key = str(cache_key)
+    epoch = _REGISTRY_SCAN_EPOCHS.get(key, 0) + 1
+    _REGISTRY_SCAN_EPOCHS.pop(key, None)
+    _REGISTRY_SCAN_EPOCHS[key] = epoch
+    while len(_REGISTRY_SCAN_EPOCHS) > _REGISTRY_SCAN_CACHE_MAX_ENTRIES:
+        oldest = next(iter(_REGISTRY_SCAN_EPOCHS))
+        _REGISTRY_SCAN_EPOCHS.pop(oldest, None)
+    return epoch
+
+
+class _NodeAgentLeaseWaiters:
+    """In-process wakeup signal for async node-agent lease long polls."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._waiters: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Event]]] = {}
+        self._generations: dict[str, int] = {}
+        self._broadcast_generation = 0
+
+    def generation(self, *node_names: str) -> tuple[int, tuple[tuple[str, int], ...]]:
+        keys = tuple(sorted({str(name).strip() for name in node_names if str(name).strip()}))
+        with self._lock:
+            return self._broadcast_generation, tuple((key, self._generations.get(key, 0)) for key in keys)
+
+    def notify(self, *node_names: str) -> None:
+        targets: list[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = []
+        with self._lock:
+            names = [str(name).strip() for name in node_names if str(name).strip()]
+            if not names:
+                self._broadcast_generation += 1
+                for bucket in self._waiters.values():
+                    targets.extend(bucket)
+            else:
+                for name in names:
+                    self._generations[name] = self._generations.get(name, 0) + 1
+                    targets.extend(self._waiters.get(name, ()))
+                targets.extend(self._waiters.get("*", ()))
+        for loop, event in targets:
+            try:
+                loop.call_soon_threadsafe(event.set)
+            except RuntimeError:
+                pass
+
+    async def wait(
+        self,
+        node_names: tuple[str, ...],
+        seen: tuple[int, tuple[tuple[str, int], ...]],
+        timeout: float,
+    ) -> None:
+        if timeout <= 0:
+            return
+        keys = tuple(sorted({str(name).strip() for name in node_names if str(name).strip()})) or ("*",)
+        loop = asyncio.get_running_loop()
+        event = asyncio.Event()
+        entry = (loop, event)
+        seen_broadcast, seen_nodes = seen
+        seen_map = dict(seen_nodes)
+        with self._lock:
+            if self._broadcast_generation != seen_broadcast:
+                return
+            for key in keys:
+                if key in seen_map and self._generations.get(key, 0) != seen_map[key]:
+                    return
+            for key in keys:
+                self._waiters.setdefault(key, set()).add(entry)
+        try:
+            try:
+                await asyncio.wait_for(event.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                pass
+        finally:
+            with self._lock:
+                for key in keys:
+                    bucket = self._waiters.get(key)
+                    if bucket is not None:
+                        bucket.discard(entry)
+                        if not bucket:
+                            self._waiters.pop(key, None)
+
+
+_NODE_AGENT_LEASE_WAITERS = _NodeAgentLeaseWaiters()
+
+
+def _notify_node_agent_lease(*node_names: str) -> None:
+    _NODE_AGENT_LEASE_WAITERS.notify(*node_names)
 
 
 def _serialize_deploy(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -274,24 +376,25 @@ def _serialize_deploy(func: Callable[..., Any]) -> Callable[..., Any]:
         def resources() -> set[str] | None:
             keys = request_resources(func.__name__, body)
             if keys is not None:
-                # Re-read after waiting: the previous revision's hosts must
-                # remain owned while removing old DNS/redirect routes, too.
-                state = load_auth_state()
                 jobs = {key.removeprefix("job:") for key in keys if key.startswith("job:")}
-                for kind, records in (state.get("deployments") or {}).items():
-                    if not isinstance(records, dict):
-                        continue
-                    for job in jobs:
-                        record = records.get(job)
-                        if not isinstance(record, dict):
+                if jobs:
+                    # Re-read after waiting: the previous revision's hosts must
+                    # remain owned while removing old DNS/redirect routes, too.
+                    state = load_auth_state()
+                    for kind, records in (state.get("deployments") or {}).items():
+                        if not isinstance(records, dict):
                             continue
-                        previous = request_resources(
-                            "handle_compose_deployment" if kind == "compose" else "handle_deployment",
-                            {"manifest": record.get("manifest")},
-                        )
-                        if previous is None:
-                            return None
-                        keys.update(previous)
+                        for job in jobs:
+                            record = records.get(job)
+                            if not isinstance(record, dict):
+                                continue
+                            previous = request_resources(
+                                "handle_compose_deployment" if kind == "compose" else "handle_deployment",
+                                {"manifest": record.get("manifest")},
+                            )
+                            if previous is None:
+                                return None
+                            keys.update(previous)
             return keys
 
         with _DEPLOY_OWNERS.hold(
@@ -723,10 +826,6 @@ def _node_agent_status(record: Dict[str, Any]) -> str:
     return "missing"
 
 
-def _node_agent_supports_storage(record: Dict[str, Any]) -> bool:
-    return _node_agent_is_ready(record, required_capability="nfs-host")
-
-
 def _node_agent_is_ready(record: Dict[str, Any], *, required_capability: str | None = None) -> bool:
     agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
     capabilities = {str(value) for value in agent.get("capabilities") or []}
@@ -831,13 +930,30 @@ def _has_native_builder_choices(state: Dict[str, Any]) -> bool:
     }) > 1
 
 
-def _busy_build_nodes(state: Dict[str, Any], *, exclude_run: str = "") -> set[str]:
-    from .build_queue import _builder_owners, _current_runs
+def _active_agent_task_owners(state: Dict[str, Any]) -> Dict[str, str]:
+    tasks = _agent_tasks(state)
+    owners: Dict[str, str] = {}
+    active = sorted(
+        (
+            task
+            for _task_id, task in _agent_task_items_with_status(tasks, {"queued", "running"})
+            if isinstance(task, dict)
+        ),
+        key=lambda t: (t.get("createdAt", 0), t.get("id", "")),
+    )
+    for task in active:
+        node = str(task.get("nodeName") or "")
+        if node:
+            owners.setdefault(node, str(task.get("buildRunId") or task.get("id") or ""))
+    return owners
 
-    # A queued run being executed reserves a builder for itself; that
-    # reservation must not make its own candidates look busy.
-    return {node for node, owner in _builder_owners(state, _current_runs(state)).items()
-            if not exclude_run or owner != exclude_run}
+
+def _busy_build_nodes(state: Dict[str, Any], *, exclude_run: str = "") -> set[str]:
+    return {
+        node
+        for node, owner in _active_agent_task_owners(state).items()
+        if not exclude_run or owner != exclude_run
+    }
 
 
 BUILD_AFFINITY_LIMIT = 500
@@ -1062,6 +1178,80 @@ def _expire_stale_local_build_runs(runs: Dict[str, Any], now: int) -> bool:
     return changed
 
 
+LEGACY_REMOTE_BUILD_RETIRED_ERROR = (
+    "Legacy built-in remote build queue has been retired; "
+    "use the Luma Build addon (Dashboard -> Builds or luma builder submit)."
+)
+
+
+def _active_build_runs(state: Dict[str, Any], statuses: set[str] | None = None) -> list[Dict[str, Any]]:
+    target = {"queued", "running", "canceling", "finalizing"} if statuses is None else statuses
+    runs = _build_runs(state)
+    active_values = getattr(runs, "active_values", None)
+    if callable(active_values):
+        return list(active_values(target))
+    return [run for run in runs.values() if isinstance(run, dict) and run.get("status") in target]
+
+
+def _build_request_body(run: Dict[str, Any], body: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    request = run.get("request")
+    return {**(request if isinstance(request, dict) else {}), **(body or {})}
+
+
+def _build_project_scope(run: Dict[str, Any], body: Dict[str, Any]) -> list[str]:
+    source = str(run.get("source") or body.get("repoUrl") or run.get("projectKey") or "").strip().rstrip("/")
+    source = normalize_import_repo_url(source)
+    if "://" not in source and "@" in source and ":" in source:
+        host, path = source.split(":", 1)
+        source = "ssh://" + host + "/" + path
+    parsed = urllib.parse.urlsplit(source)
+    if parsed.hostname:
+        port = f":{parsed.port}" if parsed.port and parsed.port not in {22, 80, 443} else ""
+        source = parsed.hostname.lower() + port + "/" + parsed.path.strip("/").lower()
+    if source.endswith(".git"):
+        source = source[:-4]
+    ref = str(body.get("ref") or "HEAD").strip() or "HEAD"
+    if ref.startswith("refs/heads/"):
+        ref = ref[len("refs/heads/"):]
+    return ["build-v2", source, ref]
+
+
+def _build_replacement_key(run: Dict[str, Any], body: Dict[str, Any]) -> str:
+    merged = _build_request_body(run, body)
+    scope = _build_project_scope(run, merged)
+    sidecar = str(merged.get("composeSidecar") or "").strip()
+    if sidecar:
+        path = posixpath.normpath(sidecar)
+        if path.startswith("/") or path == ".." or path.startswith("../"):
+            raise LumaError("composeSidecar must be a repository-relative path")
+        return json.dumps([*scope, "sidecar", path], separators=(",", ":"))
+    manifest = merged.get("manifest") or (merged.get("buildResult") or {}).get("manifest")
+    if isinstance(manifest, str) and manifest.strip():
+        data = yaml.safe_load(manifest)
+        if isinstance(data, dict) and isinstance(data.get("name"), str) and data["name"].strip():
+            return json.dumps([*scope, "manifest", slugify(data["name"])], separators=(",", ":"))
+    return ""
+
+
+def _build_project_identity(run: Dict[str, Any], body: Dict[str, Any] | None = None) -> str:
+    stored = str(run.get("queueKey") or "")
+    if body is None and run.get("queueIdentityVersion") == 2 and stored:
+        return stored
+    request = _build_request_body(run, body)
+    key = _build_replacement_key(run, request)
+    if key:
+        return key
+    scope = _build_project_scope(run, request)
+    return json.dumps([*scope, "project", "*"], separators=(",", ":")) if scope[1] else ""
+
+
+def _build_identities_conflict(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    a, b = json.loads(left), json.loads(right)
+    return a[:3] == b[:3] and (a == b or a[3] == "project" or b[3] == "project")
+
+
 def _require_build_project_available(
     runs: Dict[str, Any],
     project_key: str,
@@ -1071,27 +1261,27 @@ def _require_build_project_available(
     body: Dict[str, Any] | None = None,
     queue_state: Dict[str, Any] | None = None,
 ) -> None:
-    from .build_queue import _current_runs, _identity, identities_conflict, queue_identity
-    incoming = queue_identity(
+    incoming = _build_project_identity(
         {"projectKey": project_key, "source": source, "request": body or {}},
         body,
     )
     if not incoming:
         return
-    active_values = getattr(runs, "active_values", None)
-    candidates = (
-        ((str(run.get("id") or ""), run) for run in active_values({"queued", "running", "canceling", "finalizing"}))
-        if callable(active_values) else runs.items()
-    )
     if queue_state is not None:
-        candidates = ((run["id"], run) for run in _current_runs(queue_state))
+        candidates = ((str(run.get("id") or ""), run) for run in _active_build_runs(queue_state))
+    else:
+        active_values = getattr(runs, "active_values", None)
+        candidates = (
+            ((str(run.get("id") or ""), run) for run in active_values({"queued", "running", "canceling", "finalizing"}))
+            if callable(active_values) else runs.items()
+        )
     for run_id, run in candidates:
         if str(run_id) == current_run_id or not isinstance(run, dict):
             continue
-        existing = _identity(queue_state, run) if queue_state is not None else queue_identity(run)
-        if not identities_conflict(existing, incoming):
+        existing = _build_project_identity(run)
+        if not _build_identities_conflict(existing, incoming):
             continue
-        if run.get("queueExecuting") or str(run.get("status") or "") in {"queued", "running", "canceling", "finalizing"}:
+        if str(run.get("status") or "") in {"queued", "running", "canceling", "finalizing"}:
             raise LumaError(
                 f"deployment target already has an active build: {run_id}; "
                 "wait for it to finish or cancel it before starting another build"
@@ -1122,10 +1312,8 @@ def _create_build_run(
                 raise LumaError(f"build run not found: {retry_of}")
             if str(parent.get("status") or "") in {"queued", "running", "canceling", "finalizing"}:
                 raise LumaError("an active build cannot be retried; wait for it to finish or cancel it first")
-        if queued_work is None and not (mode == "local" and body.get("queue") is True):
-            _require_build_project_available(runs, project_key, source=source, body=body, queue_state=state)
-        from .build_queue import queue_identity
-        ident = queue_identity({"projectKey": project_key, "source": source, "request": body}, body)
+        _require_build_project_available(runs, project_key, source=source, body=body, queue_state=state)
+        ident = _build_project_identity({"projectKey": project_key, "source": source, "request": body}, body)
         runs[run_id] = {
             "id": run_id,
             "status": "running",
@@ -1142,14 +1330,8 @@ def _create_build_run(
         if ident:
             runs[run_id]["queueKey"] = ident
             runs[run_id]["queueIdentityVersion"] = 2
-        if queued_work is not None or (mode == "local" and body.get("queue") is True):
-            from .build_queue import reserve_order
-            reserve_order(state, runs[run_id])
         if build_candidates and len(build_candidates) > 1:
             runs[run_id]["buildCandidates"] = list(build_candidates)
-        if queued_work is not None:
-            from .build_queue import attach
-            attach(state, runs[run_id], "remote", queued_work)
         if expires_at:
             runs[run_id]["expiresAt"] = int(expires_at)
         if isinstance(parent, dict):
@@ -1174,8 +1356,6 @@ def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | No
             return
         current_status = str(run.get("status") or "")
         if current_status in {"succeeded", "failed", "canceled"}:
-            # A failure progress event can precede executor cleanup. Finish its
-            # history timestamps without resurrecting or changing the outcome.
             if not run.get("completedAt"):
                 run.update(completedAt=now, updatedAt=now)
             return
@@ -1191,15 +1371,10 @@ def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | No
             run["message"] = str(message)[:BUILD_RUN_MESSAGE_LIMIT]
         if final_status != "canceled" and isinstance(result, dict):
             run["result"] = _build_run_result_summary(result)
-        if final_status == "succeeded":
-            # Publish success and its ordering fence atomically. A slower build
-            # may finish while workflow receipts / executor cleanup still run.
-            from .build_queue import record_deployed
-            record_deployed(state, run)
 
     # A completed deployment must not be reclassified as failed merely because
     # its success receipt cannot acquire the writer. Retain this exact outcome
-    # and the queue owner until its idempotent persistence succeeds.
+    # until its idempotent persistence succeeds.
     persist_receipt(lambda: mutate_state(mutate, metadata_kinds={"buildRuns"}), owner="build.complete")
 
 
@@ -1249,25 +1424,28 @@ def _reconcile_orphaned_build_runs_after_control_restart() -> int:
         tasks = _agent_tasks(state)
         runs = _build_runs(state)
         active_values = getattr(runs, "active_values", None)
-        candidates = active_values({"running", "canceling"}) if callable(active_values) else runs.values()
+        candidates = (
+            active_values({"queued", "running", "canceling", "finalizing"})
+            if callable(active_values)
+            else runs.values()
+        )
         for run in candidates:
             if not isinstance(run, dict):
                 continue
             status = str(run.get("status") or "")
-            if status not in {"running", "canceling"}:
+            if status not in {"queued", "running", "canceling", "finalizing"}:
                 continue
-            if run.get("mode") == "local" and run.get("request", {}).get("queue") is True and not run.get("queueManaged"):
-                continue
-            if str(run.get("controlProcessInstanceId") or "") == _CONTROL_PROCESS_INSTANCE_ID:
+            if status != "queued" and str(run.get("controlProcessInstanceId") or "") == _CONTROL_PROCESS_INSTANCE_ID:
                 continue
 
             canceled = status == "canceling" or bool(run.get("cancelRequestedAt"))
             terminal_status = "canceled" if canceled else "failed"
-            message = (
-                "build canceled during Control restart"
-                if canceled
-                else "build interrupted by Control restart"
-            )
+            if canceled:
+                message = "build canceled during Control restart"
+            elif status == "queued":
+                message = "build queue retired during Control restart"
+            else:
+                message = "build interrupted by Control restart"
             run.update(
                 {
                     "status": terminal_status,
@@ -1276,6 +1454,8 @@ def _reconcile_orphaned_build_runs_after_control_restart() -> int:
                     "completedAt": now,
                 }
             )
+            for queue_field in ("queueExecuting", "queueOwnerReleased", "queueOwnerReleasedAt", "queueClaimToken"):
+                run.pop(queue_field, None)
             if canceled:
                 run["canceledAt"] = now
             events = run.get("events") if isinstance(run.get("events"), list) else []
@@ -1307,6 +1487,8 @@ def _reconcile_orphaned_build_runs_after_control_restart() -> int:
                     task["cancelRequestedAt"] = now
                     task["updatedAt"] = now
             reconciled += 1
+        if isinstance(state.get("buildQueue"), dict) and state["buildQueue"]:
+            state.pop("buildQueue", None)
         _prune_build_runs(state)
         return reconciled
 
@@ -1415,19 +1597,11 @@ def _prune_agent_tasks(state: Dict[str, Any], *, now: int | None = None) -> None
 
     _reconcile_unregistered_agent_tasks(state, now=now)
 
-    # Keep the completion receipt until its queue owner has consumed it and
-    # released the project fence, even when history retention has elapsed.
-    protected = set()
-    for build_id in state.get("buildQueue") or {}:
-        run = _build_runs(state).get(build_id)
-        if isinstance(run, dict) and run.get("queueExecuting"):
-            protected.add(run.get("agentTaskId"))
     terminal = {"succeeded", "failed", "timeout", "canceled"}
     stale = [
         task_id
         for task_id, task in batch.items()
         if isinstance(task, dict)
-        and task_id not in protected
         and str(task.get("status") or "") in terminal
         and int(task.get("completedAt") or task.get("updatedAt") or 0) < cutoff
     ]
@@ -1507,6 +1681,8 @@ def _reconcile_interrupted_agent_tasks(
                 "updatedAt": now,
             }
         )
+        if not canceled:
+            task["interrupted"] = True
 
         build_run_id = str(task.get("buildRunId") or "")
         build_run = _build_runs(state).get(build_run_id) if build_run_id else None
@@ -1593,21 +1769,30 @@ def handle_nomad_security_task(token: str, body: Dict[str, Any]) -> Dict[str, An
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     task_id = "security-" + identity
 
-    def mutate(state: Dict[str, Any]) -> Dict[str, Any]:
+    def mutate(state: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
         require_token(state, token, token_type="deploy")
         tasks = _agent_tasks(state)
         existing = tasks.get(task_id)
         if isinstance(existing, dict):
             if existing.get("payloadSHA256") != digest:
                 raise LumaError("security operation key was reused with a different payload")
-            if existing.get("status") in {"interrupted", "timeout"} and int(existing.get("resumeAttempts") or 0) < 3:
+            interrupted_failure = (
+                existing.get("status") == "failed"
+                and (
+                    bool(existing.get("interrupted"))
+                    or str(existing.get("message") or "") == "node agent restarted before task completion"
+                )
+            )
+            requeued = False
+            if (existing.get("status") in {"interrupted", "timeout"} or interrupted_failure) and int(existing.get("resumeAttempts") or 0) < 3:
                 # These typed operations retain a host-owned intent before
                 # mutation. Requeue a lost agent process with the same payload.
                 existing.update(status="queued", resumeAttempts=int(existing.get("resumeAttempts") or 0) + 1,
                                 updatedAt=int(time.time()), result={}, message="Resuming the saved node security operation")
-                for key in ("leasedAt", "completedAt", "cancelRequestedAt"):
+                for key in ("leasedAt", "completedAt", "cancelRequestedAt", "interrupted"):
                     existing.pop(key, None)
-            return {k: existing.get(k) for k in ("id", "status", "result", "message")}
+                requeued = True
+            return {k: existing.get(k) for k in ("id", "status", "result", "message")}, requeued
         record = _node_record_for_name(state.get("nodes") or {}, name)
         if record is None or not _node_agent_is_ready(record, required_capability=CAPABILITY):
             raise LumaError("node must finish its normal Luma update before the security migration")
@@ -1618,127 +1803,132 @@ def handle_nomad_security_task(token: str, body: Dict[str, Any]) -> Dict[str, An
                 "payloadSHA256": digest, "requiredCapability": CAPABILITY, "status": "queued", "progress": [],
                 "createdAt": now, "updatedAt": now}
         tasks[task_id] = task
-        return {"id": task_id, "status": "queued"}
-    return _mutate_control_state(mutate)
+        return {"id": task_id, "status": "queued"}, True
+    response, should_notify = _mutate_control_state(mutate)
+    if should_notify:
+        _notify_node_agent_lease(name)
+    return response
 
 
-def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    observed_at = time.time()
-    node_name = str(body.get("nodeName") or "").strip()
-    node_id = str(body.get("nodeId") or "").strip()
-    if not node_name:
-        raise LumaError("nodeName is required")
-    leased: Dict[str, Any] | None = None
-    normalized_container_stats: list[Dict[str, Any]] = []
-    config = load_config(_control_config_path())
-    wait_seconds = min(max(int(body.get("waitSeconds") or 0), 0), 30)
-    deadline = time.time() + wait_seconds
-    first_poll = True
-    while True:
-        persist_heartbeat = first_poll
+def _poll_node_agent_lease_once(
+    token: str,
+    body: Dict[str, Any],
+    *,
+    node_name: str,
+    node_id: str,
+    config: Any,
+    observed_at: float,
+    persist_heartbeat: bool,
+) -> tuple[Dict[str, Any] | None, str]:
+    canonical_name = node_name
 
-        def mutate(state: Dict[str, Any]) -> tuple[Any, bool]:
-            nonlocal normalized_container_stats
-            nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-            entry = _node_record_entry_for_name_or_id(nodes, node_name, node_id)
-            canonical_node_name = entry[0] if entry else node_name
-            record = _require_node_agent_token(state, token, node_name, node_id=node_id)
-            changed = False
-            if persist_heartbeat:
-                _reconcile_unregistered_agent_tasks(state)
-                _prune_build_runs(state)
-                normalized_container_stats = _update_agent_heartbeat(
-                    record, body, config=config, state=state, observed_at=observed_at
-                )
-                # Idle serial agents poll this endpoint instead of the busy
-                # heartbeat endpoint. Their lease heartbeat therefore proves
-                # that no earlier running task is still owned by this process.
-                _reconcile_interrupted_agent_tasks(
-                    state,
-                    canonical_node_name,
-                    str(body.get("activeTaskId") or "").strip(),
-                    observed_at=observed_at,
-                )
-                changed = True
-            tasks = _agent_tasks(state)
-            now = int(time.time())
-            # Concurrent/abandoned long polls may reach the same serial agent.
-            # Reserve its single slot transactionally, including handoff time.
-            active_values = getattr(tasks, "active_values", None)
-            running = active_values({"running"}) if callable(active_values) else tasks.values()
-            running_nodes = {str(task.get("nodeName") or "") for task in running
-                             if isinstance(task, dict) and task.get("status") == "running"}
-            if canonical_node_name in running_nodes:
-                return None, changed
-            owners: Dict[str, str] | None = None
-            for task_id, task in sorted(_agent_task_items_with_status(tasks, {"queued"})):
-                if not isinstance(task, dict) or task.get("status") != "queued":
-                    continue
-                pooled = not task.get("nodeName") and isinstance(task.get("poolCandidates"), list)
-                if pooled:
-                    # A shared builder pool: the first eligible candidate to
-                    # poll binds the task to itself in this transaction.
-                    if owners is None:
-                        from .build_queue import _builder_owners, _current_runs
-                        owners = _builder_owners(state, _current_runs(state))
-                    if not _pool_lease_eligible(state, task, canonical_node_name, running_nodes, now, owners):
-                        continue
-                elif task.get("nodeName") != canonical_node_name:
-                    continue
-                required_capabilities_raw = task.get("requiredCapabilitiesAny")
-                required_capabilities = tuple(
-                    str(value).strip()
-                    for value in required_capabilities_raw
-                    if str(value).strip()
-                ) if isinstance(required_capabilities_raw, list) else ()
-                required_capability = str(task.get("requiredCapability") or "").strip()
-                if required_capabilities and not _node_agent_has_any_capability(record, required_capabilities):
-                    continue
-                if not required_capabilities and required_capability and not _node_agent_is_ready(record, required_capability=required_capability):
-                    continue
-                if task.get("action") == "build-image":
-                    try:
-                        required = sorted(set(normalize_build_capabilities((task.get("payload") or {}).get("requireBuildCapabilities")) + [NATIVE_ARM_BUILD_CAPABILITY]))
-                        _require_builder_capabilities(record, canonical_node_name, required)
-                        task.setdefault("payload", {})["requireBuildCapabilities"] = required
-                    except LumaError as exc:
-                        if pooled:
-                            continue  # Another candidate may still run it.
-                        task.update(status="failed", message=str(exc), result={}, completedAt=now, updatedAt=now)
-                        changed = True
-                        continue
-                if pooled:
-                    by_node = task.pop("payloadByNode", None)
-                    node_payload = by_node.get(canonical_node_name) if isinstance(by_node, dict) else None
-                    task.setdefault("payload", {}).update(node_payload if isinstance(node_payload, dict) else {})
-                    task["nodeName"] = canonical_node_name
-                    run = _build_runs(state).get(str(task.get("buildRunId") or "")) if task.get("buildRunId") else None
-                    if isinstance(run, dict):
-                        run["buildNode"] = canonical_node_name
-                        run.setdefault("request", {})["buildNode"] = canonical_node_name
-                        run["updatedAt"] = now
-                task["status"] = "running"
-                task["leasedAt"] = now
-                task["updatedAt"] = now
-                leased_task = {
-                    "id": task_id,
-                    "action": task.get("action"),
-                    "payload": _agent_task_lease_payload(state, task),
-                }
-                return leased_task, True
+    def mutate(state: Dict[str, Any]) -> tuple[Any, bool]:
+        nonlocal canonical_name
+        nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+        entry = _node_record_entry_for_name_or_id(nodes, node_name, node_id)
+        canonical_node_name = entry[0] if entry else node_name
+        canonical_name = canonical_node_name
+        record = _require_node_agent_token(state, token, node_name, node_id=node_id)
+        changed = False
+        if persist_heartbeat:
+            _reconcile_unregistered_agent_tasks(state)
+            _prune_build_runs(state)
+            _update_agent_heartbeat(
+                record, body, config=config, state=state, observed_at=observed_at
+            )
+            # Idle serial agents poll this endpoint instead of the busy
+            # heartbeat endpoint. Their lease heartbeat therefore proves
+            # that no earlier running task is still owned by this process.
+            _reconcile_interrupted_agent_tasks(
+                state,
+                canonical_node_name,
+                str(body.get("activeTaskId") or "").strip(),
+                observed_at=observed_at,
+            )
+            changed = True
+        tasks = _agent_tasks(state)
+        now = int(time.time())
+        # Concurrent/abandoned long polls may reach the same serial agent.
+        # Reserve its single slot transactionally, including handoff time.
+        active_values = getattr(tasks, "active_values", None)
+        running = active_values({"running"}) if callable(active_values) else tasks.values()
+        running_nodes = {str(task.get("nodeName") or "") for task in running
+                         if isinstance(task, dict) and task.get("status") == "running"}
+        if canonical_node_name in running_nodes:
             return None, changed
+        owners: Dict[str, str] | None = None
+        for task_id, task in sorted(_agent_task_items_with_status(tasks, {"queued"})):
+            if not isinstance(task, dict) or task.get("status") != "queued":
+                continue
+            pooled = not task.get("nodeName") and isinstance(task.get("poolCandidates"), list)
+            if pooled:
+                # A shared builder pool: the first eligible candidate to
+                # poll binds the task to itself in this transaction.
+                if owners is None:
+                    owners = _active_agent_task_owners(state)
+                if not _pool_lease_eligible(state, task, canonical_node_name, running_nodes, now, owners):
+                    continue
+            elif task.get("nodeName") != canonical_node_name:
+                continue
+            required_capabilities_raw = task.get("requiredCapabilitiesAny")
+            required_capabilities = tuple(
+                str(value).strip()
+                for value in required_capabilities_raw
+                if str(value).strip()
+            ) if isinstance(required_capabilities_raw, list) else ()
+            required_capability = str(task.get("requiredCapability") or "").strip()
+            if required_capabilities and not _node_agent_has_any_capability(record, required_capabilities):
+                continue
+            if not required_capabilities and required_capability and not _node_agent_is_ready(record, required_capability=required_capability):
+                continue
+            if task.get("action") == "build-image":
+                try:
+                    required = sorted(set(normalize_build_capabilities((task.get("payload") or {}).get("requireBuildCapabilities")) + [NATIVE_ARM_BUILD_CAPABILITY]))
+                    _require_builder_capabilities(record, canonical_node_name, required)
+                    task.setdefault("payload", {})["requireBuildCapabilities"] = required
+                except LumaError as exc:
+                    if pooled:
+                        continue  # Another candidate may still run it.
+                    task.update(status="failed", message=str(exc), result={}, completedAt=now, updatedAt=now)
+                    changed = True
+                    continue
+            if pooled:
+                by_node = task.pop("payloadByNode", None)
+                node_payload = by_node.get(canonical_node_name) if isinstance(by_node, dict) else None
+                task.setdefault("payload", {}).update(node_payload if isinstance(node_payload, dict) else {})
+                task["nodeName"] = canonical_node_name
+                run = _build_runs(state).get(str(task.get("buildRunId") or "")) if task.get("buildRunId") else None
+                if isinstance(run, dict):
+                    run["buildNode"] = canonical_node_name
+                    run.setdefault("request", {})["buildNode"] = canonical_node_name
+                    run["updatedAt"] = now
+            task["status"] = "running"
+            task["leasedAt"] = now
+            task["updatedAt"] = now
+            leased_task = {
+                "id": task_id,
+                "action": task.get("action"),
+                "payload": _agent_task_lease_payload(state, task),
+            }
+            return leased_task, True
+        return None, changed
 
-        candidate = _mutate_control_state_if_changed(mutate)
-        first_poll = False
-        if candidate is not None:
-            leased = candidate
-            break
-        if time.time() >= deadline:
-            break
-        time.sleep(1)
+    leased_task = _mutate_control_state_if_changed(mutate)
+    return leased_task, canonical_name
+
+
+def _finalize_node_agent_lease(
+    node_name: str,
+    node_id: str,
+    body: Dict[str, Any],
+    *,
+    config: Any,
+    leased: Dict[str, Any] | None,
+) -> Dict[str, Any]:
     state = load_runtime_state()
     entry = _node_record_entry_for_name_or_id(state.get("nodes") if isinstance(state.get("nodes"), dict) else {}, node_name, node_id)
-    _record_metrics_history(entry[0] if entry else node_name, body, config=config, state=state)
+    canonical = entry[0] if entry else node_name
+    _record_metrics_history(canonical, body, config=config, state=state)
     from ..nomad_enrollment import agent_credential, join_settings
     if leased and leased.get("action") == "join-nomad":
         # Network/API work must happen after the lease transaction commits.
@@ -1753,9 +1943,93 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                     pending["status"] = "queued"
                     pending.pop("leasedAt", None)
             _mutate_control_state(release_pending)
+            _notify_node_agent_lease(canonical, node_name)
             raise
     credential = agent_credential(capabilities=body.get("capabilities"))
     return {"task": leased, **({"nomadCredential": credential} if credential else {})}
+
+
+def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    observed_at = time.time()
+    node_name = str(body.get("nodeName") or "").strip()
+    node_id = str(body.get("nodeId") or "").strip()
+    if not node_name:
+        raise LumaError("nodeName is required")
+    leased: Dict[str, Any] | None = None
+    config = load_config(_control_config_path())
+    wait_seconds = min(max(int(body.get("waitSeconds") or 0), 0), 30)
+    deadline = time.time() + wait_seconds
+    first_poll = True
+    while True:
+        candidate, _canonical = _poll_node_agent_lease_once(
+            token,
+            body,
+            node_name=node_name,
+            node_id=node_id,
+            config=config,
+            observed_at=observed_at,
+            persist_heartbeat=first_poll,
+        )
+        first_poll = False
+        if candidate is not None:
+            leased = candidate
+            break
+        if time.time() >= deadline:
+            break
+        time.sleep(1)
+    return _finalize_node_agent_lease(node_name, node_id, body, config=config, leased=leased)
+
+
+_DEFAULT_HANDLE_NODE_AGENT_LEASE = handle_node_agent_lease
+
+
+async def _asgi_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Async long-poll wrapper: keeps AnyIO worker threads free between polls."""
+    observed_at = time.time()
+    node_name = str(body.get("nodeName") or "").strip()
+    node_id = str(body.get("nodeId") or "").strip()
+    if not node_name:
+        raise LumaError("nodeName is required")
+    config = await run_in_threadpool(load_config, _control_config_path())
+    wait_seconds = min(max(int(body.get("waitSeconds") or 0), 0), 30)
+    deadline = time.monotonic() + wait_seconds
+    leased: Dict[str, Any] | None = None
+    canonical = node_name
+    first_poll = True
+    while True:
+        wait_keys = (node_name, canonical) if canonical != node_name else (node_name,)
+        seen = _NODE_AGENT_LEASE_WAITERS.generation(*wait_keys)
+        candidate, canonical = await run_in_threadpool(
+            functools.partial(
+                _poll_node_agent_lease_once,
+                token,
+                body,
+                node_name=node_name,
+                node_id=node_id,
+                config=config,
+                observed_at=observed_at,
+                persist_heartbeat=first_poll,
+            )
+        )
+        first_poll = False
+        if candidate is not None:
+            leased = candidate
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        wait_keys = (node_name, canonical) if canonical != node_name else (node_name,)
+        await _NODE_AGENT_LEASE_WAITERS.wait(wait_keys, seen, min(remaining, 1.0))
+    return await run_in_threadpool(
+        functools.partial(
+            _finalize_node_agent_lease,
+            node_name,
+            node_id,
+            body,
+            config=config,
+            leased=leased,
+        )
+    )
 
 
 def handle_node_agent_readiness(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -1913,7 +2187,7 @@ def handle_node_agent_complete(token: str, body: Dict[str, Any]) -> Dict[str, An
         if not isinstance(task, dict) or task.get("nodeName") != canonical_node_name:
             raise LumaError(f"agent task not found: {task_id}")
         existing_status = str(task.get("status") or "")
-        if existing_status in {"succeeded", "failed", "canceled"}:
+        if existing_status in {"succeeded", "failed", "canceled", "timeout"}:
             # Completion is an idempotent terminal acknowledgement.  The node
             # agent retries until it receives this response because the host
             # mutation may already have happened even when a gateway drops the
@@ -2025,7 +2299,7 @@ def _run_node_agent_task(
     payload: Dict[str, Any],
     *,
     timeout: int | None = None,
-    required_capability: str | None = "nfs-host",
+    required_capability: str | None = None,
     progress: Callable[[dict[str, str]], None] | None = None,
     build_run_id: str = "",
     progress_batch: Callable[[list[dict[str, str]]], None] | None = None,
@@ -2128,6 +2402,7 @@ def _queue_pooled_agent_task(
         _agent_tasks(current)[task_id] = task
 
     _mutate_control_state(mutate)
+    _notify_node_agent_lease(*candidates)
     return task_id
 
 
@@ -2166,7 +2441,7 @@ def _queue_node_agent_task(
     action: str,
     payload: Dict[str, Any],
     *,
-    required_capability: str | None = "nfs-host",
+    required_capability: str | None = None,
     build_run_id: str = "",
 ) -> str:
     if action == "build-image":
@@ -2218,6 +2493,7 @@ def _queue_node_agent_task(
         _agent_tasks(current)[task_id] = task
 
     _mutate_control_state(mutate)
+    _notify_node_agent_lease(node_name)
     return task_id
 
 
@@ -2368,9 +2644,6 @@ def handle_control_status(token: str) -> Dict[str, Any]:
             "nodes": orchestrator.get("nodes", []),
         },
         "services": nomad_services,
-        "storage": {
-            "storageClasses": _storage_classes_summary(state),
-        },
         "build": _build_summary(state),
     }
     return result
@@ -2479,7 +2752,7 @@ def handle_dashboard(token: str, *, scope: str = "full", app: str = "", query: D
         for service in services:
             _attach_service_actual_resources(service, service_stats.get(str(service.get("fullName") or ""), []))
     traffic_paths = _dashboard_traffic_paths(services, route_files, dns_target, node_targets=_node_edge_targets(state)) if scope in {"full", "network"} else []
-    storage = _dashboard_storage(services, _storage_classes_summary(state)) if scope in {"full", "storage", "deploy", "application"} else {}
+    storage = _dashboard_storage(services) if scope in {"full", "storage", "deploy", "application"} else {}
     public_services = [_public_dashboard_service(item) for item in services]
     issues = _dashboard_issues(nodes, public_services) if scope in {"full", "overview"} else []
     if scope in {"full", "overview"}:
@@ -2629,7 +2902,10 @@ def handle_dashboard_setup_configure(token: str, body: Dict[str, Any] | None = N
         providers["dns"] = dns
         raw["providers"] = providers
         save_config(LumaConfig(raw, config_path))
-        _invalidate_setup_checks(state, "cloudflare")
+        checks = (state.get("setupChecks") or {}).get("checks") if isinstance(state.get("setupChecks"), dict) else None
+        if isinstance(checks, dict) and isinstance(checks.get("cloudflare"), dict):
+            mutate_state(lambda current: _invalidate_setup_checks(current, "cloudflare"))
+            _invalidate_setup_checks(state, "cloudflare")
 
     return {
         "saved": bool(zone or zone_id or edge_target),
@@ -2846,9 +3122,6 @@ def handle_build_run_list(token: str, query: Dict[str, Any] | None = None) -> Di
 def handle_build_run_get(token: str, build_id: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
     _require_history_token(token)
     result = control_history.get_build(build_id, query)
-    if result.get("run", {}).get("status") == "queued":
-        from .build_queue import position
-        result["run"].update(position(build_id))
     from ..secret_redaction import redact_document
     return redact_document(result)
 
@@ -2905,82 +3178,8 @@ def handle_build_run_cancel(
 ) -> Dict[str, Any]:
     if body not in (None, {}):
         raise LumaError("build cancel request body must be empty")
-    state = load_state()
-    require_token(state, token, token_type="deploy")
-    now = int(time.time())
-
-    def mutate(current: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
-        require_token(current, token, token_type="deploy")
-        run = _build_runs(current).get(build_id)
-        if not isinstance(run, dict):
-            raise LumaError(f"build run not found: {build_id}")
-        run_status = str(run.get("status") or "")
-        if run_status in {"succeeded", "failed", "canceled"}:
-            return _build_run_public(run), True
-        if run_status == "canceling":
-            from .build_queue import _request_stop
-            _request_stop(current, run, now)
-            return _build_run_public(run), True
-        if run_status == "queued":
-            from .build_queue import discard
-            run.update(status="canceled", message="Canceled while waiting in project deployment queue",
-                       cancelRequestedAt=now, canceledAt=now, completedAt=now, updatedAt=now)
-            discard(current, run)
-            return _build_run_public(run), False
-        if run_status == "finalizing":
-            run.update(
-                status="canceling",
-                cancelRequestedAt=now,
-                updatedAt=now,
-                message="cancel requested during queued deployment",
-            )
-            return _build_run_public(run), False
-
-        task_id, task = _build_run_agent_task(current, run)
-        task_status = str(task.get("status") or "") if isinstance(task, dict) else ""
-        if isinstance(task, dict) and task_status not in {"queued", "running", "canceled"}:
-            raise LumaError("build phase is already complete and cannot be canceled")
-
-        message = "build canceled before it started" if task_status in {"", "queued"} else "build cancellation requested"
-        if isinstance(task, dict):
-            task["buildRunId"] = build_id
-            run["agentTaskId"] = task_id
-            if task_status == "queued":
-                task.update(
-                    {
-                        "status": "canceled",
-                        "message": message,
-                        "result": {},
-                        "completedAt": now,
-                        "updatedAt": now,
-                    }
-                )
-            elif task_status == "running":
-                task["cancelRequestedAt"] = now
-                task["updatedAt"] = now
-
-        terminal = task_status in {"", "queued", "canceled"}
-        run["status"] = "canceled" if terminal else "canceling"
-        run["message"] = "build canceled" if terminal else message
-        run["cancelRequestedAt"] = now
-        run["updatedAt"] = now
-        if terminal:
-            run["completedAt"] = now
-            run["canceledAt"] = now
-        events = run.get("events") if isinstance(run.get("events"), list) else []
-        events.append(
-            {
-                "name": "Build image",
-                "status": "canceled" if terminal else "canceling",
-                "message": run["message"],
-                "ts": now,
-            }
-        )
-        run["events"] = events
-        return _build_run_public(run), False
-
-    run, replayed = _mutate_control_state(mutate)
-    return {"run": run, "replayed": replayed}
+    require_token(load_auth_state(), token, token_type="deploy")
+    raise LumaError(LEGACY_REMOTE_BUILD_RETIRED_ERROR)
 
 
 def handle_deployment_history(token: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -3011,25 +3210,8 @@ def handle_build_run_retry(
     *,
     progress: Callable[[dict[str, str]], None] | None = None,
 ) -> Dict[str, Any]:
-    state = load_state()
-    require_token(state, token, token_type="deploy")
-    run = load_entity("buildRuns", build_id)
-    if not isinstance(run, dict):
-        raise LumaError(f"build run not found: {build_id}")
-    request = run.get("request") if isinstance(run.get("request"), dict) else {}
-    retry_body = {key: value for key, value in request.items() if key not in {"envSecretNames", "queue"}}
-    requested = normalize_build_capabilities((body or {}).get("requireBuildCapabilities"))
-    required = normalize_build_capabilities(request.get("requireBuildCapabilities"))
-    if requested or required:
-        retry_body["requireBuildCapabilities"] = sorted(set(required + requested))
-    retry_body.update(_build_run_retry_overrides({k: v for k, v in (body or {}).items() if k not in {"queue", "workflow"}}))
-    if (body or {}).get("queue") is True:
-        retry_body["queue"] = True
-        if isinstance((body or {}).get("workflow"), dict):
-            retry_body["workflow"] = body["workflow"]
-    if not retry_body:
-        raise LumaError(f"build run cannot be retried: {build_id}")
-    return handle_build_deploy(token, retry_body, progress=progress, build_run_id=build_id)
+    require_token(load_auth_state(), token, token_type="deploy")
+    raise LumaError(LEGACY_REMOTE_BUILD_RETIRED_ERROR)
 
 
 def handle_application_update(
@@ -3058,7 +3240,37 @@ def handle_application_update(
         update_body["envSecrets"] = _request_env_secrets(body)
     if not (update_body.get("repoUrl") or (update_body.get("providerId") and update_body.get("repository"))):
         raise LumaError(f"application {name} has an incomplete Git source; open the editor to update it")
-    return handle_build_deploy(token, update_body, progress=progress)
+    _emit_progress(
+        progress,
+        {
+            "name": "Submit build",
+            "status": "start",
+            "message": f"Submitting rebuild for {name} to Luma Build",
+        },
+    )
+    result = independent_builder.submit(token, update_body)
+    submitted_id = ""
+    if isinstance(result, dict):
+        nested = result.get("build")
+        if isinstance(nested, dict):
+            submitted_id = str(nested.get("id") or "")
+        else:
+            submitted_id = str(result.get("id") or result.get("buildId") or "")
+    _emit_progress(
+        progress,
+        {
+            "name": "Submit build",
+            "status": "ok",
+            "message": (
+                f"Rebuild submitted to Luma Build ({submitted_id})"
+                if submitted_id
+                else "Rebuild submitted to Luma Build"
+            ),
+        },
+    )
+    if isinstance(result, dict):
+        return {"service": name, **result}
+    return {"service": name, "result": result}
 
 
 def handle_build_config_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -3415,9 +3627,8 @@ def handle_region_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         if name not in custom:
             raise LumaError(f"unknown region {name!r}")
         nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-        storage_classes = state.get("storageClasses") if isinstance(state.get("storageClasses"), dict) else {}
-        if name in region_names_in_use(nodes, storage_classes):
-            raise LumaError(f"cannot remove region {name}: nodes or storage classes still use it")
+        if name in region_names_in_use(nodes):
+            raise LumaError(f"cannot remove region {name}: nodes still use it")
         custom.pop(name, None)
         return {"name": name, "removed": True}
 
@@ -3973,6 +4184,7 @@ def _move_node_edge_dns(state: Dict[str, Any], aliases: set[str]) -> list[str]:
     return messages
 
 
+@_serialize_deploy
 def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
     node_name = str(body.get("nodeName") or "").strip()
@@ -4433,7 +4645,7 @@ def handle_local_build_prepare(token: str, body: Dict[str, Any]) -> Dict[str, An
         require_build_result_capabilities(body, [NATIVE_ARM_BUILD_CAPABILITY], owner="Local CLI; update it before building ARM images")
     now = int(time.time())
     expires_at = now + max(LOCAL_BUILD_LEASE_SECONDS, 300)
-    request = dict(body)
+    request = {key: value for key, value in body.items() if key not in {"queue", "workflow"}}
     request["repoUrl"] = repo_url
     request["registryHost"] = registry_host
     request["registryNamespace"] = registry_namespace
@@ -4507,9 +4719,6 @@ def _validate_local_build_result(run: Dict[str, Any], build_result: Dict[str, An
 
 
 def handle_local_build_complete(token: str, build_id: str, body: Dict[str, Any], *, _from_queue: bool = False) -> Dict[str, Any]:
-    if body.get("queue") is True and not _from_queue:
-        from .build_queue import submit_local
-        return submit_local(token, build_id, body)
     state = load_state()
     require_token(state, token, token_type="deploy")
     from .state import load_entity
@@ -4518,9 +4727,9 @@ def handle_local_build_complete(token: str, build_id: str, body: Dict[str, Any],
         raise LumaError(f"build run not found: {build_id}")
     if str(run.get("mode") or "") != "local":
         raise LumaError(f"build run is not a local build: {build_id}")
-    if str(run.get("status") or "") != ("finalizing" if _from_queue else "running"):
+    if str(run.get("status") or "") != "running":
         raise LumaError(f"local build run is not active: {build_id}")
-    if not _from_queue and int(run.get("expiresAt") or 0) <= int(time.time()):
+    if int(run.get("expiresAt") or 0) <= int(time.time()):
         _complete_build_run(build_id, "failed", message="local build lease expired before upload completed")
         raise LumaError(f"local build lease expired: {build_id}")
     build_result = body.get("buildResult") if isinstance(body.get("buildResult"), dict) else {}
@@ -4537,10 +4746,9 @@ def handle_local_build_complete(token: str, build_id: str, body: Dict[str, Any],
         current_run["updatedAt"] = int(time.time())
         return dict(current_run)
 
-    if not _from_queue:
-        run = _mutate_control_state(claim)
+    run = _mutate_control_state(claim)
     request = run.get("request") if isinstance(run.get("request"), dict) else {}
-    deploy_request = dict(request)
+    deploy_request = {key: value for key, value in request.items() if key not in {"queue", "workflow"}}
     if body.get("envSecrets") is not None:
         deploy_request["envSecrets"] = _request_env_secrets(body)
     repo_url = str(run.get("source") or "")
@@ -4692,452 +4900,8 @@ def handle_build_deploy(
     _queued_run_id: str = "",
     _build_plan: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """Build a repository image and deploy it.
-
-    Queued work runs one stage per call and hands the next stage back to the
-    durable queue: ``requeueBuild`` after planning, ``requeueDeploy`` after the
-    image is pushed. Unqueued (legacy) requests still run all stages inline.
-    """
-    from .build_queue import scheduling_state
-    state = scheduling_state()
-    require_token(state, token, token_type="deploy")
-    _reject_control_maintenance(state)
-    _apply_state_secrets(state)
-    build_config = _build_config(state)
-    provider_id = str(body.get("providerId") or "").strip()
-    repository = str(body.get("repository") or "").strip()
-    repo_url = normalize_import_repo_url(str(body.get("repoUrl") or "").strip())
-    if not repo_url:
-        if not provider_id or not repository:
-            raise LumaError("repoUrl or providerId + repository is required")
-        provider = _require_git_provider(state, provider_id)
-        repo_url = _git_provider_clone_url(provider, repository)
-    selection_mode = str(body.get("buildNodeMode") or ("pinned" if body.get("buildNode") else "auto"))
-    if selection_mode not in {"auto", "pinned"}:
-        raise LumaError("buildNodeMode must be auto or pinned")
-    repo = _image_repo_from_repo_url(repo_url)
-    default_node = str(build_config.get("defaultNode") or DEFAULT_BUILD_NODE_NAME)
-    fallback_manifest = str(body.get("manifest") or "").strip()
-    requested_build_capabilities = repository_build_requirements(body.get("requireBuildCapabilities"), fallback_manifest=bool(fallback_manifest))
-    # This is Control policy, not a user workflow option. Older clients and
-    # explicit pins must not be able to dispatch ARM work to emulating agents.
-    required_build_capabilities = sorted(set(requested_build_capabilities + [NATIVE_ARM_BUILD_CAPABILITY]))
-    pooled = selection_mode == "auto" and _build_pool_enabled(state, body)
-    needs_plan = _build_plan is None and _has_native_builder_choices(state)
-    initial_node = str((_build_plan or {}).get("node") or body.get("buildNode") or default_node).strip()
-    # Candidates for this call's agent task, best first. One name binds the
-    # task to that builder; several form a pool that any of them may lease.
-    pool: list[str] = []
-    if needs_plan:
-        ready = _build_node_records(state)
-        planners = [record for record in ready if _node_agent_is_ready(record, required_capability=REPOSITORY_BUILD_PLAN_CAPABILITY)]
-        if not planners:
-            raise LumaError(f"automatic native builder selection requires a ready builder with {REPOSITORY_BUILD_PLAN_CAPABILITY}; update the builder node agent")
-        if selection_mode == "auto":
-            ranked = _rank_build_candidates(state, planners, project_key=repo, prefer_idle=True, exclude_run=_queued_run_id)
-            if pooled:
-                pool = ranked
-                initial_node = ranked[0]
-            elif not _queued_run_id:
-                initial_node = ranked[0]
-    elif _build_plan is not None:
-        planned = [str(name) for name in _build_plan.get("candidates") or [] if str(name)] or [initial_node]
-        pool = _ready_build_candidates(state, planned, ["docker-build", *required_build_capabilities, REPOSITORY_BUILD_PLAN_CAPABILITY]) or planned[:1]
-        initial_node = pool[0]
-    elif pooled:
-        # Without a plan the image platform is resolved on the builder, so only
-        # builders sharing the default builder's engine platform are equivalent.
-        default_record = _node_record_for_name(state.get("nodes") or {}, default_node) or {}
-        engine = _container_platform_for_node(default_record)
-        compatible = [record for record in _compatible_build_records(state, required_build_capabilities)
-                      if engine and _container_platform_for_node(record) == engine]
-        # Offline candidates stay in the pool: admission skips them, and one
-        # that returns may take queued work.
-        pool = _rank_build_candidates(state, compatible, project_key=repo, prefer_idle=False, exclude_run=_queued_run_id)
-        ready_pool = _ready_build_candidates(state, pool, ["docker-build", *required_build_capabilities])
-        initial_node = (ready_pool or pool or [initial_node])[0]
-    build_node = _require_build_node(
-        state,
-        initial_node,
-        purpose="repository build",
-    )
-    ref = str(body.get("ref") or "").strip()
-    compose_sidecar = str(body.get("composeSidecar") or "")
-    if compose_sidecar:
-        compose_sidecar = normalize_repo_relative_path(
-            compose_sidecar, label="composeSidecar"
-        )
-        if str(body.get("manifest") or "").strip():
-            raise LumaError("composeSidecar cannot be combined with manifest")
-    fallback_inputs = _repository_fallback_build_inputs(fallback_manifest, region=str(body.get("region") or "")) if fallback_manifest else {}
-    _require_builder_capabilities(
-        _node_record_for_name(state.get("nodes") or {}, build_node) or {}, build_node, required_build_capabilities
-    )
-    steps: list[dict[str, str]] = []
-
-    registry_host = str(body.get("registryHost") or "").strip()
-    if not registry_host:
-        registry_host = str(build_config.get("registryHost") or "").strip() or f"{_nomad_route_host_for_node(state, build_node)}:5000"
-
-    # git clone and BuildKit run on the build node. Preserve the distinction
-    # between a missing proxy (auto policy) and an explicitly empty proxy/direct
-    # mode; `body.get("proxy") or auto` would incorrectly erase that intent.
-    config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
-    proxy = _build_proxy_for_request(config, state, build_node, body)
-
-    def per_node(names: list[str]) -> Dict[str, Dict[str, Any]]:
-        # Egress differs per builder region; resolve it for every candidate.
-        return {name: {"proxy": _build_proxy_for_request(config, state, name, body)} for name in names} if len(names) > 1 else {}
-
-    # gitToken and registryAuth are injected at lease time (see
-    # _agent_task_lease_payload) so they are never persisted in agentTasks state.
-    build_payload: Dict[str, Any] = {
-        "repoUrl": repo_url,
-        "ref": ref,
-        "registryHost": registry_host,
-        "pushHost": str(body.get("pushHost") or build_config.get("pushHost") or "localhost:5000"),
-        "repo": repo,
-        "proxy": proxy,
-        "buildTimeout": int(body.get("buildTimeout") or 7200),
-        **fallback_inputs,
-    }
-    if required_build_capabilities:
-        build_payload["requireBuildCapabilities"] = required_build_capabilities
-    target_inventory = _target_build_platform_inventory(state)
-    build_payload["targetPlatformsByNode"] = target_inventory["byNode"]
-    build_payload["targetPlatformsByRegion"] = target_inventory["byRegion"]
-    if provider_id:
-        build_payload["gitProviderId"] = provider_id
-    for key in ("context", "dockerfile", "platform", "region"):
-        if body.get(key):
-            build_payload[key] = str(body.get(key))
-    if compose_sidecar:
-        build_payload["composeSidecar"] = compose_sidecar
-
-    run_body = dict(body)
-    run_body["repoUrl"] = repo_url
-    run_body["buildNode"] = build_node
-    run_body["buildNodeMode"] = selection_mode
-    if requested_build_capabilities:
-        run_body["requireBuildCapabilities"] = requested_build_capabilities
-    if provider_id:
-        run_body["providerId"] = provider_id
-    # A retry is a new attempt. Never reset the parent's request, result or
-    # event stream: those explain the failure the operator is retrying.
-    retry_of = build_run_id
-    if body.get("queue") is True:
-        _request_env_secrets(body)
-    if _queued_run_id:
-        build_run_id = _queued_run_id
-        if _build_run_cancel_requested(build_run_id):
-            raise LumaError("build canceled")
-    else:
-        build_run_id = _create_build_run(
-            run_body,
-            source=repo_url,
-            build_node=build_node,
-            project_key=repo,
-            retry_of=retry_of,
-            queued_work=run_body if body.get("queue") is True else None,
-            build_candidates=pool,
-        )
-        if body.get("queue") is True:
-            return {"queued": True, "buildRunId": build_run_id,
-                    **handle_build_run_get(token, build_run_id)}
-    git_source = _git_source_from_build_body(run_body, repo_url=repo_url, build_node=build_node, build_run_id=build_run_id)
-    run_progress, run_progress_batch = _build_run_progress(build_run_id, progress)
-
-    try:
-        # Publish the new identity before work starts, so streaming clients can
-        # open the failed child even when no final success result is produced.
-        _emit_progress(progress, {
-            "name": "Build attempt", "status": "start", "message": "Build attempt created",
-            "buildRunId": build_run_id, "retryOf": retry_of,
-        })
-        if needs_plan:
-            planning_requirements = sorted(set(required_build_capabilities + [REPOSITORY_BUILD_PLAN_CAPABILITY]))
-            plan_result = _deploy_step(
-                steps, "Resolve build architecture",
-                lambda: _run_node_agent_task(
-                    state, build_node, "build-image",
-                    {**build_payload, "planOnly": True, "requireBuildCapabilities": planning_requirements},
-                    timeout=min(int(body.get("buildTimeout") or 7200), 600) + 120,
-                    required_capability=REPOSITORY_BUILD_PLAN_CAPABILITY,
-                    progress=run_progress, build_run_id=build_run_id, progress_batch=run_progress_batch,
-                    pool=pool, payload_by_node=per_node(pool),
-                ), progress=run_progress,
-            )
-            if _build_run_cancel_requested(build_run_id):
-                raise LumaError("build canceled")
-            planning_node = str(plan_result.pop("agentNode", "") or build_node)
-            _build_plan = _checked_repository_build_plan(plan_result)
-            state = scheduling_state()
-            arm_platform = native_arm_build_platform(_build_plan["platforms"])
-            if selection_mode == "pinned":
-                selected = [build_node]
-                record = _node_record_for_name(state.get("nodes") or {}, build_node) or {}
-                engine = _container_platform_for_node(record)
-                engine = native_arm_build_platform([engine]) or engine
-                if arm_platform and engine != arm_platform:
-                    raise LumaError(f"ARM build requires a native {arm_platform} builder; pinned builder {build_node} reports {engine or 'unknown'}; omit --build-node or select an ARM builder")
-                native = engine in _build_plan["platforms"] or bool(arm_platform)
-            else:
-                selected, native = _native_build_candidates(
-                    state, _build_plan["platforms"],
-                    fallback=default_node,
-                    required=planning_requirements,
-                    project_key=repo,
-                    exclude_run=build_run_id,
-                )
-                if not pooled:
-                    selected = selected[:1]
-            _build_plan.update(node=selected[0], candidates=selected, native=native, planningNode=planning_node,
-                               nativePlatform=arm_platform or (_build_plan["platforms"][0] if native else ""))
-            run_progress({"name": "Select builder", "status": "ok", "message":
-                          f"{','.join(_build_plan['platforms']) or 'no build'} -> {', '.join(selected)}"
-                          + (" (native)" if native else " (default Buildx)")})
-            if _queued_run_id:
-                # The queue owner transfers its reservation atomically only
-                # after this completed planning task has released the agent.
-                return {"requeueBuild": _build_plan}
-            planned = [str(name) for name in selected]
-            pool = _ready_build_candidates(state, planned, ["docker-build", *planning_requirements]) or planned[:1]
-            build_node = pool[0]
-
-        if _build_plan is not None:
-            planned_requirements = sorted(set(required_build_capabilities + [REPOSITORY_BUILD_PLAN_CAPABILITY]))
-            pool = [name for name in pool if name == build_node or name in _ready_build_candidates(
-                state, [name], ["docker-build", *planned_requirements])]
-            build_node = _require_build_node(state, pool[0] if pool else build_node, purpose="planned repository build")
-            _require_builder_capabilities(_node_record_for_name(state.get("nodes") or {}, build_node) or {}, build_node, planned_requirements)
-            push_hostname = urllib.parse.urlsplit("//" + str(build_payload["pushHost"])).hostname
-            if (len(pool) > 1 or build_node != _build_plan.get("planningNode")) and push_hostname in {"localhost", "127.0.0.1", "::1"}:
-                raise LumaError("native builder routing requires a mesh-reachable build.pushHost; localhost refers to each builder separately")
-            build_payload.update(
-                ref=_build_plan["commit"], expectedCommit=_build_plan["commit"],
-                plannedPlatforms=_build_plan["platforms"], requireBuildCapabilities=planned_requirements,
-                proxy=_build_proxy_for_request(config, state, build_node, body),
-            )
-            if _build_plan.get("native"):
-                build_payload["nativePlatform"] = _build_plan.get("nativePlatform") or native_arm_build_platform(_build_plan["platforms"]) or _build_plan["platforms"][0]
-
-            def record_plan(current: Dict[str, Any]) -> None:
-                run = _build_runs(current).get(build_run_id)
-                if isinstance(run, dict):
-                    run.update(buildNode=build_node, buildPlatforms=_build_plan["platforms"], plannedCommit=_build_plan["commit"])
-                    run["request"]["buildNode"] = build_node
-            _mutate_control_state(record_plan)
-
-        build_result = _deploy_step(
-            steps,
-            "Build image",
-            lambda: _run_node_agent_task(
-                state,
-                build_node,
-                "build-image",
-                build_payload,
-                timeout=int(body.get("buildTimeout") or 7200) + 120,
-                required_capability="docker-build",
-                progress=run_progress,
-                build_run_id=build_run_id,
-                progress_batch=run_progress_batch,
-                pool=pool,
-                payload_by_node=per_node(pool),
-                affinity_seconds=_build_affinity_seconds(),
-            ),
-            progress=run_progress,
-        )
-        build_node = str(build_result.pop("agentNode", "") or build_node)
-        if _build_run_cancel_requested(build_run_id):
-            raise LumaError("build canceled")
-        require_build_result_capabilities(build_result, required_build_capabilities, owner="Builder")
-        if _build_plan is not None:
-            require_build_result_capabilities(build_result, [REPOSITORY_BUILD_PLAN_CAPABILITY], owner="Builder")
-        if not str(build_result.get("image") or "").strip() and not (
-                build_result.get("images") if isinstance(build_result.get("images"), dict) else {}):
-            raise LumaError("build did not return an image reference")
-        if compose_sidecar and (
-            str(build_result.get("kind") or "") != "compose"
-            or str(build_result.get("composeSidecar") or "") != compose_sidecar
-        ):
-            raise LumaError(
-                "builder did not honor the selected composeSidecar; update the builder node agent"
-            )
-        if fallback_manifest and not str(build_result.get("manifest") or "").strip() and build_result.get("fallbackManifestUsed") is not True:
-            raise LumaError("builder did not confirm the fallback manifest build inputs; refusing to deploy")
-        if not str(build_result.get("manifest") or "").strip() and not fallback_manifest:
-            raise LumaError("no Luma deployment manifest found in repository and no manifest provided")
-        run_body["buildNode"] = build_node
-        git_source = _git_source_from_build_body(run_body, repo_url=repo_url, build_node=build_node, build_run_id=build_run_id)
-        built = {
-            "repoUrl": repo_url,
-            "builtOn": build_node,
-            "projectKey": repo,
-            "buildResult": build_result,
-            "steps": steps,
-            "gitSource": git_source,
-            "requiredBuildCapabilities": required_build_capabilities,
-            "composeSidecar": compose_sidecar,
-        }
-        if _queued_run_id:
-            # The image is immutable and pushed; deployment is admitted
-            # separately so the builder is free for the next build.
-            return {"requeueDeploy": built}
-        return _deploy_repository_build(token, body, built, build_run_id=build_run_id, progress=run_progress)
-    except LumaError as exc:
-        _complete_build_run(
-            build_run_id,
-            "canceled" if _build_run_cancel_requested(build_run_id) else "failed",
-            message=str(exc),
-            cancel_failed=isinstance(exc, NomadCancellationError),
-        )
-        raise
-    except Exception as exc:
-        _complete_build_run(
-            build_run_id,
-            "canceled" if _build_run_cancel_requested(build_run_id) else "failed",
-            message=str(exc),
-            cancel_failed=isinstance(exc, NomadCancellationError),
-        )
-        raise
-
-
-def handle_queued_repository_deploy(
-    token: str, build_run_id: str, body: Dict[str, Any], built: Dict[str, Any]
-) -> Dict[str, Any]:
-    """Deploy an image a queued build stage already pushed."""
-    state = load_state()
-    require_token(state, token, token_type="deploy")
-    run_progress, _batch = _build_run_progress(build_run_id, None)
-    try:
-        _reject_control_maintenance(state)
-        _apply_state_secrets(state)
-        if _build_run_cancel_requested(build_run_id):
-            raise LumaError("build canceled")
-        return _deploy_repository_build(token, body, built, build_run_id=build_run_id, progress=run_progress)
-    except Exception as exc:
-        _complete_build_run(
-            build_run_id,
-            "canceled" if _build_run_cancel_requested(build_run_id) else "failed",
-            message=str(exc),
-            cancel_failed=isinstance(exc, NomadCancellationError),
-        )
-        raise
-
-
-def _deploy_repository_build(
-    token: str,
-    body: Dict[str, Any],
-    built: Dict[str, Any],
-    *,
-    build_run_id: str,
-    progress: Callable[[dict[str, str]], None],
-) -> Dict[str, Any]:
-    """Resolve the built manifest and deploy it; completes the build run."""
-    run_progress = progress
-    build_result = built.get("buildResult") if isinstance(built.get("buildResult"), dict) else {}
-    steps: list[dict[str, str]] = [dict(step) for step in built.get("steps") or [] if isinstance(step, dict)]
-    git_source = built.get("gitSource") if isinstance(built.get("gitSource"), dict) else {}
-    required_build_capabilities = [str(value) for value in built.get("requiredBuildCapabilities") or []]
-    compose_sidecar = str(built.get("composeSidecar") or "")
-    repo_url = str(built.get("repoUrl") or git_source.get("repoUrl") or body.get("repoUrl") or "")
-    fallback_manifest = str(body.get("manifest") or "").strip()
-    built_image = str(build_result.get("image") or "").strip()
-    built_images = build_result.get("images") if isinstance(build_result.get("images"), dict) else {}
-    repo_manifest = str(build_result.get("manifest") or "").strip()
-    repo_compose_content = str(build_result.get("composeContent") or "").strip()
-    # The supplied manifest is a fallback, matching Builder discovery and
-    # the CLI contract. Never build a repository recipe then deploy a
-    # different caller-supplied manifest.
-    manifest_text = repo_manifest or fallback_manifest
-    if not manifest_text:
-        raise LumaError("no Luma deployment manifest found in repository and no manifest provided")
-
-    if str(build_result.get("kind") or "") == "compose" or repo_compose_content or body.get("composeContent"):
-        # The Builder result is authoritative for repository imports.  It
-        # replaces every service that consumes a built Compose image with
-        # the immutable internal-registry reference.  Reusing a
-        # caller-supplied/source copy here would silently discard that
-        # rewrite and make sibling workers pull the original logical or
-        # retired external tag.
-        compose_content = repo_compose_content or str(
-            body.get("composeContent") or ""
-        ).strip()
-        if not compose_content:
-            raise LumaError("luma.compose.yml found but composeContent is missing")
-        compose_content = _rewrite_compose_import_images(
-            compose_content,
-            build_result=build_result,
-        )
-        ignored_overrides = [key for key in ("exposure", "domain", "port") if body.get(key)]
-        if ignored_overrides:
-            step = {
-                "name": "Import warning",
-                "status": "ok",
-                "message": "Compose import ignores service-level override(s): "
-                + ", ".join(ignored_overrides)
-                + ". Set them in luma.compose.yml services instead.",
-            }
-            steps.append(step)
-            run_progress(step)
-
-        def _inject_compose() -> tuple[str, str]:
-            data = yaml.safe_load(manifest_text) or {}
-            if not isinstance(data, dict):
-                raise LumaError("luma.compose.yml must contain a YAML mapping")
-            if body.get("region"):
-                data["region"] = body.get("region")
-            return yaml.safe_dump(data, sort_keys=False, allow_unicode=False), compose_content
-
-        final_manifest, final_compose_content = _deploy_step(steps, "Resolve compose manifest", _inject_compose, progress=run_progress)
-        deploy_body = dict(body)
-        deploy_body["manifest"] = final_manifest
-        deploy_body["composeContent"] = final_compose_content
-        deploy_body["sourceName"] = repo_url
-        deploy_body["gitSource"] = git_source
-        deploy_body.pop("repoUrl", None)
-        result = handle_compose_deployment(token, deploy_body, progress=run_progress)
-        if isinstance(result, dict):
-            merged_steps = steps + list(result.get("steps") or [])
-            result = {
-                **result,
-                "steps": merged_steps,
-                "image": built_image,
-                "images": built_images,
-                "buildRunId": build_run_id,
-                **({"composeSidecar": compose_sidecar} if compose_sidecar else {}),
-                **({"buildCapabilities": required_build_capabilities} if required_build_capabilities else {}),
-            }
-        _complete_build_run(build_run_id, "succeeded", result=result if isinstance(result, dict) else {})
-        return result
-
-    def _inject() -> str:
-        data = yaml.safe_load(manifest_text) or {}
-        if not isinstance(data, dict):
-            raise LumaError(".luma.yml must contain a YAML mapping")
-        data.pop("build", None)
-        data["image"] = built_image
-        for key in ("region", "exposure", "domain"):
-            if body.get(key):
-                data[key] = body.get(key)
-        if body.get("port"):
-            data["port"] = int(body["port"])
-        return yaml.safe_dump(data, sort_keys=False, allow_unicode=False)
-
-    final_manifest = _deploy_step(steps, "Resolve manifest", _inject, progress=run_progress)
-
-    deploy_body = dict(body)
-    deploy_body["manifest"] = final_manifest
-    deploy_body["sourceName"] = repo_url
-    deploy_body["gitSource"] = git_source
-    deploy_body.pop("repoUrl", None)
-    result = handle_deployment(token, deploy_body, progress=run_progress)
-    if isinstance(result, dict):
-        merged_steps = steps + list(result.get("steps") or [])
-        result = {**result, "steps": merged_steps, "image": built_image, "buildRunId": build_run_id,
-                  **({"buildCapabilities": required_build_capabilities} if required_build_capabilities else {})}
-    _complete_build_run(build_run_id, "succeeded", result=result if isinstance(result, dict) else {})
-    return result
+    require_token(load_auth_state(), token, token_type="deploy")
+    raise LumaError(LEGACY_REMOTE_BUILD_RETIRED_ERROR)
 
 
 def _docker_restart_allocation_ids(result: Any) -> set[str]:
@@ -5621,6 +5385,8 @@ def _preload_registry_runtime_image(state: Dict[str, Any], service: ServiceSpec,
 def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
+    if str(body.get("storageClass") or "").strip():
+        raise LumaError("storageClasses are not supported; registry serve uses a node-local volume")
     _apply_state_secrets(state)
     build_node = str(body.get("node") or body.get("buildNode") or "").strip()
     if not build_node:
@@ -5675,11 +5441,6 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
         "port": port,
         "volumes": [f"{name}-data:/var/lib/registry"],
     }
-    storage_class = str(body.get("storageClass") or "").strip()
-    if storage_class:
-        manifest["storage"] = {
-            f"{name}-data": {"storageClass": storage_class}
-        }
     if secure_public:
         manifest["domain"] = domain
         manifest["labels"] = _registry_basic_auth_labels(
@@ -5894,7 +5655,7 @@ def _registry_inventory_page(
 def _invalidate_registry_scan(host: str) -> None:
     with _REGISTRY_CACHE_LOCK:
         _REGISTRY_SCAN_CACHE.pop(str(host), None)
-        _REGISTRY_SCAN_EPOCHS[str(host)] = _REGISTRY_SCAN_EPOCHS.get(str(host), 0) + 1
+        _bump_registry_scan_epoch(str(host))
         try:
             (state_dir() / "registry-inventory.json").unlink(missing_ok=True)
         except OSError:
@@ -6069,6 +5830,8 @@ def _registry_inventory_for_state(state: Dict[str, Any], *, refresh: bool = Fals
     if not refresh:
         with _REGISTRY_CACHE_LOCK:
             cached = _REGISTRY_SCAN_CACHE.get(cache_key)
+            if cached is not None:
+                _REGISTRY_SCAN_CACHE.move_to_end(cache_key)
             result = (
                 copy.deepcopy(cached.get("result"))
                 if isinstance(cached, dict) and isinstance(cached.get("result"), dict)
@@ -6077,10 +5840,13 @@ def _registry_inventory_for_state(state: Dict[str, Any], *, refresh: bool = Fals
             if result is None:
                 result = _load_registry_scan_snapshot(spec)
                 if result is not None:
-                    _REGISTRY_SCAN_CACHE[cache_key] = {
-                        "cachedAt": int(time.time()),
-                        "result": copy.deepcopy(result),
-                    }
+                    _set_registry_scan_cache(
+                        cache_key,
+                        {
+                            "cachedAt": int(time.time()),
+                            "result": copy.deepcopy(result),
+                        },
+                    )
         if result is None:
             _start_registry_background_scan(cache_key)
             result = {
@@ -6128,10 +5894,13 @@ def _registry_inventory_for_state(state: Dict[str, Any], *, refresh: bool = Fals
         with _REGISTRY_CACHE_LOCK:
             if scan_epoch != _REGISTRY_SCAN_EPOCHS.get(cache_key, 0):
                 raise LumaError("Registry changed during inventory scan; retry the scan")
-            _REGISTRY_SCAN_CACHE[cache_key] = {
-                "cachedAt": int(time.time()),
-                "result": copy.deepcopy(result),
-            }
+            _set_registry_scan_cache(
+                cache_key,
+                {
+                    "cachedAt": int(time.time()),
+                    "result": copy.deepcopy(result),
+                },
+            )
             _persist_registry_usage(cache_key, result["entries"])
             _persist_registry_scan(spec, result)
     result["deletions"] = _registry_deletion_public_list(management["deletions"])
@@ -6894,8 +6663,8 @@ def _registry_snapshot_after_purge(
     cache_key = str(spec["host"])
     with _REGISTRY_CACHE_LOCK:
         # A scan that started before this result must not resurrect removed rows.
-        _REGISTRY_SCAN_EPOCHS[cache_key] = _REGISTRY_SCAN_EPOCHS.get(cache_key, 0) + 1
-        _REGISTRY_SCAN_CACHE[cache_key] = {"cachedAt": int(time.time()), "result": result}
+        _bump_registry_scan_epoch(cache_key)
+        _set_registry_scan_cache(cache_key, {"cachedAt": int(time.time()), "result": result})
         try:
             _persist_registry_usage(cache_key, entries)
             _persist_registry_scan(spec, result)
@@ -7112,38 +6881,49 @@ def _registry_automation_tick() -> None:
     )
 
 
-def _registry_recovery_only_once() -> None:
+def _registry_recovery_only_once(stop_event: threading.Event | None = None) -> None:
     """Run maintenance recovery once, for when retention automation is disabled."""
     delay = max(int(os.environ.get("LUMA_REGISTRY_AUTOMATION_INITIAL_DELAY_SECONDS", "30")), 1)
-    time.sleep(delay)
+    if stop_event is not None:
+        if stop_event.wait(delay):
+            return
+    else:
+        time.sleep(delay)
     try:
         _registry_recover_pending_maintenance()
     except Exception as exc:
         print(f"Registry maintenance recovery thread failed: {exc}", file=sys.stderr, flush=True)
 
 
-def _start_registry_automation() -> None:
+def _start_registry_automation(stop_event: threading.Event | None = None) -> threading.Thread | None:
     global _REGISTRY_AUTOMATION_THREAD
+    stop = stop_event if stop_event is not None else _REGISTRY_AUTOMATION_STOP
+    stop.clear()
     if str(os.environ.get("LUMA_REGISTRY_AUTOMATION_DISABLED") or "").lower() in {"1", "true", "yes"}:
         # Retention automation is off, but a Registry stranded mid-maintenance
         # still has to come back: recovery is an availability guarantee, not a
         # retention feature, so it runs on its own one-shot thread.
-        threading.Thread(
+        thread = threading.Thread(
             target=_registry_recovery_only_once,
+            args=(stop,),
             name="luma-registry-recovery",
             daemon=True,
-        ).start()
-        return
+        )
+        thread.start()
+        return thread
     with _REGISTRY_AUTOMATION_LOCK:
         if _REGISTRY_AUTOMATION_THREAD is not None and _REGISTRY_AUTOMATION_THREAD.is_alive():
-            return
+            return _REGISTRY_AUTOMATION_THREAD
+        _REGISTRY_AUTOMATION_WAKE.clear()
 
         def run() -> None:
             initial_delay = max(int(os.environ.get("LUMA_REGISTRY_AUTOMATION_INITIAL_DELAY_SECONDS", "30")), 1)
             interval = max(int(os.environ.get("LUMA_REGISTRY_AUTOMATION_INTERVAL_SECONDS", "900")), 60)
             _REGISTRY_AUTOMATION_WAKE.wait(initial_delay)
-            while True:
+            while not stop.is_set():
                 _REGISTRY_AUTOMATION_WAKE.clear()
+                if stop.is_set():
+                    break
                 try:
                     _registry_automation_tick()
                 except Exception as exc:
@@ -7151,6 +6931,8 @@ def _start_registry_automation() -> None:
                         _record_registry_automation(status="error", message=str(exc))
                     except Exception:
                         pass
+                if stop.is_set():
+                    break
                 _REGISTRY_AUTOMATION_WAKE.wait(interval)
 
         _REGISTRY_AUTOMATION_THREAD = threading.Thread(
@@ -7159,6 +6941,26 @@ def _start_registry_automation() -> None:
             daemon=True,
         )
         _REGISTRY_AUTOMATION_THREAD.start()
+        return _REGISTRY_AUTOMATION_THREAD
+
+
+def _stop_registry_automation(
+    stop_event: threading.Event | None = None,
+    thread: threading.Thread | None = None,
+) -> None:
+    global _REGISTRY_AUTOMATION_THREAD
+    stop = stop_event if stop_event is not None else _REGISTRY_AUTOMATION_STOP
+    stop.set()
+    _REGISTRY_AUTOMATION_WAKE.set()
+    target = thread
+    with _REGISTRY_AUTOMATION_LOCK:
+        if target is None:
+            target = _REGISTRY_AUTOMATION_THREAD
+    if target is not None and target.is_alive():
+        target.join(timeout=2)
+    with _REGISTRY_AUTOMATION_LOCK:
+        if _REGISTRY_AUTOMATION_THREAD is target:
+            _REGISTRY_AUTOMATION_THREAD = None
 
 
 def _deployments_state(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -7844,12 +7646,6 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         )
         _emit_tcp_ingress_refresh_advisory(steps, progress, state, _service_tcp_relay_ports(service))
         _mark_service_deployment(service, manifest, source_name, status="pending", steps=steps, git_source=git_source)
-        storage_preparation = _deploy_step(
-            steps,
-            "Prepare managed storage",
-            lambda: _prepare_service_managed_storage(service, state),
-            progress=progress,
-        )
         target = _resolve_control_path(stack_path(config, service), config_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         _emit_resource_policy_warnings(steps, progress, service.name, service.resources or {})
@@ -7972,7 +7768,6 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         "probe": probe_result,
         "health": _deployment_health_result(service, probe_result),
         "cniHostports": cni_hostports,
-        "storagePreparation": storage_preparation,
         "cdn": {"prepare": cdn_prepared.get("message"), "purge": cdn_purge} if service.cdn is not None else None,
         "steps": steps,
     }
@@ -8054,6 +7849,7 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
     }
 
 
+@_serialize_deploy
 def handle_service_remove(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -8074,6 +7870,7 @@ def handle_service_remove(token: str, body: Dict[str, Any], *, progress: Callabl
     raise LumaError(f"deployment not found: {name}")
 
 
+@_serialize_deploy
 def handle_service_rollback(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     """Roll a Nomad-engine service back to a prior version (new capability)."""
     state = load_state()
@@ -8257,7 +8054,7 @@ def _remove_compose_deployment(
     storage_cleanup = _deploy_step(
         steps,
         "Delete storage",
-        lambda: _cleanup_compose_managed_storage(deployment, state, dry_run=dry_run)
+        lambda: "No managed storage paths referenced"
         if body.get("deleteStorage")
         else "Storage cleanup skipped",
         progress=progress,
@@ -8932,6 +8729,7 @@ def _dashboard_disk_hygiene(diagnostics: Any) -> Dict[str, Any]:
     return summary
 
 
+@_serialize_deploy
 def handle_certificate_retry(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -9691,12 +9489,11 @@ def _reject_control_maintenance(state: Dict[str, Any]) -> None:
 
 
 def _active_build_blockers(state: Dict[str, Any]) -> list[str]:
-    from .build_queue import _current_runs
     statuses = {"queued", "running", "canceling", "finalizing"}
     return [
         str(run.get("id") or run.get("name") or "build")
-        for run in _current_runs(state)
-        if run.get("queueExecuting") or run.get("status") in statuses
+        for run in _active_build_runs(state, statuses)
+        if run.get("status") in statuses
     ]
 
 
@@ -10267,8 +10064,8 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         _emit_storage_warnings(steps, progress, backend_warnings)
         storage_preparation = _deploy_step(
             steps,
-            "Prepare managed storage",
-            lambda: _prepare_compose_managed_storage(deployment, state),
+            "Prepare local storage",
+            lambda: _prepare_compose_local_storage(deployment, state),
             progress=progress,
         )
         if not _skip_orchestrator(body):
@@ -10533,46 +10330,6 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
     }
 
 
-def handle_storage_apply(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
-    state = load_state()
-    require_token(state, token, token_type="deploy")
-    _apply_state_secrets(state)
-    steps: list[dict[str, str]] = []
-    source_name = str(body.get("sourceName") or "luma.compose.yml")
-    # Storage preparation is independent from image resolution.  In
-    # particular, repositories deployed through ``luma import`` legitimately
-    # contain build-only services whose immutable images do not exist until
-    # the Builder phase runs.  Requiring deploy-ready images here made the
-    # supported preflight path unusable for exactly those applications.
-    deployment = _load_compose_request(body, source_name, allow_build_services=True)
-    _deploy_step(
-        steps,
-        "Resolve storage endpoints",
-        lambda: resolve_storage_mounts(deployment, node_records=_state_nodes(state)),
-        progress=progress,
-    )
-    applied = _deploy_step(
-        steps,
-        "Prepare managed storage",
-        lambda: _prepare_compose_managed_storage(deployment, state),
-        progress=progress,
-    )
-    return {
-        "clusterId": state["clusterId"],
-        "deployment": deployment.name,
-        "sourceName": source_name,
-        "applied": applied,
-        "storage": storage_summary(deployment, node_records=_state_nodes(state)),
-        "steps": steps,
-    }
-
-
-def handle_storage_list(token: str) -> Dict[str, Any]:
-    state = load_auth_state()
-    require_token(state, token, token_type="deploy")
-    return {"storageClasses": _storage_classes_summary(state)}
-
-
 def handle_credentials_resources_list(token: str) -> Dict[str, Any]:
     """Return all settings lists from one config-only state snapshot."""
     state = load_auth_state()
@@ -10604,186 +10361,7 @@ def handle_credentials_resources_list(token: str) -> Dict[str, Any]:
         "secrets": sorted(secret_names),
         "registries": registry_items,
         "providers": provider_items,
-        "storageClasses": _storage_classes_summary(state),
     }
-
-
-def handle_storage_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    state = load_state()
-    require_token(state, token, token_type="deploy")
-    name = str(body.get("name") or "").strip()
-    if not name:
-        raise LumaError("storage class name is required")
-    provider = str(body.get("provider") or "nfs").strip()
-    if provider != "nfs":
-        raise LumaError("storage provider must be: nfs")
-    mode = "external" if bool(body.get("external")) else "managed"
-    item = {
-        "provider": provider,
-        "mode": mode,
-        "node": str(body.get("node") or "").strip(),
-        "endpoint": str(body.get("endpoint") or "").strip(),
-        "path": str(body.get("path") or "").strip(),
-        "mountOptions": str(body.get("mountOptions") or DEFAULT_NFS_MOUNT_OPTIONS).strip(),
-        "regions": [str(value) for value in body.get("regions") or [] if str(value)],
-        "nodes": [str(value) for value in body.get("nodes") or [] if str(value)],
-        "updatedAt": int(time.time()),
-    }
-    def validate(state: Dict[str, Any]) -> None:
-        require_token(state, token, token_type="deploy")
-        _validate_storage_class_record(name, item, state)
-
-    mutate_state(validate)
-    state = load_state()
-    storage_class_record = {key: value for key, value in item.items() if value not in ("", [], None)}
-    if mode == "managed":
-        storage_class_record["exportName"] = _managed_storage_export_name(
-            name, storage_class_record, state
-        )
-    storage_host = _apply_managed_storage_class(name, storage_class_record, state)
-
-    def save_storage_class(state: Dict[str, Any]) -> None:
-        require_token(state, token, token_type="deploy")
-        storage_classes = state.setdefault("storageClasses", {})
-        if not isinstance(storage_classes, dict):
-            storage_classes = {}
-            state["storageClasses"] = storage_classes
-        storage_classes[name] = storage_class_record
-
-    mutate_state(save_storage_class)
-    result = {"name": name, "saved": True, "storageClass": _public_storage_class(name, storage_class_record)}
-    if storage_host:
-        result["storageHost"] = storage_host
-    return result
-
-
-def _apply_managed_storage_class(name: str, item: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, str] | None:
-    storage_class = _storage_class_spec_from_record(name, item)
-    if storage_class.mode != "managed":
-        return None
-    export_name = str(item.get("exportName") or name)
-    if export_name != name:
-        return {
-            "name": name,
-            "node": str(storage_class.node or ""),
-            "path": str(storage_class.path or ""),
-            "prepared": "host NFS export reused",
-            "reusedFrom": export_name,
-        }
-    host_result = _prepare_managed_nfs_host(storage_class, state)
-    return host_result
-
-
-def _managed_storage_export_name(
-    name: str, item: Dict[str, Any], state: Dict[str, Any]
-) -> str:
-    storage_classes = (
-        state.get("storageClasses")
-        if isinstance(state.get("storageClasses"), dict)
-        else {}
-    )
-    existing = storage_classes.get(name)
-    if (
-        isinstance(existing, dict)
-        and _managed_storage_export_key(existing, state)
-        == _managed_storage_export_key(item, state)
-    ):
-        return str(existing.get("exportName") or name)
-    wanted = _managed_storage_export_key(item, state)
-    for other_name, other in storage_classes.items():
-        if str(other_name) == name or not isinstance(other, dict):
-            continue
-        if _managed_storage_export_key(other, state) == wanted:
-            return str(other.get("exportName") or other_name)
-    return name
-
-
-def _managed_storage_export_key(
-    item: Dict[str, Any], state: Dict[str, Any]
-) -> tuple[str, str, str] | None:
-    if str(item.get("mode") or "managed") != "managed":
-        return None
-    if str(item.get("provider") or "nfs") != "nfs":
-        return None
-    node_name = str(item.get("node") or "").strip()
-    path = str(item.get("path") or "").strip()
-    if not node_name or not path:
-        return None
-    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-    record = _node_record_for_name(nodes, node_name)
-    node_identity = (
-        _node_record_nomad_node_id(record)
-        if isinstance(record, dict)
-        else node_name
-    ) or node_name
-    return ("nfs", node_identity, str(Path(path)))
-
-
-def _storage_class_spec_from_record(name: str, item: Dict[str, Any]) -> StorageClassSpec:
-    return StorageClassSpec(
-        name=name,
-        provider=str(item.get("provider") or "nfs"),
-        mode=str(item.get("mode") or "managed"),
-        node=str(item.get("node") or "") or None,
-        path=str(item.get("path") or "") or None,
-        endpoint=str(item.get("endpoint") or "") or None,
-        mount_options=str(item.get("mountOptions") or DEFAULT_NFS_MOUNT_OPTIONS),
-        nodes=[str(value) for value in item.get("nodes") or []],
-        regions=[str(value) for value in item.get("regions") or []],
-        raw=dict(item),
-    )
-
-
-def _prepare_managed_nfs_host(storage_class: StorageClassSpec, state: Dict[str, Any]) -> Dict[str, str]:
-    if storage_class.provider != "nfs":
-        raise LumaError(f"managed storage provider not supported yet: {storage_class.provider}")
-    if not storage_class.node:
-        raise LumaError(f"managed storageClass {storage_class.name}.node is required")
-    if not storage_class.path:
-        raise LumaError(f"managed storageClass {storage_class.name}.path is required")
-    storage_root = Path(storage_class.path)
-    if not storage_root.is_absolute():
-        raise LumaError(f"managed storage path must be absolute: {storage_class.path}")
-    if ".." in storage_root.parts:
-        raise LumaError(f"managed storage path must not contain ..: {storage_class.path}")
-    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-    record = _node_record_for_name(nodes, storage_class.node) or {}
-    if not _storage_node_is_local(record, storage_class.node):
-        result = _run_node_agent_task(
-            state,
-            storage_class.node,
-            "prepare-managed-nfs-host",
-            {"name": storage_class.name, "path": storage_class.path},
-        )
-        return {
-            "name": storage_class.name,
-            "node": storage_class.node,
-            "path": storage_class.path,
-            "prepared": str(result.get("message") or "host NFS export ready"),
-            "taskId": str(result.get("taskId") or ""),
-        }
-    _prepare_local_nfs_export(storage_class, record)
-    return {
-        "name": storage_class.name,
-        "node": storage_class.node,
-        "path": storage_class.path,
-        "prepared": "host NFS export ready",
-    }
-
-
-def _prepare_local_nfs_export(storage_class: StorageClassSpec, record: Dict[str, Any] | None = None) -> None:
-    if not storage_class.path:
-        raise LumaError(f"managed storageClass {storage_class.name}.path is required")
-    try:
-        from ..agent import _linux_prepare_nfs_command, _macos_prepare_nfs_command
-
-        agent = record.get("agent") if isinstance(record, dict) and isinstance(record.get("agent"), dict) else {}
-        if str(agent.get("os") or "") == "darwin":
-            LocalExecutor().sudo(_macos_prepare_nfs_command(storage_class.name, storage_class.path))
-        else:
-            _run_host_prep_command(_linux_prepare_nfs_command(storage_class.name, storage_class.path))
-    except LumaError as exc:
-        raise LumaError(f"failed to prepare managed NFS storage {storage_class.name} on local node: {exc}") from exc
 
 
 def _run_host_prep_command(command: str) -> str:
@@ -10883,100 +10461,6 @@ def _storage_node_is_local(record: Dict[str, Any], node_name: str) -> bool:
     return bool((local_values - {""}) & (record_values - {""}))
 
 
-def _storage_apply_available(state: Dict[str, Any]) -> bool:
-    return bool(state.get("nomadAddr") or state.get("nomadToken") is not None)
-
-
-def handle_storage_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    state = load_state()
-    require_token(state, token, token_type="deploy")
-    name = str(body.get("name") or "").strip()
-    if not name:
-        raise LumaError("storage class name is required")
-    storage_classes = state.get("storageClasses") if isinstance(state.get("storageClasses"), dict) else {}
-    existing = storage_classes.get(name)
-    removed = bool(existing)
-    storage_host = _remove_managed_storage_class(name, existing, state) if isinstance(existing, dict) else None
-    def remove_storage_class(state: Dict[str, Any]) -> None:
-        require_token(state, token, token_type="deploy")
-        storage_classes = state.get("storageClasses") if isinstance(state.get("storageClasses"), dict) else {}
-        storage_classes.pop(name, None)
-        state["storageClasses"] = storage_classes
-
-    mutate_state(remove_storage_class)
-    result = {"name": name, "removed": removed}
-    if storage_host:
-        result["storageHost"] = storage_host
-    return result
-
-
-def _remove_managed_storage_class(name: str, item: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, str] | None:
-    storage_class = _storage_class_spec_from_record(name, item)
-    if storage_class.mode != "managed":
-        return None
-    export_name = str(item.get("exportName") or name)
-    storage_classes = (
-        state.get("storageClasses")
-        if isinstance(state.get("storageClasses"), dict)
-        else {}
-    )
-    shared_by = next(
-        (
-            str(other_name)
-            for other_name, other in storage_classes.items()
-            if str(other_name) != name
-            and isinstance(other, dict)
-            and str(other.get("exportName") or other_name) == export_name
-        ),
-        "",
-    )
-    if shared_by:
-        export_removed = f"retained: shared by {shared_by}"
-    else:
-        export_record = dict(item)
-        export_record["exportName"] = export_name
-        export_storage_class = _storage_class_spec_from_record(
-            export_name, export_record
-        )
-        export_removed = _remove_local_nfs_export(export_storage_class, state)
-    if not _storage_apply_available(state):
-        return {"name": name, "removed": "pending: storage apply is not available", "export": export_removed}
-    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
-    config = load_config(config_path)
-    stack_name = f"luma-storage-{slugify(storage_class.name)}"
-    removed = remove_from_nomad(config, state, slug=stack_name)
-    return {"name": name, "removed": removed, "export": export_removed}
-
-
-def _remove_local_nfs_export(storage_class: StorageClassSpec, state: Dict[str, Any]) -> str:
-    if not storage_class.node:
-        return "skipped: no node"
-    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-    record = _node_record_for_name(nodes, storage_class.node) or {}
-    if not _storage_node_is_local(record, storage_class.node):
-        try:
-            result = _run_node_agent_task(
-                state,
-                storage_class.node,
-                "remove-managed-nfs-export",
-                {"name": storage_class.name},
-            )
-            return f"removed by node agent: {result.get('taskId') or ''}".rstrip()
-        except LumaError as exc:
-            return f"skipped: node agent remove failed: {exc}"
-    try:
-        from ..agent import _linux_remove_nfs_command, _macos_remove_nfs_command
-
-        agent = record.get("agent") if isinstance(record, dict) and isinstance(record.get("agent"), dict) else {}
-        if str(agent.get("os") or "") == "darwin":
-            LocalExecutor().sudo(_macos_remove_nfs_command(storage_class.name))
-        else:
-            _run_host_prep_command(_linux_remove_nfs_command(storage_class.name))
-    except LumaError as exc:
-        raise LumaError(f"failed to remove managed NFS export {storage_class.name} on local node: {exc}") from exc
-    return "removed local NFS export"
-
-
 def _load_compose_request(
     body: Dict[str, Any],
     source_name: str,
@@ -11001,11 +10485,8 @@ def _load_compose_request(
         compose_path = _safe_compose_upload_path(sidecar_path, compose_value)
         compose_path.parent.mkdir(parents=True, exist_ok=True)
         compose_path.write_text(compose_content, encoding="utf-8")
-        state = load_state()
         return load_compose_deployment(
             sidecar_path,
-            storage_classes=_state_storage_classes(state),
-            allow_sidecar_storage_classes=False,
             allow_build_services=allow_build_services,
         )
 
@@ -11017,30 +10498,8 @@ def _safe_compose_upload_path(sidecar_path: Path, compose_value: str) -> Path:
     return sidecar_path.parent / compose_path
 
 
-def _prepare_compose_managed_storage(deployment: ComposeDeploymentSpec, state: Dict[str, Any]) -> list[dict[str, str]]:
+def _prepare_compose_local_storage(deployment: ComposeDeploymentSpec, state: Dict[str, Any]) -> list[dict[str, str]]:
     results: list[dict[str, str]] = []
-    prepared_classes: set[str] = set()
-    for volume in deployment.volumes.values():
-        if not volume.storage_class:
-            continue
-        storage_class = deployment.storage_classes[volume.storage_class]
-        if storage_class.mode == "managed":
-            _managed_volume_relative_path(volume.path or volume.name)
-    for storage_class in deployment.storage_classes.values():
-        if storage_class.mode != "managed":
-            continue
-        prepared_classes.add(storage_class.name)
-        results.append(_prepare_managed_nfs_host(storage_class, state))
-    for volume in deployment.volumes.values():
-        if not volume.storage_class:
-            continue
-        storage_class = deployment.storage_classes[volume.storage_class]
-        if storage_class.mode != "managed":
-            continue
-        if storage_class.name not in prepared_classes:
-            results.append(_prepare_managed_nfs_host(storage_class, state))
-            prepared_classes.add(storage_class.name)
-        results.append(_prepare_managed_volume_path(storage_class, volume.path or volume.name, state))
     for volume in deployment.volumes.values():
         if volume.kind == "local":
             results.append(_prepare_local_volume_path(volume, state))
@@ -11069,6 +10528,7 @@ def _prepare_local_volume_path(volume: ComposeVolumeSpec, state: Dict[str, Any])
             node_name,
             "prepare-managed-volume-path",
             {"root": root, "relative": relative, "preserveExisting": True},
+            required_capability="managed-volume-path",
         )
         return {
             "volume": volume.name,
@@ -11092,58 +10552,6 @@ def _prepare_local_volume_path(volume: ComposeVolumeSpec, state: Dict[str, Any])
     }
 
 
-def _prepare_service_managed_storage(service: ServiceSpec, state: Dict[str, Any]) -> list[dict[str, str]]:
-    if not service.storage:
-        return []
-    results: list[dict[str, str]] = []
-    prepared_classes: set[str] = set()
-    storage_records = _state_storage_classes(state)
-    for volume in service.storage.values():
-        record = storage_records.get(volume.storage_class)
-        if not record:
-            raise LumaError(f"storage.{volume.name}.storageClass references unknown storage class: {volume.storage_class}")
-        storage_class = _storage_class_spec_from_record(volume.storage_class, record)
-        if storage_class.mode != "managed":
-            continue
-        _managed_volume_relative_path(volume.path or volume.name)
-        if storage_class.name not in prepared_classes:
-            results.append(_prepare_managed_nfs_host(storage_class, state))
-            prepared_classes.add(storage_class.name)
-        results.append(_prepare_managed_volume_path(storage_class, volume.path or volume.name, state))
-    return results
-
-
-def _prepare_managed_volume_path(storage_class: StorageClassSpec, sub_path: str, state: Dict[str, Any]) -> dict[str, str]:
-    if not storage_class.node or not storage_class.path:
-        raise LumaError(f"managed storageClass {storage_class.name} requires node and path")
-    relative = _managed_volume_relative_path(sub_path)
-    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-    record = _node_record_for_name(nodes, storage_class.node) or {}
-    full_path = Path(storage_class.path) / relative
-    if not _storage_node_is_local(record, storage_class.node):
-        result = _run_node_agent_task(
-            state,
-            storage_class.node,
-            "prepare-managed-volume-path",
-            {"root": storage_class.path, "relative": str(relative)},
-        )
-        return {
-            "storageClass": storage_class.name,
-            "path": str(full_path),
-            "prepared": str(result.get("message") or "volume path ready"),
-            "taskId": str(result.get("taskId") or ""),
-        }
-    command = (
-        f"install -d -m 0777 {shlex.quote(str(full_path))}; "
-        f"chmod 0777 {shlex.quote(str(full_path))}"
-    )
-    try:
-        _run_host_prep_command(command)
-    except LumaError as exc:
-        raise LumaError(f"failed to create managed storage volume path {full_path}: {exc}") from exc
-    return {"storageClass": storage_class.name, "path": str(full_path), "prepared": "volume path ready"}
-
-
 def _cleanup_service_storage(
     service: ServiceSpec,
     state: Dict[str, Any],
@@ -11151,20 +10559,15 @@ def _cleanup_service_storage(
     dry_run: bool,
     task_nodes: list[dict[str, str]] | None = None,
 ) -> str:
-    messages: list[str] = []
-    if service.storage:
-        messages.append(_cleanup_service_managed_storage(service, state, dry_run=dry_run))
     volume_names = _service_docker_volume_names(service)
     if not volume_names:
-        return "; ".join(messages) if messages else "No named Docker volumes referenced"
+        return "No named Docker volumes referenced"
     if dry_run:
-        messages.append("Docker volumes would be removed: " + ", ".join(volume_names))
-        return "; ".join(messages)
+        return "Docker volumes would be removed: " + ", ".join(volume_names)
     targets = [_remove_docker_volume_across_nodes(volume_name, task_nodes or [], state) for volume_name in volume_names]
     removed = sum(1 for item in targets if "removed" in item.get("status", ""))
     skipped = sum(1 for item in targets if item.get("status", "").startswith("skipped"))
-    messages.append(f"Docker volume cleanup finished: removed={removed}, skipped={skipped}")
-    return "; ".join(messages)
+    return f"Docker volume cleanup finished: removed={removed}, skipped={skipped}"
 
 
 def _service_docker_volume_names(service: ServiceSpec) -> list[str]:
@@ -11176,45 +10579,6 @@ def _service_docker_volume_names(service: ServiceSpec) -> list[str]:
     # never created, so --delete-storage silently orphans the real data while
     # reporting success. (Compose volumes are cleaned via the compose path.)
     return list(named_volume_sources(service.volumes))
-
-
-def _cleanup_service_managed_storage(service: ServiceSpec, state: Dict[str, Any], *, dry_run: bool) -> str:
-    targets: list[dict[str, str]] = []
-    storage_records = _state_storage_classes(state)
-    for volume in service.storage.values():
-        record = storage_records.get(volume.storage_class)
-        if not record:
-            targets.append(
-                {
-                    "volume": volume.name,
-                    "storageClass": volume.storage_class,
-                    "path": volume.path or volume.name,
-                    "status": "skipped: storageClass is not configured",
-                }
-            )
-            continue
-        storage_class = _storage_class_spec_from_record(volume.storage_class, record)
-        if storage_class.mode != "managed":
-            targets.append(
-                {
-                    "volume": volume.name,
-                    "storageClass": storage_class.name,
-                    "path": volume.path or volume.name,
-                    "status": "skipped: storageClass is not managed",
-                }
-            )
-            continue
-        targets.append(_remove_managed_volume_path(storage_class, volume.path or volume.name, state, dry_run=dry_run))
-    if not targets:
-        return "No managed storage paths referenced"
-    if dry_run:
-        paths = ", ".join(item["path"] for item in targets if not item["status"].startswith("skipped"))
-        skipped = sum(1 for item in targets if item["status"].startswith("skipped"))
-        suffix = f"; skipped={skipped}" if skipped else ""
-        return f"Managed storage paths would be removed: {paths or '-'}{suffix}"
-    removed = sum(1 for item in targets if "removed" in item["status"])
-    skipped = sum(1 for item in targets if item["status"].startswith("skipped"))
-    return f"Managed storage cleanup finished: removed={removed}, skipped={skipped}"
 
 
 def _service_volume_cleanup_nodes(service: ServiceSpec, state: Dict[str, Any]) -> list[dict[str, str]]:
@@ -11299,78 +10663,6 @@ def _node_cleanup_target_is_local(node: dict[str, str]) -> bool:
         str(node.get("lumaNodeId") or ""),
     }
     return bool((local_values - {""}) & (node_values - {""}))
-
-
-def _cleanup_compose_managed_storage(deployment: ComposeDeploymentSpec, state: Dict[str, Any], *, dry_run: bool) -> str:
-    targets: list[dict[str, str]] = []
-    for volume in deployment.volumes.values():
-        if not volume.storage_class:
-            continue
-        storage_class = deployment.storage_classes[volume.storage_class]
-        if storage_class.mode != "managed":
-            targets.append(
-                {
-                    "volume": volume.name,
-                    "storageClass": storage_class.name,
-                    "path": volume.path or volume.name,
-                    "status": "skipped: storageClass is not managed",
-                }
-            )
-            continue
-        targets.append(_remove_managed_volume_path(storage_class, volume.path or volume.name, state, dry_run=dry_run))
-    if not targets:
-        return "No managed storage paths referenced"
-    if dry_run:
-        paths = ", ".join(item["path"] for item in targets if not item["status"].startswith("skipped"))
-        skipped = sum(1 for item in targets if item["status"].startswith("skipped"))
-        suffix = f"; skipped={skipped}" if skipped else ""
-        return f"Managed storage paths would be removed: {paths or '-'}{suffix}"
-    removed = sum(1 for item in targets if "removed" in item["status"])
-    skipped = sum(1 for item in targets if item["status"].startswith("skipped"))
-    return f"Managed storage cleanup finished: removed={removed}, skipped={skipped}"
-
-
-def _remove_managed_volume_path(storage_class: StorageClassSpec, sub_path: str, state: Dict[str, Any], *, dry_run: bool) -> dict[str, str]:
-    if not storage_class.node or not storage_class.path:
-        raise LumaError(f"managed storageClass {storage_class.name} requires node and path")
-    relative = _managed_volume_relative_path(sub_path)
-    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-    record = _node_record_for_name(nodes, storage_class.node) or {}
-    full_path = Path(storage_class.path) / relative
-    item = {"storageClass": storage_class.name, "path": str(full_path)}
-    if dry_run:
-        return {**item, "status": "planned"}
-    if not _storage_node_is_local(record, storage_class.node):
-        result = _run_node_agent_task(
-            state,
-            storage_class.node,
-            "remove-managed-volume-path",
-            {"root": storage_class.path, "relative": str(relative)},
-        )
-        return {
-            **item,
-            "status": str(result.get("message") or "removed by node agent"),
-            "taskId": str(result.get("taskId") or ""),
-        }
-    command = _remove_managed_volume_command(storage_class.path, str(relative))
-    try:
-        _run_host_prep_command(command)
-    except LumaError as exc:
-        raise LumaError(f"failed to remove managed storage volume path {full_path}: {exc}") from exc
-    return {**item, "status": "removed local path"}
-
-
-def _remove_managed_volume_command(root: str, relative: str) -> str:
-    from ..agent import _remove_volume_path_command
-
-    return _remove_volume_path_command(root, relative)
-
-
-def _managed_volume_relative_path(sub_path: str) -> Path:
-    relative = Path(str(sub_path).strip().strip("/"))
-    if relative.is_absolute() or ".." in relative.parts or not str(relative):
-        raise LumaError(f"managed storage volume path must be relative and cannot contain ..: {sub_path}")
-    return relative
 
 
 def _emit_resource_policy_warnings(steps, progress, name: str, resources: Mapping[str, Any]) -> None:
@@ -11643,14 +10935,7 @@ def _compose_storage_mount_change_exemptions(deployment: ComposeDeploymentSpec) 
 def _compose_storage_backend_signatures(deployment: ComposeDeploymentSpec) -> Dict[str, Dict[str, Any]]:
     signatures: Dict[str, Dict[str, Any]] = {}
     for name, spec in deployment.volumes.items():
-        if spec.storage_class:
-            signatures[name] = {
-                "kind": "storageClass",
-                "storageClass": spec.storage_class,
-                "path": spec.path or "",
-                "accessMode": spec.access_mode,
-            }
-        elif spec.local_node or spec.local_path:
+        if spec.local_node or spec.local_path:
             signatures[name] = {
                 "kind": "local",
                 "node": spec.local_node or "",
@@ -11716,59 +11001,6 @@ def _safe_yaml_mapping(text: str) -> Dict[str, Any]:
     if not isinstance(data, dict):
         raise LumaError("generated YAML must be a mapping")
     return data
-
-
-def _state_storage_classes(state: Dict[str, Any]) -> Dict[str, Any]:
-    storage_classes = state.get("storageClasses") if isinstance(state.get("storageClasses"), dict) else {}
-    return {str(name): dict(value) for name, value in storage_classes.items() if isinstance(value, dict)}
-
-
-def _storage_classes_summary(state: Dict[str, Any]) -> list[Dict[str, Any]]:
-    return [_public_storage_class(name, value) for name, value in sorted(_state_storage_classes(state).items())]
-
-
-def _public_storage_class(name: str, value: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "name": str(name),
-        "provider": str(value.get("provider") or ""),
-        "mode": str(value.get("mode") or "external"),
-        "node": str(value.get("node") or ""),
-        "endpoint": str(value.get("endpoint") or ""),
-        "path": str(value.get("path") or ""),
-        "mountOptions": str(value.get("mountOptions") or ""),
-        "regions": [str(item) for item in value.get("regions") or []],
-        "nodes": [str(item) for item in value.get("nodes") or []],
-        "updatedAt": value.get("updatedAt") or "",
-    }
-
-
-def _validate_storage_class_record(name: str, item: Dict[str, Any], state: Dict[str, Any]) -> None:
-    if item["mode"] == "external":
-        if not item.get("endpoint"):
-            raise LumaError(f"external storage class {name} requires endpoint")
-        if not item.get("regions"):
-            raise LumaError(f"external storage class {name} requires at least one region")
-        if item.get("node") or item.get("path"):
-            raise LumaError(f"external storage class {name} cannot set node or path")
-    if item["mode"] == "managed":
-        if not item.get("node") or not item.get("path"):
-            raise LumaError(f"managed storage class {name} requires node and path")
-        if item.get("endpoint"):
-            raise LumaError(f"managed storage class {name} cannot set endpoint")
-        nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-        node_name = str(item.get("node") or "")
-        record = _node_record_for_name(nodes, node_name)
-        if not record:
-            names = ", ".join(sorted(str(key) for key in nodes)) or "none"
-            raise LumaError(f"managed storage class {name} references unknown Luma node: {item.get('node')}. Registered nodes: {names}")
-        labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
-        if not str(record.get("region") or labels.get("region") or "").strip():
-            raise LumaError(f"managed storage node {node_name} has no region; rerun luma node join")
-    regions = item.get("regions") if isinstance(item.get("regions"), list) else []
-    parsed_regions = []
-    for region in regions:
-        parsed_regions.append(require_registered_region(state, region)["name"])
-    item["regions"] = parsed_regions
 
 
 def handle_secret_list(token: str) -> Dict[str, Any]:
@@ -12915,36 +12147,38 @@ def _recover_traefik_ingress(job_id: str = "traefik", *, service: ServiceSpec | 
 
 
 def _recreate_traefik_ingress(job_id: str, *, service: ServiceSpec | None = None) -> str:
-    if service is not None:
-        # A prior recovery may have finished after this caller's failed probe.
-        # Only a still-missing router warrants another ingress replacement.
-        try:
-            probe = _probe_public_route(service)
-        except LumaError as exc:
-            if not _public_route_error_is_traefik_miss(exc):
-                if _public_route_error_is_gateway_failure(exc):
-                    return "Traefik router available; waiting for upstream convergence"
-                raise
-        else:
-            return f"Traefik recreate skipped after recheck: {probe}"
-    state = load_state()
-    config = load_config(_control_config_path())
-    api = NomadApi(nomad_addr(config, state), token=nomad_token(state))
-    allocations = api.request("GET", f"/v1/job/{urllib.parse.quote(job_id, safe='')}/allocations")
-    if not isinstance(allocations, list):
-        raise LumaError("Nomad returned invalid allocations for Traefik")
-    running_ids = {
-        str(allocation.get("ID") or allocation.get("id") or "").strip()
-        for allocation in allocations
-        if _nomad_allocation_is_running(allocation)
-    }
-    running_ids.discard("")
-    if not running_ids:
-        raise LumaError("Traefik has no running allocation to recover")
-    for allocation_id in sorted(running_ids):
-        api.request("POST", f"/v1/allocation/{urllib.parse.quote(allocation_id, safe='')}/stop", None)
-    replacements = _wait_for_nomad_job_replacement(api, job_id, running_ids, min_running=1)
-    return f"Traefik allocation recreated ({', '.join(replacements)})"
+    lock_key = "job:" + (str(job_id or "").strip() or "traefik")
+    with _DEPLOY_OWNERS.hold(lambda: {lock_key}, lambda: False):
+        if service is not None:
+            # A prior recovery may have finished after this caller's failed probe.
+            # Only a still-missing router warrants another ingress replacement.
+            try:
+                probe = _probe_public_route(service)
+            except LumaError as exc:
+                if not _public_route_error_is_traefik_miss(exc):
+                    if _public_route_error_is_gateway_failure(exc):
+                        return "Traefik router available; waiting for upstream convergence"
+                    raise
+            else:
+                return f"Traefik recreate skipped after recheck: {probe}"
+        state = load_state()
+        config = load_config(_control_config_path())
+        api = NomadApi(nomad_addr(config, state), token=nomad_token(state))
+        allocations = api.request("GET", f"/v1/job/{urllib.parse.quote(job_id, safe='')}/allocations")
+        if not isinstance(allocations, list):
+            raise LumaError("Nomad returned invalid allocations for Traefik")
+        running_ids = {
+            str(allocation.get("ID") or allocation.get("id") or "").strip()
+            for allocation in allocations
+            if _nomad_allocation_is_running(allocation)
+        }
+        running_ids.discard("")
+        if not running_ids:
+            raise LumaError("Traefik has no running allocation to recover")
+        for allocation_id in sorted(running_ids):
+            api.request("POST", f"/v1/allocation/{urllib.parse.quote(allocation_id, safe='')}/stop", None)
+        replacements = _wait_for_nomad_job_replacement(api, job_id, running_ids, min_running=1)
+        return f"Traefik allocation recreated ({', '.join(replacements)})"
 
 
 def _recover_public_route_allocation(token: str, stack: str) -> str:
@@ -14253,9 +13487,6 @@ def _storage_from_labels(labels: Dict[str, Any]) -> list[Dict[str, str]]:
         if label.startswith("luma.storage."):
             name = label.removeprefix("luma.storage.")
             volumes.setdefault(name, {"name": name})["kind"] = raw_value
-        elif label.startswith("luma.storageClass."):
-            name = label.removeprefix("luma.storageClass.")
-            volumes.setdefault(name, {"name": name})["storageClass"] = raw_value
         elif label.startswith("luma.storageEndpoint."):
             name = label.removeprefix("luma.storageEndpoint.")
             volumes.setdefault(name, {"name": name})["endpoint"] = raw_value
@@ -14290,7 +13521,7 @@ def _deployment_diagnostics(config: Dict[str, Any]) -> list[str]:
     return [last_error or f"Deployment status is {status}"]
 
 
-def _dashboard_storage(services: list[Dict[str, Any]], storage_classes: list[Dict[str, Any]] | None = None) -> Dict[str, Any]:
+def _dashboard_storage(services: list[Dict[str, Any]]) -> Dict[str, Any]:
     volumes: dict[str, Dict[str, Any]] = {}
     warnings: list[str] = []
     for service in services:
@@ -14306,7 +13537,6 @@ def _dashboard_storage(services: list[Dict[str, Any]], storage_classes: list[Dic
                 {
                     "name": name,
                     "kind": str(item.get("kind") or "unmanaged"),
-                    "storageClass": str(item.get("storageClass") or ""),
                     "node": str(item.get("node") or ""),
                     "endpoint": str(item.get("endpoint") or ""),
                     "networkPath": str(item.get("networkPath") or ""),
@@ -14318,7 +13548,7 @@ def _dashboard_storage(services: list[Dict[str, Any]], storage_classes: list[Dic
                 warning = f"Volume {name} is unmanaged by Luma; rescheduling may use node-local data"
                 if warning not in warnings:
                     warnings.append(warning)
-    return {"storageClasses": storage_classes or [], "volumes": list(volumes.values()), "warnings": warnings}
+    return {"volumes": list(volumes.values()), "warnings": warnings}
 
 
 def _host_from_rule(rule: str) -> str:
@@ -15886,7 +15116,20 @@ class TerminalBroker:
         self._agents: dict[str, _TerminalAgentConnection] = {}
         self._sessions: dict[str, _TerminalSession] = {}
         self._lock: asyncio.Lock | None = None
-        self._pending_auth: asyncio.Semaphore | None = None
+        self._pending_browser_auth: asyncio.Semaphore | None = None
+        self._pending_agent_auth: asyncio.Semaphore | None = None
+
+    @property
+    def _pending_auth(self) -> asyncio.Semaphore | None:
+        return self._pending_browser_auth
+
+    @_pending_auth.setter
+    def _pending_auth(self, value: asyncio.Semaphore | None) -> None:
+        self._pending_browser_auth = value
+        if value is None:
+            self._pending_agent_auth = None
+        elif isinstance(value, asyncio.Semaphore):
+            self._pending_agent_auth = asyncio.Semaphore(getattr(value, "_value", max(self.per_node_limit * 4, 8)))
 
     def _lock_for_loop(self) -> asyncio.Lock:
         if self._lock is None:
@@ -15894,9 +15137,14 @@ class TerminalBroker:
         return self._lock
 
     def _pending_auth_for_loop(self) -> asyncio.Semaphore:
-        if self._pending_auth is None:
-            self._pending_auth = asyncio.Semaphore(max(self.per_node_limit * 4, 8))
-        return self._pending_auth
+        if self._pending_browser_auth is None:
+            self._pending_browser_auth = asyncio.Semaphore(max(self.per_node_limit * 4, 8))
+        return self._pending_browser_auth
+
+    def _pending_agent_auth_for_loop(self) -> asyncio.Semaphore:
+        if self._pending_agent_auth is None:
+            self._pending_agent_auth = asyncio.Semaphore(max(self.per_node_limit * 4, 8))
+        return self._pending_agent_auth
 
     def connected_nodes(self) -> set[str]:
         return set(self._agents)
@@ -16041,7 +15289,7 @@ class TerminalBroker:
         if not node_name:
             await websocket.close(code=1008)
             return
-        if not await self._acquire_pending_auth(websocket):
+        if not await self._acquire_pending_auth(websocket, agent=True):
             return
         try:
             await websocket.accept()
@@ -16063,7 +15311,7 @@ class TerminalBroker:
                 await websocket.close(code=1008)
                 return
         finally:
-            self._pending_auth_for_loop().release()
+            self._pending_agent_auth_for_loop().release()
         connection = _TerminalAgentConnection(canonical_node_name, websocket, direct_terminal=auth.get("directTerminal") is True,
                                               exec_v1=auth.get("execV1") is True)
         async with self._lock_for_loop():
@@ -16146,9 +15394,10 @@ class TerminalBroker:
         async with self._lock_for_loop():
             return [sid for sid, item in self._sessions.items() if item.node_name == node_name and item.agent is agent]
 
-    async def _acquire_pending_auth(self, websocket: WebSocket) -> bool:
+    async def _acquire_pending_auth(self, websocket: WebSocket, *, agent: bool = False) -> bool:
+        semaphore = self._pending_agent_auth_for_loop() if agent else self._pending_auth_for_loop()
         try:
-            await asyncio.wait_for(self._pending_auth_for_loop().acquire(), timeout=0.1)
+            await asyncio.wait_for(semaphore.acquire(), timeout=0.1)
             return True
         except Exception:
             try:
@@ -16276,7 +15525,6 @@ async def _asgi_health(_: Request) -> JSONResponse:
                 "terminal",
                 "repository-compose-sidecar-v1",
                 "deployment-workflow-v1",
-                "build-queue-v1",
                 "build-proxy-mode-v1",
                 REQUIRED_BUILD_CAPABILITY,
                 NATIVE_ARM_BUILD_CAPABILITY,
@@ -16353,16 +15601,156 @@ async def _asgi_forward_auth(request: Request) -> Response:
     return Response(status_code=status, headers={"Cache-Control": "no-store"})
 
 
+MAX_AUTH_BODY_BYTES = 64 * 1024
+MAX_AUTHENTICATED_BODY_BYTES = 16 * 1024 * 1024
+AUTH_RATE_LIMIT_WINDOW_SECONDS = 60.0
+AUTH_RATE_LIMIT_GENERAL = 60
+AUTH_RATE_LIMIT_PASSKEY_OPTIONS = 30
+_AUTH_RATE_LIMIT_MAX_KEYS = 4096
+
+
+def _client_ip(request: Request) -> str:
+    peer = str(request.client.host if request.client else "").strip()
+    if peer_is_loopback(peer):
+        forwarded_for = str(request.headers.get("x-forwarded-for") or "").strip()
+        if forwarded_for:
+            parts = [part.strip() for part in forwarded_for.split(",") if part.strip()]
+            for candidate in reversed(parts):
+                if not peer_is_loopback(candidate):
+                    return candidate[:128]
+            if parts:
+                return parts[-1][:128]
+        real_ip = str(request.headers.get("x-real-ip") or "").strip()
+        if real_ip:
+            return real_ip[:128]
+    return peer[:128]
+
+
+class _AuthRateLimiter:
+    """In-memory sliding-window rate limiter keyed by (bucket, client IP)."""
+
+    def __init__(
+        self,
+        *,
+        window_seconds: float = AUTH_RATE_LIMIT_WINDOW_SECONDS,
+        general_limit: int = AUTH_RATE_LIMIT_GENERAL,
+        passkey_options_limit: int = AUTH_RATE_LIMIT_PASSKEY_OPTIONS,
+    ) -> None:
+        self.window_seconds = window_seconds
+        self.general_limit = general_limit
+        self.passkey_options_limit = passkey_options_limit
+        self._lock = threading.Lock()
+        self._entries: "OrderedDict[tuple[str, str], deque[float]]" = OrderedDict()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+    def check(self, bucket: str, peer: str, *, limit: int | None = None, now: float | None = None) -> None:
+        effective_limit = self.passkey_options_limit if bucket == "passkey_options" else self.general_limit
+        if limit is not None:
+            effective_limit = limit
+        if effective_limit <= 0:
+            return
+        current = time.monotonic() if now is None else now
+        cutoff = current - self.window_seconds
+        key = (bucket, peer or "unknown")
+        with self._lock:
+            timestamps = self._entries.get(key)
+            if timestamps is None:
+                if len(self._entries) >= _AUTH_RATE_LIMIT_MAX_KEYS:
+                    stale = [k for k, q in self._entries.items() if not q or q[-1] <= cutoff]
+                    for k in stale:
+                        self._entries.pop(k, None)
+                    while len(self._entries) >= _AUTH_RATE_LIMIT_MAX_KEYS:
+                        self._entries.popitem(last=False)
+                timestamps = deque()
+                self._entries[key] = timestamps
+            else:
+                self._entries.move_to_end(key)
+            while timestamps and timestamps[0] <= cutoff:
+                timestamps.popleft()
+            if len(timestamps) >= effective_limit:
+                raise dashboard_auth.AuthError(
+                    "too many authentication requests; try again in a minute",
+                    status=429,
+                    code="auth_rate_limited",
+                )
+            timestamps.append(current)
+
+
+_AUTH_RATE_LIMITER = _AuthRateLimiter()
+
+
+def _auth_rate_limiter_for_request(request: Request) -> _AuthRateLimiter:
+    app = request.scope.get("app") if isinstance(request.scope, dict) else None
+    state = getattr(app, "state", None)
+    limiter = getattr(state, "auth_rate_limiter", None)
+    return limiter if isinstance(limiter, _AuthRateLimiter) else _AUTH_RATE_LIMITER
+
+
+def _auth_rate_limit_bucket(method: str, path: str) -> str | None:
+    if method == "POST" and path == "/v1/auth/passkey/authenticate/options":
+        return "passkey_options"
+    if path == "/v1/auth/login/verify" and method in {"GET", "POST"}:
+        return "auth"
+    if method != "POST":
+        return None
+    if path == "/v1/auth/session":
+        return "auth"
+    if path == "/v1/auth/grafana-public/session":
+        return "auth"
+    if path.startswith("/v1/auth/passkey/"):
+        return "auth"
+    if re.fullmatch(r"/v1/auth/addon/[a-z][a-z0-9-]{0,31}/exchange", path):
+        return "auth"
+    if path.startswith("/v1/auth/builder/"):
+        return "auth"
+    return None
+
+
+def _enforce_auth_rate_limit(request: Request, method: str, path: str) -> None:
+    bucket = _auth_rate_limit_bucket(method, path)
+    if bucket is None:
+        return
+    _auth_rate_limiter_for_request(request).check(bucket, _client_ip(request))
+
+
+async def _read_json_body(request: Request, *, max_bytes: int, allow_empty: bool = False) -> Dict[str, Any]:
+    raw_length = request.headers.get("content-length")
+    if raw_length is not None:
+        try:
+            if int(raw_length) > max_bytes:
+                raise dashboard_auth.AuthError("request body is too large", status=413, code="body_too_large")
+        except ValueError:
+            pass
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > max_bytes:
+            raise dashboard_auth.AuthError("request body is too large", status=413, code="body_too_large")
+        raw.extend(chunk)
+    if allow_empty and not raw.strip():
+        return {}
+    try:
+        body = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise LumaError("request body contains malformed JSON") from exc
+    if not isinstance(body, dict):
+        raise LumaError("request body must be a JSON object")
+    return body
+
+
 async def _asgi_auth(request: Request) -> Response:
     """Dashboard sign-in routes: sessions, passkeys and browser policy."""
     path = request.url.path
     method = request.method
-    if path == "/v1/auth/login/verify":
-        return await (_asgi_authenticated_post(request) if method == "POST" else _asgi_authenticated_get(request))
     if path == "/v1/auth/forward" and method == "GET":
         return await _asgi_forward_auth(request)
     session_id = request.cookies.get(dashboard_auth.SESSION_COOKIE) or ""
     try:
+        _enforce_auth_rate_limit(request, method, path)
+        if path == "/v1/auth/login/verify":
+            return await (_asgi_authenticated_post(request) if method == "POST" else _asgi_authenticated_get(request))
         if path == "/v1/auth/grafana-public/forward" and method == "GET":
             from .observe_sharing import forward_auth
             if request.headers.get("Authorization") or session_id:
@@ -16375,13 +15763,7 @@ async def _asgi_auth(request: Request) -> Response:
             return await sign_in(request)
         body: Dict[str, Any] = {}
         if method == "POST":
-            raw = await request.body()
-            try:
-                body = json.loads(raw) if raw.strip() else {}
-            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                raise LumaError("request body contains malformed JSON") from exc
-            if not isinstance(body, dict):
-                raise LumaError("request body must be a JSON object")
+            body = await _read_json_body(request, max_bytes=MAX_AUTH_BODY_BYTES, allow_empty=True)
         # Public: what the sign-in screen needs, and the sign-in ceremonies themselves.
         addon_info_match = re.fullmatch(r"/v1/auth/addon/([a-z][a-z0-9-]{0,31})/info", path)
         if method == "GET" and addon_info_match:
@@ -16422,6 +15804,8 @@ async def _asgi_auth(request: Request) -> Response:
                 await run_in_threadpool(lambda: dashboard_auth.require_same_origin(request.headers, load_auth_state()))
             return _auth_json(await run_in_threadpool(dashboard_auth.logout, session_id), clear=True)
         if method == "POST" and path == "/v1/auth/passkey/authenticate/options":
+            if request.headers.get("origin"):
+                await run_in_threadpool(lambda: dashboard_auth.require_same_origin(request.headers, load_auth_state()))
             return _auth_json(await run_in_threadpool(dashboard_auth.authentication_options))
         if method == "POST" and path == "/v1/auth/passkey/authenticate/verify":
             payload, new_session = await run_in_threadpool(dashboard_auth.authentication_verify, body, request.headers)
@@ -16473,53 +15857,18 @@ async def _asgi_auth(request: Request) -> Response:
 
 
 async def _asgi_authenticated_get(request: Request) -> Response:
+    if request.scope.get("app") is None:
+        from .routers import dispatch_direct_request
+
+        delegated = await dispatch_direct_request(request)
+        if delegated is not None:
+            return delegated
     parsed_path = request.url.path
     try:
         token = await _request_credential(request)
-        if parsed_path == "/v1/addons":
-            from . import addons as control_addons
-            return _json_response(200, await run_in_threadpool(control_addons.handle_addons_list, token))
-        if parsed_path == "/v1/addons/summary":
-            from . import addons as control_addons
-            return _json_response(200, await run_in_threadpool(control_addons.handle_addons_summary, token))
-        if parsed_path == "/v1/dashboard/addons/eye/portfolio":
-            from . import addons as control_addons
-            since = str(request.query_params.get("since") or "24h")
-            return _json_response(200, await run_in_threadpool(control_addons.handle_addon_eye_portfolio, token, since=since))
-        if parsed_path == "/v1/dashboard/addons/eye/app":
-            from . import addons as control_addons
-            app_name = str(request.query_params.get("app") or "")
-            since = str(request.query_params.get("since") or "24h")
-            return _json_response(200, await run_in_threadpool(control_addons.handle_addon_eye_app, token, app_name, since=since))
-        addon_get_match = re.fullmatch(r"/v1/addons/([a-z][a-z0-9-]{0,31})", parsed_path)
-        if addon_get_match:
-            from . import addons as control_addons
-            return _json_response(200, await run_in_threadpool(control_addons.handle_addon_get, token, addon_get_match.group(1)))
-        if parsed_path == "/v1/builder/status":
-            return _json_response(200, await run_in_threadpool(independent_builder.status, token))
-        builder_match = re.fullmatch(r"/v1/builder/builds/([A-Za-z0-9_-]+)", parsed_path)
-        if builder_match:
-            return _json_response(200, await run_in_threadpool(independent_builder.detail, token, builder_match.group(1), request.query_params.get("afterSeq", "0")))
         if operations_api.handles(parsed_path):
             result = await run_in_threadpool(functools.partial(operations_api.dispatch, token, "GET", parsed_path, query=dict(request.query_params)))
             return _json_response(200, result)
-        if parsed_path == "/v1/git-providers":
-            return _json_response(200, await run_in_threadpool(handle_git_provider_list, token))
-        if parsed_path == "/v1/cdn":
-            return _json_response(200, await run_in_threadpool(handle_cdn_list, token))
-        if parsed_path == "/v1/control-resources":
-            return _json_response(200, await run_in_threadpool(handle_credentials_resources_list, token))
-        git_repos_match = re.fullmatch(r"/v1/git-providers/([^/]+)/repositories", parsed_path)
-        if git_repos_match:
-            provider_id = urllib.parse.unquote(git_repos_match.group(1))
-            return _json_response(200, await run_in_threadpool(handle_git_provider_repositories, token, provider_id))
-        git_refs_match = re.fullmatch(r"/v1/git-providers/([^/]+)/repositories/([^/]+)/([^/]+)/refs", parsed_path)
-        if git_refs_match:
-            provider_id = urllib.parse.unquote(git_refs_match.group(1))
-            repository = f"{urllib.parse.unquote(git_refs_match.group(2))}/{urllib.parse.unquote(git_refs_match.group(3))}"
-            return _json_response(200, await run_in_threadpool(handle_git_provider_refs, token, provider_id, repository))
-        if parsed_path == "/v1/registries":
-            return _json_response(200, await run_in_threadpool(handle_registry_list, token))
         if parsed_path == "/v1/registry/inventory":
             refresh = str(request.query_params.get("refresh") or "").lower() in {"1", "true", "yes"}
             payload = await run_in_threadpool(
@@ -16540,21 +15889,6 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             return _compact_json_response(request, page)
         if parsed_path == "/v1/registry/policy":
             return _json_response(200, await run_in_threadpool(handle_registry_policy_get, token))
-        if parsed_path == "/v1/secrets":
-            return _json_response(200, await run_in_threadpool(handle_secret_list, token))
-        if parsed_path == "/v1/regions":
-            return _json_response(200, await run_in_threadpool(handle_region_list, token))
-        if parsed_path == "/v1/dns/zones":
-            return _json_response(200, await run_in_threadpool(handle_dns_zone_list, token))
-        if parsed_path == "/v1/storage":
-            return _json_response(200, await run_in_threadpool(handle_storage_list, token))
-        if parsed_path == "/v1/status":
-            return _json_response(200, await run_in_threadpool(handle_control_status, token))
-        if parsed_path == "/v1/workflows":
-            return _json_response(200, await run_in_threadpool(handle_workflow_list, token))
-        workflow_match = re.fullmatch(r"/v1/workflows/([^/]+)", parsed_path)
-        if workflow_match:
-            return _json_response(200, await run_in_threadpool(handle_workflow_get, token, urllib.parse.unquote(workflow_match.group(1))))
 
         if parsed_path == "/v1/history":
             return _json_response(200, await run_in_threadpool(handle_history_list, token, _history_query(request.url.query)))
@@ -16677,39 +16011,82 @@ async def _asgi_authenticated_get(request: Request) -> Response:
     except LogUnavailable as exc:
         return _asgi_error(503, exc, code="logs_unavailable")
     except dashboard_auth.AuthError as exc:
-        return _asgi_error(exc.status, exc, code=exc.code)
+        response = _asgi_error(exc.status, exc, code=exc.code)
+        if exc.status == 429:
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Retry-After"] = "60"
+        return response
     except LumaError as exc:
         code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
         return _asgi_error(code, exc, code="luma_error")
     return _json_response(404, _error_payload("not_found", "not found", request_id=_request_id()))
 
 
+def _prevalidate_post_token(path: str, token: str) -> None:
+    if not token:
+        raise LumaError("unauthorized")
+    if path.startswith("/v1/node-agent/"):
+        token_hash = _hash_agent_token(token)
+        nodes = load_runtime_state().get("nodes")
+        if isinstance(nodes, dict):
+            for record in nodes.values():
+                if not isinstance(record, dict):
+                    continue
+                agent = record.get("agent")
+                expected = str(agent.get("tokenHash") or "") if isinstance(agent, dict) else ""
+                if expected and secrets.compare_digest(expected, token_hash):
+                    return
+        raise LumaError("unauthorized")
+    if path.startswith("/v1/builder/"):
+        state = independent_builder.load_auth_state()
+    elif path.startswith("/v1/addons/"):
+        from . import addons as control_addons
+        state = control_addons.load_auth_state()
+    elif operations_api.handles(path):
+        state = operations_api.load_auth_state()
+    else:
+        state = load_auth_state()
+    deploy_token = str(state.get("deployToken") or "")
+    if deploy_token and secrets.compare_digest(deploy_token, token):
+        return
+    if path in {"/v1/nodes/register", "/v1/nodes/label"}:
+        join_token = str(state.get("joinToken") or "")
+        if join_token and secrets.compare_digest(join_token, token):
+            return
+    if path in {"/v1/nodes/agent-token", "/v1/nodes/unregister"}:
+        token_hash = _hash_agent_token(token)
+        nodes = load_state().get("nodes")
+        if isinstance(nodes, dict):
+            for record in nodes.values():
+                if not isinstance(record, dict):
+                    continue
+                agent = record.get("agent")
+                expected = str(agent.get("tokenHash") or "") if isinstance(agent, dict) else ""
+                if expected and secrets.compare_digest(expected, token_hash):
+                    return
+    raise LumaError("unauthorized")
+
+
 async def _asgi_authenticated_post(request: Request) -> Response:
+    if request.scope.get("app") is None:
+        from .routers import dispatch_direct_request
+
+        delegated = await dispatch_direct_request(request)
+        if delegated is not None:
+            return delegated
     try:
         path = request.url.path
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise LumaError("request body contains malformed JSON") from exc
-        if not isinstance(body, dict):
-            raise LumaError("request body must be a JSON object")
         token = await _request_credential(request)
-        addon_action_match = re.fullmatch(r"/v1/addons/([a-z][a-z0-9-]{0,31})/(configure|render|apply|apply/stream|uninstall)", path)
-        if addon_action_match:
-            from . import addons as control_addons
-            addon_id, action = addon_action_match.group(1), addon_action_match.group(2)
-            if action == "configure":
-                return _json_response(200, await run_in_threadpool(control_addons.handle_addon_configure, token, addon_id, body))
-            if action == "render":
-                return _json_response(200, await run_in_threadpool(control_addons.handle_addon_render, token, addon_id, body))
-            if action == "uninstall":
-                return _json_response(200, await run_in_threadpool(control_addons.handle_addon_uninstall, token, addon_id, body))
-            compose_body = await run_in_threadpool(control_addons.prepare_addon_apply_body, token, addon_id, body)
-            if action == "apply/stream":
-                return _asgi_stream_deployment(token, compose_body, compose=True)
-            return _json_response(200, await run_in_threadpool(handle_compose_deployment, token, compose_body))
-        if path == "/v1/builder/builds":
-            return _json_response(200, await run_in_threadpool(independent_builder.submit, token, body))
+        await run_in_threadpool(_prevalidate_post_token, path, token)
+        body = await _read_json_body(
+            request,
+            max_bytes=MAX_AUTHENTICATED_BODY_BYTES,
+            allow_empty=(path == "/v1/auth/login/verify"),
+        )
+        if path == "/v1/node-agent/lease":
+            if handle_node_agent_lease is _DEFAULT_HANDLE_NODE_AGENT_LEASE:
+                return _json_response(200, await _asgi_node_agent_lease(token, body))
+            return _json_response(200, await run_in_threadpool(handle_node_agent_lease, token, body))
         if operations_api.handles(path):
             result = await run_in_threadpool(functools.partial(operations_api.dispatch, token, "POST", path, body=body, query=dict(request.query_params)))
             return _json_response(200, result)
@@ -16758,17 +16135,12 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/security/nomad/tasks": handle_nomad_security_task,
             "/v1/nodes/unregister": handle_node_unregister,
             "/v1/nodes/public-ingress": handle_node_public_ingress,
-            "/v1/workflows": handle_workflow_record,
-            "/v1/workflows/check": handle_workflow_check,
             "/v1/deployments": handle_deployment,
             "/v1/deployments/preview": handle_deployment_preview,
             "/v1/compose-deployments": handle_compose_deployment,
             "/v1/compose-deployments/preview": handle_compose_deployment_preview,
             "/v1/builds": handle_build_deploy,
             "/v1/registry/serve": handle_registry_serve,
-            "/v1/storage/apply": handle_storage_apply,
-            "/v1/storage": handle_storage_set,
-            "/v1/storage/remove": handle_storage_remove,
             "/v1/services/remove": handle_service_remove,
             "/v1/services/rollback": handle_service_rollback,
             "/v1/services/history": handle_service_history,
@@ -16776,22 +16148,7 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/applications/update": handle_application_update,
             "/v1/certificates/retry": handle_certificate_retry,
             "/v1/fleet/update": handle_fleet_update,
-            "/v1/secrets": handle_secret_set,
-            "/v1/secrets/remove": handle_secret_remove,
-            "/v1/regions": handle_region_create,
-            "/v1/dns/zones": handle_dns_zone_add,
-            "/v1/dns/zones/check": handle_dns_zone_check,
-            "/v1/dns/zones/remove": handle_dns_zone_remove,
-            "/v1/regions/remove": handle_region_remove,
-            "/v1/regions/update": handle_region_update,
             "/v1/dashboard/metrics/history/batch": handle_metrics_history_batch,
-            "/v1/cdn/check": handle_cdn_check,
-            "/v1/cdn/purge": handle_cdn_purge,
-            "/v1/cdn/remove": handle_cdn_remove,
-            "/v1/git-providers": handle_git_provider_set,
-            "/v1/git-providers/remove": handle_git_provider_remove,
-            "/v1/registries": handle_registry_set,
-            "/v1/registries/remove": handle_registry_remove,
         }
         if path == "/v1/deployments/stream":
             return _asgi_stream_deployment(token, body, compose=False)
@@ -16850,7 +16207,11 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             return _json_response(200, await run_in_threadpool(handler, token, body))
         return _json_response(404, _error_payload("not_found", "not found", request_id=_request_id()))
     except dashboard_auth.AuthError as exc:
-        return _asgi_error(exc.status, exc, code=exc.code)
+        response = _asgi_error(exc.status, exc, code=exc.code)
+        if exc.status == 429:
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Retry-After"] = "60"
+        return response
     except LumaError as exc:
         code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
         return _asgi_error(code, exc, code="luma_error")
@@ -16859,7 +16220,44 @@ async def _asgi_authenticated_post(request: Request) -> Response:
 
 
 STREAM_HEARTBEAT_SECONDS = 15.0
+MAX_STREAM_QUEUE_SIZE = 2048
 _STREAM_HEARTBEAT: Any = object()
+
+
+def _stream_enqueue(
+    loop: asyncio.AbstractEventLoop,
+    queue: "asyncio.Queue[Dict[str, Any] | None]",
+    item: Dict[str, Any] | None,
+) -> None:
+    """Thread-safe bounded enqueue for NDJSON stream queues.
+
+    Drops intermediate progress events when the queue is full (slow or
+    disconnected client) while making room for terminal events (done/fail/None)
+    and ignoring closed event loops cleanly.
+    """
+    is_terminal = item is None or (isinstance(item, dict) and item.get("status") in {"done", "fail"})
+
+    def _put() -> None:
+        try:
+            queue.put_nowait(item)
+        except asyncio.QueueFull:
+            if not is_terminal:
+                return
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                queue.put_nowait(item)
+            except asyncio.QueueFull:
+                pass
+
+    try:
+        if loop.is_closed():
+            return
+        loop.call_soon_threadsafe(_put)
+    except RuntimeError:
+        return
 
 
 async def _next_stream_event(queue: "asyncio.Queue[Any]") -> Any:
@@ -16871,11 +16269,11 @@ async def _next_stream_event(queue: "asyncio.Queue[Any]") -> Any:
 
 def _asgi_stream_deployment(token: str, body: Dict[str, Any], *, compose: bool) -> StreamingResponse:
     async def generate() -> AsyncIterator[bytes]:
-        queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue()
+        queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue(maxsize=MAX_STREAM_QUEUE_SIZE)
         loop = asyncio.get_running_loop()
 
         def emit(event: Dict[str, Any]) -> None:
-            loop.call_soon_threadsafe(queue.put_nowait, dict(event))
+            _stream_enqueue(loop, queue, dict(event))
 
         def run() -> None:
             try:
@@ -16893,7 +16291,7 @@ def _asgi_stream_deployment(token: str, body: Dict[str, Any], *, compose: bool) 
                 print(f"requestId={request_id} stream deployment internal error: {exc}", file=sys.stderr, flush=True)
                 emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, None)
+                _stream_enqueue(loop, queue, None)
 
         threading.Thread(target=run, daemon=True).start()
         while True:
@@ -16912,11 +16310,11 @@ def _asgi_stream_deployment(token: str, body: Dict[str, Any], *, compose: bool) 
 
 def _asgi_stream_build_deploy(token: str, body: Dict[str, Any]) -> StreamingResponse:
     async def generate() -> AsyncIterator[bytes]:
-        queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue()
+        queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue(maxsize=MAX_STREAM_QUEUE_SIZE)
         loop = asyncio.get_running_loop()
 
         def emit(event: Dict[str, Any]) -> None:
-            loop.call_soon_threadsafe(queue.put_nowait, dict(event))
+            _stream_enqueue(loop, queue, dict(event))
 
         def run() -> None:
             try:
@@ -16929,7 +16327,7 @@ def _asgi_stream_build_deploy(token: str, body: Dict[str, Any]) -> StreamingResp
                 print(f"requestId={request_id} stream build deploy internal error: {exc}", file=sys.stderr, flush=True)
                 emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, None)
+                _stream_enqueue(loop, queue, None)
 
         threading.Thread(target=run, daemon=True).start()
         while True:
@@ -16948,11 +16346,11 @@ def _asgi_stream_build_deploy(token: str, body: Dict[str, Any]) -> StreamingResp
 
 def _asgi_stream_build_run_retry(token: str, build_id: str, body: Dict[str, Any] | None = None) -> StreamingResponse:
     async def generate() -> AsyncIterator[bytes]:
-        queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue()
+        queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue(maxsize=MAX_STREAM_QUEUE_SIZE)
         loop = asyncio.get_running_loop()
 
         def emit(event: Dict[str, Any]) -> None:
-            loop.call_soon_threadsafe(queue.put_nowait, dict(event))
+            _stream_enqueue(loop, queue, dict(event))
 
         def run() -> None:
             try:
@@ -16965,7 +16363,7 @@ def _asgi_stream_build_run_retry(token: str, build_id: str, body: Dict[str, Any]
                 print(f"requestId={request_id} stream build retry internal error: {exc}", file=sys.stderr, flush=True)
                 emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, None)
+                _stream_enqueue(loop, queue, None)
 
         threading.Thread(target=run, daemon=True).start()
         while True:
@@ -16984,11 +16382,11 @@ def _asgi_stream_build_run_retry(token: str, build_id: str, body: Dict[str, Any]
 
 def _asgi_stream_application_update(token: str, body: Dict[str, Any]) -> StreamingResponse:
     async def generate() -> AsyncIterator[bytes]:
-        queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue()
+        queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue(maxsize=MAX_STREAM_QUEUE_SIZE)
         loop = asyncio.get_running_loop()
 
         def emit(event: Dict[str, Any]) -> None:
-            loop.call_soon_threadsafe(queue.put_nowait, dict(event))
+            _stream_enqueue(loop, queue, dict(event))
 
         def run() -> None:
             try:
@@ -17001,7 +16399,7 @@ def _asgi_stream_application_update(token: str, body: Dict[str, Any]) -> Streami
                 print(f"requestId={request_id} stream application update internal error: {exc}", file=sys.stderr, flush=True)
                 emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, None)
+                _stream_enqueue(loop, queue, None)
 
         threading.Thread(target=run, daemon=True).start()
         while True:
@@ -17020,11 +16418,11 @@ def _asgi_stream_application_update(token: str, body: Dict[str, Any]) -> Streami
 
 def _asgi_stream_registry_serve(token: str, body: Dict[str, Any]) -> StreamingResponse:
     async def generate() -> AsyncIterator[bytes]:
-        queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue()
+        queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue(maxsize=MAX_STREAM_QUEUE_SIZE)
         loop = asyncio.get_running_loop()
 
         def emit(event: Dict[str, Any]) -> None:
-            loop.call_soon_threadsafe(queue.put_nowait, dict(event))
+            _stream_enqueue(loop, queue, dict(event))
 
         def run() -> None:
             try:
@@ -17037,7 +16435,7 @@ def _asgi_stream_registry_serve(token: str, body: Dict[str, Any]) -> StreamingRe
                 print(f"requestId={request_id} stream registry serve internal error: {exc}", file=sys.stderr, flush=True)
                 emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, None)
+                _stream_enqueue(loop, queue, None)
 
         threading.Thread(target=run, daemon=True).start()
         while True:
@@ -17127,53 +16525,85 @@ async def _asgi_operations_delete(request: Request) -> Response:
         result = await run_in_threadpool(operations_api.dispatch, await _request_credential(request), "DELETE", request.url.path)
         return _json_response(200, result)
     except dashboard_auth.AuthError as exc:
-        return _asgi_error(exc.status, exc, code=exc.code)
+        response = _asgi_error(exc.status, exc, code=exc.code)
+        if exc.status == 429:
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Retry-After"] = "60"
+        return response
     except LumaError as exc:
         return _asgi_error(401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400, exc, code="luma_error")
 
 
+DEFAULT_THREADPOOL_TOKENS = 128
+
+
 @asynccontextmanager
 async def _operations_lifespan(app: Starlette):
-    from .build_queue import BuildQueueWorker
-    queue_worker = BuildQueueWorker()
-    app.state.build_queue_worker = queue_worker
-    queue_worker.start()
+    try:
+        import anyio.to_thread
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        if getattr(limiter, "total_tokens", 0) < DEFAULT_THREADPOOL_TOKENS:
+            limiter.total_tokens = DEFAULT_THREADPOOL_TOKENS
+    except Exception:
+        pass
     worker = operations_api.OperationsWorker()
     app.state.operations_worker = worker
     worker.start()
+    registry_stop = threading.Event()
+    registry_thread = _start_registry_automation(registry_stop)
+    app.state.registry_automation_stop = registry_stop
+    app.state.registry_automation_thread = registry_thread
     try:
         yield
     finally:
-        await run_in_threadpool(queue_worker.close)
+        await run_in_threadpool(_stop_registry_automation, registry_stop, registry_thread)
         await run_in_threadpool(worker.close)
 
 
 def create_app() -> Starlette:
+    import inspect
+    from fastapi import FastAPI
     from .feishu_callbacks import endpoint as feishu_callback
+    from .routers import include_control_routers
+
     _reconcile_orphaned_build_runs_after_control_restart()
-    return Starlette(
-        lifespan=_operations_lifespan,
-        middleware=[Middleware(SecurityAuditMiddleware)],
-        routes=[
-            Route("/dashboard", _asgi_dashboard_asset, methods=["GET"]),
-            Route("/dashboard/{path:path}", _asgi_dashboard_asset, methods=["GET"]),
-            Route("/v1/health", _asgi_health, methods=["GET"]),
-            Route("/v1/metrics", _asgi_metrics, methods=["GET"]),
-            Route("/v1/auth/{path:path}", _asgi_auth, methods=["GET", "POST"]),
-            Route("/v1/alerting/feishu/callback/{app_id}", feishu_callback, methods=["POST"]),
-            Route("/v1/{path:path}", _asgi_authenticated_get, methods=["GET"]),
-            Route("/v1/{path:path}", _asgi_authenticated_post, methods=["POST"]),
-            Route("/v1/{path:path}", _asgi_operations_delete, methods=["DELETE"]),
+    fastapi_kwargs: Dict[str, Any] = {
+        "title": "Luma Control API",
+        "version": __version__,
+        "lifespan": _operations_lifespan,
+        "middleware": [Middleware(SecurityAuditMiddleware)],
+        "docs_url": None,
+        "redoc_url": None,
+        "openapi_url": None,
+    }
+    if "strict_content_type" in inspect.signature(FastAPI.__init__).parameters:
+        fastapi_kwargs["strict_content_type"] = False
+    app = FastAPI(**fastapi_kwargs)
+    include_control_routers(app)
+
+    # Static SPA, Prometheus metrics, auth/SSO ceremonies, Feishu callbacks,
+    # legacy catch-all routes for not-yet-migrated endpoints, and WebSockets.
+    app.add_route("/dashboard", _asgi_dashboard_asset, methods=["GET"], include_in_schema=False)
+    app.add_route("/dashboard/{path:path}", _asgi_dashboard_asset, methods=["GET"], include_in_schema=False)
+    app.add_route("/v1/metrics", _asgi_metrics, methods=["GET"], include_in_schema=False)
+    app.add_route("/v1/auth/{path:path}", _asgi_auth, methods=["GET", "POST"], include_in_schema=False)
+    app.add_route("/v1/alerting/feishu/callback/{app_id}", feishu_callback, methods=["POST"], include_in_schema=False)
+    app.add_route("/v1/{path:path}", _asgi_authenticated_get, methods=["GET"], include_in_schema=False)
+    app.add_route("/v1/{path:path}", _asgi_authenticated_post, methods=["POST"], include_in_schema=False)
+    app.add_route("/v1/{path:path}", _asgi_operations_delete, methods=["DELETE"], include_in_schema=False)
+    app.router.routes.extend(
+        [
             WebSocketRoute("/v1/terminal/browser", _browser_terminal_ws),
             WebSocketRoute("/v1/terminal/agent", _agent_terminal_ws),
         ]
     )
+    app.state.auth_rate_limiter = _AuthRateLimiter()
+    return app
 
 
 def serve(host: str, port: int) -> None:
     import uvicorn
 
-    _start_registry_automation()
     _ensure_observe_grafana_route()
     uvicorn.run(create_app(), host=host, port=port, proxy_headers=False, log_level=os.environ.get("LUMA_CONTROL_LOG_LEVEL", "info"))
 

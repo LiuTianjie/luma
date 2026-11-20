@@ -157,3 +157,26 @@ class ObserveSharingTests(ObserveSettingsBase):
         stripped = http["middlewares"][identity_name]["headers"]["customRequestHeaders"]
         self.assertEqual(stripped["Cookie"], "")
         self.assertEqual(stripped["Authorization"], "")
+
+    def test_client_ip_uses_forwarded_headers_only_from_loopback_proxy(self):
+        from starlette.requests import Request
+        from luma.control.observe_sharing import _client_ip
+
+        def make_request(client_host: str, headers: dict[str, str]):
+            scope = {
+                "type": "http",
+                "method": "POST",
+                "path": "/v1/auth/grafana-public/session",
+                "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+                "client": (client_host, 12345),
+            }
+            return Request(scope)
+
+        # Behind Traefik on loopback: distinct guests get distinct IPs.
+        req_a = make_request("127.0.0.1", {"X-Forwarded-For": "203.0.113.10, 127.0.0.1"})
+        req_b = make_request("127.0.0.1", {"X-Real-IP": "198.51.100.7"})
+        self.assertEqual(_client_ip(req_a), "203.0.113.10")
+        self.assertEqual(_client_ip(req_b), "198.51.100.7")
+        # Direct non-loopback peer cannot spoof X-Forwarded-For.
+        spoof = make_request("203.0.113.50", {"X-Forwarded-For": "198.51.100.99"})
+        self.assertEqual(_client_ip(spoof), "203.0.113.50")

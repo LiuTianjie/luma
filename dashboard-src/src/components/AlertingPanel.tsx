@@ -4,8 +4,11 @@ import { ActiveSourceSilences, AlertSourceControls } from "./AlertSourceControls
 import { LogIncidentDetails } from "./LogIncidentDetails";
 import { LogRuleFields } from "./LogRuleFields";
 import { fetchAlertTab } from "../alertingApi";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiError } from "../apiClient";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
+import { useDashboardQueryClient, withTimeoutSignal } from "../queryClient";
 
 import type { FormEvent } from "react";
 import type { Lang } from "../types";
@@ -30,7 +33,6 @@ import type {
   AlertIncidentDetail,
   AlertSourceSilence,
   AlertIncident,
-  AlertOverview,
   AlertPage,
   AlertPreset,
   AlertRule,
@@ -225,6 +227,16 @@ export function formatAlertObservedValue(
   return formatted;
 }
 
+const ALERTING_REFRESH_MS = 15_000;
+const ALERTING_TIMEOUT_MS = 15_000;
+const EMPTY_APPS: string[] = [];
+const EMPTY_PRESETS: AlertPreset[] = [];
+const EMPTY_RULES: AlertRule[] = [];
+const EMPTY_CHANNELS: AlertChannel[] = [];
+const EMPTY_SOURCE_SILENCES: AlertSourceSilence[] = [];
+const EMPTY_INCIDENTS: AlertPage<AlertIncident> = { items: [] };
+const EMPTY_DELIVERIES: AlertPage<AlertDelivery> = { items: [] };
+
 export function AlertingPanel({
   lang,
   token,
@@ -243,6 +255,7 @@ export function AlertingPanel({
   addons?: DashboardAddonsSummary;
 }) {
   const zh = lang === "zh";
+  const queryClient = useDashboardQueryClient();
   const hasObserveAlerts = hasAddonCapability(addons, "observe.alerts");
   const refreshHost = useObserveRefresh();
   const { confirm, element: confirmElement } = useConfirm(lang);
@@ -250,13 +263,16 @@ export function AlertingPanel({
   const query = useSearchParams();
   const appFilter = application || query.get("app") || "";
   const appQuery = appFilter ? `app=${encodeURIComponent(appFilter)}` : "";
-  const [knownApps, setKnownApps] = useState<string[]>([]);
-  useEffect(() => {
-    if (application || tab === "notifications") return;
-    const controller = new AbortController();
-    void getAlerting<AlertPage<string>>("applications", token, controller.signal).then(result => setKnownApps(result.items)).catch(() => {});
-    return () => controller.abort();
-  }, [token, application, tab]);
+  const knownAppsQuery = useQuery(
+    {
+      queryKey: ["alerting", "applications", token] as const,
+      queryFn: ({ signal }) => getAlerting<AlertPage<string>>("applications", token, signal),
+      enabled: Boolean(token) && !application && tab !== "notifications",
+      staleTime: 60_000,
+    },
+    queryClient,
+  );
+  const knownApps = knownAppsQuery.data?.items ?? EMPTY_APPS;
   const routeId = (() => {
     try {
       return decodeURIComponent(path.split("/")[application ? 4 : 3] || "");
@@ -272,41 +288,19 @@ export function AlertingPanel({
         : "/observe") + (appQuery ? `?${appQuery}` : "");
   const editor = Boolean(routeId);
   const initializedRoute = useRef("");
-  const [overview, setOverview] = useState<AlertOverview>();
-  const [presets, setPresets] = useState<AlertPreset[]>([]);
-  const [rules, setRules] = useState<AlertRule[]>([]);
-  const [channels, setChannels] = useState<AlertChannel[]>([]);
-  const [incidents, setIncidents] = useState<AlertPage<AlertIncident>>({
-    items: [],
-  });
-  const [deliveries, setDeliveries] = useState<AlertPage<AlertDelivery>>({
-    items: [],
-  });
   const [filter, setFilter] = useState("firing");
-  const [incidentsFilter, setIncidentsFilter] = useState("");
-  const [error, setError] = useState("");
+  const [expandedIncidents, setExpandedIncidents] = useState<AlertPage<AlertIncident> | null>(null);
+  const [expandedDeliveries, setExpandedDeliveries] = useState<AlertPage<AlertDelivery> | null>(null);
+  const expanded = Boolean(expandedIncidents || expandedDeliveries);
   const [actionError, setActionError] = useState("");
   const [notice, setNotice] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-  const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [rule, setRule] = useState<AlertRule | null>(null);
   const [channel, setChannel] = useState<AlertChannel | null>(null);
   const [secret, setSecret] = useState("");
   const [callbackToken, setCallbackToken] = useState("");
   const [callbackKey, setCallbackKey] = useState("");
-  const [sourceSilences, setSourceSilences] = useState<AlertSourceSilence[]>([]);
-  const [detail, setDetail] = useState<AlertIncidentDetail>();
-  const [refresh, setRefresh] = useState(0);
-  useEffect(() => {
-    const reload = () => {
-      setExpanded(false);
-      setRefresh((n) => n + 1);
-    };
-    window.addEventListener("luma:refresh", reload);
-    return () => window.removeEventListener("luma:refresh", reload);
-  }, []);
-  const [expanded, setExpanded] = useState(false);
   const mounted = useRef(true);
   const actionController = useRef<AbortController | null>(null);
   const scope = useRef(0);
@@ -318,55 +312,72 @@ export function AlertingPanel({
     };
   }, []);
 
+  const tabQuery = useQuery<Awaited<ReturnType<typeof fetchAlertTab>>>(
+    {
+      queryKey: ["alerting", "tab", tab, filter, appFilter, token] as const,
+      enabled: Boolean(token),
+      refetchInterval: (activeQuery) =>
+        activeQuery.state.error instanceof ApiError && activeQuery.state.error.status === 401
+          ? false
+          : ALERTING_REFRESH_MS,
+      refetchIntervalInBackground: false,
+      placeholderData: keepPreviousData,
+      queryFn: async ({ signal }) => {
+        const timed = withTimeoutSignal(signal, ALERTING_TIMEOUT_MS);
+        try {
+          return await fetchAlertTab(tab, token, filter, timed.signal, appFilter);
+        } finally {
+          timed.cleanup();
+        }
+      },
+    },
+    queryClient,
+  );
+
   useEffect(() => {
-    let cancelled = false;
-    let timer: number | undefined;
-    let controller: AbortController;
-    const load = async () => {
-      controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 15000);
-      try {
-        const next = await fetchAlertTab(tab, token, filter, controller.signal, appFilter);
-        if (cancelled) return;
-        setOverview(next.overview);
-        if (next.presets)
-          setPresets(
-            next.presets.items.map((preset) => localizeAlertPreset(preset, zh)),
-          );
-        if (next.rules) setRules(next.rules.items);
-        if (next.channels) setChannels(next.channels.items);
-        if (next.sourceSilences) setSourceSilences(next.sourceSilences.items);
-        // Expanded history remains a browsing snapshot until explicit refresh.
-        if (!expanded && next.incidents) {
-          setIncidents(next.incidents);
-          setIncidentsFilter(`${filter}:${appFilter}`);
-        }
-        if (!expanded && next.deliveries) setDeliveries(next.deliveries);
-        setLoaded(true);
-        setError("");
-        refreshHost.markUpdated();
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err));
-          refreshHost.setRefreshing(false);
-        }
-      } finally {
-        window.clearTimeout(timeout);
-        if (!cancelled) timer = window.setTimeout(() => void load(), 15000);
-      }
+    const reload = () => {
+      setExpandedIncidents(null);
+      setExpandedDeliveries(null);
     };
-    void load();
-    return () => {
-      cancelled = true;
-      controller?.abort();
-      window.clearTimeout(timer);
-    };
-  }, [token, tab, filter, appFilter, refresh, expanded, zh, refreshHost]);
+    window.addEventListener("luma:refresh", reload);
+    return () => window.removeEventListener("luma:refresh", reload);
+  }, []);
+
+  useEffect(() => {
+    if (tabQuery.dataUpdatedAt > 0 && !tabQuery.isError) {
+      refreshHost.markUpdated(tabQuery.dataUpdatedAt);
+    }
+  }, [tabQuery.dataUpdatedAt, tabQuery.isError, refreshHost]);
+
+  useEffect(() => {
+    if (tabQuery.isError) {
+      refreshHost.setRefreshing(false);
+    }
+  }, [tabQuery.isError, tabQuery.errorUpdatedAt, refreshHost]);
+
+  const overview = tabQuery.data?.overview;
+  const rawPresets = tabQuery.data?.presets?.items ?? EMPTY_PRESETS;
+  const presets = useMemo(
+    () => rawPresets.map((preset) => localizeAlertPreset(preset, zh)),
+    [rawPresets, zh],
+  );
+  const rules = tabQuery.data?.rules?.items ?? EMPTY_RULES;
+  const channels = tabQuery.data?.channels?.items ?? EMPTY_CHANNELS;
+  const sourceSilences = tabQuery.data?.sourceSilences?.items ?? EMPTY_SOURCE_SILENCES;
+  const incidents = expandedIncidents ?? tabQuery.data?.incidents ?? EMPTY_INCIDENTS;
+  const deliveries = expandedDeliveries ?? tabQuery.data?.deliveries ?? EMPTY_DELIVERIES;
+  const loaded = Boolean(tabQuery.data);
+  const error = tabQuery.error
+    ? tabQuery.error instanceof Error
+      ? tabQuery.error.message
+      : String(tabQuery.error)
+    : "";
 
   useEffect(() => {
     scope.current += 1;
     actionController.current?.abort();
-    setDetail(undefined);
+    setExpandedIncidents(null);
+    setExpandedDeliveries(null);
     setActionError("");
     setFieldErrors({});
     setRule(null);
@@ -412,28 +423,22 @@ export function AlertingPanel({
       if (item) setChannel({ ...item });
       else setActionError(zh ? "渠道不存在或已删除。" : "Channel not found.");
     }
-  }, [loaded, path, routeId, tab, presets, rules, channels, zh]);
-  useEffect(() => {
-    if (tab !== "alerts" || !routeId) return;
-    const controller = new AbortController();
-    let cancelled = false;
-    setDetail(undefined);
-    void getAlerting<AlertIncidentDetail>(
-      `incidents/${encodeURIComponent(routeId)}${appQuery ? `?${appQuery}` : ""}`,
-      token,
-      controller.signal,
-    )
-      .then((result) => {
-        if (!cancelled) setDetail(result);
-      })
-      .catch((err) => {
-        if (!cancelled) setActionError(String(err));
-      });
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-  }, [tab, routeId, token, refresh, appQuery]);
+  }, [loaded, path, routeId, tab, presets, rules, channels, zh, appFilter, addons]);
+  const detailQuery = useQuery(
+    {
+      queryKey: ["alerting", "incident", routeId, appFilter, token] as const,
+      enabled: Boolean(token) && tab === "alerts" && Boolean(routeId),
+      queryFn: ({ signal }) =>
+        getAlerting<AlertIncidentDetail>(
+          `incidents/${encodeURIComponent(routeId)}${appQuery ? `?${appQuery}` : ""}`,
+          token,
+          signal,
+        ),
+    },
+    queryClient,
+  );
+  const detail = detailQuery.data;
+  const visibleActionError = actionError || (detailQuery.error ? String(detailQuery.error) : "");
   const act = useCallback(
     async (
       action: (signal: AbortSignal) => Promise<unknown>,
@@ -450,11 +455,12 @@ export function AlertingPanel({
       const timeout = window.setTimeout(() => controller.abort(), 20000);
       try {
         await action(controller.signal);
-        if (mounted.current && currentScope === scope.current) {
-          if (success) setNotice(success);
+        if (mounted.current) {
+          if (currentScope === scope.current && success) setNotice(success);
           if (refreshAfter) {
-            setExpanded(false);
-            setRefresh((n) => n + 1);
+            setExpandedIncidents(null);
+            setExpandedDeliveries(null);
+            await queryClient.invalidateQueries({ queryKey: ["alerting"] });
           }
         }
       } catch (err) {
@@ -465,7 +471,7 @@ export function AlertingPanel({
         if (mounted.current) setBusy(false);
       }
     },
-    [busy],
+    [busy, queryClient],
   );
   function editChannel(item: AlertChannel) {
     navigate(`/observe/channels/${encodeURIComponent(item.id || "new")}`);
@@ -475,7 +481,8 @@ export function AlertingPanel({
     <div className="w-full sm:w-56">
       <Combobox items={["", ...new Set([...applicationNames, ...knownApps, appFilter].filter(Boolean))]}
         value={appFilter} onValueChange={(value) => {
-          setExpanded(false);
+          setExpandedIncidents(null);
+          setExpandedDeliveries(null);
           navigate(`${tab === "rules" ? "/observe/rules" : "/observe"}${value ? `?app=${encodeURIComponent(value)}` : ""}`);
         }}>
         <ComboboxInput id="alert-app-filter" className="w-full" aria-label={zh ? "筛选应用" : "Filter by application"} placeholder={zh ? "全部应用" : "All applications"} />
@@ -495,8 +502,9 @@ export function AlertingPanel({
   const channelNames = (ids: string[]) =>
     ids.map((id) => channels.find((c) => c.id === id)?.name || id).join(", ");
   const refreshNow = () => {
-    setExpanded(false);
-    setRefresh((n) => n + 1);
+    setExpandedIncidents(null);
+    setExpandedDeliveries(null);
+    void queryClient.invalidateQueries({ queryKey: ["alerting"] });
   };
   function validateForm(form: HTMLFormElement) {
     const errors: Record<string, string> = {};
@@ -542,7 +550,6 @@ export function AlertingPanel({
         await postAlerting("rules", token, ruleRequest(rule), signal);
         if (signal.aborted) return;
         setRule(null);
-        setRefresh((n) => n + 1);
         navigate(basePath);
       },
       zh ? "规则已保存" : "Rule saved",
@@ -574,7 +581,6 @@ export function AlertingPanel({
         setSecret("");
         setCallbackToken("");
         setCallbackKey("");
-        setRefresh((n) => n + 1);
         navigate(basePath);
       },
       zh
@@ -639,7 +645,6 @@ export function AlertingPanel({
       );
       if (signal.aborted) return;
       setRule(null);
-      setRefresh((n) => n + 1);
       navigate(basePath);
     });
   };
@@ -668,7 +673,6 @@ export function AlertingPanel({
       setSecret("");
       setCallbackToken("");
       setCallbackKey("");
-      setRefresh((n) => n + 1);
       navigate(basePath);
     });
   };
@@ -720,11 +724,11 @@ export function AlertingPanel({
           </AlertAction>
         </Alert>
       )}
-      {actionError && (
+      {visibleActionError && (
         <Alert variant="destructive">
           <AlertCircle />
           <AlertTitle>{zh ? "操作失败" : "Action failed"}</AlertTitle>
-          <AlertDescription>{actionError}</AlertDescription>
+          <AlertDescription>{visibleActionError}</AlertDescription>
         </Alert>
       )}
       {notice && (
@@ -858,9 +862,9 @@ export function AlertingPanel({
                   value={[filter || "all"]}
                   onValueChange={(values) => {
                     if (!values.length) return;
-                    setExpanded(false);
+                    setExpandedIncidents(null);
+                    setExpandedDeliveries(null);
                     setFilter(values[0] === "all" ? "" : values[0]);
-                    setError("");
                   }}
                   aria-label={zh ? "告警状态" : "Incident state"}
                 >
@@ -883,7 +887,7 @@ export function AlertingPanel({
                 </div>
               </div>
               <CardContent className="-mt-(--card-spacing)">
-                {incidentsFilter !== `${filter}:${appFilter}` ? (
+                {tabQuery.isPlaceholderData ? (
                   error ? null : (
                     <div aria-busy="true" className="flex flex-col gap-3 px-(--card-spacing) py-4">
                       <span role="status" className="sr-only">
@@ -1016,7 +1020,7 @@ export function AlertingPanel({
                   />
                 )}
               </CardContent>
-              {incidentsFilter === `${filter}:${appFilter}` &&
+              {!tabQuery.isPlaceholderData &&
                 (incidents.nextCursor || expanded) && (
                   <CardFooter className="flex flex-wrap gap-3">
                     {incidents.nextCursor && (
@@ -1033,11 +1037,10 @@ export function AlertingPanel({
                                 token,
                                 signal,
                               );
-                              setIncidents((old) => ({
+                              setExpandedIncidents((old) => ({
                                 ...page,
-                                items: mergeAlertPages(old.items, page.items),
+                                items: mergeAlertPages((old ?? incidents).items, page.items),
                               }));
-                              setExpanded(true);
                             },
                             undefined,
                             false,
@@ -2250,11 +2253,10 @@ export function AlertingPanel({
                             token,
                             signal,
                           );
-                          setDeliveries((old) => ({
+                          setExpandedDeliveries((old) => ({
                             ...page,
-                            items: mergeAlertPages(old.items, page.items),
+                            items: mergeAlertPages((old ?? deliveries).items, page.items),
                           }));
-                          setExpanded(true);
                         },
                         undefined,
                         false,

@@ -233,7 +233,7 @@ services:
         job = self.render()
         self.assertEqual(job["Update"]["HealthCheck"], "task_states")
 
-    def test_storage_class_mount_renders_nfs_driver_options_and_is_namespaced(self):
+    def test_storage_class_sidecar_is_rejected(self):
         compose = """
 services:
   db:
@@ -247,94 +247,16 @@ volumes:
 name: tenant-db
 compose: docker-compose.yml
 region: cn
-storageClasses:
-  shared:
-    provider: nfs
-    mode: external
-    endpoint: storage.example.test:/exports/apps
-    regions: [cn]
 volumes:
   data:
     storageClass: shared
     path: tenants/acme/postgres
-    accessMode: ReadWriteOnce
-    initialize: empty
 services:
   db:
     exposure: none
 """
-        deployment = write_deployment(sidecar, compose)
-
-        job = render_compose_job(
-            cfg(),
-            deployment,
-            as_json=False,
-            node_records={},
-        )["Job"]
-
-        task = job["TaskGroups"][0]["Tasks"][0]
-        mount = task["Config"]["mount"][0]
-        self.assertRegex(mount["source"], r"^luma-tenant-db-data-[0-9a-f]{16}$")
-        self.assertNotEqual(mount["source"], "data")
-        self.assertEqual(mount["type"], "volume")
-        options = mount["volume_options"]["driver_config"]["options"]
-        self.assertEqual(len(options), 1)
-        self.assertEqual(options[0]["type"], "nfs")
-        self.assertEqual(options[0]["device"], ":/exports/apps/tenants/acme/postgres")
-        self.assertIn("addr=storage.example.test", options[0]["o"])
-
-    def test_managed_storage_prefers_overlay_ip_even_inside_same_region(self):
-        compose = """
-services:
-  backup:
-    image: example.test/backup:1
-    volumes:
-      - data:/backups
-volumes:
-  data:
-"""
-        sidecar = """
-name: backup-stack
-compose: docker-compose.yml
-region: cn
-storageClasses:
-  remote-backups:
-    provider: nfs
-    mode: managed
-    node: cn-2
-    path: /srv/luma-backups
-    regions: [cn]
-    nodes: [manager]
-volumes:
-  data:
-    storageClass: remote-backups
-    path: tenant/backups
-    accessMode: ReadWriteOnce
-    initialize: empty
-services:
-  backup:
-    node: manager
-    exposure: none
-"""
-        deployment = write_deployment(sidecar, compose)
-        job = render_compose_job(
-            cfg({"nodes": {"manager": {"host": "manager"}}}),
-            deployment,
-            as_json=False,
-            node_records={
-                "cn-2": {
-                    "hostname": "VM-0-10-ubuntu",
-                    "region": "cn",
-                    "tailscaleIP": "100.64.29.91",
-                }
-            },
-        )["Job"]
-
-        mount = job["TaskGroups"][0]["Tasks"][0]["Config"]["mount"][0]
-        options = mount["volume_options"]["driver_config"]["options"][0]
-        self.assertIn("addr=100.64.29.91", options["o"])
-        self.assertNotIn("addr=cn-2", options["o"])
-        self.assertNotIn("addr=VM-0-10-ubuntu", options["o"])
+        with self.assertRaisesRegex(LumaError, "storageClasses are not supported"):
+            write_deployment(sidecar, compose)
 
     def test_all_internal_multi_service_gets_shared_netns_bridge(self):
         # All services exposure:none (the `compose init` default). The group
@@ -937,6 +859,52 @@ services:
         dep = write_deployment(collision_sidecar, collision_compose)
         with self.assertRaisesRegex(LumaError, "cannot override sibling service name: db"):
             render_compose_job(cfg(), dep, as_json=False)
+
+    def test_duplicate_sibling_container_and_published_ports_rejected(self):
+        compose = """
+services:
+  web:
+    image: nginx:alpine
+  api:
+    image: ghcr.io/acme/api:1
+"""
+        dup_container = """
+name: dup-container
+compose: docker-compose.yml
+region: cn
+services:
+  web:
+    exposure: cn-edge
+    domain: web.example.com
+    port: 8080
+  api:
+    exposure: cn-edge
+    domain: api.example.com
+    port: 8080
+"""
+        with self.assertRaisesRegex(LumaError, "container port 8080"):
+            write_deployment(dup_container, compose)
+
+        dup_published = """
+name: dup-published
+compose: docker-compose.yml
+region: home
+services:
+  web:
+    node: lab
+    exposure: tailscale-relay
+    domain: web.example.com
+    port: 3000
+    publishPort: 18080
+  api:
+    node: lab
+    exposure: tailscale-relay
+    domain: api.example.com
+    port: 4000
+    publishPort: 18080
+"""
+        with self.assertRaisesRegex(LumaError, "publish host port 18080"):
+            write_deployment(dup_published, compose)
 
 
 if __name__ == "__main__":

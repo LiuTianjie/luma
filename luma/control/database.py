@@ -530,6 +530,7 @@ class EntityMap(dict):
         self.metadata_only = metadata_only
         self.original_keys = {row[0] for row in conn.execute("SELECT id FROM control_entities WHERE kind=?", (kind,))}
         self.loaded: set[str] = set()
+        self._snapshots: dict[str, str] = {}
         super().__init__((key, None) for key in self.original_keys)
 
     def __getitem__(self, key):
@@ -537,8 +538,10 @@ class EntityMap(dict):
             raise KeyError(key)
         if key not in self.loaded:
             reader = read_entity_metadata if self.metadata_only else read_entity
-            super().__setitem__(key, reader(self.conn, self.kind, key))
+            value = reader(self.conn, self.kind, key)
+            super().__setitem__(key, value)
             self.loaded.add(key)
+            self._snapshots[key] = _json(value)
         return super().__getitem__(key)
 
     def __setitem__(self, key, value):
@@ -592,6 +595,7 @@ class EntityMap(dict):
                 if key in bulk:
                     super().__setitem__(key, bulk[key])
                     self.loaded.add(key)
+                    self._snapshots[key] = _json(bulk[key])
         return dict(self.items())
 
     def __eq__(self, other):
@@ -629,10 +633,14 @@ class EntityMap(dict):
         for key in self.original_keys - self.keys():
             self.conn.execute("DELETE FROM control_entities WHERE kind=? AND id=?", (self.kind, key))
         for key in self.loaded & self.keys():
+            value = super().__getitem__(key)
+            snapshot = self._snapshots.get(key)
+            if snapshot is not None and _json(value) == snapshot:
+                continue
             if self.metadata_only and key in self.original_keys:
-                update_entity_metadata(self.conn, self.kind, str(key), self[key])
+                update_entity_metadata(self.conn, self.kind, str(key), value)
             else:
-                _write_entity(self.conn, self.kind, str(key), self[key])
+                _write_entity(self.conn, self.kind, str(key), value)
 
 
 def _list_id(value: Any, index: int, used: set[str]) -> str:
@@ -784,9 +792,28 @@ class EntityList(list):
             self.conn.execute("DELETE FROM control_entities WHERE kind=? AND id=?", (self.kind, identifier))
 
 
+class _TrackedState(dict):
+    """Transaction-scoped state dict carrying original config snapshots."""
+
+    def __init__(self, data: dict[str, Any], *, conn: sqlite3.Connection, encrypted: bool, config_snapshots: dict[str, str]):
+        super().__init__(data)
+        self._conn = conn
+        self._encrypted = encrypted
+        self._config_snapshots = config_snapshots
+
+
 def read_state(conn: sqlite3.Connection, *, lazy: bool = False, kinds: set[str] | None = None,
                metadata_kinds: set[str] | None = None, include_config: bool = True) -> dict[str, Any]:
-    state = {row[0]: decode_payload(conn, row[1], "control_config", row[0]) for row in conn.execute("SELECT key,payload FROM control_config")} if include_config else {}
+    config_items = [(row[0], decode_payload(conn, row[1], "control_config", row[0])) for row in conn.execute("SELECT key,payload FROM control_config")] if include_config else []
+    if lazy and include_config:
+        state: dict[str, Any] = _TrackedState(
+            dict(config_items),
+            conn=conn,
+            encrypted=_encrypted(conn),
+            config_snapshots={key: _json(value) for key, value in config_items},
+        )
+    else:
+        state = dict(config_items)
     for kind, shape in conn.execute("SELECT kind,shape FROM control_collections"):
         if kinds is not None and kind not in kinds:
             continue
@@ -802,6 +829,11 @@ def read_state(conn: sqlite3.Connection, *, lazy: bool = False, kinds: set[str] 
 def write_state(conn: sqlite3.Connection, state: dict[str, Any]) -> None:
     config_keys, collection_keys = set(), set()
     previous_config = dict(conn.execute("SELECT key,payload FROM control_config"))
+    config_snapshots = (
+        state._config_snapshots
+        if isinstance(state, _TrackedState) and state._conn is conn and state._encrypted == _encrypted(conn)
+        else {}
+    )
     for key, value in state.items():
         if key in ENTITY_KINDS and isinstance(value, (dict, list)):
             shape = "list" if isinstance(value, list) else "dict"
@@ -826,6 +858,9 @@ def write_state(conn: sqlite3.Connection, state: dict[str, Any]) -> None:
                     conn.execute("DELETE FROM control_entities WHERE kind=? AND id=?", (key, row[0]))
         else:
             config_keys.add(key)
+            snapshot = config_snapshots.get(key)
+            if snapshot is not None and key in previous_config and _json(value) == snapshot:
+                continue
             conn.execute("INSERT INTO control_config VALUES(?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload WHERE payload<>excluded.payload", (key, encode_payload(conn, value, "control_config", key, previous=previous_config.get(key))))
     for row in conn.execute("SELECT key FROM control_config").fetchall():
         if row[0] not in config_keys:

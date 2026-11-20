@@ -349,6 +349,50 @@ class HostGatewayTests(unittest.TestCase):
         with patch.object(gateway, "ipv4_of_interface", side_effect=lambda name: {"nomad": "172.26.64.1", "docker0": "172.17.0.1"}.get(name)):
             self.assertEqual(gateway.gateway_bind_ips(["nomad", "docker0"]), ["172.26.64.1", "172.17.0.1"])
 
+    def test_reconcile_workers_signals_stop_when_interface_disappears(self):
+        import threading
+
+        gateway = load_observe("host_gateway.py", "host_gateway")
+        started = {}
+
+        class FakeThread:
+            def is_alive(self):
+                return True
+
+        def fake_start(address, stop_event):
+            started[address] = stop_event
+            return FakeThread()
+
+        workers = {}
+        gateway.reconcile_workers(workers, {"172.26.64.1", "172.17.0.1"}, start_worker=fake_start)
+        self.assertEqual(set(workers.keys()), {"172.26.64.1", "172.17.0.1"})
+        self.assertFalse(started["172.26.64.1"].is_set())
+
+        gateway.reconcile_workers(workers, {"172.17.0.1"}, start_worker=fake_start)
+        self.assertEqual(set(workers.keys()), {"172.17.0.1"})
+        self.assertTrue(started["172.26.64.1"].is_set())
+        self.assertFalse(started["172.17.0.1"].is_set())
+
+        # Connection semaphore cap rejects overflow and closes socket immediately
+        closed = []
+
+        class FakeSocket:
+            def __init__(self):
+                self.timeout = None
+
+            def settimeout(self, value):
+                self.timeout = value
+
+            def close(self):
+                closed.append(True)
+
+        sem = threading.BoundedSemaphore(1)
+        sem.acquire()
+        sock = FakeSocket()
+        self.assertFalse(gateway._accept_client(sock, slots=sem))
+        self.assertEqual(closed, [True])
+        self.assertEqual(gateway.IDLE_TIMEOUT_SECONDS, 300.0)
+
 
 class ObserveHttpLatencyTests(unittest.TestCase):
     def test_recording_rules_join_duration_buckets_to_app(self):
@@ -502,12 +546,26 @@ class ObserveTraceStackTests(unittest.TestCase):
         self.assertIn("victoriametrics-logs-datasource", dockerfile)
 
     def test_grafana_lets_anonymous_viewers_open_explore(self):
+        import yaml
+
         text = (ROOT / "observe" / "docker-compose.yml").read_text(encoding="utf-8")
         self.assertIn('GF_USERS_VIEWERS_CAN_EDIT: "true"', text)
         self.assertIn('GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"', text)
+        self.assertIn('GF_AUTH_DISABLE_LOGIN_FORM: "true"', text)
+        self.assertNotIn('GF_SECURITY_ADMIN_PASSWORD: "luma-observe"', text)
         self.assertNotIn("example.net", text)
         self.assertNotIn("GF_SERVER_DOMAIN", text)
         self.assertNotIn("GF_SERVER_ROOT_URL", text)
+
+        for rel in ("observe/docker-compose.yml", "luma/assets/addons/observe/docker-compose.yml"):
+            compose = yaml.safe_load((ROOT / rel).read_text(encoding="utf-8"))
+            grafana_env = compose["services"]["grafana"]["environment"]
+            self.assertNotEqual(grafana_env.get("GF_SECURITY_ADMIN_PASSWORD"), "luma-observe")
+            self.assertEqual(str(grafana_env.get("GF_AUTH_DISABLE_LOGIN_FORM")).lower(), "true")
+            self.assertEqual(compose["services"]["log-shipper"]["deploy"]["resources"]["limits"]["memory"], "256M")
+
+        collector_df = (ROOT / "observe" / "Dockerfile.collector").read_text(encoding="utf-8")
+        self.assertNotIn("LUMA_OTLP_TOKEN=disabled", collector_df)
 
 
 class GrafanaRouteTests(unittest.TestCase):

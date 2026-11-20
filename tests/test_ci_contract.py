@@ -56,6 +56,26 @@ class SourceGateTests(unittest.TestCase):
             self.assertNotIn("node ", invoked)
             self.assertNotIn("git ", invoked)
 
+    def test_ci_includes_eye_suite_and_addon_images_gates_push(self):
+        ci = yaml.load((ROOT / ".github/workflows/ci.yml").read_text(), Loader=yaml.BaseLoader)
+        self.assertIn("eye", ci["jobs"])
+        eye_runs = "\n".join(step.get("run", "") for step in ci["jobs"]["eye"].get("steps", []))
+        self.assertIn("go test -race ./...", eye_runs)
+        self.assertIn("npm ci && npm run typecheck && npm test", eye_runs)
+        self.assertIn("unittest discover -s sdk/python/tests", eye_runs)
+
+        addon = yaml.load((ROOT / ".github/workflows/addon-images.yml").read_text(), Loader=yaml.BaseLoader)
+        self.assertIn("verify-addons", addon["jobs"])
+        self.assertEqual(addon["jobs"]["build"].get("needs"), "verify-addons")
+
+        check_script = (ROOT / "scripts/check-luma.sh").read_text()
+        for pair in (
+            "cmp -s luma/alert_sources.py observe/alert_sources.py",
+            "cmp -s luma/log_alert_rules.py observe/log_alert_rules.py",
+            "cmp -s luma/task_results.py observe/task_results.py",
+        ):
+            self.assertIn(pair, check_script)
+
 
 class CliReferenceTests(unittest.TestCase):
     def test_reference_excludes_hidden_internal_commands(self):

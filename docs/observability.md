@@ -378,7 +378,7 @@ external Control-down probe.
 
 ## Host disk samples
 
-Updated node agents sample the filesystem containing `/opt/luma`, or `/` if that directory does not exist. Set `LUMA_METRICS_DISK_PATH` in the node agent service environment to select another absolute path. The Dashboard identifies the sampled path; this does not measure every mount, remote NFS server capacity or Docker VM capacity on macOS. A missing filesystem or unsupported inode counter is unavailable, not zero usage.
+Updated node agents sample the filesystem containing `/opt/luma`, or `/` if that directory does not exist. Set `LUMA_METRICS_DISK_PATH` in the node agent service environment to select another absolute path. The Dashboard identifies the sampled path; this does not measure every mount or Docker VM capacity on macOS. A missing filesystem or unsupported inode counter is unavailable, not zero usage.
 
 Disk usage excludes reserved blocks from usable capacity, matching the usual `df` interpretation. The available-bytes value excludes reserved blocks too. Existing agents continue to work but will not supply these additional samples until updated.
 

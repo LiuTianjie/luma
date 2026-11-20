@@ -13,6 +13,7 @@ deploys referencing the same secret name cannot clobber each other's value.
 
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any, Dict
 
@@ -20,6 +21,7 @@ from ..errors import LumaError
 from .state import mutate_state
 
 _exported_names: set[str] = set()
+_env_lock = threading.Lock()
 
 
 def _apply_state_secrets(state: Dict[str, Any]) -> None:
@@ -38,17 +40,19 @@ def _apply_state_secrets(state: Dict[str, Any]) -> None:
         if path.is_file():
             dns = load_config(path).dns
             infrastructure.update(str(dns[name]) for name in ("apiTokenEnv", "zoneIdEnv") if dns.get(name))
-        for name in _exported_names - infrastructure:
-            os.environ.pop(name, None)
-        _exported_names.intersection_update(infrastructure)
-    for key, value in secrets.items():
-        if value is None:
-            continue
-        if private and key not in infrastructure:
-            os.environ.pop(str(key), None)
-            continue
-        os.environ[str(key)] = str(value)
-        _exported_names.add(str(key))
+    with _env_lock:
+        if private:
+            for name in _exported_names - infrastructure:
+                os.environ.pop(name, None)
+            _exported_names.intersection_update(infrastructure)
+        for key, value in secrets.items():
+            if value is None:
+                continue
+            if private and key not in infrastructure:
+                os.environ.pop(str(key), None)
+                continue
+            os.environ[str(key)] = str(value)
+            _exported_names.add(str(key))
 
 
 def _render_secrets(state: Dict[str, Any], *, scope: str, body: Dict[str, Any], texts: list[str], extra_referenced: set[str] | None = None) -> tuple[Dict[str, str], Dict[str, Any]]:

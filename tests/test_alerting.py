@@ -898,3 +898,29 @@ class FeishuTransportTest(unittest.TestCase):
             self.assertLessEqual(build.return_value.open.call_args.kwargs['timeout'],8)
             self.assertTrue(any(isinstance(x,notifications._NoRedirect) for x in build.call_args.args))
         with self.assertRaises(FeishuError): notifications._post('https://localhost/',{},deadline=99999999999)
+
+    def test_token_cache_prunes_expired_and_caps_size(self):
+        with notifications._TOKEN_LOCK:
+            notifications._TOKEN_CACHE.clear()
+            now = notifications.time.monotonic()
+            notifications._TOKEN_CACHE["expired-key"] = ("old", now - 10)
+            for idx in range(notifications._TOKEN_CACHE_MAX_ENTRIES + 5):
+                notifications._TOKEN_CACHE[f"live-{idx}"] = (f"tok-{idx}", now + 100 + idx)
+            notifications._prune_token_cache(now)
+            self.assertNotIn("expired-key", notifications._TOKEN_CACHE)
+            self.assertLess(len(notifications._TOKEN_CACHE), notifications._TOKEN_CACHE_MAX_ENTRIES)
+            notifications._TOKEN_CACHE.clear()
+
+    def test_alerting_schema_initializes_once_per_database_identity(self):
+        from luma.control.state import init_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {'LUMA_CONTROL_STATE_DIR': os.path.join(tmp, 'state')}):
+                init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                with alerting._SCHEMA_LOCK:
+                    alerting._SCHEMA_INITIALIZED.clear()
+                with patch.object(alerting, "_schema", wraps=alerting._schema) as schema_fn:
+                    alerting.dispatch("GET", "rules")
+                    alerting.dispatch("GET", "rules")
+                    alerting.dispatch("GET", "channels")
+                self.assertEqual(schema_fn.call_count, 1)

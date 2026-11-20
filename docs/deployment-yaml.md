@@ -367,7 +367,7 @@ Nomad 节点身份是稳定的 UUID。节点离开集群后用同一个 Luma 节
 
 ### 普通服务使用本地卷 {#local-volume}
 
-新的持久化原生服务用 named volume 或 bind mount。Control 在首次部署前记录归属节点，后续更新钉在该节点；显式改成其他 `node` 时部署会继续，但会给出 `Storage placement` 警告，旧节点上的数据不会被复制；可写持久化挂载要求 `replicas: 1`。不要为新应用注册 storage class 或 NFS。
+持久化原生服务使用 named volume 或 bind mount。Control 在首次部署前记录归属节点，后续更新钉在该节点；显式改成其他 `node` 时部署会继续，但会给出 `Storage placement` 警告，旧节点上的数据不会被复制；可写持久化挂载要求 `replicas: 1`。
 
 ```yaml
 name: home-db
@@ -380,26 +380,6 @@ volumes:
 ```
 
 Compose sidecar 把宿主机路径写在 `volumes.<name>.local.path`，见 [compose-storage.md](compose-storage.md)。
-
-### 旧 storageClass（仅迁移） {#storageclass}
-
-旧部署可能保留顶层 `storage` 元数据，但原生 Nomad 服务的实际挂载来自 `volumes`：命名源渲染为 Docker volume，路径源渲染为 bind mount。`storageClass` 元数据不会自动把它们改成 NFS 挂载；迁移前应检查运行中的 Nomad mount、Docker volume driver options 和宿主机挂载。新文件不要再写这块。
-
-```yaml
-name: home-db
-image: postgres:16
-region: home
-exposure: none
-volumes:
-  - pg-data:/var/lib/postgresql/data
-storage:
-  pg-data:
-    storageClass: db-storage
-    path: home-db/pg-data
-    accessMode: ReadWriteOnce
-```
-
-`luma storage list` / `check` / `apply` / `remove` 继续管理这些遗留 class。切换后端会给出 `Storage placement` 警告但不再阻止部署；数据不会自动迁移，验证后可设置 `adopted: true`，新空卷可声明 `initialize: empty`。
 
 ### 需要代理的 worker {#worker_1}
 

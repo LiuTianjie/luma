@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "luma-infra"
-version = "0.2.87"
+version = "0.2.88"
 description = "Declarative deployment CLI for region-aware Nomad infrastructure."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -40,12 +40,16 @@ dependencies = [
 # Dashboard passkeys run only on Control (the Python 3.11 image); node agents on
 # Python 3.9 never import WebAuthn.
 control = [
+  "fastapi>=0.115.0; python_version >= '3.10'",
+  "pydantic>=2.9.0; python_version >= '3.10'",
   "webauthn==3.0.1; python_version >= '3.10'",
   "luma-observe-sdk[query]==0.6.2; python_version >= '3.10'",
 ]
 test = [
   "httpx2>=2.4.0",
   "ruff>=0.6",
+  "fastapi>=0.115.0; python_version >= '3.10'",
+  "pydantic>=2.9.0; python_version >= '3.10'",
   "webauthn==3.0.1; python_version >= '3.10'",
   "luma-observe-sdk[query]==0.6.2; python_version >= '3.10'",
 ]

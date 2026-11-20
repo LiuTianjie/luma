@@ -37,7 +37,6 @@ export type DashboardViewModel = {
   trafficPaths: TrafficPath[];
   issues: DashboardIssue[];
   storageVolumes: NonNullable<NonNullable<DashboardPayload["storage"]>["volumes"]>;
-  storageClasses: NonNullable<NonNullable<DashboardPayload["storage"]>["storageClasses"]>;
   storageWarnings: string[];
   activeNodes: number;
   healthyServices: number;
@@ -82,7 +81,6 @@ export function createDashboardViewModel(
   const issues = payload?.issues || [];
   const trafficPaths = payload?.trafficPaths || [];
   const storageVolumes = payload?.storage?.volumes || [];
-  const storageClasses = payload?.storage?.storageClasses || [];
   const storageWarnings = payload?.storage?.warnings || [];
   const activeNodes = nodes.filter(readyNode).length;
   const healthyServices = services.filter(isServiceHealthy).length;
@@ -98,7 +96,6 @@ export function createDashboardViewModel(
     trafficPaths,
     issues,
     storageVolumes,
-    storageClasses,
     storageWarnings,
     activeNodes,
     healthyServices,

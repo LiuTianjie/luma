@@ -113,7 +113,10 @@ func TestControlSSOEndToEndAndRevocation(t *testing.T) {
 		ControlAuthCacheTTL: 60 * time.Second,
 		AddonID:             "eye",
 	}
-	srv := New(cfg, store, nil, nil, nil, observe.NewMetrics())
+	srv, err := New(cfg, store, nil, nil, nil, observe.NewMetrics())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 

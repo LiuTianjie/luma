@@ -17,17 +17,16 @@ Exposure mapping:
   - none : worker, no service/port unless the manifest declares one.
 """
 
-import hashlib
 import json
 import math
 import re
 import urllib.parse
-from typing import Any, Dict, List, Mapping, Sequence
+from typing import Any, Dict, List, Mapping
 
 from .config import LumaConfig
 from .dns import cert_resolver_for
 from .container_dns import parse_dns_servers, parse_extra_hosts, shared_dns_servers, shared_extra_hosts
-from .compose import compose_replica_count, render_storage_class_volume, resolve_storage_mounts
+from .compose import compose_replica_count
 from .compose_network import (
     NETWORK_CONTAINER,
     macos_compose_network_tasks,
@@ -36,7 +35,7 @@ from .compose_network import (
 )
 from .errors import LumaError
 from .observe_instrument import OBSERVE_STACK, apply_env as apply_observe_env, pin_observe_placement
-from .service import ServiceSpec, slugify
+from .service import ServiceSpec, slugify, validate_service_labels
 
 # Nomad requires CPU (MHz) and MemoryMB on every task. These match Nomad's own
 # defaults so an unspecified manifest behaves like a small container.
@@ -111,6 +110,7 @@ def render_traefik_job(
     acme_domains: list[str] | None = None,
     tcp_entrypoints: list[int] | None = None,
     http_cert_resolver: str = "",
+    enable_dashboard: bool = False,
     as_json: bool = True,
 ) -> str | Dict[str, Any]:
     """Render the Traefik ingress job (host mode, ports 80/443 + tcp entrypoints).
@@ -180,7 +180,8 @@ def render_traefik_job(
                     storage=f"/letsencrypt/acme-{http_cert_resolver}.json",
                 )
             )
-    args.append("--api.dashboard=true")
+    if enable_dashboard:
+        args.append("--api.dashboard=true")
     job = {
         "ID": "traefik", "Name": "traefik", "Type": "service", "Datacenters": ["dc1"],
         "Constraints": [{"LTarget": "${meta.ingress}", "RTarget": "true", "Operand": "="}],
@@ -527,7 +528,6 @@ def render_compose_job(
     resolve_secrets: bool = True,
     egress_proxy_url: str | None = None,
     node_records: Dict[str, Any] | None = None,
-    admitted_nodes: Sequence[str] = (),
     render_storage: bool = True,
     observe_otlp: Mapping[str, str] | None = None,
 ) -> str | Dict[str, Any]:
@@ -617,16 +617,6 @@ def render_compose_job(
     dynamic_ports: List[Dict[str, Any]] = []
     nomad_services: List[Dict[str, Any]] = []
     tasks: List[Dict[str, Any]] = []
-    storage_endpoint_by_volume: Dict[str, str] = {}
-    if render_storage and node_records is not None:
-        storage_endpoint_by_volume = {
-            str(item["volume"]): str(item["endpoint"])
-            for item in resolve_storage_mounts(
-                deployment,
-                node_records=node_records,
-                admitted_nodes=admitted_nodes,
-            )
-        }
 
     for svc_name, body in services.items():
         if not isinstance(body, dict):
@@ -734,48 +724,9 @@ def render_compose_job(
                 volume = deployment.volumes.get(volume_name)
                 if volume is None:
                     continue
-                if volume.kind == "local":
-                    if render_storage:
-                        mount["type"] = "bind"
-                        mount["source"] = str(volume.local_path or "")
-                    continue
-                if not volume.storage_class:
-                    continue
-                if not render_storage:
-                    continue
-                storage_class = deployment.storage_classes[volume.storage_class]
-                endpoint = storage_endpoint_by_volume.get(volume_name)
-                if endpoint is None:
-                    raise LumaError(
-                        f"compose volume {volume_name} requires resolved storage endpoints; "
-                        "load cluster node records before rendering"
-                    )
-                driver = render_storage_class_volume(
-                    storage_class,
-                    volume,
-                    endpoint,
-                )
-                identity = "\0".join(
-                    (
-                        deployment.slug,
-                        volume_name,
-                        storage_class.name,
-                        endpoint,
-                        volume.path or volume.name,
-                    )
-                )
-                digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
-                base = f"{deployment.slug}-{slugify(volume_name)}"[:40].rstrip("-")
-                mount["source"] = f"luma-{base}-{digest}"
-                mount["volume_options"] = {
-                    "no_copy": False,
-                    "driver_config": {
-                        "name": str(driver.get("driver") or "local"),
-                        # Nomad's task-driver JSON schema requires a map to be
-                        # wrapped in a single-element list here.
-                        "options": [dict(driver.get("driver_opts") or {})],
-                    },
-                }
+                if volume.kind == "local" and render_storage:
+                    mount["type"] = "bind"
+                    mount["source"] = str(volume.local_path or "")
             docker_config["mount"] = mounts
             from .nomad_security import deny_host_root
             deny_host_root({"TaskGroups": [{"Tasks": [{"Config": docker_config}]}]})
@@ -1295,6 +1246,7 @@ def _service_block(config: LumaConfig, service: ServiceSpec, port_label: str | N
     ]
     tags.extend(_router_tls_domain_tags(config, name, str(service.domain), node_edge=node_edge))
     tags.extend(redirect_router_tags(config, name, str(service.domain), service.redirect_from, service=name, except_paths=service.redirect_except, node_edge=node_edge))
+    validate_service_labels(list(service.labels), name)
     tags.extend(str(t) for t in service.labels)
     if node_edge:
         tags = node_edge_tags(tags, str(service.node))
@@ -1652,8 +1604,6 @@ def _apply_volume_mounts(docker_config: Dict[str, Any], service: ServiceSpec) ->
     schemas.) `mount{type=volume,source=name}` attaches the actual named volume.
     Requires `plugin "docker" { config { volumes { enabled = true } } }` on the
     client (set by luma node join / render_agent_config).
-
-    Named storageClass / NFS volumes will move to Nomad host_volume/CSI later.
     """
     if not service.volumes:
         return

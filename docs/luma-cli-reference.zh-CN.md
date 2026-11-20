@@ -46,7 +46,7 @@ Cluster administration:
   node          Join, list and remove nodes
   region        Manage scheduling regions
   dns           Manage DNS zones on Cloudflare, Alibaba Cloud DNS and DNSPod
-  storage       Manage NFS storage classes
+  storage       Plan local storage migration
   registry      Manage registry credentials and the managed registry
   git-provider  Manage saved GitHub and Gitea credentials
   cdn           Check, refresh and clean up Alibaba Cloud ESA records
@@ -2691,7 +2691,7 @@ arguments:
 
 Examples:
   luma update
-  luma update --install-ref v0.2.87
+  luma update --install-ref v0.2.88
   luma update fleet
 ```
 
@@ -3306,152 +3306,20 @@ arguments:
 ```text
 usage: luma storage [-h] <command> ...
 
-Manage NFS storage classes
+Plan local storage migration
 
 arguments:
   -h, --help  show this help message and exit
 
 arguments:
   <command>
-    list      List storage classes
-    set       Create or update an NFS storage class
-    remove    Remove a storage class
-    apply     Prepare the volumes a Compose sidecar needs
-    check     Check that a sidecar's volumes can be mounted where it runs
     migrate   Print a manual plan for moving a volume's data
-```
-
-## `luma storage list`
-
-```text
-usage: luma storage list [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
-
-List storage classes
-
-arguments:
-  -h, --help                  show this help message and exit
-  --format {text,json,ndjson}
-                              Output format (default: text)
-  --quiet                     Only print the final result or error
-
-arguments:
-  --control-context CONTROL_CONTEXT
-                              Use this saved login without switching to it
-  --control-url CONTROL_URL   Control URL to use instead of the current login
-  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
-  --insecure                  Skip TLS verification for Control
-  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
-```
-
-## `luma storage set`
-
-```text
-usage: luma storage set [-h] [--provider {nfs}] [--node NODE] [--path PATH] [--external] [--endpoint ENDPOINT] [--mount-options MOUNT_OPTIONS] [--region REGIONS] [--eligible-node NODES] [--timeout TIMEOUT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] name
-
-Create or update an NFS storage class
-
-arguments:
-  name                        Storage class name
-
-arguments:
-  -h, --help                  show this help message and exit
-  --provider {nfs}            Storage provider (default: nfs)
-  --node NODE                 Node that serves a managed NFS export
-  --path PATH                 Export path on the NFS server
-  --external                  Use an existing NFS server instead of preparing one
-  --endpoint ENDPOINT         Address of an external NFS server
-  --mount-options MOUNT_OPTIONS
-                              NFS mount options (default:
-                              nfsvers=4,rw,soft,timeo=100,retrans=10,noresvport)
-  --region REGIONS            Region allowed to mount it; repeat for several
-  --eligible-node NODES       Node allowed to mount it; repeat for several
-  --timeout TIMEOUT           Seconds to wait for host preparation (default: 360)
-
-arguments:
-  --control-context CONTROL_CONTEXT
-                              Use this saved login without switching to it
-  --control-url CONTROL_URL   Control URL to use instead of the current login
-  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
-  --insecure                  Skip TLS verification for Control
-  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
-```
-
-## `luma storage remove`
-
-```text
-usage: luma storage remove [-h] [--timeout TIMEOUT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] name
-
-Remove a storage class
-
-arguments:
-  name                        Storage class name
-
-arguments:
-  -h, --help                  show this help message and exit
-  --timeout TIMEOUT           Seconds to wait for host cleanup (default: 360)
-
-arguments:
-  --control-context CONTROL_CONTEXT
-                              Use this saved login without switching to it
-  --control-url CONTROL_URL   Control URL to use instead of the current login
-  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
-  --insecure                  Skip TLS verification for Control
-  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
-```
-
-## `luma storage apply`
-
-```text
-usage: luma storage apply [-h] [--dry-run] [--timeout TIMEOUT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] SIDECAR
-
-Prepare the volumes a Compose sidecar needs
-
-arguments:
-  SIDECAR                     Luma Compose sidecar
-
-arguments:
-  -h, --help                  show this help message and exit
-  --dry-run                   Show the plan without preparing anything
-  --timeout TIMEOUT           Seconds to wait (default: 300)
-
-arguments:
-  --control-context CONTROL_CONTEXT
-                              Use this saved login without switching to it
-  --control-url CONTROL_URL   Control URL to use instead of the current login
-  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
-  --insecure                  Skip TLS verification for Control
-  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
-```
-
-## `luma storage check`
-
-```text
-usage: luma storage check [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] SIDECAR
-
-Check that a sidecar's volumes can be mounted where it runs
-
-arguments:
-  SIDECAR                     Luma Compose sidecar
-
-arguments:
-  -h, --help                  show this help message and exit
-  --format {text,json,ndjson}
-                              Output format (default: text)
-  --quiet                     Only print the final result or error
-
-arguments:
-  --control-context CONTROL_CONTEXT
-                              Use this saved login without switching to it
-  --control-url CONTROL_URL   Control URL to use instead of the current login
-  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
-  --insecure                  Skip TLS verification for Control
-  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
 ```
 
 ## `luma storage migrate`
 
 ```text
-usage: luma storage migrate [-h] --volume VOLUME --from-node FROM_NODE --from-volume FROM_VOLUME [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] SIDECAR
+usage: luma storage migrate [-h] --volume VOLUME --from-node FROM_NODE --from-volume FROM_VOLUME [--format {text,json,ndjson}] [--quiet] SIDECAR
 
 Print a manual plan for moving a volume's data
 
@@ -3466,14 +3334,6 @@ arguments:
   --format {text,json,ndjson}
                               Output format (default: text)
   --quiet                     Only print the final result or error
-
-arguments:
-  --control-context CONTROL_CONTEXT
-                              Use this saved login without switching to it
-  --control-url CONTROL_URL   Control URL to use instead of the current login
-  --token TOKEN               Management token for --control-url (or set LUMA_DEPLOY_TOKEN)
-  --insecure                  Skip TLS verification for Control
-  --resolve-ip RESOLVE_IP     Connect to this IP while keeping the Control hostname as Host
 ```
 
 ## `luma registry`
@@ -3570,7 +3430,7 @@ arguments:
 ## `luma registry serve`
 
 ```text
-usage: luma registry serve [-h] --node NODE [--port PORT] [--domain DOMAIN] [--username USERNAME] [--password-stdin] [--storage-class STORAGE_CLASS] [--image IMAGE] [--name NAME] [--no-activate] [--timeout TIMEOUT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
+usage: luma registry serve [-h] --node NODE [--port PORT] [--domain DOMAIN] [--username USERNAME] [--password-stdin] [--image IMAGE] [--name NAME] [--no-activate] [--timeout TIMEOUT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet]
 
 Deploy the managed registry on a Linux node
 
@@ -3581,8 +3441,6 @@ arguments:
   --domain DOMAIN             TLS hostname; avoids reconfiguring Docker on every node
   --username USERNAME         Basic Auth user for --domain
   --password-stdin            Read the --domain password from stdin
-  --storage-class STORAGE_CLASS
-                              Storage class for images (default: a node-local volume)
   --image IMAGE               Registry image (default: registry:2)
   --name NAME                 Service name (default: luma-registry)
   --no-activate               Do not make it the builders' push and pull registry

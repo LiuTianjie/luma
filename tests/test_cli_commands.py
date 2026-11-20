@@ -43,7 +43,7 @@ class CliTests(unittest.TestCase):
             patcher = patch("luma.cli.manager." + name)
             patcher.start()
             self.addCleanup(patcher.stop)
-        for name in ("prepare_build_dependencies", "prepare_node_buildkit"):
+        for name in ("prepare_build_dependencies",):
             patcher = patch("luma.cli.nodes." + name)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -153,59 +153,18 @@ class CliTests(unittest.TestCase):
                 "home",
                 "--from-volume",
                 "pg-data",
-                "--control-url",
-                "https://luma.example.com",
-                "--token",
-                "deploy-token",
             ]
         )
         self.assertEqual(args.command, "storage")
         self.assertEqual(args.storage_command, "migrate")
         self.assertEqual(args.volume, "pg-data")
-        self.assertEqual(args.control_url, "https://luma.example.com")
-        args = build_parser().parse_args(
-            [
-                "storage",
-                "set",
-                "home-nfs",
-                "--provider",
-                "nfs",
-                "--node",
-                "home-nas",
-                "--path",
-                "/srv/luma",
-                "--control-url",
-                "https://luma.example.com",
-                "--token",
-                "deploy-token",
-            ]
-        )
-        self.assertEqual(args.storage_command, "set")
-        self.assertEqual(args.name, "home-nfs")
-        self.assertEqual(args.node, "home-nas")
-        self.assertEqual(args.path, "/srv/luma")
-        self.assertEqual(args.timeout, 360)
-        self.assertFalse(args.external)
-        self.assertEqual(args.control_url, "https://luma.example.com")
-        args = build_parser().parse_args(
-            [
-                "storage",
-                "set",
-                "company-nfs",
-                "--external",
-                "--endpoint",
-                "nfs.example.com:/srv/luma",
-                "--region",
-                "cn",
-            ]
-        )
-        self.assertTrue(args.external)
-        self.assertEqual(args.endpoint, "nfs.example.com:/srv/luma")
-        self.assertEqual(args.regions, ["cn"])
         for argv in (
-            ["storage", "set", "home-nfs", "--mode", "managed"],
-            ["storage", "set", "home-nfs", "--export-root", "/srv/luma"],
-            ["storage", "set", "home-nfs", "--provider", "external"],
+            ["storage", "list"],
+            ["storage", "set", "home-nfs", "--node", "home-nas", "--path", "/srv/luma"],
+            ["storage", "remove", "home-nfs"],
+            ["storage", "apply", "luma.compose.yml"],
+            ["storage", "check", "luma.compose.yml"],
+            ["registry", "serve", "--node", "builder", "--storage-class", "home-nfs"],
         ):
             with self.assertRaises(SystemExit):
                 build_parser().parse_args(argv)
@@ -216,18 +175,6 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(imported.timeout, 3600)
         self.assertEqual(retried.timeout, 3600)
-
-    def test_storage_set_command_validates_new_shape_before_control_call(self):
-        cases = (
-            ["storage", "set", "home-nfs", "--node", "home-nas"],
-            ["storage", "set", "home-nfs", "--node", "home-nas", "--path", "/srv/luma", "--endpoint", "home-nas:/srv/luma"],
-            ["storage", "set", "company-nfs", "--external", "--endpoint", "nfs.example.com:/srv/luma"],
-        )
-        for argv in cases:
-            with self.subTest(argv=argv), patch("luma.cli.common.ControlClient") as client_cls, patch("builtins.print"):
-                code = main(argv)
-            self.assertEqual(code, 1)
-            client_cls.assert_not_called()
 
     def test_service_remove_rejects_manifest_path(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -695,7 +642,6 @@ class CliTests(unittest.TestCase):
         payload = json.loads(printed.call_args_list[-1].args[0])
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["result"]["validationMode"], "degraded")
-        self.assertTrue(any("Storage classes" in warning for warning in payload["result"]["warnings"]))
         self.assertTrue(any("Node records" in warning for warning in payload["result"]["warnings"]))
 
     def test_wait_heartbeat_prints_during_slow_deploy_request(self):
@@ -1194,15 +1140,6 @@ class CliTests(unittest.TestCase):
         refresh.assert_called_once()
         self.assertEqual(refresh.call_args.args[2], "luma.example.com")
 
-    def test_linux_managed_nfs_prepare_reuses_identical_export_path(self):
-        from luma.agent import _linux_prepare_nfs_command
-
-        command = _linux_prepare_nfs_command("staging-runtime-nfs", "/srv/luma")
-        self.assertIn("glob.glob('/etc/exports.d/luma-*.exports')", command)
-        self.assertIn("if export_line in lines", command)
-        self.assertIn("target.unlink(missing_ok=True)", command)
-        self.assertIn("already exists with different options", command)
-
     def test_managed_volume_path_is_writable_by_arbitrary_container_uid(self):
         from luma.agent import _volume_path_command
 
@@ -1481,18 +1418,6 @@ class CliTests(unittest.TestCase):
                         "target": "203.0.113.10",
                         "ready": True,
                     },
-                    "storage": {
-                        "storageClasses": [
-                            {
-                                "name": "cn-nfs",
-                                "provider": "nfs",
-                                "mode": "managed",
-                                "node": "manager",
-                                "path": "/srv/luma",
-                                "regions": ["cn"],
-                            }
-                        ]
-                    },
                     "nodes": {
                         "registered": 2,
                         "items": [
@@ -1540,10 +1465,6 @@ class CliTests(unittest.TestCase):
         self.assertIn("Ready     yes", printed_text)
         self.assertIn("Provider  cloudflare", printed_text)
         self.assertIn("Orchestrator (Nomad)", printed_text)
-        self.assertIn("Storage", printed_text)
-        self.assertIn("Summary: storageClasses=1", printed_text)
-        self.assertIn("cn-nfs", printed_text)
-        self.assertIn("/srv/luma", printed_text)
         self.assertIn("Nodes", printed_text)
         self.assertIn("Summary: registered=2, nomad=2", printed_text)
         self.assertIn("NAME         REGION", printed_text)
@@ -1595,7 +1516,6 @@ class CliTests(unittest.TestCase):
                         "swarmIdConfigured": True,
                         "ready": True,
                     },
-                    "storage": {"storageClasses": []},
                     "nodes": {"registered": 0, "items": []},
                     "swarm": {"available": True, "nodes": []},
                 }
@@ -2390,36 +2310,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["repositoryCount"], 12)
         request = urlopen.call_args.args[0]
         self.assertEqual(request.headers["Accept-encoding"], "gzip")
-
-    def test_control_client_reports_storage_api_error_directly(self):
-        client = ControlClient("https://luma.example.com", "secret")
-        error = urllib.error.HTTPError(
-            "https://luma.example.com/v1/storage",
-            400,
-            "Bad Request",
-            {},
-            io.BytesIO(b'{"error": "storage class cn-nfs endpoint is required for nfs"}'),
-        )
-        with patch("urllib.request.OpenerDirector.open", side_effect=error), self.assertRaises(LumaError) as raised:
-            client.set_storage(name="cn-nfs", provider="nfs", node="cn-node", path="/srv/luma")
-
-        self.assertIn("control API error 400", str(raised.exception))
-        self.assertIn("endpoint is required for nfs", str(raised.exception))
-
-    def test_control_client_storage_mutations_use_operational_timeout(self):
-        client = ControlClient("https://luma.example.com", "secret")
-        with patch.object(client, "request", return_value={"saved": True}) as request:
-            client.set_storage(
-                name="cn-nfs",
-                provider="nfs",
-                node="cn-node",
-                path="/srv/luma",
-            )
-        self.assertEqual(request.call_args.kwargs["timeout"], 360)
-
-        with patch.object(client, "request", return_value={"removed": True}) as request:
-            client.remove_storage(name="cn-nfs")
-        self.assertEqual(request.call_args.kwargs["timeout"], 360)
 
     def test_control_client_reports_missing_agent_token_endpoint_as_old_control(self):
         client = ControlClient("https://luma.example.com", "secret")

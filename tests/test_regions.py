@@ -198,7 +198,7 @@ class RegionControlApiTests(unittest.TestCase):
                 with self.assertRaisesRegex(LumaError, "unknown region"):
                     handle_node_register(state["joinToken"], {"nodeName": "ghost", "region": "mars"})
 
-                with self.assertRaisesRegex(LumaError, "nodes or storage classes"):
+                with self.assertRaisesRegex(LumaError, "nodes still use it"):
                     handle_region_remove(state["deployToken"], {"name": "batch-a"})
 
                 manifest = yaml.safe_dump(

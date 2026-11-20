@@ -92,6 +92,8 @@ class SecurityAuditMiddleware:
             "actor": credential_id(credential), "authenticated": False,
             "peer": str((scope.get("client") or ("", 0))[0])[:128],
         }
+        from starlette.concurrency import run_in_threadpool
+
         marker = _context.set(context)
         mutation = method not in {"GET", "HEAD", "OPTIONS"}
         status = 500
@@ -99,7 +101,7 @@ class SecurityAuditMiddleware:
         try:
             if mutation:
                 try:
-                    record("request.begin", method=method, path=path)
+                    await run_in_threadpool(record, "request.begin", method=method, path=path)
                 except LumaError:
                     audit_failed = True
                     if scope["type"] == "websocket":
@@ -123,6 +125,6 @@ class SecurityAuditMiddleware:
         finally:
             try:
                 if not audit_failed and (mutation or status in {401, 403}):
-                    record("request.end", method=method, path=path, status=status)
+                    await run_in_threadpool(record, "request.end", method=method, path=path, status=status)
             finally:
                 _context.reset(marker)

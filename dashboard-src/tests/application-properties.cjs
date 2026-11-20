@@ -44,7 +44,7 @@ test("volume paths and their type retain independent labels, including special c
   const html = renderToStaticMarkup(React.createElement(ApplicationProperties, { items: [
     { label: '卷 / 路径', value: '/srv/agent-pool/postgres-data<&>' },
     { label: '类型', value: 'bind' },
-    { label: '存储类 / 节点', value: '-' },
+    { label: '节点', value: '-' },
   ] }));
   assert.match(html, /<th\b[^>]*scope="row"[^>]*>卷 \/ 路径<\/th><td\b[^>]*>\/srv\/agent-pool\/postgres-data&lt;&amp;&gt;<\/td>/);
   assert.match(html, /<th\b[^>]*scope="row"[^>]*>类型<\/th><td\b[^>]*>bind<\/td>/);

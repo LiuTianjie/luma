@@ -38,8 +38,8 @@ export function DeploySummary({
     ? serviceDraft.exposure === "none" ? [] : [`${serviceDraft.domain}:${serviceDraft.port}`]
     : composeDraft.services.filter((service) => service.exposure !== "none").map((service) => `${service.name} -> ${service.domain}:${service.port}`);
   const storage = mode === "compose"
-    ? composeDraft.volumes.map((volume) => volume.storageMode === "storageClass" ? `${volume.name}:${volume.storageClass || (zh ? "未选择" : "not selected")}` : `${volume.name}: ${volume.localNode || (zh ? "部署节点本地目录" : "deployment-node directory")}`)
-    : (serviceDraft.volumeMounts || []).map((volume) => volume.storageMode === "storageClass" ? `${volume.name}:${volume.storageClass || (zh ? "未选择" : "not selected")}` : `${volume.name}: ${zh ? "部署节点本地卷" : "deployment-node volume"}`);
+    ? composeDraft.volumes.map((volume) => `${volume.name}: ${volume.localNode || (zh ? "部署节点本地目录" : "deployment-node directory")}`)
+    : (serviceDraft.volumeMounts || []).map((volume) => `${volume.name}: ${zh ? "部署节点本地卷" : "deployment-node volume"}`);
   const previewWarnings = preview ? [...(preview.warnings || []), ...(preview.storage?.warnings || [])] : [];
   const requirementGroups = preview?.requirements
     ? Array.isArray(preview.requirements)

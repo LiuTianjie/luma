@@ -907,6 +907,88 @@ class UpgradeTopology(SecurityFixture):
             self.assertEqual(consumers.call_count, 2)
             self.assertNotIn("consumerRenewalPending", security.read_private_json(path))
 
+    def test_maintain_certificates_ignores_unrelated_app_drift(self):
+        from unittest.mock import Mock
+
+        journal = {
+            "nodes": {"manager": {"nodeId": "mgr-1", "address": "100.64.0.1", "role": "server"}},
+            "manager": "manager",
+            "jobs": [],
+        }
+        path = self.admin / "upgrade.json"
+        client = Mock()
+        client.request.side_effect = [
+            [],  # /v1/allocations
+            [
+                {"ID": "drifted-user-app", "Namespace": "default", "Status": "running"},
+                {"ID": "other-ns-app", "Namespace": "team-a", "Status": "running"},
+            ],
+        ]
+        config_path = self.root / "luma.yaml"
+        config_path.write_text("defaults:\n  stackRoot: stacks\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"LUMA_CONTROL_CONFIG": str(config_path)}), \
+                mock.patch.object(upgrade, "JOURNAL", path), \
+                mock.patch.object(upgrade, "expires_soon", side_effect=[True, False, False, False, False, False]), \
+                mock.patch.object(upgrade, "NomadApi", return_value=client), \
+                mock.patch.object(upgrade, "nomad_token", return_value="tok"), \
+                mock.patch.object(upgrade, "prepare_manager") as prep, \
+                mock.patch.object(upgrade, "LocalExecutor"), \
+                mock.patch.object(upgrade, "_consumers") as consumers, \
+                mock.patch.object(upgrade, "_refresh_node_traefik_consumers"):
+            upgrade._maintain_certificates(journal, {"deployments": {"services": {}, "compose": {}}})
+        prep.assert_called_once_with("100.64.0.1")
+        consumers.assert_called_once()
+
+    def test_maintain_certificates_continues_healthy_workers_when_one_worker_fails(self):
+        now = int(time.time())
+        journal = {
+            "nodes": {
+                "manager": {"nodeId": "mgr-1", "address": "100.64.0.1", "role": "server"},
+                "worker-bad": {"nodeId": "w-bad", "address": "100.64.0.2", "role": "client"},
+                "worker-good": {"nodeId": "w-good", "address": "100.64.0.3", "role": "client"},
+            },
+            "manager": "manager",
+            "jobs": [],
+        }
+        state = {
+            "nodes": {
+                "worker-bad": {"agent": {"capabilities": [upgrade.CAPABILITY], "lastSeen": now}},
+                "worker-good": {"agent": {"capabilities": [upgrade.CAPABILITY], "lastSeen": now}},
+            }
+        }
+        path = self.admin / "upgrade.json"
+        calls = []
+
+        def fake_control_task(_state, name, key, payload):
+            calls.append((name, payload["op"]))
+            if name == "worker-bad":
+                return {"status": "failed", "message": "agent unreachable"}
+            if payload["op"] == "certificate-request":
+                return {
+                    "status": "succeeded",
+                    "result": {
+                        "nodeId": "w-good",
+                        "address": "100.64.0.3",
+                        "certificateRenewalRequired": True,
+                        "csr": "CSR-GOOD",
+                    },
+                }
+            return {"status": "succeeded"}
+
+        with mock.patch.object(upgrade, "JOURNAL", path), \
+                mock.patch.object(upgrade, "expires_soon", return_value=False), \
+                mock.patch.object(upgrade, "control_task", side_effect=fake_control_task), \
+                mock.patch.object(upgrade, "sign_csr", return_value="CERT-GOOD") as sign:
+            with self.assertRaisesRegex(LumaError, "worker-bad"):
+                upgrade._maintain_certificates(journal, state)
+
+        self.assertIn(("worker-bad", "certificate-request"), calls)
+        self.assertIn(("worker-good", "certificate-request"), calls)
+        self.assertIn(("worker-good", "renew"), calls)
+        sign.assert_called_once_with("CSR-GOOD", role="client", address="100.64.0.3")
+        saved = security.read_private_json(path)
+        self.assertEqual(saved["renewals"]["worker-good"]["certificate"], "CERT-GOOD")
+
 
 @unittest.skipUnless(os.environ.get("LUMA_TEST_NOMAD_BINARY"), "set LUMA_TEST_NOMAD_BINARY for the isolated real Nomad TLS protocol test")
 class NomadTLSProtocol(SecurityFixture):

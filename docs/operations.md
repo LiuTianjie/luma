@@ -233,7 +233,7 @@ luma app remove <app> --dry-run --delete-storage
 luma app remove <app> --delete-storage
 ```
 
-For single-service deployments, this deletes managed storage paths referenced by `storage.<volume>.path` and removes named Docker volume objects declared in the manifest; bind mounts are skipped. For Compose deployments, this deletes managed volume subdirectories referenced by the sidecar, not the storage class itself. It cannot be combined with `--skip-orchestrator`.
+For single-service deployments, this removes named Docker volume objects declared in the manifest; bind mounts are skipped. For Compose deployments, host-bound local volume directories are preserved so data is not accidentally wiped. It cannot be combined with `--skip-orchestrator`.
 
 Preview the cleanup without changing the manager:
 
@@ -297,7 +297,7 @@ sudo docker pull hello-world:latest
 
 ```bash
 luma update                                  # manager: CLI + Control; node: CLI + agent; client: CLI
-luma update --install-ref v0.2.87           # a specific release, branch or full commit
+luma update --install-ref v0.2.88           # a specific release, branch or full commit
 luma update fleet                            # every non-manager node with a ready agent
 luma update fleet --include-manager          # explicit repair only
 ```

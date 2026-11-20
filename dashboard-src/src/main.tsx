@@ -1,6 +1,8 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
+import { queryClient } from "./queryClient";
 import { RouterProvider, useRouter } from "./router";
 import { legacyRedirect } from "./routes";
 import { SharedDashboardPage } from "./components/SharedDashboardPage";
@@ -14,8 +16,10 @@ function DashboardEntry() {
 
 createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <RouterProvider redirect={legacyRedirect}>
-      <DashboardEntry />
-    </RouterProvider>
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider redirect={legacyRedirect}>
+        <DashboardEntry />
+      </RouterProvider>
+    </QueryClientProvider>
   </React.StrictMode>,
 );

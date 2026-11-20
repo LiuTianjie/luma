@@ -124,8 +124,7 @@ export function appToComposeDraft(app: Application): ComposeDeploymentDraft {
     return {
       name,
       target: "",
-      storageMode: source?.storageClass ? "storageClass" as const : "local" as const,
-      storageClass: source?.storageClass || "",
+      storageMode: "local" as const,
       localNode: source?.node || "",
       localPath: source?.networkPath || "",
     };

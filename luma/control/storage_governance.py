@@ -70,16 +70,43 @@ def _digests(value: Any) -> set[str]:
     return result
 
 
+def _measure_paths(*paths: Path) -> int | None:
+    total = 0
+    for path in paths:
+        try:
+            if path.is_symlink():
+                return None
+            if path.exists():
+                total += path.lstat().st_size
+        except OSError:
+            return None
+    return total
+
+
 def storage_inventory(state: dict[str, Any] | None = None, *, now: float | None = None) -> dict[str, Any]:
     now = time.time() if now is None else now
     root = state_dir()
-    files = [("database", "Manager database", database.database_path()), ("databaseWal", "SQLite write-ahead log", Path(str(database.database_path()) + "-wal")), ("databaseShm", "SQLite shared memory", Path(str(database.database_path()) + "-shm")), ("legacyConfig", "Legacy configuration / migration source", root / "control.json"), ("metrics", "Local metric history", root / "metrics-history.json")]
+    db_path = database.database_path()
+    metrics_db_path = root / "metrics-history.sqlite3"
+    entries = [
+        ("database", "Manager database", (db_path,)),
+        ("databaseWal", "SQLite write-ahead log", (Path(str(db_path) + "-wal"),)),
+        ("databaseShm", "SQLite shared memory", (Path(str(db_path) + "-shm"),)),
+        ("legacyConfig", "Legacy configuration / migration source", (root / "control.json",)),
+        (
+            "metrics",
+            "Local metric history",
+            (
+                metrics_db_path,
+                Path(str(metrics_db_path) + "-wal"),
+                Path(str(metrics_db_path) + "-shm"),
+                root / "metrics-history.json",
+            ),
+        ),
+    ]
     components = []
-    for key, label, path in files:
-        try:
-            size = path.lstat().st_size if path.exists() and not path.is_symlink() else (None if path.is_symlink() else 0)
-        except OSError:
-            size = None
+    for key, label, paths in entries:
+        size = _measure_paths(*paths)
         components.append({"id": key, "label": label, "location": "manager", "bytes": size, "status": "measured" if size is not None else "unknown"})
     # Migration backups are only counted under the Manager's own state directory.
     backup_bytes = 0

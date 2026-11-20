@@ -341,3 +341,18 @@ class RunnerExitTests(unittest.TestCase):
         with patch.object(service, "CONFIG", Path("/nonexistent/luma-runner.json")):
             with self.assertRaisesRegex(LumaError, "luma runner join"):
                 service.load_config(required=True)
+
+    def test_builder_release_workflow_and_runner_dockerfile_use_canonical_runner(self):
+        import yaml
+
+        root = Path(__file__).resolve().parents[1]
+        workflow = yaml.load(
+            (root / ".github/workflows/builder-release.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        entries = {item["component"]: item["context"] for item in workflow["jobs"]["images"]["strategy"]["matrix"]["include"]}
+        self.assertEqual(entries, {"server": "builder", "runner": "."})
+        dockerfile = (root / "builder/Dockerfile.runner").read_text(encoding="utf-8")
+        self.assertIn("COPY luma ./luma", dockerfile)
+        self.assertIn("COPY builder/luma_build ./builder/luma_build", dockerfile)
+        self.assertIn("pip install --no-cache-dir --no-deps . ./builder", dockerfile)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import codecs
+from collections import deque
 import contextlib
 import fcntl
 import json
@@ -25,6 +26,7 @@ import tempfile
 import termios
 import threading
 import time
+import urllib.error
 import urllib.parse
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping
@@ -34,7 +36,7 @@ from . import disk_hygiene
 from .build_capabilities import NATIVE_ARM_BUILD_CAPABILITY, REPOSITORY_BUILD_PLAN_CAPABILITY, native_arm_build_platform
 from .errors import LumaError
 from .command_session import CommandSession
-from .installer import luma_installer_command
+from .installer import luma_installer_command, validate_install_ref
 from .installation import runtime_record, installer_environment
 from .local import LocalExecutor, LocalResult
 from .registry_management import RegistryHttpClient, validate_digest, validate_repository
@@ -129,8 +131,6 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
     os_value = os_name or node_agent_os()
     if os_value == "linux":
         capabilities = [
-            "nfs-host",
-            "nfs-client",
             "managed-volume-path",
             "docker-volume",
             "docker-image",
@@ -154,7 +154,6 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
         ]
     elif os_value == "darwin":
         capabilities = [
-            "nfs-host",
             "managed-volume-path",
             "docker-volume",
             "docker-image",
@@ -1547,6 +1546,7 @@ class _AgentTaskProgressReporter:
         node_id: str,
         batch_size: int = 50,
         flush_interval: float = 0.25,
+        max_events: int = 2048,
     ) -> None:
         self.client = client
         self.task_id = task_id
@@ -1554,7 +1554,7 @@ class _AgentTaskProgressReporter:
         self.node_id = node_id
         self.batch_size = max(int(batch_size), 1)
         self.flush_interval = max(float(flush_interval), 0.01)
-        self.events: queue.Queue[Dict[str, Any]] = queue.Queue()
+        self.events: queue.Queue[Dict[str, Any]] = queue.Queue(maxsize=max(int(max_events), 1))
         self.stop = threading.Event()
         self.closed = threading.Event()
         self.batch_sequence = 0
@@ -1566,8 +1566,20 @@ class _AgentTaskProgressReporter:
         self.thread.start()
 
     def submit(self, event: Dict[str, Any]) -> None:
-        if not self.closed.is_set():
-            self.events.put(dict(event))
+        if self.closed.is_set() or self.stop.is_set():
+            return
+        payload = dict(event)
+        try:
+            self.events.put_nowait(payload)
+        except queue.Full:
+            try:
+                self.events.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.events.put_nowait(payload)
+            except queue.Full:
+                pass
 
     def close(self) -> None:
         if self.closed.is_set():
@@ -1594,9 +1606,10 @@ class _AgentTaskProgressReporter:
                     break
             if not self._send(batch):
                 # Progress is observational and must never hold the task's
-                # terminal result hostage during a Control outage. Drop the
-                # remaining queued output after bounded retries; the terminal
-                # report still carries the task outcome.
+                # terminal result hostage during a Control outage. Stop
+                # accepting new progress events and drop remaining queued
+                # output; the terminal report still carries the task outcome.
+                self.stop.set()
                 while True:
                     try:
                         self.events.get_nowait()
@@ -1705,6 +1718,32 @@ def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dic
         _stop_agent_task_heartbeat(heartbeat_stop, heartbeat_thread)
 
 
+def _is_terminal_task_report_error(exc: Exception) -> bool:
+    cause = exc.__cause__ if isinstance(exc, LumaError) and exc.__cause__ is not None else exc
+    if isinstance(cause, urllib.error.HTTPError):
+        if 400 <= cause.code < 500 and cause.code not in {408, 429}:
+            return True
+    status_code = getattr(exc, "code", None)
+    if isinstance(status_code, int) and 400 <= status_code < 500 and status_code not in {408, 429}:
+        return True
+    text = str(exc).lower()
+    if any(
+        marker in text
+        for marker in (
+            "agent task not found",
+            "task not found",
+            "task already",
+            "already completed",
+            "already finished",
+        )
+    ):
+        return True
+    match = re.search(r"\b(?:http|status|error)\s+(4\d\d)\b", text)
+    if match and int(match.group(1)) not in {408, 429}:
+        return True
+    return False
+
+
 def _report_agent_task_result(
     client: Any,
     *,
@@ -1724,6 +1763,8 @@ def _report_agent_task_result(
     the task as interrupted.  The busy heartbeat remains active while this
     loop retries, preserving the truthful task owner and making a transient
     Control restart or 502 recover without replaying the host mutation.
+    Terminal 4xx / missing-task rejections stop retrying immediately so the
+    agent is never permanently wedged on a deleted or already-finalized task.
     """
     attempt = 0
     while True:
@@ -1739,6 +1780,14 @@ def _report_agent_task_result(
             )
             return
         except Exception as exc:
+            if _is_terminal_task_report_error(exc):
+                print(
+                    f"luma: node agent stopping retries for task {task_id} result "
+                    f"({status}) after terminal Control rejection: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return
             delay = min(10.0, 0.5 * (2 ** min(attempt - 1, 5)))
             print(
                 f"luma: node agent failed to report task {task_id} result "
@@ -1759,7 +1808,7 @@ def _start_agent_task_heartbeat(
     config_path: Path,
 ) -> tuple[threading.Event, threading.Thread]:
     stop = threading.Event()
-    interval = min(_agent_task_heartbeat_interval(config_path), 2.0)
+    interval = _agent_task_heartbeat_interval(config_path)
 
     def loop() -> None:
         while not stop.is_set():
@@ -1951,6 +2000,18 @@ def _terminal_supervisor_shutdown_signal(_signum: int, _frame: Any) -> None:
     raise KeyboardInterrupt()
 
 
+class _BoundedOutboundQueue(asyncio.Queue):
+    """Bounded asyncio.Queue that drops the oldest item instead of raising QueueFull."""
+
+    def put_nowait(self, item: Dict[str, Any]) -> None:
+        while self.full():
+            try:
+                self.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        super().put_nowait(item)
+
+
 async def _run_terminal_supervisor(config_path: Path) -> None:
     from .terminal_direct import DirectTerminals
 
@@ -1963,7 +2024,7 @@ async def _run_terminal_supervisor(config_path: Path) -> None:
     if not endpoint or not token or not node_name:
         raise LumaError(f"invalid node agent config: {config_path}")
     sessions: dict[str, _PtySession] = {}
-    outbound: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+    outbound: asyncio.Queue[Dict[str, Any]] = _BoundedOutboundQueue(maxsize=1024)
     loop = asyncio.get_running_loop()
     backoff = 1.0
     max_backoff = 60.0
@@ -2153,6 +2214,8 @@ class _PtySession:
         self.outbound = outbound
         self.loop = loop
         self.closed = threading.Event()
+        self._fd_lock = threading.Lock()
+        self.master_fd: int | None
         self.master_fd, slave_fd = pty.openpty()
         _set_pty_size(self.master_fd, rows=rows, cols=cols)
         command = list(argv) if argv else [_terminal_shell()]
@@ -2172,26 +2235,47 @@ class _PtySession:
         try:
             self.process = subprocess.Popen(command, **kwargs)
         except BaseException:
-            os.close(self.master_fd)
+            self._close_master_fd()
             raise
         finally:
             os.close(slave_fd)
         self.reader = threading.Thread(target=self._read_loop, name=f"luma-terminal-{session_id}", daemon=True)
         self.reader.start()
 
+    def _close_master_fd(self) -> None:
+        lock = getattr(self, "_fd_lock", None)
+        if lock is not None:
+            with lock:
+                fd = self.master_fd
+                self.master_fd = None
+        else:
+            fd = self.master_fd
+            self.master_fd = None
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
     def write(self, data: str) -> None:
         if self.closed.is_set():
             return
+        fd = self.master_fd
+        if fd is None:
+            return
         try:
-            os.write(self.master_fd, data.encode("utf-8", errors="replace"))
+            os.write(fd, data.encode("utf-8", errors="replace"))
         except OSError:
             self.close()
 
     def resize(self, *, rows: int, cols: int) -> None:
         if self.closed.is_set():
             return
+        fd = self.master_fd
+        if fd is None:
+            return
         try:
-            _set_pty_size(self.master_fd, rows=rows, cols=cols)
+            _set_pty_size(fd, rows=rows, cols=cols)
         except OSError:
             pass
 
@@ -2218,19 +2302,22 @@ class _PtySession:
                         pass
         except Exception:
             pass
-        try:
-            os.close(self.master_fd)
-        except OSError:
-            pass
+        self._close_master_fd()
 
     def _read_loop(self) -> None:
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         try:
             while not self.closed.is_set():
-                ready, _, _ = select.select([self.master_fd], [], [], 0.2)
+                fd = self.master_fd
+                if fd is None:
+                    break
+                try:
+                    ready, _, _ = select.select([fd], [], [], 0.2)
+                except (OSError, ValueError):
+                    break
                 if ready:
                     try:
-                        data = os.read(self.master_fd, 4096)
+                        data = os.read(fd, 4096)
                     except OSError:
                         break
                     if not data:
@@ -2252,10 +2339,7 @@ class _PtySession:
             self._emit({"type": "error", "sessionId": self.session_id, "message": str(exc)})
         finally:
             self.closed.set()
-            try:
-                os.close(self.master_fd)
-            except OSError:
-                pass
+            self._close_master_fd()
 
     def _emit(self, event: Dict[str, Any]) -> None:
         try:
@@ -2430,20 +2514,16 @@ def _execute_agent_task_impl(
 ) -> Dict[str, Any]:
     action = str(task.get("action") or "")
     payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
-    if action == "prepare-managed-nfs-host":
-        name = _required(payload, "name")
-        path = _safe_absolute_path(_required(payload, "path"))
-        return prepare_managed_nfs_host(name=name, path=path)
     if action == "prepare-managed-volume-path":
-        root = _safe_absolute_path(_required(payload, "root"))
+        root = _validate_managed_volume_path(_required(payload, "root"))
         relative = _safe_relative_path(_required(payload, "relative"))
-        full_path = str(Path(root) / relative)
+        full_path = _validate_managed_volume_path(str(Path(root) / relative))
         _run_fixed_host_task(_volume_path_command(full_path, preserve_existing=bool(payload.get("preserveExisting"))))
         return {"path": full_path, "message": "volume path ready"}
     if action == "remove-managed-volume-path":
-        root = _safe_absolute_path(_required(payload, "root"))
+        root = _validate_managed_volume_path(_required(payload, "root"))
         relative = _safe_relative_path(_required(payload, "relative"))
-        full_path = str(Path(root) / relative)
+        full_path = _validate_managed_volume_path(str(Path(root) / relative))
         _run_fixed_host_task(_remove_volume_path_command(root, relative))
         return {"path": full_path, "message": "volume path removed"}
     if action == "remove-docker-volume":
@@ -2462,9 +2542,6 @@ def _execute_agent_task_impl(
             manifests=payload.get("manifests") if isinstance(payload.get("manifests"), list) else [],
             progress=progress,
         )
-    if action == "remove-managed-nfs-export":
-        name = _required(payload, "name")
-        return remove_managed_nfs_export(name=name)
     if action == "configure-docker-egress-proxy":
         proxy = str(payload.get("proxy") or "http://127.0.0.1:7890")
         no_proxy = str(
@@ -3073,29 +3150,6 @@ def join_nomad_node(
     }
 
 
-def prepare_managed_nfs_host(*, name: str, path: str) -> Dict[str, Any]:
-    os_value = node_agent_os()
-    safe_path = _safe_absolute_path(path)
-    if os_value == "darwin":
-        _run_fixed_host_task(_macos_prepare_nfs_command(name, safe_path), prefer_container=False)
-    elif os_value == "linux":
-        _run_fixed_host_task(_linux_prepare_nfs_command(name, safe_path))
-    else:
-        raise LumaError(f"managed NFS storage is not supported on {os_value}")
-    return {"name": name, "path": safe_path, "message": "host NFS export ready"}
-
-
-def remove_managed_nfs_export(*, name: str) -> Dict[str, Any]:
-    os_value = node_agent_os()
-    if os_value == "darwin":
-        _run_fixed_host_task(_macos_remove_nfs_command(name), prefer_container=False)
-    elif os_value == "linux":
-        _run_fixed_host_task(_linux_remove_nfs_command(name))
-    else:
-        raise LumaError(f"managed NFS storage is not supported on {os_value}")
-    return {"name": name, "message": "managed NFS export removed"}
-
-
 _DOCKER_CONFIG_CHANGED_MARKER = "LUMA_DOCKER_CONFIG_CHANGED="
 
 
@@ -3109,7 +3163,19 @@ def _docker_config_changed(output: str) -> bool:
     return matches[-1] == "1"
 
 
+def _validate_systemd_env_value(value: str, *, field_name: str, allow_spaces: bool = False) -> str:
+    if not isinstance(value, str):
+        raise LumaError(f"{field_name} must be a string")
+    if any(ch in value for ch in ("\r", "\n", '"', "\\")) or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise LumaError(f"{field_name} contains forbidden characters for systemd unit")
+    if not allow_spaces and any(ch.isspace() for ch in value):
+        raise LumaError(f"{field_name} must not contain whitespace")
+    return value
+
+
 def configure_docker_egress_proxy(*, proxy: str, no_proxy: str) -> Dict[str, Any]:
+    proxy = _validate_systemd_env_value(proxy, field_name="Docker daemon proxy")
+    no_proxy = _validate_systemd_env_value(no_proxy, field_name="Docker daemon no_proxy", allow_spaces=False)
     os_value = node_agent_os()
     if os_value != "linux":
         raise LumaError(f"Docker daemon egress proxy setup is not supported on {os_value}")
@@ -3236,6 +3302,74 @@ def _diagnostic_output_lines(output: str, *, limit: int = 200) -> list[str]:
     return lines[-limit:]
 
 
+_MAX_STREAM_OUTPUT_CHARS = 2 * 1024 * 1024
+_MAX_STREAM_LINE_CHARS = 64 * 1024
+_STREAM_READ_CHUNK_BYTES = 8192
+
+
+class _BoundedOutputBuffer:
+    """Keep a bounded tail of streamed command output in memory."""
+
+    def __init__(self, max_chars: int | None = None) -> None:
+        limit = _MAX_STREAM_OUTPUT_CHARS if max_chars is None else max_chars
+        self.max_chars = max(int(limit), 1)
+        self._chunks: deque[str] = deque()
+        self._size = 0
+
+    def append(self, text: str) -> None:
+        if not text:
+            return
+        if len(text) >= self.max_chars:
+            self._chunks.clear()
+            self._chunks.append(text[-self.max_chars :])
+            self._size = self.max_chars
+            return
+        self._chunks.append(text)
+        self._size += len(text)
+        while self._size > self.max_chars and self._chunks:
+            overflow = self._size - self.max_chars
+            head = self._chunks[0]
+            if len(head) <= overflow:
+                self._chunks.popleft()
+                self._size -= len(head)
+            else:
+                self._chunks[0] = head[overflow:]
+                self._size -= overflow
+
+    def text(self) -> str:
+        return "".join(self._chunks)
+
+
+def _feed_stream_lines(
+    chunk: str,
+    line_buffer: list[str],
+    line_size: list[int],
+    flush_line: Callable[[], None],
+) -> None:
+    if not chunk:
+        return
+    start = 0
+    length = len(chunk)
+    for index, ch in enumerate(chunk):
+        if ch in {"\n", "\r"}:
+            if index > start:
+                segment = chunk[start:index]
+                remaining = _MAX_STREAM_LINE_CHARS - line_size[0]
+                if remaining > 0:
+                    piece = segment[:remaining]
+                    line_buffer.append(piece)
+                    line_size[0] += len(piece)
+            flush_line()
+            start = index + 1
+    if start < length:
+        segment = chunk[start:]
+        remaining = _MAX_STREAM_LINE_CHARS - line_size[0]
+        if remaining > 0:
+            piece = segment[:remaining]
+            line_buffer.append(piece)
+            line_size[0] += len(piece)
+
+
 def _run_command_streaming(
     command: str,
     *,
@@ -3244,24 +3378,27 @@ def _run_command_streaming(
 ) -> LocalResult:
     process = subprocess.Popen(
         ["bash", "-lc", command],
-        text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         start_new_session=True,
-        bufsize=1,
     )
-    output_parts: list[str] = []
+    output_buffer = _BoundedOutputBuffer()
     line_buffer: list[str] = []
+    line_size = [0]
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
     deadline = time.monotonic() + timeout if timeout else None
 
     def flush_line() -> None:
         text = "".join(line_buffer).strip()
         line_buffer.clear()
+        line_size[0] = 0
         if text and on_line:
             on_line(text)
 
     try:
-        while True:
+        stream = process.stdout
+        fd = stream.fileno() if stream is not None else None
+        while stream is not None and fd is not None:
             if deadline and time.monotonic() > deadline:
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
@@ -3269,41 +3406,46 @@ def _run_command_streaming(
                     pass
                 flush_line()
                 message = f"command timed out after {timeout}s"
-                output_parts.append("\n" + message)
-                return LocalResult(code=124, output="".join(output_parts).strip())
-            stream = process.stdout
-            if stream is None:
-                break
-            ready, _, _ = select.select([stream], [], [], 0.2)
+                output_buffer.append("\n" + message)
+                return LocalResult(code=124, output=output_buffer.text().strip())
+            ready, _, _ = select.select([fd], [], [], 0.2)
             if ready:
-                chunk = stream.read(1)
-                if not chunk:
-                    if process.poll() is not None:
-                        break
-                    continue
-                output_parts.append(chunk)
-                if chunk in {"\n", "\r"}:
-                    flush_line()
-                else:
-                    line_buffer.append(chunk)
+                try:
+                    raw = os.read(fd, _STREAM_READ_CHUNK_BYTES)
+                except OSError:
+                    break
+                if not raw:
+                    break
+                chunk = decoder.decode(raw)
+                output_buffer.append(chunk)
+                _feed_stream_lines(chunk, line_buffer, line_size, flush_line)
                 continue
             if process.poll() is not None:
-                rest = stream.read() or ""
-                output_parts.append(rest)
-                for char in rest:
-                    if char in {"\n", "\r"}:
-                        flush_line()
-                    else:
-                        line_buffer.append(char)
+                while True:
+                    try:
+                        raw = os.read(fd, _STREAM_READ_CHUNK_BYTES)
+                    except OSError:
+                        raw = b""
+                    if not raw:
+                        break
+                    chunk = decoder.decode(raw)
+                    output_buffer.append(chunk)
+                    _feed_stream_lines(chunk, line_buffer, line_size, flush_line)
                 break
+        trailing = decoder.decode(b"", final=True)
+        if trailing:
+            output_buffer.append(trailing)
+            _feed_stream_lines(trailing, line_buffer, line_size, flush_line)
         flush_line()
-        return LocalResult(code=process.wait(), output="".join(output_parts))
+        return LocalResult(code=process.wait(), output=output_buffer.text())
     finally:
         if process.poll() is None:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+        if process.stdout is not None:
+            process.stdout.close()
 
 
 def _run_process_streaming(
@@ -3318,15 +3460,15 @@ def _run_process_streaming(
 ) -> LocalResult:
     process = subprocess.Popen(
         command,
-        text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         env=env,
         start_new_session=True,
-        bufsize=1,
     )
-    output_parts: list[str] = []
+    output_buffer = _BoundedOutputBuffer()
     line_buffer: list[str] = []
+    line_size = [0]
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
     started_at = time.monotonic()
     deadline = started_at + timeout if timeout else None
     last_progress_at = started_at
@@ -3335,6 +3477,7 @@ def _run_process_streaming(
         nonlocal last_progress_at
         text = "".join(line_buffer).strip()
         line_buffer.clear()
+        line_size[0] = 0
         if text and on_line:
             on_line(text)
             last_progress_at = time.monotonic()
@@ -3353,19 +3496,21 @@ def _run_process_streaming(
             pass
 
     try:
-        while True:
+        stream = process.stdout
+        fd = stream.fileno() if stream is not None else None
+        while stream is not None and fd is not None:
             now = time.monotonic()
             if cancel_event is not None and cancel_event.is_set():
                 kill_process_group()
                 flush_line()
-                output_parts.append("\nprocess canceled")
-                return LocalResult(code=130, output="".join(output_parts).strip())
+                output_buffer.append("\nprocess canceled")
+                return LocalResult(code=130, output=output_buffer.text().strip())
             if deadline and now > deadline:
                 kill_process_group()
                 flush_line()
                 message = f"process timed out after {timeout}s"
-                output_parts.append("\n" + message)
-                return LocalResult(code=124, output="".join(output_parts).strip())
+                output_buffer.append("\n" + message)
+                return LocalResult(code=124, output=output_buffer.text().strip())
             if (
                 on_line is not None
                 and heartbeat_interval is not None
@@ -3376,33 +3521,36 @@ def _run_process_streaming(
                     f"{heartbeat_message} ({max(1, int(now - started_at))}s elapsed)"
                 )
                 last_progress_at = now
-            stream = process.stdout
-            if stream is None:
-                break
-            ready, _, _ = select.select([stream], [], [], 0.2)
+            ready, _, _ = select.select([fd], [], [], 0.2)
             if ready:
-                chunk = stream.read(1)
-                if not chunk:
-                    if process.poll() is not None:
-                        break
-                    continue
-                output_parts.append(chunk)
-                if chunk in {"\n", "\r"}:
-                    flush_line()
-                else:
-                    line_buffer.append(chunk)
+                try:
+                    raw = os.read(fd, _STREAM_READ_CHUNK_BYTES)
+                except OSError:
+                    break
+                if not raw:
+                    break
+                chunk = decoder.decode(raw)
+                output_buffer.append(chunk)
+                _feed_stream_lines(chunk, line_buffer, line_size, flush_line)
                 continue
             if process.poll() is not None:
-                rest = stream.read() or ""
-                output_parts.append(rest)
-                for char in rest:
-                    if char in {"\n", "\r"}:
-                        flush_line()
-                    else:
-                        line_buffer.append(char)
+                while True:
+                    try:
+                        raw = os.read(fd, _STREAM_READ_CHUNK_BYTES)
+                    except OSError:
+                        raw = b""
+                    if not raw:
+                        break
+                    chunk = decoder.decode(raw)
+                    output_buffer.append(chunk)
+                    _feed_stream_lines(chunk, line_buffer, line_size, flush_line)
                 break
+        trailing = decoder.decode(b"", final=True)
+        if trailing:
+            output_buffer.append(trailing)
+            _feed_stream_lines(trailing, line_buffer, line_size, flush_line)
         flush_line()
-        return LocalResult(code=process.wait(), output="".join(output_parts))
+        return LocalResult(code=process.wait(), output=output_buffer.text())
     finally:
         if process.poll() is None:
             kill_process_group()
@@ -3857,7 +4005,6 @@ def _select_luma_compose_manifest(repo: Path, value: str) -> Path:
 
     from .compose import load_compose_deployment
     from .repo_paths import normalize_repo_relative_path
-    from .regions import VALID_REGIONS, parse_region_name
 
     selected = normalize_repo_relative_path(value, label="composeSidecar")
     repo_root = repo.resolve()
@@ -3889,43 +4036,9 @@ def _select_luma_compose_manifest(repo: Path, value: str) -> Path:
             f"selected composeSidecar references a missing Compose file: {compose_value}"
         )
 
-    volumes = raw.get("volumes")
-    storage_names = (
-        {
-            str(spec.get("storageClass"))
-            for spec in volumes.values()
-            if isinstance(spec, dict) and spec.get("storageClass")
-        }
-        if isinstance(volumes, dict)
-        else set()
-    )
-    sidecar_regions = set(VALID_REGIONS)
-    try:
-        sidecar_regions.add(parse_region_name(raw.get("region", "cn")))
-    except LumaError:
-        pass
-    services = raw.get("services") if isinstance(raw.get("services"), dict) else {}
-    for spec in services.values():
-        if not isinstance(spec, dict) or not spec.get("region"):
-            continue
-        try:
-            sidecar_regions.add(parse_region_name(spec.get("region")))
-        except LumaError:
-            pass
-    validation_storage = {
-        name: {
-            "provider": "nfs",
-            "mode": "external",
-            "endpoint": "nfs.invalid:/luma-sidecar-validation",
-            "regions": sorted(sidecar_regions),
-        }
-        for name in storage_names
-    }
     try:
         load_compose_deployment(
             sidecar_path,
-            storage_classes=validation_storage,
-            allow_sidecar_storage_classes=False,
             allow_build_services=True,
         )
     except LumaError as exc:
@@ -5125,7 +5238,13 @@ def update_luma_install(
         executor = LocalExecutor()
         if os_value == "darwin":
             refresh_command = _agent_install_command(config_path, executable=executable)
-            delayed_script = f"( sleep ${{LUMA_AGENT_RELOAD_DELAY_SECONDS:-20}}; {refresh_command} ) >/tmp/luma-node-agent-reload.log 2>&1 &"
+            reload_log_dir = config_path.parent
+            reload_log_path = reload_log_dir / "node-agent-reload.log"
+            delayed_script = (
+                f"install -d -m 0700 {shlex.quote(str(reload_log_dir))} && "
+                f"( sleep ${{LUMA_AGENT_RELOAD_DELAY_SECONDS:-20}}; {refresh_command} ) "
+                f">{shlex.quote(str(reload_log_path))} 2>&1 &"
+            )
             delayed_command = f"sh -c {shlex.quote(delayed_script)}"
             executor.sudo(delayed_command, timeout=10)
             restart_agent = False
@@ -5163,10 +5282,10 @@ def _manager_update_id(value: str) -> str:
 
 
 def _manager_update_ref(value: str) -> str:
-    install_ref = str(value or "").strip()
-    if not install_ref or len(install_ref) > 200 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", install_ref):
-        raise LumaError("installRef must be a Git tag, branch, or commit")
-    return install_ref
+    try:
+        return validate_install_ref(value)
+    except LumaError as exc:
+        raise LumaError("installRef must be a Git tag, branch, or commit") from exc
 
 
 def _manager_update_domain(value: str) -> str:
@@ -5399,109 +5518,20 @@ def _run_fixed_host_task(
         raise
 
 
-def _linux_prepare_nfs_command(name: str, path: str) -> str:
-    safe_path = _safe_absolute_path(path).rstrip("/") or "/"
-    export_file = f"/etc/exports.d/luma-{slugify(name)}.exports"
-    export_line = f"{safe_path} *(rw,async,no_subtree_check,no_auth_nlm,insecure,no_root_squash)"
-    return (
-        "set -euo pipefail; "
-        "export DEBIAN_FRONTEND=noninteractive; "
-        "command -v apt-get >/dev/null 2>&1 || { "
-        "echo 'automatic managed NFS preparation currently supports apt-based Linux only' >&2; "
-        "exit 1; "
-        "}; "
-        "if ! command -v exportfs >/dev/null 2>&1 || ! command -v mount.nfs >/dev/null 2>&1; then "
-        "for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do "
-        "[ -f \"$file\" ] || continue; "
-        "sed -i "
-        "-e 's#http://mirrors.ivolces.com/ubuntu#https://mirrors.aliyun.com/ubuntu#g' "
-        "-e 's#https://mirrors.ivolces.com/ubuntu#https://mirrors.aliyun.com/ubuntu#g' "
-        "-e 's#http://mirrors.cloud.aliyuncs.com/ubuntu#https://mirrors.aliyun.com/ubuntu#g' "
-        "-e 's#https://mirrors.cloud.aliyuncs.com/ubuntu#https://mirrors.aliyun.com/ubuntu#g' "
-        "\"$file\"; "
-        "done; "
-        "apt-get update; "
-        "apt-get install -y nfs-kernel-server nfs-common; "
-        "fi; "
-        f"install -d -m 755 {shlex.quote(safe_path)}; "
-        "install -d -m 755 /etc/exports.d; "
-        f"python3 - {shlex.quote(export_file)} {shlex.quote(export_line)} {shlex.quote(safe_path)} <<'PY'\n"
-        "import glob, os, pathlib, sys\n"
-        "target = pathlib.Path(sys.argv[1])\n"
-        "export_line = sys.argv[2]\n"
-        "export_path = sys.argv[3]\n"
-        "reused = False\n"
-        "for raw in glob.glob('/etc/exports.d/luma-*.exports'):\n"
-        "    candidate = pathlib.Path(raw)\n"
-        "    if candidate == target or not candidate.is_file():\n"
-        "        continue\n"
-        "    lines = [line.strip() for line in candidate.read_text().splitlines() if line.strip() and not line.lstrip().startswith('#')]\n"
-        "    if export_line in lines:\n"
-        "        target.unlink(missing_ok=True)\n"
-        "        reused = True\n"
-        "        break\n"
-        "    if any(line.split(None, 1)[0] == export_path for line in lines):\n"
-        "        raise SystemExit('managed NFS export path already exists with different options: ' + str(candidate))\n"
-        "if not reused:\n"
-        "    tmp = target.with_name(target.name + '.luma.tmp')\n"
-        "    tmp.write_text(export_line + '\\n')\n"
-        "    os.replace(tmp, target)\n"
-        "PY\n"
-        "mountpoint -q /proc/fs/nfsd || mount -t nfsd nfsd /proc/fs/nfsd; "
-        "systemctl enable --now nfs-server >/dev/null 2>&1 "
-        "|| systemctl enable --now nfs-kernel-server >/dev/null 2>&1 "
-        "|| service nfs-kernel-server restart; "
-        "exportfs -ra; "
-        f"exportfs -v | grep -F {shlex.quote(safe_path)} >/dev/null"
-    )
+def _validate_managed_volume_path(value: str) -> str:
+    safe_path = _safe_absolute_path(value)
+    normalized = os.path.normpath(safe_path)
+    from .nomad_security import deny_host_root
 
-
-def _linux_remove_nfs_command(name: str) -> str:
-    export_file = f"/etc/exports.d/luma-{slugify(name)}.exports"
-    return (
-        "set -euo pipefail; "
-        f"rm -f {shlex.quote(export_file)}; "
-        "if command -v exportfs >/dev/null 2>&1; then exportfs -ra; fi"
-    )
-
-
-def _macos_prepare_nfs_command(name: str, path: str) -> str:
-    safe_path = _safe_absolute_path(path).rstrip("/") or "/"
-    begin = f"# BEGIN LUMA {slugify(name)}"
-    end = f"# END LUMA {slugify(name)}"
-    export_line = f'"{safe_path}" -alldirs -maproot=root'
-    return (
-        "set -euo pipefail; "
-        f"install -d -m 755 {shlex.quote(safe_path)}; "
-        "touch /etc/exports; "
-        f"awk -v b={shlex.quote(begin)} -v e={shlex.quote(end)} "
-        "'$0==b{skip=1; next} $0==e{skip=0; next} !skip{print}' /etc/exports > /tmp/luma-exports.$$; "
-        f"printf '%s\\n%s\\n%s\\n' {shlex.quote(begin)} {shlex.quote(export_line)} {shlex.quote(end)} >> /tmp/luma-exports.$$; "
-        "cat /tmp/luma-exports.$$ > /etc/exports; "
-        "rm -f /tmp/luma-exports.$$; "
-        "/sbin/nfsd checkexports; "
-        "/sbin/nfsd enable >/dev/null 2>&1 || true; "
-        "/sbin/nfsd update || /sbin/nfsd restart"
-    )
-
-
-def _macos_remove_nfs_command(name: str) -> str:
-    begin = f"# BEGIN LUMA {slugify(name)}"
-    end = f"# END LUMA {slugify(name)}"
-    return (
-        "set -euo pipefail; "
-        "[ -f /etc/exports ] || exit 0; "
-        f"awk -v b={shlex.quote(begin)} -v e={shlex.quote(end)} "
-        "'$0==b{skip=1; next} $0==e{skip=0; next} !skip{print}' /etc/exports > /tmp/luma-exports.$$; "
-        "cat /tmp/luma-exports.$$ > /etc/exports; "
-        "rm -f /tmp/luma-exports.$$; "
-        "/sbin/nfsd checkexports; "
-        "/sbin/nfsd update || true"
-    )
+    deny_host_root({"TaskGroups": [{"Tasks": [{"Config": {"mount": [{"type": "bind", "source": normalized, "target": "/data"}]}}]}]})
+    segments = [part for part in Path(normalized).parts if part != "/"]
+    if len(segments) < 2:
+        raise LumaError(f"managed volume path must be at least 2 path segments deep: {normalized}")
+    return normalized
 
 
 def _volume_path_command(path: str, *, preserve_existing: bool = False) -> str:
-    safe_path = _safe_absolute_path(path)
+    safe_path = _validate_managed_volume_path(path)
     if preserve_existing:
         # Database directories set their own restrictive mode (e.g. 0700).
         # Adopting an existing local directory must not chmod its data root.
@@ -5519,9 +5549,9 @@ def _volume_path_command(path: str, *, preserve_existing: bool = False) -> str:
 
 
 def _remove_volume_path_command(root: str, relative: str) -> str:
-    safe_root = Path(_safe_absolute_path(root))
+    safe_root = Path(_validate_managed_volume_path(root))
     safe_relative = Path(_safe_relative_path(relative))
-    full_path = safe_root / safe_relative
+    full_path = Path(_validate_managed_volume_path(str(safe_root / safe_relative)))
     if full_path == safe_root:
         raise LumaError("refusing to remove storage root")
     return (
@@ -5592,8 +5622,9 @@ def _safe_absolute_path(value: str) -> str:
 
 
 def _safe_relative_path(value: str) -> str:
-    path = Path(value)
-    if path.is_absolute() or ".." in path.parts or not str(path):
+    text = str(value or "").strip()
+    path = Path(text)
+    if not text or path.is_absolute() or ".." in path.parts or path == Path("."):
         raise LumaError(f"volume path must be relative without ..: {value}")
     return str(path)
 

@@ -26,7 +26,7 @@ uiCapabilities:
   - observe.alerts
   - observe.settings
 requirements:
-  minMemoryMb: 4096
+  minMemoryMb: 6144
   recommendedMemoryMb: 8192
   minCpu: 2
   stateful: true

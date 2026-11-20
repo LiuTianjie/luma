@@ -1,6 +1,7 @@
 """Behavioral coverage for time-bounded metrics and incomplete heartbeats."""
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -44,7 +45,7 @@ class MetricsRetentionTests(unittest.TestCase):
         self.record("b", 20)
         self.record("a", ts=3030, stats=False)
         self.assertEqual(metrics.load_history("service", "app_web")["cpuPercent"][-1], [3030, 20])
-        scratch = json.loads(metrics.history_path().read_text())["_serviceScratch"]
+        scratch = metrics.load_history_snapshot()["_serviceScratch"]
         self.assertNotIn("a", scratch["app_web"])
 
     def test_omitted_snapshot_retains_previous_contribution(self):
@@ -56,7 +57,7 @@ class MetricsRetentionTests(unittest.TestCase):
     def test_retired_entities_are_pruned_by_age_on_next_write(self):
         self.record("retired")
         metrics.record_samples("new", {"cpuPercent": 1}, [], now=3000 + metrics.retention_seconds() + 1)
-        raw = json.loads(metrics.history_path().read_text())
+        raw = metrics.load_history_snapshot()
         self.assertNotIn("retired", raw["nodes"])
         self.assertEqual(raw["services"], {})
         self.assertEqual(raw["_serviceScratch"], {})
@@ -66,12 +67,12 @@ class MetricsRetentionTests(unittest.TestCase):
         self.assertEqual(metrics.load_history("node", "old", window=100000, now=100000), {"cpuPercent": []})
 
     def test_legacy_duplicate_history_is_compacted_without_failure(self):
-        metrics.history_path().write_text(json.dumps({"version": 1, "nodes": {}, "services": {
+        metrics.legacy_history_path().write_text(json.dumps({"version": 1, "nodes": {}, "services": {
             "legacy": {"cpuPercent": [[3000, 5], [3000, 7], [3004, 10], [3030, 11], ["bad", 1], [3040, "NaN"]]},
-        }}))
+        }}), encoding="utf-8")
         self.assertEqual(metrics.load_history("service", "legacy")["cpuPercent"], [[3004, 10], [3030, 11]])
         self.record("new", ts=3050)
-        self.assertEqual(json.loads(metrics.history_path().read_text())["version"], 2)
+        self.assertEqual(metrics.load_history_snapshot()["version"], metrics.SCHEMA_VERSION)
 
     def test_missing_metrics_do_not_become_zero(self):
         metrics.record_samples("a", {}, [{"service": "app_web", "cpuPercent": 12}], now=3000)
@@ -98,6 +99,45 @@ class MetricsRetentionTests(unittest.TestCase):
         for ts in range(3000, 3301, 30):
             metrics.record_samples("a", {"memoryUsedPercent": 95}, [], now=ts)
         self.assertIsNone(metrics.sustained_breach("node", "a", "memoryUsedPercent", threshold=85, duration_seconds=900, now=3600))
+
+    def test_retention_pruning_deletes_expired_rows_and_reclaims_pages(self):
+        # Populate enough samples across nodes and ticks to span multiple SQLite pages.
+        for tick in range(60):
+            ts = 10_000 + tick * 30
+            for idx in range(25):
+                metrics.record_samples(
+                    f"node-{idx}",
+                    {
+                        "cpuPercent": float(idx),
+                        "memoryUsedPercent": 50.0,
+                        "diskUsedPercent": 40.0,
+                        "inodesUsedPercent": 10.0,
+                    },
+                    [],
+                    now=ts,
+                )
+
+        conn = sqlite3.connect(str(metrics.history_path()))
+        try:
+            peak_rows = conn.execute("SELECT COUNT(*) FROM metric_samples").fetchone()[0]
+            peak_pages = conn.execute("PRAGMA page_count").fetchone()[0]
+            self.assertEqual(peak_rows, 60 * 25 * 4)
+            self.assertGreater(peak_pages, 10)
+        finally:
+            conn.close()
+
+        # Advance past retention so all 6,000 old rows expire on the next write.
+        after_expiry = 10_000 + 60 * 30 + metrics.retention_seconds() + 60
+        metrics.record_samples("fresh-node", {"cpuPercent": 1.0}, [], now=after_expiry)
+
+        conn = sqlite3.connect(str(metrics.history_path()))
+        try:
+            remaining_rows = conn.execute("SELECT COUNT(*) FROM metric_samples").fetchone()[0]
+            pages_after = conn.execute("PRAGMA page_count").fetchone()[0]
+            self.assertEqual(remaining_rows, 1)
+            self.assertLess(pages_after, peak_pages)
+        finally:
+            conn.close()
 
 
 class HeartbeatMetricsIntegrationTests(unittest.TestCase):
@@ -138,7 +178,7 @@ class HeartbeatMetricsIntegrationTests(unittest.TestCase):
             })
 
     def scratch(self):
-        return json.loads(metrics.history_path().read_text())["_serviceScratch"]
+        return metrics.load_history_snapshot()["_serviceScratch"]
 
     def test_metrics_only_heartbeat_preserves_service_contribution_and_timestamp(self):
         self.now.return_value = 3030

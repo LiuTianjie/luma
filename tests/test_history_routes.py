@@ -108,19 +108,20 @@ class HistoryRetentionTests(unittest.TestCase):
         self.assertIn('d-0', {row['id'] for row in rows})
         self.assertEqual(server.handle_deployment_history_get(self.token, 'd-0')['event']['steps'], [{'message': '0'}])
 
-    def test_cancellation_keeps_more_than_300_build_events(self):
-        self.state['buildRuns'] = {'b1': {'id': 'b1', 'status': 'running', 'createdAt': 1, 'updatedAt': 1,
+    def test_completion_keeps_more_than_300_build_events(self):
+        self.state['buildRuns'] = {'b1': {'id': 'b1', 'mode': 'local', 'status': 'running', 'createdAt': 1, 'updatedAt': 1,
                                         'events': [{'message': f'line-{index}'} for index in range(350)]}}
         server.save_state(self.state)
-        server.handle_build_run_cancel(self.token, 'b1')
+        server.handle_local_build_fail(self.token, 'b1', {'message': 'stopped locally'})
         page = server.handle_build_run_get(self.token, 'b1', {'limit': 100})
         events = list(page['run']['events'])
         while page['eventsPage']['hasMore']:
             page = server.handle_build_run_get(self.token, 'b1', {'limit': 100, 'cursor': page['eventsPage']['nextCursor']})
             events.extend(page['run']['events'])
-        self.assertEqual(len(events), 351)
+        self.assertEqual(len(events), 350)
         self.assertEqual(events[0]['message'], 'line-0')
-        self.assertEqual(events[-1]['status'], 'canceled')
+        self.assertEqual(events[-1]['message'], 'line-349')
+        self.assertEqual(page['run']['status'], 'failed')
 
     def test_legacy_prune_hook_never_iterates_or_deletes_historical_runs(self):
         class NoScan(dict):

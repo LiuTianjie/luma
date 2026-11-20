@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from typing import Any
 
@@ -37,7 +38,7 @@ def handle_metrics_history_batch(token: str, body: dict[str, Any]) -> dict[str, 
             raise ValueError()
     except (ValueError, TypeError):
         raise LumaError("until must be a positive Unix timestamp")
-    # One JSON parse per request and a common clock for every target. Duplicate
+    # One history snapshot read per request and a common clock for every target. Duplicate
     # targets keep their response position but do not repeat filtering/compaction.
     snapshot = None
     cache: dict[tuple[str, str], dict[str, Any]] = {}
@@ -67,7 +68,7 @@ def handle_metrics_history_batch(token: str, body: dict[str, Any]) -> dict[str, 
                     **history_metadata(series, requested_window, now=until),
                 }
             item["payload"] = cache[key]
-        except (LumaError, OSError, TypeError, ValueError, OverflowError) as exc:
+        except (LumaError, OSError, sqlite3.Error, TypeError, ValueError, OverflowError) as exc:
             # A bad target must not discard other targets' successful histories.
             item["error"] = str(exc)
         results.append(item)

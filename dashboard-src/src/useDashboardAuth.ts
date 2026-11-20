@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { sessionCredential } from "./apiClient";
+import { sessionCredential, UNAUTHORIZED_EVENT } from "./apiClient";
 import {
   exchangeToken,
   fetchAuthConfig,
@@ -9,6 +9,7 @@ import {
   SignInUnavailable,
   type AuthConfig,
 } from "./authApi";
+import { useDashboardQueryClient } from "./queryClient";
 
 // Earlier dashboards kept the management token here. It is traded for a session
 // once and removed; nothing is written back.
@@ -18,6 +19,7 @@ const isDev = typeof window !== "undefined" && (window.location.hostname === "lo
 export type AuthStatus = "checking" | "signedOut" | "signedIn";
 
 export function useDashboardAuth() {
+  const queryClient = useDashboardQueryClient();
   const [token, setToken] = useState("");
   const [status, setStatus] = useState<AuthStatus>("checking");
   const [config, setConfig] = useState<AuthConfig | null>(null);
@@ -38,10 +40,11 @@ export function useDashboardAuth() {
   }, []);
 
   const signedOut = useCallback(() => {
+    queryClient.clear();
     setToken("");
     setStatus("signedOut");
     void refreshConfig();
-  }, [refreshConfig]);
+  }, [queryClient, refreshConfig]);
 
   useEffect(() => {
     let active = true;
@@ -111,6 +114,13 @@ export function useDashboardAuth() {
     setExpired(true);
     signedOut();
   }, [signedOut]);
+
+  useEffect(() => {
+    if (status !== "signedIn") return;
+    const onUnauthorized = () => expire();
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+  }, [status, expire]);
 
   return { token, status, config, expired, signInWithToken, signInPasskey, adoptSession, signOut, expire };
 }

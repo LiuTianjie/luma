@@ -57,7 +57,7 @@ test("registry retains exact long identifiers and exposes a keyboard-scrollable 
 });
 test("credentials retain full long names, scope and rotation actions inside their scroll region", () => {
   route = "/settings/secrets";
-  const html = renderToStaticMarkup(React.createElement(CredentialsPage, { lang: "en", token: "test", vm: { storageClasses: [] } }));
+  const html = renderToStaticMarkup(React.createElement(CredentialsPage, { lang: "en", token: "test" }));
   assert.ok(html.includes(longName));
   assert.match(html, /tabindex="0" role="region" aria-label="Secrets, horizontally scrollable"/);
   assert.match(html, /Rotate/);

@@ -148,7 +148,7 @@ class DeployWorkflowTests(unittest.TestCase):
     def test_compose_deploy_checks_and_records_the_stack(self):
         Path('docker-compose.yml').write_text('services:\n  web:\n    image: nginx:alpine\n')
         Path('luma.compose.yml').write_text('name: app\ncompose: docker-compose.yml\nregion: cn\nservices:\n  web:\n    exposure: none\n')
-        with patch('luma.cli.deploy._control_storage_classes_for_local', return_value={}), patch('luma.cli.deploy._control_node_records_for_local', return_value={}):
+        with patch('luma.cli.deploy._control_node_records_for_local', return_value={}):
             code, _, error, _ = self.invoke('compose', 'deploy', 'luma.compose.yml')
         self.assertEqual(code, 0, error)
         self.assertEqual(handle_workflow_get(self.token, 'app')['workflow']['recipe']['method'], 'compose-deploy')

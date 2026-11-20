@@ -120,3 +120,28 @@ func TestReaperSizeCapPriorityAndWatermark(t *testing.T) {
 		t.Fatalf("unexpected status snapshot: %+v", st)
 	}
 }
+
+func TestReaperNeverDropsActiveTodayOrCurrentMonthPartition(t *testing.T) {
+	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	backend := &fakeBackend{
+		totalBytes: 1500,
+		parts: []clickhouse.PartitionStat{
+			{Table: "events", Partition: "20261115", Bytes: 500},
+			{Table: "events", Partition: "20261118", Bytes: 500},        // today's active day partition
+			{Table: "events_hourly", Partition: "202611", Bytes: 500},   // current active month partition
+		},
+	}
+	cfg := &config.Config{
+		RetentionDays:   7,
+		MaxStorageBytes: 100, // far below remaining 1000B so reaper wants to drop everything it can
+	}
+	r := NewReaper(cfg, backend, nil, nil)
+	if err := r.RunOnce(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+
+	wantDropped := []string{"events/20261115"}
+	if !reflect.DeepEqual(backend.dropped, wantDropped) {
+		t.Fatalf("expected only older partition dropped, got %v (want %v)", backend.dropped, wantDropped)
+	}
+}

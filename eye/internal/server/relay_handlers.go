@@ -38,7 +38,11 @@ func (s *Server) handleRelayIngest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid relay json", http.StatusBadRequest)
 		return
 	}
-	s.batcher.Enqueue(batch)
+	if s.batcher != nil && !s.batcher.Enqueue(batch) {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "relay queue overloaded, retry later", http.StatusServiceUnavailable)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

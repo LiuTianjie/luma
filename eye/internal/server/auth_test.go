@@ -40,7 +40,11 @@ func newTestAuthServer(t *testing.T, dataDir string) *Server {
 	if err != nil {
 		t.Fatalf("NewBatcher: %v", err)
 	}
-	return New(cfg, store, nil, batcher, sym, metrics)
+	srv, err := New(cfg, store, nil, batcher, sym, metrics)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return srv
 }
 
 func TestPersistentSessionAndCustomPasswordAcrossServerRestart(t *testing.T) {
@@ -80,6 +84,7 @@ func TestPersistentSessionAndCustomPasswordAcrossServerRestart(t *testing.T) {
 		"new_password": "CloudflareGradePassword!99",
 	})
 	reqPw := httptest.NewRequest(http.MethodPost, "/api/v1/auth/password", bytes.NewReader(pwBody))
+	reqPw.Header.Set("Origin", "https://eye.itool.tech")
 	reqPw.AddCookie(sessCookie)
 	wPw := httptest.NewRecorder()
 	srv1.Handler().ServeHTTP(wPw, reqPw)

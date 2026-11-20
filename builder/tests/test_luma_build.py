@@ -1080,7 +1080,7 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(BuildError, "must share the primary repository HTTPS origin"):
+            with self.assertRaisesRegex(BuildError, "must use the primary repository's HTTPS origin"):
                 _prepare_git_contexts(
                     primary,
                     {"x-luma-git-contexts": {"shared": {"lock": "bad.lock.json"}}},
@@ -1307,7 +1307,7 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
                 self.assertTrue(app.state.deploy_worker.run_pending_once())
             self.assertEqual(deployed_ids, [b_new, b_manual_rollback])
 
-    def test_retry_build_preserves_encrypted_env_secrets_after_build_or_deploy_failure(self) -> None:
+    def test_terminal_states_clear_encrypted_env_secrets_and_retry_accepts_fresh_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app = create_app(
                 data_dir=Path(tmp) / "data",
@@ -1321,6 +1321,7 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
             hdr = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
             rtok = client.post("/v1/runners/tokens", headers=hdr, json={"name": "r1"}).json()["runner"]["runnerToken"]
 
+            # 1) Failed deploy clears encrypted_env_secrets from SQLite immediately
             b1 = client.post(
                 "/v1/builds",
                 headers=hdr,
@@ -1337,14 +1338,32 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
                 headers={"Authorization": f"Bearer {rtok}"},
                 json={"buildId": b1, "status": "succeeded", "result": {"kind": "service", "image": "img:1", "manifest": "name: pay\nregion: cn\n"}},
             )
-
-            # Simulate transient Control failure during deploy
             with patch.object(app.state.deployer, "deploy_built_artifact", side_effect=BuildError("Control 503")):
                 self.assertTrue(app.state.deploy_worker.run_pending_once())
             self.assertEqual(client.get(f"/v1/builds/{b1}", headers=hdr).json()["build"]["status"], "failed")
+            with app.state.store._conn(write=False) as conn:
+                self.assertEqual(conn.execute("SELECT encrypted_env_secrets FROM builds WHERE id = ?", (b1,)).fetchone()[0], "")
 
-            # Retry from dashboard/CLI without re-uploading .env -> envSecrets MUST survive!
-            b2 = client.post(f"/v1/builds/{b1}/retry", headers=hdr, json={}).json()["build"]["id"]
+            # 2) Canceled queued build also clears encrypted_env_secrets
+            b_cancel = client.post(
+                "/v1/builds",
+                headers=hdr,
+                json={
+                    "repository": "acme/cancel-pay",
+                    "ref": "main",
+                    "envSecrets": {"API_KEY": "secret-canceled"},
+                },
+            ).json()["build"]["id"]
+            client.post(f"/v1/builds/{b_cancel}/cancel", headers=hdr)
+            with app.state.store._conn(write=False) as conn:
+                self.assertEqual(conn.execute("SELECT encrypted_env_secrets FROM builds WHERE id = ?", (b_cancel,)).fetchone()[0], "")
+
+            # 3) Retry with freshly supplied envSecrets deploys cleanly and clears after success
+            b2 = client.post(
+                f"/v1/builds/{b1}/retry",
+                headers=hdr,
+                json={"envSecrets": {"STRIPE_SECRET": "sk_live_fresh"}},
+            ).json()["build"]["id"]
             client.post("/v1/runner/lease", headers={"Authorization": f"Bearer {rtok}"}, json={"nativePlatform": "linux/amd64"})
             client.post(
                 "/v1/runner/complete",
@@ -1359,7 +1378,9 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
 
             with patch.object(app.state.deployer, "deploy_built_artifact", side_effect=ok_deploy):
                 self.assertTrue(app.state.deploy_worker.run_pending_once())
-            self.assertEqual(captured_secrets, {"STRIPE_SECRET": "sk_live_keep_me"})
+            self.assertEqual(captured_secrets, {"STRIPE_SECRET": "sk_live_fresh"})
+            with app.state.store._conn(write=False) as conn:
+                self.assertEqual(conn.execute("SELECT encrypted_env_secrets FROM builds WHERE id = ?", (b2,)).fetchone()[0], "")
 
     def test_monorepo_cache_variants_and_cloud_registry_no_proxy(self) -> None:
         # Default single-service repo keeps existing tag unchanged
@@ -1866,6 +1887,165 @@ class SecurityAndReliabilityRegressionTests(unittest.TestCase):
             self.assertIn("type=image,push=true,oci-mediatypes=false", cmd)
             self.assertIn("type=inline", cmd)
             self.assertIn("crpi-x.cn-beijing.personal.cr.aliyuncs.com/luma-acr/acme-app:cache-acme-app-linux-amd64", cmd)
+
+    def test_compose_dockerfile_path_traversal_rejected(self) -> None:
+        for bad_dockerfile in ("/etc/passwd", "../../../etc/passwd", "../outside/Dockerfile"):
+            with self.subTest(dockerfile=bad_dockerfile), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+
+                def fake_clone(*, repo_url, ref, dest, git_auth, proxy="", _df=bad_dockerfile):
+                    dest.mkdir(parents=True, exist_ok=True)
+                    (dest / "luma.compose.yml").write_text(
+                        "name: stack-evil\ncompose: docker-compose.yml\nregion: cn\n", encoding="utf-8"
+                    )
+                    (dest / "docker-compose.yml").write_text(
+                        f"services:\n  web:\n    build:\n      context: .\n      dockerfile: {_df}\n",
+                        encoding="utf-8",
+                    )
+                    return "abcdef123456", "abcdef123456" + "0" * 28
+
+                with patch("luma_build.runner._clone_repo", side_effect=fake_clone), patch(
+                    "luma_build.runner._ensure_runner_buildx", return_value="luma-runner"
+                ), patch("luma_build.runner._run_buildx_command") as mock_bx:
+                    with self.assertRaisesRegex(BuildError, "escapes repository root"):
+                        execute_build_task(
+                            {
+                                "repoUrl": "https://github.com/acme/stack.git",
+                                "repoSlug": "acme/stack",
+                                "ref": "main",
+                                "registryHost": "100.66.177.70:5000",
+                                "pushHost": "100.66.177.70:5000",
+                                "platforms": ["linux/amd64"],
+                            },
+                            docker_bin="docker",
+                            native_platform="linux/amd64",
+                            buildx_state_dir=root / "buildx",
+                        )
+                    mock_bx.assert_not_called()
+
+    def test_deployer_enforces_authorized_app_name_and_allows_auto_discovery(self) -> None:
+        from luma_build.deployer import ControlDeployClient
+
+        client = ControlDeployClient("https://luma.example.com", "deploy-token")
+        with patch.object(client, "_stream_or_post", return_value={"service": "orders"}) as mock_post:
+            # Matching appName succeeds
+            client.deploy_built_artifact(
+                build_record={
+                    "repoUrl": "https://github.com/acme/orders.git",
+                    "ref": "main",
+                    "request": {"appName": "orders"},
+                    "result": {
+                        "kind": "service",
+                        "image": "registry.test/acme/orders@sha256:" + "a" * 64,
+                        "manifest": "name: orders\nregion: cn\n",
+                    },
+                }
+            )
+            self.assertEqual(mock_post.call_count, 1)
+
+            # Compromised runner overriding name against request.appName is rejected
+            with self.assertRaisesRegex(BuildError, "does not match authorized app"):
+                client.deploy_built_artifact(
+                    build_record={
+                        "repoUrl": "https://github.com/acme/orders.git",
+                        "ref": "main",
+                        "request": {"appName": "orders"},
+                        "result": {
+                            "kind": "service",
+                            "image": "registry.test/acme/orders@sha256:" + "a" * 64,
+                            "manifest": "name: prod-auth\nregion: cn\n",
+                        },
+                    }
+                )
+
+            # Compromised runner overriding compose sidecar name against request.manifest is rejected
+            with self.assertRaisesRegex(BuildError, "does not match authorized app"):
+                client.deploy_built_artifact(
+                    build_record={
+                        "repoUrl": "https://github.com/acme/stack.git",
+                        "ref": "main",
+                        "request": {"manifest": "name: staging-stack\ncompose: docker-compose.yml\n"},
+                        "result": {
+                            "kind": "compose",
+                            "composeContent": "services:\n  web:\n    image: x\n",
+                            "manifest": "name: prod-stack\ncompose: docker-compose.yml\n",
+                        },
+                    }
+                )
+
+            # Auto-discovered manifest without appName or request.manifest still succeeds
+            client.deploy_built_artifact(
+                build_record={
+                    "repoUrl": "https://github.com/acme/auto.git",
+                    "ref": "main",
+                    "request": {},
+                    "result": {
+                        "kind": "service",
+                        "image": "registry.test/acme/auto@sha256:" + "b" * 64,
+                        "manifest": "name: auto-svc\nregion: cn\n",
+                    },
+                }
+            )
+            self.assertEqual(mock_post.call_count, 2)
+
+    def test_secret_box_pbkdf2_derivation_with_legacy_sha256_fallback(self) -> None:
+        from cryptography.fernet import Fernet
+        from luma_build.crypto import SecretBox, _derive_fernet_key, _derive_legacy_fernet_key
+
+        master = "super-secret-master-key-1234"
+        pbkdf2_key = _derive_fernet_key(master)
+        legacy_key = _derive_legacy_fernet_key(master)
+        self.assertNotEqual(pbkdf2_key, legacy_key)
+
+        legacy_token = Fernet(legacy_key).encrypt(b"legacy-credential").decode("ascii")
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ", {"LUMA_BUILD_MASTER_KEY": master}, clear=False
+        ):
+            box = SecretBox.from_env_or_file(Path(tmp))
+            # Reads legacy SHA-256 encrypted values seamlessly
+            self.assertEqual(box.decrypt(legacy_token), "legacy-credential")
+            # Writes new values using PBKDF2-derived key
+            new_token = box.encrypt("new-credential")
+            self.assertEqual(box.decrypt(new_token), "new-credential")
+            self.assertEqual(Fernet(pbkdf2_key).decrypt(new_token.encode("ascii")), b"new-credential")
+
+    def test_idle_runner_poll_throttles_last_seen_writes(self) -> None:
+        from luma_build.store import BuildStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = BuildStore(Path(tmp) / "data", default_registry_host="100.66.177.70:5000")
+            rtok = store.create_runner_token(name="idle-r1")["runnerToken"]
+            first = store.poll_and_lease(rtok, {"nativePlatform": "linux/amd64"}, now=1000)
+            self.assertIsNone(first["task"])
+            self.assertEqual(first["runner"]["lastSeenAt"], 1000)
+
+            # Polling 2 seconds later with no queued builds does NOT update last_seen_at
+            second = store.poll_and_lease(rtok, {"nativePlatform": "linux/amd64"}, now=1002)
+            self.assertIsNone(second["task"])
+            self.assertEqual(second["runner"]["lastSeenAt"], 1000)
+
+            # Polling 15 seconds later refreshes last_seen_at
+            third = store.poll_and_lease(rtok, {"nativePlatform": "linux/amd64"}, now=1015)
+            self.assertIsNone(third["task"])
+            self.assertEqual(third["runner"]["lastSeenAt"], 1015)
+
+    def test_runner_and_http_shims_delegate_to_canonical_luma_implementation(self) -> None:
+        from luma import builder_runner as canonical_runner
+        from luma import runner_http as canonical_http
+        from luma_build import runner as compat_runner
+        from luma_build import runner_http as compat_http
+
+        self.assertIs(compat_http.interruptible_urlopen, canonical_http.interruptible_urlopen)
+        self.assertTrue(issubclass(compat_runner.RunnerDaemon, canonical_runner.RunnerDaemon))
+        self.assertTrue(issubclass(compat_runner.PlatformRequeueRequired, BuildError))
+
+        with patch("luma_build.runner.find_docker_binary", side_effect=canonical_runner.LumaError("no docker")):
+            with self.assertRaisesRegex(BuildError, "no docker"):
+                compat_runner.RunnerDaemon(
+                    server_url="https://build.test",
+                    runner_token="lbr_test",
+                    state_dir=Path("/tmp/unused-runner-state"),
+                )
 
 
 if __name__ == "__main__":

@@ -202,6 +202,9 @@ func (r *Reaper) RunOnce(ctx context.Context, now time.Time) error {
 					if (chBytes + dataDirBytes) <= lowWatermark {
 						break
 					}
+					if isActivePartition(p.Partition, now) {
+						continue
+					}
 					dCtx, dCancel := context.WithTimeout(ctx, 15*time.Second)
 					err := r.ch.DropPartition(dCtx, p.Table, p.Partition)
 					dCancel()
@@ -239,6 +242,19 @@ func (r *Reaper) RunOnce(ctx context.Context, now time.Time) error {
 			dropped, prunedMaps, float64(chBytes+dataDirBytes)/(1024*1024))
 	}
 	return chErr
+}
+
+func isActivePartition(partition string, now time.Time) bool {
+	todayDay := now.UTC().Format("20060102")
+	todayMonth := todayDay[:6]
+	switch len(partition) {
+	case 8:
+		return partition >= todayDay
+	case 6:
+		return partition >= todayMonth
+	default:
+		return false
+	}
 }
 
 func normalizePartitionDay(partition string) string {

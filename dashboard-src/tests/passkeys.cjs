@@ -84,3 +84,26 @@ test('signed-out and missing sign-in API are told apart', async () => {
     await assert.rejects(auth.fetchCurrentSession(), auth.SignInUnavailable);
   } finally { global.fetch = previous; }
 });
+
+test('readJson throws ApiError with status and dispatches luma:unauthorized on HTTP 401', async () => {
+  const prevWindow = global.window;
+  const prevCustomEvent = global.CustomEvent;
+  const events = [];
+  global.CustomEvent = class CustomEvent {
+    constructor(type) { this.type = type; }
+  };
+  global.window = {
+    dispatchEvent(ev) { events.push(ev.type); return true; },
+  };
+  try {
+    const resp = { ok: false, status: 401, text: async () => JSON.stringify({ error: 'session expired' }) };
+    await assert.rejects(
+      apiClient.readJson(resp),
+      (err) => err instanceof apiClient.ApiError && err.status === 401 && /session expired/.test(err.message),
+    );
+    assert.deepEqual(events, ['luma:unauthorized']);
+  } finally {
+    global.window = prevWindow;
+    global.CustomEvent = prevCustomEvent;
+  }
+});

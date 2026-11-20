@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
 from .cdn import CdnSpec, parse_cdn_block, validate_cdn_exposure
 from .config import LumaConfig
@@ -15,30 +15,12 @@ from .regions import parse_region_name, validate_region_exposure_syntax
 from .service import VALID_EXPOSURES, parse_redirect_from, slugify, tcp_entrypoint_name
 
 
-VALID_STORAGE_PROVIDERS = {"nfs"}
-VALID_STORAGE_MODES = {"managed", "external"}
 VALID_ACCESS_MODES = {"ReadWriteOnce", "ReadWriteMany"}
-DEFAULT_NFS_MOUNT_OPTIONS = "nfsvers=4,rw,soft,timeo=100,retrans=10,noresvport"
-
-
-@dataclass(frozen=True)
-class StorageClassSpec:
-    name: str
-    provider: str
-    mode: str = "managed"
-    node: Optional[str] = None
-    path: Optional[str] = None
-    endpoint: Optional[str] = None
-    mount_options: str = DEFAULT_NFS_MOUNT_OPTIONS
-    nodes: List[str] = field(default_factory=list)
-    regions: List[str] = field(default_factory=list)
-    raw: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class ComposeVolumeSpec:
     name: str
-    storage_class: Optional[str] = None
     path: Optional[str] = None
     access_mode: str = "ReadWriteOnce"
     local_node: Optional[str] = None
@@ -49,8 +31,6 @@ class ComposeVolumeSpec:
 
     @property
     def kind(self) -> str:
-        if self.storage_class:
-            return "storageClass"
         if self.local_node or self.local_path:
             return "local"
         return "unmanaged"
@@ -84,7 +64,6 @@ class ComposeDeploymentSpec:
     compose: Dict[str, Any]
     name: str
     region: str
-    storage_classes: Dict[str, StorageClassSpec]
     volumes: Dict[str, ComposeVolumeSpec]
     services: Dict[str, ComposeServiceSpec]
     warnings: List[str] = field(default_factory=list)
@@ -98,8 +77,6 @@ class ComposeDeploymentSpec:
 def load_compose_deployment(
     path: Path,
     *,
-    storage_classes: Dict[str, Any] | None = None,
-    allow_sidecar_storage_classes: bool = True,
     allow_build_services: bool = False,
 ) -> ComposeDeploymentSpec:
     sidecar = load_yaml(path)
@@ -117,28 +94,12 @@ def load_compose_deployment(
     if not isinstance(compose.get("services"), dict) or not compose["services"]:
         raise LumaError(f"{compose_path} requires a non-empty services mapping")
 
-    if storage_classes is not None:
-        if not allow_sidecar_storage_classes and sidecar.get("storageClasses"):
-            raise LumaError("storageClasses are managed by Luma Control; register them with luma storage set")
-        storage_raw = storage_classes
-    else:
-        storage_raw = sidecar.get("storageClasses") or {}
-    storage_classes_loaded = _load_storage_classes(storage_raw)
-    volumes = _load_compose_volumes(sidecar.get("volumes") or {}, storage_classes_loaded)
-    referenced_storage_classes = {
-        volume.storage_class
-        for volume in volumes.values()
-        if volume.storage_class
-    }
-    storage_classes_loaded = {
-        name: storage_classes_loaded[name]
-        for name in sorted(referenced_storage_classes)
-        if name in storage_classes_loaded
-    }
+    if sidecar.get("storageClasses") is not None and sidecar.get("storageClasses") != {}:
+        raise LumaError("storageClasses are not supported; use local storage instead")
+    volumes = _load_compose_volumes(sidecar.get("volumes") or {})
     services = _load_compose_services(sidecar.get("services") or {})
     warnings = validate_compose_deployment_data(
         compose,
-        storage_classes_loaded,
         volumes,
         services,
         default_region=str(region),
@@ -150,7 +111,6 @@ def load_compose_deployment(
         compose=compose,
         name=name.strip(),
         region=str(region),
-        storage_classes=storage_classes_loaded,
         volumes=volumes,
         services=services,
         warnings=warnings,
@@ -241,24 +201,10 @@ def storage_summary(deployment: ComposeDeploymentSpec, *, node_records: Dict[str
         if volume_name not in deployment.volumes
     )
     return {
-        "storageClasses": [
-            {
-                "name": item.name,
-                "provider": item.provider,
-                "mode": item.mode,
-                "node": item.node or "",
-                "endpoint": item.endpoint or "",
-                "path": item.path or "",
-                "regions": item.regions,
-                "nodes": item.nodes,
-            }
-            for item in deployment.storage_classes.values()
-        ],
         "volumes": [
             {
                 "name": item.name,
                 "kind": item.kind,
-                "storageClass": item.storage_class or "",
                 "accessMode": item.access_mode,
                 "node": item.local_node or "",
                 "path": item.path or item.local_path or "",
@@ -267,7 +213,6 @@ def storage_summary(deployment: ComposeDeploymentSpec, *, node_records: Dict[str
             }
             for item in deployment.volumes.values()
         ],
-        "mounts": resolve_storage_mounts(deployment, node_records=node_records) if node_records is not None else [],
         "unmanagedVolumes": unmanaged,
         "warnings": list(deployment.warnings),
     }
@@ -281,7 +226,6 @@ def init_compose_sidecar(compose_path: Path, output: Path) -> Dict[str, Any]:
         "name": slugify(compose_path.parent.name or "app-stack"),
         "compose": str(compose_path),
         "region": "cn",
-        "storageClasses": {},
         "volumes": {str(name): {} for name in volumes.keys()},
         "services": {str(name): {"region": "cn", "exposure": "none"} for name in services.keys()},
     }
@@ -291,7 +235,6 @@ def init_compose_sidecar(compose_path: Path, output: Path) -> Dict[str, Any]:
 
 def validate_compose_deployment_data(
     compose: Dict[str, Any],
-    storage_classes: Dict[str, StorageClassSpec],
     volumes: Dict[str, ComposeVolumeSpec],
     services: Dict[str, ComposeServiceSpec],
     *,
@@ -327,8 +270,8 @@ def validate_compose_deployment_data(
     for volume_name in volumes:
         if declared_volume_names and volume_name not in declared_volume_names:
             warnings.append(f"volume {volume_name} is declared in Luma sidecar but not in compose top-level volumes")
-    # Named volumes without a storageClass use the deployment node's Docker
-    # storage. Control persists that node before submitting the first job.
+    # Named volumes use the deployment node's Docker storage.
+    # Control persists that node before submitting the first job.
     usage = _compose_service_volume_usage(compose)
     local_nodes = _local_volume_nodes(volumes)
     for service_name, used_volumes in usage.items():
@@ -373,6 +316,29 @@ def validate_compose_deployment_data(
         if port in tcp_ports:
             raise LumaError(f"compose tcp-relay publishPort {port} is already used by service {tcp_ports[port]}")
         tcp_ports[port] = service_name
+    container_ports: dict[int, str] = {}
+    published_ports: dict[int, str] = {}
+    for service_name, override in services.items():
+        if override.port is not None:
+            container_port = int(override.port)
+            if container_port in container_ports:
+                raise LumaError(
+                    f"compose services {container_ports[container_port]} and {service_name} "
+                    f"share a network namespace and cannot both use container port {container_port}"
+                )
+            container_ports[container_port] = service_name
+        published: int | None = None
+        if override.publish_port is not None:
+            published = int(override.publish_port)
+        elif override.exposure in {"tailscale-relay", "tcp-relay"} and override.port is not None:
+            published = int(override.port)
+        if published is not None:
+            if published in published_ports:
+                raise LumaError(
+                    f"compose services {published_ports[published]} and {service_name} "
+                    f"cannot both publish host port {published}"
+                )
+            published_ports[published] = service_name
     return warnings
 
 
@@ -443,54 +409,7 @@ def compose_replica_count(
     return counts[name]
 
 
-def _load_storage_classes(raw: Any) -> Dict[str, StorageClassSpec]:
-    if not isinstance(raw, dict):
-        raise LumaError("storageClasses must be a mapping")
-    result: Dict[str, StorageClassSpec] = {}
-    for name, value in raw.items():
-        if not isinstance(value, dict):
-            raise LumaError(f"storageClasses.{name} must be a mapping")
-        provider = str(value.get("provider") or "")
-        if provider not in VALID_STORAGE_PROVIDERS:
-            raise LumaError(f"storageClasses.{name}.provider must be one of {sorted(VALID_STORAGE_PROVIDERS)}")
-        mode = str(value.get("mode") or "managed")
-        if mode not in VALID_STORAGE_MODES:
-            raise LumaError(f"storageClasses.{name}.mode must be one of {sorted(VALID_STORAGE_MODES)}")
-        if mode == "external" and not value.get("endpoint"):
-            raise LumaError(f"storageClasses.{name}.endpoint is required for external nfs")
-        if mode == "external" and (value.get("node") or value.get("path")):
-            raise LumaError(f"storageClasses.{name} external nfs cannot set node or path")
-        if mode == "managed" and (not value.get("node") or not value.get("path")):
-            raise LumaError(f"storageClasses.{name} managed nfs requires node and path")
-        if mode == "managed" and value.get("endpoint"):
-            raise LumaError(f"storageClasses.{name} managed nfs endpoint is resolved automatically")
-        nodes = _string_list(value.get("nodes") or [])
-        regions = _string_list(value.get("regions") or [])
-        if mode == "external" and not regions:
-            raise LumaError(f"storageClasses.{name}.regions requires at least one region for external nfs")
-        parsed_regions = []
-        for region in regions:
-            try:
-                parsed_regions.append(parse_region_name(region))
-            except LumaError as exc:
-                raise LumaError(f"storageClasses.{name}.regions contains invalid region: {exc}") from exc
-        regions = parsed_regions
-        result[str(name)] = StorageClassSpec(
-            name=str(name),
-            provider=provider,
-            mode=mode,
-            node=str(value["node"]).strip() if value.get("node") else None,
-            path=str(value["path"]).strip() if value.get("path") else None,
-            endpoint=str(value["endpoint"]).strip() if value.get("endpoint") else None,
-            mount_options=str(value.get("mountOptions") or DEFAULT_NFS_MOUNT_OPTIONS),
-            nodes=nodes,
-            regions=regions,
-            raw=dict(value),
-        )
-    return result
-
-
-def _load_compose_volumes(raw: Any, storage_classes: Dict[str, StorageClassSpec]) -> Dict[str, ComposeVolumeSpec]:
+def _load_compose_volumes(raw: Any) -> Dict[str, ComposeVolumeSpec]:
     if not isinstance(raw, dict):
         raise LumaError("volumes must be a mapping")
     result: Dict[str, ComposeVolumeSpec] = {}
@@ -499,14 +418,11 @@ def _load_compose_volumes(raw: Any, storage_classes: Dict[str, StorageClassSpec]
             value = {}
         if not isinstance(value, dict):
             raise LumaError(f"volumes.{name} must be a mapping")
-        storage_class = value.get("storageClass")
+        if value.get("storageClass"):
+            raise LumaError("storageClasses are not supported; use local storage instead")
         local = value.get("local") or {}
         if local and not isinstance(local, dict):
             raise LumaError(f"volumes.{name}.local must be a mapping")
-        if storage_class and local:
-            raise LumaError(f"volumes.{name} cannot use both storageClass and local")
-        if storage_class and str(storage_class) not in storage_classes:
-            raise LumaError(f"volumes.{name}.storageClass references unknown storage class: {storage_class}")
         access_mode = str(value.get("accessMode") or "ReadWriteOnce")
         if access_mode not in VALID_ACCESS_MODES:
             raise LumaError(f"volumes.{name}.accessMode must be one of {sorted(VALID_ACCESS_MODES)}")
@@ -516,7 +432,6 @@ def _load_compose_volumes(raw: Any, storage_classes: Dict[str, StorageClassSpec]
         adopted = bool(value.get("adopted", False))
         result[str(name)] = ComposeVolumeSpec(
             name=str(name),
-            storage_class=str(storage_class) if storage_class else None,
             path=str(value["path"]).strip().strip("/") if value.get("path") else None,
             access_mode=access_mode,
             local_node=str(local["node"]).strip() if local.get("node") else None,
@@ -595,175 +510,6 @@ def _positive_int(value: Any, field_name: str) -> int:
     return parsed
 
 
-def _render_storage_class_volume(storage_class: StorageClassSpec, volume: ComposeVolumeSpec, endpoint: str) -> Dict[str, Any]:
-    if storage_class.provider != "nfs":
-        return {"driver": "local"}
-    host, export_path = _parse_nfs_endpoint(storage_class, endpoint)
-    sub_path = volume.path or volume.name
-    device = f":{export_path.rstrip('/')}/{sub_path.strip('/')}"
-    options = storage_class.mount_options
-    if "addr=" not in options:
-        options = f"addr={host},{options}" if options else f"addr={host}"
-    return {
-        "driver": "local",
-        "driver_opts": {
-            "type": "nfs",
-            "o": options,
-            "device": device,
-        },
-    }
-
-
-def render_storage_class_volume(
-    storage_class: StorageClassSpec,
-    volume: ComposeVolumeSpec,
-    endpoint: str,
-) -> Dict[str, Any]:
-    """Render Docker volume-driver options for a resolved storage class.
-
-    Kept as a public wrapper so trusted control-plane renderers can translate
-    the same storage policy into Nomad Docker ``mount.volume_options`` without
-    duplicating NFS endpoint parsing or mount option handling.
-    """
-
-    return _render_storage_class_volume(storage_class, volume, endpoint)
-
-
-def _parse_nfs_endpoint(storage_class: StorageClassSpec, endpoint: str) -> tuple[str, str]:
-    if endpoint.startswith("nfs://"):
-        endpoint = endpoint[len("nfs://") :]
-    host, sep, export_path = endpoint.partition(":")
-    if not sep or not host or not export_path:
-        raise LumaError(f"storage class {storage_class.name} endpoint must look like host:/export/path")
-    return host, export_path
-
-
-def resolve_storage_mounts(
-    deployment: ComposeDeploymentSpec,
-    *,
-    node_records: Dict[str, Any] | None = None,
-    admitted_nodes: Sequence[str] = (),
-) -> List[Dict[str, Any]]:
-    usage = _compose_service_volume_usage(deployment.compose)
-    mounts: List[Dict[str, Any]] = []
-    for service_name, used_volumes in usage.items():
-        override = deployment.services.get(service_name)
-        region = override.region if override and override.region else deployment.region
-        for volume_name in used_volumes:
-            volume = deployment.volumes.get(volume_name)
-            if not volume or not volume.storage_class:
-                continue
-            storage_class = deployment.storage_classes[volume.storage_class]
-            _validate_storage_class_service_use(
-                storage_class,
-                service_name=service_name,
-                region=region,
-                explicit_node=override.node if override else None,
-                admitted_nodes=admitted_nodes,
-            )
-            endpoint, network_path = _storage_endpoint_for_region(storage_class, region, node_records)
-            mounts.append(
-                {
-                    "service": service_name,
-                    "volume": volume_name,
-                    "storageClass": storage_class.name,
-                    "provider": storage_class.provider,
-                    "mode": storage_class.mode,
-                    "region": region,
-                    "endpoint": endpoint,
-                    "networkPath": network_path,
-                    "path": volume.path or volume.name,
-                }
-            )
-    return mounts
-
-
-def _validate_storage_class_service_use(
-    storage_class: StorageClassSpec,
-    *,
-    service_name: str,
-    region: str,
-    explicit_node: str | None,
-    admitted_nodes: Sequence[str] = (),
-) -> None:
-    if storage_class.regions and region not in storage_class.regions:
-        raise LumaError(
-            f"compose service {service_name} region {region} is not allowed by storageClass {storage_class.name}"
-        )
-    if storage_class.nodes:
-        admitted = {
-            str(value).strip() for value in admitted_nodes if str(value).strip()
-        }
-        if explicit_node and explicit_node not in storage_class.nodes:
-            raise LumaError(
-                f"compose service {service_name} node {explicit_node} is not allowed by storageClass {storage_class.name}"
-            )
-        if admitted and not admitted.issubset(set(storage_class.nodes)):
-            raise LumaError(
-                f"compose service {service_name} placement is not allowed by storageClass {storage_class.name}"
-            )
-        if len(storage_class.nodes) > 1 and not explicit_node and not admitted:
-            raise LumaError(
-                f"compose service {service_name} must set node because storageClass {storage_class.name} allows multiple nodes"
-            )
-
-
-def _storage_endpoint_for_region(
-    storage_class: StorageClassSpec,
-    region: str,
-    node_records: Dict[str, Any] | None,
-) -> tuple[str, str]:
-    if storage_class.mode == "external":
-        if not storage_class.endpoint:
-            raise LumaError(f"external storageClass {storage_class.name} requires endpoint")
-        return storage_class.endpoint, "external"
-    if not storage_class.node or not storage_class.path:
-        raise LumaError(f"managed storageClass {storage_class.name} requires node and path")
-    record = _node_record_for_name(node_records or {}, storage_class.node)
-    if not record:
-        raise LumaError(f"managed storageClass {storage_class.name} references unknown Luma node: {storage_class.node}")
-    node_region = str(record.get("region") or "")
-    if not node_region:
-        raise LumaError(f"managed storageClass {storage_class.name} node {storage_class.node} has no region; rerun luma node join")
-    tailscale_endpoint = str(record.get("tailscaleIP") or record.get("tailscaleName") or "").strip()
-    # A Luma region is a scheduling/placement boundary, not a shared DNS or
-    # layer-2 network. Nodes in the same region can live in different clouds
-    # and a Docker volume driver cannot resolve Luma display names reliably.
-    # Prefer the cluster overlay for every cross-node managed NFS mount, even
-    # when producer and consumer have the same region label.
-    if tailscale_endpoint:
-        return f"{tailscale_endpoint}:{storage_class.path}", "tailscale"
-    if node_region != region:
-        raise LumaError(
-            f"managed storageClass {storage_class.name} crosses {region}->{node_region} but node {storage_class.node} has no tailscaleIP; rerun luma node join"
-        )
-    endpoint_host = _same_region_storage_host(storage_class, record)
-    return f"{endpoint_host}:{storage_class.path}", "same-region-fallback"
-
-
-def _same_region_storage_host(storage_class: StorageClassSpec, record: Dict[str, Any]) -> str:
-    labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
-    for value in (
-        record.get("hostname"),
-        labels.get("luma.node.hostname"),
-        storage_class.node,
-    ):
-        host = str(value or "").strip()
-        if host:
-            return host
-    raise LumaError(f"managed storageClass {storage_class.name} node {storage_class.node} has no usable storage host")
-
-
-def _node_record_for_name(nodes: Dict[str, Any], name: str) -> Dict[str, Any] | None:
-    direct = nodes.get(name)
-    if isinstance(direct, dict):
-        return direct
-    for value in nodes.values():
-        if isinstance(value, dict) and value.get("displayName") == name:
-            return value
-    return None
-
-
 def _compose_declared_volume_names(compose: Dict[str, Any]) -> set[str]:
     names = set()
     top_volumes = compose.get("volumes")
@@ -839,9 +585,3 @@ def _is_named_volume(source: str) -> bool:
 
 def _local_volume_nodes(volumes: Dict[str, ComposeVolumeSpec]) -> Dict[str, str]:
     return {name: spec.local_node or "" for name, spec in volumes.items() if spec.kind == "local" and spec.local_node}
-
-
-def _string_list(value: Any) -> List[str]:
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise LumaError("expected a list of strings")
-    return [item for item in value if item]

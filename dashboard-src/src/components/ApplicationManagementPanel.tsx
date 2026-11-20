@@ -1045,15 +1045,15 @@ export function ApplicationManagementPanel({
                         <TableRow>
                           <TableHead>{lang === "zh" ? "卷 / 路径" : "Volume / path"}</TableHead>
                           <TableHead>{lang === "zh" ? "类型" : "Type"}</TableHead>
-                          <TableHead>{lang === "zh" ? "存储类 / 节点" : "Storage class / node"}</TableHead>
+                          <TableHead>{lang === "zh" ? "节点" : "Node"}</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {selectedVolumes.map((volume, index) => (
-                          <TableRow key={`${volume.name}-${volume.storageClass}-${volume.node}-${index}`}>
+                          <TableRow key={`${volume.name}-${volume.node}-${index}`}>
                             <TableCell className="whitespace-normal wrap-anywhere"><code className="font-mono text-xs">{volume.name}</code></TableCell>
                             <TableCell>{volume.kind || "unmanaged"}</TableCell>
-                            <TableCell>{volume.storageClass || volume.node || "—"}</TableCell>
+                            <TableCell>{volume.node || "—"}</TableCell>
                           </TableRow>
                         ))}
                       </TableBody>

@@ -20,13 +20,7 @@
 | `constraints` | no | string[] | Extra placement constraints (`attr == value`). Luma adds region and node/storage constraints automatically. |
 | `labels` | no | string[] | Extra service tags. Luma adds Traefik routing tags for `cn-edge`, `external-edge` and `node-edge`. |
 | `networks` | no | string[] | Extra network names for advanced renderers; Nomad services normally use bridge or host mode. |
-| `volumes` | no | string[] | Compose-style service mounts. Named sources such as `data:/data` are mounted as named volumes (Nomad mount blocks). |
-| `storage` | no | map | Legacy storage metadata; keys must reference named volume sources. For native Nomad services, inspect actual mounts rather than assuming this metadata changes their backend. |
-| `storage.<name>.storageClass` | storage only | string | Legacy storage metadata; inspect actual mounts and omit for new local deployments. |
-| `storage.<name>.path` | no | string | Subdirectory under the storage class export. |
-| `storage.<name>.accessMode` | no | `ReadWriteOnce` / `ReadWriteMany` | Informational and used for dashboard diagnosis. |
-| `storage.<name>.initialize` | no | `empty` | Explicit fresh-path acknowledgement. |
-| `storage.<name>.adopted` | no | boolean | Set after manual migration/adoption verification. |
+| `volumes` | no | string[] | Compose-style service mounts. Named sources such as `data:/data` are mounted as named volumes (Nomad mount blocks); host paths render as bind mounts. |
 | `proxy` | no | boolean | Runtime outbound proxy. Control supplies the configured egress endpoint through default proxy environment variables unless already set. Not used for image pulls. |
 | `resources` | no | map | Elastic CPU scheduling shares via `reservations.cpus` (`"0.50"` maps to 500 MHz; default 100 MHz). Do not use `limits.cpus`; it is ignored with a warning. Memory reservations and hard limits are separate; limit-only memory reserves min(256 MiB, limit). |
 | `healthcheck` | no | map | For native edge services, renders a Nomad HTTP check from an extractable URL, otherwise TCP. It does not execute an arbitrary container shell command; inspect rendered checks for other exposure modes. |
@@ -92,7 +86,7 @@ Rules:
 - `tcp-relay` adds the derived TCP entrypoint to Traefik, writes a TCP route, and forwards to the host port; the published port is exclusive to that TCP service.
 - `cloudflare-tunnel` adds a `cloudflared` sidecar task in the same group using `${<tokenEnv>}`.
 - `proxy: true` injects default `HTTP_PROXY`/`HTTPS_PROXY` pointing at the egress proxy unless those env vars are already present.
-- Native `volumes` render as Nomad Docker `mount` blocks (`type=volume` for named volumes, `type=bind` for host paths). Legacy native `storage` metadata does not rewrite those sources into storage-class mounts. Inspect actual mount sources and Docker volume driver options before a migration.
+- Native `volumes` render as Nomad Docker `mount` blocks (`type=volume` for named volumes, `type=bind` for host paths). Inspect actual mount sources and Docker volume options before a migration.
 - `resources` maps to Nomad `resources` (CPU MHz from fractional cores, MemoryMB); quote `cpus` as a YAML string such as `"0.50"`.
 - Native edge `healthcheck` renders a Nomad HTTP or TCP service check. An HTTP URL provides its path and the allocated service port supplies the target. Use rendered checks and the public-route probe to assess readiness; a running task alone is insufficient.
 
@@ -183,13 +177,13 @@ docker buildx version
 
 If needed, install Docker/buildx and refresh the Luma node agent with `luma update` on that node.
 
-3. Start or refresh the in-cluster registry on the builder. Use deployment-node local storage; no registered storage class is required:
+3. Start or refresh the in-cluster registry on the builder with deployment-node local storage:
 
 ```bash
 luma registry serve --node builder --port 5000
 ```
 
-Preserve the existing registry volume identity. Remove stale class metadata only after verifying its actual local mount.
+Preserve the existing registry volume identity.
 
 `luma registry serve` deploys `registry:2` as `luma-registry`, pins it to `builder`, and records its transport. It does not configure or restart other nodes. Use `<builder-tailscale-ip>:5000` for both BuildKit pushes and target-node pulls; `localhost:5000` is not valid inside the BuildKit container. Target access is verified on normal join or deployment, against the exact managed HTTP endpoints and actual Docker runtime.
 
@@ -243,8 +237,6 @@ For a stateful Compose stack before completion:
 
 ### Common Failures
 
-- An older `registry serve` requiring a registered `local` class needs a compatible CLI/Control update. Do not create an NFS class as a workaround.
-- A newly registered storage class times out or is missing afterwards: do not assume storage registration completed. Re-check with `luma storage list` before using it for registry data.
 - Registry allocation is `running`, port `5000` is listening, but `/v2/` returns `No route to host`: suspect stale Nomad CNI hostport rules. Recreate the registry allocation:
 
 ```bash
@@ -487,7 +479,7 @@ volumes:
   - home-db-data:/var/lib/postgresql/data
 ```
 
-Control records the first deployment node and preserves it on updates. Keep the exact existing volume source when updating an existing database. Legacy native `storage` fields are not evidence of an NFS runtime mount.
+Control records the first deployment node and preserves it on updates. Keep the exact existing volume source when updating an existing database.
 
 ## Compose Sidecar Fields
 
@@ -498,8 +490,6 @@ Control records the first deployment node and preserves it on updates. Keep the 
 | `name` | yes | Stack/deployment name. Reusing it updates the same Nomad job. |
 | `compose` | yes | Relative path to the standard Compose file. Control-plane deploy rejects absolute paths and `..`. |
 | `region` | yes | Default service region: `cn`, `global`, `home`, or a registered custom region. |
-| `volumes.<name>.storageClass` | no | Legacy registered shared-storage class; omit for local storage. |
-| `volumes.<name>.path` | no | Subdirectory under the storage class export. Defaults to volume name when omitted. |
 | `volumes.<name>.accessMode` | no | `ReadWriteOnce` or `ReadWriteMany`; informational and dashboard-facing. |
 | `volumes.<name>.initialize` | no | `empty` for a deliberately fresh storage path. |
 | `volumes.<name>.adopted` | no | `true` after verified manual migration/adoption. |
@@ -515,8 +505,6 @@ Control records the first deployment node and preserves it on updates. Keep the 
 | `services.<name>.proxy` | no | Adds Luma egress env/network for runtime outbound traffic. |
 | `services.<name>.relay` | relay only | Optional relay override. Usually omit. |
 | `services.<name>.tunnel` | tunnel only | Optional Cloudflare Tunnel settings. |
-
-Do not put non-empty `storageClasses` in production sidecars. Luma Control owns shared storage declarations through `luma storage set`.
 
 ### Compose Example
 
@@ -546,9 +534,9 @@ services:
 
 ## Storage Operations
 
-New local volumes need no `storage set` or NFS preparation. See [Local Storage and Migration](local-storage.md) for ownership, permissions, explicit migration and retirement checks.
+See [Local Storage and Migration](local-storage.md) for ownership, permissions, and explicit migration checks.
 
-`luma storage migrate` prints a manual plan; it does not stop writers or copy data. Local targets require an explicit destination node. Existing storage classes may be listed/checked during legacy recovery, but do not introduce them into new manifests.
+`luma storage migrate` prints a manual plan; it does not stop writers or copy data. Local targets require an explicit destination node.
 
 ## Validation Commands
 
@@ -570,13 +558,12 @@ CI:
 
 ```bash
 # Verify this version is published before installing.
-python -m pip install "luma-infra==0.2.87"
+python -m pip install "luma-infra==0.2.88"
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 luma validate service.yaml --format json
 luma deploy service.yaml --dry-run --format json
 luma compose validate luma.compose.yml --format json
-luma storage check luma.compose.yml --format json
 ```
 
 Live deploys can stream events:
@@ -604,7 +591,7 @@ luma app remove <name> --dry-run --delete-storage
 luma app remove <name> --delete-storage
 ```
 
-`--delete-storage` for single-service manifests removes managed storage paths and named Docker volume objects from the recorded manifest while skipping bind mounts. For Compose it removes managed storage subdirectories referenced by the recorded sidecar, not the storage class itself.
+`--delete-storage` for single-service manifests removes named Docker volume objects from the recorded manifest while skipping bind mounts. For Compose, host-bound local volume directories are preserved.
 
 ## Review Checklist
 
@@ -618,7 +605,7 @@ luma app remove <name> --delete-storage
 - If the service needs runtime outbound network access, is `proxy: true` used instead of manual proxy boilerplate?
 - Are CPU `cpus` values quoted strings?
 - On small manager nodes, are `resources` limits/reservations reasonable?
-- For persistent services, are the local path/volume identity and original deployment node preserved? Do not require a storage class or silently move an offline owner.
+- For persistent services, are the local path/volume identity and original deployment node preserved? Do not silently move an offline owner.
 - For `tailscale-relay` or `tcp-relay`, is `publishPort` free on the target node?
 - For Compose storage backend or owner-node changes, was the data copied and verified before redeploying (Control only warns)?
 - For `node-edge`, is ingress enabled on that node (`luma node list` / Dashboard node page) and are TCP 80/443 open in its security group?

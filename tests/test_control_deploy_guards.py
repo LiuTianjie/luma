@@ -553,6 +553,159 @@ class AgentCallbackNoDeployLockTests(unittest.TestCase):
         self._assert_not_blocked_by_deploy_lock(handle_node_agent_complete)
 
 
+class DeployLocksHardeningTests(unittest.TestCase):
+    def test_resources_callback_runs_outside_condition_lock(self):
+        from luma.control.deploy_locks import DeploymentLocks
+
+        locks = DeploymentLocks(threading.RLock())
+        in_callback = threading.Event()
+        release_callback = threading.Event()
+        acquired_other = threading.Event()
+
+        def slow_resources():
+            in_callback.set()
+            self.assertTrue(release_callback.wait(3.0))
+            return {"job:slow"}
+
+        def holder():
+            with locks.hold(slow_resources, lambda: False):
+                pass
+
+        t1 = threading.Thread(target=holder)
+        t1.start()
+        try:
+            self.assertTrue(in_callback.wait(2.0))
+            # While t1 is blocked inside slow_resources(), an unrelated deploy
+            # must acquire immediately without waiting on self.condition.
+            def fast_holder():
+                with locks.hold(lambda: {"job:fast"}, lambda: False):
+                    acquired_other.set()
+
+            t2 = threading.Thread(target=fast_holder)
+            t2.start()
+            self.assertTrue(acquired_other.wait(2.0), "resources() held DeploymentLocks.condition")
+            t2.join(timeout=2.0)
+        finally:
+            release_callback.set()
+            t1.join(timeout=2.0)
+
+    def test_wildcard_request_has_fifo_fairness_over_new_per_app_deploys(self):
+        from luma.control.deploy_locks import DeploymentLocks
+
+        locks = DeploymentLocks(threading.RLock())
+        order: list[str] = []
+        app_a_held = threading.Event()
+        release_app_a = threading.Event()
+        wildcard_waiting = threading.Event()
+        wildcard_done = threading.Event()
+
+        def hold_app_a():
+            with locks.hold(lambda: {"job:a"}, lambda: False):
+                app_a_held.set()
+                release_app_a.wait(3.0)
+
+        def hold_wildcard():
+            def res():
+                wildcard_waiting.set()
+                return None  # cluster-wide "*"
+            with locks.hold(res, lambda: False):
+                order.append("wildcard")
+            wildcard_done.set()
+
+        def hold_app_b():
+            with locks.hold(lambda: {"job:b"}, lambda: False):
+                order.append("app_b")
+
+        t_a = threading.Thread(target=hold_app_a)
+        t_a.start()
+        self.assertTrue(app_a_held.wait(2.0))
+
+        t_wild = threading.Thread(target=hold_wildcard)
+        t_wild.start()
+        self.assertTrue(wildcard_waiting.wait(2.0))
+        # Wait until wildcard has queued its ticket inside locks._wildcard_waiters.
+        deadline = time.monotonic() + 2.0
+        while not locks._wildcard_waiters and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(locks._wildcard_waiters)
+
+        # Start an unrelated per-app deploy while wildcard is waiting: FIFO
+        # fairness means wildcard must acquire before app_b.
+        t_b = threading.Thread(target=hold_app_b)
+        t_b.start()
+        time.sleep(0.05)
+        self.assertEqual(order, [])
+        release_app_a.set()
+        t_a.join(timeout=2.0)
+        self.assertTrue(wildcard_done.wait(2.0))
+        t_wild.join(timeout=2.0)
+        t_b.join(timeout=2.0)
+        self.assertEqual(order, ["wildcard", "app_b"])
+
+    def test_request_resources_and_serialize_deploy_cover_mutating_handlers(self):
+        from luma.control.deploy_locks import request_resources
+        from luma.control import server as control_server
+
+        self.assertEqual(request_resources("handle_service_remove", {"name": "web"}), {"job:web"})
+        self.assertEqual(request_resources("handle_service_rollback", {"name": "api"}), {"job:api"})
+        self.assertIsNone(request_resources("handle_node_unregister", {"name": "node-1"}))
+        self.assertEqual(request_resources("handle_certificate_retry", {"domain": "app.example.com"}), {"host:app.example.com"})
+
+        for name in (
+            "handle_service_remove",
+            "handle_service_rollback",
+            "handle_node_unregister",
+            "handle_certificate_retry",
+        ):
+            fn = getattr(control_server, name)
+            self.assertTrue(hasattr(fn, "__wrapped__"), f"{name} must be decorated with @_serialize_deploy")
+
+    def test_recreate_traefik_ingress_acquires_traefik_lock(self):
+        from luma.control import server as control_server
+
+        observed_locks: list[set[str]] = []
+
+        def fake_probe(_service):
+            with control_server._DEPLOY_OWNERS.condition:
+                owned = set().union(*(set(keys) for keys in control_server._DEPLOY_OWNERS.owners.values()))
+            observed_locks.append(owned)
+            return "200 OK"
+
+        with patch.object(control_server, "_probe_public_route", side_effect=fake_probe):
+            result = control_server._recreate_traefik_ingress("traefik-ingress", service=object())
+        self.assertIn("skipped", result)
+        self.assertTrue(observed_locks and "job:traefik-ingress" in observed_locks[0])
+
+    def test_apply_state_secrets_is_thread_safe(self):
+        import os
+        from luma.control import secrets as control_secrets
+
+        errors: list[Exception] = []
+        old_val = os.environ.get("LUMA_TEST_RACE_KEY")
+
+        def worker(i: int):
+            try:
+                for j in range(25):
+                    control_secrets._apply_state_secrets({"secrets": {"LUMA_TEST_RACE_KEY": f"{i}-{j}"}})
+            except Exception as exc:
+                errors.append(exc)
+
+        try:
+            with patch("luma.secret_storage.enabled", return_value=False):
+                threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(timeout=5.0)
+            self.assertEqual(errors, [])
+            self.assertIn("LUMA_TEST_RACE_KEY", control_secrets._exported_names)
+        finally:
+            if old_val is None:
+                os.environ.pop("LUMA_TEST_RACE_KEY", None)
+            else:
+                os.environ["LUMA_TEST_RACE_KEY"] = old_val
+            control_secrets._exported_names.discard("LUMA_TEST_RACE_KEY")
+
 
 if __name__ == "__main__":
     unittest.main()

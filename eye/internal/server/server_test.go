@@ -55,7 +55,10 @@ func TestServerRoutesAuthAndIngest(t *testing.T) {
 		sCancel()
 	}()
 
-	srv := New(cfg, store, nil, batcher, sym, metrics)
+	srv, err := New(cfg, store, nil, batcher, sym, metrics)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -73,6 +76,7 @@ func TestServerRoutesAuthAndIngest(t *testing.T) {
 
 	// 2. Create project using session cookie
 	projReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/projects", strings.NewReader(`{"slug":"vibecheck","allowed_origins":["https://vibecheck.itool.tech"]}`))
+	projReq.Header.Set("Origin", ts.URL)
 	projReq.AddCookie(cookies[0])
 	projResp, err := http.DefaultClient.Do(projReq)
 	if err != nil || projResp.StatusCode != http.StatusCreated {
@@ -231,7 +235,10 @@ func TestReactNativeIngestMetadataOverridesAndHermesStack(t *testing.T) {
 		sCancel()
 	}()
 
-	srv := New(cfg, store, nil, batcher, sym, metrics)
+	srv, err := New(cfg, store, nil, batcher, sym, metrics)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 

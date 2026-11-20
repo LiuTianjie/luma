@@ -63,34 +63,57 @@ export type DisplayLogLine = {
  * Search only the latest row of this source: a later complete row or rotation
  * must never cause a continuation to attach to an older abandoned fragment.
  */
+export function appendLogFrames(
+  previous: DisplayLogLine[],
+  frames: Record<string, unknown>[],
+  maxLines: number,
+): { lines: DisplayLogLine[]; dropped: number } {
+  if (!frames.length) return { lines: previous, dropped: 0 };
+  const limit = Math.max(1, maxLines);
+  const lines = [...previous];
+  let head = 0;
+  let dropped = 0;
+  for (const frame of frames) {
+    if (typeof frame.line !== "string") continue;
+    const source = [frame.allocationId, frame.task, frame.stream].map((value) => typeof value === "string" ? value : "");
+    const sourceKey = JSON.stringify(source);
+    const label = source.filter(Boolean).join(" / ");
+    const file = typeof frame.file === "string" ? frame.file : "";
+    let merged = false;
+    if (frame.continued === true && label) {
+      for (let index = lines.length - 1; index >= head; index -= 1) {
+        const row = lines[index];
+        if (row.sourceKey !== sourceKey) continue;
+        if (row.partial && row.file === file) {
+          lines[index] = { ...row, text: row.text + frame.line, partial: frame.partial === true };
+          merged = true;
+        }
+        break;
+      }
+    }
+    if (!merged) {
+      lines.push({
+        sourceKey, file, label, partial: frame.partial === true,
+        text: (frame.continued === true ? "…" : "") + frame.line,
+      });
+      const liveLen = lines.length - head;
+      if (liveLen > limit) {
+        const excess = liveLen - limit;
+        head += excess;
+        dropped += excess;
+      }
+    }
+  }
+  return { lines: head > 0 ? lines.slice(head) : lines, dropped };
+}
+
 export function appendLogFrame(
   previous: DisplayLogLine[],
   frame: Record<string, unknown>,
   maxLines: number,
 ): { lines: DisplayLogLine[]; dropped: number } {
   if (typeof frame.line !== "string") return { lines: previous, dropped: 0 };
-  const source = [frame.allocationId, frame.task, frame.stream].map((value) => typeof value === "string" ? value : "");
-  const sourceKey = JSON.stringify(source);
-  const label = source.filter(Boolean).join(" / ");
-  const file = typeof frame.file === "string" ? frame.file : "";
-  const lines = [...previous];
-  if (frame.continued === true && label) {
-    for (let index = lines.length - 1; index >= 0; index -= 1) {
-      const row = lines[index];
-      if (row.sourceKey !== sourceKey) continue;
-      if (row.partial && row.file === file) {
-        lines[index] = { ...row, text: row.text + frame.line, partial: frame.partial === true };
-        return { lines, dropped: 0 };
-      }
-      break;
-    }
-  }
-  lines.push({
-    sourceKey, file, label, partial: frame.partial === true,
-    text: (frame.continued === true ? "…" : "") + frame.line,
-  });
-  const limit = Math.max(1, maxLines);
-  return { lines: lines.slice(-limit), dropped: Math.max(0, lines.length - limit) };
+  return appendLogFrames(previous, [frame], maxLines);
 }
 
 export function formatLogLine(line: DisplayLogLine): string {

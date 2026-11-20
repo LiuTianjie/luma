@@ -22,6 +22,7 @@ from .log_alert_details import detail_rows as log_detail_rows
 AUTH_URL = 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal'
 MESSAGE_URL = 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id'
 _TOKEN_CACHE: dict[str, tuple[str, float]] = {}
+_TOKEN_CACHE_MAX_ENTRIES = 128
 _TOKEN_LOCK = threading.Lock()
 
 
@@ -121,20 +122,31 @@ def _cache_key(app_id: str,app_secret: str) -> str:
     return hashlib.sha256((app_id+'\0'+app_secret).encode()).hexdigest()
 
 
+def _prune_token_cache(now: float) -> None:
+    expired = [cache_key for cache_key, (_, expires_at) in _TOKEN_CACHE.items() if expires_at <= now]
+    for cache_key in expired:
+        _TOKEN_CACHE.pop(cache_key, None)
+    while len(_TOKEN_CACHE) >= _TOKEN_CACHE_MAX_ENTRIES:
+        _TOKEN_CACHE.pop(min(_TOKEN_CACHE, key=lambda k: _TOKEN_CACHE[k][1]))
+
+
 def _tenant_token(app_id: str,app_secret: str,*,deadline: float) -> str:
     key=_cache_key(app_id,app_secret)
     with _TOKEN_LOCK:
+        now=time.monotonic()
         cached=_TOKEN_CACHE.get(key)
-        if cached and cached[1]>time.monotonic(): return cached[0]
+        if cached and cached[1]>now: return cached[0]
+        if cached:
+            _TOKEN_CACHE.pop(key, None)
         result=_post(AUTH_URL,{'app_id':app_id,'app_secret':app_secret},deadline=deadline)
         token,expire=result.get('tenant_access_token'),result.get('expire')
         if not isinstance(token,str) or not token or len(token)>4096 or any(c.isspace() for c in token) or not isinstance(expire,(int,float)) or isinstance(expire,bool) or not 0<expire<=86400:
             raise FeishuError('invalid_response')
         # Refresh early; use monotonic time so wall-clock adjustments cannot extend credentials.
         ttl=max(0,expire-min(600,expire*0.1))
-        if len(_TOKEN_CACHE)>=128:
-            _TOKEN_CACHE.pop(min(_TOKEN_CACHE,key=lambda k:_TOKEN_CACHE[k][1]))
-        _TOKEN_CACHE[key]=(token,time.monotonic()+ttl)
+        now=time.monotonic()
+        _prune_token_cache(now)
+        _TOKEN_CACHE[key]=(token,now+ttl)
         return token
 
 

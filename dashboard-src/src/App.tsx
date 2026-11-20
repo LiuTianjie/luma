@@ -1,4 +1,5 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { QueryClientContext, QueryClientProvider } from "@tanstack/react-query";
 import { ErrorBanner } from "./components/ErrorBanner";
 import type { ApplicationUpdateRequest } from "./components/ApplicationManagementPanel";
 import { appToComposeDraft, serviceToDraft } from "./components/applicationModel";
@@ -34,6 +35,7 @@ import { createDashboardViewModel, type NavPage } from "./dashboardViewModel";
 import type { TerminalSessionTarget } from "./components/TerminalDrawer";
 import type { DashboardNode, DashboardService, Lang, SyncStatus } from "./types";
 import { dashboardScopeForPage, dashboardQueryForRoute } from "./dashboardScope";
+import { invalidateDashboardQueries, queryClient, useDashboardQueryClient } from "./queryClient";
 import { useDashboardAuth } from "./useDashboardAuth";
 import { useDashboardData } from "./useDashboardData";
 import { useTheme } from "./useTheme";
@@ -45,6 +47,19 @@ const SIDEBAR_KEY = "luma.dashboard.sidebar";
 const EMPTY_DASHBOARD_PAYLOAD = {};
 
 export function App() {
+  const existingClient = useContext(QueryClientContext);
+  if (!existingClient) {
+    return (
+      <QueryClientProvider client={queryClient}>
+        <AppShell />
+      </QueryClientProvider>
+    );
+  }
+  return <AppShell />;
+}
+
+function AppShell() {
+  const activeQueryClient = useDashboardQueryClient();
   const router = useRouter();
   const contentRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -107,9 +122,8 @@ export function App() {
   const terminalTarget: TerminalSessionTarget | null = objectRoute?.kind === "node-terminal" && routeNode ? { kind: "node", node: routeNode }
     : objectRoute?.kind === "service-terminal" && routeService ? { kind: "container", service: routeService, stack: new URLSearchParams(router.search).get("stack") || routeService.stack } : null;
   const refreshPage = useCallback(async () => {
-    window.dispatchEvent(new CustomEvent("luma:refresh"));
-    await loadDashboard();
-  }, [loadDashboard]);
+    await invalidateDashboardQueries(undefined, activeQueryClient);
+  }, [activeQueryClient]);
   useEffect(() => {
     if (!editName || !token || currentUpdateRequest || !payload) return;
     const app = vm.applications.find(item => item.stack === editName);

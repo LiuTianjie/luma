@@ -1,5 +1,8 @@
+import json
 import os
+import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -114,6 +117,152 @@ class MetricsHistoryTests(unittest.TestCase):
             self.assertEqual(metrics.max_points(), metrics.MAX_MAX_POINTS)
         with patch.dict(os.environ, {"LUMA_METRICS_HISTORY_POINTS": "not-a-number"}, clear=False):
             self.assertEqual(metrics.max_points(), metrics.DEFAULT_MAX_POINTS)
+
+    def test_sqlite_wal_store_uses_dedicated_db_without_flock(self):
+        metrics.record_samples("cn-edge", {"cpuPercent": 15.5, "memoryUsedPercent": 60.0}, [], now=3000)
+        db_path = metrics.history_path()
+        self.assertEqual(db_path.name, "metrics-history.sqlite3")
+        self.assertTrue(db_path.exists())
+        self.assertFalse((self.state_dir / "metrics-history.lock").exists())
+        self.assertFalse(hasattr(metrics, "fcntl"))
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            self.assertEqual(str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower(), "wal")
+            self.assertEqual(int(conn.execute("PRAGMA auto_vacuum").fetchone()[0]), 2)
+            meta = dict(conn.execute("SELECT key, value FROM metrics_meta").fetchall())
+            self.assertEqual(meta["schema_version"], str(metrics.SCHEMA_VERSION))
+            self.assertEqual(meta["legacy_json_imported"], "1")
+        finally:
+            conn.close()
+
+    def test_legacy_json_auto_imports_once_on_first_open(self):
+        legacy_payload = {
+            "version": 2,
+            "nodes": {
+                "edge-a": {
+                    "cpuPercent": [[3000, 11.5], [3030, 22.0]],
+                    "memoryUsedPercent": [[3030, 55.0]],
+                }
+            },
+            "services": {
+                "app_web": {
+                    "cpuPercent": [[3000, 10.0], [3030, 14.0]],
+                    "memoryUsageBytes": [[3030, 2048.0]],
+                }
+            },
+            "_serviceScratch": {
+                "app_web": {
+                    "edge-a": {"ts": 3030, "cpuPercent": 14.0, "memoryUsageBytes": 2048.0},
+                }
+            },
+        }
+        metrics.legacy_history_path().write_text(json.dumps(legacy_payload), encoding="utf-8")
+
+        self.assertEqual(
+            metrics.load_history("node", "edge-a"),
+            {"cpuPercent": [[3000, 11.5], [3030, 22.0]], "memoryUsedPercent": [[3030, 55.0]]},
+        )
+        self.assertEqual(
+            metrics.load_history("service", "app_web"),
+            {"cpuPercent": [[3000, 10.0], [3030, 14.0]], "memoryUsageBytes": [[3030, 2048.0]]},
+        )
+        self.assertTrue(metrics.history_path().exists())
+
+        # Subsequent writes use imported scratch for cross-node summation.
+        metrics.record_samples(
+            "edge-b",
+            {"cpuPercent": 9.0},
+            [{"service": "app_web", "cpuPercent": 6.0, "memoryUsageBytes": 1024}],
+            now=3060,
+        )
+        svc = metrics.load_history("service", "app_web")
+        self.assertEqual(svc["cpuPercent"][-1], [3060, 20.0])
+        self.assertEqual(svc["memoryUsageBytes"][-1], [3060, 3072.0])
+
+        # Mutating the legacy JSON file afterwards must NOT trigger a second import.
+        legacy_payload["nodes"]["should-not-reimport"] = {"cpuPercent": [[3060, 99.0]]}
+        metrics.legacy_history_path().write_text(json.dumps(legacy_payload), encoding="utf-8")
+        metrics.close_connection()
+        self.assertEqual(metrics.load_history("node", "should-not-reimport"), {})
+
+    def test_corrupt_legacy_json_starts_fresh_without_error(self):
+        metrics.legacy_history_path().write_text("{corrupt legacy json", encoding="utf-8")
+        self.assertEqual(metrics.load_history("node", "cn-edge"), {})
+        metrics.record_samples("cn-edge", {"cpuPercent": 5.0}, [], now=4000)
+        self.assertEqual(metrics.load_history("node", "cn-edge")["cpuPercent"], [[4000, 5.0]])
+
+    def test_concurrent_multithread_writes_and_reads_succeed_cleanly(self):
+        writer_count = 8
+        ticks_per_writer = 40
+        reader_count = 4
+        start_barrier = threading.Barrier(writer_count + reader_count)
+        final_tick_barrier = threading.Barrier(writer_count)
+        stop_readers = threading.Event()
+        errors = []
+        errors_lock = threading.Lock()
+
+        def record_error(exc):
+            with errors_lock:
+                errors.append(exc)
+
+        def writer(worker_id):
+            node = f"node-{worker_id}"
+            try:
+                start_barrier.wait(timeout=5)
+                for tick in range(ticks_per_writer - 1):
+                    ts = 10_000 + tick * 30 + worker_id
+                    metrics.record_samples(
+                        node,
+                        {"cpuPercent": float(worker_id + tick), "memoryUsedPercent": 45.0},
+                        [{"service": "shared_api", "cpuPercent": float(worker_id + 1), "memoryUsageBytes": 1000}],
+                        now=ts,
+                    )
+                # Synchronize before the final bucket so all writers contribute
+                # to the last 30s window concurrently without simulated-clock skew.
+                final_tick_barrier.wait(timeout=15)
+                final_ts = 10_000 + (ticks_per_writer - 1) * 30
+                metrics.record_samples(
+                    node,
+                    {"cpuPercent": float(worker_id + ticks_per_writer - 1), "memoryUsedPercent": 45.0},
+                    [{"service": "shared_api", "cpuPercent": float(worker_id + 1), "memoryUsageBytes": 1000}],
+                    now=final_ts,
+                )
+            except BaseException as exc:
+                record_error(exc)
+
+        def reader(reader_id):
+            try:
+                start_barrier.wait(timeout=5)
+                while not stop_readers.is_set():
+                    metrics.load_history("node", f"node-{reader_id % writer_count}")
+                    metrics.load_history("service", "shared_api", window=600, now=10_000 + ticks_per_writer * 30)
+                    snap = metrics.load_history_snapshot()
+                    self.assertIn("nodes", snap)
+                    self.assertIn("services", snap)
+            except BaseException as exc:
+                record_error(exc)
+
+        writers = [threading.Thread(target=writer, args=(i,)) for i in range(writer_count)]
+        readers = [threading.Thread(target=reader, args=(i,)) for i in range(reader_count)]
+        for thread in writers + readers:
+            thread.start()
+        for thread in writers:
+            thread.join(timeout=30)
+        stop_readers.set()
+        for thread in readers:
+            thread.join(timeout=10)
+
+        self.assertEqual(errors, [])
+        for worker_id in range(writer_count):
+            node_hist = metrics.load_history("node", f"node-{worker_id}")
+            self.assertEqual(len(node_hist["cpuPercent"]), ticks_per_writer)
+            self.assertEqual(node_hist["cpuPercent"][-1][1], float(worker_id + ticks_per_writer - 1))
+        svc_hist = metrics.load_history("service", "shared_api")
+        self.assertEqual(len(svc_hist["cpuPercent"]), ticks_per_writer)
+        # All 8 writers reported in the final bucket: sum(1..8) = 36, memory = 8000.
+        self.assertEqual(svc_hist["cpuPercent"][-1][1], 36.0)
+        self.assertEqual(svc_hist["memoryUsageBytes"][-1][1], 8000.0)
 
 
 class SustainedBreachTests(unittest.TestCase):

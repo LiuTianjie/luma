@@ -8,8 +8,6 @@ const serviceVolume = (name: string, target: string, overrides: Partial<ServiceV
   name,
   target,
   storageMode: "local",
-  storageClass: "",
-  path: "",
   ...overrides,
 });
 
@@ -85,7 +83,6 @@ function composeVolume(name: string, target: string, overrides: Partial<ComposeV
     name,
     target,
     storageMode: "local",
-    storageClass: "",
     localNode: "",
     localPath: "",
     ...overrides,
@@ -276,11 +273,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
         { ...row("PASSWORD", "${CODE_SERVER_PASSWORD}"), kind: "secret" },
       ],
       volumeMounts: [
-        serviceVolume("code-server-config", "/config", {
-          storageMode: "local",
-          storageClass: "",
-          path: "code-server/config",
-        }),
+        serviceVolume("code-server-config", "/config"),
       ],
       memoryLimit: "1G",
     }),
@@ -296,7 +289,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
       name: "uptime-kuma",
       region: "home",
       services: [{ name: "uptime-kuma", region: "home", node: "", exposure: "tailscale-relay", domain: "kuma.example.com", port: "3001", publishPort: "", replicas: 1, proxy: false, env: [] }],
-      volumes: [{ name: "kuma-data", target: "/app/data", storageMode: "local", storageClass: "", localNode: "", localPath: "" }],
+      volumes: [{ name: "kuma-data", target: "/app/data", storageMode: "local", localNode: "", localPath: "" }],
       dockerComposeYaml: [
         "services:",
         "  uptime-kuma:",
@@ -323,7 +316,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
       name: "vaultwarden",
       region: "home",
       services: [{ name: "vaultwarden", region: "home", node: "", exposure: "tailscale-relay", domain: "vault.example.com", port: "80", publishPort: "", replicas: 1, proxy: false, env: [row("WEBSOCKET_ENABLED", "true")] }],
-      volumes: [{ name: "vaultwarden-data", target: "/data", storageMode: "local", storageClass: "", localNode: "", localPath: "" }],
+      volumes: [{ name: "vaultwarden-data", target: "/data", storageMode: "local", localNode: "", localPath: "" }],
       dockerComposeYaml: [
         "services:",
         "  vaultwarden:",
@@ -349,7 +342,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
       name: "gitea",
       region: "home",
       services: [{ name: "gitea", region: "home", node: "", exposure: "tailscale-relay", domain: "git.example.com", port: "3000", publishPort: "", replicas: 1, proxy: false, env: [row("USER_UID", "1000"), row("USER_GID", "1000")] }],
-      volumes: [{ name: "gitea-data", target: "/data", storageMode: "local", storageClass: "", localNode: "", localPath: "" }],
+      volumes: [{ name: "gitea-data", target: "/data", storageMode: "local", localNode: "", localPath: "" }],
       dockerComposeYaml: [
         "services:",
         "  gitea:",
@@ -376,7 +369,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
       name: "n8n",
       region: "home",
       services: [{ name: "n8n", region: "home", node: "", exposure: "tailscale-relay", domain: "n8n.example.com", port: "5678", publishPort: "", replicas: 1, proxy: true, env: [row("N8N_HOST", "n8n.example.com"), row("N8N_PORT", "5678"), row("N8N_PROTOCOL", "https"), row("WEBHOOK_URL", "https://n8n.example.com/")] }],
-      volumes: [{ name: "n8n-data", target: "/home/node/.n8n", storageMode: "local", storageClass: "", localNode: "", localPath: "" }],
+      volumes: [{ name: "n8n-data", target: "/home/node/.n8n", storageMode: "local", localNode: "", localPath: "" }],
       dockerComposeYaml: [
         "services:",
         "  n8n:",

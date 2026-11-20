@@ -25,7 +25,7 @@ Use this skill for Luma deployment artifacts:
 
 Single-service manifests are not Docker Compose. They describe one service: image, region, optional node pin, exposure, domain, port, replicas, storage, and runtime options. Luma Control renders a Nomad job, syncs DNS, writes Traefik routes, and deploys via the Nomad API.
 
-Compose files stay standard for local development. Put Luma-specific deployment semantics in `luma.compose.yml`: region, exposure, routing, service node pins, local data paths and deployment node placement. Storage classes are legacy compatibility, not a prerequisite for new deployments.
+Compose files stay standard for local development. Put Luma-specific deployment semantics in `luma.compose.yml`: region, exposure, routing, service node pins, local data paths and deployment node placement.
 
 For complete field tables and examples, read `references/manifest-reference.md`.
 
@@ -33,7 +33,7 @@ For local build/upload/deploy, repository import, builder registry setup, or reg
 
 For CDN, acceleration, caching, `cdn:` manifests, `luma cdn` commands, or failures at `Prepare CDN` / `Purge CDN`, read [CDN (Alibaba Cloud ESA)](references/cdn.md).
 
-For actual deployments, recorded commands, or workflow-change prompts, read [Deployment Workflow Records](references/deployment-workflow.md). For persistent placement, NFS migration, or storage retirement, read [Local Storage and Migration](references/local-storage.md).
+For actual deployments, recorded commands, or workflow-change prompts, read [Deployment Workflow Records](references/deployment-workflow.md). For persistent placement and local data migration, read [Local Storage and Migration](references/local-storage.md).
 
 ## Token Vocabulary
 
@@ -56,7 +56,7 @@ For actual deployments, recorded commands, or workflow-change prompts, read [Dep
    - Home/private Cloudflare Tunnel: usually `region: home`, `exposure: cloudflare-tunnel`
    - Worker/internal: `exposure: none`
    - Runtime outbound proxy: add `proxy: true` and keep the chosen scheduling region.
-3. Ask only for missing required facts: service or stack name, image or compose path, domain, container port, region/exposure, and a data path or existing volume identity when persistence is needed. Do not ask for a storage class for local storage; the first node may be chosen by Control.
+3. Ask only for missing required facts: service or stack name, image or compose path, domain, container port, region/exposure, and a data path or existing volume identity when persistence is needed. The first node may be chosen by Control.
 4. For a YAML-only request, emit only YAML unless the user asks for explanation. For deployment work, report relevant checks, workflow differences and the actual outcome.
 5. Use `${ENV_NAME}` for secrets; never put secret values in YAML. If the project has a `.env`, recommend `luma deploy service.yaml --env .env`, `luma compose deploy luma.compose.yml --env .env`, or `luma import ... --env .env` so Luma stores referenced variables under the application/stack scope.
 6. For private images, do not put registry tokens in YAML or container env. Use `luma registry login <host> --username <user> --password-stdin`.
@@ -115,7 +115,7 @@ luma build local . --platform linux/amd64
 - Use `resources.reservations.cpus` for elastic CPU scheduling shares, for example `"0.50"` (Luma maps this to 500 MHz; it is not a dedicated core count). Do not emit `resources.limits.cpus`: it is ignored with a warning, not enforced as a CPU hard limit. CPU reservation defaults to 100 MHz. Memory limit-only declarations reserve min(256 MiB, limit); specify realistic memory reservations and hard limits separately.
 - For native `cn-edge` / `external-edge` services, `healthcheck` becomes a Nomad service check: an extractable HTTP URL supplies its path; otherwise it falls back to TCP. It does not execute an arbitrary shell health command inside the container. Inspect rendered checks for other exposure modes before claiming rollout readiness.
 - `engine` is optional. Omit it to inherit the cluster default. Set `engine: nomad` only when you need an explicit override.
-- New native services use named volumes or bind mounts in `volumes`; persistent writable mounts require `replicas: 1`. Preserve existing sources. Legacy `storage` metadata does not prove that the actual Nomad mount uses NFS; inspect the rendered/running mount before changing it.
+- Native services use named volumes or bind mounts in `volumes`; persistent writable mounts require `replicas: 1`. Preserve existing sources.
 - `build` is for source-to-image builds via `luma import` / Dashboard Repository Import, not plain `luma deploy`. Subfields: `context` (default `.`), `dockerfile` (default `Dockerfile`), `platform` (default `linux/amd64`), and optional `repo` to override the internal image repository path.
 
 ## Node Edge
@@ -154,13 +154,13 @@ Use `node-edge` when the user wants public traffic to skip the Manager, usually 
 - Choose a declared builder with a ready agent, `docker-build` and the required native container architecture. Linux and macOS with OrbStack / Docker Desktop are supported. `builder` is the simple default name, not a required node identity.
 - Dashboard and CLI repository imports use the declared builder set. Do not hide a declared ARM or macOS builder because its name differs from `builder`, or select undeclared nodes merely because they advertise Docker capabilities.
 - Prefer a builder-hosted registry for internal image distribution. Both `registryHost` and `pushHost` must use the live Builder Tailscale endpoint reachable from target nodes and from the BuildKit container, such as `<builder-tailscale-ip>:5000`. Do not use `localhost:5000`: inside BuildKit that is the BuildKit container itself. Resolve the actual endpoint from the cluster configuration.
-- Start or refresh the registry on its deployment node with local storage; no storage class registration is required:
+- Start or refresh the registry on its deployment node with local storage:
 
 ```bash
 luma registry serve --node builder --port 5000
 ```
 
-- Preserve the existing registry volume name when updating; verify the actual mount before removing a legacy storage-class reference.
+- Preserve the existing registry volume name when updating.
 - Verify registry health before importing:
 
 ```bash
@@ -195,16 +195,14 @@ luma app restart luma-registry --mode recreate
 
 ## Compose And Storage Rules
 
-- Compose replicas resolve from `deploy.replicas`, Compose `scale`, or sidecar `services.<name>.replicas`; declarations must agree and default to 1. Multiple replicas require one mount-free service and bridge networking. Multi-service groups, volume mounts (including read-only and legacy NFS), sidecar volumes, host networking, static/relay ports and Compose placement/update/rollback overrides cannot scale. Split independently scaled workers into separate deployments; use region scheduling without a node pin when cross-node placement is intended.
+- Compose replicas resolve from `deploy.replicas`, Compose `scale`, or sidecar `services.<name>.replicas`; declarations must agree and default to 1. Multiple replicas require one mount-free service and bridge networking. Multi-service groups, volume mounts (including read-only mounts), sidecar volumes, host networking, static/relay ports and Compose placement/update/rollback overrides cannot scale. Split independently scaled workers into separate deployments; use region scheduling without a node pin when cross-node placement is intended.
 - Upgrading Control does not resubmit saved applications. Preview the rendered `Count` after upgrade, then explicitly redeploy through the recorded workflow to apply capacity. A successful old deployment with `Count=1` is not evidence that the requested replica count was honored.
 
-- New persistent deployments use local storage on the deployment node. Control saves the first owner before submission; updates and restarts keep that owner. An offline owner must not cause an empty database to start elsewhere.
+- Persistent deployments use local storage on the deployment node. Control saves the first owner before submission; updates and restarts keep that owner. An offline owner must not cause an empty database to start elsewhere.
 - Keep `docker-compose.yml` standard. Put local paths in `luma.compose.yml` using `volumes.<name>.local.path`. `local.node` inherits deployment placement when omitted; do not introduce a separate storage-node picker. A multi-service or persistent Compose stack stays in one region on one node.
 - New dashboard Compose paths are scoped by deployment; native volume names are scoped too. Preserve the exact actual source on existing applications. A new volume name is a data migration, even on the same machine.
-- Inspect live mounts before changing saved metadata: historical manifests can claim NFS while the running container uses a local Docker volume, or a migration may already have happened.
 - Storage backend/path changes and an explicit `node` different from the saved local owner no longer block deployment; Control reports a `Storage placement` warning and does not move data. Copy and verify data first when it matters, then set `adopted: true` and remove old `initialize: empty` acknowledgements.
-- Do not register NFS or restart an old NFS service to satisfy a new deployment. Retain legacy parsing only for inspection/recovery of old configurations. No allocations does not imply no data.
-- For migration, permission preservation, offline nodes, and shutdown verification, follow [Local Storage and Migration](references/local-storage.md).
+- For migration, permission preservation, and offline nodes, follow [Local Storage and Migration](references/local-storage.md).
 
 ## Runtime Resources And OOM
 
@@ -332,7 +330,7 @@ Direct `compose render` with local paths requires an explicit node. Control dry-
 For generic CI, install a published PyPI version; verify publication before using the version example below. A source version bump or a successful Control rollout does not prove PyPI availability. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.2.87"
+python -m pip install "luma-infra==0.2.88"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:
@@ -348,7 +346,6 @@ PR checks should validate and dry-run:
 luma validate deploy/app.yaml --format json
 luma deploy deploy/app.yaml --dry-run --format json
 luma compose validate luma.compose.yml --format json
-luma storage check luma.compose.yml --format json
 ```
 
 ## Operational Notes

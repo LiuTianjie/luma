@@ -100,19 +100,43 @@ func (s *Symbolicator) Upload(project, release, assetPath string, rawMap []byte)
 	}
 
 	compressed := s.zstdEnc.EncodeAll(rawMap, make([]byte, 0, len(rawMap)/3))
-	tmp := target + ".tmp"
-	if err := os.WriteFile(tmp, compressed, 0o644); err != nil {
+	targetDir := filepath.Dir(target)
+	tmpFile, err := os.CreateTemp(targetDir, filepath.Base(target)+".*.tmp")
+	if err != nil {
 		return "", err
 	}
-	if err := os.Rename(tmp, target); err != nil {
-		_ = os.Remove(tmp)
+	tmpPath := tmpFile.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmpFile.Write(compressed); err != nil {
+		_ = tmpFile.Close()
 		return "", err
 	}
+	if err := tmpFile.Chmod(0o644); err != nil {
+		_ = tmpFile.Close()
+		return "", err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmpPath, target); err != nil {
+		return "", err
+	}
+	cleanup = false
 
-	// Evict any previously cached consumer/entries for this release+asset.
+	// Evict any previously cached consumer and lookup entries so the new sourcemap takes effect immediately.
 	s.consumerMu.Lock()
 	delete(s.consumers, target)
 	s.consumerMu.Unlock()
+
+	s.lruMu.Lock()
+	s.lruList.Init()
+	s.lruMap = make(map[string]*list.Element)
+	s.lruMu.Unlock()
 	return norm, nil
 }
 
@@ -312,7 +336,7 @@ func NormalizeAssetKey(raw string) string {
 	raw = strings.ReplaceAll(raw, "..", "_")
 	raw = strings.ReplaceAll(raw, "\\", "__")
 	raw = strings.ReplaceAll(raw, "/", "__")
-	if raw == "" {
+	if raw == "" || raw == "." {
 		return "bundle.js"
 	}
 	return raw
@@ -320,11 +344,17 @@ func NormalizeAssetKey(raw string) string {
 
 func sanitizeSeg(s string) string {
 	s = strings.TrimSpace(s)
+	if s == "" {
+		return "default"
+	}
+	if s == "." || s == ".." {
+		return "_"
+	}
 	s = strings.ReplaceAll(s, "..", "_")
 	s = strings.ReplaceAll(s, "/", "_")
 	s = strings.ReplaceAll(s, "\\", "_")
-	if s == "" {
-		return "default"
+	if s == "" || s == "." || s == ".." {
+		return "_"
 	}
 	return s
 }

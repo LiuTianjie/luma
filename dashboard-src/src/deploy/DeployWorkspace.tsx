@@ -135,9 +135,6 @@ function serviceErrors(draft: ServiceManifestDraft, yamlDirty: boolean, serviceY
   for (const volume of draft.volumeMounts || []) {
     if (!volume.name.trim() && volume.target.trim()) errors.push(lang === "zh" ? "卷挂载缺少 volume 名称" : "Volume mount is missing a volume name");
     if (volume.name.trim() && !volume.target.trim()) errors.push(lang === "zh" ? `${volume.name.trim()} 缺少挂载目标` : `${volume.name.trim()} is missing a mount target`);
-    if (volume.storageMode === "storageClass" && volume.name.trim() && !volume.storageClass.trim()) {
-      errors.push(lang === "zh" ? `${volume.name.trim()} 必须选择 storageClass` : `${volume.name.trim()} must select a storageClass`);
-    }
   }
   for (const row of draft.env || []) {
     if (!row.key.trim() && row.value.trim()) errors.push(lang === "zh" ? "环境变量缺少名称" : "Environment variable is missing a name");
@@ -178,7 +175,6 @@ function composeErrors(draft: ComposeDeploymentDraft, yamlDirty: boolean, compos
     }
   }
   for (const volume of draft.volumes) {
-    if (volume.storageMode === "storageClass" && !volume.storageClass) errors.push(lang === "zh" ? `${volume.name} 必须选择 storageClass` : `${volume.name} must select a storageClass`);
     if (volume.storageMode === "local" && volume.localNode) {
       const node = findNode(nodes, volume.localNode);
       if (!node) errors.push(lang === "zh" ? `${volume.name} 本地存储节点 ${volume.localNode} 不在当前节点清单中` : `${volume.name} local storage node ${volume.localNode} is not in the current node list`);
@@ -253,7 +249,6 @@ export function DeployWorkspace({
   const [importView, setImportView] = useState(false);
   const { confirm, element: confirmDialog } = useConfirm(lang);
   const nodes = payload?.nodes || [];
-  const storageClasses = payload?.storage?.storageClasses || [];
   const regions = regionChoices(payload?.regions || [], nodes);
 
   useEffect(() => {
@@ -495,8 +490,8 @@ export function DeployWorkspace({
               </Alert> : null}
               <TabsContent value="form">
                 {mode === "service"
-                  ? <SingleServiceDeployForm lang={lang} draft={serviceDraft} nodes={nodes} storageClasses={storageClasses} regions={regions} regionCatalog={payload?.regions} onChange={updateServiceDraft} />
-                  : <ComposeDeployForm lang={lang} draft={composeDraft} nodes={nodes} storageClasses={storageClasses} regions={regions} regionCatalog={payload?.regions} onChange={updateComposeDraft} onEditYaml={() => setEditorMode("yaml")} />}
+                  ? <SingleServiceDeployForm lang={lang} draft={serviceDraft} nodes={nodes} regions={regions} regionCatalog={payload?.regions} onChange={updateServiceDraft} />
+                  : <ComposeDeployForm lang={lang} draft={composeDraft} nodes={nodes} regions={regions} regionCatalog={payload?.regions} onChange={updateComposeDraft} onEditYaml={() => setEditorMode("yaml")} />}
               </TabsContent>
               <TabsContent value="yaml">
                 <YamlPreviewEditor lang={lang} mode={mode} serviceYaml={serviceYaml} composeYaml={composeYaml} sidecarYaml={sidecarYaml}

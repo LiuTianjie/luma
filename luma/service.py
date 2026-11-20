@@ -13,7 +13,6 @@ from .io import load_yaml
 from .regions import parse_region_name, validate_region_exposure_syntax
 
 VALID_EXPOSURES = {"none", "cn-edge", "tailscale-relay", "cloudflare-tunnel", "external-edge", "tcp-relay", "node-edge"}
-VALID_ACCESS_MODES = {"ReadWriteOnce", "ReadWriteMany"}
 VALID_ENGINES = {"nomad"}
 TCP_RELAY_RESERVED_PORTS = {80, 443}
 SERVICE_FIELDS = {
@@ -60,17 +59,6 @@ def slugify(value: str) -> str:
 
 
 @dataclass(frozen=True)
-class ServiceVolumeStorageSpec:
-    name: str
-    storage_class: str
-    path: Optional[str] = None
-    access_mode: str = "ReadWriteOnce"
-    initialize: Optional[str] = None
-    adopted: bool = False
-    raw: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
 class ServiceBuildSpec:
     context: str = "."
     dockerfile: str = "Dockerfile"
@@ -102,7 +90,6 @@ class ServiceSpec:
     labels: List[str] = field(default_factory=list)
     networks: List[str] = field(default_factory=list)
     volumes: List[str] = field(default_factory=list)
-    storage: Dict[str, ServiceVolumeStorageSpec] = field(default_factory=dict)
     resources: Dict[str, Any] = field(default_factory=dict)
     healthcheck: Dict[str, Any] = field(default_factory=dict)
     stack_path: Optional[Path] = None
@@ -159,6 +146,64 @@ def tcp_entrypoint_name(port: int) -> str:
     if int(port) < 1:
         raise LumaError("tcp-relay requires a valid port")
     return f"tcp-{int(port)}"
+
+
+_FORBIDDEN_INTERNAL_TARGETS = ("api@internal", "dashboard@internal", "traefik@internal")
+_FORBIDDEN_ROUTER_PROPS = frozenset({"rule", "priority", "service", "entrypoints"})
+
+
+def validate_service_labels(labels: List[str], service_slug: str) -> None:
+    """Validate service.labels to prevent Traefik router hijacking and dashboard exposure."""
+    expected_slug = service_slug.strip().lower()
+    for raw_label in labels:
+        label = str(raw_label)
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in label):
+            raise LumaError("service label must not contain newlines or control characters")
+        lowered = label.lower()
+        for forbidden in _FORBIDDEN_INTERNAL_TARGETS:
+            if forbidden in lowered:
+                raise LumaError(f"service label must not reference {forbidden}")
+        key, sep, value = label.partition("=")
+        key_lower = key.strip().lower()
+        value_lower = value.strip().lower()
+        if key_lower == "luma.edge":
+            raise LumaError("service label must not override luma.edge")
+        if not (key_lower.startswith("traefik.") or key_lower.startswith("lumaedge.")):
+            continue
+        if not sep:
+            raise LumaError(f"Traefik service label must use key=value syntax: {label!r}")
+        parts = key_lower.split(".")
+        # Expected shape: <prefix>.<proto>.<section>.<name>.<prop...>
+        if len(parts) >= 3 and parts[1] in {"http", "tcp", "udp"}:
+            section = parts[2]
+            if section == "routers":
+                if len(parts) < 5 or not parts[3] or not parts[4]:
+                    raise LumaError(f"invalid Traefik router label: {label!r}")
+                router_name = parts[3]
+                prop = parts[4]
+                if router_name != expected_slug:
+                    raise LumaError(
+                        f"service label cannot define or modify Traefik router {router_name!r}; "
+                        f"only router {expected_slug!r} is allowed"
+                    )
+                if prop in _FORBIDDEN_ROUTER_PROPS:
+                    raise LumaError(
+                        f"service label cannot override Traefik router property {prop!r}"
+                    )
+            elif section == "services":
+                if len(parts) < 5 or not parts[3] or not parts[4]:
+                    raise LumaError(f"invalid Traefik service label: {label!r}")
+                target_service = parts[3]
+                if target_service != expected_slug:
+                    raise LumaError(
+                        f"service label cannot modify Traefik service {target_service!r}; "
+                        f"only service {expected_slug!r} is allowed"
+                    )
+                rest = ".".join(parts[4:])
+                if rest == "loadbalancer.servers" or rest.startswith("loadbalancer.servers.") or rest.startswith("loadbalancer.servers["):
+                    raise LumaError("service label cannot override Traefik loadBalancer.servers")
+        if "@internal" in value_lower:
+            raise LumaError("service label must not reference Traefik @internal providers")
 
 
 def load_service(path: Path) -> ServiceSpec:
@@ -241,7 +286,8 @@ def load_service(path: Path) -> ServiceSpec:
     labels = raw.get("labels") or []
     networks = raw.get("networks") or []
     volumes = raw.get("volumes") or []
-    storage = _load_service_storage(raw.get("storage") or {}, volumes)
+    if raw.get("storage") is not None and raw.get("storage") != {}:
+        raise LumaError("storage classes are not supported; use local volumes instead")
     resources = raw.get("resources") or {}
     healthcheck = raw.get("healthcheck") or {}
     for field_name, value in {
@@ -252,6 +298,7 @@ def load_service(path: Path) -> ServiceSpec:
     }.items():
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             raise LumaError(f"{field_name} must be a list of strings")
+    validate_service_labels(labels, slugify(name))
     if not isinstance(resources, dict):
         raise LumaError("resources must be a mapping")
     resources = _normalize_service_resources(resources)
@@ -288,7 +335,6 @@ def load_service(path: Path) -> ServiceSpec:
         labels=labels,
         networks=networks,
         volumes=volumes,
-        storage=storage,
         resources=resources,
         healthcheck=healthcheck,
         stack_path=Path(stack_path) if stack_path else None,
@@ -419,47 +465,3 @@ def _positive_int(value: Any, field_name: str) -> int:
     if parsed < 1:
         raise LumaError(f"{field_name} must be a positive integer")
     return parsed
-
-
-def _load_service_storage(raw: Any, volumes: List[str]) -> Dict[str, ServiceVolumeStorageSpec]:
-    if not isinstance(raw, dict):
-        raise LumaError("storage must be a mapping")
-    named_volumes = _named_volume_sources(volumes)
-    result: Dict[str, ServiceVolumeStorageSpec] = {}
-    for name, value in raw.items():
-        if value is None:
-            value = {}
-        if not isinstance(value, dict):
-            raise LumaError(f"storage.{name} must be a mapping")
-        volume_name = str(name)
-        if volume_name not in named_volumes:
-            raise LumaError(f"storage.{name} references unknown named volume")
-        storage_class = str(value.get("storageClass") or "").strip()
-        if not storage_class:
-            raise LumaError(f"storage.{name}.storageClass is required")
-        access_mode = str(value.get("accessMode") or "ReadWriteOnce")
-        if access_mode not in VALID_ACCESS_MODES:
-            raise LumaError(f"storage.{name}.accessMode must be one of {sorted(VALID_ACCESS_MODES)}")
-        initialize = value.get("initialize")
-        if initialize is not None and str(initialize) != "empty":
-            raise LumaError(f"storage.{name}.initialize only supports: empty")
-        result[volume_name] = ServiceVolumeStorageSpec(
-            name=volume_name,
-            storage_class=storage_class,
-            path=str(value["path"]).strip().strip("/") if value.get("path") else None,
-            access_mode=access_mode,
-            initialize=str(initialize) if initialize is not None else None,
-            adopted=bool(value.get("adopted", False)),
-            raw=dict(value),
-        )
-    return result
-
-
-def _named_volume_sources(volumes: List[str]) -> set[str]:
-    names: set[str] = set()
-    for spec in volumes:
-        source = spec.split(":", 1)[0].strip()
-        if not source or source.startswith("/") or source.startswith(".") or source == "~":
-            continue
-        names.add(source)
-    return names

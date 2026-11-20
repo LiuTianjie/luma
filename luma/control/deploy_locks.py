@@ -17,6 +17,17 @@ def request_resources(handler: str, body: dict[str, Any]) -> set[str] | None:
     if handler == "handle_application_restart":
         stack = str(body.get("stack") or "").strip()
         return {"job:" + stack} if stack else None
+    if handler in {"handle_service_remove", "handle_service_rollback"}:
+        name = str(body.get("name") or "").strip()
+        if not name:
+            return None
+        try:
+            return {"job:" + slugify(name)}
+        except LumaError:
+            return None
+    if handler == "handle_certificate_retry":
+        domain = str(body.get("domain") or "").strip().lower().rstrip(".")
+        return {"host:" + domain} if domain else None
     if handler not in {"handle_deployment", "handle_compose_deployment"}:
         return None
     try:
@@ -45,21 +56,70 @@ class DeploymentLocks:
     def __init__(self, lock: Any):
         self.condition = threading.Condition(lock)
         self.owners: dict[int, Counter[str]] = {}
+        self._wildcard_waiters: list[int] = []
+        self._next_ticket = 0
+        self._version = 0
 
     @contextmanager
     def hold(self, resources: Callable[[], set[str] | None], cancel_requested: Callable[[], bool]):
         ident = threading.get_ident()
-        with self.condition:
+        ticket: int | None = None
+        try:
             while True:
+                # Invoke cancel/resource callbacks outside self.condition so DB
+                # reads never stall unrelated lock acquisitions or releases.
                 if cancel_requested():
                     raise LumaError("build canceled while waiting for runtime deployment")
+                with self.condition:
+                    version_before = self._version
                 requested = resources()
-                wanted = requested if requested is not None else {"*"}
-                others = set().union(*(set(keys) for owner, keys in self.owners.items() if owner != ident))
-                if not others or ("*" not in wanted and "*" not in others and wanted.isdisjoint(others)):
-                    break
-                self.condition.wait(0.25)
-            self.owners.setdefault(ident, Counter()).update(wanted)
+                wanted = set(requested) if requested is not None else {"*"}
+                needs_wildcard = "*" in wanted
+                with self.condition:
+                    if needs_wildcard and ticket is None:
+                        self._next_ticket += 1
+                        ticket = self._next_ticket
+                        self._wildcard_waiters.append(ticket)
+                    elif not needs_wildcard and ticket is not None:
+                        if ticket in self._wildcard_waiters:
+                            self._wildcard_waiters.remove(ticket)
+                            self.condition.notify_all()
+                        ticket = None
+
+                    already_owner = ident in self.owners
+                    others = set().union(*(set(keys) for owner, keys in self.owners.items() if owner != ident))
+                    # FIFO fairness for cluster-wide ("*") operations prevents
+                    # starvation behind overlapping per-app deploys; existing
+                    # owners keep re-entrancy so nested locks never deadlock.
+                    wildcard_ahead = (
+                        bool(self._wildcard_waiters)
+                        and not already_owner
+                        and (not needs_wildcard or self._wildcard_waiters[0] != ticket)
+                    )
+                    can_acquire = (
+                        not wildcard_ahead
+                        and (not others or (not needs_wildcard and "*" not in others and wanted.isdisjoint(others)))
+                    )
+                    if can_acquire:
+                        if self._version != version_before and not already_owner:
+                            # A concurrent deployment released while we computed
+                            # resources outside the lock; refresh once so our
+                            # resource set reflects the latest committed state.
+                            continue
+                        if ticket is not None and ticket in self._wildcard_waiters:
+                            self._wildcard_waiters.remove(ticket)
+                            ticket = None
+                        self.owners.setdefault(ident, Counter()).update(wanted)
+                        self._version += 1
+                        break
+                    self.condition.wait(0.25)
+        except BaseException:
+            if ticket is not None:
+                with self.condition:
+                    if ticket in self._wildcard_waiters:
+                        self._wildcard_waiters.remove(ticket)
+                        self.condition.notify_all()
+            raise
         try:
             yield
         finally:
@@ -69,4 +129,5 @@ class DeploymentLocks:
                 owned += Counter()  # Drop zero-count keys after nested calls.
                 if not owned:
                     del self.owners[ident]
+                self._version += 1
                 self.condition.notify_all()

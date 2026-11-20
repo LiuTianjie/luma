@@ -40,7 +40,11 @@ jobs:
       packages: write
     strategy:
       matrix:
-        component: [server, runner]
+        include:
+          - component: server
+            context: builder
+          - component: runner
+            context: .
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -55,7 +59,7 @@ jobs:
         run: echo "tag=${GITHUB_REF_NAME#builder-}" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
-          context: builder
+          context: ${{ matrix.context }}
           file: builder/Dockerfile.${{ matrix.component }}
           platforms: linux/amd64,linux/arm64
           push: true

@@ -201,7 +201,7 @@ def registered_nodes(state: Mapping[str, Any], manager_id: str) -> tuple[dict[st
     return nodes, waiting
 
 
-def _source_jobs(state: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+def _source_jobs(state: Mapping[str, Any], *, only_ids: set[str] | None = None) -> dict[str, dict[str, Any]]:
     from .config import load_config
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "/opt/luma/luma.yaml")
     config = load_config(config_path)
@@ -213,6 +213,8 @@ def _source_jobs(state: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     for kind in ("services", "compose"):
         for slug, record in (records.get(kind) or {}).items():
             if not isinstance(record, dict) or not record.get("manifest") or not re_slug(slug):
+                continue
+            if only_ids is not None and slug not in only_ids:
                 continue
             spec = yaml.safe_load(record["manifest"]) or {}
             region = str(spec.get("region") or record.get("region") or "")
@@ -240,6 +242,8 @@ def _source_jobs(state: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         node_name = canonical_node_name(str(key), record)
         expected_id = node_traefik_job_id(node_name)
         job_id = str(ingress.get("jobId") or expected_id)
+        if only_ids is not None and job_id not in only_ids:
+            continue
         if job_id != expected_id or not re_slug(job_id):
             raise LumaError("recorded node ingress identifier does not match its node")
         path = root / "node-edge" / job_id / (job_id + ".nomad.json")
@@ -314,17 +318,25 @@ def _require_single_server() -> None:
         raise LumaError("automatic Nomad security migration requires exactly one healthy Raft server; the multi-server cluster was retained")
 
 
-def inventory(state: Mapping[str, Any], nodes: Mapping[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def inventory(
+    state: Mapping[str, Any],
+    nodes: Mapping[str, Any],
+    *,
+    consumers_only: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     client = NomadApi("http://127.0.0.1:4646", token=nomad_token())
-    sources = _source_jobs(state)
+    consumer_ids = {"traefik", "luma-observe"} if consumers_only else None
+    sources = _source_jobs(state, only_ids=consumer_ids)
     allocations = client.request("GET", "/v1/allocations") or []
-    mounts: dict[str, Any] = {name: {"mounts": [], "systemMounts": [], "trustedHost": node["role"] == "server"} for name, node in nodes.items()}
-    node_names = {value["nodeId"]: name for name, value in nodes.items()}
+    mounts: dict[str, Any] = {name: {"mounts": [], "systemMounts": [], "trustedHost": node.get("role") == "server"} for name, node in nodes.items()}
+    node_names = {value["nodeId"]: name for name, value in nodes.items() if value.get("nodeId")}
     jobs = []
     for stub in client.request("GET", "/v1/jobs?namespace=*") or []:
         if stub.get("Stop") or stub.get("Status") == "dead":
             continue
         namespace, job_id = str(stub.get("Namespace") or "default"), str(stub["ID"])
+        if consumer_ids is not None and (namespace != "default" or job_id not in consumer_ids):
+            continue
         if namespace != "default":
             raise LumaError("automatic security migration requires explicit policy for non-default Nomad namespaces")
         job = client.request("GET", "/v1/job/" + urllib.parse.quote(job_id, safe=""))
@@ -771,21 +783,32 @@ def _maintain_certificates(journal: dict[str, Any], state: Mapping[str, Any]) ->
         return
     manager = journal["nodes"][journal["manager"]]
     changed = expires_soon(ADMIN_ROOT / "tls") or any(expires_soon(security_root() / (role + ".d")) for role in ROLES)
+    errors: list[str] = []
+    pending_messages: list[str] = []
     if changed or journal.get("consumerRenewalPending"):
         if not journal.get("consumerRenewalPending"):
             # Normal application updates may have changed the saved sources
-            # since migration. Revalidate current consumer specs before renewal.
-            jobs, _ = inventory(state, journal["nodes"])
-            journal["jobs"] = [item for item in journal["jobs"] if item["Job"]["ID"] not in {"traefik", "luma-observe"}] + [item for item in jobs if item["Job"]["ID"] in {"traefik", "luma-observe"}]
+            # since migration. Revalidate only consumer specs so unrelated
+            # application drift never blocks cluster PKI renewal.
+            try:
+                jobs, _ = inventory(state, journal["nodes"], consumers_only=True)
+                journal["jobs"] = [item for item in journal["jobs"] if item["Job"]["ID"] not in {"traefik", "luma-observe"}] + [item for item in jobs if item["Job"]["ID"] in {"traefik", "luma-observe"}]
+            except LumaError as exc:
+                errors.append(f"consumer inventory failed: {exc}")
             journal["consumerRenewalPending"] = True
             _write_journal(journal)
-        if changed:
-            prepare_manager(manager["address"])
-        LocalExecutor().run("systemctl reload nomad", timeout=30)
-        _consumers(journal, consumers_only=True)
-        _refresh_node_traefik_consumers(state)
-        journal.pop("consumerRenewalPending", None)
-        _write_journal(journal)
+        try:
+            if changed:
+                prepare_manager(manager["address"])
+            LocalExecutor().run("systemctl reload nomad", timeout=30)
+            _consumers(journal, consumers_only=True)
+            _refresh_node_traefik_consumers(state)
+            journal.pop("consumerRenewalPending", None)
+            _write_journal(journal)
+        except Pending as exc:
+            pending_messages.append(str(exc))
+        except LumaError as exc:
+            errors.append(f"manager certificate refresh failed: {exc}")
     deferred = False
     for name, node in journal["nodes"].items():
         if name == journal["manager"]:
@@ -794,27 +817,36 @@ def _maintain_certificates(journal: dict[str, Any], state: Mapping[str, Any]) ->
         if CAPABILITY not in (agent.get("capabilities") or []) or now - int(agent.get("lastSeen") or 0) > 120:
             deferred = True
             continue
-        # Renewal uses the node's own current CSR; private keys never leave it.
-        epoch = now // 86400
-        inspected = control_task(state, name, f"renew-inspect:{epoch}:{name}", {"schema": 1, "op": "certificate-request"})
-        if inspected.get("status") in {"failed", "timeout", "interrupted"}:
-            raise LumaError("Nomad certificate inspection failed on " + name + ": " + str(inspected.get("message") or "no valid response"))
-        if inspected.get("status") != "succeeded":
-            raise Pending("Checking Nomad certificate lifetime on " + name)
-        facts = inspected.get("result") or {}
-        if facts.get("nodeId") != node["nodeId"] or facts.get("address") != node["address"]:
-            raise LumaError("certificate renewal does not match the enrolled node identity")
-        if facts.get("certificateRenewalRequired"):
-            renewal = journal.setdefault("renewals", {}).get(name)
-            if renewal is None or renewal.get("epoch") != epoch:
-                renewal = {"epoch": epoch, "certificate": sign_csr(facts["csr"], role="client", address=node["address"])}
-                journal["renewals"][name] = renewal
-                _write_journal(journal)
-            response = control_task(state, name, f"renew:{epoch}:{name}", {"schema": 1, "op": "renew", "nodeId": node["nodeId"], "address": node["address"], "certificate": renewal["certificate"]})
-            if response.get("status") in {"failed", "timeout", "interrupted"}:
-                raise LumaError("Nomad certificate renewal failed on " + name + ": " + str(response.get("message") or "no valid response"))
-            if response.get("status") != "succeeded":
-                raise Pending("Renewing Nomad certificate on " + name)
+        try:
+            # Renewal uses the node's own current CSR; private keys never leave it.
+            epoch = now // 86400
+            inspected = control_task(state, name, f"renew-inspect:{epoch}:{name}", {"schema": 1, "op": "certificate-request"})
+            if inspected.get("status") in {"failed", "timeout", "interrupted"}:
+                raise LumaError("Nomad certificate inspection failed on " + name + ": " + str(inspected.get("message") or "no valid response"))
+            if inspected.get("status") != "succeeded":
+                raise Pending("Checking Nomad certificate lifetime on " + name)
+            facts = inspected.get("result") or {}
+            if facts.get("nodeId") != node["nodeId"] or facts.get("address") != node["address"]:
+                raise LumaError("certificate renewal does not match the enrolled node identity")
+            if facts.get("certificateRenewalRequired"):
+                renewal = journal.setdefault("renewals", {}).get(name)
+                if renewal is None or renewal.get("epoch") != epoch:
+                    renewal = {"epoch": epoch, "certificate": sign_csr(facts["csr"], role="client", address=node["address"])}
+                    journal["renewals"][name] = renewal
+                    _write_journal(journal)
+                response = control_task(state, name, f"renew:{epoch}:{name}", {"schema": 1, "op": "renew", "nodeId": node["nodeId"], "address": node["address"], "certificate": renewal["certificate"]})
+                if response.get("status") in {"failed", "timeout", "interrupted"}:
+                    raise LumaError("Nomad certificate renewal failed on " + name + ": " + str(response.get("message") or "no valid response"))
+                if response.get("status") != "succeeded":
+                    raise Pending("Renewing Nomad certificate on " + name)
+        except Pending as exc:
+            pending_messages.append(str(exc))
+        except LumaError as exc:
+            errors.append(f"{name}: {exc}")
+    if errors:
+        raise LumaError("Nomad certificate maintenance failed: " + "; ".join(errors))
+    if pending_messages:
+        raise Pending("; ".join(pending_messages))
     journal["certificateCheckAt"] = now - 3540 if deferred else now
     _write_journal(journal)
 

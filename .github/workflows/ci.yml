@@ -161,3 +161,40 @@ jobs:
           luma runner status --help
           python -m luma.cli node-agent run --help > /dev/null
           bash scripts/validate-stacks.sh
+
+  eye:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: eye/go.mod
+          cache-dependency-path: eye/go.sum
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: eye/sdk/js/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test Luma Eye Go server
+        working-directory: eye
+        run: go test -race ./...
+
+      - name: Test Luma Eye JS SDK
+        working-directory: eye/sdk/js
+        run: npm ci && npm run typecheck && npm test
+
+      - name: Test Luma Eye Python SDK
+        working-directory: eye
+        run: python -m unittest discover -s sdk/python/tests

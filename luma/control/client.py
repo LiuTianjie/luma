@@ -1011,7 +1011,6 @@ class ControlClient:
         port: int = 5000,
         image: str = "",
         name: str = "",
-        storage_class: str = "",
         domain: str = "",
         username: str = "",
         password: str = "",
@@ -1027,7 +1026,6 @@ class ControlClient:
         port: int = 5000,
         image: str = "",
         name: str = "",
-        storage_class: str = "",
         domain: str = "",
         username: str = "",
         password: str = "",
@@ -1042,7 +1040,6 @@ class ControlClient:
         for src, dst in (
             ("image", "image"),
             ("name", "name"),
-            ("storage_class", "storageClass"),
             ("domain", "domain"),
             ("username", "username"),
             ("password", "password"),
@@ -1085,21 +1082,6 @@ class ControlClient:
 
     def service_history(self, *, name: str, timeout: int = 60) -> Dict[str, Any]:
         return self.request("POST", "/v1/services/history", {"name": name}, timeout=timeout)
-
-    def apply_storage(
-        self,
-        *,
-        manifest: str,
-        compose_content: str,
-        source_name: str,
-        timeout: int = 300,
-    ) -> Dict[str, Any]:
-        return self.request(
-            "POST",
-            "/v1/storage/apply",
-            {"manifest": manifest, "composeContent": compose_content, "sourceName": source_name},
-            timeout=timeout,
-        )
 
     def list_secrets(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/secrets")
@@ -1233,47 +1215,6 @@ class ControlClient:
             f"/v1/git-providers/{urllib.parse.quote(provider_id, safe='')}/repositories/{urllib.parse.quote(owner, safe='')}/{urllib.parse.quote(repo, safe='')}/refs",
         )
 
-    def list_storage(self) -> Dict[str, Any]:
-        return self.request("GET", "/v1/storage")
-
-    def set_storage(
-        self,
-        *,
-        name: str,
-        provider: str,
-        external: bool = False,
-        node: str = "",
-        path: str = "",
-        endpoint: str = "",
-        mount_options: str = "",
-        regions: list[str] | None = None,
-        nodes: list[str] | None = None,
-        timeout: int = 360,
-    ) -> Dict[str, Any]:
-        return self.request(
-            "POST",
-            "/v1/storage",
-            {
-                "name": name,
-                "provider": provider,
-                "external": external,
-                "node": node,
-                "path": path,
-                "endpoint": endpoint,
-                "mountOptions": mount_options,
-                "regions": regions or [],
-                "nodes": nodes or [],
-            },
-            timeout=timeout,
-        )
-
-    def remove_storage(self, *, name: str, timeout: int = 360) -> Dict[str, Any]:
-        return self.request(
-            "POST",
-            "/v1/storage/remove",
-            {"name": name},
-            timeout=timeout,
-        )
 
 def _timeout_message(path: str, timeout: int) -> str:
     message = f"control API timed out after {timeout:g}s waiting for {path}"

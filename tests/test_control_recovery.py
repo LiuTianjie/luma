@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 from starlette.requests import Request
 
 from luma.agent import _AgentTaskProgressReporter
-from luma.control import build_queue, database, database_errors, server, state, storage_governance
+from luma.control import database, database_errors, server, state, storage_governance
 from luma.control.client import ControlClient
 from luma.errors import DatabaseBusyError, LumaError
 
@@ -28,21 +28,21 @@ class ControlRecoveryTests(unittest.TestCase):
         self.original = {
             "domain": "recovery.test", "clusterId": "test", "deployToken": "management",
             "build": {"defaultNode": "builder", "registryHost": "builder:5000"},
-            "nodes": {"builder": {"agent": {"status": "ready", "capabilities": ["docker-build", "native-arm-build-v1"],
-                                             "tokenHash": server._hash_agent_token(self.token)}}},
+            "nodes": {"builder": {"name": "builder", "region": "cn", "nomadStatus": "ready",
+                                  "agent": {"status": "ready", "os": "linux", "arch": "amd64",
+                                            "capabilities": ["docker-build", "native-arm-build-v1"],
+                                            "tokenHash": server._hash_agent_token(self.token)}}},
             "agentTasks": {"task": {"id": "task", "nodeName": "builder", "status": "running", "progress": []}},
             "buildRuns": {},
         }
         state.save_state(self.original)
 
-    def remote(self, **body):
-        return server._create_build_run(body, source="https://github.com/acme/app.git", build_node="builder",
-                                        project_key="acme/app", queued_work=body)
-
     def test_deployed_success_receipt_retries_without_replaying_deployment(self):
-        body = {"repoUrl": "https://github.com/acme/app.git"}
-        run = self.remote(**body)
-        build_queue.claim()
+        prepared = server.handle_local_build_prepare(
+            "management", {"repoUrl": "https://github.com/acme/app.git", "region": "cn"}
+        )
+        run = prepared["run"]["id"]
+        image = prepared["upload"]["image"]
         update = database.update_entity_metadata
         attempts = []
 
@@ -57,23 +57,28 @@ class ControlRecoveryTests(unittest.TestCase):
             self.assertEqual(database._writer_gate.owner, "")
             state.mutate_state(lambda current: current["nodes"]["builder"].update(heartbeatDuringRetry=True))
 
-        with patch.object(server, "load_config", return_value=Mock(defaults={})), patch.object(
-            server, "_require_build_node", return_value="builder"
-        ), patch.object(server, "_build_proxy_for_request", return_value=""), patch.object(
-            server, "_run_node_agent_task", return_value={"image": "registry/app:sha", "manifest": "name: app\nregion: cn\nexposure: none\n", "buildCapabilities": ["native-arm-build-v1"]}
-        ), patch.object(server, "handle_deployment", return_value={"service": "app", "image": "registry/app:sha"}) as deploy, patch.object(
+        with patch.object(server, "handle_deployment", return_value={"service": "app", "image": image}) as deploy, patch.object(
             database, "update_entity_metadata", side_effect=locked_once
         ), patch.object(database_errors.time, "sleep", side_effect=retry_wait):
-            staged = server.handle_build_deploy("management", body, _queued_run_id=run)
-            # The queued build hands its image back; deployment is its own stage.
-            result = server.handle_queued_repository_deploy("management", run, body, staged["requeueDeploy"])
-        self.assertEqual(result["image"], "registry/app:sha")
+            result = server.handle_local_build_complete(
+                "management",
+                run,
+                {
+                    "buildResult": {
+                        "kind": "service",
+                        "image": image,
+                        "manifest": "name: app\nregion: cn\nexposure: none\n",
+                        "buildCapabilities": ["native-arm-build-v1"],
+                    }
+                },
+            )
+        self.assertEqual(result["image"], image)
         deploy.assert_called_once()
         self.assertEqual(len(attempts), 2)
         self.assertEqual(attempts[0], attempts[1])
         saved = state.load_entity("buildRuns", run)
         self.assertEqual(saved["status"], "succeeded")
-        self.assertEqual(saved["result"]["image"], "registry/app:sha")
+        self.assertEqual(saved["result"]["image"], image)
 
     def test_receipt_retries_only_transient_database_errors(self):
         for error in (ValueError("invalid"), sqlite3.IntegrityError("constraint"), LumaError("unauthorized")):
@@ -83,22 +88,6 @@ class ControlRecoveryTests(unittest.TestCase):
                     database_errors.persist_receipt(write, owner="test")
                 write.assert_called_once()
                 sleep.assert_not_called()
-
-    def test_blocked_queue_poll_and_claim_never_load_or_rewrite_log_streams(self):
-        first = self.remote(ref="main")
-        build_queue.claim()
-        second = self.remote(ref="dev")
-        state.mutate_state(lambda current: current["buildRuns"][first].update(events=[{"message": "old"}] * 10000))
-        read = database.read_entity
-
-        def only_nodes(conn, kind, identifier):
-            self.assertEqual(kind, "nodes")
-            return read(conn, kind, identifier)
-
-        with patch.object(database, "read_entity", side_effect=only_nodes):
-            self.assertIsNone(build_queue.claim())
-            self.assertEqual(build_queue.position(second)["waitReason"], "builder")
-        self.assertEqual(len(state.load_entity("buildRuns", first)["events"]), 10000)
 
     def test_metadata_mutation_preserves_unloaded_event_streams(self):
         state.mutate_state(lambda current: current["buildRuns"].update(run={"id": "run", "status": "running", "events": [{"message": "preserve"}]}))

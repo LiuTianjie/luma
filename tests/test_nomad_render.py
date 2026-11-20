@@ -688,6 +688,57 @@ port: 3000
         self.assertGreaterEqual(check["CheckRestart"]["Grace"], check["Interval"] * check["CheckRestart"]["Limit"])
         self.assertLess(int(task["Env"]["GOMEMLIMIT"].removesuffix("MiB")), task["Resources"]["MemoryMB"])
 
+    def test_traefik_dashboard_disabled_by_default_and_opt_in(self):
+        default_args = render_traefik_job(image="traefik:v3.6", as_json=False)["Job"]["TaskGroups"][0]["Tasks"][0]["Config"]["args"]
+        self.assertNotIn("--api.dashboard=true", default_args)
+        enabled_args = render_traefik_job(image="traefik:v3.6", enable_dashboard=True, as_json=False)["Job"]["TaskGroups"][0]["Tasks"][0]["Config"]["args"]
+        self.assertIn("--api.dashboard=true", enabled_args)
+
+    def test_service_labels_allow_own_router_middlewares_and_block_hijacking(self):
+        # Legitimate managed registry basicauth and custom middlewares succeed.
+        job = self.render(
+            """
+name: luma-registry
+image: registry:2
+region: cn
+exposure: cn-edge
+domain: registry.example.com
+port: 5000
+labels:
+  - traefik.http.middlewares.luma-registry-auth.basicauth.users=builder:{SHA}abc123
+  - traefik.http.routers.luma-registry.middlewares=luma-registry-auth
+  - traefik.http.middlewares.luma-registry-buf.buffering.maxRequestBodyBytes=0
+  - com.example.team=platform
+"""
+        )
+        tags = job["TaskGroups"][0]["Services"][0]["Tags"]
+        self.assertIn("traefik.http.routers.luma-registry.middlewares=luma-registry-auth", tags)
+        self.assertIn("com.example.team=platform", tags)
+
+        dangerous_labels = [
+            "traefik.http.routers.app.service=api@internal",
+            "traefik.http.routers.app.service=dashboard@internal",
+            "traefik.http.routers.app.service=traefik@internal",
+            "traefik.http.routers.luma-control.rule=Host(`control.example.com`)",
+            "traefik.http.routers.other-app.middlewares=evil",
+            "traefik.tcp.routers.other-db.rule=HostSNI(`*`)",
+            "lumaedge.http.routers.other-app.middlewares=evil",
+            "traefik.http.routers.app.rule=Host(`control.example.com`)",
+            "traefik.http.routers.app.priority=99999",
+            "traefik.http.routers.app.entrypoints=metrics",
+            "traefik.http.services.other.loadbalancer.passhostheader=false",
+            "traefik.http.services.app.loadbalancer.servers[0].url=http://127.0.0.1:8080",
+            "luma.edge=other-node",
+            "traefik.http.routers.app.middlewares=ok\ntraefik.http.routers.evil.service=api@internal",
+            "bad\x00label",
+        ]
+        for bad in dangerous_labels:
+            with self.subTest(label=bad):
+                with self.assertRaises(LumaError):
+                    self.load(
+                        f"name: app\nimage: nginx:latest\nregion: cn\nexposure: cn-edge\ndomain: app.example.com\nport: 80\nlabels:\n  - {json.dumps(bad)}\n"
+                    )
+
 
 class InternalFixedPortTests(unittest.TestCase):
     def config(self):

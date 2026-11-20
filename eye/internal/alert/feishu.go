@@ -14,13 +14,21 @@ import (
 	"github.com/liutianjie/luma-eye/internal/model"
 )
 
+const (
+	feishuDedupWindow     = 60 * time.Second
+	feishuMaxDedupEntries = 4096
+	feishuMaxConcurrent   = 16
+)
+
 type FeishuNotifier struct {
 	webhookURL string
 	publicURL  string
 	httpClient *http.Client
 
-	mu       sync.Mutex
-	lastSent map[string]time.Time
+	mu         sync.Mutex
+	lastSent   map[string]time.Time
+	maxEntries int
+	sem        chan struct{}
 }
 
 func NewFeishuNotifier(webhookURL, publicURL string) *FeishuNotifier {
@@ -29,6 +37,8 @@ func NewFeishuNotifier(webhookURL, publicURL string) *FeishuNotifier {
 		publicURL:  strings.TrimRight(strings.TrimSpace(publicURL), "/"),
 		httpClient: &http.Client{Timeout: 8 * time.Second},
 		lastSent:   make(map[string]time.Time),
+		maxEntries: feishuMaxDedupEntries,
+		sem:        make(chan struct{}, feishuMaxConcurrent),
 	}
 }
 
@@ -44,14 +54,54 @@ func (f *FeishuNotifier) NotifyIssueAsync(reason string, exc model.ExceptionEven
 	now := time.Now()
 
 	f.mu.Lock()
-	if prev, ok := f.lastSent[key]; ok && now.Sub(prev) < 60*time.Second {
+	if prev, ok := f.lastSent[key]; ok && now.Sub(prev) < feishuDedupWindow {
 		f.mu.Unlock()
 		return
+	}
+	if f.sem != nil {
+		select {
+		case f.sem <- struct{}{}:
+		default:
+			f.mu.Unlock()
+			return
+		}
+	}
+	maxEntries := f.maxEntries
+	if maxEntries <= 0 {
+		maxEntries = feishuMaxDedupEntries
+	}
+	if len(f.lastSent) >= maxEntries {
+		for k, ts := range f.lastSent {
+			if now.Sub(ts) >= feishuDedupWindow {
+				delete(f.lastSent, k)
+			}
+		}
+		targetSize := maxEntries - max(1, maxEntries/8)
+		for len(f.lastSent) >= maxEntries {
+			var oldestKey string
+			var oldestTS time.Time
+			for k, ts := range f.lastSent {
+				if oldestKey == "" || ts.Before(oldestTS) {
+					oldestKey = k
+					oldestTS = ts
+				}
+			}
+			if oldestKey == "" {
+				break
+			}
+			delete(f.lastSent, oldestKey)
+			if len(f.lastSent) <= targetSize {
+				break
+			}
+		}
 	}
 	f.lastSent[key] = now
 	f.mu.Unlock()
 
 	go func() {
+		if f.sem != nil {
+			defer func() { <-f.sem }()
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
 		_ = f.sendCard(ctx, reason, exc)

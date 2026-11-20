@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"github.com/liutianjie/luma-eye/internal/config"
+	"github.com/liutianjie/luma-eye/internal/model"
 	"github.com/liutianjie/luma-eye/internal/observe"
 	"github.com/liutianjie/luma-eye/internal/pipeline"
 	"github.com/liutianjie/luma-eye/internal/project"
@@ -51,7 +54,10 @@ func TestLoginPersistsConfigAndPowersCLIWithoutEnvVars(t *testing.T) {
 		sCancel()
 	}()
 
-	srv := server.New(cfg, store, nil, batcher, sym, metrics)
+	srv, err := server.New(cfg, store, nil, batcher, sym, metrics)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -120,5 +126,79 @@ func TestSkillsInstallAndStatus(t *testing.T) {
 	}
 	if err := runSkills([]string{"status", "--path", baseDir, "--json"}); err != nil {
 		t.Fatalf("runSkills status failed: %v", err)
+	}
+}
+
+func TestGracefulShutdownDrainsInFlightIngestBeforeStoppingBatcher(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Mode:          config.ModeAll,
+		DataDir:       dir,
+		BatchInterval: 10 * time.Second, // long interval so only shutdown drain flushes
+		BatchSize:     100,
+		QueueCapacity: 64,
+	}
+	store, err := project.NewStore(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics := observe.NewMetrics()
+	batcher, err := pipeline.NewBatcher(cfg, store, nil, nil, nil, metrics)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batcherCtx, cancelBatcher := context.WithCancel(context.Background())
+	batcher.Start(batcherCtx)
+
+	entered := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /slow-ingest", func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		// Simulate in-flight handler still running after SIGTERM starts httpServer.Shutdown
+		time.Sleep(120 * time.Millisecond)
+		ok := batcher.Enqueue(model.RelayBatch{
+			Events: []model.Event{{
+				TS:        model.FormatTS(time.Now().UTC()),
+				Project:   "demo",
+				EventType: "pageview",
+				EventName: "pageview",
+			}},
+		})
+		if !ok {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpSrv := &http.Server{Handler: mux}
+	go func() {
+		_ = httpSrv.Serve(ln)
+	}()
+
+	reqDone := make(chan int, 1)
+	go func() {
+		resp, err := http.Post("http://"+ln.Addr().String()+"/slow-ingest", "application/json", nil)
+		if err != nil {
+			reqDone <- 0
+			return
+		}
+		_ = resp.Body.Close()
+		reqDone <- resp.StatusCode
+	}()
+
+	<-entered
+	shutdownGracefully(httpSrv, cancelBatcher, batcher, 5*time.Second)
+
+	if status := <-reqDone; status != http.StatusNoContent {
+		t.Fatalf("expected in-flight ingest to finish with 204, got %d", status)
+	}
+	snap, _, _, _, _, _ := metrics.Snapshot()
+	if snap["demo"].Events != 1 {
+		t.Fatalf("expected in-flight event to be flushed before exit, got %+v", snap["demo"])
 	}
 }

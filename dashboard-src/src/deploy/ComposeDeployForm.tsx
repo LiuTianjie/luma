@@ -2,7 +2,7 @@ import { FileCode2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldGroup, FieldLegend, FieldSet, FieldTitle } from "@/components/ui/field";
-import type { DashboardNode, DashboardRegion, DashboardStorageClass, Lang } from "../types";
+import type { DashboardNode, DashboardRegion, Lang } from "../types";
 import type { ComposeDeploymentDraft, ComposeServiceDraft, ComposeVolumeDraft, Exposure, Region } from "./types";
 import { EXPOSURES, exposureAllowedInRegion, exposureOptionLabel, hasReadyNodeInRegion, nodeChoicesForExposure, nodeForExposure, publicIngressNodes, regionChoices, requiredRegionForExposure, regionOptionLabel } from "./options";
 import { defaultLocalVolumePath, updateComposeServiceExposure } from "./yaml";
@@ -12,7 +12,6 @@ export function ComposeDeployForm({
   lang,
   draft,
   nodes,
-  storageClasses,
   regions,
   regionCatalog = [],
   onChange,
@@ -21,7 +20,6 @@ export function ComposeDeployForm({
   lang: Lang;
   draft: ComposeDeploymentDraft;
   nodes: DashboardNode[];
-  storageClasses: DashboardStorageClass[];
   regions?: Region[];
   regionCatalog?: DashboardRegion[];
   onChange: (draft: ComposeDeploymentDraft) => void;
@@ -111,12 +109,8 @@ export function ComposeDeployForm({
             <DeploySelectField label={zh ? "存储方式" : "Storage"} value={volume.storageMode} onChange={(value) => updateVolume(volume.name, { storageMode: value as ComposeVolumeDraft["storageMode"] })} options={[
               { value: "local", label: zh ? "部署节点本地目录" : "Deployment-node directory" },
               { value: "unmanaged", label: zh ? "使用已有命名卷" : "Existing named volume" },
-              ...(volume.storageMode === "storageClass" ? [{ value: "storageClass", label: zh ? "原有共享存储" : "Existing shared storage" }] : []),
             ]} />
-            {volume.storageMode === "storageClass" ? <DeploySelectField label="storageClass" value={volume.storageClass} onChange={(value) => updateVolume(volume.name, { storageClass: value })} options={[
-              { value: "", label: zh ? "选择已注册存储" : "Select registered storage" },
-              ...storageClasses.map((item) => ({ value: item.name || "", label: item.name })),
-            ]} error={!volume.storageClass ? (zh ? "请选择存储类" : "Select a storage class") : undefined} /> : volume.storageMode === "local" ? <>
+            {volume.storageMode === "local" ? <>
               <DeployTextField label={zh ? "数据位置" : "Data location"} value={volume.localNode || (zh ? "跟随部署节点并固定" : "Pinned to the deployment node")} disabled />
               <DeployTextField label={zh ? "本地路径（可选）" : "Local path (optional)"} value={volume.localPath} onChange={(event) => updateVolume(volume.name, { localPath: event.target.value })} placeholder={defaultLocalVolumePath(draft.name, volume.name)} />
             </> : <DeployTextField label={zh ? "说明" : "Note"} value={zh ? "保留原卷名，固定到部署节点" : "Preserve the volume name and pin its deployment node"} disabled />}

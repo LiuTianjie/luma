@@ -2,7 +2,7 @@ import { Plus, Trash2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { FieldGroup, FieldLegend, FieldSet } from "@/components/ui/field";
-import type { DashboardNode, DashboardRegion, DashboardStorageClass, Lang } from "../types";
+import type { DashboardNode, DashboardRegion, Lang } from "../types";
 import type { Exposure, Region, ServiceManifestDraft, ServiceVolumeDraft } from "./types";
 import { EXPOSURES, exposureAllowedInRegion, exposureOptionLabel, hasReadyNodeInRegion, nodeChoicesForExposure, nodeForExposure, publicIngressNodes, regionChoices, requiredRegionForExposure, regionOptionLabel } from "./options";
 import { serviceExposureRegion } from "./yaml";
@@ -12,7 +12,6 @@ export function SingleServiceDeployForm({
   lang,
   draft,
   nodes,
-  storageClasses,
   regions,
   regionCatalog = [],
   onChange,
@@ -20,7 +19,6 @@ export function SingleServiceDeployForm({
   lang: Lang;
   draft: ServiceManifestDraft;
   nodes: DashboardNode[];
-  storageClasses: DashboardStorageClass[];
   regions?: Region[];
   regionCatalog?: DashboardRegion[];
   onChange: (draft: ServiceManifestDraft) => void;
@@ -51,8 +49,6 @@ export function SingleServiceDeployForm({
           name: "",
           target: "",
           storageMode: "local",
-          storageClass: "",
-          path: "",
         },
       ],
     });
@@ -109,15 +105,8 @@ export function SingleServiceDeployForm({
               <DeploySelectField label={zh ? "存储方式" : "Storage"} value={volume.storageMode} onChange={(value) => updateVolumeMount(volume.id, { storageMode: value as ServiceVolumeDraft["storageMode"] })} options={[
                 { value: "local", label: zh ? "部署节点本地卷" : "Deployment-node volume" },
                 { value: "unmanaged", label: zh ? "使用已有命名卷" : "Existing named volume" },
-                ...(volume.storageMode === "storageClass" ? [{ value: "storageClass", label: zh ? "原有共享存储" : "Existing shared storage" }] : []),
               ]} />
-              {volume.storageMode === "storageClass" ? <>
-                <DeploySelectField label="storageClass" value={volume.storageClass} onChange={(value) => updateVolumeMount(volume.id, { storageClass: value })} options={[
-                  { value: "", label: zh ? "选择已注册存储" : "Select registered storage" },
-                  ...storageClasses.map((item) => ({ value: item.name || "", label: item.name })),
-                ]} error={volume.name.trim() && !volume.storageClass.trim() ? (zh ? "请选择存储类" : "Select a storage class") : undefined} />
-                <DeployTextField label="path" value={volume.path} onChange={(event) => updateVolumeMount(volume.id, { path: event.target.value })} placeholder={`${draft.name || "app"}/${volume.name || "data"}`} />
-              </> : <DeployTextField label={zh ? "数据位置" : "Data location"} value={zh ? "跟随部署节点，重启与更新保留数据" : "On the deployment node; retained across restarts and updates"} disabled />}
+              <DeployTextField label={zh ? "数据位置" : "Data location"} value={zh ? "跟随部署节点，重启与更新保留数据" : "On the deployment node; retained across restarts and updates"} disabled />
             </FieldGroup>
             <Button type="button" variant="ghost" size="sm" className="self-end" aria-label={zh ? `删除卷 ${volume.name || index + 1}` : `Remove volume ${volume.name || index + 1}`} onClick={() => patch({ volumeMounts: volumeMounts.filter((item) => item.id !== volume.id) })}><Trash2 data-icon="inline-start" />{zh ? "删除" : "Remove"}</Button>
           </FieldSet>)}</FieldGroup> : <Empty><EmptyHeader><EmptyTitle>{zh ? "暂无存储卷" : "No volumes"}</EmptyTitle><EmptyDescription>{zh ? "需要持久化配置或数据时添加一个卷。" : "Add a volume when configuration or data should persist."}</EmptyDescription></EmptyHeader></Empty>}

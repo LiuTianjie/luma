@@ -193,7 +193,7 @@ Luma 自动申请 tenant access token，仅缓存于进程内存，并在过期�
 
 ## 主机磁盘采样 {#host-disk-samples}
 
-更新后的节点 agent 采样 `/opt/luma` 所在文件系统；该目录不存在时采样 `/`。可在节点 agent 服务环境设置 `LUMA_METRICS_DISK_PATH`，指定其他绝对路径。控制台显示采样路径；它不代表所有挂载点、远端 NFS 服务器容量或 macOS Docker VM 容量。文件系统缺失或 inode 计数不受支持时显示不可用，而非零使用率。
+更新后的节点 agent 采样 `/opt/luma` 所在文件系统；该目录不存在时采样 `/`。可在节点 agent 服务环境设置 `LUMA_METRICS_DISK_PATH`，指定其他绝对路径。控制台显示采样路径；它不代表所有挂载点或 macOS Docker VM 容量。文件系统缺失或 inode 计数不受支持时显示不可用，而非零使用率。
 
 磁盘使用率从可用容量中排除保留块，与常见 `df` 语义一致；可用字节数也排除保留块。旧 agent 仍可工作，但更新后才会上报这些新增采样。
 

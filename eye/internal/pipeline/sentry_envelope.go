@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,10 @@ import (
 	"github.com/liutianjie/luma-eye/internal/model"
 	"github.com/liutianjie/luma-eye/internal/scrub"
 )
+
+const maxDecompressedBodyBytes = 8 << 20 // 8 MiB
+
+var ErrDecompressedTooLarge = errors.New("decompressed payload exceeds 8 MiB limit")
 
 type SentryParseResult struct {
 	EventID    string
@@ -60,6 +65,17 @@ func ExtractSentryKey(r *http.Request, body []byte) string {
 	return ""
 }
 
+func readLimitedDecompressed(r io.Reader, limit int64) ([]byte, error) {
+	out, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(out)) > limit {
+		return nil, ErrDecompressedTooLarge
+	}
+	return out, nil
+}
+
 func DecompressBody(contentEncoding string, raw []byte) ([]byte, error) {
 	ce := strings.ToLower(strings.TrimSpace(contentEncoding))
 	if ce == "" && len(raw) >= 2 && raw[0] == 0x1f && raw[1] == 0x8b {
@@ -74,21 +90,21 @@ func DecompressBody(contentEncoding string, raw []byte) ([]byte, error) {
 			return nil, err
 		}
 		defer gr.Close()
-		return io.ReadAll(io.LimitReader(gr, 8<<20))
+		return readLimitedDecompressed(gr, maxDecompressedBodyBytes)
 	case "zstd":
-		dec, err := zstd.NewReader(nil)
+		dec, err := zstd.NewReader(bytes.NewReader(raw), zstd.WithDecoderMaxWindow(maxDecompressedBodyBytes))
 		if err != nil {
 			return nil, err
 		}
 		defer dec.Close()
-		return dec.DecodeAll(raw, nil)
+		return readLimitedDecompressed(dec, maxDecompressedBodyBytes)
 	case "deflate":
 		zr, err := zlib.NewReader(bytes.NewReader(raw))
 		if err != nil {
 			return nil, err
 		}
 		defer zr.Close()
-		return io.ReadAll(io.LimitReader(zr, 8<<20))
+		return readLimitedDecompressed(zr, maxDecompressedBodyBytes)
 	default:
 		return raw, nil
 	}

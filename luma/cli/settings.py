@@ -113,7 +113,6 @@ def cmd_registry(args: argparse.Namespace) -> int:
             port=args.port,
             image=args.image,
             name=args.name,
-            storage_class=args.storage_class,
             domain=args.domain,
             username=args.username,
             password=registry_password,

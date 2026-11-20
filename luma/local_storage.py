@@ -49,11 +49,6 @@ def compose_persistent_mounts(deployment: ComposeDeploymentSpec) -> list[dict[st
             continue
         for mount in persistent_mounts(body.get("volumes") or []):
             volume = deployment.volumes.get(mount["source"]) if mount["type"] == "volume" else None
-            # An existing shared-storage deployment retains its old backend
-            # until an explicit data migration. Local mounts in mixed stacks
-            # still determine the owning node.
-            if volume and volume.storage_class:
-                continue
             if volume and volume.local_path:
                 mount = {**mount, "type": "bind", "source": volume.local_path}
             mounts.append({"service": str(name), **mount})

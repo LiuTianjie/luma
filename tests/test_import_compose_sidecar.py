@@ -29,8 +29,8 @@ compose: docker-compose.staging.yml
 region: cn
 volumes:
   data:
-    storageClass: cn-nfs
-    path: app/staging/data
+    local:
+      path: /srv/luma/data/app-staging/data
 services:
   web:
     exposure: none
@@ -177,6 +177,13 @@ class ImportComposeSidecarTests(unittest.TestCase):
             with self.assertRaisesRegex(LumaError, "selected composeSidecar is invalid"):
                 _select_luma_compose_manifest(root, "deploy/invalid.yml")
 
+            (deploy / "legacy-nfs.yml").write_text(
+                "name: app-staging\ncompose: docker-compose.staging.yml\nregion: cn\nvolumes:\n  data:\n    storageClass: old-nfs\n    path: app/data\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(LumaError, "storageClasses are not supported"):
+                _select_luma_compose_manifest(root, "deploy/legacy-nfs.yml")
+
     def test_missing_or_symlink_escape_never_falls_back_to_auto_discovery(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as outside:
             root = Path(temporary)
@@ -259,7 +266,7 @@ class ImportComposeSidecarTests(unittest.TestCase):
         self.assertIn("name: app-staging", result["manifest"])
         self.assertNotIn("name: production", result["manifest"])
 
-    def test_control_passes_sidecar_to_builder_and_rejects_manifest_mix(self) -> None:
+    def test_control_legacy_remote_sidecar_import_returns_retirement_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             environment = {
@@ -271,99 +278,15 @@ class ImportComposeSidecarTests(unittest.TestCase):
                 state = init_state(
                     domain="luma.example.com", cluster_id="luma-test", overwrite=True
                 )
-                state["nodes"] = {
-                    "builder": {
-                        "name": "builder",
-                        "region": "home",
-                        "tailscaleIP": "100.64.0.70",
-                        "agent": {
-                            "status": "ready",
-                            "os": "linux",
-                            "capabilities": ["docker-build", "native-arm-build-v1"],
-                        },
-                    }
-                }
-                state["build"] = {
-                    "defaultNode": "builder",
-                    "registryHost": "100.64.0.70:5000",
-                    "pushHost": "localhost:5000",
-                }
                 save_state(state)
-                captured: dict[str, object] = {}
-
-                def fake_task(
-                    _state: dict[str, object],
-                    _node: str,
-                    _action: str,
-                    payload: dict[str, object],
-                    **_kwargs: object,
-                ) -> dict[str, object]:
-                    captured.update(payload)
-                    return {
-                        "kind": "compose",
-                        "buildCapabilities": ["native-arm-build-v1"],
-                        "manifest": "name: app-staging\ncompose: docker-compose.yml\nregion: cn\nservices:\n  web:\n    exposure: none\n",
-                        "composeContent": "services:\n  web:\n    image: registry.internal/acme/app:abc123\n",
-                        "images": {"web": "registry.internal/acme/app:abc123"},
-                        "imageAliases": {},
-                        "image": "registry.internal/acme/app:abc123",
-                        "composeSidecar": "deploy/luma.compose.staging.yml",
-                    }
-
-                with patch(
-                    "luma.control.server._run_node_agent_task",
-                    side_effect=fake_task,
-                ), patch(
-                    "luma.control.server.handle_compose_deployment",
-                    return_value={"deployment": "app-staging", "steps": []},
-                ):
-                    result = handle_build_deploy(
-                        state["deployToken"],
-                        {
-                            "repoUrl": "https://github.com/acme/app.git",
-                            "composeSidecar": "deploy/luma.compose.staging.yml",
-                        },
-                    )
-
-                self.assertEqual(
-                    captured["composeSidecar"],
-                    "deploy/luma.compose.staging.yml",
-                )
-                self.assertEqual(
-                    result["composeSidecar"],
-                    "deploy/luma.compose.staging.yml",
-                )
-
-                stale_builder_result = {
-                    "kind": "compose",
-                    "buildCapabilities": ["native-arm-build-v1"],
-                    "manifest": "name: production\ncompose: docker-compose.yml\nregion: cn\n",
-                    "composeContent": "services:\n  web:\n    image: registry.internal/acme/app:abc123\n",
-                    "images": {"web": "registry.internal/acme/app:abc123"},
-                    "imageAliases": {},
-                    "image": "registry.internal/acme/app:abc123",
-                }
-                with patch(
-                    "luma.control.server._run_node_agent_task",
-                    return_value=stale_builder_result,
-                ), self.assertRaisesRegex(LumaError, "update the builder node agent"):
-                    handle_build_deploy(
-                        state["deployToken"],
-                        {
-                            "repoUrl": "https://github.com/acme/app.git",
-                            "composeSidecar": "deploy/luma.compose.staging.yml",
-                        },
-                    )
-
                 with self.assertRaisesRegex(
-                    LumaError, "cannot be combined with manifest"
+                    LumaError, "Legacy built-in remote build queue has been retired"
                 ):
                     handle_build_deploy(
                         state["deployToken"],
                         {
                             "repoUrl": "https://github.com/acme/app.git",
                             "composeSidecar": "deploy/luma.compose.staging.yml",
-                            "manifest": "name: not-allowed\n",
                         },
                     )
 

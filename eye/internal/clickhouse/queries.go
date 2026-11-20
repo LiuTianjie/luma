@@ -593,11 +593,7 @@ func (c *Client) ListIssues(ctx context.Context, project string, since time.Dura
 	if sinceSec <= 0 {
 		sinceSec = 7 * 86400
 	}
-	params := map[string]string{
-		"project":  project,
-		"sinceSec": strconv.Itoa(sinceSec),
-		"limit":    strconv.Itoa(limit),
-	}
+	filtering := filterStatus != "" && filterStatus != "all"
 
 	type rollupRow struct {
 		Fingerprint  string `json:"fingerprint"`
@@ -611,7 +607,8 @@ func (c *Client) ListIssues(ctx context.Context, project string, since time.Dura
 		Level        string `json:"level"`
 		LastRelease  string `json:"last_release"`
 	}
-	rows, err := QueryJSON[rollupRow](ctx, c, `
+
+	const listIssuesSQL = `
 SELECT
     fingerprint,
     formatDateTime(first_seen_ts, '%Y-%m-%dT%H:%i:%SZ') AS first_seen,
@@ -639,37 +636,65 @@ FROM (
     WHERE project = {project:String}
     GROUP BY fingerprint
     HAVING last_seen_ts >= now('UTC') - toIntervalSecond({sinceSec:UInt32})
-    ORDER BY last_seen_ts DESC
-    LIMIT {limit:UInt32}
+    ORDER BY last_seen_ts DESC, fingerprint ASC
+    LIMIT {limit:UInt32} OFFSET {offset:UInt32}
 )
-`, params)
-	if err != nil {
-		return nil, err
-	}
+`
 
-	out := make([]IssueSummary, 0, len(rows))
-	for _, r := range rows {
-		st := model.IssueOpen
-		if s, ok := states[r.Fingerprint]; ok && s.Status != "" {
-			st = s.Status
+	pageSize := limit
+	if filtering {
+		pageSize = limit * 4
+		if pageSize < 200 {
+			pageSize = 200
 		}
-		if filterStatus != "" && filterStatus != "all" && string(st) != filterStatus {
-			continue
+		if pageSize > 500 {
+			pageSize = 500
 		}
-		out = append(out, IssueSummary{
-			Project:      project,
-			Fingerprint:  r.Fingerprint,
-			Status:       st,
-			Level:        r.Level,
-			ErrorType:    r.ErrorType,
-			ErrorMessage: r.ErrorMessage,
-			Culprit:      r.Culprit,
-			LastRelease:  r.LastRelease,
-			FirstSeen:    r.FirstSeen,
-			LastSeen:     r.LastSeen,
-			Count:        r.Count,
-			Users:        r.Users,
-		})
+	}
+	const maxScanRows = 5000
+
+	out := make([]IssueSummary, 0, limit)
+	for offset := 0; offset < maxScanRows && len(out) < limit; {
+		params := map[string]string{
+			"project":  project,
+			"sinceSec": strconv.Itoa(sinceSec),
+			"limit":    strconv.Itoa(pageSize),
+			"offset":   strconv.Itoa(offset),
+		}
+		rows, err := QueryJSON[rollupRow](ctx, c, listIssuesSQL, params)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			st := model.IssueOpen
+			if s, ok := states[r.Fingerprint]; ok && s.Status != "" {
+				st = s.Status
+			}
+			if filtering && string(st) != filterStatus {
+				continue
+			}
+			out = append(out, IssueSummary{
+				Project:      project,
+				Fingerprint:  r.Fingerprint,
+				Status:       st,
+				Level:        r.Level,
+				ErrorType:    r.ErrorType,
+				ErrorMessage: r.ErrorMessage,
+				Culprit:      r.Culprit,
+				LastRelease:  r.LastRelease,
+				FirstSeen:    r.FirstSeen,
+				LastSeen:     r.LastSeen,
+				Count:        r.Count,
+				Users:        r.Users,
+			})
+			if len(out) >= limit {
+				break
+			}
+		}
+		if !filtering || len(rows) < pageSize {
+			break
+		}
+		offset += len(rows)
 	}
 	return out, nil
 }

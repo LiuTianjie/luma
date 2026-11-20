@@ -149,7 +149,7 @@ class ObserveRecoveryTests(unittest.TestCase):
         deployment = ComposeDeploymentSpec(
             source=Path("luma.compose.yml"), compose_path=Path("docker-compose.yml"),
             compose={"services": {}}, name="luma-observe", region="cn",
-            storage_classes={}, volumes={}, services={},
+            volumes={}, services={},
         )
         state = {"observeOtlpToken": "r" * 40}
         with patch.object(server, "mutate_state", side_effect=lambda fn: fn(state)), \
@@ -170,7 +170,7 @@ class ObserveRecoveryTests(unittest.TestCase):
         deployment = ComposeDeploymentSpec(
             source=Path("luma.compose.yml"), compose_path=Path("docker-compose.yml"),
             compose={"services": {}}, name="luma-observe", region="cn",
-            storage_classes={}, volumes={}, services={},
+            volumes={}, services={},
         )
         state = {"observeOtlpToken": "r" * 40, "deployments": {"compose": {
             "luma-observe": {"status": "active", "updatedAt": 123},

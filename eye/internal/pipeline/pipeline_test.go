@@ -3,8 +3,10 @@ package pipeline
 import (
 	"bytes"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -185,4 +187,57 @@ func TestEdgeToCoreZstdRelayRoundtrip(t *testing.T) {
 func itoa(n int) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+func TestDecompressBodyEnforcesSizeCapForZstdGzipDeflate(t *testing.T) {
+	small := bytes.Repeat([]byte("a"), 1024)
+	bomb := make([]byte, maxDecompressedBodyBytes+64*1024) // highly compressible zero payload > 8 MiB
+
+	// Zstd
+	enc, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer enc.Close()
+
+	zSmall := enc.EncodeAll(small, nil)
+	if got, err := DecompressBody("zstd", zSmall); err != nil || !bytes.Equal(got, small) {
+		t.Fatalf("expected small zstd payload to succeed, err=%v len=%d", err, len(got))
+	}
+	zBomb := enc.EncodeAll(bomb, nil)
+	if _, err := DecompressBody("zstd", zBomb); !errors.Is(err, ErrDecompressedTooLarge) {
+		t.Fatalf("expected ErrDecompressedTooLarge for zstd bomb, got %v", err)
+	}
+
+	// Gzip
+	var gzSmall bytes.Buffer
+	gw := gzip.NewWriter(&gzSmall)
+	_, _ = gw.Write(small)
+	_ = gw.Close()
+	if got, err := DecompressBody("gzip", gzSmall.Bytes()); err != nil || !bytes.Equal(got, small) {
+		t.Fatalf("expected small gzip payload to succeed, err=%v len=%d", err, len(got))
+	}
+	var gzBomb bytes.Buffer
+	gw2 := gzip.NewWriter(&gzBomb)
+	_, _ = gw2.Write(bomb)
+	_ = gw2.Close()
+	if _, err := DecompressBody("gzip", gzBomb.Bytes()); !errors.Is(err, ErrDecompressedTooLarge) {
+		t.Fatalf("expected ErrDecompressedTooLarge for gzip bomb, got %v", err)
+	}
+
+	// Deflate (zlib)
+	var dfSmall bytes.Buffer
+	zw := zlib.NewWriter(&dfSmall)
+	_, _ = zw.Write(small)
+	_ = zw.Close()
+	if got, err := DecompressBody("deflate", dfSmall.Bytes()); err != nil || !bytes.Equal(got, small) {
+		t.Fatalf("expected small deflate payload to succeed, err=%v len=%d", err, len(got))
+	}
+	var dfBomb bytes.Buffer
+	zw2 := zlib.NewWriter(&dfBomb)
+	_, _ = zw2.Write(bomb)
+	_ = zw2.Close()
+	if _, err := DecompressBody("deflate", dfBomb.Bytes()); !errors.Is(err, ErrDecompressedTooLarge) {
+		t.Fatalf("expected ErrDecompressedTooLarge for deflate bomb, got %v", err)
+	}
 }

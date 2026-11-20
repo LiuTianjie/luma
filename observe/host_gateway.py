@@ -16,11 +16,14 @@ import struct
 import sys
 import threading
 import time
-from typing import Iterable
+from typing import Callable, Iterable
 
 UPSTREAM_HOST = os.environ.get("LUMA_OBSERVE_UPSTREAM_HOST", "127.0.0.1")
 UPSTREAM_PORT = int(os.environ.get("LUMA_OBSERVE_UPSTREAM_PORT", "8428"))
 LISTEN_PORT = int(os.environ.get("LUMA_OBSERVE_PORT", "8428"))
+MAX_CONNECTIONS = max(int(os.environ.get("LUMA_OBSERVE_GATEWAY_MAX_CONNS", "64")), 1)
+IDLE_TIMEOUT_SECONDS = max(float(os.environ.get("LUMA_OBSERVE_GATEWAY_IDLE_TIMEOUT", "300")), 1.0)
+_CONN_SLOTS = threading.BoundedSemaphore(MAX_CONNECTIONS)
 IFACES = tuple(
     name.strip()
     for name in os.environ.get("LUMA_OBSERVE_GATEWAY_IFACES", "nomad,docker0").split(",")
@@ -84,12 +87,19 @@ def _pipe(src: socket.socket, dst: socket.socket) -> None:
             pass
 
 
-def _handle(client: socket.socket) -> None:
+def _handle(
+    client: socket.socket,
+    slots: threading.Semaphore | None = None,
+    idle_timeout: float = IDLE_TIMEOUT_SECONDS,
+) -> None:
     upstream = None
+    peer_thread: threading.Thread | None = None
     try:
+        client.settimeout(idle_timeout)
         upstream = socket.create_connection((UPSTREAM_HOST, UPSTREAM_PORT), timeout=3)
-        upstream.settimeout(None)
-        threading.Thread(target=_pipe, args=(client, upstream), daemon=True).start()
+        upstream.settimeout(idle_timeout)
+        peer_thread = threading.Thread(target=_pipe, args=(client, upstream), daemon=True)
+        peer_thread.start()
         _pipe(upstream, client)
     except OSError:
         pass
@@ -101,9 +111,37 @@ def _handle(client: socket.socket) -> None:
                 sock.close()
             except OSError:
                 pass
+        if peer_thread is not None:
+            peer_thread.join(timeout=1.0)
+        if slots is not None:
+            slots.release()
 
 
-def _serve(bind_ip: str, stop: threading.Event) -> None:
+def _accept_client(
+    client: socket.socket,
+    slots: threading.Semaphore = _CONN_SLOTS,
+    idle_timeout: float = IDLE_TIMEOUT_SECONDS,
+) -> bool:
+    if not slots.acquire(blocking=False):
+        try:
+            client.close()
+        except OSError:
+            pass
+        return False
+    try:
+        client.settimeout(idle_timeout)
+        threading.Thread(target=_handle, args=(client, slots, idle_timeout), daemon=True).start()
+        return True
+    except Exception:
+        slots.release()
+        try:
+            client.close()
+        except OSError:
+            pass
+        return False
+
+
+def _serve(bind_ip: str, stop: threading.Event, slots: threading.Semaphore = _CONN_SLOTS) -> None:
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
@@ -126,35 +164,48 @@ def _serve(bind_ip: str, stop: threading.Event) -> None:
                     client, _addr = server.accept()
                 except OSError:
                     continue
-                client.settimeout(None)
-                threading.Thread(target=_handle, args=(client,), daemon=True).start()
+                _accept_client(client, slots=slots)
     finally:
         selector.close()
         server.close()
 
 
+def _start_worker(address: str, worker_stop: threading.Event) -> threading.Thread:
+    thread = threading.Thread(target=_serve, args=(address, worker_stop), daemon=True)
+    thread.start()
+    return thread
+
+
+def reconcile_workers(
+    workers: dict[str, tuple[threading.Thread, threading.Event]],
+    wanted: set[str],
+    start_worker: Callable[[str, threading.Event], threading.Thread] = _start_worker,
+) -> None:
+    for address, (thread, worker_stop) in list(workers.items()):
+        if address not in wanted or not thread.is_alive():
+            worker_stop.set()
+            workers.pop(address, None)
+    for address in wanted:
+        entry = workers.get(address)
+        if entry is not None and entry[0].is_alive():
+            continue
+        worker_stop = threading.Event()
+        thread = start_worker(address, worker_stop)
+        workers[address] = (thread, worker_stop)
+
+
 def main() -> int:
-    stop = threading.Event()
-    workers: dict[str, threading.Thread] = {}
+    workers: dict[str, tuple[threading.Thread, threading.Event]] = {}
     try:
         while True:
             wanted = set(gateway_bind_ips())
-            for address, thread in list(workers.items()):
-                if address not in wanted or not thread.is_alive():
-                    workers.pop(address, None)
-            for address in wanted:
-                thread = workers.get(address)
-                if thread is not None and thread.is_alive():
-                    continue
-                worker_stop = threading.Event()
-                thread = threading.Thread(target=_serve, args=(address, worker_stop), daemon=True)
-                thread.start()
-                workers[address] = thread
+            reconcile_workers(workers, wanted)
             if not workers:
                 print("luma-observe host-gateway waiting for nomad/docker0", file=sys.stderr, flush=True)
             time.sleep(5)
     except KeyboardInterrupt:
-        stop.set()
+        for _thread, worker_stop in list(workers.values()):
+            worker_stop.set()
         return 0
 
 

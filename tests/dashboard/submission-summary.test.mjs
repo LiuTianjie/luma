@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { submissionSummary } from '../../dashboard-src/src/deploy/submissionSummary.ts';
 
 test('deployment confirmation follows edited YAML target, not the original form', () => {
-  const summary = submissionSummary('service', 'name: changed-app\nimage: registry/app:v2\nregion: cn\nexposure: cn-edge\ndomain: app.example.com\nport: 8080\nstorage:\n  data: {storageClass: shared}\n');
+  const summary = submissionSummary('service', 'name: changed-app\nimage: registry/app:v2\nregion: cn\nexposure: cn-edge\ndomain: app.example.com\nport: 8080\nvolumes:\n  - data:/data\n');
   assert.equal(summary.name, 'changed-app');
   assert.equal(summary.region, 'cn');
   assert.deepEqual(summary.images, ['changed-app: registry/app:v2']);

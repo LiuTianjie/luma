@@ -5,22 +5,16 @@ import argparse
 import os
 from typing import Any, Dict
 from ..bootstrap import _is_tailscale_manager_addr, configure_dns, configure_journald_limit, install_docker, install_nomad_node, local_host_name, setup_tailscale
-from ..build_prerequisites import prepare_build_dependencies, prepare_node_buildkit
-from ..compose import (
-    load_compose_deployment,
-    resolve_storage_mounts,
-    storage_summary,
-)
+from ..build_prerequisites import prepare_build_dependencies
+from ..compose import load_compose_deployment
 from ..errors import LumaError
-from ..io import dump_yaml
 from ..node_readiness import wait_for_node_readiness
 from ..local import LocalExecutor
 from ..regions import parse_region_name
-from ..storage import storage_check_plan, storage_migration_plan
+from ..storage import storage_migration_plan
 from ..userconfig import ensure_interactive_config
 from . import common
-from .common import _control_context, _format_epoch, _output_format, _print_deploy_step, _print_success, _print_table, _run_with_wait_heartbeat, log
-from .deploy import _compose_request_text, _control_node_records_for_local, _control_storage_classes_for_local
+from .common import _control_context, _format_epoch, _output_format, _print_success, _print_table, _run_with_wait_heartbeat, log
 from .manager import _host_from_hostport, _install_node_agent_from_token, _local_agent_config, _local_node, _safe_local_nomad_node_info, local_nomad_node_info
 
 
@@ -91,8 +85,6 @@ def cmd_node(args: argparse.Namespace) -> int:
             egress_proxy = str(result.get("egressProxy") or "").strip() or None
             if egress_proxy is None and str(result.get("egress") or "") == "proxy" and server_host:
                 egress_proxy = f"http://{server_host}:7890"
-            log("[start] Prepare BuildKit and Dockerfile frontend")
-            prepare_node_buildkit(proxy=egress_proxy or "")
             install_nomad_node(
                 node,
                 role="client",
@@ -510,153 +502,14 @@ def cmd_region_remove(args: argparse.Namespace) -> int:
 
 
 def cmd_storage(args: argparse.Namespace) -> int:
-    if args.storage_command == "list":
-        return cmd_storage_list(args)
-    if args.storage_command == "set":
-        return cmd_storage_set(args)
-    if args.storage_command == "remove":
-        return cmd_storage_remove(args)
-    if args.storage_command == "apply":
-        return cmd_storage_apply(args)
-    if args.storage_command == "check":
-        return cmd_storage_check(args)
     if args.storage_command == "migrate":
         return cmd_storage_migrate(args)
     raise LumaError(f"unknown storage command: {args.storage_command}")
 
 
-def cmd_storage_list(args: argparse.Namespace) -> int:
-    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
-    result = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).list_storage()
-    if _output_format(args) != "text":
-        _print_success(args, result)
-        return 0
-    for item in result.get("storageClasses") or []:
-        location = item.get("endpoint") or item.get("path") or item.get("node") or ""
-        print(f"{item.get('name')}: {item.get('provider')} {item.get('mode')} {location}".rstrip())
-    return 0
-
-
-def cmd_storage_set(args: argparse.Namespace) -> int:
-    if args.external:
-        if not args.endpoint:
-            raise LumaError("external storage requires --endpoint")
-        if not args.regions:
-            raise LumaError("external storage requires at least one --region")
-        if args.node or args.path:
-            raise LumaError("external storage cannot set --node or --path")
-    else:
-        if not args.node:
-            raise LumaError("managed storage requires --node")
-        if not args.path:
-            raise LumaError("managed storage requires --path")
-        if args.endpoint:
-            raise LumaError("managed storage endpoint is resolved automatically; do not pass --endpoint")
-    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
-    result = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).set_storage(
-        name=args.name,
-        provider=args.provider,
-        external=args.external,
-        node=args.node,
-        path=args.path,
-        endpoint=args.endpoint,
-        mount_options=args.mount_options,
-        regions=args.regions,
-        nodes=args.nodes,
-        timeout=args.timeout,
-    )
-    print(f"Storage class saved: {result.get('name', args.name)}")
-    _print_storage_host_result(result.get("storageHost"))
-    return 0
-
-
-def cmd_storage_remove(args: argparse.Namespace) -> int:
-    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
-    result = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).remove_storage(
-        name=args.name,
-        timeout=args.timeout,
-    )
-    status = "removed" if result.get("removed") else "not configured"
-    print(f"Storage class {status}: {args.name}")
-    _print_storage_host_result(result.get("storageHost"))
-    return 0
-
-
-def _print_storage_host_result(value: Any) -> None:
-    if not isinstance(value, dict):
-        return
-    prepared = value.get("prepared")
-    removed = value.get("removed")
-    export = value.get("export")
-    if prepared:
-        print(f"Storage host: {prepared}")
-    if removed:
-        print(f"Storage cleanup: {removed}")
-    if export:
-        print(f"Storage export: {export}")
-
-
-def cmd_storage_apply(args: argparse.Namespace) -> int:
-    storage_classes = _control_storage_classes_for_local(args, required=True)
-    node_records = _control_node_records_for_local(args, required=True)
-    deployment = load_compose_deployment(
-        args.sidecar,
-        storage_classes=storage_classes,
-        allow_build_services=True,
-    )
-    # Storage preflight must validate placement/endpoints without requiring
-    # Builder-produced image references to exist yet.
-    resolve_storage_mounts(deployment, node_records=node_records)
-    if args.dry_run:
-        print(dump_yaml(storage_summary(deployment, node_records=node_records)))
-        return 0
-    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
-    client = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
-    manifest_text, compose_text = _compose_request_text(args.sidecar, deployment)
-    result = _run_with_wait_heartbeat(
-        lambda: client.apply_storage(
-            manifest=manifest_text,
-            compose_content=compose_text,
-            source_name=str(args.sidecar),
-            timeout=args.timeout,
-        ),
-        timeout=args.timeout,
-    )
-    for step in result.get("steps") or []:
-        if isinstance(step, dict):
-            _print_deploy_step(step)
-    print(f"[ok] Storage apply finished: {result.get('deployment', deployment.name)}")
-    return 0
-
-
-def cmd_storage_check(args: argparse.Namespace) -> int:
-    storage_classes = _control_storage_classes_for_local(args, required=True)
-    node_records = _control_node_records_for_local(args, required=True)
-    deployment = load_compose_deployment(
-        args.sidecar,
-        storage_classes=storage_classes,
-        allow_build_services=True,
-    )
-    result = storage_check_plan(deployment, node_records=node_records)
-    if _output_format(args) != "text":
-        _print_success(args, result)
-        return 0
-    for item in result.get("mounts") or []:
-        print(
-            f"{item['service']}/{item['volume']}: {item['storageClass']} "
-            f"{item.get('mode', '')} via {item['networkPath']} {item['endpoint']} path={item.get('path', '')}".rstrip()
-        )
-    for item in result["storageClasses"]:
-        print(f"{item['name']}: {item['message']}")
-    for warning in result["warnings"]:
-        print(f"[warn] {warning}")
-    return 0
-
-
 def cmd_storage_migrate(args: argparse.Namespace) -> int:
     deployment = load_compose_deployment(
         args.sidecar,
-        storage_classes=_control_storage_classes_for_local(args, required=True),
         allow_build_services=True,
     )
     result = storage_migration_plan(

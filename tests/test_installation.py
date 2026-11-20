@@ -306,3 +306,41 @@ class ReleasePruneTests(unittest.TestCase):
         with patch.object(ins, '_running_release_names', return_value=None):
             self.assertEqual(ins.prune_releases(self.home, bin_dir=self.bin), [])
         self.assertEqual(self.prune(), ['candidate.old'])
+
+
+class InstallRefValidationTests(unittest.TestCase):
+    def test_valid_install_refs_accepted(self):
+        from luma.installer import luma_installer_command, validate_install_ref
+
+        for ref in ("main", "v0.1.320", "staging/a4b02a3", "a" * 40):
+            with self.subTest(ref=ref):
+                self.assertEqual(validate_install_ref(ref), ref)
+                cmd, exact = luma_installer_command(ref, environ={})
+                self.assertEqual(exact, ref)
+                self.assertIn(f"/LiuTianjie/luma/{ref}/scripts/install-luma.sh", cmd)
+
+    def test_traversal_and_malformed_install_refs_rejected(self):
+        from luma.errors import LumaError
+        from luma.installer import luma_installer_command, validate_install_ref
+
+        bad_refs = [
+            "../../attacker/evil/main",
+            "main/../../attacker/evil",
+            "main%2f..%2f..%2fevil",
+            "main?foo=bar",
+            "main#frag",
+            "/main",
+            "main/",
+            "a//b",
+            "a..b",
+            ".hidden",
+            "main evil",
+            "main\nevil",
+            "a" * 129,
+        ]
+        for ref in bad_refs:
+            with self.subTest(ref=ref):
+                with self.assertRaises(LumaError):
+                    validate_install_ref(ref)
+                with self.assertRaises(LumaError):
+                    luma_installer_command(ref, environ={})

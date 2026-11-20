@@ -10,6 +10,23 @@
 // no Authorization header is sent. Each sign-in gets a fresh marker so cached
 // snapshots never cross sessions.
 const SESSION_PREFIX = "session:";
+export const UNAUTHORIZED_EVENT = "luma:unauthorized";
+
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+export function notifyUnauthorized(): void {
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function" && typeof CustomEvent === "function") {
+    window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+  }
+}
 
 export function sessionCredential(): string {
   return `${SESSION_PREFIX}${Date.now().toString(36)}`;
@@ -30,13 +47,16 @@ export function authHeaders(token: string, json = false): Record<string, string>
 // an `error` string.
 export async function readJson<T = Record<string, unknown>>(response: Response): Promise<T> {
   const text = await response.text();
+  if (response.status === 401) notifyUnauthorized();
   let payload: Record<string, unknown> = {};
   try {
     payload = text ? JSON.parse(text) : {};
   } catch {
-    throw new Error(`Invalid response format (HTTP ${response.status}): ${text.slice(0, 100)}`);
+    const message = `Invalid response format (HTTP ${response.status}): ${text.slice(0, 100)}`;
+    if (!response.ok) throw new ApiError(message, response.status);
+    throw new Error(message);
   }
-  if (!response.ok) throw new Error(String(payload.error || `HTTP ${response.status}`));
+  if (!response.ok) throw new ApiError(String(payload.error || `HTTP ${response.status}`), response.status);
   return payload as T;
 }
 

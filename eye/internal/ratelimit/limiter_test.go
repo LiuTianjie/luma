@@ -1,9 +1,39 @@
 package ratelimit
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
+
+func TestTokenLimiterEvictsAtMaxBuckets(t *testing.T) {
+	l := NewTokenLimiter(10, 20)
+	l.maxBuckets = 32
+	for i := 0; i < 200; i++ {
+		l.Allow(fmt.Sprintf("ip:198.51.100.%d", i), 0)
+	}
+	l.mu.Lock()
+	n := len(l.buckets)
+	l.mu.Unlock()
+	if n > 32 {
+		t.Fatalf("expected TokenLimiter buckets <= 32, got %d", n)
+	}
+}
+
+func TestStormSamplerEvictsAtMaxEntries(t *testing.T) {
+	s := NewStormSampler(time.Minute, 3)
+	s.maxEntries = 32
+	now := time.Now().UTC()
+	for i := 0; i < 200; i++ {
+		s.Admit("demo", fmt.Sprintf("fp_%d", i), now, "sample")
+	}
+	s.mu.Lock()
+	n := len(s.entries)
+	s.mu.Unlock()
+	if n > 32 {
+		t.Fatalf("expected StormSampler entries <= 32, got %d", n)
+	}
+}
 
 func TestStormSampler(t *testing.T) {
 	s := NewStormSampler(time.Minute, 3)

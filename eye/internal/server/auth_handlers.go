@@ -155,8 +155,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if trimmedCandidate != "" && s.cfg.AdminToken != "" && subtle.ConstantTimeCompare([]byte(trimmedCandidate), []byte(s.cfg.AdminToken)) == 1 {
 		loginMethod = "token"
 	} else if trimmedCandidate != "" && s.controlSSO != nil {
+		// Do not exchange a Luma Control token for a 30-day local cookie that would
+		// silently outlive token revocation on Control. Browser sessions must use
+		// Luma Control SSO (/auth/login), and CLI/API calls use Authorization: Bearer.
 		if ok, err := s.controlSSO.VerifyToken(r.Context(), trimmedCandidate); err == nil && ok {
-			loginMethod = "control-token"
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"error": "请使用 Luma Control 单点登录（/auth/login），或在 API 请求中通过 Authorization: Bearer 使用 Control Token",
+			})
+			return
 		}
 	}
 	if loginMethod == "" && rawPassword != "" && s.controlSSO == nil && s.auth.VerifyPassword(body.Username, rawPassword) {
@@ -203,6 +209,10 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		clearSSOLoginCookies(w, r)
 	}
 	if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
+		if _, _, ok := s.auth.VerifySession(c.Value); ok && !s.verifyLocalSessionCSRF(r) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "request origin does not match Luma Eye console"})
+			return
+		}
 		s.auth.RevokeSessionByCookie(c.Value)
 	}
 	clearSessionCookie(w, r)
@@ -371,6 +381,10 @@ func (s *Server) handleDeletePasskey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request) {
+	if s.controlSSO != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "已启用 Luma Control 统一单点登录，请通过 Luma Control 进行 Passkey 登录"})
+		return
+	}
 	origin, rpID, ok := s.resolveRPInfo(r)
 	if !ok {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "当前访问地址不支持 WebAuthn"})
@@ -386,6 +400,10 @@ func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
+	if s.controlSSO != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "已启用 Luma Control 统一单点登录，请通过 Luma Control 进行 Passkey 登录"})
+		return
+	}
 	clientIP := scrub.ExtractClientIP(r)
 	if s.authLimiter != nil && !s.authLimiter.Allow(clientIP, 0) {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "登录尝试过于频繁，请稍后再试"})

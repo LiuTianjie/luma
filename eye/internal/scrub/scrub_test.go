@@ -34,14 +34,55 @@ func TestScrubMapAndURL(t *testing.T) {
 }
 
 func TestExtractClientIPAndUA(t *testing.T) {
+	// Trusted reverse proxy (loopback/private/CGNAT) -> honor proxy headers
 	req := httptest.NewRequest(http.MethodPost, "/_e/b", nil)
+	req.RemoteAddr = "127.0.0.1:43210"
 	req.Header.Set("Ali-Real-Client-IP", "203.0.113.9")
 	req.Header.Set("X-Forwarded-For", "10.0.0.1, 10.0.0.2")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36")
 
 	if got := ExtractClientIP(req); got != "203.0.113.9" {
-		t.Fatalf("expected Ali-Real-Client-IP, got %q", got)
+		t.Fatalf("expected Ali-Real-Client-IP from trusted proxy, got %q", got)
 	}
+
+	// Untrusted public peer -> ignore spoofed proxy headers and return RemoteAddr host
+	pubReq := httptest.NewRequest(http.MethodPost, "/_e/b", nil)
+	pubReq.RemoteAddr = "198.51.100.42:51234"
+	pubReq.Header.Set("Ali-Real-Client-IP", "127.0.0.1")
+	pubReq.Header.Set("CF-Connecting-IP", "203.0.113.9")
+	pubReq.Header.Set("X-Real-IP", "203.0.113.9")
+	pubReq.Header.Set("X-Forwarded-For", "10.0.0.1")
+	if got := ExtractClientIP(pubReq); got != "198.51.100.42" {
+		t.Fatalf("expected RemoteAddr host for public peer, got %q", got)
+	}
+
+	// Verify RFC1918, IPv6 loopback, and CGNAT/Tailscale proxy peers are trusted
+	for _, proxyAddr := range []string{
+		"127.0.0.1:8080",
+		"[::1]:8080",
+		"10.0.0.5:1234",
+		"172.18.0.2:1234",
+		"192.168.1.10:1234",
+		"100.64.0.9:1234",
+		"100.127.255.254:1234",
+		"[fd7a:115c:a1e0::1]:1234",
+	} {
+		pr := httptest.NewRequest(http.MethodPost, "/_e/b", nil)
+		pr.RemoteAddr = proxyAddr
+		pr.Header.Set("X-Forwarded-For", "203.0.113.55, 10.0.0.1")
+		if got := ExtractClientIP(pr); got != "203.0.113.55" {
+			t.Fatalf("proxyAddr=%s: expected forwarded IP 203.0.113.55, got %q", proxyAddr, got)
+		}
+	}
+
+	// Non-CGNAT 100.x public IP must NOT be treated as a trusted proxy
+	nonCGNAT := httptest.NewRequest(http.MethodPost, "/_e/b", nil)
+	nonCGNAT.RemoteAddr = "100.128.0.1:4444"
+	nonCGNAT.Header.Set("X-Real-IP", "203.0.113.99")
+	if got := ExtractClientIP(nonCGNAT); got != "100.128.0.1" {
+		t.Fatalf("expected public 100.128.0.1 to ignore X-Real-IP, got %q", got)
+	}
+
 	ua := ParseUserAgent(req.Header.Get("User-Agent"))
 	if ua.IsBot || ua.Browser != "Chrome" || ua.OS != "macOS" || ua.DeviceType != "desktop" {
 		t.Fatalf("unexpected ua parse: %+v", ua)

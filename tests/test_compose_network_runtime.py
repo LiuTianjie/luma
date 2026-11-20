@@ -51,7 +51,7 @@ class ComposeNetworkRuntimeTests(unittest.TestCase):
         self.assertEqual(config["PortBindings"], {"8080/tcp": [{"HostIp": "0.0.0.0", "HostPort": "18080"}]})
         self.assertEqual(config["ExtraHosts"], ["api:127.0.0.1", "database:127.0.0.1"])
         self.assertTrue(info["State"]["Running"])
-        self.assertEqual(config["RestartPolicy"]["Name"], "unless-stopped")
+        self.assertEqual(config["RestartPolicy"]["Name"], "no")
 
     def test_prepare_retry_is_idempotent_and_cannot_change_existing_ports(self):
         self.prepare()

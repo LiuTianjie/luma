@@ -87,7 +87,7 @@ export function buildNavGroups(lang: Lang, vm: DashboardViewModel): NavGroup[] {
         { href: "/fleet/regions", label: zh ? "区域" : "Regions", detail: zh ? "调度区域与出口策略" : "Scheduling regions and egress" },
         { href: "/fleet/network", label: zh ? "网络" : "Network", detail: zh ? "入口路径与节点拓扑" : "Ingress paths and topology" },
         { href: "/fleet/domains", label: zh ? "域名" : "Domains", detail: zh ? "DNS 域名与服务商凭据" : "DNS zones and provider keys" },
-        { href: "/storage", label: zh ? "存储" : "Storage", detail: zh ? "卷、存储类、容量与回收" : "Volumes, classes, capacity and cleanup" },
+        { href: "/storage", label: zh ? "存储" : "Storage", detail: zh ? "存储卷、容量与回收" : "Volumes, capacity and cleanup" },
         { href: "/registry", label: zh ? "镜像" : "Registry", detail: zh ? "镜像生命周期与清理" : "Image lifecycle and cleanup" },
       ] },
     ] },

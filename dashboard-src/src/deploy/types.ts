@@ -1,4 +1,4 @@
-import type { DashboardNode, DashboardStorageClass } from "../types";
+import type { DashboardNode } from "../types";
 
 export type DeployMode = "service" | "compose";
 export type Region = string;
@@ -15,9 +15,7 @@ export type ServiceVolumeDraft = {
   id: string;
   name: string;
   target: string;
-  storageMode: "local" | "unmanaged" | "storageClass";
-  storageClass: string;
-  path: string;
+  storageMode: "local" | "unmanaged";
 };
 
 export type ServiceManifestDraft = {
@@ -61,8 +59,7 @@ export type ComposeServiceDraft = {
 export type ComposeVolumeDraft = {
   name: string;
   target: string;
-  storageMode: "unmanaged" | "storageClass" | "local";
-  storageClass: string;
+  storageMode: "unmanaged" | "local";
   localNode: string;
   localPath: string;
 };
@@ -119,7 +116,6 @@ export type DeployPreviewResult = {
   summary?: Record<string, unknown>;
   artifacts?: DeployPreviewArtifact[];
   storage?: {
-    storageClasses?: DashboardStorageClass[];
     volumes?: unknown[];
     warnings?: string[];
   };
@@ -137,5 +133,4 @@ export type ServiceRequirements = {
 
 export type DeployWorkspaceData = {
   nodes: DashboardNode[];
-  storageClasses: DashboardStorageClass[];
 };

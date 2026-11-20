@@ -139,7 +139,7 @@ class BuildPrerequisiteTests(unittest.TestCase):
 
 
 class NodeBuildGateTests(unittest.TestCase):
-    def test_node_buildkit_failure_rolls_back_before_nomad_or_agent_install(self):
+    def test_plain_nomad_node_join_skips_buildkit_warmup_and_rolls_back_on_nomad_failure(self):
         from types import SimpleNamespace
         args = SimpleNamespace(node_command="join", region="global", endpoint="https://control.test",
                                token="join-test", insecure=False, resolve_ip=None, name="test-node")
@@ -154,14 +154,14 @@ class NodeBuildGateTests(unittest.TestCase):
             stack.enter_context(patch("luma.cli.nodes._local_tailscale_ip", return_value="100.64.0.2"))
             stack.enter_context(patch("luma.cli.nodes._local_tailscale_connected", return_value=True))
             stack.enter_context(patch("luma.cli.common.ControlClient", return_value=client))
-            warm = stack.enter_context(patch("luma.cli.nodes.prepare_node_buildkit", side_effect=LumaError("frontend unreachable")))
-            nomad = stack.enter_context(patch("luma.cli.nodes.install_nomad_node"))
+            warm = stack.enter_context(patch("luma.build_prerequisites.prepare_node_buildkit"))
+            nomad = stack.enter_context(patch("luma.cli.nodes.install_nomad_node", side_effect=LumaError("nomad install failed")))
             agent = stack.enter_context(patch("luma.cli.nodes._install_node_agent_from_token"))
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
-            with self.assertRaisesRegex(LumaError, "frontend unreachable"):
+            with self.assertRaisesRegex(LumaError, "nomad install failed"):
                 cmd_node(args)
-        warm.assert_called_once_with(proxy="http://100.64.0.1:7890")
+        warm.assert_not_called()
+        nomad.assert_called_once()
         client.unregister_node.assert_called_once_with(node_name="test-node", enrollment_token="enrollment-test")
         client.label_node.assert_not_called()
-        nomad.assert_not_called()
         agent.assert_not_called()

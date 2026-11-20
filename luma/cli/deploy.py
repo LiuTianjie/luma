@@ -86,14 +86,6 @@ def _render_result(
     return {"service": _service_summary(service), "artifacts": artifacts}
 
 
-def _service_storage_context_for_local(args: argparse.Namespace, service: Any) -> tuple[Dict[str, Any] | None, Dict[str, Any] | None]:
-    if not getattr(service, "storage", None):
-        return None, None
-    storage_classes = _control_storage_classes_for_local(args, required=True)
-    node_records = _control_node_records_for_local(args, required=True)
-    return storage_classes, node_records
-
-
 def cmd_deploy(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     service = load_service(args.service)
@@ -232,7 +224,6 @@ def cmd_compose_validate(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     deployment = load_compose_deployment(
         args.sidecar,
-        storage_classes=_control_storage_classes_for_local(args),
         allow_build_services=bool(args.import_mode),
     )
     if args.import_mode:
@@ -277,9 +268,8 @@ def _inject_import_mode_placeholder_images(deployment: Any) -> None:
 
 def cmd_compose_deploy(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    storage_classes = _control_storage_classes_for_local(args, required=True)
     node_records = _control_node_records_for_local(args, required=True)
-    deployment = load_compose_deployment(args.sidecar, storage_classes=storage_classes)
+    deployment = load_compose_deployment(args.sidecar)
     _require_nomad_engine(_compose_engine(config, args))
     output_format = _output_format(args)
     quiet = _quiet(args) or output_format != "text"
@@ -415,28 +405,6 @@ def _require_nomad_engine(engine: str) -> str:
 
 def _compose_request_text(sidecar: Path, deployment: Any) -> tuple[str, str]:
     return sidecar.read_text(encoding="utf-8"), deployment.compose_path.read_text(encoding="utf-8")
-
-
-def _control_storage_classes_for_local(args: argparse.Namespace, *, required: bool = False) -> Dict[str, Any] | None:
-    try:
-        setattr(args, "_luma_context_used", True)
-        endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
-        result = common.ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).list_storage()
-    except LumaError as exc:
-        if required:
-            raise
-        _add_context_warning(args, f"Storage classes were not loaded from Luma Control; validation is using local sidecar data only ({exc})")
-        return None
-    if not isinstance(result, dict):
-        _add_context_warning(args, "Storage classes were not loaded from Luma Control; control API returned an invalid response")
-        return None
-    storage: Dict[str, Any] = {}
-    for item in result.get("storageClasses") or []:
-        if not isinstance(item, dict) or not item.get("name"):
-            continue
-        name = str(item["name"])
-        storage[name] = {key: value for key, value in item.items() if key != "name" and value not in ("", [], None)}
-    return storage
 
 
 def _control_node_records_for_local(args: argparse.Namespace, *, required: bool = False) -> Dict[str, Any] | None:

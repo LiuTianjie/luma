@@ -148,18 +148,36 @@ func ExtractClientIP(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	for _, hdr := range []string{"Ali-Real-Client-IP", "CF-Connecting-IP", "X-Real-IP"} {
-		if v := strings.TrimSpace(r.Header.Get(hdr)); v != "" {
-			return stripPort(v)
+	remoteIP := stripPort(r.RemoteAddr)
+	if isTrustedProxyIP(remoteIP) {
+		for _, hdr := range []string{"Ali-Real-Client-IP", "CF-Connecting-IP", "X-Real-IP"} {
+			if v := strings.TrimSpace(r.Header.Get(hdr)); v != "" {
+				return stripPort(v)
+			}
+		}
+		if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+			first, _, _ := strings.Cut(xff, ",")
+			if first = strings.TrimSpace(first); first != "" {
+				return stripPort(first)
+			}
 		}
 	}
-	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
-		first, _, _ := strings.Cut(xff, ",")
-		if first = strings.TrimSpace(first); first != "" {
-			return stripPort(first)
-		}
+	return remoteIP
+}
+
+func isTrustedProxyIP(raw string) bool {
+	ip := net.ParseIP(strings.TrimSpace(raw))
+	if ip == nil {
+		return false
 	}
-	return stripPort(r.RemoteAddr)
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+		return true
+	}
+	// CGNAT / Tailscale range: 100.64.0.0/10 (RFC 6598)
+	if ip4 := ip.To4(); ip4 != nil && ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+		return true
+	}
+	return false
 }
 
 func ExtractCountry(r *http.Request) string {
@@ -185,9 +203,9 @@ func HashIP(ip, salt string) string {
 func stripPort(addr string) string {
 	addr = strings.TrimSpace(addr)
 	if host, _, err := net.SplitHostPort(addr); err == nil {
-		return host
+		return strings.Trim(host, "[]")
 	}
-	return addr
+	return strings.Trim(addr, "[]")
 }
 
 type UAInfo struct {

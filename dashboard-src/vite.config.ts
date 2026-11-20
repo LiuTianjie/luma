@@ -155,13 +155,9 @@ const devDashboardPayload = {
     { id: "ledger", kind: "tcp-relay", domain: "ledger-db.example.net", segments: ["Cloudflare DNS", "203.0.113.30:3306", "Traefik TCP", "Tailscale", "100.64.0.3:3306"] },
   ],
   storage: {
-    storageClasses: [
-      { name: "home-nfs", provider: "nfs", mode: "external", endpoint: "nas:/srv/luma", regions: ["home"] },
-      { name: "cn-nfs", provider: "nfs", mode: "managed", node: "cn-edge", path: "/srv/luma", regions: ["cn"] },
-    ],
     volumes: [
-      { name: "ledger-mysql", kind: "volume", storageClass: "local", node: "tailscale-relay", services: ["ledger"] },
-      { name: "gitea-data", kind: "bind", storageClass: "local", node: "tailscale-relay", services: ["gitea"] },
+      { name: "ledger-mysql", kind: "volume", node: "tailscale-relay", services: ["ledger"] },
+      { name: "gitea-data", kind: "bind", node: "tailscale-relay", services: ["gitea"] },
     ],
     warnings: [],
   },
@@ -549,23 +545,6 @@ export default defineConfig({
             risks: [],
           }));
         });
-        server.middlewares.use("/v1/storage", (request, response, next) => {
-          if (request.method !== "GET") {
-            next();
-            return;
-          }
-          const auth = request.headers.authorization || "";
-          if (!auth.startsWith("Bearer ")) {
-            response.statusCode = 401;
-            response.setHeader("Content-Type", "application/json; charset=utf-8");
-            response.end(JSON.stringify({ error: "unauthorized" }));
-            return;
-          }
-          response.statusCode = 200;
-          response.setHeader("Content-Type", "application/json; charset=utf-8");
-          response.setHeader("Cache-Control", "no-store");
-          response.end(JSON.stringify({ storageClasses: devDashboardPayload.storage.storageClasses }));
-        });
         server.middlewares.use("/v1/git-providers", (request, response, next) => {
           if (request.method !== "GET") {
             next();
@@ -898,7 +877,7 @@ export default defineConfig({
             deployment: "preview-compose",
             summary: { name: "preview-compose" },
             artifacts: [{ kind: "job", path: "stacks/compose/preview-compose/preview-compose.nomad.json", content: body.composeContent || "" }],
-            storage: { storageClasses: devDashboardPayload.storage.storageClasses, volumes: [], warnings: [] },
+            storage: { volumes: [], warnings: [] },
             warnings: [],
           }));
         });

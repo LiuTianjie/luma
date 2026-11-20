@@ -23,6 +23,7 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from ..errors import LumaError
 from .dashboard_auth import AuthError, require_same_origin
+from .monitoring import peer_is_loopback
 from .state import load_auth_state
 
 SESSION_COOKIE = "__Host-luma-grafana-share"
@@ -108,6 +109,23 @@ def valid_session(state: Mapping[str, Any], value: str) -> bool:
     return hmac.compare_digest(signature, _signature(state, payload))
 
 
+def _client_ip(request: Request) -> str:
+    peer = str(request.client.host if request.client else "").strip()
+    if peer_is_loopback(peer):
+        forwarded_for = str(request.headers.get("x-forwarded-for") or "").strip()
+        if forwarded_for:
+            parts = [part.strip() for part in forwarded_for.split(",") if part.strip()]
+            for candidate in reversed(parts):
+                if not peer_is_loopback(candidate):
+                    return candidate[:128]
+            if parts:
+                return parts[-1][:128]
+        real_ip = str(request.headers.get("x-real-ip") or "").strip()
+        if real_ip:
+            return real_ip[:128]
+    return peer[:128]
+
+
 async def sign_in(request: Request) -> Response:
     if request.headers.get("content-type", "").split(";", 1)[0].strip() != "application/json":
         raise AuthError("a JSON request is required", status=415, code="unsupported_media_type")
@@ -120,7 +138,7 @@ async def sign_in(request: Request) -> Response:
         body = json.loads(raw)
     except (ValueError, UnicodeDecodeError) as exc:
         raise LumaError("request body contains malformed JSON") from exc
-    session = await run_in_threadpool(create_session, body, request.headers, request.client.host if request.client else "")
+    session = await run_in_threadpool(create_session, body, request.headers, _client_ip(request))
     response = JSONResponse({"authenticated": True}, headers={"Cache-Control": "no-store"})
     response.set_cookie(SESSION_COOKIE, session, max_age=SESSION_SECONDS, secure=True, httponly=True, samesite="lax", path="/")
     return response

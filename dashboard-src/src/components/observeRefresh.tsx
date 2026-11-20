@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { formatDateTime } from "../format";
+import { invalidateDashboardQueries, useDashboardQueryClient } from "../queryClient";
 import type { Lang } from "../types";
 
 /**
@@ -88,6 +89,7 @@ export function formatClock(value: number | Date, lang: Lang) {
 
 export function ObserveRefreshControl({ lang, intervalSeconds }: { lang: Lang; intervalSeconds?: number }) {
   const zh = lang === "zh";
+  const queryClient = useDashboardQueryClient();
   const store = useObserveRefresh();
   const { updatedAt, refreshing } = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
   const fallback = useRef<number | undefined>(undefined);
@@ -97,7 +99,7 @@ export function ObserveRefreshControl({ lang, intervalSeconds }: { lang: Lang; i
     window.clearTimeout(fallback.current);
     // A panel that cannot report (an embedded Grafana view) still ends the spin.
     fallback.current = window.setTimeout(() => store.setRefreshing(false), 8000);
-    window.dispatchEvent(new CustomEvent("luma:refresh"));
+    void invalidateDashboardQueries(undefined, queryClient);
   };
   const cadence = intervalSeconds
     ? zh ? `每 ${intervalSeconds} 秒自动刷新` : `Refreshes every ${intervalSeconds} seconds`

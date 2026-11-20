@@ -30,6 +30,7 @@ var (
 
 type Store struct {
 	mu       sync.RWMutex
+	ioMu     sync.Mutex
 	dataDir  string
 	metaDir  string
 	readOnly bool
@@ -334,9 +335,13 @@ func (s *Store) CheckAndRecordIssue(project, fingerprint string, now time.Time) 
 	}
 	key := issueKey(project, fingerprint)
 
+	var (
+		shouldAlert bool
+		reason      string
+		st          model.IssueState
+	)
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, exists := s.issues[key]
+	existing, exists := s.issues[key]
 	if !exists {
 		st = model.IssueState{
 			Project:     project,
@@ -347,18 +352,25 @@ func (s *Store) CheckAndRecordIssue(project, fingerprint string, now time.Time) 
 			UpdatedAt:   now,
 		}
 		s.issues[key] = st
-		s.saveIssuesLockedBestEffort()
-		return true, "new_issue", st
-	}
-	if st.Status == model.IssueResolved {
+		shouldAlert = true
+		reason = "new_issue"
+	} else if existing.Status == model.IssueResolved {
+		st = existing
 		st.Status = model.IssueOpen
 		st.LastAlertAt = now
 		st.UpdatedAt = now
 		s.issues[key] = st
-		s.saveIssuesLockedBestEffort()
-		return true, "regression", st
+		shouldAlert = true
+		reason = "regression"
+	} else {
+		st = existing
 	}
-	return false, "", st
+	s.mu.Unlock()
+
+	if shouldAlert {
+		s.saveIssuesBestEffort()
+	}
+	return shouldAlert, reason, st
 }
 
 func (s *Store) SetIssueStatus(project, fingerprint string, status model.IssueStatus) (model.IssueState, error) {
@@ -371,7 +383,6 @@ func (s *Store) SetIssueStatus(project, fingerprint string, status model.IssueSt
 	key := issueKey(project, fingerprint)
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	st, exists := s.issues[key]
 	if !exists {
 		st = model.IssueState{
@@ -383,10 +394,10 @@ func (s *Store) SetIssueStatus(project, fingerprint string, status model.IssueSt
 	st.Status = status
 	st.UpdatedAt = now
 	s.issues[key] = st
-	if !s.readOnly && s.dataDir != "" {
-		if err := s.saveIssuesLocked(); err != nil {
-			return st, err
-		}
+	s.mu.Unlock()
+
+	if err := s.saveIssues(); err != nil {
+		return st, err
 	}
 	return st, nil
 }
@@ -412,7 +423,6 @@ func (s *Store) PruneStaleIssues(maxAge time.Duration) int {
 	}
 	now := time.Now().UTC()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	removed := 0
 	for k, st := range s.issues {
 		if st.UpdatedAt.IsZero() {
@@ -427,8 +437,9 @@ func (s *Store) PruneStaleIssues(maxAge time.Duration) int {
 			removed++
 		}
 	}
+	s.mu.Unlock()
 	if removed > 0 {
-		s.saveIssuesLockedBestEffort()
+		s.saveIssuesBestEffort()
 	}
 	return removed
 }
@@ -448,11 +459,22 @@ func (s *Store) saveProjectsLocked() error {
 	return writeAtomicJSON(filepath.Join(s.metaDir, "projects.json"), payload)
 }
 
-func (s *Store) saveIssuesLocked() error {
+// saveIssues snapshots issues under a brief RLock and performs JSON encoding + fsync
+// serialized by ioMu so ResolveForIngest readers are never blocked by disk I/O.
+func (s *Store) saveIssues() error {
+	if s.readOnly || s.dataDir == "" {
+		return nil
+	}
+	s.ioMu.Lock()
+	defer s.ioMu.Unlock()
+
+	s.mu.RLock()
 	list := make([]model.IssueState, 0, len(s.issues))
 	for _, st := range s.issues {
 		list = append(list, st)
 	}
+	s.mu.RUnlock()
+
 	sort.Slice(list, func(i, j int) bool {
 		if list[i].Project != list[j].Project {
 			return list[i].Project < list[j].Project
@@ -462,11 +484,8 @@ func (s *Store) saveIssuesLocked() error {
 	return writeAtomicJSON(filepath.Join(s.metaDir, "issues_state.json"), issuesFile{Issues: list})
 }
 
-func (s *Store) saveIssuesLockedBestEffort() {
-	if s.readOnly || s.dataDir == "" {
-		return
-	}
-	_ = s.saveIssuesLocked()
+func (s *Store) saveIssuesBestEffort() {
+	_ = s.saveIssues()
 }
 
 func writeAtomicJSON(path string, v any) error {
@@ -474,12 +493,17 @@ func writeAtomicJSON(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return err
 	}
+	tmp := f.Name()
 	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Chmod(0o644); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
 		return err

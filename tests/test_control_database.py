@@ -364,6 +364,56 @@ finally:
         finally:
             os.umask(old)
 
+    def test_entity_map_skips_rewriting_read_only_unchanged_entities(self):
+        sample = self.sample()
+        sample["nodes"]["node-b"] = {"agent": {"lastSeen": 2}}
+        state.save_state(sample)
+        with patch.object(database, "_write_entity", wraps=database._write_entity) as write_entity:
+            def mutate(current):
+                # Read node-a without modifying it; mutate only node-b.
+                _ = current["nodes"]["node-a"]["agent"]["lastSeen"]
+                current["nodes"]["node-b"]["agent"]["lastSeen"] = 99
+            state.mutate_state(mutate)
+        written_ids = [call.args[2] for call in write_entity.call_args_list if call.args[1] == "nodes"]
+        self.assertIn("node-b", written_ids)
+        self.assertNotIn("node-a", written_ids)
+
+    def test_write_state_skips_unchanged_control_config_keys(self):
+        state.save_state(self.sample())
+        with patch.object(database, "encode_payload", wraps=database.encode_payload) as encode_payload:
+            def mutate(current):
+                current["domain"] = "updated.example.com"
+            state.mutate_state(mutate)
+        config_keys_encoded = [
+            call.args[3] for call in encode_payload.call_args_list
+            if len(call.args) >= 4 and call.args[2] == "control_config"
+        ]
+        self.assertEqual(config_keys_encoded, ["domain"])
+
+    def test_persist_receipt_respects_max_attempts_and_stop_event(self):
+        from luma.control.database_errors import persist_receipt
+        import threading
+
+        calls = 0
+
+        def always_busy():
+            nonlocal calls
+            calls += 1
+            raise sqlite3.OperationalError("database is locked")
+
+        with patch("luma.control.database_errors.time.sleep"):
+            with self.assertRaises(sqlite3.OperationalError):
+                persist_receipt(always_busy, owner="test.cap", max_attempts=3)
+        self.assertEqual(calls, 3)
+
+        stop = threading.Event()
+        stop.set()
+        calls = 0
+        with patch("luma.control.database_errors.time.sleep"):
+            with self.assertRaises(sqlite3.OperationalError):
+                persist_receipt(always_busy, owner="test.stop", max_attempts=10, stop_event=stop)
+        self.assertEqual(calls, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

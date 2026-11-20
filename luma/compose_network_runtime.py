@@ -153,7 +153,7 @@ def prepare(docker, allocation, job, image, services, ports, dns_servers=None, e
                 "NetworkMode": "bridge",
                 "PortBindings": spec["bindings"],
                 "ExtraHosts": expected_extra_hosts,
-                "RestartPolicy": {"Name": "unless-stopped"},
+                "RestartPolicy": {"Name": "no"},
                 "ReadonlyRootfs": True,
                 "CapDrop": ["ALL"],
             },

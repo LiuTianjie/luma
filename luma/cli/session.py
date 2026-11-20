@@ -87,15 +87,6 @@ def cmd_status(args: argparse.Namespace) -> int:
             ("Leader", _status_value(nomad.get("leader"))),
         ],
     )
-    storage = payload.get("storage") if isinstance(payload.get("storage"), dict) else {}
-    storage_classes = storage.get("storageClasses") if isinstance(storage.get("storageClasses"), list) else []
-    print()
-    print("Storage")
-    print(f"  Summary: storageClasses={len(storage_classes)}")
-    if storage_classes:
-        _print_table(["NAME", "MODE", "PROVIDER", "NODE", "PATH/ENDPOINT", "REGIONS"], _status_storage_rows(storage_classes))
-    else:
-        print("  No storage classes registered")
     nodes = payload.get("nodes") if isinstance(payload.get("nodes"), dict) else {}
     registered_items = nodes.get("items") if isinstance(nodes.get("items"), list) else []
     nomad = payload.get("nomad") if isinstance(payload.get("nomad"), dict) else {}
@@ -193,23 +184,6 @@ def _status_node_rows(registered_items: list[object], orchestrator_nodes: list[o
                 "yes" if orchestrator_dict.get("leader") else "-",
                 display,
                 _status_value(registered_dict.get("agentStatus")),
-            ]
-        )
-    return rows
-
-
-def _status_storage_rows(storage_classes: list[object]) -> list[list[str]]:
-    rows: list[list[str]] = []
-    for item in sorted((value for value in storage_classes if isinstance(value, dict)), key=lambda value: str(value.get("name") or "")):
-        regions = item.get("regions") if isinstance(item.get("regions"), list) else []
-        rows.append(
-            [
-                _status_value(item.get("name")),
-                _status_value(item.get("mode")),
-                _status_value(item.get("provider")),
-                _status_value(item.get("node")),
-                _status_value(item.get("path") or item.get("endpoint")),
-                ", ".join(str(region) for region in regions) or "-",
             ]
         )
     return rows

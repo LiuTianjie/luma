@@ -14,7 +14,6 @@ from pathlib import Path
 
 from .. import __version__
 from ..agent import DEFAULT_AGENT_CONFIG
-from ..compose import DEFAULT_NFS_MOUNT_OPTIONS
 from ..profiles import PROFILES
 from ..service import VALID_EXPOSURES
 from .common import OUTPUT_FORMATS
@@ -52,7 +51,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("node", "Join, list and remove nodes"),
         ("region", "Manage scheduling regions"),
         ("dns", "Manage DNS zones on Cloudflare, Alibaba Cloud DNS and DNSPod"),
-        ("storage", "Manage NFS storage classes"),
+        ("storage", "Plan local storage migration"),
         ("registry", "Manage registry credentials and the managed registry"),
         ("git-provider", "Manage saved GitHub and Gitea credentials"),
         ("cdn", "Check, refresh and clean up Alibaba Cloud ESA records"),
@@ -551,7 +550,7 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
             "Update the local CLI. On a manager this also refreshes Luma Control, and on a joined "
             "node it refreshes the node agent."
         ),
-        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.87\n  luma update fleet",
+        epilog="Examples:\n  luma update\n  luma update --install-ref v0.2.88\n  luma update fleet",
     )
     _add_update_arguments(update)
     _add_control_arguments(update)
@@ -682,40 +681,11 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
 
     storage = _command(sub, "storage")
     storage_sub = _commands(storage, "storage_command")
-    storage_list = _command(storage_sub, "list", "List storage classes")
-    _add_control_arguments(storage_list)
-    _add_output_arguments(storage_list)
-    storage_set = _command(storage_sub, "set", "Create or update an NFS storage class")
-    storage_set.add_argument("name", help="Storage class name")
-    storage_set.add_argument("--provider", choices=("nfs",), default="nfs", help="Storage provider (default: nfs)")
-    storage_set.add_argument("--node", default="", help="Node that serves a managed NFS export")
-    storage_set.add_argument("--path", default="", help="Export path on the NFS server")
-    storage_set.add_argument("--external", action="store_true", help="Use an existing NFS server instead of preparing one")
-    storage_set.add_argument("--endpoint", default="", help="Address of an external NFS server")
-    storage_set.add_argument("--mount-options", default="", help=f"NFS mount options (default: {DEFAULT_NFS_MOUNT_OPTIONS})")
-    storage_set.add_argument("--region", action="append", dest="regions", default=[], help="Region allowed to mount it; repeat for several")
-    storage_set.add_argument("--eligible-node", action="append", dest="nodes", default=[], help="Node allowed to mount it; repeat for several")
-    storage_set.add_argument("--timeout", type=int, default=360, help="Seconds to wait for host preparation (default: 360)")
-    _add_control_arguments(storage_set)
-    storage_remove = _command(storage_sub, "remove", "Remove a storage class")
-    storage_remove.add_argument("name", help="Storage class name")
-    storage_remove.add_argument("--timeout", type=int, default=360, help="Seconds to wait for host cleanup (default: 360)")
-    _add_control_arguments(storage_remove)
-    storage_apply = _command(storage_sub, "apply", "Prepare the volumes a Compose sidecar needs")
-    storage_apply.add_argument("sidecar", type=Path, metavar="SIDECAR", help="Luma Compose sidecar")
-    storage_apply.add_argument("--dry-run", action="store_true", help="Show the plan without preparing anything")
-    storage_apply.add_argument("--timeout", type=int, default=300, help="Seconds to wait (default: 300)")
-    _add_control_arguments(storage_apply)
-    storage_check = _command(storage_sub, "check", "Check that a sidecar's volumes can be mounted where it runs")
-    storage_check.add_argument("sidecar", type=Path, metavar="SIDECAR", help="Luma Compose sidecar")
-    _add_control_arguments(storage_check)
-    _add_output_arguments(storage_check)
     storage_migrate = _command(storage_sub, "migrate", "Print a manual plan for moving a volume's data")
     storage_migrate.add_argument("sidecar", type=Path, metavar="SIDECAR", help="Luma Compose sidecar")
     storage_migrate.add_argument("--volume", required=True, help="Volume in the sidecar")
     storage_migrate.add_argument("--from-node", required=True, help="Node that holds the current data")
     storage_migrate.add_argument("--from-volume", required=True, help="Current Docker volume or path")
-    _add_control_arguments(storage_migrate)
     _add_output_arguments(storage_migrate)
 
     registry = _command(sub, "registry")
@@ -737,7 +707,6 @@ def _add_cluster_commands(sub: argparse._SubParsersAction) -> None:
     registry_serve.add_argument("--domain", default="", help="TLS hostname; avoids reconfiguring Docker on every node")
     registry_serve.add_argument("--username", default="", help="Basic Auth user for --domain")
     registry_serve.add_argument("--password-stdin", action="store_true", help="Read the --domain password from stdin")
-    registry_serve.add_argument("--storage-class", dest="storage_class", default="", help="Storage class for images (default: a node-local volume)")
     registry_serve.add_argument("--image", default="", help="Registry image (default: registry:2)")
     registry_serve.add_argument("--name", default="", help="Service name (default: luma-registry)")
     registry_serve.add_argument("--no-activate", action="store_true", help="Do not make it the builders' push and pull registry")

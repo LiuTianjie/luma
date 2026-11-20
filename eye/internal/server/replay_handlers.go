@@ -42,6 +42,12 @@ func (s *Server) handleReplayIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clientIP := scrub.ExtractClientIP(r)
+	if !s.allowIPRateLimit(clientIP) {
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
 	raw, err := io.ReadAll(io.LimitReader(r.Body, maxReplayIngestBytes+1))
 	if err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
@@ -89,8 +95,7 @@ func (s *Server) handleReplayIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientIP := scrub.ExtractClientIP(r)
-	if !s.allowRateLimit(proj, clientIP) {
+	if !s.allowProjectRateLimit(proj) {
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
@@ -170,10 +175,12 @@ func (s *Server) handleReplayIngest(w http.ResponseWriter, r *http.Request) {
 		EventsJSON:      string(eventsBytes),
 	}
 
-	if s.batcher != nil {
-		s.batcher.Enqueue(model.RelayBatch{
-			ReplaySegments: []model.ReplaySegment{seg},
-		})
+	if s.batcher != nil && !s.batcher.Enqueue(model.RelayBatch{
+		ReplaySegments: []model.ReplaySegment{seg},
+	}) {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "ingest queue overloaded, retry later", http.StatusServiceUnavailable)
+		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
 }

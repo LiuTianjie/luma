@@ -2,6 +2,8 @@ import argparse
 import http.client
 import io
 import gzip
+from pathlib import Path
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,8 +13,11 @@ import urllib.error
 from unittest.mock import Mock, patch
 
 from luma.cli.builds import _wait_for_queued_build
+from luma.control import server, state as state_mod
 from luma.control.client import ControlClient
+from luma.control.state import init_state
 from luma.errors import ControlRequestError, LumaError
+from tests.support import _restore_env, _set_env
 
 
 def response(payload=b'{"ok":true}'):
@@ -223,3 +228,285 @@ class BuildResumeTests(unittest.TestCase):
             with self.assertRaisesRegex(LumaError, 'server task continues'):
                 _wait_for_queued_build(self.args(), client, {'queued': True, 'buildRunId': 'b1'})
         client.cancel_build.assert_not_called()
+
+
+class ControlPlaneHardeningTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(self._tmp.name) / "state"))
+        self.state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+        self.token = self.state["deployToken"]
+
+    def tearDown(self):
+        _restore_env("LUMA_CONTROL_STATE_DIR", self._old_state)
+        self._tmp.cleanup()
+
+    def _register_node_with_agent(self, name: str = "worker-1") -> str:
+        from luma.nomad_migration_node import CAPABILITY
+
+        now = int(time.time())
+
+        def mutate(current):
+            current.setdefault("nodes", {})[name] = {
+                "name": name,
+                "host": "10.0.0.10",
+                "nodeId": f"id-{name}",
+                "status": "ready",
+                "agent": {
+                    "tokenHash": server._hash_agent_token("agent-secret"),
+                    "status": "ready",
+                    "lastSeen": now,
+                    "capabilities": [CAPABILITY, "managed-volume-path"],
+                },
+            }
+        state_mod.mutate_state(mutate)
+        return "agent-secret"
+
+    def test_async_node_agent_lease_wakes_promptly_when_task_is_queued(self):
+        import asyncio
+
+        agent_token = self._register_node_with_agent("worker-wake")
+
+        async def run():
+            started = time.monotonic()
+            lease_task = asyncio.create_task(
+                server._asgi_node_agent_lease(
+                    agent_token,
+                    {"nodeName": "worker-wake", "waitSeconds": 25},
+                )
+            )
+            await asyncio.sleep(0.05)
+            self.assertFalse(lease_task.done())
+            task_id = server._queue_node_agent_task(
+                state_mod.load_state(),
+                "worker-wake",
+                "noop",
+                {"hello": "world"},
+                required_capability=None,
+            )
+            result = await asyncio.wait_for(lease_task, timeout=3.0)
+            elapsed = time.monotonic() - started
+            return task_id, result, elapsed
+
+        task_id, result, elapsed = asyncio.run(run())
+        self.assertLess(elapsed, 3.0)
+        self.assertIsNotNone(result.get("task"))
+        self.assertEqual(result["task"]["id"], task_id)
+
+    def test_authenticated_post_validates_auth_before_parsing_or_sizing_body(self):
+        from starlette.testclient import TestClient
+
+        with TestClient(server.create_app(), base_url="https://luma.example.com") as client:
+            # Unauthenticated request with invalid JSON gets 401, not 400.
+            no_auth = client.post(
+                "/v1/secrets",
+                content=b"{malformed-json",
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(no_auth.status_code, 401)
+
+            # Wrong bearer token with oversized Content-Length gets 401, not 413.
+            wrong_auth = client.post(
+                "/v1/secrets",
+                content=b"{}",
+                headers={
+                    "Authorization": "Bearer wrong-token",
+                    "Content-Length": str(server.MAX_AUTHENTICATED_BODY_BYTES + 1024),
+                },
+            )
+            self.assertEqual(wrong_auth.status_code, 401)
+
+            # Valid bearer token with oversized body gets 413.
+            with patch.object(server, "MAX_AUTHENTICATED_BODY_BYTES", 64):
+                too_big = client.post(
+                    "/v1/secrets",
+                    content=b'{"name":"A","value":"' + (b"x" * 100) + b'"}',
+                    headers={
+                        "Authorization": f"Bearer {self.token}",
+                        "Content-Type": "application/json",
+                    },
+                )
+            self.assertEqual(too_big.status_code, 413)
+            self.assertEqual(too_big.json()["errorInfo"]["code"], "body_too_large")
+
+    def test_terminal_broker_isolates_browser_and_agent_pending_auth_semaphores(self):
+        import asyncio
+        import threading
+        from starlette.websockets import WebSocketDisconnect
+
+        class FakeSocket:
+            def __init__(self, query, token):
+                self.query_params = query
+                self.token = token
+                self.sent = []
+                self.closed = None
+                self.headers = {}
+                self.cookies = {}
+
+            async def accept(self):
+                pass
+
+            async def receive_json(self):
+                if self.token is not None:
+                    tok, self.token = self.token, None
+                    return {"type": "auth", "token": tok}
+                raise WebSocketDisconnect(1000)
+
+            async def send_json(self, message):
+                self.sent.append(message)
+
+            async def close(self, code=1000):
+                self.closed = code
+
+        self._register_node_with_agent("worker-term")
+        browser_blocked = threading.Event()
+        release_browser = threading.Event()
+
+        def slow_browser_target(*_args, **_kwargs):
+            browser_blocked.set()
+            release_browser.wait(3.0)
+            return ("worker-term", None)
+
+        async def run():
+            broker = server.TerminalBroker(per_node_limit=2, idle_timeout_seconds=60)
+            broker._pending_auth = asyncio.Semaphore(1)
+            browser_sock = FakeSocket({"node": "worker-term"}, self.token)
+            agent_sock = FakeSocket({"node": "worker-term"}, "agent-secret")
+            with patch.object(server, "_terminal_browser_target", side_effect=slow_browser_target):
+                b_task = asyncio.create_task(broker.connect_browser(browser_sock))
+                try:
+                    self.assertTrue(await asyncio.wait_for(asyncio.to_thread(browser_blocked.wait, 2.0), 3.0))
+                    # Browser pending-auth slot is full, yet node agent must still authenticate.
+                    await asyncio.wait_for(broker.connect_agent(agent_sock), timeout=2.0)
+                    self.assertIn({"type": "ready", "node": "worker-term"}, agent_sock.sent)
+                finally:
+                    release_browser.set()
+                    await asyncio.wait_for(b_task, timeout=3.0)
+
+        asyncio.run(run())
+
+    def test_registry_scan_cache_and_epochs_are_bounded(self):
+        with server._REGISTRY_SCAN_LOCK:
+            server._REGISTRY_SCAN_CACHE.clear()
+            server._REGISTRY_SCAN_EPOCHS.clear()
+            for idx in range(server._REGISTRY_SCAN_CACHE_MAX_ENTRIES + 40):
+                key = f"reg-{idx}"
+                server._bump_registry_scan_epoch(key)
+                server._set_registry_scan_cache(key, {"ok": True, "idx": idx})
+            self.assertLessEqual(len(server._REGISTRY_SCAN_CACHE), server._REGISTRY_SCAN_CACHE_MAX_ENTRIES)
+            self.assertLessEqual(len(server._REGISTRY_SCAN_EPOCHS), server._REGISTRY_SCAN_CACHE_MAX_ENTRIES)
+            self.assertNotIn("reg-0", server._REGISTRY_SCAN_CACHE)
+            self.assertIn(f"reg-{server._REGISTRY_SCAN_CACHE_MAX_ENTRIES + 39}", server._REGISTRY_SCAN_CACHE)
+            server._REGISTRY_SCAN_CACHE.clear()
+            server._REGISTRY_SCAN_EPOCHS.clear()
+
+    def test_stream_enqueue_bounds_queue_preserves_terminal_and_ignores_closed_loop(self):
+        import asyncio
+
+        async def run():
+            loop = asyncio.get_running_loop()
+            queue: asyncio.Queue = asyncio.Queue(maxsize=2)
+            server._stream_enqueue(loop, queue, {"status": "progress", "n": 1})
+            server._stream_enqueue(loop, queue, {"status": "progress", "n": 2})
+            server._stream_enqueue(loop, queue, {"status": "progress", "n": 3})  # dropped
+            server._stream_enqueue(loop, queue, {"status": "done", "result": {"ok": True}})
+            server._stream_enqueue(loop, queue, None)
+            await asyncio.sleep(0)
+            items = []
+            while not queue.empty():
+                items.append(queue.get_nowait())
+            return items
+
+        items = asyncio.run(run())
+        self.assertEqual(items[-1], None)
+        self.assertEqual(items[-2], {"status": "done", "result": {"ok": True}})
+
+        closed_loop = asyncio.new_event_loop()
+        closed_loop.close()
+        # Must not raise RuntimeError on a closed event loop.
+        server._stream_enqueue(closed_loop, asyncio.Queue(maxsize=1), None)
+
+    def test_node_agent_complete_does_not_overwrite_timeout_status(self):
+        agent_token = self._register_node_with_agent("worker-timeout")
+        task_id = server._queue_node_agent_task(
+            state_mod.load_state(),
+            "worker-timeout",
+            "noop",
+            {},
+            required_capability=None,
+        )
+
+        def mark_timeout(current):
+            current["agentTasks"][task_id]["status"] = "timeout"
+            current["agentTasks"][task_id]["message"] = "timed out"
+        state_mod.mutate_state(mark_timeout)
+
+        res = server.handle_node_agent_complete(
+            agent_token,
+            {"nodeName": "worker-timeout", "taskId": task_id, "status": "succeeded", "result": {"late": True}},
+        )
+        self.assertEqual(res["status"], "timeout")
+        self.assertEqual(state_mod.load_state()["agentTasks"][task_id]["status"], "timeout")
+
+    def test_nomad_security_task_requeues_interrupted_failed_task(self):
+        self._register_node_with_agent("worker-sec")
+        body = {
+            "nodeName": "worker-sec",
+            "operationKey": "op-interrupted-1",
+            "payload": {"schema": 1, "op": "inspect"},
+        }
+        first = server.handle_nomad_security_task(self.token, body)
+        task_id = first["id"]
+
+        def mark_running(current):
+            current["agentTasks"][task_id]["status"] = "running"
+        state_mod.mutate_state(mark_running)
+
+        state_mod.mutate_state(lambda current: server._reconcile_interrupted_agent_tasks(current, "worker-sec", ""))
+        after_reconcile = state_mod.load_state()["agentTasks"][task_id]
+        self.assertEqual(after_reconcile["status"], "failed")
+        self.assertTrue(after_reconcile.get("interrupted"))
+
+        second = server.handle_nomad_security_task(self.token, body)
+        self.assertEqual(second["status"], "queued")
+        self.assertFalse(state_mod.load_state()["agentTasks"][task_id].get("interrupted"))
+
+    def test_dashboard_setup_configure_persists_cloudflare_check_invalidation(self):
+        config_path = Path(self._tmp.name) / "luma.yaml"
+        config_path.write_text("defaults:\n  engine: nomad\n", encoding="utf-8")
+        old_cfg = _set_env("LUMA_CONTROL_CONFIG", str(config_path))
+        try:
+            def seed_check(current):
+                current["setupChecks"] = {"checks": {"cloudflare": {"status": "ready", "detail": "ok"}}}
+            state_mod.mutate_state(seed_check)
+
+            server.handle_dashboard_setup_configure(
+                self.token,
+                {"cloudflareZone": "example.com", "cloudflareZoneId": "zone-123"},
+            )
+            persisted = state_mod.load_state()
+            cf_check = ((persisted.get("setupChecks") or {}).get("checks") or {}).get("cloudflare")
+            self.assertNotEqual((cf_check or {}).get("status"), "ready")
+        finally:
+            _restore_env("LUMA_CONTROL_CONFIG", old_cfg)
+
+    def test_operations_lifespan_raises_threadpool_limiter_and_stops_registry_automation(self):
+        import anyio.to_thread
+        from starlette.testclient import TestClient
+
+        observed_tokens = None
+        app = server.create_app()
+
+        with TestClient(app, base_url="https://luma.example.com") as client:
+            thread = app.state.registry_automation_thread
+            self.assertIsNotNone(thread)
+            self.assertTrue(thread.is_alive())
+
+            async def read_tokens():
+                return anyio.to_thread.current_default_thread_limiter().total_tokens
+
+            observed_tokens = client.portal.call(read_tokens)
+            self.assertGreaterEqual(observed_tokens, server.DEFAULT_THREADPOOL_TOKENS)
+
+        self.assertTrue(app.state.registry_automation_stop.is_set())
+        self.assertFalse(app.state.registry_automation_thread.is_alive())

@@ -1,6 +1,6 @@
 # Compose Deployments And Local Storage
 
-Persistent data belongs to the node running the application. New dashboard templates use local storage; no NFS server or storage class is needed. Control chooses a ready node in the deployment region (or uses the requested node), records that owner before submitting the job, and pins subsequent deployments to it. An unavailable owner blocks placement rather than starting an empty database elsewhere.
+Persistent data belongs to the node running the application. Dashboard templates and Compose sidecars use local storage. Control chooses a ready node in the deployment region (or uses the requested node), records that owner before submitting the job, and pins subsequent deployments to it. An unavailable owner blocks placement rather than starting an empty database elsewhere.
 
 A multi-service Compose stack runs together on one node, with one allocation. A mount-free single-service stack can run multiple allocations in its region. Read-only configuration mounts and Docker sockets do not create persistent-data ownership. Writable local mounts require stable node placement. Native services with persistent mounts require `replicas: 1`; persistent workloads do not use canary promotion that could start two writers against one directory.
 
@@ -15,7 +15,7 @@ null and conflicting declarations fail validation, including import validation.
 Only `deploy.mode: replicated` is supported.
 
 Multiple replicas require exactly one service, no Compose volume mounts and no
-sidecar volume declarations. This includes read-only, anonymous and legacy NFS
+sidecar volume declarations. This includes read-only and anonymous
 mounts: replicated mount semantics are not supported yet. A multi-service stack
 requires every service to use one replica, even when all requested counts are
 equal. Siblings share loopback inside one allocation; scaling its group would
@@ -144,13 +144,13 @@ Application settings remain in the standard Compose file. The sidecar carries re
 
 Mount differences between generated jobs, including added or removed services, produce a `Runtime storage mounts` warning without blocking deployment. Changes to a volume's configured backend, node or path, and an explicit `node` that differs from the saved local-storage owner, produce a `Storage placement` warning and the deployment continues on the new placement. None of these warnings migrate data: check that the services still use the intended data, and follow the migration steps below when the old data matters. Without an explicit node, a redeploy stays on the saved owner.
 
-## Migrate Existing NFS Data
+## Migrate Local Volume Data
 
-Backend changes do not copy data automatically. First inspect the actual running mount: old configuration may differ from what an earlier renderer mounted. Record the application node, source directory or Docker volume, numeric ownership, permissions, data size and current job/configuration.
+Changing a volume path or node does not copy data automatically. First inspect the actual running mount and record the application node, source directory or Docker volume, numeric ownership, permissions, data size and current job/configuration.
 
-1. Prepare the destination on the existing application node and check free space.
+1. Prepare the destination on the target application node and check free space.
 2. Capture a recoverable backup. Stop every writer before the final copy. Use database-native backup/restore when appropriate; copying an active database directory is not a consistent backup.
-3. Copy while preserving numeric ownership and permissions, or reuse the same host directory when NFS exports it from the application node itself.
+3. Copy while preserving numeric ownership and permissions.
 4. Verify data and permissions; configure the local destination and set `adopted: true` on that volume. Remove any old `initialize: empty` acknowledgement.
 5. Redeploy, check application/database health and read back representative data. Keep the original data and saved job/configuration for rollback. After new writes, rollback also requires reconciling those writes.
 
@@ -173,12 +173,6 @@ luma storage migrate luma.compose.yml \
 ```
 
 This command does not stop services or copy data. For a local destination it requires an explicit deployment/local node. `adopted: true` records that the data was verified and suppresses the backend-change warning. Setting a different `node` moves the deployment and reports a `Storage placement` warning; copy the data first if the old node still holds it.
-
-## Legacy NFS Compatibility
-
-Existing `storageClass` references remain usable while data is migrated. Registered classes remain manager-owned; non-empty `storageClasses` in submitted sidecars are rejected. `luma storage list`, `check`, `apply`, and `remove` continue to operate on those legacy classes. No class is required for local storage.
-
-Do not remove a class, unmount volumes or disable the NFS server until every active and stopped deployment has been checked. An application with no running allocations can still depend on its old data. Keep offline-node data in place until that node can be inspected.
 
 ## Removal And Recovery
 

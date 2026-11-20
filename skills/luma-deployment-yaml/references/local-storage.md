@@ -1,6 +1,6 @@
 # Local Storage and Migration
 
-Use this reference for persistent deployments, NFS retirement, and recovery of older storage configurations. Check the running Control and relevant node Agent versions: current Control reports storage backend, mount and explicit owner changes as warnings, while older versions may reject them. Neither behavior copies data. A checked-out source version is not deployment proof.
+Use this reference for persistent deployments and migrating local volume data. Check the running Control and relevant node Agent versions: current Control reports storage backend, mount and explicit owner changes as warnings, while older versions may reject them. Neither behavior copies data. A checked-out source version is not deployment proof.
 
 ## Placement and Identity
 
@@ -8,7 +8,6 @@ Use this reference for persistent deployments, NFS retirement, and recovery of o
 - Compose local paths use `volumes.<key>.local.path`; `local.node` may be omitted for Control to inherit placement. A persistent Compose stack stays on one node in one region. Direct offline rendering needs an explicit node.
 - Native services use `volumes` with exact bind paths or Docker volume names. Writable persistence requires `replicas: 1`; avoid canaries that would start concurrent database writers against the same data.
 - New dashboard defaults isolate data by deployment. Existing sources must retain their identities. Compare actual Nomad mount `type`, `source`, and `target`, Docker volume options, and host mount state; changing a path/name can create an empty database without deleting the old one.
-- Legacy native `storage` metadata may differ from its rendered mount. A `storageClass` reference alone does not prove NFS was used. Conversely, a Docker volume with driver `local` can still mount NFS through its driver options.
 - Local storage requires independent backups. It does not provide cross-node failover. Removing a deployment can remove its saved owner, so retain the pinned configuration for recovery.
 
 ## Existing-Data Migration
@@ -16,16 +15,9 @@ Use this reference for persistent deployments, NFS retirement, and recovery of o
 1. Recheck the current deployment immediately before acting. Another update may already have migrated it. If actual mounts are local and correct, skip the migration.
 2. Capture the running job/version, saved deployment configuration, owning node, mount source, numeric UID/GID, permissions, and data size. Check destination free space and prepare a rollback backup. Keep credentials and raw job/environment data in private files.
 3. Stop every writer for the final copy and verify termination on the owning host. A lost/unknown allocation is not proof that a process stopped. Use database-native backup/restore where appropriate; do not treat a copy of an active database directory as consistent.
-4. If NFS exports the data from the application's own host, reuse that verified directory as a bind mount. For cross-host data, copy to the application node while preserving numeric ownership and permissions. Existing PostgreSQL directories may require mode 0700; do not recursively chmod them to 0777 during path preparation.
+4. Copy to the destination application node while preserving numeric ownership and permissions. Existing PostgreSQL directories may require mode 0700; do not recursively chmod them to 0777 during path preparation.
 5. Verify archive/copy checksums and contents before startup. Set the destination local path with `adopted: true` and remove old `initialize: empty` acknowledgements. These flags do not copy data. Changing the owner node only produces a `Storage placement` warning, so copy data before redeploying elsewhere.
-6. Update both the saved deployment and its source manifest so a later release cannot restore the old backend. Preserve unrelated uncommitted changes. Keep the agreed deployment/build workflow; an authorized storage-maintenance cutover does not imply a new build lane for future releases.
+6. Update both the saved deployment and its source manifest so a later release cannot restore the old path. Preserve unrelated uncommitted changes. Keep the agreed deployment/build workflow; an authorized storage-maintenance cutover does not imply a new build lane for future releases.
 7. Verify actual container mounts, database/queue read-back, public health and a representative operation. Report which checks ran. Keep original data and configuration for rollback; account for writes made after cutover before reverting.
 
 `luma storage migrate` only prints a manual plan. For a local destination, supply an explicit deployment/local node. It does not copy data or stop applications. `--delete-storage` is not part of a migration.
-
-## Retiring NFS
-
-- Inventory current jobs, stopped applications, Docker NFS options and host mounts. Historical references may need preservation for recovery even after current workloads stop using NFS.
-- Remove unused classes only after checking dependencies. Class removal is not proof of host shutdown; a node-agent operation may be skipped while the class still disappears from Control.
-- Stop and disable the NFS service on reachable hosts after client mounts are gone. Verify both inactive/disabled status and empty exports. Retain source data and configuration backups separately from live exports.
-- Do not call an offline host cleaned. Report its remaining host-level work separately from the verified online state. Never relocate its database into a new empty volume to make the inventory look healthy.

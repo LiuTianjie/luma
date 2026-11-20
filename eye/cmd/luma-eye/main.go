@@ -172,7 +172,9 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("init batcher: %w", err)
 	}
-	batcher.Start(ctx)
+	batcherCtx, cancelBatcher := context.WithCancel(context.Background())
+	defer cancelBatcher()
+	batcher.Start(batcherCtx)
 
 	var storageBackend retention.StorageBackend
 	if chClient != nil {
@@ -185,7 +187,14 @@ func runServe(args []string) error {
 		otlp.Start(ctx, 30*time.Second)
 	}
 
-	srv := server.New(cfg, store, chClient, batcher, symbolicator, metrics)
+	srv, err := server.New(cfg, store, chClient, batcher, symbolicator, metrics)
+	if err != nil {
+		cancelBatcher()
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		batcher.Shutdown(drainCtx)
+		drainCancel()
+		return fmt.Errorf("init server: %w", err)
+	}
 	srv.SetRetentionProvider(reaper.Snapshot)
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -207,13 +216,35 @@ func runServe(args []string) error {
 	select {
 	case <-ctx.Done():
 		log.Printf("[luma-eye] shutting down gracefully...")
-		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = httpServer.Shutdown(shutCtx)
-		batcher.Shutdown(shutCtx)
-		cancel()
+		shutdownGracefully(httpServer, cancelBatcher, batcher, 10*time.Second)
 		return nil
 	case err := <-errCh:
+		cancelBatcher()
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		batcher.Shutdown(drainCtx)
+		drainCancel()
 		return err
+	}
+}
+
+// shutdownGracefully drains in-flight HTTP ingest handlers BEFORE cancelling the batcher
+// so events accepted right before shutdown are enqueued and flushed cleanly.
+func shutdownGracefully(httpServer *http.Server, cancelBatcher context.CancelFunc, batcher *pipeline.Batcher, timeout time.Duration) {
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	if httpServer != nil {
+		httpCtx, httpCancel := context.WithTimeout(context.Background(), timeout)
+		_ = httpServer.Shutdown(httpCtx)
+		httpCancel()
+	}
+	if cancelBatcher != nil {
+		cancelBatcher()
+	}
+	if batcher != nil {
+		batchCtx, batchCancel := context.WithTimeout(context.Background(), timeout)
+		batcher.Shutdown(batchCtx)
+		batchCancel()
 	}
 }
 

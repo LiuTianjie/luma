@@ -205,7 +205,7 @@ def ensure_regions_state(state: dict[str, Any]) -> dict[str, Any]:
     return raw
 
 
-def region_names_in_use(nodes: Mapping[str, Any] | None, storage_classes: Mapping[str, Any] | None = None) -> set[str]:
+def region_names_in_use(nodes: Mapping[str, Any] | None) -> set[str]:
     used: set[str] = set()
     for record in (nodes or {}).values():
         if not isinstance(record, Mapping):
@@ -214,12 +214,5 @@ def region_names_in_use(nodes: Mapping[str, Any] | None, storage_classes: Mappin
         name = str(record.get("region") or labels.get("region") or "").strip().lower()
         if name:
             used.add(name)
-    for record in (storage_classes or {}).values():
-        if not isinstance(record, Mapping):
-            continue
-        for item in record.get("regions") or []:
-            name = str(item or "").strip().lower()
-            if name:
-                used.add(name)
     return used
 

@@ -550,5 +550,86 @@ class PasskeyUnavailableTests(DashboardAuthBase):
         self.token_session()
 
 
+class AuthHardeningTests(DashboardAuthBase):
+    def test_auth_endpoints_enforce_rate_limiting_and_retry_after(self):
+        from luma.control import server as control_server
+        # Configure a tight per-app limiter to verify 429 + Retry-After cleanly.
+        self.client.app.state.auth_rate_limiter = control_server._AuthRateLimiter(
+            window_seconds=60.0,
+            general_limit=3,
+            passkey_options_limit=2,
+        )
+        for _ in range(3):
+            res = self.client.post("/v1/auth/session", headers=self.bearer("wrong"))
+            self.assertEqual(res.status_code, 401)
+        limited = self.client.post("/v1/auth/session", headers=self.bearer("wrong"))
+        self.assertEqual(limited.status_code, 429)
+        self.assertEqual(limited.headers.get("retry-after"), "60")
+        self.assertEqual(limited.headers.get("cache-control"), "no-store")
+        self.assertEqual(limited.json()["errorInfo"]["code"], "auth_rate_limited")
+
+        # Separate bucket for passkey authenticate options (2/min here).
+        for _ in range(2):
+            res = self.client.post("/v1/auth/passkey/authenticate/options", json={})
+            self.assertIn(res.status_code, (404, 501))
+        limited_pk = self.client.post("/v1/auth/passkey/authenticate/options", json={})
+        self.assertEqual(limited_pk.status_code, 429)
+        self.assertEqual(limited_pk.headers.get("retry-after"), "60")
+
+    def test_auth_endpoints_reject_oversized_body_with_413(self):
+        from luma.control import server as control_server
+        oversized = b'{"x":"' + (b"a" * (control_server.MAX_AUTH_BODY_BYTES + 128)) + b'"}'
+        response = self.client.post(
+            "/v1/auth/session",
+            headers={**self.bearer(), "Content-Type": "application/json"},
+            content=oversized,
+        )
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response.json()["errorInfo"]["code"], "body_too_large")
+
+    def test_passkey_authenticate_options_checks_origin_when_present(self):
+        foreign = self.client.post(
+            "/v1/auth/passkey/authenticate/options",
+            headers={"Origin": "https://evil.example"},
+            json={},
+        )
+        self.assertEqual(foreign.status_code, 403)
+        self.assertEqual(foreign.json()["errorInfo"]["code"], "forbidden_origin")
+
+    def test_security_audit_middleware_runs_record_off_event_loop(self):
+        import asyncio
+        import threading
+        from luma import security_audit
+
+        recorded_threads = []
+        loop_thread = None
+
+        async def ok_app(scope, receive, send):
+            nonlocal loop_thread
+            loop_thread = threading.get_ident()
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"{}"})
+
+        def spy_record(kind, **fields):
+            recorded_threads.append((kind, threading.get_ident()))
+
+        middleware = security_audit.SecurityAuditMiddleware(ok_app)
+
+        async def run():
+            scope = {"type": "http", "method": "POST", "path": "/v1/secrets", "headers": [], "client": ("127.0.0.1", 1234)}
+            sent = []
+            async def receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+            async def send(msg):
+                sent.append(msg)
+            with patch.object(security_audit, "record", side_effect=spy_record):
+                await middleware(scope, receive, send)
+
+        asyncio.run(run())
+        self.assertEqual([kind for kind, _ in recorded_threads], ["request.begin", "request.end"])
+        for _kind, tid in recorded_threads:
+            self.assertNotEqual(tid, loop_thread, "SecurityAuditMiddleware.record must run off the ASGI event loop")
+
+
 if __name__ == "__main__":
     unittest.main()
