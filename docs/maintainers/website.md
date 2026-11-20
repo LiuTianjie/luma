@@ -4,11 +4,11 @@ The public GitHub Pages website lives in `site/`. It is a static bilingual site:
 
 ## Design and product previews
 
-Use the console's neutral background, white surfaces, thin borders, 8px card corners and blue primary actions. The homepage contains an interactive, clearly labeled illustration of applications, routes, metrics, delivery and observability. Its `example.com` domains and resource values are sample data, not a live cluster or a screenshot. Keep route-relationship descriptions distinct from connectivity or health checks.
+Use the console's neutral background, white surfaces, thin borders, 8px card corners and blue primary actions. The homepage contains an interactive, clearly labeled illustration of applications, routes, metrics, deployments and observability. Its `example.com` domains and resource values are sample data, not a live cluster or a screenshot. Keep route-relationship descriptions distinct from connectivity or health checks.
 
-The illustration uses native HTML and SVG and works without remote images. All 25 sidebar menus and submenus switch to distinct illustrative screens and synchronize the breadcrumb and selected state. The five shortcut tabs share that navigation state and support arrow keys, Home and End. Keep the menu targets and sample screens aligned between both languages. JavaScript also provides the mobile menu and command copying; core page content and documentation remain readable without JavaScript.
+The illustration uses native HTML and SVG and works without remote images. All 24 sidebar menus and submenus (across Workspace and Platform, including Addons, Domains, Sign-in, Maintenance under Settings and First install under Platform) switch to distinct illustrative screens and synchronize the breadcrumb and selected state. The five shortcut tabs share that navigation state and support arrow keys, Home and End. Keep the menu targets and sample screens aligned between both languages. JavaScript also provides the mobile menu, application sample filters and command copying; core page content and documentation remain readable without JavaScript.
 
-The Geist font is self-hosted under `site/assets/fonts/` with its license. Chinese text uses the platform's CJK fonts. Existing brand assets remain available; the old decorative hero graphics are not loaded.
+The Geist font is self-hosted under `site/assets/fonts/` with its license. Chinese text uses the platform's CJK fonts. Brand assets and social preview images live under `site/assets/`.
 
 ## Build and preview
 

@@ -24,8 +24,9 @@ function selectPreview(key, focusTab = false) {
     if (active) item.setAttribute('aria-current', 'page');
     else item.removeAttribute('aria-current');
   });
-  document.getElementById('preview-label').textContent = panel.querySelector('h2').textContent;
-  const icon = panel.querySelector('h2 svg');
+  const heading = panel.querySelector('h3, h2');
+  document.getElementById('preview-label').textContent = heading ? heading.textContent : '';
+  const icon = heading?.querySelector('svg');
   const targetIcon = document.getElementById('preview-icon');
   if (targetIcon) targetIcon.replaceChildren(...(icon ? [icon.cloneNode(true)] : []));
   if (focusTab) selectedTab?.focus();
@@ -71,14 +72,22 @@ document.querySelectorAll("[data-doc-language]").forEach(link => {
 // Application filters mirror the console controls, using sample rows only.
 function filterDemoApplications() {
   const query = document.getElementById('demo-app-search')?.value.trim().toLowerCase() || '';
+  const status = document.getElementById('demo-app-status')?.value || 'all';
   const region = document.getElementById('demo-app-region')?.value || 'all';
   const rows = [...document.querySelectorAll('[data-demo-app]')];
   let count = 0;
-  rows.forEach(row => { row.hidden = !([row.cells[0].textContent, row.cells[2].textContent].join(' ').toLowerCase().includes(query) && (region === 'all' || row.dataset.region === region)); if (!row.hidden) count++; });
+  rows.forEach(row => {
+    const matchesQuery = [row.cells[0].textContent, row.cells[2].textContent].join(' ').toLowerCase().includes(query);
+    const matchesStatus = status === 'all' || row.dataset.status === status;
+    const matchesRegion = region === 'all' || row.dataset.region === region;
+    row.hidden = !(matchesQuery && matchesStatus && matchesRegion);
+    if (!row.hidden) count++;
+  });
   const countLabel = document.getElementById('demo-app-count');
   if (countLabel) countLabel.textContent = String(count);
   const empty = document.getElementById('demo-app-empty');
   if (empty) empty.hidden = count > 0;
 }
-['demo-app-search', 'demo-app-region', 'demo-app-status'].forEach(id => document.getElementById(id)?.addEventListener('input', filterDemoApplications));
+document.getElementById('demo-app-search')?.addEventListener('input', filterDemoApplications);
+['demo-app-region', 'demo-app-status'].forEach(id => document.getElementById(id)?.addEventListener('change', filterDemoApplications));
 if (previewPanels.length) selectPreview('apps');
