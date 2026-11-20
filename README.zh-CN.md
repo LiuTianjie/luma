@@ -28,7 +28,7 @@
 
 Luma 把分散的几台服务器组织成一个可以从电脑、CI 和浏览器操作的部署平台。用 YAML 描述服务，指定运行位置和访问方式，再通过统一的认证 API 完成部署。
 
-底层由 **Nomad 调度容器、Traefik 转发流量、Cloudflare 管理 DNS**。Luma 将它们连接起来，提供应用历史、密钥、构建、节点管理和 Web 控制台。部署客户端只持有管理令牌，基础设施凭据留在控制面。
+底层由 **Nomad 调度容器、Traefik 转发流量、Cloudflare / 阿里云 DNS / DNSPod 管理 DNS**。Luma 将它们连接起来，提供应用历史、密钥、构建、节点管理和 Web 控制台。部署客户端只持有管理令牌，基础设施凭据留在控制面。
 
 ```yaml
 # status.yaml
@@ -104,18 +104,20 @@ python -m pip install "luma-infra==0.2.88"
 | 要求 | 用途 |
 | --- | --- |
 | 一台 Linux 服务器；文档以 Ubuntu 22.04+ 为起点 | 运行 Luma Control、Nomad 和 Traefik；建议起步 2 核 / 8 GiB 内存，其中 Control 预留 4 GiB |
-| 一个由 Cloudflare 管理的域名 | 控制面与应用域名 |
-| 具有 Zone Read 和 DNS Edit 权限的 Cloudflare API Token | 管理 DNS 记录 |
+| 一个由 Cloudflare 管理的域名（更多业务域名也支持通过 `luma dns zone add` 接入阿里云 DNS 或 DNSPod） | 控制面与应用域名 |
+| 具有 Zone Read 和 DNS Edit 权限的 Cloudflare API Token | 管理 DNS 记录（或通过 `luma dns zone add` 配置其他 DNS 服务商凭据） |
 | 公网 80/443 端口与 ACME 邮箱 | HTTP 入口与 HTTPS 证书 |
 | 能够访问配置的容器镜像仓库 | 拉取 Control 和应用镜像 |
 
 **在 Manager 上**执行：
 
 ```bash
+luma bootstrap
+# 或直接指定控制面域名（适合非交互式初始化）：
 luma bootstrap --domain luma.example.com
 ```
 
-CLI 会交互式补齐配置、准备运行环境、初始化 SQLite，并输出控制台地址、**管理令牌**和**节点加入令牌**。请妥善保管这两个令牌。
+在交互式终端中直接运行 `luma bootstrap` 会启动引导式安装向导（逐步完成域名、DNS、出站代理、可选登录、官方插件与 AI 技能配置）。传入 `--domain` 则直接初始化 Manager、仅提示缺失项、准备运行环境、初始化 SQLite，并输出控制台地址、**管理令牌**和**节点加入令牌**。请妥善保管这两个令牌。
 
 如果 Manager 需要代理才能拉取默认 GHCR 镜像，请在初始化前配置 `EGRESS_SUBSCRIPTION_URL`，中国大陆服务器尤其需要确认这一点。第一台 Manager 的基础工作负载不依赖 Tailscale 或 Builder Registry。主机与网络配置详见[快速上手](docs/getting-started.zh-CN.md)。
 
@@ -158,7 +160,7 @@ flowchart LR
 | --- | --- | --- |
 | `region` | 服务可以运行在哪里？ | `cn`、`global`、`home` 或自定义区域 |
 | `node` | 是否必须运行在某台机器？ | `luma node join --name` 注册的节点名称 |
-| `exposure` | 客户端如何访问它？ | `cn-edge`、`external-edge`、`tailscale-relay`、`tcp-relay`、`cloudflare-tunnel`、`none` |
+| `exposure` | 客户端如何访问它？ | `cn-edge`、`external-edge`、`node-edge`、`tailscale-relay`、`tcp-relay`、`cloudflare-tunnel`、`none` |
 | `proxy` | 容器运行时是否需要出站代理？ | `true` 接入已配置的 egress |
 
 例如，`region: home` 配合 `exposure: tailscale-relay`，将服务运行在家庭节点，公网流量经过边缘节点和 Tailscale 转发；`region: cn` 配合 `exposure: none`，则运行没有公网入口的内部服务。
@@ -171,10 +173,10 @@ flowchart LR
 | --- | --- | --- |
 | 已发布的容器镜像 | `luma deploy app.yaml` | 部署清单声明的镜像 |
 | 本地源码 | `luma build local . --platform linux/amd64` | 通过本地 Docker / Buildx 构建，上传到已配置的 Builder Registry，再部署 |
-| GitHub / Gitea 仓库 | `luma import <repository-url>` | 在已配置的 Builder 上构建并部署 |
+| GitHub / Gitea 仓库 | `luma builder submit <repository-url>` | 在已接入的 Builder Runner（`luma addon install builder` + `luma runner join`）上构建并部署 |
 | 多服务 Compose 应用 | `luma compose deploy luma.compose.yml` | 使用已有 Compose 文件及 Luma 调度、入口配置进行部署 |
 
-**`luma deploy` 不会构建源码。** 需要新镜像时应选择构建或导入流程。Builder 工作流需要配置 Builder 和 Registry，直接部署已有镜像则不需要。
+**`luma deploy` 不会构建源码。** 需要新镜像时应选择本地构建（`luma build local`）或可插拔的 Luma Build 插件（`luma addon install builder` + `luma runner join` + `luma builder submit`）。Builder 工作流需要安装 Builder 插件、接入 Runner 并配置 Registry，直接部署已有镜像则不需要。
 
 公网服务应设置有业务意义的健康检查和明确的内存限制。滚动更新行为取决于端口、持久卷与调度约束；本地校验通过并不代表实际服务已经就绪。字段定义与示例见[部署清单参考](docs/deployment-yaml.zh-CN.md)。
 

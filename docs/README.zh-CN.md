@@ -25,7 +25,7 @@
 | [出站代理](egress-gateway.zh-CN.md) | 镜像拉取与 `proxy: true` 服务使用的出站代理 |
 | [可观测](observability.zh-CN.md) | 指标、告警与可选的 observe 栈 |
 | [控制台指南](dashboard-guide.zh-CN.md) | Web 控制台 |
-| [AI Agent 技能](ai-agent-skills.zh-CN.md) | 让编码助手使用 Luma 部署的 Skill |
+| [AI Agent 技能](ai-agent-skills.zh-CN.md) | 让编码助手使用 Luma 完成部署、日志排查、可观测查询、容器终端与 Eye 埋点分析的 Skill |
 | [故障排查](troubleshooting.zh-CN.md) | 已知故障与处理方法 |
 
 ## 参考 {#reference}

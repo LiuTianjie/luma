@@ -40,7 +40,7 @@ $EDITOR .env
 /opt/luma/control/control.sqlite3
 ```
 
-其中包含集群 ID、管理令牌、节点加入令牌、Nomad gossip key，以及 Control API 所需的 Cloudflare 环境变量副本。数据库、运行时 WAL/SHM 文件和备份都不能提交到 Git 或复制到客户端。旧版 `control.json` 仅作为初次迁移输入，迁移后不要再编辑。关于一致性备份和外部密钥文件，见[控制面存储与恢复](control-storage.md)。
+其中包含集群 ID、管理令牌、节点加入令牌、Nomad gossip key，以及 Control API 所需的 Cloudflare 环境变量副本。数据库、运行时 WAL/SHM 文件和备份都不能提交到 Git 或复制到客户端。旧版 `control.json` 仅作为初次迁移输入，迁移后不要再编辑。关于一致性备份和外部密钥文件，见[控制面存储与恢复](control-storage.zh-CN.md)。
 
 Luma Control 还挂载 `/var/run/docker.sock` 并访问 Nomad HTTP API，以便客户端加入后记录节点元数据。管理令牌和节点加入令牌都应按集群管理级敏感凭据保管。
 

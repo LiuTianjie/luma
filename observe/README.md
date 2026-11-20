@@ -63,12 +63,13 @@ language equivalent). See [Application integration](../docs/observability.md#app
 
 ## Deploy
 
-Collector has a 768 MiB container ceiling, a 384 MiB Go memory target, a
-512 MiB memory limiter and bounded batches/export queues. Spans of node agent
-requests to Control (`/v1/node-agent/`, `/v1/terminal/`) are dropped first:
-they are long-lived by design and would otherwise all count as slow. Tail sampling keeps
-at most 5,000 pending traces; inactive span-metric series expire after five
-minutes. These bounds preserve room for transient and non-heap allocations.
+Collector reserves 768 MiB with a 2 GiB container ceiling, a 1024 MiB Go memory
+target (`GOMEMLIMIT=1024MiB`), a 1280 MiB soft / 1536 MiB hard memory limiter,
+and bounded batches/export queues. Spans of node agent requests to Control
+(`/v1/node-agent/`, `/v1/terminal/`) are dropped first: they are long-lived by
+design and would otherwise all count as slow. Tail sampling keeps at most 5,000
+pending traces; inactive span-metric series expire after five minutes. These
+bounds preserve room for transient and non-heap allocations.
 
 VictoriaMetrics retains 15 days under a 1 GiB container ceiling. Its cache
 allowance is 384 MiB, with at most four concurrent queries and 64 MiB per query;
@@ -116,18 +117,27 @@ names or hardcode a Grafana host.
 
 ### First deployment
 
-Use `observe/` from the current Luma source checkout or release archive. Have a
-working Control login and internal Registry configured for Local Build; the
-machine running the build needs Docker Buildx. Check the manager's architecture,
-available RAM and free disk before adding the stack. Tempo alone reserves 1 GiB
-for scheduling and can use up to 3 GiB; allow that headroom in addition to
-Control, Traefik, the other observe services and any colocated applications.
-The reservation is not a promise that the complete stack fits in 1 GiB.
+The recommended way to install `luma-observe` is via the Luma Addon system using
+prebuilt GHCR images:
 
-Build and deploy from this directory (AMD64 manager example):
+```bash
+luma addon install observe
+```
+
+For custom builds from a local source checkout or release archive, have a
+working Control login and configured registry for Local Build (Docker Buildx
+required on the build host). Check the manager's architecture, available RAM,
+and free disk before adding the stack. Tempo alone reserves 1 GiB for
+scheduling and can use up to 3 GiB; allow that headroom in addition to Control,
+Traefik, the other observe services, and any colocated applications. The
+reservation is not a promise that the complete stack fits in 1 GiB.
+
+Build and deploy from `observe/` (AMD64 manager example):
 
 ```bash
 luma build local . --platform linux/amd64
+# Or install via addon from local source:
+# luma addon install observe --source ./observe
 ```
 
 Control prepares the local data directories and pins the whole stack to the
@@ -232,13 +242,3 @@ Do not publish these on `0.0.0.0` or the public NIC.
 the Nomad/docker0 bridge. Control itself is host-networked and queries
 `http://127.0.0.1:8428`. Grafana listens on `127.0.0.1:3100` and is published
 at `/grafana` on the Control domain.
-
-## Local release with ACR
-
-Run `bash observe/deploy.sh` from the repository. This preserves the local-build
-lane and the `luma-observe` application/storage. Control provides
-`build.localRegistryHost` and `build.registryNamespace`; do not put the former
-`:5000` registry in Compose. Explicit `--proxy` remains a caller-specific base-image
-network option, not a registry setting. If the saved workflow includes an old LAN
-proxy, review that difference before accepting it. Third-party image references
-remain upstream source images; this source change does not copy old runtime images.

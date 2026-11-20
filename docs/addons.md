@@ -29,7 +29,7 @@ Luma Control acts as the single Identity Provider (IdP) for all addons:
 
 1. **Browser SSO (`control-sso`, used by Luma Build and Luma Eye)**: opening an addon console redirects to `https://<control-domain>/dashboard/addon-login?addon=<id>&challenge=...`, reuses your existing Passkey/dashboard session, issues a one-use PKCE ticket, and establishes an audience-bound opaque addon session (`las_...`). Signing out of Control or uninstalling the addon revokes all addon sessions immediately.
 2. **ForwardAuth (`forward-auth`, used by Luma Observe)**: Traefik verifies `/grafana` requests against Control's `/v1/auth/forward` endpoint using the same dashboard session or management token.
-3. **Zero-extra-token CLI**: `luma builder` and `luma eye` automatically reuse your active `luma login` token and discover the addon URL from Control.
+3. **Zero-extra-token CLI & automatic URL discovery**: both `luma builder` and `luma eye` automatically reuse your active `luma login` token and discover the deployed addon URL directly from Control (no manual endpoint setup required). When targeting a separately hosted Builder or overriding the discovered endpoint, pass `--url`, set `LUMA_BUILD_URL`, or bind once with `luma builder use <url>`.
 
 ```bash
 luma addon list

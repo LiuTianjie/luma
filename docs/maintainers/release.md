@@ -59,6 +59,12 @@ The `Build Control Image` workflow publishes:
 - `ghcr.io/liutianjie/luma-control:sha-<7-char-sha>` from an authorized
   `workflow_dispatch` run on any branch or tag
 
+Separately, `.github/workflows/addon-images.yml` (`Build Addon Images`) runs addon
+unit/parity checks and publishes prebuilt GHCR images for the official addons
+(`luma-build-server`, `luma-eye`, `luma-eye-clickhouse`, and `luma-observe-*`)
+whenever `builder/**`, `eye/**`, or `observe/**` change on `main`, on `v*` tags,
+or via `workflow_dispatch`.
+
 The manual tag is commit-scoped. It does not add `latest` to a topic branch or
 change the existing `main-*`/release-tag channels. Run the workflow only after
 the candidate ref is pushed, and verify that the completed run's `headSha`
@@ -183,9 +189,12 @@ nomad job status luma-control
 The current manager update path preserves Control state and user jobs, but it
 does reconcile firewall TCP relay ports, Traefik when the manager has the
 `edge` role, the watchdog, installed config/state, and the `luma-control` Nomad
-job. It also installs the independent Nomad security supervisor, which waits
-for updated node agents before upgrading and restarting Nomad and verifying
-ACL/mTLS. Docker and business applications keep their existing configuration.
+job. Docker and business applications keep their existing configuration.
+When running from a terminal session that may disconnect (or inside a Luma
+terminal running under `luma-node-agent.service`), pass `--detach`
+(`luma update manager --detach`) so the update runs in its own transient
+systemd unit and forwards any opt-in caller `HTTP_PROXY` / `HTTPS_PROXY` /
+`NO_PROXY` / `PIP_INDEX_URL` (`LUMA_PIP_INDEX_URL`) settings.
 Treat it as a control-plane maintenance change and keep the
 pre-change values above until post-update checks pass.
 
@@ -263,10 +272,8 @@ After both package and Control-image workflows succeed, open Dashboard → Setti
 4. verify the automatic post-update route sentinel;
 5. update only non-manager nodes whose reported agent version differs from the release;
 6. retry any failed or interrupted image, manager, or node operation from the same page.
-7. wait for **Cluster security upgrade → All checks passed**; package version
-   alignment alone does not confirm that Nomad security migration finished.
 
-Control-image preparation and fleet operations are persisted by Control. The image preparation uses the Builder's `control-image-mirror-v1` capability and the configured `registryHost` / `pushHost`; its proxy is never exposed to the browser. Manager updates run in an independent transient systemd unit, so refreshing the manager node agent cannot terminate the rollout that started it. A fleet node is successful only after the installer finishes and a new heartbeat reports the target release version. CLI update commands remain break-glass and first-adoption fallbacks; they are not required for normal releases.
+Control-image preparation and fleet operations are persisted by Control. The image preparation uses the Builder's `control-image-mirror-v1` capability and the configured `registryHost` / `pushHost`; its proxy is never exposed to the browser. Manager updates run in an independent transient systemd unit (forwarding the manager's configured egress proxy on `start-manager-update` when set), so refreshing the manager node agent cannot terminate the rollout that started it. A fleet node is successful only after the installer finishes and a new heartbeat reports the target release version. CLI update commands (`luma update manager --detach`) remain break-glass and first-adoption fallbacks; they are not required for normal releases.
 
 Users can uninstall the local CLI with:
 

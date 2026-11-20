@@ -28,7 +28,7 @@
 
 Luma turns a handful of servers into a deployment platform you can operate from your laptop, CI, or browser. Describe a service in YAML, choose where it runs and how it is reached, then deploy through one authenticated API.
 
-Underneath, **Nomad schedules containers, Traefik routes traffic, and Cloudflare manages DNS**. Luma connects those pieces with application history, secrets, builds, node management, and a web console. Deployment clients carry a management token; infrastructure credentials stay with the control plane.
+Underneath, **Nomad schedules containers, Traefik routes traffic, and Cloudflare / Alibaba Cloud DNS / DNSPod manage DNS**. Luma connects those pieces with application history, secrets, builds, node management, and a web console. Deployment clients carry a management token; infrastructure credentials stay with the control plane.
 
 ```yaml
 # status.yaml
@@ -104,18 +104,20 @@ Have these ready:
 | Requirement | Purpose |
 | --- | --- |
 | A Linux server; Ubuntu 22.04+ is the documented starting point | Runs Luma Control, Nomad, and Traefik; start with 2 CPU cores / 8 GiB RAM, including Control's 4 GiB reservation |
-| A domain managed in Cloudflare | Control API and application domains |
-| A Cloudflare API token with Zone Read and DNS Edit | DNS record management |
+| A domain managed in Cloudflare (additional application zones also support Alibaba Cloud DNS and DNSPod via `luma dns zone add`) | Control API and application domains |
+| A Cloudflare API token with Zone Read and DNS Edit | DNS record management (or provider credentials added via `luma dns zone add`) |
 | Public ports 80/443 and an ACME email address | HTTP ingress and HTTPS certificates |
 | Access to the configured container registry | Pulls the Control image and application images |
 
 Run **on the manager**:
 
 ```bash
+luma bootstrap
+# Or specify the control domain directly (non-interactive friendly):
 luma bootstrap --domain luma.example.com
 ```
 
-The CLI prompts for missing values, provisions the runtime, initializes SQLite, and prints the dashboard URL, **management token**, and **node join token**. Keep both tokens private.
+Running `luma bootstrap` with no flags on an interactive terminal launches the guided setup wizard (walking through domain, DNS, egress, optional login, addons, and AI skills). Passing `--domain` configures the manager directly, prompts only for missing values, provisions the runtime, initializes SQLite, and prints the dashboard URL, **management token**, and **node join token**. Keep both tokens private.
 
 If the manager needs a proxy to pull the default GHCR image, configure `EGRESS_SUBSCRIPTION_URL` before bootstrap. This is especially relevant on mainland China hosts. Tailscale and a Builder Registry are not prerequisites for the first single-manager workload. See [getting started](docs/getting-started.md) for network and host setup.
 
@@ -158,7 +160,7 @@ The deployment path and the application traffic path are separate. Control submi
 | --- | --- | --- |
 | `region` | Where may this service run? | `cn`, `global`, `home`, or a custom region |
 | `node` | Must it run on a particular machine? | The name registered by `luma node join --name` |
-| `exposure` | How do clients reach it? | `cn-edge`, `external-edge`, `tailscale-relay`, `tcp-relay`, `cloudflare-tunnel`, `none` |
+| `exposure` | How do clients reach it? | `cn-edge`, `external-edge`, `node-edge`, `tailscale-relay`, `tcp-relay`, `cloudflare-tunnel`, `none` |
 | `proxy` | Does the container need runtime outbound proxying? | `true` attaches configured egress |
 
 For example, `region: home` with `exposure: tailscale-relay` places the workload on a home node and sends public traffic through an edge relay over Tailscale. `region: cn` with `exposure: none` runs an internal workload without public ingress.
@@ -171,10 +173,10 @@ A node pin still respects the region constraint. Runtime `proxy: true` and image
 | --- | --- | --- |
 | Published container image | `luma deploy app.yaml` | Deploys the image declared in the manifest |
 | Local source checkout | `luma build local . --platform linux/amd64` | Builds with local Docker/Buildx, uploads to the configured Builder Registry, then deploys |
-| GitHub or Gitea repository | `luma import <repository-url>` | Builds on a configured Builder and deploys the result |
+| GitHub or Gitea repository | `luma builder submit <repository-url>` | Builds on a joined Builder Runner (`luma addon install builder` + `luma runner join`) and deploys the result |
 | Multi-service Compose app | `luma compose deploy luma.compose.yml` | Deploys an existing Compose file with Luma placement and exposure configuration |
 
-**`luma deploy` does not build your source.** Choose the build/import workflow when you need a new image. Builder workflows require Builder and Registry setup; plain image deployment does not.
+**`luma deploy` does not build your source.** Choose local builds (`luma build local`) or the pluggable Luma Build addon (`luma addon install builder` + `luma runner join` + `luma builder submit`) when you need a new image. Builder workflows require the Builder addon, at least one runner, and Registry setup; plain image deployment does not.
 
 For public services, add a meaningful application health check and explicit memory limits. Rolling behavior depends on ports, volumes, and placement; a successful local validation alone does not prove runtime readiness. Field definitions and examples live in the [manifest reference](docs/deployment-yaml.md).
 

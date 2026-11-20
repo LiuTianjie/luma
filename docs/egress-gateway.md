@@ -18,26 +18,27 @@ luma manager egress
 
 Luma will:
 
-- download the subscription;
-- convert YAML or base64 subscription output into a minimal Mihomo config;
+- generate a minimal Mihomo config using native `proxy-providers` (polling `EGRESS_SUBSCRIPTION_URL` every `interval: 3600` seconds with `health-check` every `300` seconds) — or parse YAML/base64 subscriptions directly when static config is supplied;
+- configure `EGRESS-AUTO` (`url-test`, automatic lowest-latency selection) and `EGRESS` (`fallback`, automatically failing over across healthy nodes) proxy groups;
+- bind `external-controller` to `127.0.0.1:9090` authenticated with `LUMA_EGRESS_SECRET` (cryptographically generated if unset);
 - write `/opt/luma/egress-gateway/config.yaml` with mode `600`;
 - configure stable system DNS resolvers for registry/bootstrap reliability;
 - temporarily disable Docker daemon proxy for the first egress bootstrap;
-- deploy the core `egress-mihomo` Nomad job using Luma's built-in egress image;
+- deploy the core `egress-mihomo` Nomad job using the configured egress image;
 - mark the gateway host as `egress=true` (Nomad client meta) for the internal `egress_mihomo` service;
 - install Docker-aware public port guards for the egress proxy;
 - configure Docker daemon proxy to `127.0.0.1:7890`;
 - restart Docker.
 
-The default egress image is a domestic registry mirror tested for first bootstrap:
+By default, Luma uses the upstream `metacubex/mihomo:latest` image. On mainland China hosts or networks that require a private mirror, set `LUMA_DOCKER_MIRROR`, override `LUMA_EGRESS_IMAGE`, or configure `defaults.images.egressGateway` in `luma.yaml`:
 
 ```yaml
 defaults:
   images:
-    egressGateway: docker.1panel.live/metacubex/mihomo:latest
+    egressGateway: mirror.example.com/metacubex/mihomo:latest
 ```
 
-Most users do not need to configure an image. Advanced users can override `defaults.images.egressGateway` in `luma.yaml` when operating their own registry mirror.
+Most users on direct networks do not need to configure an image override.
 
 Refresh later:
 

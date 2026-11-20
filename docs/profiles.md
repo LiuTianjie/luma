@@ -20,11 +20,24 @@ luma bootstrap --domain luma.example.com --profile single-node
 
 ## `cn-edge`
 
-Domestic public edge:
+Domestic public edge (roles: `nomad-manager`, `edge`; labels: `region=cn`, `ingress=true`):
 
 - Docker
 - Nomad server
 - Traefik
+- Luma Control API (no egress gateway)
+
+## `egress-gateway`
+
+Outbound proxy gateway for image pulls and `proxy: true` services (roles: `egress`; labels: `egress=true`).
+
+## `home-node`
+
+Home/private node for internal tools, `tailscale-relay`, or `cloudflare-tunnel` services (roles: `home`; labels: `region=home`).
+
+## `global-worker`
+
+Overseas/external-network worker node (roles: `global-worker`; labels: `region=global`).
 
 ## Worker regions
 

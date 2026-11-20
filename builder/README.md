@@ -24,16 +24,19 @@ builder/
 ├── Dockerfile.runner       # Linux 即插即用 Runner 容器镜像 (内置 docker-cli + buildx + git)
 ├── docker-compose.yml      # 本地或 Compose 部署编排
 ├── luma.compose.yml        # Luma Compose 部署 sidecar
-├── luma.yml                # Luma 单服务部署 manifest 模板
 ├── .env.example            # Luma Scoped Secrets 环境变量配置模板
 ├── luma_build/
 │   ├── server.py           # Starlette ASGI API + Luma SSO + DeployWorker + /metrics
+│   ├── browser_auth.py     # Luma Control 浏览器 SSO 票据校验与会话 Cookie 管理
+│   ├── dashboard.py        # 内嵌 Web 控制台页面与交互逻辑
 │   ├── store.py            # SQLite WAL 状态机、Luma Scoped Env 凭据读取、分支 Supersede
 │   ├── scheduler.py        # 原生架构硬校验（禁 QEMU 慢模拟）、缓存亲和与权重选路
-│   ├── runner.py           # 跨平台 BuildKit 执行器（Linux 容器 / 宿主机 / macOS OrbStack）
+│   ├── runner.py           # 薄封装层，转发到 `luma.builder_runner` 跨平台 BuildKit 执行器
+│   ├── runner_http.py      # Runner 与服务端心跳、租约及日志上报 HTTP 封装
 │   ├── deployer.py         # Luma SSO 验签缓存 & 对接 Luma Control 标准公开部署 API
-│   ├── registry_naming.py  # 阿里云 ACR 两级命名空间自动扁平化 & HTTP/HTTPS 协议判定
+│   ├── registry_naming.py  # 两级命名空间（如阿里云 ACR）扁平化 & HTTP/HTTPS 协议判定
 │   ├── crypto.py           # 动态凭据与部署 .env 的 Fernet 加密
+│   ├── errors.py           # Builder 统一异常类型定义
 │   └── cli.py              # luma-build 命令行工具（自动读取 ~/.config/luma 登录态）
 └── tests/                  # 独立单元测试套件
 ```
@@ -44,24 +47,32 @@ builder/
 
 ### 1. 用 Luma 原生凭据体系配置并部署 `luma-build`
 
-复制 `builder/.env.example` 为 `builder/.env`，填入阿里云 ACR Push 读写账密与 Git Token，部署时 Luma 会自动将它们存为 **`luma-build` 专属的 Scoped Secrets**：
+可以通过 `luma addon install builder` 直接安装预构建的 GHCR 镜像，或从源码自定义构建。复制 `builder/.env.example` 为 `builder/.env`，填入 OCI Registry（如 `ghcr.io`、`registry.example.com` 或阿里云 ACR）的 Push 读写账密与 Git Token，部署时 Luma 会自动将它们存为 **`luma-build` 专属的 Scoped Secrets**：
 
 ```bash
-# 1) 在 Luma Control 保存阿里云 ACR 的【只读 Pull 子账号】（供集群运行节点拉镜像）
-printf '%s' "$ACR_PULL_PASSWORD" | luma registry login \
-  crpi-xxxxxxxx.cn-beijing.personal.cr.aliyuncs.com \
-  --username "$ACR_PULL_USERNAME" --password-stdin
+# 1) 在 Luma Control 保存 OCI Registry 的【只读 Pull 凭据】（供集群运行节点拉镜像）
+# 通用 OCI Registry（如 ghcr.io / registry.example.com）：
+printf '%s' "$REGISTRY_PULL_PASSWORD" | luma registry login \
+  registry.example.com \
+  --username "$REGISTRY_PULL_USERNAME" --password-stdin
 
-# 2) 本地构建并部署 luma-build 服务（同 observe/ 部署方式；ACR Push 密码与 Git Token 自动存为 scoped secrets）
-luma build local builder --platform linux/amd64 --env builder/.env
+# 若使用阿里云 ACR，将 registry 地址替换为你的实例域名，例如：
+# crpi-xxxxxxxx.cn-beijing.personal.cr.aliyuncs.com
+
+# 2) 安装预构建 Addon（推荐）或本地源码构建并部署 luma-build 服务
+luma addon install builder
+# 或本地源码构建并注入 scoped secrets：
+# luma build local builder --platform linux/amd64 --env builder/.env
 
 # 后续若需单独轮换某个密钥，直接用标准 luma secret 命令即可：
-# luma secret set GITEA_TOKEN "new-token" --scope luma-build && luma app restart luma-build
+# printf '%s' "$NEW_GITEA_TOKEN" | luma secret set GITEA_TOKEN --scope luma-build --value-stdin && luma app restart luma-build
+# 或使用 --value：
+# luma secret set GITEA_TOKEN --scope luma-build --value "$NEW_GITEA_TOKEN" && luma app restart luma-build
 ```
 
 ### 2. 本地绑定一次地址（直接使用 `luma builder`，自动复用 `luma login` 身份）
 
-直接打开浏览器访问 `https://build.example.com` 即可进入内置的 **Luma 同风格 Web 控制台**（查看构建时间线、实时流式日志、网页提交构建与管理 Runner）；命令行同样已内置进 `luma builder`：
+直接打开浏览器访问 `https://build.example.com` 即可进入内置的 **Luma 同风格 Web 控制台**（查看构建时间线、实时流式日志、网页提交构建与管理 Runner）；命令行同样已内置进 `luma builder`，并会自动从当前 `luma login` 的 Control 上下文发现已部署的 Builder 地址（如需覆盖可运行 `luma builder use`）：
 
 ```bash
 luma builder use https://build.example.com
@@ -71,8 +82,8 @@ luma builder status
 ### 3. 在任意机器接入 Runner（即插即用）
 
 ```bash
-luma builder token create bd-runner --weight 200 --cache-mode read-write
-luma builder token create m4 --weight 100 --cache-mode read-only
+luma builder token create x86-builder --weight 200 --cache-mode read-write
+luma builder token create arm64-builder --weight 100 --cache-mode read-only
 ```
 
 - **Linux 机器（容器方式一行启动）**：
@@ -116,13 +127,3 @@ PYTHONPATH=builder .venv/bin/python -m unittest discover -s builder/tests -p 'te
 ## 独立发版
 
 使用 `python scripts/bump-builder-version.py` 更新 builder 版本，提交后推送 `builder-v0.2.76` tag。`Publish Builder` CI 发布 GitHub Release 包制品和 `ghcr.io/liutianjie/luma-build-server:v0.2.76`、`ghcr.io/liutianjie/luma-build-runner:v0.2.76`，不自动部署。先升级 Luma/Control，再由操作员部署 builder；详见[发版指南](../docs/maintainers/release.zh-CN.md#independent-builder-release)。
-
-## 本集群维护入口
-
-`bash builder/deploy.sh` 使用本机 `luma.local.compose.yml` 和 Control 的全局 ACR 配置。
-本地 sidecar 定义实际域名；示例 `build.example.com` 不作为本集群默认入口。
-首次显式修改 scoped secrets 时传 `--env builder/.env`，日常发布复用已有作用域。
-Registry host/namespace 不固定在脚本中。运行镜像迁移和实际服务升级须在发布时执行；
-仅提交脚本不会升级 Builder、Control 或 Runner。
-
-CLI 0.2.81 起，脚本省略 Registry 参数时，工作流校验会读取 Control 的实际默认值，与已记录的显式 ACR 地址/命名空间比较，并固定本次上传目标。默认值相同不再误报为 `None`；真正改变地址或命名空间仍需确认。

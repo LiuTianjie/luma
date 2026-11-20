@@ -225,7 +225,7 @@ Dashboard application details can open a shell inside a running service containe
 - the terminal supervisor is disconnected, same as a node terminal failure;
 - the image is distroless / scratch and has no `bash`/`ash`/`sh`.
 
-This path never execs into system stacks (`traefik`, `egress`, `luma-control`, `luma-storage*`).
+This path never execs into system stacks (`traefik`, `egress`, `luma-control`).
 
 ## Nomad client is disconnected but containers still run
 
@@ -317,8 +317,8 @@ Confirm the manifest's `region` and `exposure` actually produce an edge route (o
 
 ## macOS node join fails at Docker
 
-macOS workers and home nodes must have Docker Desktop installed and running before `luma node join`.
-Luma cannot install Docker Desktop automatically.
+macOS workers and home nodes must have OrbStack or Docker Desktop installed and running before `luma node join`.
+Luma cannot install OrbStack or Docker Desktop automatically.
 
 Verify locally before joining:
 
@@ -327,7 +327,7 @@ command -v docker
 docker info
 ```
 
-If Docker Desktop is missing or still starting, `luma node join` stops before registering the node with Luma Control. Start Docker Desktop, wait until `docker info` succeeds, then rerun the same join command.
+If OrbStack / Docker Desktop is missing or still starting, `luma node join` stops before registering the node with Luma Control. Start OrbStack or Docker Desktop, wait until `docker info` succeeds, then rerun the same join command.
 
 ## Cloudflare DNS fails
 

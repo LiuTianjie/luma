@@ -6,7 +6,7 @@ Control’s **Create application → Git repository** form submits to this same 
 
 ## Join and start
 
-On an operator machine, bind the build service and create a token using the existing Luma login:
+On an operator machine signed in to Luma Control (`luma login`), `luma builder` auto-discovers the deployed Builder URL (run `luma builder use https://build.example.com` only if you want to override it or target a standalone Builder), then create a runner token:
 
 ```bash
 luma builder use https://build.example.com
@@ -34,6 +34,13 @@ On macOS, start OrbStack or Docker Desktop first. Missing Git/Buildx are install
 Join bootstraps the actual persistent BuildKit instance and performs a cache-only `FROM scratch` preflight with `# syntax=docker/dockerfile:1`. This prepares the BuildKit image and Dockerfile frontend before reporting success. It does not build or publish an application image. The foreground runner repeats the tool and BuildKit preflight before it can lease tasks. A failed preflight preserves existing runner service configuration; node enrollment rolls back if BuildKit preparation fails.
 
 Docker has two separate network paths: the Docker daemon pulls the BuildKit container image, while BuildKit resolves the Dockerfile frontend and base images itself. A daemon proxy does not configure BuildKit. On restricted networks, use a reachable HTTP proxy with `luma runner join --proxy http://proxy-host:7890`; existing token/options are reused. Wait for active work to finish before rejoining. Node join uses the region's returned egress proxy for BuildKit. Configure daemon image-pull access separately if bootstrapping the BuildKit container fails; join surfaces that failure immediately. Application-specific images and dependencies are still resolved when their builds run.
+
+BuildKit also supports opt-in `docker.io` registry mirrors without any hardcoded third-party mirror defaults:
+
+- Set `LUMA_RUNNER_DOCKER_MIRRORS` (comma-separated mirror hosts or URLs, for example `LUMA_RUNNER_DOCKER_MIRRORS="mirror.example.com"`) in the runner environment or before `luma runner join`;
+- Or configure `registry-mirrors` in the host's `/etc/docker/daemon.json` — the runner automatically reads those mirrors when rendering `buildkitd.toml` (`[registry."docker.io"]`).
+
+Every configured mirror host is automatically appended to BuildKit's `NO_PROXY` list so mirror pulls connect directly even when a runner HTTP proxy is configured.
 
 ## Daily commands
 

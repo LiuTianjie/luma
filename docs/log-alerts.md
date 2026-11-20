@@ -148,6 +148,8 @@ A different unmuted source bypasses another source's repeat interval. Expiry or
 early removal resumes notifications on the next fresh evaluation. Matchers survive
 recovery and recurrence within the same scope; changing rule conditions clears them.
 
+### Feishu card actions {#feishu-source-actions}
+
 Enable card actions in Notifications → Edit channel and save the Feishu app's
 Verification Token and Encrypt Key. Credentials are never returned by the API;
 channels using the same App ID share callback settings. In Feishu's developer

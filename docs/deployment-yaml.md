@@ -1,10 +1,10 @@
 # Luma Deployment YAML
 
-Luma 的部署文件不是 Docker Compose。它是一个更小的 service manifest，用户只描述服务入口、镜像、区域和少量运行参数。`luma deploy` 会把它提交给控制面，控制面再渲染成 Nomad jobspec、同步 DNS、配置 Traefik 路由，并通过 Nomad HTTP API 部署。
+A Luma deployment manifest is not Docker Compose. It is a smaller service manifest where you describe the service entrypoint, image, region, and a small set of runtime parameters. `luma deploy` submits it to the control plane, which renders a Nomad jobspec, syncs DNS, configures Traefik routes, and deploys through the Nomad HTTP API.
 
-## 最小公开服务
+## Minimal public service
 
-国内公开服务通常写成这样：
+A public service in the `cn` region typically looks like this:
 
 ```yaml
 name: status
@@ -16,62 +16,62 @@ port: 80
 replicas: 1
 ```
 
-部署：
+Deploy it:
 
 ```bash
 luma deploy status.yaml
 ```
 
-结果：
+Result:
 
-- Cloudflare 写入 `status.example.com` 记录；
-- Traefik 为 `Host(status.example.com)` 创建 HTTPS 路由；
-- Nomad 部署 `status` job；
-- 请求转发到容器内 `port: 80`。
+- DNS writes the `status.example.com` record (Cloudflare, Alibaba Cloud DNS, or DNSPod);
+- Traefik creates an HTTPS route for `Host(status.example.com)`;
+- Nomad deploys the `status` job;
+- requests forward to container `port: 80`.
 
-## 字段参考
+## Field reference
 
-| 字段 | 必填 | 类型 | 说明 |
+| Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `name` | 是 | string | 服务名。Luma 会转成 slug，用作 Nomad job/group/task 名称。 |
-| `image` | 是* | string | 容器镜像，例如 `ghcr.io/acme/api:1.0.0`。`latest` 或未带 tag 会在部署时解析成 `name@sha256:...` 再部署。*提供 `build` 块时可省略，镜像由构建产出。 |
-| `build` | 否 | map | 从源码构建镜像（`luma import`）。子字段：`context`（默认 `.`）、`dockerfile`（默认 `Dockerfile`）、`platform`（默认 `linux/amd64`）。提供 `build` 时 `image` 可省略。见下方「从 Git 仓库构建部署」。 |
-| `region` | 是 | `cn` / `global` / `home` 或已创建的自定义 Region | 服务运行区域。自定义 Region 需先 `luma region create`。 |
-| `engine` | 否 | `nomad` | 该服务的编排后端。当前集群默认是 Nomad，通常不需要填。 |
-| `node` | 否 | string | 指定 Luma 节点名，也就是 `luma node join --name` 的值。用于把服务钉到某台机器；控制面会渲染成 Nomad 的 `${node.unique.name}`（或 `meta.luma_node_name`）约束，仍会同时加 region 约束。 |
-| `exposure` | 否 | 见下方 | 访问方式。新文件必须显式表达公开、隧道或内部访问语义。 |
-| `domain` | 公开服务必填 | string | 用户访问的域名。 |
-| `port` | 公开服务必填 | integer | 容器内部监听端口，不是云服务器安全组端口。 |
-| `replicas` | 否 | integer | 副本数，渲染成 Nomad group `count`，默认 `1`，必须大于等于 `1`。 |
-| `env` / `environment` | 否 | map | 环境变量，会写进 Nomad task 的 `env`。 |
-| `command` | 否 | string/list | 覆盖容器启动命令。 |
-| `constraints` | 否 | string[] | 追加 Nomad placement 约束。Luma 会自动加 region 约束。 |
-| `labels` | 否 | string[] | 追加服务标签。公开 Traefik 路由所需的 service tags 会自动生成。 |
-| `networks` | 否 | string[] | 追加网络声明。公开服务的入口由 Traefik Nomad provider 自动发现。 |
-| `proxy` | 否 | boolean | 服务运行时是否需要走 egress proxy。为 `true` 时会自动挂上 egress 代理和代理环境变量。调度仍按 `region`。不是镜像拉取代理。 |
-| `resources` | 否 | map | 渲染到 Nomad task 的 `resources` 块，CPU 使用 `reservations.cpus` 弹性共享，不执行 `limits.cpus`。内存 reservation 映射到 `memory`、limit 映射到 `memory_max`；首次部署这类任务时会自动启用 Nomad 内存超卖，确保 limit 真正成为容器硬上限。 |
-| `healthcheck` | 否 | map | 单服务 `cn-edge` / `external-edge` 渲染成 Nomad HTTP 或 TCP 检查；可提取的 HTTP URL 提供路径，否则回退到 TCP，不会在容器中执行任意 shell 命令。其他暴露模式应检查实际生成的 `Checks`。 |
-| `requirements` | 否 | map | 组件依赖契约。支持 `capabilities`（`cloudflare` / `tailscale` / `egress` / `registry`）、`secrets`、`init` 和 `notes`。`init` 支持 `cloudflare-dns`、`cloudflare-tunnel`、`tailscale-node`、`egress`、`registry`、`secrets`。部署预览会合并显式声明与运行时推导，并在必需项缺失时阻止提交；正式部署会先执行并记录初始化计划。 |
-| `publishPort` | 公开服务可用 | integer | 显式启用 Nomad bridge 端口映射，把宿主机 `publishPort` 转到容器 `port`。原生 Mac/OrbStack 单服务仍需省略此项；Mac Compose 支持 Docker 管理的端口映射，见[自定义 Region 公网入口](region-public-ingress.md#mac-compose-networking)。 |
-| `relay` | tailscale-relay 可选 | map | 覆盖 Tailscale relay 上游。默认由 `node` 指定的节点及其 Tailscale 地址推导；Compose 可继承同组服务或本地卷的节点约束。 |
-| `tcp` | tcp-relay 可选 | map | TCP relay 高级上游覆盖。正常情况不需要填写；入口由 `publishPort` / `port` 自动派生。 |
-| `tunnel` | cloudflare-tunnel 可用 | map | Cloudflare Tunnel token env 等设置。 |
-| `dns.servers` | 否 | IP 或 IP 数组 | 容器使用的 DNS 解析服务器；省略时继承原有默认设置。 |
-| `cdn` | 否 | string 或 map | 开启阿里云 ESA：`cdn: esa`，或写 `provider`、`scope`（`global` / `domestic` / `overseas`）、`purge`（部署后刷新的路径；省略时刷新整个主机名，`[]` 不刷新）、`cache`（对所有访客都一样的路径及缓存秒数）。仅支持 `cn-edge`、`external-edge`、`tailscale-relay`。见 [CDN](cdn.md)。 |
-| `redirectFrom` | 否 | 主机名数组或 map | 这些主机名的 GET/HEAD 请求 301 跳转到 `domain`（保留路径和查询参数），其他方法直接转发给服务，回调不丢。写成 `{hosts: [...], except: ["/api/*"]}` 时，`except` 里的路径在旧主机上对所有方法都不跳转，适合带 `Authorization` 头调用的 API。DNS 始终是直连 edge 的 A 记录，不进 CDN。仅支持 `cn-edge`、`external-edge`、`tailscale-relay`。 |
-| `stackPath` | 否 | string | 覆盖生成 jobspec 路径。通常不用。 |
-| `routePath` | 否 | string | 覆盖 tailscale route 文件路径。通常不用。 |
+| `name` | Yes | string | Service name. Luma converts it to a slug used for the Nomad job/group/task names. |
+| `image` | Yes* | string | Container image, such as `ghcr.io/acme/api:1.0.0`. `latest` or untagged references are resolved to `name@sha256:...` at deploy time. *May be omitted when a `build` block is provided and the image is produced by a build. |
+| `build` | No | map | Build the image from source (`luma builder submit` / `luma build local`). Sub-fields: `context` (default `.`), `dockerfile` (default `Dockerfile`), `platform` (default `linux/amd64`), `target` (optional Dockerfile stage). When `build` is set, `image` may be omitted. See "Building and deploying from a Git provider" below. |
+| `region` | Yes | `cn` / `global` / `home` or a created custom region | Region where the service runs. Custom regions must first be created with `luma region create`. |
+| `engine` | No | `nomad` | Orchestration backend for this service. Defaults to Nomad and usually does not need to be set. |
+| `node` | No | string | Pin the service to a Luma node name (the value passed to `luma node join --name`). Control renders a Nomad `${node.unique.name}` (or `meta.luma_node_name`) constraint while still preserving the `region` constraint. |
+| `exposure` | No | see below | Ingress mode. New manifests must explicitly declare public, tunnel, or internal access semantics. |
+| `domain` | Required for public services | string | Public domain name used by clients. |
+| `port` | Required for public services | integer | Internal listening port inside the container, not the cloud firewall port. |
+| `replicas` | No | integer | Replica count, rendered to Nomad group `count`. Defaults to `1`; must be `>= 1`. |
+| `env` / `environment` | No | map | Environment variables written to the Nomad task `env` block. |
+| `command` | No | string/list | Override the container startup command. |
+| `constraints` | No | string[] | Additional Nomad placement constraints. Luma adds the `region` constraint automatically. |
+| `labels` | No | string[] | Additional service tags/labels. Traefik routing tags for public services are generated automatically. |
+| `networks` | No | string[] | Additional network declarations. Public ingress is discovered automatically by the Traefik Nomad provider. |
+| `proxy` | No | boolean | Whether the running container routes outbound traffic through the Luma egress proxy. Setting `true` attaches egress proxy settings and proxy env vars; placement still follows `region`. This is separate from image-pull proxying. |
+| `resources` | No | map | Rendered into the Nomad task `resources` block. CPU uses elastic `reservations.cpus` sharing (`limits.cpus` is not enforced). Memory reservation maps to `memory` and limit maps to `memory_max`; Nomad memory oversubscription is enabled automatically on first deploy so `limit` acts as the hard container ceiling. |
+| `healthcheck` | No | map | For single-service `cn-edge` / `external-edge` / `node-edge`, rendered into a Nomad HTTP or TCP check; extractable HTTP URLs supply the path, otherwise falls back to TCP (arbitrary shell commands are not executed in the container). For other modes, inspect the rendered `Checks`. |
+| `requirements` | No | map | Component dependency contract supporting `capabilities` (`cloudflare` / `tailscale` / `egress` / `registry`), `secrets`, `init`, and `notes`. `init` supports `cloudflare-dns`, `cloudflare-tunnel`, `tailscale-node`, `egress`, `registry`, and `secrets`. Preview merges explicit declarations with inferred requirements and blocks submission when required items are missing; deployment executes and records the init plan first. |
+| `publishPort` | Optional for public services | integer | Explicitly enable Nomad bridge port mapping from host `publishPort` to container `port`. Native Mac/OrbStack single-service deploys still omit this; Mac Compose supports Docker-managed port mappings, see [Custom-region public ingress](region-public-ingress.md#mac-compose-networking). |
+| `relay` | Optional for `tailscale-relay` | map | Override the Tailscale relay upstream. Derived by default from the node pinned via `node` and its Tailscale address; Compose can inherit a sibling service or local volume node constraint. |
+| `tcp` | Optional for `tcp-relay` | map | Advanced upstream override for TCP relay. Normally omitted; the entrypoint is derived automatically from `publishPort` / `port`. |
+| `tunnel` | Optional for `cloudflare-tunnel` | map | Cloudflare Tunnel settings such as `tokenEnv`. |
+| `dns.servers` | No | IP or IP list | Container DNS resolver servers; inherits the default behavior when omitted. |
+| `cdn` | No | string or map | Enable Alibaba Cloud ESA: `cdn: esa`, or configure `provider`, `scope` (`global` / `domestic` / `overseas`), `purge` (paths refreshed after deploy; defaults to the full hostname, `[]` disables purge), and `cache` (shared cache paths and TTL seconds). Supported for `cn-edge`, `external-edge`, and `tailscale-relay`. See [CDN](cdn.md). |
+| `redirectFrom` | No | hostname list or map | Redirect `GET`/`HEAD` requests on these hostnames with HTTP 301 to `domain` (preserving path and query string), while forwarding other methods directly so callbacks are not lost. With `{hosts: [...], except: ["/api/*"]}`, matching paths never redirect on any method (useful for APIs sending `Authorization` headers). DNS always points directly to the edge with an A record, bypassing CDN. Supported for `cn-edge`, `external-edge`, and `tailscale-relay`. |
+| `stackPath` | No | string | Override the generated jobspec path. Rarely needed. |
+| `routePath` | No | string | Override the Tailscale route file path. Rarely needed. |
 
-## 容器 DNS {#container-dns}
+## Container DNS {#container-dns}
 
-单服务 manifest 使用 `dns.servers`：
+Single-service manifests use `dns.servers`:
 
 ```yaml
 dns:
   servers: [100.100.2.136, 100.100.2.138]
 ```
 
-Compose 使用标准 `docker-compose.yml` 中的服务字段，不能放在 Luma sidecar：
+Compose uses the standard service field in `docker-compose.yml`, not the Luma sidecar:
 
 ```yaml
 services:
@@ -80,46 +80,48 @@ services:
     dns: [100.100.2.136, 100.100.2.138]
 ```
 
-支持 IPv4、IPv6 和单个 IP 字符串。仅设置容器的运行时解析器，不修改宿主机、Control、镜像拉取或出口代理的 DNS。阿里云 SLS 私网端点需使用云上内网 DNS；其他云或本地节点应配置其实际可达的解析服务器。
+IPv4, IPv6, and a single IP string are supported. This configures only the container's runtime resolver and does not alter DNS for the host, Control, image pulls, or the egress proxy. Private cloud endpoints (such as Alibaba Cloud SLS private endpoints) require the cloud's internal DNS; other clouds or home nodes should specify resolvers reachable from those nodes.
 
-独立 worker 和 host 网络下的服务使用 Docker `dns_servers`；Linux CNI bridge 使用 Nomad 网络层的 `DNS.Servers`；Mac Compose 将配置传给共享网络的容器。共享网络内所有服务必须显式声明相同的 `dns`，否则拒绝部署，避免一个服务的设置改变其他服务的解析行为。
+Standalone workers and host-networked services use Docker `dns_servers`; Linux CNI bridge networking uses Nomad's network-level `DNS.Servers`; Mac Compose passes the setting to the shared-network container. All services sharing a network must declare the exact same `dns` setting, or deployment is rejected so one service cannot silently change another service's resolver.
 
-CLI 和 Control 都需升级到支持 `container-dns-v1` 的版本。修改 Git 中的配置后必须先部署一次，升级 Control 或直接重启旧任务不会读取新的 Git 配置。部署成功后，后续容器重建沿用已提交的 DNS 设置。
+Both CLI and Control must run a version supporting `container-dns-v1`. After editing the configuration in Git, run a deployment—upgrading Control or restarting an existing task does not reload Git changes. Once deployed, subsequent container recreations retain the submitted DNS settings.
 
-## 更新策略
+## Update strategy
 
-Luma 渲染 Nomad `update` 策略时默认启用 `auto_revert`、`max_parallel = 1` 和健康窗口，失败发布会自动回滚到上一版。多副本服务按 Nomad rolling update 逐个替换。
+Luma renders Nomad `update` blocks with `auto_revert`, `max_parallel = 1`, and a health window enabled by default, so failed rollouts revert automatically to the previous version. Multi-replica services replace instances one at a time via Nomad rolling updates.
 
-单副本的 `cn-edge` / `external-edge` 服务如果使用动态端口（未设置 `publishPort`），Luma 会渲染 Nomad canary + auto-promote：先启动一个新 allocation，等它健康后再提升为正式版本并停掉旧 allocation。建议公开 HTTP 服务都配置 `healthcheck`，这样 Nomad 会等 service check 稳定；没有 `healthcheck` 时只能按 task running 判断健康。
+For single-replica `cn-edge` / `external-edge` / `node-edge` services using dynamic ports (no `publishPort`), Luma renders Nomad canary + auto-promote: a new allocation starts first, becomes healthy, and only then promotes and stops the old allocation. Configure `healthcheck` on public HTTP services so Nomad waits for service checks to stabilize; without `healthcheck`, health is judged only by the task running state.
 
-显式 `publishPort`、`tailscale-relay` 默认 host network、`tcp-relay`、内部服务和有本地状态的服务不会默认启用 canary，因为新旧 allocation 同时存在可能撞宿主机端口或本地数据。它们仍然使用 `auto_revert` 和 `max_parallel = 1`，但无法保证单副本完全无中断。
+Explicit `publishPort`, host-networked `tailscale-relay`, `tcp-relay`, internal services, and services with local persistent state skip canary by default because running old and new allocations simultaneously could collide on host ports or local data. They still use `auto_revert` and `max_parallel = 1`, though single-replica rollouts are not guaranteed zero-downtime.
 
-Compose 部署也渲染同样的 Nomad `update` 基线策略。多副本单服务使用逐个滚动更新，不额外启动 canary；副本配置与限制见 [Compose 副本数](compose-storage.md#replicas)。单副本时，对没有 `publishPort` 的 `cn-edge` / `external-edge` compose 服务，Luma 使用 Nomad dynamic port，并在整组没有固定宿主机端口、`tailscale-relay` / `tcp-relay`、持久卷时启用 canary + auto-promote：先起新 compose allocation，健康后再切换。只要 compose 里任一服务需要固定宿主机端口或声明持久卷，就跳过 canary，避免新旧整组同时存在导致端口冲突或状态数据风险。
+Compose deployments use the same Nomad `update` baseline. Multi-replica single-service Compose stacks roll one instance at a time without an extra canary; see [Compose replicas](compose-storage.md#replicas) for details and limits. For single-replica `cn-edge` / `external-edge` / `node-edge` Compose services without `publishPort`, Luma uses Nomad dynamic ports and enables canary + auto-promote when the task group has no fixed host ports, `tailscale-relay` / `tcp-relay`, or persistent volumes. If any service in the Compose stack needs a fixed host port or persistent volume, canary is skipped to prevent port conflicts or state corruption.
 
-## exposure 选择
+## Choosing an exposure
 
-| exposure | region | 是否需要 domain/port | 适合场景 |
+| exposure | region | Requires domain/port | Best for |
 | --- | --- | --- | --- |
-| `cn-edge` | `cn` | 是 | 国内公开 Web/API，走国内 Traefik 和备案域名。 |
-| `external-edge` | `global` | 是 | 海外公开服务，例如外网 API 网关、低频海外工具。 |
-| `tailscale-relay` | `home` 或已开启此能力的自定义 Region | 是 | 通过现有 Traefik + Tailscale 暴露私网节点服务。 |
-| `tcp-relay` | 已允许此入口的 Region | 是 | 数据库等原生 TCP 服务，公网端口独占，走 Traefik TCP -> task host port。 |
-| `cloudflare-tunnel` | 通常 `home` | 是 | 家里/私有服务通过 Cloudflare Tunnel 暴露。 |
-| `none` | 任意已注册 Region | 否 | 内部任务、worker、队列消费者，不直接公开。 |
+| `cn-edge` | `cn` | Yes | Domestic public web/API traffic routed through the Manager's `cn` Traefik edge. |
+| `external-edge` | `global` | Yes | Overseas public services such as external API gateways or tools. |
+| `node-edge` | Any region with a public ingress node | Yes | Direct public ingress on a standalone public node (`luma node ingress enable <node> --public-ip <ip>`), bypassing Manager bandwidth and forwarding. |
+| `tailscale-relay` | `home` or a custom region with relay enabled | Yes | Exposing services on private/home nodes through edge Traefik over Tailscale. |
+| `tcp-relay` | Region with TCP relay enabled | Yes | Raw TCP services such as databases, using a dedicated public port through Traefik TCP -> task host port. |
+| `cloudflare-tunnel` | Typically `home` | Yes | Exposing home/private services through Cloudflare Tunnel. |
+| `none` | Any registered region | No | Internal jobs, workers, and queue consumers with no public ingress. |
 
-规则：
+Rules:
 
-- `exposure: cn-edge` 必须配 `region: cn`。
-- `exposure: external-edge` 必须配 `region: global`。
-- `cn-edge` / `external-edge` 默认使用 Nomad 动态端口；如果要保留固定宿主端口，可显式设置 `publishPort`。
-- `exposure: tailscale-relay` 可用于 `home`，也可用于执行过 `luma region update render --exposure tailscale-relay` 的自定义 Region。未提供 `relay.host`/`relay.url` 时需要节点约束；Compose 可继承同组节点。离线校验只检查语法，Control 按实时 Region 能力校验。
-- `exposure: tcp-relay` 的 Traefik TCP entrypoint 由 `publishPort` 或 `port` 自动生成。普通 MySQL 不能可靠使用 SNI 分流，因此当前实现按端口独占转发。
-- 公开服务必须提供 `domain` 和整数 `port`。
-- `public` 已移除；请使用 `exposure`。
+- `exposure: cn-edge` requires `region: cn`.
+- `exposure: external-edge` requires `region: global`.
+- `exposure: node-edge` requires pinning or targeting a node that has node-edge ingress enabled (`luma node ingress enable`). Traffic goes directly `DNS -> node public IP -> node Traefik -> container`.
+- `cn-edge` / `external-edge` / `node-edge` use Nomad dynamic ports by default; set `publishPort` explicitly only if you need a fixed host port.
+- `exposure: tailscale-relay` works on `home` and on custom regions enabled with `luma region update <name> --exposure tailscale-relay`. When `relay.host` / `relay.url` is omitted, a node constraint is required (Compose can inherit a sibling's node). Offline validation checks syntax only; Control validates against live region capabilities.
+- `exposure: tcp-relay` automatically creates a Traefik TCP entrypoint from `publishPort` or `port`. Plain MySQL connections cannot rely on SNI routing, so each published port is exclusive to one TCP service.
+- Public services must provide `domain` and an integer `port`.
+- The legacy `public` field has been removed; use `exposure`.
 
-## 常用模板
+## Common templates
 
-### 国内公开 API {#api}
+### Domestic public API {#api}
 
 ```yaml
 name: api
@@ -134,9 +136,9 @@ env:
   DATABASE_URL: ${DATABASE_URL}
 ```
 
-## 环境变量和 Secret
+## Environment variables and secrets
 
-普通非敏感配置可以直接写在 manifest 里：
+Non-sensitive configuration can be written directly in the manifest:
 
 ```yaml
 env:
@@ -144,7 +146,7 @@ env:
   LOG_LEVEL: info
 ```
 
-敏感值不要写明文。可以手动把 secret 存到控制面：
+Do not put sensitive values in plaintext. Store secrets in Control instead:
 
 ```bash
 luma secret set DATABASE_URL --scope api
@@ -152,21 +154,21 @@ luma secret set OPENAI_API_KEY --scope api
 luma secret list
 ```
 
-如果项目已经有 `.env` 文件，推荐直接在部署时提供它：
+If your project already has a `.env` file, pass it at deploy time:
 
 ```bash
 luma deploy service.yaml --env .env
 ```
 
-Compose 部署同理：
+The same works for Compose:
 
 ```bash
 luma compose deploy luma.compose.yml --env .env
 ```
 
-`--env` 会按当前应用名隔离保存 secret。比如 `name: api` 的服务会把 `.env` 中实际被 manifest 引用的 `DATABASE_URL` 保存为 `api/DATABASE_URL` 这个作用域内的值；另一个 `name: worker` 的服务即使也有 `DATABASE_URL`，也不会互相覆盖。`.env` 里没有被 YAML 引用的变量不会上传。
+`--env` saves secrets isolated under the application name. For example, a service named `api` stores the referenced `DATABASE_URL` under `api/DATABASE_URL`; another service named `worker` with its own `DATABASE_URL` will not overwrite it. Variables in `.env` that are not referenced by the manifest are not uploaded.
 
-然后在 YAML 里引用：
+Reference them in YAML with `${VAR}`:
 
 ```yaml
 env:
@@ -174,34 +176,34 @@ env:
   OPENAI_API_KEY: ${OPENAI_API_KEY}
 ```
 
-部署时，客户端只提交 manifest。Luma Control 会从控制面 secret store 读取这些变量，并写入 Nomad task 的 `env`。`luma secret list` 只显示 key，不显示 value。
+At deploy time, the client submits only the manifest. Luma Control loads the referenced values from its secret store and writes them into the Nomad task `env`. `luma secret list` prints keys only, never values.
 
-如果缺少引用的变量，部署会失败并提示：
+If a referenced variable is missing, deployment fails with:
 
 ```text
 missing deployment secrets: DATABASE_URL. Run: luma secret set <NAME>
 ```
 
-## 私有镜像仓库
+## Private container registries
 
-镜像拉取凭证不要写进 manifest，也不要作为容器环境变量传给业务服务。先在控制面保存 registry credential：
+Never put registry pull credentials in a manifest or pass them as application environment variables. Store them in Control instead:
 
 ```bash
 luma registry login ghcr.io --username <user> --password-stdin
 luma registry list
 ```
 
-然后 manifest 仍然只写镜像：
+Then keep only the image reference in the manifest:
 
 ```yaml
 image: ghcr.io/acme/private-api:1.0.0
 ```
 
-已配置 Builder Registry 时，Luma 将匹配外部 image 的源仓库凭据租给 Builder，由 Builder 复制镜像并返回已验证的内部镜像 digest。最终 Nomad job 使用内部镜像引用；只有内部仓库需要认证时，才把对应凭据写入 docker `config.auth`，不会把外部源仓库凭据交给运行节点。`luma registry list` 只显示 registry host 和 username，不显示 password/token。
+When a Builder Registry is configured, Luma leases matching source-registry credentials to the builder, which copies the image and returns the verified internal image digest. The resulting Nomad job references the internal image; only if the internal registry itself requires authentication are its credentials written to Docker `config.auth`, so external source credentials are never distributed to runtime nodes. `luma registry list` displays only registry host and username, never passwords or tokens.
 
-## Compose 组件依赖
+## Compose component requirements
 
-Compose sidecar 的 `services.<name>` 可以声明与单服务相同的 `requirements` 契约：
+Each `services.<name>` entry in a Compose sidecar can declare the same `requirements` contract as a single-service manifest:
 
 ```yaml
 services:
@@ -214,34 +216,34 @@ services:
       init: [cloudflare-dns]
 ```
 
-Control 会在 Compose 预览和部署前逐服务检查这些依赖。未知 capability 或初始化动作会在解析阶段直接报错，不会被静默忽略。
+Control checks these requirements per service before Compose preview and deployment. Unknown capabilities or init actions fail during parsing rather than being ignored silently.
 
-常见 GitHub 场景：GitHub Actions 把应用镜像推到私有 GHCR，同一个仓库还可以用 GitHub Pages 发布文档或营销页。在上述 Builder Registry 链路中，GHCR 凭据供 Builder 复制源镜像，运行节点拉取内部镜像，不需要把 GitHub token 写进 manifest，也不影响 GitHub Pages 的静态站点发布。
+Common GitHub pattern: GitHub Actions pushes application images to private GHCR while the same repository publishes documentation or marketing pages via GitHub Pages. With a Builder Registry configured, GHCR credentials are used only for image copying and runtime nodes pull from the internal registry—no GitHub token is needed in the manifest, and GitHub Pages publishing is unaffected.
 
-镜像获取和服务运行时 `proxy: true` 是两条路径。`proxy: true` 只给容器里的出站 HTTP/HTTPS 请求注入代理。配置 Builder Registry 后，外部源镜像访问、进程级代理及 Docker Hub 风格镜像的 `defaults.imageMirrors` 回退由 Builder 负责；不会因为源仓库拉取失败就改运行节点的 Docker egress proxy。设置 `defaults.imageMirrors: []` 可以禁用镜像源回退。
+Image fetching and runtime `proxy: true` are separate paths. `proxy: true` injects proxy variables only for outbound HTTP/HTTPS requests made by the running container. When a Builder Registry is configured, external source image access, process-level proxy handling, and `defaults.imageMirrors` fallback for Docker Hub-style images are handled by the builder rather than mutating runtime nodes' Docker egress proxy. Set `defaults.imageMirrors: []` to disable image mirror fallback.
 
-最终镜像使用托管 HTTP Registry 时，正式部署会在提交 Nomad job 前检查全部符合落点约束的 Docker 目标节点，并在修改任何配置前要求所有 agent 声明 `managed-registry-access-v2`。新 agent 保留 v1/v2 并共用同一修正实现，兼容仍要求 v1 的旧 Control。Linux 使用 Docker 实际代理字段；OrbStack 使用其原生代理设置及 `auto` 模式下的系统有效代理，不能仅凭内置 broker 地址判断外部代理。Manager 只做只读验证；配置修改要求空闲引擎。具体 HTTP 地址范围、历史兼容例外和维护边界见[运维说明](operations.zh-CN.md#private-registries-on-new-nodes)。
+When the final image comes from a managed HTTP registry, deployment checks all eligible Docker target nodes before submitting the Nomad job and requires every agent to advertise `managed-registry-access-v2` before modifying any host configuration. Newer agents preserve v1/v2 compatibility and share the same remediation logic for older Control instances. Linux checks Docker's active proxy fields; OrbStack checks its native proxy settings and effective system proxy under `auto` mode rather than assuming the built-in broker address implies an external proxy. The manager performs read-only verification; config updates require an idle engine. See [Operations](operations.md#private-registries-on-new-nodes) for HTTP address scope, compatibility notes, and maintenance boundaries.
 
-## 从 Git provider 构建部署
+## Building and deploying from a Git provider
 
-默认的 `luma deploy` 只部署已构建好的镜像。`luma import` 多走一步：在集群里的**构建节点**上 `git clone` 一个 GitHub/Gitea 仓库、自动发现 `.luma.yml` 或 `luma.compose.yml`、按仓库里的 Dockerfile 或 Compose `build:` 构建镜像、推送到集群内自托管 registry，再走正常部署链路。适合「源码到上线」的一条龙，不依赖外部 CI。
+Plain `luma deploy` only deploys prebuilt images. Remote source builds use the decoupled **Luma Build** addon (`luma-build`) and joined **Build Runners** (`luma runner`): a compatible runner clones a GitHub/Gitea repository, discovers `.luma.yml` or `luma.compose.yml`, builds the Dockerfile or Compose `build:` services, pushes immutable images to the configured OCI registry, and hands off deployment to Control.
 
-前提（一次性）：
+One-time prerequisites:
 
-1. 至少一个节点装好 `docker buildx`（节点 agent 会自动 advertise `docker-build` 能力）。
-2. 用 `luma registry serve --node <build-node>` 起一个集群内 registry（详见运维文档的接入 SOP）。
-3. 私有仓库需先保存 Git provider 凭据；公开仓库可直接用 repo URL。
+1. Install the Builder addon (`luma addon install builder`) and attach at least one native-architecture runner (`luma builder token create` + `luma runner join`). See [Build runners](runners.md).
+2. Configure registry credentials (`luma registry login` for cluster pull access and `luma-build` push credentials via scoped secrets / addon config).
+3. For private repositories, save Git provider credentials once; public repositories can be submitted directly by URL.
 
 ```bash
-printf '%s' "$GITEA_TOKEN" | luma git-provider set gitea lin \
-  --base-url https://gcode.example.com \
-  --username lin \
+printf '%s' "$GITEA_TOKEN" | luma git-provider set gitea team \
+  --base-url https://gitea.example.com \
+  --username team \
   --token-stdin
 
-luma git-provider repos gitea:lin
+luma git-provider repos gitea:team
 ```
 
-仓库根目录放一个 `.luma.yml`，就是普通的 service manifest，只是用 `build` 块代替 `image`：
+Place a `.luma.yml` in the repository root—it is a standard service manifest with a `build` block instead of `image`:
 
 ```yaml
 name: myapp
@@ -252,67 +254,61 @@ port: 8080
 build:
   context: .
   dockerfile: Dockerfile
-  platform: linux/amd64   # 默认值；构建节点是 arm64 而目标节点是 amd64 时尤其重要
+  platform: linux/amd64   # default; set explicitly when target arch differs
 env:
   NODE_ENV: production
 ```
 
-部署：
+Submit a build and deploy:
 
 ```bash
-luma import https://github.com/acme/myapp --build-node build-1
+luma builder submit https://github.com/acme/myapp --ref main
 ```
 
-GitHub 仓库可以短写：
+GitHub repositories support `owner/repo` shorthand:
 
 ```bash
-luma import acme/myapp --build-node build-1
+luma builder submit acme/myapp --ref main
 ```
 
-短写只表示 GitHub `owner/repo`，会展开为 `https://github.com/acme/myapp.git`。Gitea/self-hosted Git 推荐用保存的 provider：
-
-也可以使用保存的 provider 账户：
+The shorthand always means GitHub `owner/repo` and expands to `https://github.com/acme/myapp.git`. For Gitea or self-hosted Git, reference a saved provider:
 
 ```bash
-luma build config --node builder --registry-host 100.64.0.70:5000 --push-host 100.64.0.70:5000
-luma import --provider-id gitea:lin --repository acme/myapp --env .env
+luma builder submit --provider-id gitea:team --repository acme/myapp --ref main --env .env
 ```
 
-Compose 仓库同样支持 import：`luma import` 会发现 `luma.compose.yml` / `.luma.compose.yml` / `*.luma.compose.yml` / `*.compose.luma.yml` / `docker-compose.luma.yml`，构建 `docker-compose.yml` 中带 `build:` 的服务，推送到 builder registry，并在最终部署 payload 中注入 `image:`。本地校验 build-only Compose 时用：
+Compose repositories are supported too: `luma builder submit` discovers `luma.compose.yml` / `.luma.compose.yml` / `*.luma.compose.yml` / `*.compose.luma.yml` / `docker-compose.luma.yml`, builds every service in `docker-compose.yml` that defines `build:`, pushes images to the configured registry, and injects the resulting `image:` digests into the deployment payload. Validate build-only Compose manifests locally with:
 
 ```bash
 luma compose validate --import-mode luma.compose.yml
 ```
 
-If a repository has separate staging/production sidecars, pass the exact
-repository-relative Compose sidecar to import:
+If a repository has separate staging/production sidecars, pass the exact repository-relative Compose sidecar path:
 
 ```bash
-luma import https://github.com/acme/app.git \
+luma builder submit https://github.com/acme/app.git \
   --ref v1.2.3 \
   --compose-sidecar deploy/staging.luma.compose.yml
 ```
 
-The path is resolved only after the Builder clones the repository. Absolute or
-non-normalized paths, `..`, missing files, invalid Luma Compose sidecars, and
-symlink escapes are rejected. Explicit selection is fail-closed and never
-falls back to another discovered manifest.
+The path is resolved only after the runner clones the repository. Absolute or non-normalized paths, `..`, missing files, invalid Luma Compose sidecars, and symlink escapes are rejected. Explicit selection is fail-closed and never falls back to another discovered manifest.
 
-普通 `luma compose validate` / `luma compose deploy` 不构建镜像，因此仍要求运行时 Compose 的每个 service 都已经有 `image:`。
+Plain `luma compose validate` / `luma compose deploy` never builds images, so every service in runtime Compose must already specify `image:`.
 
-CLI 会流式回传 clone → build → push → deploy 每一步。构建节点来自控制面声明的 builder 节点；通常无需传 `--build-node`，只有临时覆盖时才传，且 Control 会拒绝未声明的构建节点。`--env .env` 会把运行时环境变量作为 scoped secrets 交给控制面，由最终 `.luma.yml` / Compose 内容过滤并保存。单服务 import 可用 `--region` / `--exposure` / `--domain` / `--port` / `--platform` 覆盖 `.luma.yml` 里的对应字段；Compose import 只接受 `--region` 覆盖 sidecar，服务级入口要写在 `luma.compose.yml` 的 `services:` 里。构建出的镜像 tag 形如 `<build-node-tailscale-host>:5000/acme/myapp:<git-sha>`，其它区域的节点经 Tailscale 内网拉取；HTTP 访问由目标节点在 join 或最终部署预检时按需准备，`luma registry serve` 不再为全体节点配置 `insecure-registries`。构建历史用 `luma build list` 查看，失败详情用 `luma build logs <id>`，修好凭据或配置后可 `luma build retry <id>`。
+The CLI streams clone -> build -> push -> deploy progress. Runners are selected automatically by native platform, cache affinity, and weight; `--env .env` passes runtime environment variables as scoped secrets filtered by the resolved `.luma.yml` or Compose sidecar. Inspect build history with `luma builder list`, view failure logs with `luma builder logs <id>`, retry with `luma builder retry <id>`, or cancel with `luma builder cancel <id>`.
 
-dashboard 的「创建应用」页顶部也有「仓库导入」入口，可选择 Git provider/账户/仓库/ref 或手填 URL，进度实时显示。
+The Dashboard **Create application** page also includes a Git repository submission form with provider/repository/ref selection and live build logs.
 
-`build` 块字段：
+`build` block fields:
 
-| 字段 | 默认 | 说明 |
+| Field | Default | Description |
 | --- | --- | --- |
-| `context` | `.` | Docker 构建上下文（仓库内相对路径）。 |
-| `dockerfile` | `Dockerfile` | Dockerfile 路径（仓库内相对路径）。 |
-| `platform` | `linux/amd64` | `docker buildx build --platform` 的目标平台。 |
+| `context` | `.` | Docker build context (repository-relative path). |
+| `dockerfile` | `Dockerfile` | Dockerfile path (repository-relative path). |
+| `platform` | `linux/amd64` | Target platform for `docker buildx build --platform`. |
+| `target` | *(none)* | Optional literal Dockerfile build stage name. |
 
-### 海外 worker {#worker}
+### Overseas worker {#worker}
 
 ```yaml
 name: fetch-worker
@@ -325,7 +321,7 @@ env:
   OPENAI_BASE_URL: https://api.openai.com/v1
 ```
 
-渲染后会自动带上 region 约束：
+Rendered with the `region` constraint automatically:
 
 ```hcl
 constraint {
@@ -334,9 +330,9 @@ constraint {
 }
 ```
 
-### 指定部署到某个节点 {#_6}
+### Pinning to a specific node
 
-如果服务必须固定在某台机器上，例如有本地磁盘状态、只想跑在家里的 Mac mini、或临时调试某个 worker，可以使用 `node`：
+If a service must stay on a specific host—for example due to local disk state, a home Mac mini, or debugging a worker—set `node`:
 
 ```yaml
 name: home-db
@@ -348,7 +344,7 @@ volumes:
   - home_db_data:/var/lib/postgresql/data
 ```
 
-控制面部署时会同时保留 region 约束，并把 Luma 节点名渲染成 Nomad 的节点约束：
+Control keeps the `region` constraint and renders the Luma node name as a Nomad node constraint:
 
 ```hcl
 constraint {
@@ -361,13 +357,13 @@ constraint {
 }
 ```
 
-`node` 使用的是 Luma 节点名，不是 Docker hostname。这个区别对 OrbStack 很重要：多台 Mac 的 Docker hostname 可能都叫 `orbstack`，但 Luma 用 `meta.luma_node_name` 指向唯一节点，避免服务跑到错误机器。
+`node` is the Luma node name, not the Docker hostname. This matters on OrbStack: multiple Macs may share the Docker hostname `orbstack`, whereas Luma targets a unique host via `meta.luma_node_name`.
 
-Nomad 节点身份是稳定的 UUID。节点离开集群后用同一个 Luma 节点名重新 join，`meta.luma_node_name` 不变，固定节点服务约束仍然有效；不用手工把 Docker hostname 写进 manifest。
+Nomad node identity is a stable UUID. If a node leaves and rejoins with the same Luma node name, `meta.luma_node_name` remains identical and pinned constraints keep working without hardcoding Docker hostnames.
 
-### 普通服务使用本地卷 {#local-volume}
+### Single service with a local volume {#local-volume}
 
-持久化原生服务使用 named volume 或 bind mount。Control 在首次部署前记录归属节点，后续更新钉在该节点；显式改成其他 `node` 时部署会继续，但会给出 `Storage placement` 警告，旧节点上的数据不会被复制；可写持久化挂载要求 `replicas: 1`。
+Stateful single services use named volumes or bind mounts. Control records the owning node before the first deploy and pins subsequent updates to that node; explicitly changing `node` proceeds with a `Storage placement` warning, and data on the old node is not copied automatically. Writable persistent mounts require `replicas: 1`.
 
 ```yaml
 name: home-db
@@ -379,13 +375,13 @@ volumes:
   - home-db-data:/var/lib/postgresql/data
 ```
 
-Compose sidecar 把宿主机路径写在 `volumes.<name>.local.path`，见 [compose-storage.md](compose-storage.md)。
+For Compose sidecars, host paths live under `volumes.<name>.local.path`; see [Compose and storage](compose-storage.md).
 
-### 需要代理的 worker {#worker_1}
+### Worker with outbound proxy {#worker-proxy}
 
-如果服务运行时需要通过 Luma egress proxy 访问外网，声明 `proxy: true`。不要为了使用默认代理手写 `networks: [egress]` 或 `HTTP_PROXY` / `HTTPS_PROXY`；Luma 会自动渲染这些字段。如果你显式写了同名 env，Luma 会保留你的值。
+If a service needs outbound internet access through the Luma egress proxy at runtime, set `proxy: true`. Do not hand-write `networks: [egress]` or `HTTP_PROXY` / `HTTPS_PROXY` just to use the default proxy; Luma injects them automatically (explicitly specified env vars with the same names are preserved).
 
-`proxy: true` 只管容器自己的出站 HTTP/HTTPS 请求，和服务如何被访问是两件事。比如 `region: home` + `exposure: tailscale-relay` + `proxy: true` 是有效组合：用户入站流量走公网 Traefik -> Tailscale -> home task，容器访问外网时走 `egress_mihomo`。
+`proxy: true` controls only the container's own outbound HTTP/HTTPS traffic and is independent of inbound exposure. For example, `region: home` + `exposure: tailscale-relay` + `proxy: true` is valid: inbound user traffic arrives via edge Traefik -> Tailscale -> home task, while outbound container requests route through `egress_mihomo`.
 
 ```yaml
 name: ai-worker
@@ -397,7 +393,7 @@ env:
   OPENAI_BASE_URL: https://api.openai.com/v1
 ```
 
-渲染后会自动带上：
+Rendered automatically with:
 
 ```hcl
 env {
@@ -410,9 +406,9 @@ constraint {
 }
 ```
 
-### 小机器资源限制 {#_7}
+### Resource limits on small hosts
 
-如果 manager 只有 2c2g，并且业务服务也部署在 manager 上，建议给每个非核心服务显式设置资源边界。CPU 只通过 `reservations.cpus` 声明调度份额，运行时可使用空闲 CPU，不设独立硬上限。`limits.memory` 是内存硬上限，`reservations.memory` 是调度预留量。未填 CPU 预留时使用 100 MHz；只填内存上限时预留 `min(256 MiB, 上限)`。旧 `limits.cpus` 会明确告警并忽略，不再预占调度额度；它不是可执行的 CPU 硬上限：
+When running workloads on a small Manager (for example 2 vCPU / 2 GiB RAM), set explicit resource boundaries for non-core services. CPU uses elastic `reservations.cpus` scheduling shares (idle CPU remains usable; no hard CPU cap is enforced). `limits.memory` is the hard memory ceiling and `reservations.memory` is the scheduling reservation. Omitting CPU reservation defaults to 100 MHz; setting only a memory limit reserves `min(256 MiB, limit)`. Legacy `limits.cpus` emits a warning and is ignored rather than reserving extra scheduling budget:
 
 ```yaml
 name: api
@@ -429,11 +425,11 @@ resources:
     memory: 128M
 ```
 
-这些规则在普通服务和 Compose 的 `deploy.resources` 中一致。内存预留不能超过上限；不填内存上限时，保留 Nomad 以内存预留量为容器上限的行为。内存超额分配不等于增加物理内存，多个服务同时冲高仍可能 OOM。
+These rules apply consistently to single-service manifests and Compose `deploy.resources`. Memory reservation cannot exceed the limit; when no limit is set, Nomad keeps using the reservation as the container ceiling. Memory oversubscription does not add physical RAM—simultaneous spikes across services can still trigger OOM kills.
 
-控制面升级只改变后续生成的 Job；已有服务需要重新部署才生效，不需要批量升级 worker。
+Control upgrades affect newly generated jobs only; redeploy existing services to apply updated rendering rules without needing a fleet-wide worker restart.
 
-### 家里内部服务 {#_8}
+### Internal home service
 
 ```yaml
 name: backup-job
@@ -443,7 +439,7 @@ exposure: none
 replicas: 1
 ```
 
-### 家里服务通过 Tailscale Relay 暴露 {#tailscale-relay}
+### Home service via Tailscale Relay {#tailscale-relay}
 
 ```yaml
 name: home-panel
@@ -456,22 +452,22 @@ publishPort: 8080
 replicas: 1
 ```
 
-默认情况下，Luma Control 会在服务部署后查看 Nomad allocation 实际运行在哪些 home 节点，并把 route 上游指向这些节点的 host port。若服务必须固定到某台机器，再显式指定 `node`：
+By default, Luma Control inspects which home nodes run the Nomad allocation after deploy and points the relay route upstream to those nodes' host ports. Add `node` explicitly only when the service must stay on a specific host:
 
 ```yaml
 node: home-mac-mini
 ```
 
-也可以手动覆盖完整上游 URL：
+You can also override the complete upstream URL manually:
 
 ```yaml
 relay:
   url: http://home-1.your-tailnet.ts.net:8080
 ```
 
-### 公开 TCP 服务 {#tcp}
+### Public TCP service {#tcp}
 
-服务 manifest：
+Service manifest:
 
 ```yaml
 name: ledger-db
@@ -485,10 +481,10 @@ publishPort: 3306
 replicas: 1
 ```
 
-Luma 会把 DNS 指到公网 edge，自动确保 Traefik 监听 `tcp-3306` entrypoint，并写入 Traefik TCP route。`domain` 用于 DNS；普通 MySQL 连接无法提供 HTTP Host 或可靠起始 SNI，所以同一个发布端口一次只应给一个 TCP 服务使用。
-`publishPort` 是目标 task 节点上的宿主机端口，并会在 Nomad bridge 模式下映射到容器 `port`。如果同一台机器已有本机容器或非 Luma 服务占用 `3306`，请选择其它端口并同步调整客户端连接端口或入口配置。原生 Mac/OrbStack 单服务需省略 `publishPort` 并使用真实监听端口；Mac Compose 则支持独立的 `publishPort`。
+Luma points DNS to the public edge, ensures Traefik listens on the `tcp-3306` entrypoint, and writes the Traefik TCP route. `domain` is used for DNS; plain MySQL connections do not carry an HTTP Host or reliable initial SNI, so each published port should be assigned to only one TCP service at a time.
+`publishPort` is the host port on the target task node mapped to container `port` under Nomad bridge mode. If another container or non-Luma process on that host already binds `3306`, pick another port and adjust client connection settings accordingly. Native Mac/OrbStack single services omit `publishPort` and use the actual listening port; Mac Compose supports an independent `publishPort`.
 
-### Cloudflare Tunnel 服务 {#cloudflare-tunnel}
+### Cloudflare Tunnel service {#cloudflare-tunnel}
 
 ```yaml
 name: home-tool
@@ -502,22 +498,22 @@ tunnel:
   tokenEnv: CLOUDFLARE_TUNNEL_TOKEN
 ```
 
-## 生成前检查清单
+## Pre-deploy checklist
 
-- 域名是否是用户真正要访问的入口。
-- `port` 是否是容器内部监听端口，而不是公网端口。
-- `region` 和 `exposure` 是否匹配。
-- 公开服务是否填写了 `domain` 和 `port`。
-- 镜像是否带 tag；`latest`/未带 tag 会在部署时解析成 digest，但生产回滚仍建议使用固定版本 tag 或 digest，避免旧 Nomad job 版本重新拉到新镜像内容。
-- secret 不要直接写明文，优先写 `${ENV_NAME}`，部署时用 `--env .env` 或 scoped `luma secret set --scope <app>` 提供值。
-- worker 默认使用 `exposure: none`，不要给它配公网域名。
-- home 节点不要承载核心高频公网服务。
+- Verify `domain` is the actual hostname users should reach.
+- Verify `port` is the internal container listening port, not the public port.
+- Verify `region` and `exposure` are compatible.
+- Verify public services define both `domain` and `port`.
+- Pin image tags or digests; `latest` / untagged images resolve to a digest at deploy time, but immutable tags or digests keep Nomad rollbacks predictable.
+- Keep secrets out of plaintext YAML: use `${ENV_NAME}` and supply values with `--env .env` or `luma secret set --scope <app>`.
+- Keep workers on `exposure: none` without a public domain.
+- Avoid placing high-traffic core public services on home nodes.
 
-## 验证命令
+## Validation commands
 
 ```bash
 luma validate service.yaml
 luma deploy service.yaml --dry-run
 ```
 
-单服务 `luma validate` 在本地校验并渲染，默认文本输出为摘要；`--format json` 包含渲染产物。`luma deploy --dry-run` 打印本地生成的 Nomad job 和适用的路由，不向 Control 提交部署，也不读取实时集群放置、存储或镜像状态。正式部署时 Control 仍会解析实际节点、存储归属、密钥和镜像，因此本地预览不保证与最终提交的 job 完全一致，也不证明运行时就绪。
+Single-service `luma validate` validates and renders locally, printing a text summary by default (`--format json` includes the rendered artifacts). `luma deploy --dry-run` prints the locally rendered Nomad job and any applicable route without submitting to Control or querying live cluster placement, storage, or image state. Real deployments still resolve live nodes, storage ownership, secrets, and image digests on Control, so local preview does not guarantee an identical final job or prove runtime readiness.

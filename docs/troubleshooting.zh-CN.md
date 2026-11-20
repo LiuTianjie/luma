@@ -216,7 +216,7 @@ sudo launchctl kickstart -k system/io.luma.node-agent
 - 终端 supervisor 断开，与节点终端故障相同；
 - 镜像是 distroless / scratch，没有 `bash`/`ash`/`sh`。
 
-该流程不会进入系统 stack（`traefik`、`egress`、`luma-control`、`luma-storage*`）。
+该流程不会进入系统 stack（`traefik`、`egress`、`luma-control`）。
 
 ## Nomad client 已断开，但容器仍运行 {#nomad-client-is-disconnected-but-containers-still-run}
 
@@ -308,7 +308,7 @@ nomad job status <service>                # allocation is running/healthy
 
 ## macOS 节点加入时在 Docker 步骤失败 {#macos-node-join-fails-at-docker}
 
-macOS 工作节点和家庭节点在执行 `luma node join` 前，必须已安装并启动 Docker Desktop。Luma 无法自动安装 Docker Desktop。
+macOS 工作节点和家庭节点在执行 `luma node join` 前，必须已安装并启动 OrbStack 或 Docker Desktop。Luma 无法自动安装 OrbStack 或 Docker Desktop。
 
 加入前先在本地验证：
 
@@ -317,7 +317,7 @@ command -v docker
 docker info
 ```
 
-Docker Desktop 缺失或仍在启动时，`luma node join` 会在向 Control 注册节点前停止。启动 Docker Desktop，等 `docker info` 成功后重试相同加入命令。
+OrbStack / Docker Desktop 缺失或仍在启动时，`luma node join` 会在向 Control 注册节点前停止。启动 OrbStack 或 Docker Desktop，等 `docker info` 成功后重试相同加入命令。
 
 ## Cloudflare DNS 失败 {#cloudflare-dns-fails}
 

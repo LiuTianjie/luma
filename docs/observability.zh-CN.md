@@ -5,7 +5,7 @@ Luma 提供节点与容器采样、当前任务队列、资源历史、运行事
 
 ## 控制台导航 {#console-navigation}
 
-可观测分为告警事件、应用监控、资源指标、日志、告警规则和通知渠道，各页使用简洁的独立标题。引擎摘要位于告警事件页；通知渠道关注配置与发送历史。内置告警页每 15 秒刷新，资源历史每 30 秒刷新。操作流程及路由关系与连通性探测的区别，见[控制台指南](dashboard-guide.md)。
+可观测分为告警事件、应用监控、资源指标、日志、告警规则和通知渠道，各页使用简洁的独立标题。引擎摘要位于告警事件页；通知渠道关注配置与发送历史。内置告警页每 15 秒刷新，资源历史每 30 秒刷新。操作流程及路由关系与连通性探测的区别，见[控制台指南](dashboard-guide.zh-CN.md)。
 
 
 ## 应用告警（`luma-observe`） {#application-alerts-luma-observe}
@@ -130,7 +130,7 @@ async function charge(orderId) {
 
 可观测日志来自 Nomad allocation 的 stdout/stderr，由 luma-observe 发送到 VictoriaLogs。按 `app`（Nomad job / Luma stack）筛选。Traefik JSON 访问日志是 `traefik` job 的 stdout，可用 LogsQL 的 `unpack_json` 解析。Nomad 帧没有事件时间戳，因此日志行时间是观测时间。`luma app logs` 和应用详情的实时日志仍通过 Control 跟随 Nomad 文件，只提供有限片段，并非 VictoriaLogs 的持久化日志存储。
 
-资源数据按 30 秒桶保留，与上报某个服务的节点数量无关。`LUMA_METRICS_HISTORY_POINTS` 默认 720（约 6 小时），范围为 60 到 10000。资源历史独立保存在 Control 状态目录下有界的 `metrics-history.json` 中；长期排查和独立故障检测仍适合外部采集。备份范围见[控制面存储与恢复](control-storage.md)。服务汇总只覆盖已上报节点，缺失贡献在 180 秒后过期，不能证明所有副本均已上报。
+资源数据按 30 秒桶保留，与上报某个服务的节点数量无关。`LUMA_METRICS_HISTORY_POINTS` 默认 720（约 6 小时），范围为 60 到 10000。资源历史保存在 Control 状态目录下独立的 SQLite WAL 数据库 `metrics-history.sqlite3` 中（与 `control.sqlite3` 分离，启用 incremental auto-vacuum，首次打开时自动一次性迁移旧版 `metrics-history.json`）；长期排查和独立故障检测仍适合外部采集。备份范围见[控制面存储与恢复](control-storage.zh-CN.md)。服务汇总只覆盖已上报节点，缺失贡献在 180 秒后过期，不能证明所有副本均已上报。
 
 ## 内置告警规则与通知 {#built-in-alert-rules-and-notifications}
 
@@ -187,7 +187,7 @@ Luma 自动申请 tenant access token，仅缓存于进程内存，并在过期�
 
 评估独立运行，约每 15 秒一次。单独的发送循环约每秒检查持久化发件箱，慢提供方请求不会暂停评估。待发送、已发送、重试中和失败均可查看。网络及限流失败会退避重试，最多 8 次；无效凭据、缺少权限和群不可访问会给出可操作的错误分类。每个 HTTPS 请求超时为 8 秒，总发送预算为 16 秒。
 
-成功响应表示飞书已接受消息，不代表有人阅读。发件箱重试使用稳定的消息 UUID 供提供方去重；这仍是至少一次投递，而非无限期的严格恰好一次保证。不要为了再次触发而先修改规则，应先检查发送历史。已恢复/关闭事件和最终发送记录在摘要保留期（默认 90 天）后纳入经审查的存储保留计划；活动事件和未完成发送受保护。见[控制面存储](control-storage.md)。
+成功响应表示飞书已接受消息，不代表有人阅读。发件箱重试使用稳定的消息 UUID 供提供方去重；这仍是至少一次投递，而非无限期的严格恰好一次保证。不要为了再次触发而先修改规则，应先检查发送历史。已恢复/关闭事件和最终发送记录在摘要保留期（默认 90 天）后纳入经审查的存储保留计划；活动事件和未完成发送受保护。见[控制面存储](control-storage.zh-CN.md)。
 
 `/v1/alerting/` 下的管理 API 需要管理令牌，纯指标令牌不能管理告警。不会自动创建通知渠道。Control 必须保持可用，才能评估并发送自己的告警；应保留独立 Prometheus 抓取或外部探针检测 Manager/Control 故障。内置资源告警不探测公网 URL。应用 p95、5xx 比例和失败 allocation 预设读取 luma-observe，不能替代外部 Control 宕机探测。
 

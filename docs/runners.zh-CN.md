@@ -6,7 +6,7 @@ Control 的 **创建应用 → Git 仓库** 表单向同一个队列提交，并
 
 ## 加入并启动 {#join-and-start}
 
-在操作员机器上，绑定构建服务地址，并复用已有 Luma 登录态创建 token：
+在已执行 `luma login` 的操作员机器上，`luma builder` 会自动从当前 Control 登录上下文发现 Builder 地址（仅在需要覆盖或连接独立部署的 Builder 时运行 `luma builder use`），然后创建 runner token：
 
 ```bash
 luma builder use https://build.example.com
@@ -34,6 +34,13 @@ macOS 先启动 OrbStack 或 Docker Desktop，再以拥有 Docker/Homebrew 的�
 加入时会启动实际使用的持久 BuildKit 实例，并使用 `# syntax=docker/dockerfile:1` 和 `FROM scratch` 执行仅保留缓存的预检，在报告成功前准备好 BuildKit 镜像与 Dockerfile 前端，不构建或发布业务镜像。前台 runner 每次启动后、领取任务前也会执行工具检查和 BuildKit 预检。预检失败保留已有 runner 服务配置；node 的 BuildKit 准备失败会回滚注册。
 
 Docker 有两条网络路径：Docker daemon 拉取 BuildKit 容器镜像，BuildKit 自己拉取 Dockerfile 前端和基础镜像。daemon 的代理不会自动传入 BuildKit。受限网络使用节点可达的 HTTP 代理：`luma runner join --proxy http://proxy-host:7890`；会复用已有 token 和参数，重新加入前等待当前构建结束。node join 使用 Control 返回的区域出口代理。若 BuildKit 容器镜像拉取失败，需先配置 daemon 的镜像拉取通路；join 会当场报错。具体业务基础镜像和依赖仍在对应构建时解析。
+
+BuildKit 还支持按需启用的 `docker.io` 镜像加速（不内置硬编码第三方镜像站）：
+
+- 在 Runner 环境中或在执行 `luma runner join` 前设置 `LUMA_RUNNER_DOCKER_MIRRORS`（逗号分隔的镜像站主机名或 URL，例如 `LUMA_RUNNER_DOCKER_MIRRORS="mirror.example.com"`）；
+- 或在宿主机 `/etc/docker/daemon.json` 中配置 `registry-mirrors`，Runner 在生成 `buildkitd.toml`（`[registry."docker.io"]`）时会自动读取这些镜像地址。
+
+所有已配置的镜像站主机名会自动加入 BuildKit 的 `NO_PROXY` 列表，即使 Runner 配置了 HTTP 代理，访问镜像站时也会直连而不绕经代理。
 
 ## 日常命令 {#daily-commands}
 

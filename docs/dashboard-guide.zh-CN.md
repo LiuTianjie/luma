@@ -64,7 +64,7 @@ Passkey 校验在 Control 镜像中运行，镜像安装了 `control` 依赖组�
 
 选择模板不会立即部署。提交前应检查并校验配置。手动编辑 YAML 后，校验与部署将以当前 YAML 为准；恢复表单前会确认是否丢弃这些编辑。
 
-字段定义见[部署 YAML](deployment-yaml.md)，多服务和持久卷行为见 [Compose 与存储](compose-storage.md)。
+字段定义见[部署 YAML](deployment-yaml.zh-CN.md)，多服务和持久卷行为见 [Compose 与存储](compose-storage.zh-CN.md)。
 
 ## 查看应用 {#inspect-an-application}
 
@@ -91,7 +91,7 @@ Passkey 校验在 Control 镜像中运行，镜像安装了 `control` 依赖组�
 
 告警事件、规则和通知渠道分别有独立页面。告警引擎摘要位于事件页；通知渠道显示配置和发送历史，排队并不代表发送成功。保存渠道不会自动发送测试消息。
 
-内置资源监控与可选的应用级可观测组件有不同的要求。区别和部署说明见[可观测](observability.md)。
+内置资源监控与可选的应用级可观测组件有不同的要求。区别和部署说明见[可观测](observability.zh-CN.md)。
 
 ## 预览与真实集群 {#preview-versus-a-live-cluster}
 

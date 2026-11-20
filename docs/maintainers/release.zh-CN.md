@@ -44,6 +44,8 @@ git push origin main
 - 从 `v*` 标签发布 `ghcr.io/liutianjie/luma-control:<tag>`
 - 对任意分支或标签执行获授权的 `workflow_dispatch` 时，发布 `ghcr.io/liutianjie/luma-control:sha-<7-char-sha>`
 
+此外，`.github/workflows/addon-images.yml`（`Build Addon Images`）在 `builder/**`、`eye/**` 或 `observe/**` 发生变更并推送到 `main`、打 `v*` 标签或手动 `workflow_dispatch` 时，执行各插件单元测试与一致性校验，并将官方插件的预构建镜像（`luma-build-server`、`luma-eye`、`luma-eye-clickhouse` 以及全部 `luma-observe-*`）发布到 GHCR。
+
 手动发布标签绑定具体提交，不会给功能分支添加 `latest`，也不会改变现有的 `main-*` 或发布标签渠道。候选引用推送后再运行工作流，并验证已完成运行的 `headSha` 与准备安装的提交一致：
 
 ```bash
@@ -112,7 +114,7 @@ curl --fail --silent --show-error https://luma.example.net/v1/health
 nomad job status luma-control
 ```
 
-当前 Manager 更新流程保留 Control 状态和用户任务，但会协调防火墙 TCP 中继端口、带 `edge` 角色 Manager 上的 Traefik、watchdog、已安装配置与状态，以及 `luma-control` Nomad 任务。它还会安装独立的安全升级服务，等待新版节点 Agent 就绪后升级并重启 Nomad，验证 ACL/mTLS；Docker 和业务应用保留既有配置。应将其视为控制面维护变更，在更新后检查通过之前，保留上述变更前记录。
+当前 Manager 更新流程保留 Control 状态和用户任务，但会协调防火墙 TCP 中继端口、带 `edge` 角色 Manager 上的 Traefik、watchdog、已安装配置与状态，以及 `luma-control` Nomad 任务；Docker 和业务应用保留既有配置。在可能断连的终端或隶属 `luma-node-agent.service` 的 Luma 终端中执行时，请使用 `luma update manager --detach`，让更新运行在独立的瞬态 systemd 单元中，并按需透传调用方的 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` / `PIP_INDEX_URL`（`LUMA_PIP_INDEX_URL`）。应将其视为控制面维护变更，在更新后检查通过之前，保留上述变更前记录。
 
 兼容升级使用 Nomad `AutoRevert`，但运维人员仍须验证公共健康端点和实际运行镜像。如果新 Control 实例不健康，立即恢复之前的 Nomad 任务：
 
@@ -184,9 +186,7 @@ curl -fsSL "https://raw.githubusercontent.com/LiuTianjie/luma/$LUMA_INSTALL_REF/
 5. 仅更新报告的 agent 版本与目标版本不同的非 Manager 节点；
 6. 在同一页面重试失败或中断的镜像、Manager 或节点操作。
 
-Control 持久化镜像准备和集群操作。镜像准备使用 Builder 的 `control-image-mirror-v1` 能力及配置的 `registryHost` / `pushHost`，代理不会暴露给浏览器。Manager 更新运行于独立的临时 systemd 单元，因此刷新 Manager 节点 agent 不会终止由它启动的更新。只有安装器执行完毕，且新心跳报告目标发布版本后，集群节点才被视为更新成功。CLI 更新命令保留用于应急和首次接入；常规发布无需使用。
-
-还需等待「集群安全升级 → 全部验证通过」。软件版本对齐不代表 Nomad 安全迁移已经完成。
+Control 持久化镜像准备和集群操作。镜像准备使用 Builder 的 `control-image-mirror-v1` 能力及配置的 `registryHost` / `pushHost`，代理不会暴露给浏览器。Manager 更新运行于独立的瞬态 systemd 单元（在配置了出站代理时通过 `start-manager-update` 自动透传 Manager 的 egress proxy），因此刷新 Manager 节点 agent 不会终止由它启动的更新。只有安装器执行完毕，且新心跳报告目标发布版本后，集群节点才被视为更新成功。CLI 更新命令（`luma update manager --detach`）保留用于应急和首次接入；常规发布无需使用。
 
 用户可以卸载本地 CLI：
 

@@ -7,8 +7,8 @@ This guide takes you from an empty Linux server to a running application: instal
 | Requirement | Why |
 | --- | --- |
 | A Linux server, Ubuntu 22.04+ recommended, 2 CPU / 8 GiB RAM to start | Runs Luma Control, Nomad and Traefik; Control reserves 4 GiB |
-| A domain whose DNS is managed by Cloudflare | Control API, dashboard and application hostnames |
-| A Cloudflare API token with **Zone Read** and **DNS Edit** for that zone | Luma creates and updates DNS records |
+| A domain whose DNS is managed by Cloudflare (additional application domains can also use `cloudflare`, `alidns`, or `dnspod` via `luma dns zone add`) | Control API, dashboard and application hostnames |
+| A Cloudflare API token with **Zone Read** and **DNS Edit** for that zone | Luma creates and updates DNS records (see [DNS zones](dns-zones.md) for Alibaba Cloud DNS and DNSPod) |
 | Public ports 80 and 443 open, and an email address for Let's Encrypt | HTTPS certificates and ingress |
 | Access to the container registry that hosts the Luma Control image (GHCR by default) | The manager pulls Control from it |
 
@@ -42,18 +42,20 @@ To uninstall the CLI (server state under `/opt/luma` is not touched), run `scrip
 Run this **on the manager server**:
 
 ```bash
+luma bootstrap
+# Or pass --domain directly (non-interactive friendly):
 luma bootstrap --domain luma.example.com
 ```
 
-`luma bootstrap` asks for anything it is missing and explains each value:
+Running `luma bootstrap` with no flags on an interactive TTY launches the guided setup wizard, walking step-by-step through the control domain, DNS credentials, egress setup, and optional post-bootstrap steps (CLI login, official addons, and AI agent skills). Passing `--domain` runs directly and prompts only for missing values:
 
-- `CLOUDFLARE_API_TOKEN` and `TRAEFIK_ACME_EMAIL` are required.
+- `CLOUDFLARE_API_TOKEN` and `TRAEFIK_ACME_EMAIL` are required for the primary Cloudflare zone (you can add additional `cloudflare`, `alidns`, or `dnspod` zones after bootstrap with `luma dns zone add`; see [DNS zones](dns-zones.md)).
 - `LUMA_DNS_EDGE_TARGET` (the public IP that DNS records point to) is asked when it cannot be inferred.
 - `TAILSCALE_AUTHKEY` and `EGRESS_SUBSCRIPTION_URL` are optional; press Enter to skip.
 
 Answers are saved to `~/.luma.config.json` (mode 0600) so reruns do not ask again. You can also export them as environment variables or put them in a `.env` file in the current directory; Luma reads only its own settings from `./.env`.
 
-If the manager needs a proxy to reach GHCR, which is usually the case on mainland China hosts, set `EGRESS_SUBSCRIPTION_URL` before bootstrapping. Otherwise pass `--skip-egress`.
+If the manager needs a proxy to reach GHCR—which is usually the case on mainland China hosts—set `EGRESS_SUBSCRIPTION_URL` before bootstrapping (and optionally `LUMA_DOCKER_MIRROR` when pulling bootstrap images through a China or private Docker mirror). Otherwise pass `--skip-egress`.
 
 Bootstrap installs Docker and the Nomad server, applies node metadata, configures the firewall, deploys Traefik and Luma Control as Nomad jobs and creates the Control database at `/opt/luma/control/control.sqlite3`. Each step prints `[start]`, `[ok]` or `[fail]` with a `Fix:` hint. Bootstrap is safe to rerun after fixing a failure; individual layers can also be repaired with `luma manager egress`, `luma node tailscale` and `luma doctor`.
 

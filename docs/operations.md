@@ -297,14 +297,17 @@ sudo docker pull hello-world:latest
 
 ```bash
 luma update                                  # manager: CLI + Control; node: CLI + agent; client: CLI
+luma update manager --detach                 # detached manager update in its own transient systemd unit
 luma update --install-ref v0.2.88           # a specific release, branch or full commit
 luma update fleet                            # every non-manager node with a ready agent
 luma update fleet --include-manager          # explicit repair only
 ```
 
-Updates install the latest release unless `--install-ref` is given; use a full commit for a coordinated candidate rollout. The dashboard's **Settings → Maintenance** is the preferred manager path: it mirrors the Control image into the internal registry first, then rolls out with progress and route checks. A direct `luma update` on the manager pulls the image itself; where GHCR is unreachable, set `LUMA_CONTROL_IMAGE` to a pullable image.
+Updates install the latest release unless `--install-ref` is given; use a full commit for a coordinated candidate rollout. The dashboard's **Settings → Maintenance** is the preferred manager path: it mirrors the Control image into the internal registry first, forwards the manager's configured egress proxy to the `start-manager-update` task when available, and rolls out with progress and route checks. A direct `luma update` on the manager pulls the image itself; where GHCR is unreachable, set `LUMA_CONTROL_IMAGE` to a pullable image.
 
 On the manager, `luma update` refreshes the firewall, Traefik, the Tailscale watchdog, the journald size limit, Control configuration and the `luma-control` job (with Nomad auto-revert), then refreshes the local node agent. It does not restart Docker or the Nomad agent, run egress setup, or redeploy applications. Manager state under `/opt/luma/control` is root-only; without passwordless sudo run `sudo ~/.local/bin/luma update`.
+
+When running a manager update from a Luma terminal session (or any shell that may disconnect), pass `--detach` (`luma update manager --detach`). On systemd hosts, `--detach` launches an independent transient unit (`systemd-run`) outside `luma-node-agent.service`'s cgroup so refreshing the node agent cannot terminate the update mid-rollout, and prints log and exit-status paths. Opt-in network and package index settings (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`, `PIP_INDEX_URL`, `LUMA_PIP_INDEX_URL`) from the caller's environment are forwarded into the detached unit.
 
 Fleet updates run up to four nodes at a time. A node whose installer or reconnect check fails is retried up to five times; from Settings → Maintenance, a node that is offline at the start is also waited for and retried. Each install keeps the new and previous (rollback) runtimes and anything a process still uses, and removes older `releases/candidate.*` directories that contain only `src` and `venv`; set `LUMA_KEEP_RELEASES=1` to keep them.
 
@@ -314,11 +317,11 @@ Managers and nodes run a small Tailscale watchdog that restarts Tailscale after 
 
 ## Builder Lifecycle
 
-A builder is an ordinary joined Luma node selected with `luma build config --node <name> --default-node <name>`. Its node agent leases build tasks; Docker Buildx creates the `luma-builder` and `luma-builder-egress` engines on demand. No additional background startup script is required.
+Remote repository builds run on the decoupled **Luma Build** addon (`luma-build`) and stateless **Build Runners** managed by `luma runner`. Runners authenticate with a runner token (`luma builder token create <name>` + `luma runner join`) and do **not** require `luma node join` or Nomad. Each runner runs as a native system service (`luma runner start|stop|restart|status|logs --follow`) or Docker container, maintains a persistent local BuildKit engine with automatic LRU cache GC, and reconnects automatically after reboots. See [Build runners](runners.md) for runner lifecycle, mirror configuration, and deregistration.
 
-`luma node join` installs the node service. Linux uses `luma-node-agent.service`, enabled at boot with `Restart=always`. macOS uses the `io.luma.node-agent` LaunchDaemon with `RunAtLoad` and `KeepAlive`. Nomad has its own system service, and Docker manages BuildKit containers. On macOS, Docker Desktop or OrbStack must still be configured to start at user login; a running agent does not mean Docker is available.
+For joined cluster nodes (such as workload hosts or nodes hosting a managed registry via `luma registry serve`), `luma node join` installs the node agent service. Linux uses `luma-node-agent.service`, enabled at boot with `Restart=always`. macOS uses the `io.luma.node-agent` LaunchDaemon with `RunAtLoad` and `KeepAlive`. Nomad has its own system service, and Docker manages container/BuildKit lifecycles. On macOS, Docker Desktop or OrbStack must still be configured to start at user login; a running agent does not mean Docker is available.
 
-Node join, agent updates and the standalone installer share the service definitions and node Tailscale watchdog installation in `luma/agent.py`. The standalone installer only refreshes a node with an existing `agent.json`; it does not turn an ordinary CLI client into a builder. Machine-specific startup patches outside the source tree are not part of the installation procedure.
+Node join, agent updates and the standalone installer share the service definitions and node Tailscale watchdog installation in `luma/agent.py`. The standalone installer only refreshes a node with an existing `agent.json`; it does not turn an ordinary CLI client into a joined node or build runner. Machine-specific startup patches outside the source tree are not part of the installation procedure.
 
 On Linux, `luma-node-tailscale-watchdog.timer` starts checking about two minutes after boot and then about once a minute. It reads Manager addresses from Nomad configuration, checks Tailscale connectivity and actual TCP ports, and restarts local Tailscale after three consecutive failures by default. Check this layer when services have started but Control still reports the node offline. An SSH connection and the agent's connection to its Manager are separate paths.
 
@@ -329,9 +332,10 @@ systemctl is-enabled luma-node-agent.service luma-node-tailscale-watchdog.timer
 systemctl status luma-node-agent.service luma-node-tailscale-watchdog.timer --no-pager
 journalctl -b -u luma-node-agent.service -u luma-node-tailscale-watchdog.service
 luma node list
+luma builder runners
 ```
 
-Verify recovery using service state, a fresh Control heartbeat and builder `ready` status together. Large clock jumps at boot also warrant checking host/VM RTC settings and the system time service. A clock jump alone does not establish the cause of a network outage, and Luma does not require every installation to adopt a particular NTP provider.
+Verify recovery using service state, a fresh Control heartbeat (`luma node list`), and runner online status (`luma builder runners` / `luma runner status`) together. Large clock jumps at boot also warrant checking host/VM RTC settings and the system time service. A clock jump alone does not establish the cause of a network outage, and Luma does not require every installation to adopt a particular NTP provider.
 
 ## Node Disk Cleanup
 

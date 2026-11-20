@@ -7,8 +7,8 @@
 | 条件 | 用途 |
 | --- | --- |
 | 一台 Linux 服务器，推荐 Ubuntu 22.04+，建议起步 2 核 / 8 GiB | 运行 Luma Control、Nomad 和 Traefik；Control 预留 4 GiB |
-| 一个由 Cloudflare 托管 DNS 的域名 | Control API、控制台和应用域名 |
-| 该域名的 Cloudflare API Token，权限为 **Zone Read** 和 **DNS Edit** | Luma 创建和更新 DNS 记录 |
+| 一个由 Cloudflare 托管 DNS 的域名（更多业务域名也支持通过 `luma dns zone add` 接入 `cloudflare`、`alidns` 或 `dnspod`） | Control API、控制台和应用域名 |
+| 该域名的 Cloudflare API Token，权限为 **Zone Read** 和 **DNS Edit** | Luma 创建和更新 DNS 记录（阿里云 DNS 和 DNSPod 详见[DNS 域名](dns-zones.zh-CN.md)） |
 | 公网开放 80 和 443 端口，以及一个用于 Let's Encrypt 的邮箱 | HTTPS 证书与入口 |
 | 能访问存放 Luma Control 镜像的仓库（默认 GHCR） | Manager 从这里拉取 Control |
 
@@ -42,18 +42,20 @@ python -m pip install "luma-infra==0.2.88"
 **在 Manager 服务器上**执行：
 
 ```bash
+luma bootstrap
+# Or pass --domain directly (non-interactive friendly):
 luma bootstrap --domain luma.example.com
 ```
 
-`luma bootstrap` 会询问缺少的配置并解释每一项：
+在交互式终端（TTY）中不带参数直接运行 `luma bootstrap` 会启动引导式安装向导，逐步完成控制面域名、DNS 凭据、出站代理配置以及初始化后的可选步骤（CLI 登录、官方插件安装与 AI 技能安装）。传入 `--domain` 则直接执行初始化并仅询问缺失的配置：
 
-- `CLOUDFLARE_API_TOKEN` 和 `TRAEFIK_ACME_EMAIL` 必填。
+- `CLOUDFLARE_API_TOKEN` 和 `TRAEFIK_ACME_EMAIL` 用于主 Cloudflare 域名（初始化后可通过 `luma dns zone add` 添加更多 `cloudflare`、`alidns` 或 `dnspod` 域名，详见[DNS 域名](dns-zones.zh-CN.md)）。
 - 无法自动推断时，会询问 `LUMA_DNS_EDGE_TARGET`（DNS 记录指向的公网 IP）。
 - `TAILSCALE_AUTHKEY` 和 `EGRESS_SUBSCRIPTION_URL` 可选，直接回车跳过。
 
 回答会保存到 `~/.luma.config.json`（权限 0600），重跑时不再询问。也可以用环境变量提供，或写在当前目录的 `.env` 中；Luma 只会从 `./.env` 读取它自己的配置项。
 
-如果 Manager 需要代理才能访问 GHCR（中国大陆服务器通常如此），请在初始化前设置 `EGRESS_SUBSCRIPTION_URL`；否则加 `--skip-egress`。
+如果 Manager 需要代理才能访问 GHCR（中国大陆服务器通常如此），请在初始化前设置 `EGRESS_SUBSCRIPTION_URL`（如需通过国内或私有镜像源拉取引导镜像，可同时设置 `LUMA_DOCKER_MIRROR`）；否则加 `--skip-egress`。
 
 初始化会安装 Docker 和 Nomad server、写入节点元数据、配置防火墙、以 Nomad job 方式部署 Traefik 和 Luma Control，并在 `/opt/luma/control/control.sqlite3` 创建 Control 数据库。每一步都会打印 `[start]`、`[ok]` 或 `[fail]`，失败时附带 `Fix:` 提示。修复后可以直接重跑；也可以单独修复某一层：`luma manager egress`、`luma node tailscale`、`luma doctor`。
 

@@ -82,7 +82,7 @@ lifetimes and must be managed separately.
 | Data | Location and lifecycle |
 | --- | --- |
 | Control configuration and operational records | Manager SQLite database; query pagination does not delete data |
-| Resource history | Separate bounded `metrics-history.json` inside the Control state directory; the API reports the available interval and retention |
+| Resource history | Dedicated bounded SQLite WAL database `metrics-history.sqlite3` inside the Control state directory (separate from `control.sqlite3`, with incremental auto-vacuum and automatic one-time import of legacy `metrics-history.json`); the API reports the available interval and retention |
 | Generated Nomad jobs and Traefik routes | Manager files keyed by application/service name; updating one application replaces its current generated files |
 | Builder source snapshots and analysis/build evidence | Builder content-addressed store, normally `/var/lib/luma/builder/snapshots`; identical content can share a digest |
 | Builder temporary checkouts and credentials | Task work directory; normal task completion removes it, while a process crash can leave remnants |
@@ -179,11 +179,13 @@ scope. This flow does not clean temporary workspaces, BuildKit/Trivy caches,
 Registry blobs, secrets or application volumes.
 
 Registry has its own retention policy and protected deletion/GC flow. Its
-default mode is `recommend`, with 20 recent images, a 30-day age policy and a
-seven-day recovery window. Automatic deletion requires explicit `enforce`
-configuration; changing Control history retention does not enable it. Registry
-manifest deletion and physical blob garbage collection are separate steps,
-and shared layers can remain in use by retained images.
+default mode is `recommend`, marking unreferenced images as cleanup candidates
+after 7 consecutive observed unused days, with a seven-day recovery window
+before GC (see [Registry cleanup candidates](operations.md#registry-cleanup-candidates)).
+Automatic deletion requires explicit `enforce` configuration; changing Control
+history retention does not enable it. Registry manifest deletion and physical
+blob garbage collection are separate steps, and shared layers can remain in use
+by retained images.
 
 ## Existing installations: legacy state import
 
@@ -242,13 +244,14 @@ Dashboard passkeys (public keys only) and browser sessions (hashes only) are
 SQLite tables, so a restore brings back the sessions the snapshot held. If a
 backup may have been exposed, run `luma passkey sign-out` after restoring.
 
-The Control archive includes a consistent database snapshot and supported
-files inside the Control state directory, including private token files and
-fleet/prepare/Registry recovery artifacts. It excludes live WAL/SHM, lock and
-temporary files. Legacy import files are retained as recovery evidence. Keep
-configuration/token rotation quiescent while creating the archive: the SQLite snapshot is transactional, while external
-files are copied separately. Files configured outside the state directory are
-not automatically included.
+The Control archive includes consistent SQLite snapshots of `control.sqlite3`
+and `metrics-history.sqlite3` along with supported files inside the Control
+state directory, including private token files and fleet/prepare/Registry
+recovery artifacts. It excludes live WAL/SHM, lock and temporary files. Legacy
+import files are retained as recovery evidence. Keep configuration/token
+rotation quiescent while creating the archive: the SQLite snapshots are
+transactional, while external files are copied separately. Files configured
+outside the state directory are not automatically included.
 
 A complete Manager recovery set also needs the files outside that archive:
 

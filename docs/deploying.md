@@ -81,63 +81,41 @@ Secrets are scoped by application name, so `api/DATABASE_URL` and `worker/DATABA
 
 ## Builds
 
-The Dashboard Git form and `luma builder submit` use the independent Builder queue. Bind the CLI once with `luma builder use https://build.example.com`. No build-node or registry selection is needed: compatible idle Runners claim tasks and use Builder’s configured destination, such as Alibaba Cloud ACR. See [Runner setup](runners.md).
+Remote repository builds run on the decoupled **Luma Build** addon (`luma-build`) and token-authenticated **Build Runners** (`luma runner`). Install the addon once with `luma addon install builder` and attach one or more Linux or macOS runners with `luma runner join` (see [Pluggable addons & SSO](addons.md) and [Build runners](runners.md)).
 
-### Legacy Control builds
+When you are signed in to Luma Control (`luma login`), `luma builder` automatically discovers the cluster's Builder URL and reuses your Control credentials. You can also bind or override the endpoint explicitly with `luma builder use https://build.example.com` (or `--url` / `LUMA_BUILD_URL`).
 
-The following `luma import` / `luma build config` instructions apply to the existing Control-managed build path; the Dashboard Git form uses the independent Builder instead.
+### Native-architecture runners
 
-Source builds need a node with Docker Buildx (Linux, or macOS with OrbStack / Docker Desktop) and a registry the cluster can pull from:
-
-```bash
-luma registry serve --node builder          # deploy the managed registry on a node
-luma build config --node builder --default-node builder
-```
-
-Luma picks the image architecture from the target region's nodes: an ARM node gets `linux/arm64`, a mixed region gets a multi-platform image. `--platform` is accepted only when it covers every target.
-
-### Native builders
-
-Register AMD64 and ARM64 builders to route builds by their target architecture:
+Luma Build never falls back to slow QEMU emulation for ARM builds. Register native AMD64 and ARM64 runners to match your target cluster architecture:
 
 ```bash
-luma build config --node builder --node arm64-builder --default-node builder \
-  --registry-host 100.64.0.70:5000 --push-host 100.64.0.70:5000
+luma builder token create x86-builder --weight 200 --cache-mode read-write
+luma builder token create arm64-builder --weight 100 --cache-mode read-only
 ```
 
-Upgrade Control and all builder agents first. Repository builders must advertise `native-arm-build-v1`; automatic selection also uses `repository-build-plan-v1`. macOS with OrbStack or Docker Desktop is supported. `luma status` reports each builder's native container platform.
+Then join each machine with `luma runner join --url https://build.example.com --token <runner-token>` (Linux or macOS with OrbStack / Docker Desktop). Each runner reports its actual native Docker platform and keeps a persistent local BuildKit cache (L1) backed by shared registry layer caching (L2).
 
-When declared builders have different native architectures, Control first resolves the repository manifest (including a selected Compose sidecar and per-service placement), locks its Git commit, then queues the build on a matching native builder. Any build containing ARM64, including mixed AMD64/ARM64 builds, must use a native ARM64 builder. A busy or offline native builder remains queued; a missing native ARM builder is an error. Runtime secrets stay on Control until deployment.
+When a build targets ARM64—including mixed AMD64/ARM64 requests—the scheduler routes it to a native ARM64 runner and verifies the Docker engine's native architecture before building. If no matching native runner is online, the build stays queued or fails fast rather than silently emulating.
 
-`--build-node` can pin a compatible builder but cannot bypass the ARM requirement. Before every ARM build, Luma verifies the actual Docker engine of every Buildx worker; emulated platform advertisements are insufficient. This covers imports, Compose, retries and `luma build local`, including custom Buildx builders. Upgrade an older local CLI before building ARM images. Unverifiable remote/Kubernetes Buildx drivers are rejected for ARM builds.
+### Submit a repository build
 
-A mixed AMD64/ARM64 request runs on the ARM builder, where its AMD64 portion may use emulation; it is not split across machines. Different ARM architectures (for example ARMv7 and ARM64) require separate requests. Builds without ARM retain their existing fallback behavior. Set `pushHost` to an address reachable from every builder, rather than `localhost`.
-
-### Build a local checkout
+Submit a GitHub or Gitea repository directly from the CLI or from the Dashboard **Create application** Git form:
 
 ```bash
-cd app
-luma build local . --env .env
+luma builder submit acme/app --ref main --env .env                      # GitHub owner/repo
+luma builder submit https://gitea.example.com/acme/app.git --ref v1.4.0
 ```
 
-The project identity comes from the `origin` remote (`--repo-url` otherwise). Luma builds with your local Docker Buildx, pushes to the cluster registry under the same repository path as `luma import`, then deploys. Your machine must reach the registry. Options: `--platform`, `--context`, `--dockerfile`, `--compose-sidecar`, `--builder` (reuse a Buildx builder) and `--proxy` (HTTP proxy for base images and `RUN` steps).
-
-### Import a repository
-
-```bash
-luma import acme/app --ref main --env .env                      # GitHub owner/repo
-luma import https://gitea.example.com/acme/app.git --ref v1.4.0
-```
-
-For private repositories, save a token once and refer to it:
+For private repositories, save a Git provider token in Control once (shared with Builder via scoped secrets / Control SSO) and reference it:
 
 ```bash
 printf '%s' "$GITHUB_TOKEN" | luma git-provider set github personal --username octo --token-stdin
 luma git-provider repos github:personal
-luma import --provider-id github:personal --repository acme/app --ref main
+luma builder submit --provider-id github:personal --repository acme/app --ref main
 ```
 
-Import looks for a single-service manifest (`.luma.yml`, `luma.yml`, `*.luma.yml`) or a Compose sidecar (`luma.compose.yml`, `.luma.compose.yml`, `*.luma.compose.yml`, `docker-compose.luma.yml`). Select one explicitly with `--compose-sidecar path/in/repo.yml`, or pass `--manifest local.yml` when the repository has none. For Compose repositories, services with `build:` are built and rewritten to the pushed `image:`. Check that locally with `luma compose validate --import-mode luma.compose.yml`.
+Builder looks for a single-service manifest (`.luma.yml`, `luma.yml`, `*.luma.yml`) or a Compose sidecar (`luma.compose.yml`, `.luma.compose.yml`, `*.luma.compose.yml`, `docker-compose.luma.yml`). Select one explicitly with `--compose-sidecar path/in/repo.yml`, or pass `--manifest local.yml` when the repository has none. For Compose repositories, services with `build:` are built and rewritten to the pushed `image:`. Check that locally with `luma compose validate --import-mode luma.compose.yml`.
 
 ### Dockerfile targets and pinned Git inputs
 
@@ -166,43 +144,45 @@ services:
 }
 ```
 
-Replace these example hashes with the full lowercase commit and SHA256 of `git archive --format=tar.gz <commit>`. Builder verifies both before supplying the exported files as the BuildKit context `library`, usable with `COPY --from=library`. Hosted archive endpoints may produce different bytes and are not interchangeable with this archive.
+Replace these example hashes with the full lowercase commit and SHA256 of `git archive --format=tar.gz <commit>`. The runner verifies both before supplying the exported files as the BuildKit context `library`, usable with `COPY --from=library`. Hosted archive endpoints may produce different bytes and are not interchangeable with this archive.
 
 Additional repositories must use the same HTTPS origin (host and port) as the primary repository, without embedded credentials, query or fragment. They use the selected primary Git provider credential; that credential must have access to every locked repository. Fetching and verification happen outside Docker. Only verified exported source enters BuildKit; Git credentials, helpers and `.git` metadata do not enter Docker contexts or image layers.
 
-Require the protocol explicitly when importing:
-
-```bash
-luma import --provider-id gitea:team --repository acme/app --ref "$APP_COMMIT" \
-  --compose-sidecar deploy/luma.compose.yml \
-  --require-build-capability repository-build-inputs-v1
-```
-
-This requires a CLI that supports the flag, Control capability `required-build-capability-v1`, and the selected ready Builder advertising `repository-build-inputs-v1`. Control checks the live Builder again and requires the build result to confirm the capability before deployment; retries preserve the requirement. Missing support stops the operation rather than ignoring the additional inputs. Source implementation alone does not prove the feature is released or running: publish the supporting Luma version and upgrade Control and Builder before using this path.
-
-An external `--manifest` automatically requires the same capability, even without the flag. Builder uses its validated build and placement fields only when the repository has no manifest; a repository manifest takes precedence for both building and deployment. Runtime environment and secrets from the external manifest are never forwarded as build inputs. Upgrade Control and Builder before using an external manifest with this CLI.
-
-`luma build local` does not support `x-luma-git-contexts`, including in Compose builds. Use remote `luma import` for these inputs; do not move provider credentials into a Dockerfile to bypass the restriction. `build.target` alone does not require an additional Git input.
+`luma build local` does not support `x-luma-git-contexts`, including in Compose builds. Use remote `luma builder submit` for these inputs; do not move provider credentials into a Dockerfile to bypass the restriction. `build.target` alone does not require an additional Git input.
 
 ### Build runs and the queue
 
-Imports and retries enter a persistent queue and move through two stages:
+Submitted builds enter the persistent `luma-build` SQLite queue and move through two decoupled stages:
 
-- **Build.** Builds never wait for another build of the same application, because every attempt pushes its own immutable image. They wait only for a free compatible builder. Without `--build-node`, every declared builder with the right native platform and agent capabilities forms a pool: whichever becomes free first takes the next build. A project's previous builder holds its BuildKit cache, so it gets a short head start (`LUMA_BUILD_AFFINITY_WAIT_SECONDS` on Control, default 20) before another idle builder may take over. Pooling requires `registryHost` and a `pushHost` that every builder reaches, rather than `localhost`. `--build-node` pins one builder.
-- **Deploy.** Up to eight independent applications can deploy concurrently. The same application (the manifest `name`) and conflicting domains or TCP relay ports remain serialized. Within one repository and ref, the latest submission wins: a newer finished image can deploy while an older image is still building, and that older image cannot overwrite it later. Local build order is reserved before building, not when uploading finishes. A rollout already running finishes before the next revision; `main` and `dev` are ordered for a shared target, never canceled by each other.
-
-Canceling a build during rollout stops its exact Nomad deployment (honoring the job's automatic rollback policy), interrupts the Control wait, and releases its queue slot when the executor exits. Repeated clicks or elapsed time do not mark a still-running executor as canceled. If Nomad cannot confirm the stop, the attempt reports the cancellation error instead of claiming success.
-
-The builder is released as soon as its image is pushed, so the next build starts while the previous one deploys. `LUMA_BUILD_QUEUE_CONCURRENCY` (default 4) limits concurrent build stages on Control; deployments have their own slot.
+- **Build.** Compatible idle runners claim queued leases based on native platform, cache affinity (preferring the repository's previous runner during a short affinity window so L1 BuildKit cache hits stay warm), and runner weight. Registry push credentials and Git tokens are scoped to `luma-build`, leased in memory only for the active build, and cleared when the job finishes.
+- **Deploy.** Once the runner pushes the immutable image, it is immediately released for the next build while Builder's deploy worker submits the rendered rollout to Luma Control. On Control, up to eight independent applications can deploy concurrently while the same application (`name`) and conflicting domains or TCP relay ports remain serialized. Within a single branch/ref, newer submissions supersede older pending builds so stale revisions never overwrite newer rollouts.
 
 ```bash
-luma build list --app api --status failed
-luma build logs <build-id>
-luma build retry <build-id>
-luma build cancel <build-id>
+luma builder list --app api --status failed
+luma builder logs <build-id>
+luma builder retry <build-id>
+luma builder cancel <build-id>
 ```
 
-Closing the CLI after a build is accepted does not cancel it. Queued requests survive a Control restart; interrupted active builds are marked failed instead of being replayed.
+Closing the CLI after a build is accepted does not cancel it. Queued requests survive restarts; see [Build runners](runners.md) for runner management and cache tuning.
+
+### Build a local checkout and managed registry
+
+When you prefer to build directly on your workstation with local Docker Buildx instead of queuing on remote runners, configure a cluster registry (an external OCI registry such as GHCR/ACR, or a self-hosted registry via `luma registry serve`) and set Control's build target with `luma build config`:
+
+```bash
+luma registry serve --node builder
+luma build config --registry-host 100.64.0.70:5000 --push-host 100.64.0.70:5000
+```
+
+Then build and deploy from your local checkout:
+
+```bash
+cd app
+luma build local . --env .env
+```
+
+The project identity comes from the `origin` remote (`--repo-url` otherwise). Luma builds with your local Docker Buildx, verifies the Docker engine's native architecture for ARM builds, pushes to the configured registry, and submits the resulting immutable image to Control. Your machine must reach the configured registry. Options: `--platform`, `--context`, `--dockerfile`, `--compose-sidecar`, `--builder` (reuse a Buildx builder), and `--proxy` (HTTP proxy for base images and `RUN` steps).
 
 ## Compose applications
 
@@ -219,14 +199,14 @@ All services of one application run on one node and share a network namespace. P
 
 ## Recorded workflows
 
-Control remembers how each application was last built and deployed successfully (local build, import, image deploy or Compose, plus ref, builder, platform, region and similar options). The next `deploy`, `import`, `build local`, `build retry` or `compose deploy` compares itself with that record:
+Control remembers how each application was last built and deployed successfully (local build, builder submission, image deploy or Compose, plus ref, platform, region and similar options). The next `deploy`, `builder submit`, `build local`, or `compose deploy` compares itself with that record:
 
 - no record, or a match: proceed and refresh the record;
 - a difference: show it and stop until you confirm. In a terminal you are asked; in JSON, quiet or non-interactive mode the command exits nonzero. Rerun with `--accept-workflow-change` only after reviewing the difference.
 
 ```bash
 luma workflow show api
-luma workflow record api --note "Built on the builder node" -- import acme/api --ref main
+luma workflow record api --note "Built on Luma Build runners" -- builder-submit acme/api --ref main
 luma workflow run api --path ~/src/api
 ```
 
@@ -255,7 +235,3 @@ luma login https://staging.example.com --token-stdin < staging.token
 luma context list
 luma deploy app.yaml --control-context staging
 ```
-
-## Independent build queue
-
-`luma builder submit` uses the separate `luma-build` service and token-authenticated runners. It has its own runner pool, credentials, queue and releases. See [Build runners](runners.md) for setup and the distinction from Control-managed `luma import` / `luma build`.

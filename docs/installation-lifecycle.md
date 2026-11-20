@@ -1,12 +1,8 @@
 # Managed installation and local diagnosis
 
-> Introduced in v0.1.317: the initial managed-installation hardening batch.
-> Candidate preparation is isolated. A later change adds an independent
-> node-agent cutover supervisor with shim rollback when the new process does
-> not prove it is the target runtime. Manager updates take a Control
-> maintenance lease that rejects concurrent deploys/builds and requires a
-> cached Control image. Do not treat this document as a completed fleet
-> migration procedure.
+Managed Luma installations isolate candidate runtime preparation, cut over node
+agents through an independent systemd/launchd supervisor with automatic shim
+rollback, and coordinate manager updates under a Control maintenance lease.
 
 ## Installation identity
 
@@ -138,9 +134,8 @@ do not find `target.json` keep the previous in-process service refresh.
 
 ## Not yet covered
 
-Crash recovery of a supervisor that died mid-switch, public adoption/repair,
-Dashboard lifecycle UI, complete builder/registry validation and observe/backup standardization remain
-open. No live upgrade should
+Crash recovery of a supervisor that died mid-switch and interactive adoption/repair
+of arbitrary non-standard install paths remain open. No live upgrade should
 be justified by candidate-preparation tests alone.
 
 ## Runner services and CLI updates

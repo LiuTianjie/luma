@@ -64,9 +64,10 @@ Set `node: <name>` in a manifest only when a service must stay on one machine (l
 
 | Exposure | Path |
 | --- | --- |
-| `cn-edge` | Cloudflare DNS → Traefik on the manager → service in `cn` |
-| `external-edge` | Cloudflare DNS → a global edge → service in `global` |
-| `tailscale-relay` | Cloudflare DNS → Traefik → Tailscale → service on a home or relay-enabled custom-region node |
+| `cn-edge` | DNS → Traefik on the manager → service in `cn` |
+| `external-edge` | DNS → a global edge → service in `global` |
+| `node-edge` | DNS → standalone public node's own Traefik (`luma node ingress enable`) → service on that node, bypassing the manager |
+| `tailscale-relay` | DNS → Traefik → Tailscale → service on a home or relay-enabled custom-region node |
 | `tcp-relay` | A public TCP port on Traefik → service (for example a database) |
 | `cloudflare-tunnel` | Cloudflare Tunnel → private service, bypassing Traefik |
 | `none` | No public ingress |

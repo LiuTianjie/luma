@@ -25,7 +25,7 @@ New to Luma? Read the first two pages in order, then pick guides as you need the
 | [Egress gateway](egress-gateway.md) | Outbound proxy for image pulls and `proxy: true` services |
 | [Observability](observability.md) | Metrics, alerts and the optional observe stack |
 | [Console guide](dashboard-guide.md) | The web dashboard |
-| [AI agent skills](ai-agent-skills.md) | Skills that teach coding assistants to deploy with Luma |
+| [AI agent skills](ai-agent-skills.md) | Skills that teach coding assistants to deploy, inspect logs, query observability, open shells, and analyze Luma Eye telemetry |
 | [Troubleshooting](troubleshooting.md) | Known failures and their fixes |
 
 ## Reference

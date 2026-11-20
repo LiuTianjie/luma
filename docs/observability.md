@@ -195,7 +195,7 @@ Line time is observation time because Nomad frames have no event timestamps.
 `luma app logs` and the application-detail live tail still follow Nomad
 files through Control and are bounded excerpts, not this 15-day store.
 
-Resources are retained in 30-second buckets, independently of the number of nodes reporting a service. `LUMA_METRICS_HISTORY_POINTS` defaults to 720 (approximately six hours), bounded between 60 and 10000. Resource history remains a separate bounded `metrics-history.json` file in the Control state directory; collection outside Control is still useful for longer investigations and independent outage detection. See [Control storage and recovery](control-storage.md) for backup scope. A service aggregate covers reporting nodes; missing contributions expire after 180 seconds. It is not proof that all replicas have reported.
+Resources are retained in 30-second buckets, independently of the number of nodes reporting a service. `LUMA_METRICS_HISTORY_POINTS` defaults to 720 (approximately six hours), bounded between 60 and 10000. Resource history lives in a dedicated SQLite WAL database (`metrics-history.sqlite3`) inside the Control state directory—separate from `control.sqlite3`, with incremental auto-vacuum and automatic one-time migration from legacy `metrics-history.json` on first open; collection outside Control is still useful for longer investigations and independent outage detection. See [Control storage and recovery](control-storage.md) for backup scope. A service aggregate covers reporting nodes; missing contributions expire after 180 seconds. It is not proof that all replicas have reported.
 
 ## Built-in alert rules and notifications
 

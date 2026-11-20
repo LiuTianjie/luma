@@ -288,14 +288,17 @@ sudo docker pull hello-world:latest
 
 ```bash
 luma update                                  # manager: CLI + Control; node: CLI + agent; client: CLI
+luma update manager --detach                 # detached manager update in its own transient systemd unit
 luma update --install-ref v0.2.88           # a specific release, branch or full commit
 luma update fleet                            # every non-manager node with a ready agent
 luma update fleet --include-manager          # explicit repair only
 ```
 
-未指定 `--install-ref` 时安装最新发布版；协调发布候选版本时请使用完整提交。控制台的 **设置 → 系统维护** 是升级 Manager 的首选方式：它先把 Control 镜像同步到内部镜像仓库，再带进度和路由检查滚动升级。在 Manager 上直接执行 `luma update` 会自行拉取镜像；无法访问 GHCR 时，把 `LUMA_CONTROL_IMAGE` 设为可拉取的镜像。
+未指定 `--install-ref` 时安装最新发布版；协调发布候选版本时请使用完整提交。控制台的 **设置 → 系统维护** 是升级 Manager 的首选方式：它先把 Control 镜像同步到内部镜像仓库，在配置了出站代理时自动向 `start-manager-update` 任务透传 Manager 的 egress proxy，再带进度和路由检查滚动升级。在 Manager 上直接执行 `luma update` 会自行拉取镜像；无法访问 GHCR 时，把 `LUMA_CONTROL_IMAGE` 设为可拉取的镜像。
 
 在 Manager 上，`luma update` 会刷新防火墙、Traefik、Tailscale 看门狗、journald 大小上限、Control 配置和 `luma-control` job（启用 Nomad auto-revert），然后刷新本机节点 agent。它不会重启 Docker 或 Nomad agent，不会重新配置出站代理，也不会重新部署应用。`/opt/luma/control` 下的 Manager 状态仅 root 可读；没有免密 sudo 时执行 `sudo ~/.local/bin/luma update`。
+
+在 Luma 网页/CLI 终端会话或可能断连的 Shell 中升级 Manager 时，应加上 `--detach`（`luma update manager --detach`）。在 systemd 主机上，`--detach` 会通过 `systemd-run` 启动独立瞬态单元以脱离 `luma-node-agent.service` 的 cgroup，避免刷新节点 agent 时中断正在进行的控制面更新，并打印日志与退出码路径。调用方环境中显式设置的代理和包源变量（`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`、`ALL_PROXY`、`PIP_INDEX_URL`、`LUMA_PIP_INDEX_URL`）会按需透传到该独立更新单元。
 
 批量升级最多同时升级四个节点。安装或重连检查失败的节点最多重试五次；从设置 → 系统维护发起时，开始时离线的节点也会等待并重试。每次安装会保留新版本、上一版本（用于回滚）以及仍被进程使用的版本，并删除只包含 `src` 和 `venv` 的旧 `releases/candidate.*` 目录；设置 `LUMA_KEEP_RELEASES=1` 可保留。
 
@@ -305,11 +308,11 @@ Manager 和节点都运行一个小的 Tailscale 看门狗，连续探测对端�
 
 ## Builder 的安装与重启恢复 {#builder-lifecycle}
 
-Builder 是加入集群的普通 Luma 节点，通过 `luma build config --node <name> --default-node <name>` 指定其构建职责。节点上的 agent 负责领取构建任务，Docker Buildx 按需创建 `luma-builder` 和 `luma-builder-egress` 构建引擎。它们不需要额外的后台启动脚本。
+远程仓库构建运行在独立解耦的 **Luma Build** 插件（`luma-build`）和由 `luma runner` 管理的无状态 **Build Runner** 之上。Runner 通过专属令牌认证接入（`luma builder token create <name>` + `luma runner join`），**不需要**执行 `luma node join` 或安装 Nomad。Runner 以本机系统服务（`luma runner start|stop|restart|status|logs --follow`）或 Docker 容器方式运行，自带持久化本地 BuildKit 缓存与自动 LRU 回收，主机重启后自动重连。Runner 生命周期、镜像加速与移除见[构建 Runner](runners.zh-CN.md)。
 
-`luma node join` 安装节点服务。Linux 使用 `luma-node-agent.service`（开机启用、`Restart=always`），macOS 使用 `io.luma.node-agent` LaunchDaemon（`RunAtLoad`、`KeepAlive`）。Nomad 由自己的系统服务管理，BuildKit 容器由 Docker 管理。macOS 上的 Docker Desktop 或 OrbStack 仍须配置为随用户登录启动；agent 自启不等于 Docker 已经可用。
+对于已加入集群的工作节点（例如业务运行节点或通过 `luma registry serve` 承载自托管镜像仓库的节点），`luma node join` 会安装节点 agent 服务。Linux 使用 `luma-node-agent.service`（开机启用、`Restart=always`），macOS 使用 `io.luma.node-agent` LaunchDaemon（`RunAtLoad`、`KeepAlive`）。Nomad 由自己的系统服务管理，容器与 BuildKit 生命周期由 Docker 管理。macOS 上的 Docker Desktop 或 OrbStack 仍须配置为随用户登录启动；agent 自启不等于 Docker 已经可用。
 
-加入节点、agent 更新和独立安装脚本复用 `luma/agent.py` 中的服务定义及节点 Tailscale 看门狗安装逻辑。独立安装脚本只会刷新已有 `agent.json` 的节点，不会把普通 CLI 客户端变成 builder。不要在单台机器上另加无源码的启动补丁作为正常安装步骤。
+加入节点、agent 更新和独立安装脚本复用 `luma/agent.py` 中的服务定义及节点 Tailscale 看门狗安装逻辑。独立安装脚本只会刷新已有 `agent.json` 的节点，不会把普通 CLI 客户端变成集群节点或构建 Runner。不要在单台机器上另加无源码的启动补丁作为正常安装步骤。
 
 Linux 的 `luma-node-tailscale-watchdog.timer` 在开机约两分钟后开始检查，随后约每分钟检查一次。它从 Nomad 配置读取 Manager 地址，检查 Tailscale 连通性和实际 TCP 端口，默认连续三次失败才重启本机 Tailscale。进程已经启动但控制面仍显示离线时，先检查这一层；SSH 可达和 agent 到 Manager 可达是不同的连接。
 
@@ -320,9 +323,10 @@ systemctl is-enabled luma-node-agent.service luma-node-tailscale-watchdog.timer
 systemctl status luma-node-agent.service luma-node-tailscale-watchdog.timer --no-pager
 journalctl -b -u luma-node-agent.service -u luma-node-tailscale-watchdog.service
 luma node list
+luma builder runners
 ```
 
-恢复验收要同时确认系统服务、最新 Control 心跳和 builder 的 `ready` 状态。发现开机时间大幅跳变时，还应检查宿主机/虚拟机 RTC 与系统校时服务；不能仅凭时间跳变认定网络故障根因，也不应默认给所有开发者安装或强制依赖某一种 NTP 服务。
+恢复验收要同时确认系统服务、最新 Control 心跳（`luma node list`）以及 Runner 在线状态（`luma builder runners` / `luma runner status`）。发现开机时间大幅跳变时，还应检查宿主机/虚拟机 RTC 与系统校时服务；不能仅凭时间跳变认定网络故障根因，也不应默认给所有开发者安装或强制依赖某一种 NTP 服务。
 
 ## 节点磁盘清理 {#node-disk-cleanup}
 

@@ -20,11 +20,24 @@ luma bootstrap --domain luma.example.com --profile single-node
 
 ## `cn-edge` {#cn-edge}
 
-中国大陆公共边缘节点：
+中国大陆公共边缘节点（角色：`nomad-manager`、`edge`；标签：`region=cn`、`ingress=true`）：
 
 - Docker
 - Nomad server
 - Traefik
+- Luma Control API（不含出网网关）
+
+## `egress-gateway` {#egress-gateway}
+
+面向镜像拉取与 `proxy: true` 服务的出站代理网关（角色：`egress`；标签：`egress=true`）。
+
+## `home-node` {#home-node}
+
+用于内部工具、`tailscale-relay` 或 `cloudflare-tunnel` 服务的家庭/私网节点（角色：`home`；标签：`region=home`）。
+
+## `global-worker` {#global-worker}
+
+海外/直连外网工作节点（角色：`global-worker`；标签：`region=global`）。
 
 ## 工作节点区域 {#worker-regions}
 

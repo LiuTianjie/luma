@@ -1,6 +1,6 @@
 # 托管安装与本地诊断 {#managed-installation-and-local-diagnosis}
 
-> v0.1.317 引入了首批托管安装加固。候选环境准备相互隔离。后续变更新增独立节点 agent 切换监督器，新进程无法证明自身是目标运行时时会回滚命令 shim。Manager 更新获取 Control 维护租约，拒绝并发部署/构建，并要求镜像已缓存。本文不代表已完成的全节点迁移流程。
+Luma 托管安装采用隔离的候选运行时准备、基于独立 systemd/launchd 监督器（支持自动 shim 回滚）的节点 agent 切换，以及在 Control 维护租约下协调执行的 Manager 更新。
 
 ## 安装身份 {#installation-identity}
 
@@ -69,7 +69,7 @@ Control 未返回 agent 凭据时，`luma node join` 不再报告完成。本地
 
 ## 尚未覆盖 {#not-yet-covered}
 
-切换中途监督器崩溃恢复、公开接管/修复、控制台生命周期 UI、完整的 Builder/Registry 验证和 observe/备份标准化仍待完成。不能仅凭候选准备测试就判断可安全进行真实升级。
+切换中途监督器崩溃恢复，以及任意非标准安装路径的交互式接管/修复仍待完成。不能仅凭候选准备测试就判断可安全进行真实升级。
 
 ## Runner 服务与 CLI 升级 {#runner-services-and-cli-updates}
 

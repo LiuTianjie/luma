@@ -18,26 +18,27 @@ luma manager egress
 
 Luma 会：
 
-- 下载订阅；
-- 将 YAML 或 base64 订阅转换成最小 Mihomo 配置；
+- 生成基于 Mihomo 原生 `proxy-providers` 的最小配置（按 `interval: 3600` 秒自动刷新 `EGRESS_SUBSCRIPTION_URL`，并每 `300` 秒执行 `health-check`），或在传入静态配置时解析 YAML / base64 订阅；
+- 配置 `EGRESS-AUTO`（`url-test` 自动测速择优）与 `EGRESS`（`fallback` 健康节点故障转移）代理组；
+- 将 `external-controller` 绑定到 `127.0.0.1:9090`，并使用 `LUMA_EGRESS_SECRET` 认证（未设置时自动随机生成）；
 - 以 `600` 权限写入 `/opt/luma/egress-gateway/config.yaml`；
 - 配置稳定系统 DNS，保障镜像仓库和初始化可靠性；
 - 首次初始化出网时临时禁用 Docker daemon 代理；
-- 使用内置出网镜像部署核心 `egress-mihomo` Nomad job；
+- 使用配置的出网镜像部署核心 `egress-mihomo` Nomad job；
 - 将网关主机 Nomad client meta 标为 `egress=true`，供内部 `egress_mihomo` 服务使用；
 - 安装适配 Docker 的公网端口防护；
 - 将 Docker daemon 代理配置为 `127.0.0.1:7890`；
 - 重启 Docker。
 
-默认出网镜像来自已验证可用于首次初始化的中国大陆镜像源：
+默认使用上游镜像 `metacubex/mihomo:latest`。在中国大陆主机或需要使用私有镜像源的网络环境下，可设置 `LUMA_DOCKER_MIRROR`、`LUMA_EGRESS_IMAGE`，或在 `luma.yaml` 中覆盖 `defaults.images.egressGateway`：
 
 ```yaml
 defaults:
   images:
-    egressGateway: docker.1panel.live/metacubex/mihomo:latest
+    egressGateway: mirror.example.com/metacubex/mihomo:latest
 ```
 
-多数用户无需配置镜像。自行维护镜像源时，可在 `luma.yaml` 覆盖 `defaults.images.egressGateway`。
+直连外网的多数用户无需覆盖默认镜像。
 
 后续刷新：
 

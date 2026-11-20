@@ -61,11 +61,11 @@ make e2e
 
 ### 推荐方式：通过 Luma Addon 一键插拔安装（统一 Control SSO，零手改 YAML）
 
-无需手改 compose 文件、无需手工生成和逐个填写内部密钥，也无需再配置第二套 Passkey / 登录密码：
+无需手改 compose 文件、无需手工生成和逐个填写内部密钥，也无需再配置第二套 Passkey / 登录密码。默认直接拉取预构建的 GHCR 镜像；如需从本地源码自定义构建，追加 `--source ./eye`：
 
 ```bash
-# 交互式向导安装（自动生成内部密钥、注入 LUMA_CONTROL_URL 并接入 Control 统一单点登录）
-luma addon install eye --source ./eye
+# 交互式向导安装（默认使用预构建 GHCR 镜像；自动生成内部密钥、注入 LUMA_CONTROL_URL 并接入 Control 统一单点登录）
+luma addon install eye
 
 # 或非交互指定参数（例如 node-edge 独立公网节点直连模式）
 luma addon install eye \
@@ -73,8 +73,10 @@ luma addon install eye \
   --domain eye.example.com \
   --region global \
   --node public-node \
-  --source ./eye \
   --yes
+
+# 如需基于本地源码自定义构建镜像：
+# luma addon install eye --source ./eye
 
 # 后续修改保留天数/存储上限/告警 Webhook（也可在 Control 控制台「插件中心」可视化配置并热更新）
 luma addon configure eye --set retentionDays=14 --apply
@@ -211,22 +213,3 @@ luma-eye issues demo-app --since 7d --json
 luma-eye issues demo-app --detail <fingerprint> --json
 luma-eye logs demo-app --level error --since 1h --json
 ```
-
-## 本集群发布入口（ACR）
-
-```sh
-bash scripts/deploy-luma.sh
-# 只有首次保存或明确更新运行时配置时再追加 --env <file>。
-```
-
-入口沿用 `deploy/node-edge/luma.compose.yml`，构建 Eye 和定制 ClickHouse，
-保留 `bot` 节点、现有数据卷和 `local/luma-eye` 项目标识。
-前文 root/split Compose 是其他安装形态；不能单独 compose deploy 本地镜像别名。
-
-The local build reads `build.localRegistryHost` and
-`build.registryNamespace` from the active Control context (ACR in this cluster).
-Do not hardcode the old `:5000` registry or use a separate Docker push.
-Keep the project identity and application name so existing scoped secrets and
-storage continue to apply. Use Luma CLI 0.2.79 or newer; inspect workflow changes
-before explicitly passing `--accept-workflow-change` for a migration.
-Committing this change does not rebuild or redeploy the running application.

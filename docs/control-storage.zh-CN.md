@@ -46,7 +46,7 @@ python -m luma.control.maintenance restore /secure-backups/control-2026-09-05.ta
 | 数据 | 位置与生命周期 |
 | --- | --- |
 | Control 配置及运维记录 | Manager SQLite；查询分页不删除数据。 |
-| 资源历史 | 状态目录下独立有界 `metrics-history.json`，API 报告可用区间与保留期。 |
+| 资源历史 | 状态目录下独立的 SQLite WAL 数据库 `metrics-history.sqlite3`（与 `control.sqlite3` 分离，启用 incremental auto-vacuum 并在首次打开时自动一次性迁移旧版 `metrics-history.json`），API 报告可用区间与保留期。 |
 | 生成的 Nomad job 和 Traefik 路由 | 按应用/服务名保存于 Manager，更新应用替换其当前生成文件。 |
 | Builder 源码快照与分析/构建证据 | 内容寻址存储，通常 `/var/lib/luma/builder/snapshots`，相同内容可共享 digest。 |
 | Builder 临时检出和凭据 | 任务工作目录，正常结束清理，崩溃可能遗留。 |
@@ -93,7 +93,7 @@ Builder 清理需要新鲜完整的 Manager 引用清单，且无活动构建任
 
 隔离只在同一文件系统移动字节，不释放空间，最终清除才释放。符号链接、未知路径、内容变化、引用过期或活动任务会阻止清理，不扩大删除范围。不清理临时工作区、BuildKit/Trivy 缓存、Registry blob、密钥或应用卷。
 
-Registry 有独立保留和保护删除/GC 流程。默认 `recommend`，保留最近 20 镜像，年龄策略 30 天，恢复窗口 7 天。自动删除需显式 `enforce`；修改 Control 历史策略不会启用它。Manifest 删除和物理 blob GC 分开，保留镜像可能仍使用共享层。
+Registry 有独立保留和保护删除/GC 流程。默认 `recommend` 模式，在连续 7 天观测未被引用后将镜像标为可清理候选，并提供 7 天恢复窗口（详见 [Registry 可清理镜像](operations.zh-CN.md#registry-cleanup-candidates)）。自动删除需显式 `enforce`；修改 Control 历史策略不会启用它。Manifest 删除和物理 blob GC 分开，保留镜像可能仍使用共享层。
 
 ## 已有安装：旧状态导入 {#existing-installations-legacy-state-import}
 
@@ -113,7 +113,7 @@ Registry 有独立保留和保护删除/GC 流程。默认 `recommend`，保留�
 
 控制台 Passkey（只有公钥）和浏览器会话（只有哈希）都在 SQLite 表中，恢复备份会一并恢复快照里的会话。如果备份可能外泄，恢复后运行 `luma passkey sign-out`。
 
-Control 归档包含一致性数据库快照及状态目录支持的文件，包括私有 token 和 fleet/prepare/Registry 恢复产物；排除活动 WAL/SHM、锁和临时文件，保留旧导入证据。归档时暂停配置/token 轮换：数据库快照是事务性的，外部文件分别复制。目录外配置文件不会自动包括。
+Control 归档包含 `control.sqlite3` 与 `metrics-history.sqlite3` 的一致性 SQLite 快照，以及状态目录支持的文件（包括私有 token 和 fleet/prepare/Registry 恢复产物）；排除活动 WAL/SHM、锁和临时文件，保留旧导入证据。归档时暂停配置/token 轮换：数据库快照是事务性的，外部文件分别复制。目录外配置文件不会自动包括。
 
 完整 Manager 恢复集还需要归档外的文件：
 

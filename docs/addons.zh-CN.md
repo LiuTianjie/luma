@@ -29,7 +29,7 @@ Luma Control 作为所有插件的统一身份提供方（IdP）：
 
 1. **浏览器单点登录（`control-sso`，用于 Luma Build 和 Luma Eye）**：打开插件控制台时自动跳转至 `https://<control-domain>/dashboard/addon-login?addon=<id>&challenge=...`，复用已登录的 Passkey/控制台会话签发一次性 PKCE 票据，换取绑定目标域名受众的不透明会话（`las_...`）。在 Control 退出登录或卸载插件时，相关插件会话立即吊销。
 2. **ForwardAuth（`forward-auth`，用于 Luma Observe）**：Traefik 通过 Control 的 `/v1/auth/forward` 校验 `/grafana` 请求，直接复用同一控制台会话或管理令牌，无需维护第二套 Grafana 账号。
-3. **CLI 零额外 Token**：`luma builder` 与 `luma eye` 自动复用当前 `luma login` 凭据，并从 Control 自动发现插件地址。
+3. **CLI 零额外 Token 与自动地址发现**：`luma builder` 与 `luma eye` 均会自动复用当前 `luma login` 凭据，并直接从 Control 发现已部署插件的公网地址（无需手工绑定）。若要连接独立部署的 Builder 或临时覆盖自动发现的地址，可使用 `luma builder use <url>`、`--url` 或环境变量 `LUMA_BUILD_URL`。
 
 ```bash
 luma addon list

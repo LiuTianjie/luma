@@ -64,9 +64,10 @@ Nomad 节点身份是稳定的 UUID，同名重新加入后，固定到该节点
 
 | 暴露方式 | 路径 |
 | --- | --- |
-| `cn-edge` | Cloudflare DNS → Manager 上的 Traefik → `cn` 中的服务 |
-| `external-edge` | Cloudflare DNS → global 入口 → `global` 中的服务 |
-| `tailscale-relay` | Cloudflare DNS → Traefik → Tailscale → 家庭或已启用中继的自定义 Region 节点上的服务 |
+| `cn-edge` | DNS → Manager 上的 Traefik → `cn` 中的服务 |
+| `external-edge` | DNS → global 入口 → `global` 中的服务 |
+| `node-edge` | DNS → 独立公网节点自带的 Traefik（`luma node ingress enable`）→ 该节点上的服务，绕开 Manager |
+| `tailscale-relay` | DNS → Traefik → Tailscale → 家庭或已启用中继的自定义 Region 节点上的服务 |
 | `tcp-relay` | Traefik 上的公网 TCP 端口 → 服务（例如数据库） |
 | `cloudflare-tunnel` | Cloudflare Tunnel → 私网服务，不经过 Traefik |
 | `none` | 无公网入口 |
