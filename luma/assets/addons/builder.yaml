@@ -20,6 +20,11 @@ ui:
   openMode: external
   dashboardPath: /builds
   healthPath: /healthz
+uiCapabilities:
+  - builder.git_import
+  - builder.runs
+defaultImages:
+  server: ghcr.io/liutianjie/luma-build-server:latest
 presets:
   - id: default
     label:
@@ -35,6 +40,7 @@ configSchema:
   - key: domain
     type: domain
     group: placement
+    tier: basic
     required: true
     placeholder: build.example.com
     label:
@@ -46,6 +52,7 @@ configSchema:
   - key: region
     type: region
     group: placement
+    tier: basic
     required: true
     default: cn
     label:
@@ -57,6 +64,7 @@ configSchema:
   - key: node
     type: node
     group: placement
+    tier: basic
     required: false
     default: manager
     label:
@@ -68,6 +76,7 @@ configSchema:
   - key: exposure
     type: select
     group: placement
+    tier: basic
     required: true
     default: cn-edge
     options:
@@ -85,6 +94,7 @@ configSchema:
   - key: registryHost
     type: string
     group: integrations
+    tier: recommended
     required: false
     default: ""
     env: LUMA_BUILD_REGISTRY_HOST
@@ -95,22 +105,10 @@ configSchema:
     description:
       en: Default container registry host used by target nodes when pulling built images.
       zh: 目标节点拉取构建镜像时使用的默认镜像仓库域名。
-  - key: pushHost
-    type: string
-    group: integrations
-    required: false
-    default: ""
-    env: LUMA_BUILD_PUSH_HOST
-    placeholder: registry.example.com
-    label:
-      en: Registry Push Host
-      zh: 镜像推送仓库地址
-    description:
-      en: Defaults to Registry Pull Host when left blank.
-      zh: 留空时默认与拉取仓库地址相同。
   - key: registryNamespace
     type: string
     group: integrations
+    tier: recommended
     required: false
     default: ""
     env: LUMA_BUILD_REGISTRY_NAMESPACE
@@ -124,6 +122,7 @@ configSchema:
   - key: registryUsername
     type: string
     group: integrations
+    tier: recommended
     required: false
     default: ""
     env: LUMA_BUILD_REGISTRY_USERNAME
@@ -133,14 +132,30 @@ configSchema:
   - key: registryPassword
     type: secret
     group: integrations
+    tier: recommended
     required: false
     env: LUMA_BUILD_REGISTRY_PASSWORD
     label:
       en: Registry Password / Token
       zh: 镜像仓库密码 / Token
+  - key: pushHost
+    type: string
+    group: integrations
+    tier: advanced
+    required: false
+    default: ""
+    env: LUMA_BUILD_PUSH_HOST
+    placeholder: registry.example.com
+    label:
+      en: Registry Push Host
+      zh: 镜像推送仓库地址
+    description:
+      en: Defaults to Registry Pull Host when left blank.
+      zh: 留空时默认与拉取仓库地址相同。
   - key: githubToken
     type: secret
     group: integrations
+    tier: advanced
     required: false
     env: GITHUB_TOKEN
     label:
@@ -152,6 +167,7 @@ configSchema:
   - key: giteaHost
     type: string
     group: integrations
+    tier: advanced
     required: false
     default: ""
     env: GITEA_HOST
@@ -162,6 +178,7 @@ configSchema:
   - key: giteaUsername
     type: string
     group: integrations
+    tier: advanced
     required: false
     default: ""
     env: GITEA_USERNAME
@@ -171,6 +188,7 @@ configSchema:
   - key: giteaToken
     type: secret
     group: integrations
+    tier: advanced
     required: false
     env: GITEA_TOKEN
     label:
@@ -179,6 +197,7 @@ configSchema:
   - key: affinitySeconds
     type: integer
     group: general
+    tier: advanced
     required: false
     default: 3
     min: 0

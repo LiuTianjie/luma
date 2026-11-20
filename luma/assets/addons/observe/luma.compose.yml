@@ -1,0 +1,91 @@
+# Control pins this stack to the registered manager (Traefik/Control node) and
+# rewrites region/node on deploy. Values below are only the local-render fallback.
+name: luma-observe
+compose: docker-compose.yml
+region: cn
+
+volumes:
+  collector-data:
+    local:
+      node: manager
+      path: /srv/luma/data/luma-observe/collector
+    initialize: empty
+  log-shipper-data:
+    local:
+      node: manager
+      path: /srv/luma/data/luma-observe/log-shipper
+    initialize: empty
+  victoria-data:
+    local:
+      node: manager
+      path: /srv/luma/data/luma-observe/victoria
+  tempo-data:
+    local:
+      node: manager
+      path: /srv/luma/data/luma-observe/tempo
+    initialize: empty
+  victorialogs-data:
+    local:
+      node: manager
+      path: /srv/luma/data/luma-observe/victorialogs
+    initialize: empty
+  observe-extensions:
+    local:
+      node: manager
+      path: /srv/luma/data/luma-observe/extensions
+    initialize: empty
+
+services:
+  log-alerts:
+    node: manager
+    exposure: none
+    replicas: 1
+  collector:
+    node: manager
+    exposure: none
+    replicas: 1
+  victoria:
+    node: manager
+    exposure: none
+    replicas: 1
+  tempo:
+    node: manager
+    exposure: none
+    replicas: 1
+  vmalert:
+    node: manager
+    exposure: none
+    replicas: 1
+  alertmanager:
+    node: manager
+    exposure: none
+    replicas: 1
+  nomad-exporter:
+    node: manager
+    exposure: none
+    replicas: 1
+  feishu-webhook:
+    node: manager
+    exposure: none
+    replicas: 1
+  host-gateway:
+    node: manager
+    exposure: none
+    replicas: 1
+  observe-access:
+    node: manager
+    exposure: none
+    replicas: 1
+  grafana:
+    node: manager
+    exposure: none
+    replicas: 1
+  victoria-logs:
+    node: manager
+    exposure: none
+    replicas: 1
+  log-shipper:
+    node: manager
+    exposure: none
+    replicas: 1
+

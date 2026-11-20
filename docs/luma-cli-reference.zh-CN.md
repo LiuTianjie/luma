@@ -2119,7 +2119,7 @@ arguments:
 ## `luma addon configure`
 
 ```text
-usage: luma addon configure [-h] [--preset PRESET] [--domain DOMAIN] [--region REGION] [--node NODE] [--exposure EXPOSURE] [--set KEY=VALUE] [--secret NAME=VALUE] [--interactive] [--rotate-secrets] [--apply] [--timeout TIMEOUT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] addon
+usage: luma addon configure [-h] [--preset PRESET] [--domain DOMAIN] [--region REGION] [--node NODE] [--exposure EXPOSURE] [--set KEY=VALUE] [--secret NAME=VALUE] [--use-registry HOST] [--use-git-provider ID] [--interactive] [--rotate-secrets] [--apply] [--timeout TIMEOUT] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] addon
 
 Configure addon settings and auto-generate missing internal secrets
 
@@ -2136,6 +2136,9 @@ arguments:
                               relay, cloudflare-tunnel, none)
   --set KEY=VALUE             Set a schema config field (repeatable)
   --secret NAME=VALUE         Set an addon secret value (repeatable)
+  --use-registry HOST         Reuse a saved Control registry credential (host) instead of retyping
+                              credentials
+  --use-git-provider ID       Reuse a saved Control Git provider credential (repeatable)
   --interactive               Prompt interactively for configuration values
   --rotate-secrets            Regenerate auto-managed internal secrets
   --apply                     Redeploy the addon immediately using its pinned image
@@ -2156,7 +2159,7 @@ arguments:
 ## `luma addon install`
 
 ```text
-usage: luma addon install [-h] [--preset PRESET] [--domain DOMAIN] [--region REGION] [--node NODE] [--exposure EXPOSURE] [--set KEY=VALUE] [--secret NAME=VALUE] [--source SOURCE] [--image SERVICE=IMAGE] [--platform PLATFORM] [--rotate-secrets] [--timeout TIMEOUT] [--yes] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] addon
+usage: luma addon install [-h] [--preset PRESET] [--domain DOMAIN] [--region REGION] [--node NODE] [--exposure EXPOSURE] [--set KEY=VALUE] [--secret NAME=VALUE] [--use-registry HOST] [--use-git-provider ID] [--source SOURCE] [--image SERVICE=IMAGE] [--platform PLATFORM] [--rotate-secrets] [--timeout TIMEOUT] [--yes] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] addon
 
 Configure and deploy an addon with unified Control SSO
 
@@ -2173,6 +2176,9 @@ arguments:
                               relay, cloudflare-tunnel, none)
   --set KEY=VALUE             Set a schema config field (repeatable)
   --secret NAME=VALUE         Set an addon secret value (repeatable)
+  --use-registry HOST         Reuse a saved Control registry credential (host) instead of retyping
+                              credentials
+  --use-git-provider ID       Reuse a saved Control Git provider credential (repeatable)
   --source SOURCE             Local source checkout to build and push (auto-detected if
                               ./<sourceDir> exists)
   --image SERVICE=IMAGE       Pin a prebuilt image instead of building locally (repeatable)
@@ -2685,7 +2691,7 @@ arguments:
 
 Examples:
   luma update
-  luma update --install-ref v0.2.85
+  luma update --install-ref v0.2.86
   luma update fleet
 ```
 

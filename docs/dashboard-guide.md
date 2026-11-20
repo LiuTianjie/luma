@@ -41,14 +41,15 @@ Passkey verification runs in the Control image, which installs the `control` ext
 | Workspace | What you can do |
 | --- | --- |
 | Overview | Review applications or nodes that need attention. |
-| Applications | Inspect services, replicas, endpoints, logs, metrics, custom dashboards, configuration and version history. |
-| Deployments | Follow builds and deployment results. |
-| Observability | Review alert incidents, application monitoring (requests, logs and traces), resource metrics, alert rules and notification channels. |
+| Applications | Inspect services, replicas, endpoints, live logs, resource metrics, configuration, secrets and version history (plus Grafana dashboards when Luma Observe is installed and frontend RUM when Luma Eye is installed). |
+| Deployments | Follow deployment history, plus remote Git builds and direct Builder console access when Luma Build is installed. |
+| Monitoring / Observability | Native alert incidents, Agent-backed resource metrics, alert rules and notification channels. Automatically expands with Platform health, App monitoring, Dashboard sharing (via Luma Observe) and Frontend RUM (via Luma Eye). |
 | Infrastructure | Manage nodes (including joining new ones and cleaning up their disks), regions, network routes, storage and registry images. |
+| Addons | Install, configure and uninstall optional official addons (Luma Build, Luma Observe, Luma Eye) with unified Control SSO and auto-managed internal secrets. See [Pluggable addons & SSO](addons.md). |
 | Settings | Manage secrets, registry credentials, Git credentials, sign-in (passkeys and browser sessions) and system maintenance (Control and agent upgrades). |
-| First install | Configure cluster dependencies and verify them. |
+| First install | Configure core cluster dependencies and verify them. |
 
-Settings and First install sit in the sidebar's Platform group. Creating an application and building from Git belong to Applications. The top bar shows your current location. Appearance, language and sign-out controls live in the sidebar. When the desktop sidebar is collapsed to icons, workspaces with secondary pages open a flyout menu. Choosing an appearance or language closes the preference menu. On desktop, the sidebar header contains the collapse control; narrow screens use the top-bar navigation opener.
+Addons, Settings and First install sit in the sidebar's Platform group. Creating an application and building from Git belong to Applications. The console adapts automatically to installed addons: uninstalled addon views stay hidden, and visiting an addon URL directly displays an installation guide rather than an error. The top bar shows your current location. Appearance, language and sign-out controls live in the sidebar. When the desktop sidebar is collapsed to icons, workspaces with secondary pages open a flyout menu. Choosing an appearance or language closes the preference menu. On desktop, the sidebar header contains the collapse control; narrow screens use the top-bar navigation opener.
 
 ## Create an application
 
@@ -69,9 +70,10 @@ See [Deployment YAML](deployment-yaml.md) for the schema and [Compose & storage]
 
 An application's tabs keep the same object context while switching between overview, services and instances, logs, metrics, custom dashboards, configuration, and version history.
 
-- **Overview** presents runtime status, placement, access addresses, storage and diagnostics.
-- **Logs** offers application-filtered VictoriaLogs search and Tempo traces in Grafana, with an expand/restore button. These views require observability services. **Live logs** retains Control-backed service/instance output, filtering, pause, wrapping, copy and download; opening logs from a specific service selects this view directly. Runtime events and pull diagnostics are separate from application output.
-- **Dashboards** lists Grafana dashboards tagged `luma-app:<application-name>`. Select a dashboard, refresh the list after installing definitions, or open it in a new tab. This view requires Observe; see [dashboard configuration and delivery](observe-applications.md#link-dashboards-to-an-application).
+- **Overview** presents runtime status, placement, access addresses, storage and diagnostics (plus pipeline health when Luma Observe is installed).
+- **Logs** defaults to Control-backed **Live logs** (service/instance stdout with filtering, pause, wrap, copy and download) when Luma Observe is not installed. With Luma Observe enabled, it unlocks application-filtered VictoriaLogs search and Tempo traces alongside live logs. Runtime events and pull diagnostics are separate from application output.
+- **Dashboards** (unlocked by **Luma Observe**) lists Grafana dashboards tagged `luma-app:<application-name>` and OTel task boards. See [dashboard configuration and delivery](observe-applications.md#link-dashboards-to-an-application).
+- **Frontend** (unlocked by **Luma Eye**) automatically matches the application to its Luma Eye project by slug or domain, showing live UV/PV, client error counts, crash-free session rate and a one-click SSO link into the full Eye console.
 - **Configuration** shows the registered deployment source and update time, with a copy action. A file switch appears when more than one configuration is available.
 - **Versions** separates loading failures from an empty history and from rollback failures. A rollback requires confirmation and changes the running deployment.
 

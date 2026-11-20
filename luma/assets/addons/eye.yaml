@@ -18,7 +18,13 @@ auth:
 ui:
   icon: eye
   openMode: external
+  dashboardPath: /observe/eye
   healthPath: /healthz
+uiCapabilities:
+  - eye.rum
+defaultImages:
+  eye: ghcr.io/liutianjie/luma-eye:latest
+  clickhouse: ghcr.io/liutianjie/luma-eye-clickhouse:latest
 presets:
   - id: all-in-one
     label:
@@ -44,6 +50,7 @@ configSchema:
   - key: domain
     type: domain
     group: placement
+    tier: basic
     required: true
     placeholder: eye.example.com
     label:
@@ -55,6 +62,7 @@ configSchema:
   - key: region
     type: region
     group: placement
+    tier: basic
     required: true
     default: cn
     label:
@@ -66,6 +74,7 @@ configSchema:
   - key: node
     type: node
     group: placement
+    tier: basic
     required: false
     default: ""
     label:
@@ -77,6 +86,7 @@ configSchema:
   - key: exposure
     type: select
     group: placement
+    tier: basic
     required: true
     default: cn-edge
     options:
@@ -91,6 +101,7 @@ configSchema:
   - key: autoOriginSuffixes
     type: string
     group: general
+    tier: advanced
     required: false
     default: ""
     env: LUMA_EYE_AUTO_ORIGIN_SUFFIXES
@@ -104,6 +115,7 @@ configSchema:
   - key: retentionDays
     type: integer
     group: storage
+    tier: advanced
     required: false
     default: 7
     min: 1
@@ -118,6 +130,7 @@ configSchema:
   - key: maxStorageGb
     type: integer
     group: storage
+    tier: advanced
     required: false
     default: 15
     min: 1
@@ -132,6 +145,7 @@ configSchema:
   - key: feishuWebhook
     type: secret
     group: integrations
+    tier: advanced
     required: false
     env: LUMA_EYE_FEISHU_WEBHOOK
     label:

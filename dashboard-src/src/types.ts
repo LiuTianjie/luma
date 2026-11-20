@@ -1,3 +1,5 @@
+import type { DashboardAddonsSummary } from "./addonCapabilities";
+
 export type Lang = "zh" | "en";
 
 export type Readiness = {
@@ -294,6 +296,7 @@ export type DashboardPayload = {
     id?: string;
     version?: string;
   };
+  addons?: DashboardAddonsSummary;
   readiness?: Readiness;
   nodes?: DashboardNode[];
   regions?: DashboardRegion[];

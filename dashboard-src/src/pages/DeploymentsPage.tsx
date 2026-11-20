@@ -1,6 +1,7 @@
 import { investigationPath } from "../observeContext";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { ArrowDown, ArrowLeft, ChevronDown, GitBranch, SlidersHorizontal, Plus, RefreshCw, RotateCcw, ScrollText, Search, Square } from "@/components/icons";
+import { ArrowDown, ArrowLeft, ArrowUpRight, ChevronDown, GitBranch, SlidersHorizontal, Plus, RefreshCw, RotateCcw, ScrollText, Search, Square } from "@/components/icons";
+import { addonConsoleUrl, hasAddonCapability, type DashboardAddonsSummary } from "../addonCapabilities";
 import { cancelBuildRun, retryBuildRunStream } from "../deploy/deployApi";
 import type { DeployStep } from "../deploy/types";
 import { StepLog } from "../deploy/StepLog";
@@ -357,8 +358,19 @@ function HistoryDetailPage({ lang, token, selection, initialItem, onClose, onRef
   );
 }
 
-export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) {
+export function DeploymentsPage({
+  lang,
+  token,
+  addons,
+}: {
+  lang: Lang;
+  token: string;
+  addons?: DashboardAddonsSummary;
+}) {
   const zh = lang === "zh";
+  const hasBuilderRuns = hasAddonCapability(addons, "builder.runs");
+  const hasBuilderImport = hasAddonCapability(addons, "builder.git_import");
+  const builderConsole = hasBuilderRuns ? addonConsoleUrl(addons, "builder") : "";
   const { path, search, navigate } = useRouter();
   const filters = historyFilters(search).toString();
   const segments = path.split("/").filter(Boolean);
@@ -418,8 +430,10 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
     <div className="flex min-w-0 flex-col gap-6">
       <PageHeader meta={{
         eyebrow: zh ? "部署记录" : "Deployments",
-        title: zh ? "部署与构建时间线" : "Deployment and build timeline",
-        description: zh ? "按应用、来源、状态和时间查询；记录与步骤日志按需分页。" : "Search by application, source, status, and time. Records and event logs load in pages.",
+        title: hasBuilderRuns ? (zh ? "部署与构建时间线" : "Deployment and build timeline") : (zh ? "部署时间线" : "Deployment timeline"),
+        description: hasBuilderRuns
+          ? (zh ? "按应用、来源、状态和时间查询；记录与步骤日志按需分页。" : "Search by application, source, status, and time. Records and event logs load in pages.")
+          : (zh ? "由 Control 原生记录的应用部署与发布历史；安装 Luma Build 插件后可解锁远端 Git 构建流水线。" : "Native Control deployment and release history. Install Luma Build to enable remote Git build pipelines."),
         metrics: [],
         action: (
           <div className="flex flex-wrap items-center gap-2">
@@ -427,10 +441,18 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
               {loading === "refresh" ? <Spinner data-icon="inline-start" aria-hidden="true" /> : <RefreshCw data-icon="inline-start" />}
               {zh ? "刷新" : "Refresh"}
             </Button>
-            <Button type="button" variant="outline" onClick={() => navigate("/builds")}>
-              <GitBranch data-icon="inline-start" />
-              {zh ? "从 Git 构建" : "Build from Git"}
-            </Button>
+            {builderConsole ? (
+              <Button type="button" variant="outline" nativeButton={false} render={<a href={builderConsole} target="_blank" rel="noreferrer" />}>
+                {zh ? "Builder 控制台" : "Builder console"}
+                <ArrowUpRight data-icon="inline-end" />
+              </Button>
+            ) : null}
+            {hasBuilderImport ? (
+              <Button type="button" variant="outline" onClick={() => navigate("/builds")}>
+                <GitBranch data-icon="inline-start" />
+                {zh ? "从 Git 构建" : "Build from Git"}
+              </Button>
+            ) : null}
             <Button type="button" onClick={() => navigate("/create")}>
               <Plus data-icon="inline-start" />
               {zh ? "创建应用" : "Create application"}

@@ -1,6 +1,9 @@
 import { ObservationStatus } from "../components/ObservationStatus";
 import { useEffect, useMemo } from "react";
+import { hasAddonCapability } from "../addonCapabilities";
+import { AddonRequiredCard } from "../components/AddonRequiredCard";
 import { AlertingPanel } from "../components/AlertingPanel";
+import { EyeObservabilityPanel } from "../components/EyeObservabilityPanel";
 import { useRouter, useSearchParams } from "../router";
 import { ObservabilityPanel } from "../components/ObservabilityPanel";
 import { ObserveAppsPanel } from "../components/ObserveAppsPanel";
@@ -22,7 +25,7 @@ const SECTIONS: Record<string, Section> = {
     refresh: true,
   },
   status: {
-    title: ["平台状态", "Platform health"],
+    title: ["采集状态", "Platform health"],
     description: ["指标、日志与链路的采集和查询是否正常。没有采样不代表系统健康。", "Whether metrics, logs and traces are being collected and queried. Missing samples do not establish health."],
     refresh: true,
   },
@@ -30,6 +33,10 @@ const SECTIONS: Record<string, Section> = {
     title: ["应用监控", "Application monitoring"],
     description: ["HTTP 入口、Nomad 任务、节点看板，以及链路与日志检索。", "HTTP ingress, Nomad job and node dashboards, with trace and log search."],
     refresh: true,
+  },
+  eye: {
+    title: ["前端监控", "Frontend RUM"],
+    description: ["Luma Eye 前端访客（UV/PV）、客户端异常与无崩溃会话率总览。", "Frontend visitors (UV/PV), client errors, and crash-free session rates from Luma Eye."],
   },
   metrics: {
     title: ["资源指标", "Resource metrics"],
@@ -50,8 +57,8 @@ const SECTIONS: Record<string, Section> = {
     refresh: true,
   },
   settings: {
-    title: ["观测设置", "Observability settings"],
-    description: ["观测平台的共享与访问选项。", "Sharing and access options for the observability stack."],
+    title: ["看板分享", "Dashboard sharing"],
+    description: ["Grafana 看板的对外公开分享与密码访问选项。", "External sharing and password access options for Grafana dashboards."],
   },
 };
 SECTIONS.logs = SECTIONS.apps;
@@ -91,6 +98,15 @@ export function ObservabilityPage({
   }, [path, legacyPath, navigate, query]);
   const section = path.split("/")[2] || "incidents";
   const meta = SECTIONS[section] || SECTIONS.incidents;
+  const hasObserveStatus = hasAddonCapability(vm.addons, "observe.status");
+  const hasObserveApps = hasAddonCapability(vm.addons, "observe.apps");
+  const hasObserveSettings = hasAddonCapability(vm.addons, "observe.settings");
+  const hasEyeRum = hasAddonCapability(vm.addons, "eye.rum");
+  const sectionMissingAddon =
+    (section === "status" && !hasObserveStatus) ||
+    ((section === "apps" || section === "logs") && !hasObserveApps) ||
+    (section === "settings" && !hasObserveSettings) ||
+    (section === "eye" && !hasEyeRum);
   // A fresh store per section, so one page's "updated at" never shows on another.
   const refreshStore = useMemo(() => createObserveRefreshStore(), [section]);
   // Editors and incident details carry their own heading and back action.
@@ -104,19 +120,27 @@ export function ObservabilityPage({
             title: meta.title[zh ? 0 : 1],
             metrics: [],
             description: subPage ? "" : meta.description[zh ? 0 : 1],
-            action: meta.refresh && !subPage ? <ObserveRefreshControl lang={lang} intervalSeconds={meta.interval} /> : undefined,
+            action: meta.refresh && !subPage && !sectionMissingAddon ? <ObserveRefreshControl lang={lang} intervalSeconds={meta.interval} /> : undefined,
           }}
         />
-        {section === "status" ? <ObservationStatus lang={lang} token={token} /> : section === "settings" ? (
-          <ObserveSettingsPanel key={token} lang={lang} token={token} />
+        {section === "status" ? (
+          hasObserveStatus ? <ObservationStatus lang={lang} token={token} /> : <AddonRequiredCard addonId="observe" lang={lang} featureTitle={meta.title[zh ? 0 : 1]} />
+        ) : section === "settings" ? (
+          hasObserveSettings ? <ObserveSettingsPanel key={token} lang={lang} token={token} /> : <AddonRequiredCard addonId="observe" lang={lang} featureTitle={meta.title[zh ? 0 : 1]} />
+        ) : section === "eye" ? (
+          hasEyeRum ? <EyeObservabilityPanel lang={lang} token={token} /> : <AddonRequiredCard addonId="eye" lang={lang} featureTitle={meta.title[zh ? 0 : 1]} />
         ) : section === "apps" || section === "logs" ? (
-          <ObserveAppsPanel
-            lang={lang}
-            token={token}
-            applicationNames={vm.applications.map((app) => app.stack)}
-            initialView={section === "logs" ? "logs" : "http"}
-            initialApp={query.get("app") || ""}
-          />
+          hasObserveApps ? (
+            <ObserveAppsPanel
+              lang={lang}
+              token={token}
+              applicationNames={vm.applications.map((app) => app.stack)}
+              initialView={section === "logs" ? "logs" : "http"}
+              initialApp={query.get("app") || ""}
+            />
+          ) : (
+            <AddonRequiredCard addonId="observe" lang={lang} featureTitle={meta.title[zh ? 0 : 1]} />
+          )
         ) : section === "metrics" ? (
           <ObservabilityPanel
             lang={lang}
@@ -130,6 +154,7 @@ export function ObservabilityPage({
             key={`${token}:${section}:${query.get("app") || ""}`}
             lang={lang}
             token={token}
+            addons={vm.addons}
             tab={
               section === "rules"
                 ? "rules"

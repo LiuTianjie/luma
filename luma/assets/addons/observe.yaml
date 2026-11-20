@@ -15,8 +15,30 @@ auth:
 ui:
   icon: observe
   openMode: internal
-  dashboardPath: /observe
+  dashboardPath: /observe/apps
   healthPath: /v1/dashboard/observe/status
+uiCapabilities:
+  - observe.status
+  - observe.apps
+  - observe.logs
+  - observe.traces
+  - observe.dashboards
+  - observe.alerts
+  - observe.settings
+defaultImages:
+  log-alerts: ghcr.io/liutianjie/luma-observe-log-alerts:latest
+  collector: ghcr.io/liutianjie/luma-observe-collector:latest
+  tempo: ghcr.io/liutianjie/luma-observe-tempo:latest
+  victoria: victoriametrics/victoria-metrics:v1.114.0
+  vmalert: ghcr.io/liutianjie/luma-observe-vmalert:latest
+  alertmanager: ghcr.io/liutianjie/luma-observe-alertmanager:latest
+  victoria-logs: victoriametrics/victoria-logs:v1.25.0
+  log-shipper: ghcr.io/liutianjie/luma-observe-python:latest
+  nomad-exporter: ghcr.io/liutianjie/luma-observe-python:latest
+  feishu-webhook: ghcr.io/liutianjie/luma-observe-python:latest
+  host-gateway: ghcr.io/liutianjie/luma-observe-python:latest
+  observe-access: ghcr.io/liutianjie/luma-observe-access:latest
+  grafana: ghcr.io/liutianjie/luma-observe-grafana:latest
 presets:
   - id: manager
     label:
@@ -32,6 +54,7 @@ configSchema:
   - key: region
     type: region
     group: placement
+    tier: basic
     required: true
     default: cn
     label:
@@ -43,6 +66,7 @@ configSchema:
   - key: feishuWebhookUrl
     type: secret
     group: integrations
+    tier: advanced
     required: false
     env: FEISHU_WEBHOOK_URL
     label:

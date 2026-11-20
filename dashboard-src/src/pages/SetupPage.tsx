@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { AlertCircle, CheckCircle2, Cloud, Info, KeyRound, Network, RefreshCw, ShieldCheck } from "@/components/icons";
+import { AlertCircle, ArrowRight, CheckCircle2, Cloud, Info, KeyRound, Network, Package, RefreshCw, ShieldCheck } from "@/components/icons";
+import type { DashboardAddonsSummary } from "../addonCapabilities";
+import { spaLink, useRouter } from "../router";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -45,7 +47,7 @@ const integrationDefinitions = [
   { id: "tailscale", zh: "Tailscale", en: "Tailscale", icon: Network },
   { id: "acme", zh: "ACME / TLS", en: "ACME / TLS", icon: ShieldCheck },
   { id: "egress", zh: "出网代理", en: "Egress", icon: Network },
-  { id: "registry", zh: "构建镜像仓库", en: "Builder registry", icon: KeyRound },
+  { id: "registry", zh: "镜像仓库", en: "Container registry", icon: KeyRound },
 ] as const;
 
 function statusFor(item: { configured?: boolean; required?: boolean } | undefined) {
@@ -71,8 +73,21 @@ function checkLabel(status: string | undefined, zh: boolean) {
   return labels[status || ""]?.[zh ? 0 : 1] || status || (zh ? "未知" : "Unknown");
 }
 
-export function SetupPage({ lang, token, readiness, onRefresh }: { lang: Lang; token: string; readiness?: Readiness; onRefresh: () => Promise<void> | void }) {
+export function SetupPage({
+  lang,
+  token,
+  readiness,
+  addons,
+  onRefresh,
+}: {
+  lang: Lang;
+  token: string;
+  readiness?: Readiness;
+  addons?: DashboardAddonsSummary;
+  onRefresh: () => Promise<void> | void;
+}) {
   const zh = lang === "zh";
+  const { navigate } = useRouter();
   const [form, setForm] = useState<SetupForm>(() => ({
     ...emptyForm,
     cloudflareZone: readiness?.dns?.zone || "",
@@ -215,7 +230,7 @@ export function SetupPage({ lang, token, readiness, onRefresh }: { lang: Lang; t
         </Card>
 
         <Card>
-          <CardHeader><CardTitle>{zh ? "集群内部镜像仓库（可选）" : "Cluster internal registry (optional)"}</CardTitle><CardDescription>{zh ? "供 Control 的镜像缓存与兼容构建流程使用。独立 Builder 的目标镜像仓库和推送凭据在 Builder 服务中配置。" : "Used by Control image caching and legacy builds. Configure the independent Builder’s destination registry and push credentials on the Builder service."}</CardDescription></CardHeader>
+          <CardHeader><CardTitle>{zh ? "镜像仓库（可选）" : "Container registry (optional)"}</CardTitle><CardDescription>{zh ? "用于本地构建推送、镜像缓存，并可在安装 Luma Build 插件时直接复用，无需重复输入凭据。" : "Used for local builds and image caching, and can be inherited directly by the Luma Build addon with zero duplicate entry."}</CardDescription></CardHeader>
           <CardContent><FieldGroup className="grid gap-4 md:grid-cols-2">
             <Field data-disabled={busy !== ""} data-invalid={registryInvalid && !form.registryHost.trim()}><FieldLabel htmlFor="registry-host">{zh ? "拉取地址（registryHost）" : "Pull address (registryHost)"}</FieldLabel><Input disabled={busy !== ""} id="registry-host" placeholder="100.64.0.10:5000" value={form.registryHost} aria-invalid={registryInvalid && !form.registryHost.trim()} aria-describedby={registryInvalid && !form.registryHost.trim() ? "registry-host-error" : undefined} onChange={(event) => update("registryHost", event.target.value)} />{registryInvalid && !form.registryHost.trim() ? <FieldError id="registry-host-error">{zh ? "请填写镜像拉取地址。" : "Enter the image pull address."}</FieldError> : null}</Field>
             <Field data-disabled={busy !== ""} data-invalid={registryInvalid && !form.pushHost.trim()}><FieldLabel htmlFor="push-host">{zh ? "推送地址（pushHost）" : "Push address (pushHost)"}</FieldLabel><Input disabled={busy !== ""} id="push-host" placeholder="100.64.0.10:5000" value={form.pushHost} aria-invalid={registryInvalid && !form.pushHost.trim()} aria-describedby={registryInvalid && !form.pushHost.trim() ? "push-host-error" : undefined} onChange={(event) => update("pushHost", event.target.value)} />{registryInvalid && !form.pushHost.trim() ? <FieldError id="push-host-error">{zh ? "请填写镜像推送地址。" : "Enter the image push address."}</FieldError> : null}</Field>
@@ -240,6 +255,46 @@ export function SetupPage({ lang, token, readiness, onRefresh }: { lang: Lang; t
             <TableBody>{Object.entries(checks?.checks || {}).map(([id, item]) => <TableRow key={id}><TableCell>{integrationDefinitions.find((definition) => definition.id === id)?.[zh ? "zh" : "en"] || id}</TableCell><TableCell><Badge variant={checkVariant(item.status)}>{checkLabel(item.status, zh)}</Badge></TableCell><TableCell className="min-w-48 whitespace-normal break-words">{item.detail || "-"}</TableCell></TableRow>)}</TableBody>
           </Table> : busy === "check" ? <div className="flex flex-col gap-3" role="status" aria-label={zh ? "正在验证依赖" : "Verifying dependencies"}><Skeleton className="h-8 w-full" /><Skeleton className="h-8 w-full" /><Skeleton className="h-8 w-3/4" /></div> : <Empty><EmptyHeader><EmptyMedia variant="icon"><ShieldCheck /></EmptyMedia><EmptyTitle>{zh ? "暂无验证结果" : "No verification results"}</EmptyTitle><EmptyDescription>{zh ? "选择“立即验证依赖”后，结果会显示在这里。" : "Choose Verify dependencies to see the results here."}</EmptyDescription></EmptyHeader></Empty>}
         </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Package className="size-4 text-primary" aria-hidden="true" />
+            {zh ? "按需安装扩展插件（可选）" : "Optional extensions (Addons Hub)"}
+          </CardTitle>
+          <CardDescription>
+            {zh
+              ? "Luma 核心开箱即可管理节点、部署镜像、查看实时日志和资源指标。需要远端 Git 构建、全栈可观测或前端监控时，可按需一键启用官方插件，全部自动接入统一单点登录。"
+              : "Luma Core manages nodes, deploys images, and provides live logs and resource metrics out of the box. Enable official addons on demand with unified SSO."}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-3">
+          {[
+            { id: "builder", name: "Luma Build", desc: zh ? "Git 仓库构建与多 Runner 队列" : "Git builds & multi-runner queue" },
+            { id: "observe", name: "Luma Observe", desc: zh ? "历史日志、Tempo 链路与 Grafana 看板" : "Historical logs, Tempo traces & Grafana" },
+            { id: "eye", name: "Luma Eye", desc: zh ? "前端埋点 UV/PV、崩溃堆栈与会话回放" : "Frontend RUM, crashes & session replay" },
+          ].map((addon) => {
+            const active = Boolean(addons?.items?.[addon.id]?.installed);
+            return (
+              <div key={addon.id} className="flex items-start justify-between gap-2 rounded-lg border border-border bg-muted/30 p-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium">{addon.name}</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">{addon.desc}</div>
+                </div>
+                <Badge variant={active ? "success" : "outline"} className="shrink-0">
+                  {active ? (zh ? "已运行" : "Running") : (zh ? "可选" : "Optional")}
+                </Badge>
+              </div>
+            );
+          })}
+        </CardContent>
+        <CardFooter>
+          <Button variant="outline" size="sm" nativeButton={false} render={<a {...spaLink("/addons", navigate)} />}>
+            {zh ? "打开插件中心" : "Open Addons Hub"}
+            <ArrowRight data-icon="inline-end" />
+          </Button>
+        </CardFooter>
       </Card>
     </div>
   );

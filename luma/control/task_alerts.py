@@ -5,11 +5,11 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 
 PRESETS = [
-    dict(metric='app.task_heartbeat_age', name='任务服务心跳中断', description='指定 OTel 服务中最新进程心跳距今；缺失也可能是采集链路不可用', threshold=120, forSeconds=180, unit='seconds'),
-    dict(metric='app.task_queue_wait_p95', name='任务排队等待 P95', description='近 15 分钟已消费任务排队 P95；每个服务/队列至少 20 次样本，取最大值', threshold=300, forSeconds=300, unit='seconds'),
-    dict(metric='app.task_telemetry_dropped', name='任务 SDK 遥测丢弃', description='近 15 分钟 SDK 生命周期日志丢弃及埋点异常增量；不含全部 OTLP/Collector 丢弃', threshold=10, forSeconds=0, unit='count'),
-    dict(metric='app.task_tracking_overflow', name='活跃任务跟踪溢出', description='有新鲜心跳的进程中，当前未被 SDK 跟踪的活跃任务数', threshold=0, forSeconds=300, unit='count'),
-    dict(metric='app.task_completion_missing', name='周期任务完成观测中断', description='预期按固定周期执行的任务在统计窗口内没有完成记录；需结合心跳排查调度、执行和采集链路', threshold=0, forSeconds=180, unit='count'),
+    dict(metric='app.task_heartbeat_age', name='任务服务心跳中断', description='指定 OTel 服务中最新进程心跳距今；缺失也可能是采集链路不可用', threshold=120, forSeconds=180, unit='seconds', requiresCapability='observe.alerts'),
+    dict(metric='app.task_queue_wait_p95', name='任务排队等待 P95', description='近 15 分钟已消费任务排队 P95；每个服务/队列至少 20 次样本，取最大值', threshold=300, forSeconds=300, unit='seconds', requiresCapability='observe.alerts'),
+    dict(metric='app.task_telemetry_dropped', name='任务 SDK 遥测丢弃', description='近 15 分钟 SDK 生命周期日志丢弃及埋点异常增量；不含全部 OTLP/Collector 丢弃', threshold=10, forSeconds=0, unit='count', requiresCapability='observe.alerts'),
+    dict(metric='app.task_tracking_overflow', name='活跃任务跟踪溢出', description='有新鲜心跳的进程中，当前未被 SDK 跟踪的活跃任务数', threshold=0, forSeconds=300, unit='count', requiresCapability='observe.alerts'),
+    dict(metric='app.task_completion_missing', name='周期任务完成观测中断', description='预期按固定周期执行的任务在统计窗口内没有完成记录；需结合心跳排查调度、执行和采集链路', threshold=0, forSeconds=180, unit='count', requiresCapability='observe.alerts'),
 ]
 METRICS = {p['metric'] for p in PRESETS}
 # Largest finite task.queue_wait bucket in sdk/python luma_observe.runtime._BUCKETS.

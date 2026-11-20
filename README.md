@@ -59,9 +59,15 @@ The example assumes an initialized manager and a domain in your Cloudflare zone.
 
 Luma fits personal infrastructure and small teams running web apps, APIs, and workers on a few machines. The control plane currently uses **one Manager with local SQLite storage**. Multi-active Manager high availability and Kubernetes-style tenant isolation are outside that model. See [storage and recovery](docs/control-storage.md) before relying on it for production.
 
-## Independent build runners
+## Pluggable addons & unified SSO
 
-Use `luma builder` for the independent build queue and `luma runner join` to enroll a Linux or macOS build machine. Join starts a persistent background service; manage it with `luma runner start`, `stop`, `restart`, `status` and `logs`. See [Build runners](docs/runners.md) for existing-runner migration and deletion.
+Luma Control works cleanly on its own (nodes, deployments, secrets, live logs, Agent resource metrics and core alerts). When you want more, install official addons on demand from **Platform → Addons** or with `luma addon install`:
+
+- **Luma Build (`builder`)** — independent multi-runner container build queue (`luma builder`, `luma runner join`) with GitHub/Gitea imports and one-click Control credential reuse.
+- **Luma Observe (`observe`)** — VictoriaMetrics, VictoriaLogs, Tempo traces, Alertmanager and `/grafana` dashboards protected by Control `forwardAuth`.
+- **Luma Eye (`eye`)** — frontend analytics (UV/PV), Web Vitals, Sentry-compatible crash tracking, SourceMaps and 1:1 DOM session replay (`luma eye`).
+
+All addons share **unified Luma Control SSO** (Passkey browser sign-in and `luma login` CLI tokens), auto-generate internal secrets, and dynamically unlock their console tabs and sidebar views. See [Pluggable addons & SSO](docs/addons.md) and [Build runners](docs/runners.md).
 
 ## Quick start
 
@@ -84,7 +90,7 @@ Python 3.9+ is required. Use a virtual environment on systems with externally ma
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install "luma-infra==0.2.85"
+python -m pip install "luma-infra==0.2.86"
 ```
 
 See [installation lifecycle](docs/installation-lifecycle.md) for runtime diagnostics and uninstall behavior.

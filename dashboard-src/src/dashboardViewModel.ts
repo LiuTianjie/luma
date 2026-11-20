@@ -1,4 +1,5 @@
 import { DEPLOY_TEMPLATES } from "./deploy/templates";
+import type { DashboardAddonsSummary } from "./addonCapabilities";
 import type { DashboardIssue, DashboardNode, DashboardPayload, DashboardRegion, DashboardService, TrafficPath } from "./types";
 import { groupApplications, isServiceHealthy, type Application } from "./components/applicationModel";
 
@@ -28,6 +29,7 @@ export type IssueCounts = {
 
 export type DashboardViewModel = {
   clusterId: string;
+  addons?: DashboardAddonsSummary;
   nodes: DashboardNode[];
   regions: DashboardRegion[];
   services: DashboardService[];
@@ -71,7 +73,10 @@ function healthScore(activeNodes: number, totalNodes: number, healthyServices: n
   return Math.max(0, Math.round((nodeRatio * 0.38 + serviceRatio * 0.62 - issuePenalty) * 100));
 }
 
-export function createDashboardViewModel(payload: DashboardPayload | null): DashboardViewModel {
+export function createDashboardViewModel(
+  payload: DashboardPayload | null,
+  addonsOverride?: DashboardAddonsSummary,
+): DashboardViewModel {
   const nodes = payload?.nodes || [];
   const services = payload?.services || [];
   const issues = payload?.issues || [];
@@ -85,6 +90,7 @@ export function createDashboardViewModel(payload: DashboardPayload | null): Dash
 
   return {
     clusterId: payload?.cluster?.id || "-",
+    addons: payload?.addons || addonsOverride,
     nodes,
     regions: payload?.regions || [],
     services,

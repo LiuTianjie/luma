@@ -60,3 +60,40 @@ test('moved destinations redirect instead of rendering a missing page', () => {
   assert.equal(legacyRedirect('/settings/storage'), '/storage');
   for (const path of ['/fleet', '/fleet/join', '/storage', '/settings/secrets', '/observe/logs']) assert.equal(legacyRedirect(path), null, path);
 });
+
+test('core-only cluster without addons exposes only native monitoring items', () => {
+  const coreVm = {
+    issueCounts: { critical: 0, warning: 0, info: 0 },
+    addons: { known: true, active: [], capabilities: [], urls: {} },
+  };
+  const coreItems = buildNavGroups('zh', coreVm).flatMap((group) => group.items);
+  const monitor = coreItems.find((entry) => entry.id === 'observability');
+  assert.equal(monitor.label, '监控与告警');
+  assert.deepEqual(
+    monitor.children.map((c) => c.href),
+    ['/observe', '/observe/metrics', '/observe/rules', '/observe/channels'],
+  );
+});
+
+test('installed addons dynamically mount observe and eye navigation entries without collisions', () => {
+  const fullVm = {
+    issueCounts: { critical: 0, warning: 0, info: 0 },
+    addons: {
+      known: true,
+      active: ['builder', 'eye', 'observe'],
+      capabilities: ['builder.git_import', 'builder.runs', 'eye.rum', 'observe.status', 'observe.apps', 'observe.settings'],
+      urls: { builder: 'https://build.example.com/', eye: 'https://eye.example.com/console/', observe: 'https://luma.example.com/grafana' },
+    },
+  };
+  const fullItems = buildNavGroups('zh', fullVm).flatMap((group) => group.items);
+  const observe = fullItems.find((entry) => entry.id === 'observability');
+  assert.equal(observe.label, '可观测');
+  const hrefs = observe.children.map((c) => c.href);
+  assert.ok(hrefs.includes('/observe/status'));
+  assert.ok(hrefs.includes('/observe/apps'));
+  assert.ok(hrefs.includes('/observe/eye'));
+  assert.ok(hrefs.includes('/observe/settings'));
+  assert.equal(activeNavChild(observe, '/observe/eye')?.href, '/observe/eye');
+  const allLabels = fullItems.flatMap((entry) => [entry.label, ...(entry.children || []).map((c) => c.label)]);
+  assert.equal(new Set(allLabels).size, allLabels.length);
+});

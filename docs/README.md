@@ -12,6 +12,7 @@ New to Luma? Read the first two pages in order, then pick guides as you need the
 | Guide | Covers |
 | --- | --- |
 | [Deploying applications](deploying.md) | Images, local builds, repository imports, Compose, recorded workflows and CI |
+| [Pluggable addons & SSO](addons.md) | Optional Luma Build, Observe and Eye addons, unified Control SSO, credential reuse and UI capabilities |
 | [Build runners](runners.md) | Independent build queue, join/start/stop, existing-runner migration and deletion |
 | [Operations](operations.md) | Logs, history, rollback, restart, removal, updates and node maintenance |
 | [Nomad security](nomad-security.md) | Secure first install, automatic fleet migration, verification and recovery |

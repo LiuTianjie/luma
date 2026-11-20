@@ -2529,6 +2529,8 @@ def handle_dashboard(token: str, *, scope: str = "full", app: str = "", query: D
     # to a fake token.
     join_token = _ensure_dashboard_join_token(state)
 
+    from . import addons as control_addons
+
     payload = {
         "cluster": {
             "id": str(state.get("clusterId") or ""),
@@ -2543,6 +2545,7 @@ def handle_dashboard(token: str, *, scope: str = "full", app: str = "", query: D
             "token": join_token,
             "domain": str(state.get("domain") or ""),
         },
+        "addons": control_addons.addon_capabilities_summary(state),
         "readiness": readiness,
         "nodes": nodes,
         "regions": listed_regions(state),
@@ -2573,7 +2576,7 @@ def handle_dashboard(token: str, *, scope: str = "full", app: str = "", query: D
     if scope == "applications":
         payload["services"], payload["applicationPage"] = _dashboard_application_page(public_services, query or {})
     if scope != "full":
-        keep = fields[scope] | {"cluster", "errors", "applicationPage"}
+        keep = fields[scope] | {"cluster", "errors", "applicationPage", "addons"}
         payload = {key: value for key, value in payload.items() if key in keep}
     payload["scope"] = scope
     return payload
@@ -16284,6 +16287,7 @@ async def _asgi_health(_: Request) -> JSONResponse:
                 "dashboard-sessions-v1",
                 "addons-v1",
                 "addon-sso-v1",
+                "addon-capabilities-v1",
             ],
         },
     )
@@ -16475,6 +16479,18 @@ async def _asgi_authenticated_get(request: Request) -> Response:
         if parsed_path == "/v1/addons":
             from . import addons as control_addons
             return _json_response(200, await run_in_threadpool(control_addons.handle_addons_list, token))
+        if parsed_path == "/v1/addons/summary":
+            from . import addons as control_addons
+            return _json_response(200, await run_in_threadpool(control_addons.handle_addons_summary, token))
+        if parsed_path == "/v1/dashboard/addons/eye/portfolio":
+            from . import addons as control_addons
+            since = str(request.query_params.get("since") or "24h")
+            return _json_response(200, await run_in_threadpool(control_addons.handle_addon_eye_portfolio, token, since=since))
+        if parsed_path == "/v1/dashboard/addons/eye/app":
+            from . import addons as control_addons
+            app_name = str(request.query_params.get("app") or "")
+            since = str(request.query_params.get("since") or "24h")
+            return _json_response(200, await run_in_threadpool(control_addons.handle_addon_eye_app, token, app_name, since=since))
         addon_get_match = re.fullmatch(r"/v1/addons/([a-z][a-z0-9-]{0,31})", parsed_path)
         if addon_get_match:
             from . import addons as control_addons

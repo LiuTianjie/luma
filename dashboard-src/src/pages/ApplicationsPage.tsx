@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { ApplicationManagementPanel, type ApplicationUpdateRequest } from "../components/ApplicationManagementPanel";
 import { groupApplications } from "../components/applicationModel";
 import { t } from "../i18n";
+import type { DashboardAddonsSummary } from "../addonCapabilities";
 import type { DashboardPayload, DashboardService, Lang } from "../types";
 import { PageHeader } from "./PageHeader";
 import { useRouter, useSearchParams } from "../router";
@@ -13,6 +14,7 @@ export function ApplicationsPage({
   lang,
   token,
   payload,
+  addons,
   onRefresh,
   onCreateApplication,
   onUpdateApplication,
@@ -22,6 +24,7 @@ export function ApplicationsPage({
   lang: Lang;
   token: string;
   payload: DashboardPayload;
+  addons?: DashboardAddonsSummary;
   onRefresh: () => Promise<void> | void;
   onCreateApplication: () => void;
   onUpdateApplication: (request: ApplicationUpdateRequest) => void;
@@ -68,6 +71,7 @@ export function ApplicationsPage({
         lang={lang}
         token={token}
         payload={payload}
+        addons={addons || payload.addons}
         applications={applications}
         onRefresh={onRefresh}
         onUpdateApplication={onUpdateApplication}

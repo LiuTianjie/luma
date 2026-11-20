@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Boxes, CornerDownLeft, Search, Server, type Icon } from "@/components/icons";
 import { cn } from "@/lib/utils";
+import { hasAddonCapability, type DashboardAddonsSummary } from "../addonCapabilities";
 import { NAV_ICONS } from "../navIcons";
 import type { NavGroup } from "../navItems";
 import { ROUTE_BY_PAGE } from "../routes";
@@ -18,7 +19,13 @@ export type PaletteEntry = {
 };
 
 /** Destinations from the sidebar plus live objects, so ⌘K reaches anything in one step. */
-export function buildPaletteEntries(lang: Lang, groups: NavGroup[], applications: string[], nodes: string[]): PaletteEntry[] {
+export function buildPaletteEntries(
+  lang: Lang,
+  groups: NavGroup[],
+  applications: string[],
+  nodes: string[],
+  addons?: DashboardAddonsSummary,
+): PaletteEntry[] {
   const zh = lang === "zh";
   const pages: PaletteEntry[] = [];
   for (const group of groups) {
@@ -34,7 +41,9 @@ export function buildPaletteEntries(lang: Lang, groups: NavGroup[], applications
     }
   }
   pages.push({ id: "page:/create", group: zh ? "页面" : "Pages", label: zh ? "创建应用" : "Create application", hint: zh ? "应用" : "Applications", href: "/create", icon: NAV_ICONS.applications });
-  pages.push({ id: "page:/builds", group: zh ? "页面" : "Pages", label: zh ? "从 Git 构建" : "Build from Git", hint: zh ? "应用" : "Applications", href: "/builds", icon: NAV_ICONS.applications });
+  if (hasAddonCapability(addons, "builder.git_import")) {
+    pages.push({ id: "page:/builds", group: zh ? "页面" : "Pages", label: zh ? "从 Git 构建" : "Build from Git", hint: zh ? "应用" : "Applications", href: "/builds", icon: NAV_ICONS.applications });
+  }
   pages.push({ id: "page:/fleet/join", group: zh ? "页面" : "Pages", label: zh ? "加入节点" : "Join a node", hint: zh ? "基础设施" : "Infrastructure", href: "/fleet/join", icon: NAV_ICONS.infrastructure });
   const apps = applications.map((stack) => ({ id: `app:${stack}`, group: zh ? "应用" : "Applications", label: stack, href: `/apps/${encodeURIComponent(stack)}/overview`, icon: Boxes }));
   const fleet = nodes.map((name) => ({ id: `node:${name}`, group: zh ? "节点" : "Nodes", label: name, href: `/fleet/nodes/${encodeURIComponent(name)}`, icon: Server }));

@@ -22,19 +22,19 @@ from . import log_alert_details
 
 PRESETS = [
     dict(metric='app.memory', name='服务容器内存接近上限', description='服务内各容器的 Docker 内存使用率最大值；来自 Agent，无需 observe', threshold=80, forSeconds=120, unit='percent'),
-    dict(metric='app.log_matches', name='服务日志匹配', description='指定应用/服务的匹配日志条数；由 observe 统计', threshold=4, forSeconds=0, unit='count'),
+    dict(metric='app.log_matches', name='服务日志匹配', description='指定应用/服务的匹配日志条数；由 observe 统计', threshold=4, forSeconds=0, unit='count', requiresCapability='observe.alerts'),
     dict(metric='node.offline', name='节点失联', description='Agent 心跳距今超过阈值；不是 Nomad 调度状态', threshold=120, forSeconds=60, unit='seconds'),
     dict(metric='node.cpu', name='CPU 持续高占用', description='新鲜的 Linux 主机 CPU 样本', threshold=90, forSeconds=300, unit='percent'),
     dict(metric='node.memory', name='内存持续高占用', description='主机内存使用率', threshold=85, forSeconds=300, unit='percent'),
     dict(metric='node.disk', name='磁盘空间紧张', description='Agent 所采样文件系统使用率', threshold=90, forSeconds=300, unit='percent'),
     dict(metric='node.inode', name='inode 空间紧张', description='Agent 所采样文件系统 inode 使用率', threshold=90, forSeconds=300, unit='percent'),
     dict(metric='task.queue_age', name='任务排队过久', description='按 agent/builder/build 分组的最老排队任务等待秒数', threshold=600, forSeconds=60, unit='seconds'),
-    dict(metric='build.failed', name='最新构建失败', description='新构建失败触发独立告警；后续成功恢复，也可手动关闭', threshold=0, forSeconds=0, unit='count'),
-    dict(metric='app.http_p95', name='应用 p95 延迟', description='Traefik 入口 p95，来自 luma-observe', threshold=1, forSeconds=300, unit='seconds'),
-    dict(metric='app.http_5xx_ratio', name='应用 5xx 占比', description='公开 HTTP 5xx / 总请求，来自 luma-observe', threshold=0.05, forSeconds=300, unit='ratio'),
-    dict(metric='app.nomad_not_running', name='应用无运行实例', description='应运行的应用持续没有运行实例，来自 luma-observe', threshold=0, forSeconds=300, unit='count'),
-    dict(metric='app.nomad_failed', name='应用失败 alloc', description='Nomad 仍想跑但失败的 alloc 数，来自 luma-observe', threshold=0, forSeconds=120, unit='count'),
-    dict(metric='observe.metrics_age', name='观测指标链路中断', description='Collector 自监控样本距今；覆盖采集、指标写入及查询链路，缺失表示观测不可用', threshold=120, forSeconds=180, unit='seconds'),
+    dict(metric='build.failed', name='最新构建失败', description='新构建失败触发独立告警；后续成功恢复，也可手动关闭', threshold=0, forSeconds=0, unit='count', requiresCapability='builder.runs'),
+    dict(metric='app.http_p95', name='应用 p95 延迟', description='Traefik 入口 p95，来自 luma-observe', threshold=1, forSeconds=300, unit='seconds', requiresCapability='observe.alerts'),
+    dict(metric='app.http_5xx_ratio', name='应用 5xx 占比', description='公开 HTTP 5xx / 总请求，来自 luma-observe', threshold=0.05, forSeconds=300, unit='ratio', requiresCapability='observe.alerts'),
+    dict(metric='app.nomad_not_running', name='应用无运行实例', description='应运行的应用持续没有运行实例，来自 luma-observe', threshold=0, forSeconds=300, unit='count', requiresCapability='observe.alerts'),
+    dict(metric='app.nomad_failed', name='应用失败 alloc', description='Nomad 仍想跑但失败的 alloc 数，来自 luma-observe', threshold=0, forSeconds=120, unit='count', requiresCapability='observe.alerts'),
+    dict(metric='observe.metrics_age', name='观测指标链路中断', description='Collector 自监控样本距今；覆盖采集、指标写入及查询链路，缺失表示观测不可用', threshold=120, forSeconds=180, unit='seconds', requiresCapability='observe.alerts'),
 ]
 PRESETS += task_alerts.PRESETS
 METRICS = {p['metric'] for p in PRESETS}

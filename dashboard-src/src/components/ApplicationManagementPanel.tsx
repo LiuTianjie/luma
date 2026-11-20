@@ -65,6 +65,9 @@ import {
 import { applicationEndpoints } from "./applicationEndpoints";
 import { ApplicationLogs } from "./ApplicationLogs";
 import { ApplicationDashboards } from "./ApplicationDashboards";
+import { AddonRequiredCard } from "./AddonRequiredCard";
+import { EyeObservabilityPanel } from "./EyeObservabilityPanel";
+import { hasAddonCapability, type DashboardAddonsSummary } from "../addonCapabilities";
 import { useRouter, toHref } from "../router";
 import { StepLog } from "../deploy/StepLog";
 import { ObservabilityPanel } from "./ObservabilityPanel";
@@ -72,6 +75,7 @@ import {
   applicationPath,
   parseApplicationPath,
   APPLICATION_TABS,
+  visibleApplicationTabs,
 } from "./applicationRoutes";
 import { useConfirm } from "./ConfirmDialog";
 import { Badge, CodeCell, StatePill } from "./primitives";
@@ -171,6 +175,7 @@ export function ApplicationManagementPanel({
   lang,
   token,
   payload,
+  addons,
   applications,
   onRefresh,
   onUpdateApplication,
@@ -182,6 +187,7 @@ export function ApplicationManagementPanel({
   lang: Lang;
   token: string;
   payload: DashboardPayload | null;
+  addons?: DashboardAddonsSummary;
   applications: Application[];
   onRefresh: () => Promise<void> | void;
   onUpdateApplication?: (request: ApplicationUpdateRequest) => void;
@@ -190,6 +196,13 @@ export function ApplicationManagementPanel({
   selectedStack?: string | null;
   onSelectApplication: (stack: string | null) => void;
 }) {
+  const effectiveAddons = addons || payload?.addons;
+  const visibleTabs = useMemo(() => visibleApplicationTabs(effectiveAddons), [effectiveAddons]);
+  const hasObserveStatus = hasAddonCapability(effectiveAddons, "observe.status");
+  const hasObserveLogs = hasAddonCapability(effectiveAddons, "observe.logs");
+  const hasObserveTraces = hasAddonCapability(effectiveAddons, "observe.traces");
+  const hasObserveDashboards = hasAddonCapability(effectiveAddons, "observe.dashboards");
+  const hasEyeRum = hasAddonCapability(effectiveAddons, "eye.rum");
   const { path, search, navigate } = useRouter();
   const route = parseApplicationPath(path);
   const tab = route.tab;
@@ -916,7 +929,7 @@ export function ApplicationManagementPanel({
             variant="line"
             aria-label={lang === "zh" ? "应用工作区" : "Application workspace"}
           >
-            {APPLICATION_TABS.map((item) => (
+            {visibleTabs.map((item) => (
               <TabsTrigger
                 key={item.id}
                 value={item.id}
@@ -944,8 +957,8 @@ export function ApplicationManagementPanel({
           </TabsList>
         </div>
         <TabsContent value={tab} className="flex min-w-0 flex-col gap-6">
-          {tab === "overview" && <ObservationStatus app={selected.stack} lang={lang} token={token} />}
-          {tab === "alerts" ? <AlertingPanel key={selected.stack} lang={lang} token={token} tab="alerts" application={selected.stack} /> : null}
+          {tab === "overview" && hasObserveStatus && <ObservationStatus app={selected.stack} lang={lang} token={token} />}
+          {tab === "alerts" ? <AlertingPanel key={selected.stack} lang={lang} token={token} addons={effectiveAddons} tab="alerts" application={selected.stack} /> : null}
           {tab === "secrets" ? (
             <ApplicationSecrets
               key={selected.stack}
@@ -1526,6 +1539,8 @@ export function ApplicationManagementPanel({
               lang={lang}
               token={token}
               services={selected.services}
+              hasObserveLogs={hasObserveLogs}
+              hasObserveTraces={hasObserveTraces}
               initialServiceName={
                 new URLSearchParams(search).get("service") || ""
               }
@@ -1548,12 +1563,28 @@ export function ApplicationManagementPanel({
             </>
           ) : null}
           {tab === "dashboards" ? (
-            <ApplicationDashboards
-              key={selected.stack}
-              app={selected.stack}
-              lang={lang}
-              token={token}
-            />
+            hasObserveDashboards ? (
+              <ApplicationDashboards
+                key={selected.stack}
+                app={selected.stack}
+                lang={lang}
+                token={token}
+              />
+            ) : (
+              <AddonRequiredCard addonId="observe" lang={lang} featureTitle={lang === "zh" ? "应用看板" : "Application dashboards"} />
+            )
+          ) : null}
+          {tab === "eye" ? (
+            hasEyeRum ? (
+              <EyeObservabilityPanel
+                key={selected.stack}
+                app={selected.stack}
+                lang={lang}
+                token={token}
+              />
+            ) : (
+              <AddonRequiredCard addonId="eye" lang={lang} featureTitle={lang === "zh" ? "前端监控" : "Frontend monitoring"} />
+            )
           ) : null}
         </TabsContent>
       </Tabs>

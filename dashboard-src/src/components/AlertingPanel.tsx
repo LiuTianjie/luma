@@ -1,4 +1,5 @@
 import { ExternalAlerts, evidenceSummary } from "./ExternalAlerts";
+import { hasAddonCapability, type DashboardAddonsSummary } from "../addonCapabilities";
 import { ActiveSourceSilences, AlertSourceControls } from "./AlertSourceControls";
 import { LogIncidentDetails } from "./LogIncidentDetails";
 import { LogRuleFields } from "./LogRuleFields";
@@ -231,6 +232,7 @@ export function AlertingPanel({
   nodeNames = [],
   applicationNames = [],
   application,
+  addons,
 }: {
   lang: Lang;
   token: string;
@@ -238,8 +240,10 @@ export function AlertingPanel({
   nodeNames?: string[];
   applicationNames?: string[];
   application?: string;
+  addons?: DashboardAddonsSummary;
 }) {
   const zh = lang === "zh";
+  const hasObserveAlerts = hasAddonCapability(addons, "observe.alerts");
   const refreshHost = useObserveRefresh();
   const { confirm, element: confirmElement } = useConfirm(lang);
   const { path, navigate } = useRouter();
@@ -382,10 +386,11 @@ export function AlertingPanel({
     setCallbackKey("");
     if (!routeId) return;
     if (tab === "rules") {
+      const defaultPreset = presets.find((p) => hasAddonCapability(addons, p.requiresCapability)) || presets[0];
       const item =
         routeId === "new"
-          ? presets[0]
-            ? { ...newAlertRule(presets[0]), ...(appFilter ? { target: appFilter } : {}) }
+          ? defaultPreset
+            ? { ...newAlertRule(defaultPreset), ...(appFilter ? { target: appFilter } : {}) }
             : null
           : rules.find((item) => item.id === routeId);
       if (item) setRule({ ...item, channelIds: [...item.channelIds] });
@@ -1059,7 +1064,7 @@ export function AlertingPanel({
                 )}
             </Card>
           )}
-          {tab === "alerts" && !editor && <ExternalAlerts app={appFilter} lang={lang} token={token} />}
+          {tab === "alerts" && !editor && hasObserveAlerts && <ExternalAlerts app={appFilter} lang={lang} token={token} />}
           {tab === "alerts" && !editor && <ActiveSourceSilences items={sourceSilences} zh={zh} busy={busy} stamp={stamp}
             onRemove={(item) => void act((signal) => postAlerting(`source-silences/remove${appQuery ? `?${appQuery}` : ""}`, token, item, signal), zh ? "已恢复此来源通知" : "Source notifications resumed")} />}
           {tab === "alerts" && editor && !detail && !actionError && (
@@ -1406,10 +1411,12 @@ export function AlertingPanel({
                               forSeconds: preset?.forSeconds ?? rule.forSeconds,
                             });
                           }}
-                          options={presets.map((p) => ({
-                            value: p.metric,
-                            label: p.name,
-                          }))}
+                          options={presets
+                            .filter((p) => p.metric === rule.metric || hasAddonCapability(addons, p.requiresCapability))
+                            .map((p) => ({
+                              value: p.metric,
+                              label: p.name,
+                            }))}
                         />
                         <FieldDescription>
                           {

@@ -1,3 +1,4 @@
+import { hasAddonCapability, hasAnyAddonCapability } from "./addonCapabilities.ts";
 import type { DashboardViewModel, NavPage } from "./dashboardViewModel";
 import type { Lang } from "./types";
 
@@ -56,20 +57,31 @@ export function activeNavChild(item: NavItem | undefined, path: string): NavChil
 export function buildNavGroups(lang: Lang, vm: DashboardViewModel): NavGroup[] {
   const zh = lang === "zh";
   const issues = vm.issueCounts.critical + vm.issueCounts.warning;
+  const addons = vm.addons;
+  const hasObserveStatus = hasAddonCapability(addons, "observe.status");
+  const hasObserveApps = hasAddonCapability(addons, "observe.apps");
+  const hasObserveSettings = hasAddonCapability(addons, "observe.settings");
+  const hasEyeRum = hasAddonCapability(addons, "eye.rum");
+  const hasBuilderRuns = hasAddonCapability(addons, "builder.runs");
+  const hasRichObserve = hasAnyAddonCapability(addons, ["observe.status", "observe.apps", "eye.rum"]);
+
+  const observeChildren: NavChild[] = [
+    { href: "/observe", label: zh ? "告警事件" : "Incidents", detail: zh ? "当前触发与历史告警" : "Active and historical incidents" },
+    ...(hasObserveStatus ? [{ href: "/observe/status", label: zh ? "采集状态" : "Platform health", detail: zh ? "指标、日志与链路采集健康" : "Collection, query and storage health" }] : []),
+    ...(hasObserveApps ? [{ href: "/observe/apps", label: zh ? "应用监控" : "App monitoring", detail: zh ? "按应用查看请求、日志与链路" : "Requests, logs and traces by app", also: ["/observe/logs"] }] : []),
+    ...(hasEyeRum ? [{ href: "/observe/eye", label: zh ? "前端监控" : "Frontend RUM", detail: zh ? "Luma Eye 访客、崩溃与会话回放" : "Luma Eye analytics, crashes and session replay" }] : []),
+    { href: "/observe/metrics", label: zh ? "资源指标" : "Metrics", detail: zh ? "节点与服务资源曲线" : "Node and service metrics" },
+    { href: "/observe/rules", label: zh ? "告警规则" : "Rules", detail: zh ? "配置触发条件" : "Configure alert conditions" },
+    { href: "/observe/channels", label: zh ? "通知渠道" : "Channels", detail: zh ? "管理通知出口" : "Manage notification destinations" },
+    ...(hasObserveSettings ? [{ href: "/observe/settings", label: zh ? "看板分享" : "Dashboard sharing", detail: zh ? "Grafana 看板对外分享" : "External Grafana dashboard sharing" }] : []),
+  ];
+
   return [
     { key: "workspace", label: zh ? "工作空间" : "Workspace", items: [
       { id: "overview", icon: "overview", label: zh ? "总览" : "Overview", value: issues || null, detail: zh ? "运行概况与待处理事项" : "Operations and attention queue" },
       { id: "applications", icon: "applications", label: zh ? "应用" : "Applications", detail: zh ? "服务、实例、终端与生命周期" : "Services, instances, terminal and lifecycle" },
-      { id: "deployments", icon: "deployments", label: zh ? "部署记录" : "Deployments", detail: zh ? "构建、部署与任务记录" : "Builds, deployments and tasks" },
-      { id: "observability", icon: "observability", label: zh ? "可观测" : "Observability", detail: zh ? "指标、日志与告警" : "Metrics, logs and alerts", children: [
-        { href: "/observe", label: zh ? "告警事件" : "Incidents", detail: zh ? "当前触发与历史告警" : "Active and historical incidents" },
-        { href: "/observe/status", label: zh ? "平台状态" : "Platform health", detail: zh ? "采集、查询与存储健康" : "Collection, query and storage health" },
-        { href: "/observe/apps", label: zh ? "应用监控" : "App monitoring", detail: zh ? "按应用查看请求、日志与链路" : "Requests, logs and traces by app", also: ["/observe/logs"] },
-        { href: "/observe/metrics", label: zh ? "资源指标" : "Metrics", detail: zh ? "节点与服务资源曲线" : "Node and service metrics" },
-        { href: "/observe/rules", label: zh ? "告警规则" : "Rules", detail: zh ? "配置触发条件" : "Configure alert conditions" },
-        { href: "/observe/channels", label: zh ? "通知渠道" : "Channels", detail: zh ? "管理通知出口" : "Manage notification destinations" },
-        { href: "/observe/settings", label: zh ? "观测设置" : "Settings", detail: zh ? "看板对外分享" : "External dashboard sharing" },
-      ] },
+      { id: "deployments", icon: "deployments", label: zh ? "部署记录" : "Deployments", detail: hasBuilderRuns ? (zh ? "构建、部署与任务记录" : "Builds, deployments and tasks") : (zh ? "部署历史与发布记录" : "Deployment history and releases") },
+      { id: "observability", icon: "observability", label: hasRichObserve ? (zh ? "可观测" : "Observability") : (zh ? "监控与告警" : "Monitoring"), detail: hasRichObserve ? (zh ? "指标、日志、前端与告警" : "Metrics, logs, RUM and alerts") : (zh ? "资源指标与告警" : "Resource metrics and alerts"), children: observeChildren },
       { id: "nodes", icon: "infrastructure", label: zh ? "基础设施" : "Infrastructure", detail: zh ? "节点、网络、存储与镜像" : "Nodes, networking, storage and images", children: [
         { href: "/fleet", label: zh ? "节点" : "Nodes", detail: zh ? "节点资源、调度状态与加入新节点" : "Node resources, scheduling and joining", exact: true, also: ["/fleet/join", "/fleet/nodes", "/terminal/node"] },
         { href: "/fleet/regions", label: zh ? "区域" : "Regions", detail: zh ? "调度区域与出口策略" : "Scheduling regions and egress" },

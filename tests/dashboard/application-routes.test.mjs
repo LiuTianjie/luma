@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applicationPath, parseApplicationPath, APPLICATION_TABS } from '../../dashboard-src/src/components/applicationRoutes.ts';
+import { applicationPath, parseApplicationPath, APPLICATION_TABS, visibleApplicationTabs } from '../../dashboard-src/src/components/applicationRoutes.ts';
 
 test('application detail URLs round-trip object names without changing route boundaries', () => {
   for (const stack of ['word2pdf', '应用 空格', 'team/app', 'a?b#c%']) {
@@ -22,4 +22,20 @@ test('legacy short paths default to overview and malformed escape sequences do n
   assert.equal(parseApplicationPath('/apps').stack, null);
   assert.equal(parseApplicationPath('/apps/%broken/config').stack, '%broken');
   assert.equal(parseApplicationPath('/nodes/manager').stack, null);
+});
+
+test('application tabs adapt cleanly to installed addon capabilities', () => {
+  const coreTabs = visibleApplicationTabs({ known: true, active: [], capabilities: [], urls: {} }).map((t) => t.id);
+  assert.ok(coreTabs.includes('logs'));
+  assert.ok(coreTabs.includes('metrics'));
+  assert.ok(!coreTabs.includes('dashboards'));
+  assert.ok(!coreTabs.includes('eye'));
+
+  const observeTabs = visibleApplicationTabs({ known: true, active: ['observe'], capabilities: ['observe.dashboards'], urls: {} }).map((t) => t.id);
+  assert.ok(observeTabs.includes('dashboards'));
+  assert.ok(!observeTabs.includes('eye'));
+
+  const eyeTabs = visibleApplicationTabs({ known: true, active: ['eye'], capabilities: ['eye.rum'], urls: {} }).map((t) => t.id);
+  assert.ok(eyeTabs.includes('eye'));
+  assert.ok(!eyeTabs.includes('dashboards'));
 });

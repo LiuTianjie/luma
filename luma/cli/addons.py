@@ -87,6 +87,8 @@ def _add_config_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--exposure", default="", help="Traffic exposure mode (cn-edge, node-edge, external-edge, tailscale-relay, cloudflare-tunnel, none)")
     parser.add_argument("--set", dest="set_values", action="append", default=[], metavar="KEY=VALUE", help="Set a schema config field (repeatable)")
     parser.add_argument("--secret", dest="secret_values", action="append", default=[], metavar="NAME=VALUE", help="Set an addon secret value (repeatable)")
+    parser.add_argument("--use-registry", dest="use_registry", default="", metavar="HOST", help="Reuse a saved Control registry credential (host) instead of retyping credentials")
+    parser.add_argument("--use-git-provider", dest="use_git_providers", action="append", default=[], metavar="ID", help="Reuse a saved Control Git provider credential (repeatable)")
 
 
 def _parse_kv_list(items: List[str], *, flag: str) -> Dict[str, str]:
@@ -111,6 +113,17 @@ def _collect_flag_overrides(args: argparse.Namespace) -> Tuple[str, Dict[str, An
         if val:
             config[key] = val
     return preset, config, secrets_map
+
+
+def _collect_inherit_payload(args: argparse.Namespace) -> Dict[str, Any]:
+    inherit: Dict[str, Any] = {}
+    reg = str(getattr(args, "use_registry", "") or "").strip()
+    if reg:
+        inherit["registryHost"] = reg
+    git_ids = [str(item).strip() for item in (getattr(args, "use_git_providers", []) or []) if str(item or "").strip()]
+    if git_ids:
+        inherit["gitProviderIds"] = git_ids
+    return inherit
 
 
 def _prompt_line(label: str, default: str = "", *, secret: bool = False) -> str:
@@ -265,36 +278,40 @@ def _deploy_from_source(
         sidecar_path.write_text(sidecar_yaml, encoding="utf-8")
         if compose_path is not None:
             compose_path.write_text(compose_yaml, encoding="utf-8")
-        build_args = argparse.Namespace(
-            command="build",
-            build_command="local",
-            path=source_dir,
-            compose_sidecar=sidecar_name,
-            repo_url=f"local/{stack}",
-            workflow_app=stack,
-            workflow_skip_guard=True,
-            accept_workflow_change=True,
-            region=None,
-            exposure=None,
-            domain=None,
-            port=None,
-            platform=str(getattr(args, "platform", "linux/amd64") or "linux/amd64"),
-            build_context="",
-            dockerfile="",
-            registry_host="",
-            registry_namespace="",
-            builder="",
-            proxy="",
-            deploy_env_file=None,
-            timeout=int(getattr(args, "timeout", 7200) or 7200),
-            format="json" if quiet else common._output_format(args),
-            quiet=quiet,
-            control_context=getattr(args, "control_context", None),
-            control_url=getattr(args, "control_url", None),
-            token=getattr(args, "token", None),
-            insecure=getattr(args, "insecure", False),
-            resolve_ip=getattr(args, "resolve_ip", None),
-        )
+        from .parser import build_parser
+
+        argv: List[str] = [
+            "build",
+            "local",
+            str(source_dir),
+            "--compose-sidecar",
+            sidecar_name,
+            "--repo-url",
+            f"local/{stack}",
+            "--workflow-app",
+            stack,
+            "--accept-workflow-change",
+            "--platform",
+            str(getattr(args, "platform", "linux/amd64") or "linux/amd64"),
+            "--timeout",
+            str(int(getattr(args, "timeout", 7200) or 7200)),
+        ]
+        if quiet:
+            argv.extend(["--format", "json"])
+        elif common._output_format(args) != "text":
+            argv.extend(["--format", common._output_format(args)])
+        if getattr(args, "control_context", None):
+            argv.extend(["--control-context", str(args.control_context)])
+        if getattr(args, "control_url", None):
+            argv.extend(["--control-url", str(args.control_url)])
+        if getattr(args, "token", None):
+            argv.extend(["--token", str(args.token)])
+        if getattr(args, "insecure", False):
+            argv.append("--insecure")
+        if getattr(args, "resolve_ip", None):
+            argv.extend(["--resolve-ip", str(args.resolve_ip)])
+        build_args = build_parser().parse_args(argv)
+        build_args._raw_argv = list(argv)
         code = cmd_build(build_args)
         if code != 0:
             raise LumaError(f"local source build for addon {addon_id!r} failed")
@@ -373,6 +390,9 @@ def cmd_addon(args: argparse.Namespace) -> int:
             "secrets": secrets_map,
             "rotateSecrets": bool(getattr(args, "rotate_secrets", False)),
         }
+        inherit = _collect_inherit_payload(args)
+        if inherit:
+            payload["inherit"] = inherit
         if preset:
             payload["preset"] = preset
         result = client.request("POST", f"/v1/addons/{args.addon_id}/configure", payload)
@@ -386,6 +406,8 @@ def cmd_addon(args: argparse.Namespace) -> int:
         print(f"[ok] Configured {addon_view.get('name')} ({addon_view.get('id')})")
         if result.get("generatedSecrets"):
             print(f"  Auto-generated secrets: {', '.join(result['generatedSecrets'])}")
+        if result.get("inheritedCredentials"):
+            print(f"  Inherited Control credentials: {', '.join(result['inheritedCredentials'])}")
         if addon_view.get("consoleUrl"):
             print(f"  Console: {addon_view['consoleUrl']} (auth: {(addon_view.get('auth') or {}).get('mode')})")
         if getattr(args, "apply", False):
@@ -412,12 +434,17 @@ def cmd_addon(args: argparse.Namespace) -> int:
             "rotateSecrets": bool(getattr(args, "rotate_secrets", False)),
             "requireComplete": True,
         }
+        inherit = _collect_inherit_payload(args)
+        if inherit:
+            cfg_payload["inherit"] = inherit
         if preset:
             cfg_payload["preset"] = preset
         configured = client.request("POST", f"/v1/addons/{args.addon_id}/configure", cfg_payload)
         addon_view = configured.get("addon") or addon_view
         if not quiet and configured.get("generatedSecrets"):
             print(f"[ok] Auto-generated internal secrets: {', '.join(configured['generatedSecrets'])}")
+        if not quiet and configured.get("inheritedCredentials"):
+            print(f"[ok] Inherited Control credentials: {', '.join(configured['inheritedCredentials'])}")
 
         source_dir = _detect_source_dir(getattr(args, "source", None), str(addon_view.get("sourceDir") or ""))
         if not images_map and source_dir is not None and (getattr(args, "source", None) is not None or not addon_view.get("canApplyInPlace")):

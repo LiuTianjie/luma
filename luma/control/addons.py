@@ -1,9 +1,16 @@
 """Control-plane Addon Registry, discovery, configuration, and lifecycle."""
 from __future__ import annotations
 
+import json
 import os
+import re
+import ssl
+import threading
 import time
-from typing import Any, Dict, Mapping, Optional, Tuple
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
 import yaml
@@ -223,7 +230,8 @@ def _addon_view(state: Mapping[str, Any], spec: Mapping[str, Any]) -> Dict[str, 
 
     has_saved = bool(saved)
     status = "running" if installed else ("configured" if has_saved else "not_installed")
-    can_apply_in_place = bool(installed and compose_yaml.strip())
+    default_images = spec.get("defaultImages") if isinstance(spec.get("defaultImages"), Mapping) else {}
+    can_apply_in_place = bool((installed and compose_yaml.strip()) or default_images)
 
     return {
         "id": addon_id,
@@ -243,6 +251,8 @@ def _addon_view(state: Mapping[str, Any], spec: Mapping[str, Any]) -> Dict[str, 
         "auth": spec["auth"],
         "ssoReady": sso_ready,
         "ui": spec["ui"],
+        "uiCapabilities": list(spec.get("uiCapabilities") or []),
+        "defaultImages": dict(default_images),
         "presets": spec["presets"],
         "configSchema": spec["configSchema"],
         "autoSecrets": spec["autoSecrets"],
@@ -262,6 +272,94 @@ def _cluster_regions_and_nodes(state: Mapping[str, Any]) -> Tuple[set[str], set[
     return regions, nodes
 
 
+def _available_credentials(state: Mapping[str, Any]) -> Dict[str, Any]:
+    """Secret-free catalog of saved Control registry & Git credentials for addon reuse."""
+    registries = state.get("registries") if isinstance(state.get("registries"), Mapping) else {}
+    reg_items = [
+        {
+            "host": str(host),
+            "username": str(item.get("username") or ""),
+            "configured": bool(item.get("username") and item.get("password")),
+        }
+        for host, item in sorted(registries.items())
+        if isinstance(item, Mapping)
+    ]
+    git_providers = state.get("gitProviders") if isinstance(state.get("gitProviders"), Mapping) else {}
+    git_items = [
+        {
+            "id": str(pid),
+            "type": str(item.get("type") or "").strip().lower(),
+            "account": str(item.get("account") or str(pid).split(":", 1)[-1]),
+            "baseUrl": str(item.get("baseUrl") or ""),
+            "username": str(item.get("username") or ""),
+            "configured": bool(item.get("token")),
+        }
+        for pid, item in sorted(git_providers.items())
+        if isinstance(item, Mapping)
+    ]
+    build_cfg = state.get("build") if isinstance(state.get("build"), Mapping) else {}
+    return {
+        "registries": reg_items,
+        "gitProviders": git_items,
+        "defaultBuildRegistry": {
+            "registryHost": str(build_cfg.get("registryHost") or ""),
+            "pushHost": str(build_cfg.get("pushHost") or ""),
+        },
+    }
+
+
+def addon_capabilities_summary(state: Mapping[str, Any]) -> Dict[str, Any]:
+    """Compact, zero-I/O summary of installed addons and their active UI capabilities."""
+    catalog = load_addon_catalog()
+    active: List[str] = []
+    capabilities: set[str] = set()
+    urls: Dict[str, str] = {}
+    items: Dict[str, Dict[str, Any]] = {}
+    for addon_id, spec in catalog.items():
+        stack = str(spec["stack"])
+        _kind, record = _deployment_record(state, stack)
+        installed = _deployment_active(record)
+        saved = _saved_addon_entry(state, addon_id)
+        try:
+            url = resolve_addon_url(state, addon_id)
+        except LumaError:
+            url = ""
+        console_path = str(spec["auth"].get("consolePath") or "/")
+        if spec["auth"]["mode"] == "forward-auth":
+            console_url = url
+        elif url:
+            console_url = url.rstrip("/") + (console_path if console_path.startswith("/") else "/" + console_path)
+        else:
+            console_url = ""
+        caps = [str(c).strip() for c in (spec.get("uiCapabilities") or []) if str(c or "").strip()]
+        items[addon_id] = {
+            "id": addon_id,
+            "name": str(spec["name"]),
+            "installed": installed,
+            "status": "running" if installed else ("configured" if saved else "not_installed"),
+            "consoleUrl": console_url,
+            "capabilities": caps,
+        }
+        if installed:
+            active.append(addon_id)
+            capabilities.update(caps)
+            if console_url:
+                urls[addon_id] = console_url
+    return {
+        "known": True,
+        "active": sorted(active),
+        "capabilities": sorted(capabilities),
+        "urls": urls,
+        "items": items,
+    }
+
+
+def handle_addons_summary(token: str) -> Dict[str, Any]:
+    state = load_auth_state()
+    require_token(state, token, token_type="deploy")
+    return addon_capabilities_summary(state)
+
+
 def handle_addons_list(token: str) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -273,6 +371,7 @@ def handle_addons_list(token: str) -> Dict[str, Any]:
         "controlUrl": _control_url(state),
         "availableRegions": sorted(regions),
         "availableNodes": sorted(nodes),
+        "availableCredentials": _available_credentials(state),
     }
 
 
@@ -286,6 +385,7 @@ def handle_addon_get(token: str, addon_id: str) -> Dict[str, Any]:
         "controlUrl": _control_url(state),
         "availableRegions": sorted(regions),
         "availableNodes": sorted(nodes),
+        "availableCredentials": _available_credentials(state),
     }
 
 
@@ -344,9 +444,63 @@ def handle_addon_configure(token: str, addon_id: str, body: Mapping[str, Any]) -
     if clean_id == "eye" and domain and not str(clean_config.get("autoOriginSuffixes") or "").strip():
         clean_config["autoOriginSuffixes"] = derive_origin_suffixes(domain)
 
-    # Also mirror non-empty builder registry/gitea config values into builder's scopedSecrets
-    # so existing compose templates referencing ${VAR} continue working seamlessly.
+    # Also inherit saved Control registry / Git credentials when requested for builder
+    # so operators never have to retype registry passwords or Git tokens.
+    inherited: List[str] = []
     if clean_id == "builder":
+        inherit_obj = body.get("inherit") if isinstance(body.get("inherit"), Mapping) else {}
+        inherit_reg = str(
+            inherit_obj.get("registryHost")
+            or body.get("inheritRegistryHost")
+            or ""
+        ).strip()
+        if inherit_reg:
+            registries = state.get("registries") if isinstance(state.get("registries"), Mapping) else {}
+            reg_cred = registries.get(inherit_reg)
+            if not isinstance(reg_cred, Mapping):
+                raise LumaError(f"saved Control registry credential not found: {inherit_reg}")
+            clean_config["registryHost"] = inherit_reg
+            build_cfg = state.get("build") if isinstance(state.get("build"), Mapping) else {}
+            if not clean_config.get("pushHost") and str(build_cfg.get("registryHost") or "").strip() == inherit_reg and str(build_cfg.get("pushHost") or "").strip():
+                clean_config["pushHost"] = str(build_cfg["pushHost"]).strip()
+            if reg_cred.get("username") and not str(raw_config.get("registryUsername") or "").strip():
+                clean_config["registryUsername"] = str(reg_cred["username"]).strip()
+            if reg_cred.get("password") and "LUMA_BUILD_REGISTRY_PASSWORD" not in secret_updates:
+                merged_secrets["LUMA_BUILD_REGISTRY_PASSWORD"] = str(reg_cred["password"])
+            inherited.append(f"registry:{inherit_reg}")
+
+        raw_git_ids = inherit_obj.get("gitProviderIds")
+        if raw_git_ids is None:
+            raw_git_ids = body.get("inheritGitProviderIds")
+        if isinstance(raw_git_ids, (list, tuple)):
+            git_providers = state.get("gitProviders") if isinstance(state.get("gitProviders"), Mapping) else {}
+            for raw_pid in raw_git_ids:
+                pid = str(raw_pid or "").strip()
+                if not pid:
+                    continue
+                provider = git_providers.get(pid)
+                if not isinstance(provider, Mapping):
+                    raise LumaError(f"saved Control Git provider not found: {pid}")
+                ptype = str(provider.get("type") or "").strip().lower()
+                ptoken = str(provider.get("token") or "").strip()
+                if ptype == "github" and ptoken and "GITHUB_TOKEN" not in secret_updates:
+                    merged_secrets["GITHUB_TOKEN"] = ptoken
+                    inherited.append(f"git:{pid}")
+                elif ptype == "gitea":
+                    base_url = str(provider.get("cloneBaseUrl") or provider.get("baseUrl") or "").strip()
+                    parsed_git = urlsplit(base_url if "://" in base_url else f"https://{base_url}") if base_url else None
+                    gitea_host = parsed_git.netloc if parsed_git and parsed_git.netloc else ""
+                    if gitea_host and not str(raw_config.get("giteaHost") or "").strip():
+                        clean_config["giteaHost"] = gitea_host
+                    gitea_user = str(provider.get("username") or provider.get("account") or "").strip()
+                    if gitea_user and not str(raw_config.get("giteaUsername") or "").strip():
+                        clean_config["giteaUsername"] = gitea_user
+                    if ptoken and "GITEA_TOKEN" not in secret_updates:
+                        merged_secrets["GITEA_TOKEN"] = ptoken
+                    inherited.append(f"git:{pid}")
+
+        # Mirror non-empty builder registry/gitea config values into builder's scopedSecrets
+        # so existing compose templates referencing ${VAR} continue working seamlessly.
         for field in spec.get("configSchema") or []:
             env_name = str(field.get("env") or "").strip()
             key = str(field.get("key") or "")
@@ -411,6 +565,7 @@ def handle_addon_configure(token: str, addon_id: str, body: Mapping[str, Any]) -
         "addon": _addon_view(updated_state, spec),
         "generatedSecrets": sorted(generated.keys()),
         "updatedSecrets": sorted(secret_updates.keys()),
+        "inheritedCredentials": inherited,
     }
 
 
@@ -444,7 +599,15 @@ def handle_addon_render(token: str, addon_id: str, body: Mapping[str, Any]) -> D
 
 def prepare_addon_apply_body(token: str, addon_id: str, body: Mapping[str, Any]) -> Dict[str, Any]:
     """Configure (if provided) and return a Compose deployment request body."""
-    if body.get("config") or body.get("secrets") or body.get("preset") or body.get("rotateSecrets"):
+    if (
+        body.get("config")
+        or body.get("secrets")
+        or body.get("preset")
+        or body.get("rotateSecrets")
+        or body.get("inherit")
+        or body.get("inheritRegistryHost")
+        or body.get("inheritGitProviderIds")
+    ):
         handle_addon_configure(token, addon_id, {**dict(body), "requireComplete": True})
     else:
         # Ensure auto-secrets and derived Control URL exist even on direct apply
@@ -510,4 +673,175 @@ def addon_login_info(addon_id: str) -> Dict[str, str]:
     return {
         "addonId": target["addonId"],
         "name": target["name"],
+    }
+
+
+_EYE_CACHE_LOCK = threading.Lock()
+_EYE_PORTFOLIO_CACHE: Dict[Tuple[str, str], Tuple[float, Dict[str, Any]]] = {}
+_EYE_CACHE_TTL_SECONDS = 20.0
+_EYE_VALID_SINCE = frozenset({"1h", "6h", "24h", "7d", "30d"})
+_SLUG_NORM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _eye_fetch_json(base_url: str, path: str, bearer: str, *, timeout: float = 4.0) -> Dict[str, Any]:
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}{path}",
+        headers={"Accept": "application/json", "Authorization": f"Bearer {bearer}"},
+        method="GET",
+    )
+    insecure = str(os.environ.get("LUMA_EYE_INSECURE") or "").strip().lower() in {"1", "true", "yes"}
+    ctx = ssl._create_unverified_context() if insecure else None
+    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+        raw = resp.read().decode("utf-8")
+        parsed = json.loads(raw) if raw.strip() else {}
+        return parsed if isinstance(parsed, dict) else {}
+
+
+def _eye_portfolio_cached(base_url: str, bearer: str, since: str) -> Dict[str, Any]:
+    now = time.monotonic()
+    key = (base_url, since)
+    with _EYE_CACHE_LOCK:
+        cached = _EYE_PORTFOLIO_CACHE.get(key)
+        if cached and now - cached[0] < _EYE_CACHE_TTL_SECONDS:
+            return cached[1]
+    qs = urllib.parse.urlencode({"since": since})
+    data = _eye_fetch_json(base_url, f"/api/v1/query/portfolio?{qs}", bearer)
+    with _EYE_CACHE_LOCK:
+        if len(_EYE_PORTFOLIO_CACHE) >= 32:
+            _EYE_PORTFOLIO_CACHE.clear()
+        _EYE_PORTFOLIO_CACHE[key] = (now, data)
+    return data
+
+
+def _app_domains(state: Mapping[str, Any], app: str) -> set[str]:
+    """Extract configured public hostnames for a Luma application from state."""
+    domains: set[str] = set()
+    kind, record = _deployment_record(state, app)
+    if not isinstance(record, Mapping):
+        return domains
+    manifest_text = str(record.get("manifest") or "")
+    if not manifest_text.strip():
+        return domains
+    try:
+        manifest = yaml.safe_load(manifest_text)
+    except yaml.YAMLError:
+        return domains
+    if not isinstance(manifest, dict):
+        return domains
+    candidates: List[Mapping[str, Any]] = []
+    if kind == "compose" and isinstance(manifest.get("services"), dict):
+        candidates.extend(v for v in manifest["services"].values() if isinstance(v, Mapping))
+    else:
+        candidates.append(manifest)
+    for item in candidates:
+        for key in ("domain", "domains"):
+            val = item.get(key)
+            if isinstance(val, str) and val.strip():
+                domains.add(val.strip().lower())
+            elif isinstance(val, list):
+                for entry in val:
+                    if isinstance(entry, str) and entry.strip():
+                        domains.add(entry.strip().lower())
+    return domains
+
+
+def _normalize_eye_project_entry(item: Mapping[str, Any], base_url: str) -> Dict[str, Any]:
+    proj = item.get("project") if isinstance(item.get("project"), Mapping) else {}
+    slug = str(proj.get("slug") or "").strip()
+    console_base = f"{base_url.rstrip('/')}/console/"
+    return {
+        "slug": slug,
+        "name": str(proj.get("name") or slug),
+        "publicKey": str(proj.get("public_key") or ""),
+        "allowedOrigins": [str(o) for o in (proj.get("allowed_origins") or []) if str(o or "").strip()],
+        "consoleUrl": f"{console_base}?project={urllib.parse.quote(slug)}" if slug else console_base,
+        "uniqueVisitors": int(item.get("unique_visitors") or 0),
+        "pageviews": int(item.get("pageviews") or 0),
+        "errorCount": int(item.get("error_count") or 0),
+        "crashFreeRate": round(float(item.get("crash_free_rate") if item.get("crash_free_rate") is not None else 100.0), 2),
+    }
+
+
+def handle_addon_eye_portfolio(token: str, *, since: str = "24h") -> Dict[str, Any]:
+    """Proxy read-only Luma Eye portfolio summary for the Control Dashboard."""
+    state = load_auth_state()
+    require_token(state, token, token_type="deploy")
+    window = since if since in _EYE_VALID_SINCE else "24h"
+    _kind, record = _deployment_record(state, "luma-eye")
+    installed = _deployment_active(record)
+    try:
+        eye_url = resolve_addon_url(state, "eye")
+    except LumaError:
+        eye_url = ""
+    if not installed or not eye_url:
+        return {"available": False, "installed": installed, "reason": "not_installed", "consoleUrl": "", "since": window, "projects": []}
+    bearer = str(state.get("deployToken") or token or "").strip()
+    console_url = f"{eye_url.rstrip('/')}/console/"
+    try:
+        raw = _eye_portfolio_cached(eye_url, bearer, window)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        return {"available": False, "installed": True, "reason": "unreachable", "error": str(exc), "consoleUrl": console_url, "since": window, "projects": []}
+    raw_items = raw.get("projects") if isinstance(raw.get("projects"), list) else []
+    projects = [_normalize_eye_project_entry(item, eye_url) for item in raw_items if isinstance(item, Mapping)]
+    totals = {
+        "projects": len(projects),
+        "uniqueVisitors": sum(p["uniqueVisitors"] for p in projects),
+        "pageviews": sum(p["pageviews"] for p in projects),
+        "errorCount": sum(p["errorCount"] for p in projects),
+    }
+    return {
+        "available": True,
+        "installed": True,
+        "consoleUrl": console_url,
+        "eyeUrl": eye_url,
+        "since": window,
+        "totals": totals,
+        "projects": projects,
+    }
+
+
+def _match_eye_project(projects: List[Dict[str, Any]], app: str, domains: set[str]) -> Optional[Dict[str, Any]]:
+    app_low = app.strip().lower()
+    app_norm = _SLUG_NORM_RE.sub("", app_low)
+    for proj in projects:
+        if proj["slug"].lower() == app_low:
+            return proj
+    if app_norm:
+        for proj in projects:
+            if _SLUG_NORM_RE.sub("", proj["slug"].lower()) == app_norm:
+                return proj
+    if domains:
+        for proj in projects:
+            for origin in proj["allowedOrigins"]:
+                host = (urlsplit(origin).hostname or "").lower()
+                if host and (host in domains or (host.startswith("www.") and host[4:] in domains) or f"www.{host}" in domains):
+                    return proj
+    return None
+
+
+def handle_addon_eye_app(token: str, app: str, *, since: str = "24h") -> Dict[str, Any]:
+    """Match a Luma application to its Luma Eye project and return live RUM stats."""
+    portfolio = handle_addon_eye_portfolio(token, since=since)
+    clean_app = str(app or "").strip()
+    if not portfolio.get("available") or not clean_app:
+        return {
+            **{k: v for k, v in portfolio.items() if k != "projects"},
+            "app": clean_app,
+            "matched": False,
+            "project": None,
+            "projectsCount": len(portfolio.get("projects") or []),
+        }
+    state = load_auth_state()
+    domains = _app_domains(state, clean_app)
+    matched = _match_eye_project(portfolio["projects"], clean_app, domains)
+    return {
+        "available": True,
+        "installed": True,
+        "app": clean_app,
+        "since": portfolio["since"],
+        "consoleUrl": portfolio["consoleUrl"],
+        "eyeUrl": portfolio.get("eyeUrl", ""),
+        "matched": matched is not None,
+        "project": matched,
+        "projectsCount": len(portfolio["projects"]),
     }

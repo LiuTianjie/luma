@@ -59,9 +59,15 @@ luma deploy status.yaml
 
 Luma 适合在少量机器上运行 Web、API 和 Worker 的个人开发者与小团队。目前控制面采用 **单 Manager + 本地 SQLite**，不提供多活 Manager 高可用或 Kubernetes 式租户隔离。用于生产前，请阅读[存储与恢复说明](docs/control-storage.zh-CN.md)。
 
-## 独立构建 Runner
+## 可插拔插件与统一单点登录
 
-使用 `luma builder` 管理独立构建队列，在 Linux 或 macOS 构建机器上通过 `luma runner join` 加入并默认启动后台服务。之后使用 `luma runner start`、`stop`、`restart`、`status` 和 `logs` 管理，关闭终端不影响运行。旧 Runner 迁移和删除见[构建 Runner](docs/runners.zh-CN.md)。
+Luma Control 零插件即可完成节点编排、镜像与 Compose 部署、密钥隔离、实时容器日志、资源指标与核心告警。需要更多能力时，可在控制台 **平台管理 → 插件中心** 或用 `luma addon install` 按需一键启用官方插件：
+
+- **Luma Build (`builder`)** — 独立多 Runner 容器构建队列（`luma builder`、`luma runner join`），支持 GitHub / Gitea 仓库导入并直接复用 Control 已保存的仓库与 Git 凭据。
+- **Luma Observe (`observe`)** — VictoriaMetrics、VictoriaLogs、Tempo 链路追踪、Alertmanager 与 `/grafana` 看板，自动接入 Control `forwardAuth`。
+- **Luma Eye (`eye`)** — 轻量级前端埋点（UV/PV）、Web Vitals、兼容 Sentry 崩溃追踪、SourceMap 还原与 1:1 DOM 会话回放（`luma eye`）。
+
+所有插件共享 **统一的 Luma Control 单点登录**（复用 Passkey 浏览器会话与 `luma login` 令牌），自动托管内部密钥，并按已装能力动态激活控制台菜单与应用详情页签。详见[插件与统一登录](docs/addons.zh-CN.md)和[构建 Runner](docs/runners.zh-CN.md)。
 
 ## 快速开始
 
@@ -84,7 +90,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install "luma-infra==0.2.85"
+python -m pip install "luma-infra==0.2.86"
 ```
 
 运行时诊断与卸载行为见[安装生命周期](docs/installation-lifecycle.zh-CN.md)。

@@ -63,6 +63,19 @@ for args in (
     ['runner', 'status', '--format', 'json'], ['runner', 'logs', '--follow'],
 ):
     assert build_parser().parse_args(args).command == 'runner'
+for args in (
+    ['addon', 'list', '--format', 'json'],
+    ['addon', 'show', 'eye'],
+    ['addon', 'install', 'builder', '--domain', 'build.example.com', '--use-registry', 'ghcr.io', '--yes'],
+    ['eye', 'status'],
+    ['eye', 'portfolio', '--since', '24h'],
+):
+    assert build_parser().parse_args(args).command in {'addon', 'eye'}
+from luma import addons as packaged_addons
+catalog = packaged_addons.load_addon_catalog()
+assert set(catalog.keys()) >= {'builder', 'eye', 'observe'}, catalog.keys()
+obs_rendered = packaged_addons.render_addon_manifests(catalog['observe'], {'region': 'cn'}, for_source_build=False)
+assert 'luma-observe' in obs_rendered['sidecarYaml'] and 'grafana' in obs_rendered['composeYaml']
 for command, name in [('node', 'worker'), ('app', 'shop_api')]:
     parsed = build_parser().parse_args([command, 'shell', name, '--transport', 'relay'])
     assert parsed.command == command and parsed.name == name and parsed.transport == 'relay'

@@ -28,6 +28,8 @@ import { useRouter } from "./router";
 import { pageForPath, ROUTE_BY_PAGE } from "./routes";
 import type { DeployUpdateContext } from "./pages/DeployPage";
 import { PageLoading } from "./pages/PageLoading";
+import { apiGet } from "./apiClient";
+import type { DashboardAddonsSummary } from "./addonCapabilities";
 import { createDashboardViewModel, type NavPage } from "./dashboardViewModel";
 import type { TerminalSessionTarget } from "./components/TerminalDrawer";
 import type { DashboardNode, DashboardService, Lang, SyncStatus } from "./types";
@@ -67,7 +69,29 @@ export function App() {
   const token = enrolling ? "" : auth.token;
   const { payload, cluster, errors, syncStatus, lastUpdated, loadDashboard } = useDashboardData(dashboardScope, dashboardQuery, addonLogin ? "" : token, auth.expire);
   const { mode: themeMode, theme, setMode: setThemeMode } = useTheme(addonThemeOverride);
-  const vm = useMemo(() => createDashboardViewModel(payload), [payload]);
+  const [addonsSummary, setAddonsSummary] = useState<DashboardAddonsSummary | undefined>(undefined);
+  useEffect(() => {
+    if (payload?.addons) setAddonsSummary(payload.addons);
+  }, [payload?.addons]);
+  const refreshAddonsSummary = useCallback(async () => {
+    if (!token || addonLogin) return;
+    try {
+      const next = await apiGet<DashboardAddonsSummary>("/v1/addons/summary", token);
+      if (next && typeof next === "object") setAddonsSummary(next);
+    } catch {
+      // Older Control servers without /v1/addons/summary keep legacy fallback behavior.
+    }
+  }, [token, addonLogin]);
+  useEffect(() => {
+    if (!token || addonLogin) {
+      setAddonsSummary(undefined);
+      return;
+    }
+    if (!addonsSummary && dashboardScope === "none") {
+      void refreshAddonsSummary();
+    }
+  }, [token, addonLogin, addonsSummary, dashboardScope, refreshAddonsSummary]);
+  const vm = useMemo(() => createDashboardViewModel(payload, addonsSummary), [payload, addonsSummary]);
   // Pages that fetch their own data return no cluster identity; keep the last one seen.
   const [clusterId, setClusterId] = useState("");
   const liveClusterId = cluster?.id || payload?.cluster?.id || "";
@@ -139,7 +163,7 @@ export function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [token]);
   const paletteEntries = useMemo(
-    () => paletteOpen ? buildPaletteEntries(lang, buildNavGroups(lang, vm), vm.applications.map(app => app.stack), vm.nodes.map(node => node.name || "").filter(Boolean)) : [],
+    () => paletteOpen ? buildPaletteEntries(lang, buildNavGroups(lang, vm), vm.applications.map(app => app.stack), vm.nodes.map(node => node.name || "").filter(Boolean), vm.addons) : [],
     [paletteOpen, lang, vm],
   );
 
@@ -305,6 +329,7 @@ export function App() {
                   onUpdateApplication={openUpdatePage}
                   onCloseUpdate={closeUpdatePage}
                   onTemplateLandingChange={setDeployTemplateLanding}
+                  onAddonsChange={() => { void refreshAddonsSummary(); void loadDashboard(); }}
                   onUnauthorized={auth.expire}
                 />
               ) : (

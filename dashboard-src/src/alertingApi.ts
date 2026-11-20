@@ -1,7 +1,7 @@
 import { apiGet, apiPost, authHeaders, readJson } from "./apiClient";
 
 export type AlertTab = "alerts" | "rules" | "notifications";
-export type AlertPreset = { metric: string; name: string; description: string; threshold: number; forSeconds: number; unit: string };
+export type AlertPreset = { metric: string; name: string; description: string; threshold: number; forSeconds: number; unit: string; requiresCapability?: string };
 export type LogQuery = { mode?: "lines" | "task_failures"; windowSeconds: number; task?: string; contains?: string; exclude?: string; field?: string; equals?: string };
 export type AlertRule = { taskQuery?: { service: string; taskName?: string; framework?: "taskiq" | "celery"; windowSeconds?: number }; logQuery?: LogQuery; id: string; name: string; metric: string; target: string; threshold: number; forSeconds: number; severity: "warning" | "critical"; channelIds: string[]; enabled: boolean; repeatSeconds: number; noData: "keep" | "alert"; silencedUntil?: number };
 export type AlertChannel = { id: string; name: string; type: "feishu"; enabled: boolean; appId: string; chatId: string; appSecretConfigured: boolean; cardActionsEnabled?: boolean; callbackPath?: string };

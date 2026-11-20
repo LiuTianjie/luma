@@ -2,12 +2,15 @@
 import hashlib
 import os
 import secrets
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
+import yaml
+
 from luma import addons as addon_specs
-from luma.control import dashboard_auth, database, state as control_state
+from luma.control import addons as control_addons, dashboard_auth, database, state as control_state
 from tests.test_dashboard_auth import DashboardAuthBase, ORIGIN, b64url
 
 EYE_DOMAIN = "eye.example.com"
@@ -268,3 +271,199 @@ class AddonPlatformTests(DashboardAuthBase):
         self.assertIsNotNone(dashboard_auth)
         self.assertIsNotNone(os)
         self.assertIsNotNone(patch)
+
+    def test_one_click_default_images_and_bundled_observe_parity(self):
+        catalog = addon_specs.load_addon_catalog()
+        for addon_id in ("builder", "eye", "observe"):
+            spec = catalog[addon_id]
+            self.assertTrue(spec["uiCapabilities"], f"{addon_id} should declare uiCapabilities")
+            self.assertTrue(spec["defaultImages"], f"{addon_id} should declare defaultImages")
+
+        # Fresh first-time browser install (no existing compose, no --source) works for all 3 addons
+        builder_rendered = addon_specs.render_addon_manifests(
+            catalog["builder"],
+            {"domain": "build.example.com", "region": "cn", "exposure": "cn-edge", "node": "manager"},
+            control_url="https://luma.example.com",
+            scoped_secrets={"LUMA_DEPLOY_TOKEN": "tok"},
+            for_source_build=False,
+        )
+        builder_compose = yaml.safe_load(builder_rendered["composeYaml"])
+        self.assertEqual(builder_compose["services"]["server"]["image"], catalog["builder"]["defaultImages"]["server"])
+        self.assertNotIn("build", builder_compose["services"]["server"])
+
+        eye_rendered = addon_specs.render_addon_manifests(
+            catalog["eye"],
+            {"domain": "eye.example.com", "region": "global", "exposure": "node-edge", "node": "edge-1"},
+            preset_id="node-edge",
+            control_url="https://luma.example.com",
+            scoped_secrets={"LUMA_EYE_ADMIN_TOKEN": "a", "LUMA_EYE_RELAY_SECRET": "b", "LUMA_EYE_AUTO_KEY": "c"},
+            for_source_build=False,
+        )
+        eye_compose = yaml.safe_load(eye_rendered["composeYaml"])
+        self.assertEqual(eye_compose["services"]["eye"]["image"], catalog["eye"]["defaultImages"]["eye"])
+        self.assertEqual(eye_compose["services"]["clickhouse"]["image"], catalog["eye"]["defaultImages"]["clickhouse"])
+        self.assertNotIn("build", eye_compose["services"]["eye"])
+
+        obs_rendered = addon_specs.render_addon_manifests(
+            catalog["observe"],
+            {"region": "global"},
+            control_url="https://luma.example.com",
+            scoped_secrets={"LUMA_OBSERVE_READ_TOKEN": "r", "LUMA_OBSERVE_INGEST_TOKEN": "i"},
+            for_source_build=False,
+        )
+        obs_sidecar = yaml.safe_load(obs_rendered["sidecarYaml"])
+        obs_compose = yaml.safe_load(obs_rendered["composeYaml"])
+        self.assertEqual(obs_sidecar["region"], "global")
+        for svc_name, svc in obs_compose["services"].items():
+            self.assertNotIn("build", svc, f"bundled observe service {svc_name} must not require local build")
+            self.assertTrue(svc.get("image"), f"bundled observe service {svc_name} missing image")
+
+        # Verify bundled observe compose stays in sync with observe/docker-compose.yml service set
+        repo_root = Path(__file__).resolve().parents[1]
+        source_observe = yaml.safe_load((repo_root / "observe" / "docker-compose.yml").read_text(encoding="utf-8"))
+        self.assertEqual(set(obs_compose["services"].keys()), set(source_observe["services"].keys()))
+
+    def test_builder_inherits_saved_control_credentials_without_leaking_secrets(self):
+        control_state.mutate_state(lambda s: s.update({
+            "registries": {
+                "ghcr.io": {"serverAddress": "ghcr.io", "username": "octocat", "password": "ghp_secret_registry_value"},
+            },
+            "build": {"registryHost": "ghcr.io", "pushHost": "ghcr.io"},
+            "gitProviders": {
+                "github:octocat": {"type": "github", "account": "octocat", "token": "ghp_secret_git_value"},
+                "gitea:dev": {"type": "gitea", "account": "dev", "username": "dev", "baseUrl": "https://git.example.com", "token": "gitea_secret_value"},
+            },
+        }))
+
+        listed_resp = self.client.get("/v1/addons", headers=self.bearer())
+        self.assertEqual(listed_resp.status_code, 200, listed_resp.text)
+        creds = listed_resp.json()["availableCredentials"]
+        self.assertEqual(creds["registries"][0]["host"], "ghcr.io")
+        self.assertNotIn("password", creds["registries"][0])
+        self.assertEqual(len(creds["gitProviders"]), 2)
+        for gp in creds["gitProviders"]:
+            self.assertNotIn("token", gp)
+
+        cfg_resp = self.client.post(
+            "/v1/addons/builder/configure",
+            headers=self.bearer(),
+            json={
+                "config": {"domain": "build.example.com", "region": "cn", "exposure": "cn-edge", "node": "manager", "registryNamespace": "acme"},
+                "inherit": {"registryHost": "ghcr.io", "gitProviderIds": ["github:octocat", "gitea:dev"]},
+            },
+        )
+        self.assertEqual(cfg_resp.status_code, 200, cfg_resp.text)
+        res = cfg_resp.json()
+        self.assertEqual(
+            res["inheritedCredentials"],
+            ["registry:ghcr.io", "git:github:octocat", "git:gitea:dev"],
+        )
+        saved_state = control_state.load_state()
+        scoped = saved_state["scopedSecrets"]["luma-build"]
+        self.assertEqual(scoped["LUMA_BUILD_REGISTRY_HOST"], "ghcr.io")
+        self.assertEqual(scoped["LUMA_BUILD_PUSH_HOST"], "ghcr.io")
+        self.assertEqual(scoped["LUMA_BUILD_REGISTRY_USERNAME"], "octocat")
+        self.assertEqual(scoped["LUMA_BUILD_REGISTRY_PASSWORD"], "ghp_secret_registry_value")
+        self.assertEqual(scoped["GITHUB_TOKEN"], "ghp_secret_git_value")
+        self.assertEqual(scoped["GITEA_HOST"], "git.example.com")
+        self.assertEqual(scoped["GITEA_USERNAME"], "dev")
+        self.assertEqual(scoped["GITEA_TOKEN"], "gitea_secret_value")
+
+    def test_addon_capabilities_summary_and_eye_app_matching(self):
+        # Zero addons installed -> empty active/capabilities via /v1/addons/summary
+        empty_resp = self.client.get("/v1/addons/summary", headers=self.bearer())
+        self.assertEqual(empty_resp.status_code, 200, empty_resp.text)
+        empty_summary = empty_resp.json()
+        self.assertTrue(empty_summary["known"])
+        self.assertEqual(empty_summary["active"], [])
+        self.assertEqual(empty_summary["capabilities"], [])
+
+        # Activate observe & eye deployments -> summary reflects both accurately
+        control_state.mutate_state(lambda s: s.setdefault("deployments", {}).setdefault("compose", {}).update({
+            "luma-observe": {"status": "active", "manifest": "name: luma-observe\nregion: cn\n"},
+            "luma-eye": {
+                "status": "active",
+                "manifest": "name: luma-eye\nregion: global\nservices:\n  eye:\n    exposure: node-edge\n    domain: eye.example.com\n",
+            },
+            "web-app": {
+                "status": "active",
+                "manifest": "name: web-app\nregion: cn\nservices:\n  web:\n    domain: app.example.com\n",
+            },
+        }))
+        summary = self.client.get("/v1/addons/summary", headers=self.bearer()).json()
+        self.assertEqual(summary["active"], ["eye", "observe"])
+        self.assertIn("eye.rum", summary["capabilities"])
+        self.assertIn("observe.dashboards", summary["capabilities"])
+        self.assertNotIn("builder.git_import", summary["capabilities"])
+        self.assertEqual(summary["urls"]["eye"], "https://eye.example.com/console/")
+        self.assertEqual(summary["urls"]["observe"], f"{ORIGIN}/grafana")
+
+        # Eye project matching by slug, normalized slug, and configured domain
+        sample_projects = [
+            {
+                "slug": "acme-web",
+                "name": "Acme Web",
+                "publicKey": "pk_1",
+                "allowedOrigins": ["https://www.acme.example.com"],
+                "consoleUrl": "https://eye.example.com/console/?project=acme-web",
+                "uniqueVisitors": 42,
+                "pageviews": 99,
+                "errorCount": 0,
+                "crashFreeRate": 100.0,
+            },
+            {
+                "slug": "marketing",
+                "name": "Marketing",
+                "publicKey": "pk_2",
+                "allowedOrigins": ["https://app.example.com"],
+                "consoleUrl": "https://eye.example.com/console/?project=marketing",
+                "uniqueVisitors": 10,
+                "pageviews": 20,
+                "errorCount": 1,
+                "crashFreeRate": 95.0,
+            },
+        ]
+        self.assertEqual(control_addons._match_eye_project(sample_projects, "acme-web", set())["slug"], "acme-web")
+        self.assertEqual(control_addons._match_eye_project(sample_projects, "acme_web", set())["slug"], "acme-web")
+        self.assertEqual(control_addons._match_eye_project(sample_projects, "web-app", {"app.example.com"})["slug"], "marketing")
+        self.assertIsNone(control_addons._match_eye_project(sample_projects, "unmatched-api", set()))
+
+    def test_cli_deploy_from_source_builds_complete_parser_namespace(self):
+        from luma.cli import addons as cli_addons
+        from luma.cli import parser as cli_parser
+
+        # Regression test: _deploy_from_source must pass a full parsed Namespace (including --config)
+        # rather than a partial manual argparse.Namespace missing global parser options.
+        captured = {}
+
+        def fake_cmd_build(ns):
+            captured["ns"] = ns
+            return 0
+
+        class FakeClient:
+            def request(self, method, path, body=None):
+                self.last = (method, path, body)
+                return {
+                    "rendered": {
+                        "sidecarYaml": "name: luma-eye\ncompose: docker-compose.yml\nregion: global\n",
+                        "composeYaml": "services:\n  eye:\n    image: luma-eye:local\n",
+                    }
+                }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "eye-src"
+            src.mkdir()
+            parsed_args = cli_parser.build_parser().parse_args(["addon", "install", "eye", "--yes"])
+            with patch("luma.cli.builds.cmd_build", side_effect=fake_cmd_build):
+                result = cli_addons._deploy_from_source(
+                    parsed_args,
+                    FakeClient(),
+                    {"id": "eye", "stack": "luma-eye", "config": {"region": "global"}},
+                    src,
+                    quiet=True,
+                )
+            self.assertEqual(result["stack"], "luma-eye")
+            self.assertTrue(hasattr(captured["ns"], "config"))
+            self.assertEqual(captured["ns"].workflow_app, "luma-eye")
+            self.assertFalse((src / ".luma.addon.compose.yml").exists())
+            self.assertFalse((src / ".luma.addon.docker-compose.yml").exists())

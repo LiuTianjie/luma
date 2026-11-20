@@ -48,6 +48,14 @@ def _normalize_spec(raw: Any, *, source: str = "<addon>") -> Dict[str, Any]:
     presets = raw.get("presets") if isinstance(raw.get("presets"), list) else []
     schema = raw.get("configSchema") if isinstance(raw.get("configSchema"), list) else []
     auto_secrets = raw.get("autoSecrets") if isinstance(raw.get("autoSecrets"), list) else []
+    raw_caps = raw.get("uiCapabilities") if isinstance(raw.get("uiCapabilities"), list) else []
+    ui_capabilities = [str(c).strip() for c in raw_caps if str(c or "").strip()]
+    raw_defaults = raw.get("defaultImages") if isinstance(raw.get("defaultImages"), dict) else {}
+    default_images = {
+        str(k).strip(): str(v).strip()
+        for k, v in raw_defaults.items()
+        if str(k or "").strip() and str(v or "").strip()
+    }
     return {
         "apiVersion": ADDON_API_VERSION,
         "id": addon_id,
@@ -57,6 +65,8 @@ def _normalize_spec(raw: Any, *, source: str = "<addon>") -> Dict[str, Any]:
         "primaryService": str(raw.get("primaryService") or addon_id).strip(),
         "sourceDir": str(raw.get("sourceDir") or "").strip(),
         "defaultImage": str(raw.get("defaultImage") or "").strip(),
+        "defaultImages": default_images,
+        "uiCapabilities": ui_capabilities,
         "description": raw.get("description") if isinstance(raw.get("description"), dict) else {"en": "", "zh": ""},
         "auth": {
             "mode": str(auth.get("mode") or "none").strip(),
@@ -450,7 +460,12 @@ def render_addon_manifests(
     stack = str(spec.get("stack") or f"luma-{addon_id}")
     resolved_preset = str(preset_id or "").strip() or default_preset_id(spec)
     secrets_present = {str(k) for k, v in (scoped_secrets or {}).items() if str(v or "").strip()}
-    pinned_images = extract_compose_images(existing_compose_yaml)
+    pinned_images: Dict[str, str] = {}
+    if not for_source_build:
+        for k, v in (spec.get("defaultImages") or {}).items():
+            if str(v or "").strip():
+                pinned_images[str(k)] = str(v).strip()
+    pinned_images.update(extract_compose_images(existing_compose_yaml))
     if image_overrides:
         for k, v in image_overrides.items():
             if str(v or "").strip():
@@ -480,6 +495,7 @@ def render_addon_manifests(
             stack=stack,
             config=config,
             secrets_present=secrets_present,
+            pinned_images=pinned_images,
             existing_sidecar_yaml=existing_sidecar_yaml,
             existing_compose_yaml=existing_compose_yaml,
             for_source_build=for_source_build,
@@ -747,6 +763,7 @@ def _render_observe(
     stack: str,
     config: Mapping[str, Any],
     secrets_present: set[str],
+    pinned_images: Mapping[str, str],
     existing_sidecar_yaml: str,
     existing_compose_yaml: str,
     for_source_build: bool,
@@ -764,12 +781,28 @@ def _render_observe(
             sidecar_doc["region"] = region
         return yaml.safe_dump(sidecar_doc, sort_keys=False, allow_unicode=True), compose_path.read_text(encoding="utf-8")
 
-    if existing_sidecar_yaml.strip() and existing_compose_yaml.strip():
-        sidecar_doc = yaml.safe_load(existing_sidecar_yaml)
+    raw_sidecar = existing_sidecar_yaml if existing_sidecar_yaml.strip() else ""
+    raw_compose = existing_compose_yaml if existing_compose_yaml.strip() else ""
+    if not raw_sidecar or not raw_compose:
+        bundled = addons_assets_dir() / "observe"
+        bundled_sidecar = bundled / "luma.compose.yml"
+        bundled_compose = bundled / "docker-compose.yml"
+        if bundled_sidecar.is_file() and bundled_compose.is_file():
+            raw_sidecar = bundled_sidecar.read_text(encoding="utf-8")
+            raw_compose = bundled_compose.read_text(encoding="utf-8")
+
+    if raw_sidecar.strip() and raw_compose.strip():
+        sidecar_doc = yaml.safe_load(raw_sidecar)
         if isinstance(sidecar_doc, dict):
+            sidecar_doc["name"] = stack
             sidecar_doc["region"] = region
-        compose_doc = yaml.safe_load(existing_compose_yaml)
+        compose_doc = yaml.safe_load(raw_compose)
         if isinstance(compose_doc, dict) and isinstance(compose_doc.get("services"), dict):
+            for svc_name, svc_cfg in compose_doc["services"].items():
+                if isinstance(svc_cfg, dict):
+                    svc_cfg.pop("build", None)
+                    if svc_name in pinned_images:
+                        svc_cfg["image"] = pinned_images[svc_name]
             feishu = compose_doc["services"].get("feishu-webhook")
             if isinstance(feishu, dict) and "FEISHU_WEBHOOK_URL" in secrets_present:
                 env = feishu.setdefault("environment", {})

@@ -57,6 +57,7 @@ export type AppRoutesProps = {
   onUpdateApplication: (request: ApplicationUpdateRequest) => void;
   onCloseUpdate: () => void;
   onTemplateLandingChange: (isLanding: boolean) => void;
+  onAddonsChange?: () => void;
   // The session ended (expired, revoked or its passkey removed).
   onUnauthorized: () => void;
 };
@@ -114,6 +115,7 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
           lang={lang}
           token={token}
           payload={payload}
+          addons={vm.addons}
           onRefresh={props.onRefresh}
           onCreateApplication={props.onCreateApplication}
           onUpdateApplication={props.onUpdateApplication}
@@ -139,10 +141,10 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
       );
       break;
     case "builder":
-      content = <BuilderPage lang={lang} token={token} payload={payload} onRefresh={props.onRefresh} />;
+      content = <BuilderPage lang={lang} token={token} payload={payload} addons={vm.addons} onRefresh={props.onRefresh} />;
       break;
     case "deployments":
-      content = <DeploymentsPage lang={lang} token={token} />;
+      content = <DeploymentsPage lang={lang} token={token} addons={vm.addons} />;
       break;
     case "nodes":
       content = <NodesPage lang={lang} vm={vm} theme={theme} token={token} nodeJoin={payload.nodeJoin} onSelectNode={props.onSelectNode} onTerminal={props.onTerminal} onRefresh={props.onRefresh} />;
@@ -166,10 +168,10 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
       content = <SecurityPage lang={lang} token={token} onUnauthorized={props.onUnauthorized} />;
       break;
     case "addons":
-      content = <AddonsPage lang={lang} token={token} onUnauthorized={props.onUnauthorized} />;
+      content = <AddonsPage lang={lang} token={token} onAddonsChange={props.onAddonsChange} onUnauthorized={props.onUnauthorized} />;
       break;
     case "setup":
-      content = <SetupPage lang={lang} token={token} readiness={payload.readiness} onRefresh={props.onRefresh} />;
+      content = <SetupPage lang={lang} token={token} readiness={payload.readiness} addons={vm.addons} onRefresh={props.onRefresh} />;
       break;
     default:
       content = <NotFound lang={lang} onHome={() => props.onNavigate("overview")} />;
