@@ -338,12 +338,28 @@ export function AddonsPage({
   const [purgeSecrets, setPurgeSecrets] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
 
-  // Static-bundle hot-swap state (e.g. Luma Dashboard)
-  const [bundleBusy, setBundleBusy] = useState<"" | "update" | "upload" | "rollback">("");
-  const [bundleLogs, setBundleLogs] = useState<string[]>([]);
-  const [reloadPrompt, setReloadPrompt] = useState(false);
+  // Static-bundle hot-swap state (e.g. Luma Dashboard) — stays inline on buttons to avoid layout shifts
+  const [bundleOp, setBundleOp] = useState<{
+    addonId: string;
+    addonName: string;
+    action: "update" | "upload" | "rollback";
+    status: "running" | "success" | "error";
+    error?: string;
+    logs: string[];
+  } | null>(null);
+  const [bundleLogOpen, setBundleLogOpen] = useState(false);
+  const bundleResetTimerRef = useRef<number | null>(null);
   const bundleFileInputRef = useRef<HTMLInputElement | null>(null);
   const [uploadTargetAddon, setUploadTargetAddon] = useState<AddonItem | null>(null);
+
+  const clearBundleResetTimer = useCallback(() => {
+    if (bundleResetTimerRef.current !== null) {
+      window.clearTimeout(bundleResetTimerRef.current);
+      bundleResetTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => clearBundleResetTimer, [clearBundleResetTimer]);
 
   const loadBuilderStatus = useCallback(async () => {
     setRecheckingRunners(true);
@@ -599,11 +615,25 @@ export function AddonsPage({
     }
   };
 
+  const scheduleBundleSuccessReset = useCallback(() => {
+    clearBundleResetTimer();
+    bundleResetTimerRef.current = window.setTimeout(() => {
+      bundleResetTimerRef.current = null;
+      setBundleOp((prev) => (prev?.status === "success" ? null : prev));
+    }, 3000);
+  }, [clearBundleResetTimer]);
+
   const handleBundleHotSwap = async (addon: AddonItem) => {
-    setBundleBusy("update");
-    setError("");
-    setNotice("");
-    setBundleLogs([]);
+    clearBundleResetTimer();
+    setBundleLogOpen(false);
+    const collectedLogs: string[] = [];
+    setBundleOp({
+      addonId: addon.id,
+      addonName: addon.name,
+      action: "update",
+      status: "running",
+      logs: [],
+    });
     try {
       const response = await fetch(`/v1/addons/${encodeURIComponent(addon.id)}/apply/stream`, {
         method: "POST",
@@ -614,29 +644,44 @@ export function AddonsPage({
         const name = String(ev.name || ev.stage || "");
         const msg = String(ev.message || "");
         if (name || msg) {
-          setBundleLogs((prev) => [...prev, `[${String(ev.status || "step")}] ${name}${msg ? `: ${msg}` : ""}`]);
+          collectedLogs.push(`[${String(ev.status || "step")}] ${name}${msg ? `: ${msg}` : ""}`);
         }
       });
-      setNotice(
-        zh
-          ? `${addon.name} 已完成静态包原子热更新（未重启 Control）。刷新页面即可加载新版界面。`
-          : `${addon.name} hot-swapped atomically without restarting Control. Reload to load the new UI.`,
-      );
-      setReloadPrompt(true);
+      setBundleOp({
+        addonId: addon.id,
+        addonName: addon.name,
+        action: "update",
+        status: "success",
+        logs: collectedLogs,
+      });
+      scheduleBundleSuccessReset();
       await loadAddons();
       onAddonsChange?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBundleBusy("");
+      const msg = err instanceof Error ? err.message : String(err);
+      collectedLogs.push(`[fail] ${msg}`);
+      setBundleOp({
+        addonId: addon.id,
+        addonName: addon.name,
+        action: "update",
+        status: "error",
+        error: msg,
+        logs: collectedLogs,
+      });
     }
   };
 
   const handleBundleUpload = async (addon: AddonItem, file: File) => {
-    setBundleBusy("upload");
-    setError("");
-    setNotice("");
-    setBundleLogs([]);
+    clearBundleResetTimer();
+    setBundleLogOpen(false);
+    const collectedLogs: string[] = [`[running] Upload ${file.name} (${(file.size / 1024).toFixed(1)} KiB)`];
+    setBundleOp({
+      addonId: addon.id,
+      addonName: addon.name,
+      action: "upload",
+      status: "running",
+      logs: collectedLogs,
+    });
     try {
       const buffer = await file.arrayBuffer();
       const params = new URLSearchParams({ source: "browser" });
@@ -653,47 +698,73 @@ export function AddonsPage({
       if (!response.ok) {
         throw new Error(parsed.error || `HTTP ${response.status}`);
       }
-      const ver = parsed.release?.version || file.name;
-      setNotice(
-        zh
-          ? `已上传并热切换 ${addon.name} 到 ${ver}（未重启 Control）。刷新页面即可生效。`
-          : `Uploaded and activated ${addon.name} release ${ver} without restarting Control. Reload to view.`,
-      );
-      setReloadPrompt(true);
+      collectedLogs.push(`[ok] Activated ${parsed.release?.version || file.name}`);
+      setBundleOp({
+        addonId: addon.id,
+        addonName: addon.name,
+        action: "upload",
+        status: "success",
+        logs: collectedLogs,
+      });
+      scheduleBundleSuccessReset();
       await loadAddons();
       onAddonsChange?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      collectedLogs.push(`[fail] ${msg}`);
+      setBundleOp({
+        addonId: addon.id,
+        addonName: addon.name,
+        action: "upload",
+        status: "error",
+        error: msg,
+        logs: collectedLogs,
+      });
     } finally {
-      setBundleBusy("");
       setUploadTargetAddon(null);
       if (bundleFileInputRef.current) bundleFileInputRef.current.value = "";
     }
   };
 
   const handleBundleRollback = async (addon: AddonItem, releaseId?: string) => {
-    setBundleBusy("rollback");
-    setError("");
-    setNotice("");
+    clearBundleResetTimer();
+    setBundleLogOpen(false);
+    const collectedLogs: string[] = [`[running] Rollback ${addon.name}${releaseId ? ` -> ${releaseId}` : ""}`];
+    setBundleOp({
+      addonId: addon.id,
+      addonName: addon.name,
+      action: "rollback",
+      status: "running",
+      logs: collectedLogs,
+    });
     try {
       const res = await apiPost<{ release?: DashboardBundleRelease }>(
         `/v1/addons/${encodeURIComponent(addon.id)}/rollback`,
         token,
         releaseId ? { releaseId } : {},
       );
-      const ver = res.release?.version || res.release?.id || "";
-      setNotice(
-        zh
-          ? `${addon.name} 已原子回滚至 ${ver}。刷新页面即可生效。`
-          : `Rolled back ${addon.name} to ${ver}. Reload to view.`,
-      );
-      setReloadPrompt(true);
+      collectedLogs.push(`[ok] Activated ${res.release?.version || res.release?.id || "previous release"}`);
+      setBundleOp({
+        addonId: addon.id,
+        addonName: addon.name,
+        action: "rollback",
+        status: "success",
+        logs: collectedLogs,
+      });
+      scheduleBundleSuccessReset();
       await loadAddons();
       onAddonsChange?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBundleBusy("");
+      const msg = err instanceof Error ? err.message : String(err);
+      collectedLogs.push(`[fail] ${msg}`);
+      setBundleOp({
+        addonId: addon.id,
+        addonName: addon.name,
+        action: "rollback",
+        status: "error",
+        error: msg,
+        logs: collectedLogs,
+      });
     }
   };
 
@@ -1104,22 +1175,8 @@ export function AddonsPage({
         <Alert>
           <ShieldCheck className="size-4" />
           <AlertTitle>{zh ? "已完成" : "Success"}</AlertTitle>
-          <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
-            <span>{notice}</span>
-            {reloadPrompt ? (
-              <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
-                <RefreshCw className="mr-1 size-3.5" />
-                {zh ? "立即刷新控制台" : "Reload console"}
-              </Button>
-            ) : null}
-          </AlertDescription>
+          <AlertDescription>{notice}</AlertDescription>
         </Alert>
-      ) : null}
-
-      {bundleLogs.length > 0 ? (
-        <pre className="max-h-36 overflow-auto rounded-lg border border-border bg-muted/40 p-3 font-mono text-xs text-muted-foreground">
-          {bundleLogs.join("\n")}
-        </pre>
       ) : null}
 
       {error ? (
@@ -1352,49 +1409,116 @@ export function AddonsPage({
                   ) : null}
 
                   <div className="flex flex-wrap items-center gap-2">
-                    {isStaticBundle ? (
-                      <>
-                        <Button
-                          size="sm"
-                          disabled={Boolean(bundleBusy)}
-                          onClick={() => void handleBundleHotSwap(addon)}
-                        >
-                          {bundleBusy === "update" ? <Spinner className="mr-1 size-3.5" /> : <Download className="mr-1 size-3.5" />}
-                          {zh ? "在线热更新" : "Hot-swap update"}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={Boolean(bundleBusy)}
-                          onClick={() => {
-                            setUploadTargetAddon(addon);
-                            bundleFileInputRef.current?.click();
-                          }}
-                        >
-                          {bundleBusy === "upload" ? <Spinner className="mr-1 size-3.5" /> : <Package className="mr-1 size-3.5" />}
-                          {zh ? "上传本地包" : "Upload bundle"}
-                        </Button>
-                        {releaseCount > 1 ? (
+                    {isStaticBundle ? (() => {
+                      const activeOp = bundleOp && bundleOp.addonId === addon.id ? bundleOp : null;
+                      const isRunning = activeOp?.status === "running";
+                      const updateState = activeOp?.action === "update" ? activeOp.status : null;
+                      const uploadState = activeOp?.action === "upload" ? activeOp.status : null;
+                      const rollbackState = activeOp?.action === "rollback" ? activeOp.status : null;
+                      return (
+                        <>
                           <Button
                             size="sm"
-                            variant="outline"
-                            disabled={Boolean(bundleBusy)}
-                            onClick={() => void handleBundleRollback(addon)}
+                            variant={updateState === "error" ? "destructive" : "default"}
+                            disabled={isRunning}
+                            onClick={() => {
+                              if (updateState === "error") {
+                                setBundleLogOpen(true);
+                                return;
+                              }
+                              void handleBundleHotSwap(addon);
+                            }}
                           >
-                            {bundleBusy === "rollback" ? <Spinner className="mr-1 size-3.5" /> : <RotateCcw className="mr-1 size-3.5" />}
-                            {zh ? "回滚" : "Rollback"}
+                            {updateState === "running" ? (
+                              <Spinner className="mr-1 size-3.5" />
+                            ) : updateState === "success" ? (
+                              <Check className="mr-1 size-3.5" />
+                            ) : updateState === "error" ? (
+                              <TriangleAlert className="mr-1 size-3.5" />
+                            ) : (
+                              <Download className="mr-1 size-3.5" />
+                            )}
+                            {updateState === "running"
+                              ? zh ? "更新中…" : "Updating…"
+                              : updateState === "success"
+                                ? zh ? "已更新" : "Updated"
+                                : updateState === "error"
+                                  ? zh ? "查看日志" : "View logs"
+                                  : zh ? "在线热更新" : "Hot-swap update"}
                           </Button>
-                        ) : null}
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => openEditor(addon, data)}
-                        >
-                          <Settings className="mr-1 size-3.5" />
-                          {zh ? "配置源" : "Source"}
-                        </Button>
-                      </>
-                    ) : (
+                          <Button
+                            size="sm"
+                            variant={uploadState === "error" ? "destructive" : "outline"}
+                            disabled={isRunning}
+                            onClick={() => {
+                              if (uploadState === "error") {
+                                setBundleLogOpen(true);
+                                return;
+                              }
+                              setUploadTargetAddon(addon);
+                              bundleFileInputRef.current?.click();
+                            }}
+                          >
+                            {uploadState === "running" ? (
+                              <Spinner className="mr-1 size-3.5" />
+                            ) : uploadState === "success" ? (
+                              <Check className="mr-1 size-3.5 text-emerald-600 dark:text-emerald-400" />
+                            ) : uploadState === "error" ? (
+                              <TriangleAlert className="mr-1 size-3.5" />
+                            ) : (
+                              <Package className="mr-1 size-3.5" />
+                            )}
+                            {uploadState === "running"
+                              ? zh ? "上传中…" : "Uploading…"
+                              : uploadState === "success"
+                                ? zh ? "已上传" : "Uploaded"
+                                : uploadState === "error"
+                                  ? zh ? "查看日志" : "View logs"
+                                  : zh ? "上传本地包" : "Upload bundle"}
+                          </Button>
+                          {releaseCount > 1 ? (
+                            <Button
+                              size="sm"
+                              variant={rollbackState === "error" ? "destructive" : "outline"}
+                              disabled={isRunning}
+                              onClick={() => {
+                                if (rollbackState === "error") {
+                                  setBundleLogOpen(true);
+                                  return;
+                                }
+                                void handleBundleRollback(addon);
+                              }}
+                            >
+                              {rollbackState === "running" ? (
+                                <Spinner className="mr-1 size-3.5" />
+                              ) : rollbackState === "success" ? (
+                                <Check className="mr-1 size-3.5 text-emerald-600 dark:text-emerald-400" />
+                              ) : rollbackState === "error" ? (
+                                <TriangleAlert className="mr-1 size-3.5" />
+                              ) : (
+                                <RotateCcw className="mr-1 size-3.5" />
+                              )}
+                              {rollbackState === "running"
+                                ? zh ? "回滚中…" : "Rolling back…"
+                                : rollbackState === "success"
+                                  ? zh ? "已回滚" : "Rolled back"
+                                  : rollbackState === "error"
+                                    ? zh ? "查看日志" : "View logs"
+                                    : zh ? "回滚" : "Rollback"}
+                            </Button>
+                          ) : null}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={isRunning}
+                            onClick={() => openEditor(addon, data)}
+                          >
+                            <Settings className="mr-1 size-3.5" />
+                            {zh ? "配置源" : "Source"}
+                          </Button>
+                        </>
+                      );
+                    })() : (
                       <>
                         {addon.installed && addon.consoleUrl ? (
                           <Button
@@ -1766,6 +1890,75 @@ export function AddonsPage({
               </DialogFooter>
             </form>
           ) : null}
+        </DialogContent>
+      </Dialog>
+
+      {/* Static-bundle failure log modal */}
+      <Dialog
+        open={bundleLogOpen && Boolean(bundleOp)}
+        onOpenChange={(open) => {
+          setBundleLogOpen(open);
+          if (!open && bundleOp?.status === "error") {
+            setBundleOp(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              {zh ? `${bundleOp?.addonName || "Dashboard"} 更新失败日志` : `${bundleOp?.addonName || "Dashboard"} update failure logs`}
+            </DialogTitle>
+            <DialogDescription>
+              {zh
+                ? "本次热更新未切换当前生效版本，现有控制台未受影响。"
+                : "The active bundle was not modified; your running console remains unaffected."}
+            </DialogDescription>
+          </DialogHeader>
+          {bundleOp?.error ? (
+            <Alert variant="destructive">
+              <TriangleAlert className="size-4" />
+              <AlertTitle>{zh ? "错误信息" : "Error"}</AlertTitle>
+              <AlertDescription className="wrap-anywhere text-xs">{bundleOp.error}</AlertDescription>
+            </Alert>
+          ) : null}
+          {bundleOp?.logs.length ? (
+            <pre className="max-h-60 overflow-auto rounded-lg border border-border bg-muted/40 p-3 font-mono text-xs text-muted-foreground">
+              {bundleOp.logs.join("\n")}
+            </pre>
+          ) : null}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setBundleLogOpen(false);
+                setBundleOp(null);
+              }}
+            >
+              {zh ? "关闭" : "Close"}
+            </Button>
+            {bundleOp && (bundleOp.action === "update" || bundleOp.action === "rollback") ? (
+              <Button
+                type="button"
+                onClick={() => {
+                  const target = addons.find((item) => item.id === bundleOp.addonId);
+                  setBundleLogOpen(false);
+                  if (!target) {
+                    setBundleOp(null);
+                    return;
+                  }
+                  if (bundleOp.action === "rollback") {
+                    void handleBundleRollback(target);
+                  } else {
+                    void handleBundleHotSwap(target);
+                  }
+                }}
+              >
+                <RefreshCw className="mr-1 size-3.5" />
+                {zh ? "重试" : "Retry"}
+              </Button>
+            ) : null}
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

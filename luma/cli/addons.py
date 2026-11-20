@@ -462,10 +462,15 @@ def _deploy_static_bundle_from_source(
 
     addon_id = str(addon["id"])
     dist_dir = source_dir
-    if not (dist_dir / "index.html").is_file():
+    is_vite_source = (
+        (source_dir / "vite.config.ts").is_file()
+        or (source_dir / "vite.config.js").is_file()
+        or (source_dir / "src").is_dir()
+    )
+    if is_vite_source or not (dist_dir / "index.html").is_file():
         repo_root = source_dir.parent if (source_dir.parent / "package.json").is_file() else source_dir
         if not (repo_root / "package.json").is_file():
-            raise LumaError(f"cannot build static bundle from {source_dir}: missing package.json and index.html")
+            raise LumaError(f"cannot build static bundle from {source_dir}: missing package.json and built index.html")
         if not quiet:
             print(f"[step] Building dashboard bundle locally in {repo_root} (no Docker image required)...", flush=True)
         proc = subprocess.run(

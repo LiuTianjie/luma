@@ -204,7 +204,10 @@ class ControlClient:
             headers=request_headers,
         )
         try:
-            with urllib.request.urlopen(req, timeout=timeout, context=self.ssl_context) as response:
+            handlers: list[Any] = [_NoControlRedirect()]
+            if self.insecure:
+                handlers.append(urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
+            with urllib.request.build_opener(*handlers).open(req, timeout=timeout) as response:
                 raw = response.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
