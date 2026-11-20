@@ -335,7 +335,7 @@ Use `luma compose deploy <sidecar> --dry-run` to preview Compose deployments wit
 For generic CI, install a published PyPI version; verify publication before using the version example below. A source version bump or a successful Control rollout does not prove PyPI availability. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.2.91"
+python -m pip install "luma-infra==0.2.92"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:

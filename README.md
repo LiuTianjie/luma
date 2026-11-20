@@ -90,7 +90,7 @@ Python 3.9+ is required. Use a virtual environment on systems with externally ma
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install "luma-infra==0.2.91"
+python -m pip install "luma-infra==0.2.92"
 ```
 
 See [installation lifecycle](docs/installation-lifecycle.md) for runtime diagnostics and uninstall behavior.
