@@ -298,7 +298,7 @@ sudo docker pull hello-world:latest
 ```bash
 luma update                                  # manager: CLI + Control; node: CLI + agent; client: CLI
 luma update manager --detach                 # detached manager update in its own transient systemd unit
-luma update --install-ref v0.2.89           # a specific release, branch or full commit
+luma update --install-ref v0.2.90           # a specific release, branch or full commit
 luma update fleet                            # every non-manager node with a ready agent
 luma update fleet --include-manager          # explicit repair only
 ```
