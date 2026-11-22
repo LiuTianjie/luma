@@ -9,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { localizeState } from "../i18n";
 import { useRouter, useSearchParams, spaLink } from "../router";
+import { applicationPath } from "../components/applicationRoutes";
 import { servicePath } from "../objectRoutes";
 import { PageHeader } from "./PageHeader";
 import type { DashboardNode, DashboardService, Lang } from "../types";
@@ -23,6 +24,16 @@ function Fact({ label, value }: { label: string; value: string }) {
       <dd className="m-0 min-w-0 text-sm wrap-break-word">{value || "-"}</dd>
     </div>
   );
+}
+
+export function serviceDetailPath(item: DashboardService, applicationNames: string[]): string {
+  if (item.stack && applicationNames.includes(item.stack)) {
+    if (item.name && item.name !== item.stack) {
+      return applicationPath(item.stack, "services", item.fullName || item.name);
+    }
+    return applicationPath(item.stack);
+  }
+  return servicePath(item.fullName || item.name || "");
 }
 
 export function ResourceDetailPage({ lang, token, node, service, services, applicationNames, onTerminal, onRefresh }: {
@@ -47,6 +58,7 @@ export function ResourceDetailPage({ lang, token, node, service, services, appli
   const memory = node?.metrics?.memoryUsedPercent;
   const title = node?.displayName || node?.name || (service?.stack ? `${service.stack} / ${service.name}` : service?.name) || "-";
   const status = node?.state || service?.status || service?.health || "unknown";
+  const serviceImage = service?.image || service?.tasks?.find((task) => task.image)?.image || "";
 
   return (
     <div className="flex min-w-0 flex-col gap-6">
@@ -55,7 +67,7 @@ export function ResourceDetailPage({ lang, token, node, service, services, appli
         title,
         description: node
           ? [node.agentOs, node.agentStatus, node.terminalConnected ? (zh ? "Shell 已连接" : "Shell connected") : (zh ? "Shell 未连接" : "Shell waiting")].filter(Boolean).join(" · ")
-          : [service?.fullName, service?.region, service?.image].filter(Boolean).join(" · "),
+          : [service?.fullName, service?.region, serviceImage].filter(Boolean).join(" · "),
         metrics: [],
         action: (
           <div className="flex flex-wrap items-center gap-2">
@@ -127,7 +139,7 @@ export function ResourceDetailPage({ lang, token, node, service, services, appli
                 <Fact label={zh ? "入口" : "Exposure"} value={service.exposure || "-"} />
                 <Fact label={zh ? "副本" : "Replicas"} value={`${service.running ?? 0}/${service.desired ?? 0}`} />
                 <Fact label={zh ? "节点" : "Nodes"} value={(service.nodes || []).join(", ") || service.node || "-"} />
-                <Fact label={zh ? "镜像" : "Image"} value={service.image || "-"} />
+                <Fact label={zh ? "镜像" : "Image"} value={serviceImage || "-"} />
               </>
             ) : null}
           </dl>
@@ -166,7 +178,7 @@ export function ResourceDetailPage({ lang, token, node, service, services, appli
                         size="sm"
                         className="h-auto max-w-96 justify-start px-0"
                         nativeButton={false}
-                        render={<a {...spaLink(servicePath(item.fullName || item.name || ""), navigate)} />}
+                        render={<a {...spaLink(serviceDetailPath(item, applicationNames), navigate)} />}
                       >
                         <span className="truncate" title={item.stack ? `${item.stack} / ${item.name}` : item.name}>{item.stack ? `${item.stack} / ` : ""}{item.name}</span>
                       </Button>

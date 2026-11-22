@@ -8226,6 +8226,114 @@ class ControlApiTests(unittest.TestCase):
         image = "mysql:8.4.9@sha256:c36050afdca850f23cef85703f84c7531a5ae155a11b5ee1c60acb09937c4084"
         self.assertEqual(registry_host_from_image(image), DEFAULT_DOCKER_REGISTRY)
 
+    def test_service_deployment_prepares_host_bind_mount_directory_before_nomad_deploy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "gcp": {
+                        "name": "gcp",
+                        "region": "global",
+                        "nodeId": "node-gcp",
+                        "tailscaleIP": "100.121.40.34",
+                        "labels": {"luma.node.id": "node-gcp", "luma.node.name": "gcp", "region": "global"},
+                        "agent": {"status": "ready", "capabilities": ["managed-volume-path"]},
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "demo",
+                        "image": "nginx:alpine",
+                        "region": "global",
+                        "node": "gcp",
+                        "exposure": "none",
+                        "volumes": ["/srv/luma/demo:/state"],
+                    }
+                )
+                order: list[str] = []
+                agent_calls: list[tuple[tuple, dict]] = []
+
+                def fake_agent_task(*args, **kwargs):
+                    order.append("agent")
+                    agent_calls.append((args, kwargs))
+                    return {"message": "volume path ready", "taskId": "task-prep-1"}
+
+                def fake_deploy(*_args, **_kwargs):
+                    order.append("deploy")
+                    return "Nomad job deployed"
+
+                with patch("luma.control.server._local_storage_previous_node", return_value=""), patch(
+                    "luma.control.server.resolve_service_image", side_effect=lambda _config, service, **_kwargs: (service, {})
+                ), patch(
+                    "luma.control.server._run_node_agent_task", side_effect=fake_agent_task
+                ), patch("luma.control.server.deploy_to_nomad", side_effect=fake_deploy), patch(
+                    "luma.control.server._refresh_nomad_cni_hostports_for_job",
+                    return_value={"nodes": ["gcp"], "results": [], "skipped": []},
+                ):
+                    result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "demo.yaml"})
+
+                self.assertEqual(result["service"], "demo")
+                self.assertEqual(order, ["agent", "deploy"])
+                self.assertEqual(len(agent_calls), 1)
+                args, kwargs = agent_calls[0]
+                self.assertEqual(args[1], "gcp")
+                self.assertEqual(args[2], "prepare-managed-volume-path")
+                self.assertEqual(args[3], {"root": "/srv/luma", "relative": "demo", "preserveExisting": True})
+                self.assertEqual(kwargs.get("required_capability"), "managed-volume-path")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_service_deployment_skips_local_storage_prep_for_readonly_and_named_volumes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "gcp": {
+                        "name": "gcp",
+                        "region": "global",
+                        "nodeId": "node-gcp",
+                        "tailscaleIP": "100.121.40.34",
+                        "labels": {"luma.node.id": "node-gcp", "luma.node.name": "gcp", "region": "global"},
+                        "agent": {"status": "ready", "capabilities": ["managed-volume-path"]},
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "demo",
+                        "image": "nginx:alpine",
+                        "region": "global",
+                        "node": "gcp",
+                        "exposure": "none",
+                        "volumes": ["/srv/luma/shared-ro:/readonly:ro", "app_data:/data"],
+                    }
+                )
+                with patch("luma.control.server._local_storage_previous_node", return_value=""), patch(
+                    "luma.control.server.resolve_service_image", side_effect=lambda _config, service, **_kwargs: (service, {})
+                ), patch(
+                    "luma.control.server._run_node_agent_task"
+                ) as agent_task, patch("luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"), patch(
+                    "luma.control.server._refresh_nomad_cni_hostports_for_job",
+                    return_value={"nodes": ["gcp"], "results": [], "skipped": []},
+                ):
+                    result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "demo.yaml"})
+
+                self.assertEqual(result["service"], "demo")
+                agent_task.assert_not_called()
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
 
 
 if __name__ == "__main__":

@@ -20,12 +20,12 @@ function load(filename) {
   mod.paths = module.paths;
   mod.require = (name) => {
     if (name === "react") return { ...React, useState(initial) {
-      if (initial === null) return [{ usage: registryUsage, entries: [{ repository: longName, digest, tags: [longName], protectionReasons: [{ source: longName }] }], protectionComplete: true }, () => {}];
+      if (initial === null && route === "/registry") return [{ usage: registryUsage, entries: [{ repository: longName, digest, tags: [longName], protectionReasons: [{ source: longName }] }], protectionComplete: true }, () => {}];
       if (initial && typeof initial === "object" && "secrets" in initial) return [{ ...initial, secrets: [longName], loading: false, gitProviders: [{ id: longName, account: longName, configured: true }] }, () => {}];
       if (initial instanceof Set) return [new Set(["global:other"]), () => {}];
       return [initial, () => {}];
     } };
-    if (name.endsWith("/router")) return { useRouter: () => ({ path: route, search: "", navigate() {} }), toHref: (value) => `/dashboard${value}`, isPlainLeftClick: () => true, spaLink: (to) => ({ href: `/dashboard${to}`, onClick() {} }) };
+    if (name.endsWith("/router")) return { useRouter: () => ({ path: route, search: "", navigate() {} }), useSearchParams: () => new URLSearchParams(""), toHref: (value) => `/dashboard${value}`, isPlainLeftClick: () => true, spaLink: (to) => ({ href: `/dashboard${to}`, onClick() {} }) };
     if (name.endsWith("/ConfirmDialog")) return { useConfirm: () => ({ confirm() {}, element: null }) };
     if (name.endsWith(".css")) return {};
     if (name.startsWith("@/")) {
@@ -46,6 +46,7 @@ function load(filename) {
 }
 const { RegistryPage } = load("pages/RegistryPage.tsx");
 const { CredentialsPage } = load("pages/CredentialsPage.tsx");
+const { ResourceDetailPage } = load("pages/ResourceDetailPage.tsx");
 test("registry retains exact long identifiers and exposes a keyboard-scrollable table", () => {
   route = "/registry";
   const html = renderToStaticMarkup(React.createElement(RegistryPage, { lang: "en", token: "test" }));
@@ -89,4 +90,73 @@ test("registry inventory exposes real storage usage and does not turn failed col
   assert.ok(!capacity.includes("0 B"));
   assert.ok(!html.includes("node agent restarted before task completion"));
   registryUsage = {};
+});
+
+test("node detail workloads link to full application pages and fall back for standalone services", () => {
+  route = "/fleet/gcp";
+  const html = renderToStaticMarkup(React.createElement(ResourceDetailPage, {
+    lang: "zh",
+    token: "test",
+    node: { name: "gcp", region: "global", state: "ready", agentStatus: "ready", agentOs: "linux" },
+    services: [
+      {
+        name: "coshot-colab-controller",
+        fullName: "coshot-colab-controller",
+        stack: "coshot-colab-controller",
+        node: "gcp",
+        status: "running",
+        running: 1,
+        desired: 1,
+      },
+      {
+        name: "worker",
+        fullName: "vibecheck_worker",
+        stack: "vibecheck",
+        node: "gcp",
+        status: "running",
+        running: 1,
+        desired: 1,
+      },
+      {
+        name: "traefik-node-gcp",
+        fullName: "traefik-node-gcp",
+        stack: "traefik-node-gcp",
+        node: "gcp",
+        status: "running",
+        running: 1,
+        desired: 1,
+      },
+    ],
+    applicationNames: ["coshot-colab-controller", "vibecheck"],
+    onTerminal() {},
+  }));
+  assert.ok(html.includes('href="/dashboard/apps/coshot-colab-controller/overview"'));
+  assert.ok(html.includes('href="/dashboard/apps/vibecheck/services/vibecheck_worker"'));
+  assert.ok(html.includes('href="/dashboard/services/traefik-node-gcp"'));
+});
+
+test("service detail falls back to task image when top-level service image is empty", () => {
+  route = "/services/coshot-colab-controller";
+  const imageRef = "100.66.177.70:5000/liutianjie/placetoworld-controller@sha256:2603bb24";
+  const html = renderToStaticMarkup(React.createElement(ResourceDetailPage, {
+    lang: "zh",
+    token: "test",
+    service: {
+      name: "coshot-colab-controller",
+      fullName: "coshot-colab-controller",
+      stack: "coshot-colab-controller",
+      region: "global",
+      exposure: "none",
+      node: "gcp",
+      status: "running",
+      running: 1,
+      desired: 1,
+      image: "",
+      tasks: [{ id: "task-1", image: imageRef, node: "gcp", state: "running" }],
+    },
+    services: [],
+    applicationNames: ["coshot-colab-controller"],
+    onTerminal() {},
+  }));
+  assert.ok(html.includes(imageRef));
 });

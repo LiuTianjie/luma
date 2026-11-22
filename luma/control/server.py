@@ -7668,6 +7668,13 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
                 )
         if not _skip_orchestrator(body):
             stack_text = _prepare_nomad_workload_security(config, state, stack_text)
+            if _service_local_bind_paths(service) and service.node:
+                _deploy_step(
+                    steps,
+                    "Prepare local storage",
+                    lambda: _prepare_service_local_storage(service, state),
+                    progress=progress,
+                )
         else:
             stack_text = _protect_nomad_secrets(config, state, stack_text)
         _deploy_step(steps, "Write Nomad job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
@@ -10513,19 +10520,24 @@ def _prepare_compose_local_storage(deployment: ComposeDeploymentSpec, state: Dic
     return results
 
 
-def _prepare_local_volume_path(volume: ComposeVolumeSpec, state: Dict[str, Any]) -> dict[str, str]:
-    node_name = str(volume.local_node or "").strip()
-    raw_path = str(volume.local_path or "").strip()
+def _prepare_host_bind_path(
+    *,
+    label: str,
+    node_name: str,
+    raw_path: str,
+    state: Dict[str, Any],
+    volume_name: str = "",
+) -> dict[str, str]:
     path = Path(raw_path)
     if not node_name or not path.is_absolute() or ".." in path.parts or path == Path("/"):
         raise LumaError(
-            f"local volume {volume.name} requires a node and an absolute path other than / without .."
+            f"{label} requires a node and an absolute path other than / without .."
         )
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     record = _node_record_for_name(nodes, node_name)
     if not record:
         names = ", ".join(sorted(str(name) for name in nodes)) or "none"
-        raise LumaError(f"local volume {volume.name} references unknown Luma node: {node_name}. Registered nodes: {names}")
+        raise LumaError(f"{label} references unknown Luma node: {node_name}. Registered nodes: {names}")
 
     root = str(path.parent)
     relative = path.name
@@ -10537,13 +10549,15 @@ def _prepare_local_volume_path(volume: ComposeVolumeSpec, state: Dict[str, Any])
             {"root": root, "relative": relative, "preserveExisting": True},
             required_capability="managed-volume-path",
         )
-        return {
-            "volume": volume.name,
+        payload = {
             "node": node_name,
             "path": str(path),
             "prepared": str(result.get("message") or "local volume path ready"),
             "taskId": str(result.get("taskId") or ""),
         }
+        if volume_name:
+            payload["volume"] = volume_name
+        return payload
 
     try:
         _run_host_prep_command(
@@ -10551,12 +10565,68 @@ def _prepare_local_volume_path(volume: ComposeVolumeSpec, state: Dict[str, Any])
         )
     except LumaError as exc:
         raise LumaError(f"failed to create local volume path {path} on {node_name}: {exc}") from exc
-    return {
-        "volume": volume.name,
+    payload = {
         "node": node_name,
         "path": str(path),
         "prepared": "local volume path ready",
     }
+    if volume_name:
+        payload["volume"] = volume_name
+    return payload
+
+
+def _prepare_local_volume_path(volume: ComposeVolumeSpec, state: Dict[str, Any]) -> dict[str, str]:
+    return _prepare_host_bind_path(
+        label=f"local volume {volume.name}",
+        node_name=str(volume.local_node or "").strip(),
+        raw_path=str(volume.local_path or "").strip(),
+        state=state,
+        volume_name=volume.name,
+    )
+
+
+def _service_local_bind_paths(service: ServiceSpec) -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    for spec in service.volumes or []:
+        parts = str(spec).split(":")
+        if len(parts) < 2:
+            continue
+        source = parts[0].strip()
+        readonly = len(parts) > 2 and parts[2].strip() == "ro"
+        if readonly or not source.startswith("/") or ".." in Path(source).parts:
+            continue
+        normalized = os.path.normpath(source)
+        segments = [part for part in Path(normalized).parts if part != "/"]
+        if len(segments) < 2 or normalized in seen:
+            continue
+        seen.add(normalized)
+        paths.append(normalized)
+    return paths
+
+
+def _prepare_service_local_storage(service: ServiceSpec, state: Dict[str, Any]) -> list[dict[str, str]]:
+    node_name = str(service.node or "").strip()
+    if not node_name:
+        return []
+    record = _node_record_for_name(_state_nodes(state), node_name)
+    if not record:
+        return []
+    is_local = _storage_node_is_local(record, node_name)
+    results: list[dict[str, str]] = []
+    for raw_path in _service_local_bind_paths(service):
+        segments = [part for part in Path(raw_path).parts if part != "/"]
+        if not is_local and len(segments) < 3:
+            continue
+        results.append(
+            _prepare_host_bind_path(
+                label=f"service volume {raw_path}",
+                node_name=node_name,
+                raw_path=raw_path,
+                state=state,
+            )
+        )
+    return results
 
 
 def _cleanup_service_storage(

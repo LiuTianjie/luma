@@ -954,6 +954,106 @@ class NomadApiTests(unittest.TestCase):
         self.assertEqual(task["failed"], 1)
         self.assertEqual([row["id"] for row in task["tasks"]], ["alloc-bad", "alloc-ok"])
 
+    def test_wait_for_deployment_fails_fast_on_unrecoverable_allocation_failure(self):
+        dep = _deployment(status="running")
+        dep["TaskGroups"]["app"]["UnhealthyAllocs"] = 1
+        fake = _FakeApi({
+            "GET /v1/job/app/allocations": [
+                {
+                    "ID": "f3ebea0f-57f0-b946-d7a4-95184e06fc1c",
+                    "JobID": "app",
+                    "JobVersion": 2,
+                    "DeploymentID": "deployment-123",
+                    "TaskGroup": "app",
+                    "DesiredStatus": "run",
+                    "ClientStatus": "failed",
+                    "TaskStates": {
+                        "app": {
+                            "State": "dead",
+                            "Failed": True,
+                            "Events": [
+                                {"Type": "Received", "DisplayMessage": "Task received by client"},
+                                {
+                                    "Type": "Driver Failure",
+                                    "FailsTask": True,
+                                    "DisplayMessage": 'failed to create container: bind source path does not exist: /srv/luma/demo',
+                                },
+                                {"Type": "Not Restarting", "DisplayMessage": "Error was unrecoverable"},
+                            ],
+                        }
+                    },
+                }
+            ],
+            "POST /v1/deployment/fail/deployment-123": {"Index": 22},
+        })
+        with self.assertRaisesRegex(
+            nomad_api.NomadRolloutError,
+            "bind source path does not exist: /srv/luma/demo",
+        ):
+            nomad_api._wait_for_deployment(
+                fake,
+                job_id="app",
+                slug="app",
+                deployment_id="deployment-123",
+                target_modify_index=20,
+                target_version=2,
+                deadline=nomad_api.time.monotonic() + 30.0,
+                timeout_seconds=30.0,
+                initial=dep,
+            )
+        self.assertIn(("POST", "/v1/deployment/fail/deployment-123", {"DeploymentID": "deployment-123"}), fake.calls)
+
+    def test_wait_for_deployment_does_not_fail_fast_when_replacement_is_pending(self):
+        dep_running = _deployment(status="running")
+        dep_running["TaskGroups"]["app"]["UnhealthyAllocs"] = 1
+        dep_ok = _deployment(status="successful")
+        fake = _FakeApi({
+            "GET /v1/deployment/deployment-123": dep_ok,
+            "GET /v1/job/app/allocations": [
+                {
+                    "ID": "alloc-old",
+                    "JobID": "app",
+                    "JobVersion": 2,
+                    "DeploymentID": "deployment-123",
+                    "TaskGroup": "app",
+                    "DesiredStatus": "stop",
+                    "ClientStatus": "failed",
+                    "NextAllocation": "alloc-new",
+                    "TaskStates": {
+                        "app": {
+                            "State": "dead",
+                            "Failed": True,
+                            "Events": [{"Type": "Not Restarting", "DisplayMessage": "Error was unrecoverable"}],
+                        }
+                    },
+                },
+                {
+                    "ID": "alloc-new",
+                    "JobID": "app",
+                    "JobVersion": 2,
+                    "DeploymentID": "deployment-123",
+                    "TaskGroup": "app",
+                    "DesiredStatus": "run",
+                    "ClientStatus": "pending",
+                    "TaskStates": {"app": {"State": "pending", "Failed": False}},
+                },
+            ],
+        })
+        with mock.patch.object(nomad_api, "_poll"):
+            result = nomad_api._wait_for_deployment(
+                fake,
+                job_id="app",
+                slug="app",
+                deployment_id="deployment-123",
+                target_modify_index=20,
+                target_version=2,
+                deadline=nomad_api.time.monotonic() + 30.0,
+                timeout_seconds=30.0,
+                initial=dep_running,
+            )
+        self.assertEqual(result["Status"], "successful")
+        self.assertFalse(any(method == "POST" for method, _, _ in fake.calls))
+
 
 if __name__ == "__main__":
     unittest.main()

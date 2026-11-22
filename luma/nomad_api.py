@@ -723,6 +723,116 @@ def _target_deployment(
     )
 
 
+def _deployment_has_unhealthy_allocs(deployment: Mapping[str, Any]) -> bool:
+    groups = deployment.get("TaskGroups")
+    if not isinstance(groups, Mapping):
+        return False
+    return any(
+        isinstance(raw_group, Mapping)
+        and (_nonnegative_int(raw_group.get("UnhealthyAllocs")) or 0) > 0
+        for raw_group in groups.values()
+    )
+
+
+def _unrecoverable_task_failure(allocation: Mapping[str, Any]) -> str:
+    task_states = allocation.get("TaskStates")
+    if not isinstance(task_states, Mapping):
+        return ""
+    priority_types = {
+        "Driver Failure",
+        "Setup Failure",
+        "Task hook failed",
+        "Template",
+        "Vault",
+        "Terminated",
+    }
+    alloc_prefix = str(allocation.get("ID") or "")[:8]
+    for task_name, task in task_states.items():
+        if not isinstance(task, Mapping) or task.get("Failed") is not True:
+            continue
+        events = [e for e in (task.get("Events") or []) if isinstance(e, Mapping)]
+        terminal_events = [
+            e
+            for e in events
+            if str(e.get("Type") or "").strip().lower() == "not restarting"
+            or e.get("FailsTask") is True
+        ]
+        if not terminal_events:
+            continue
+        detail = ""
+        for event in reversed(events):
+            if str(event.get("Type") or "").strip() in priority_types:
+                for key in ("DisplayMessage", "DriverMessage", "SetupError", "Message"):
+                    val = str(event.get(key) or "").strip()
+                    if val:
+                        detail = val
+                        break
+            if detail:
+                break
+        if not detail:
+            for event in reversed(terminal_events):
+                for key in ("DisplayMessage", "Message"):
+                    val = str(event.get(key) or "").strip()
+                    if val:
+                        detail = val
+                        break
+                if detail:
+                    break
+        if not detail:
+            detail = "unrecoverable task failure"
+        return f"allocation {alloc_prefix} task {task_name} failed unrecoverably: {detail}"
+    return ""
+
+
+def _unrecoverable_deployment_failure(
+    client: "NomadApi",
+    *,
+    job_id: str,
+    deployment_id: str,
+    target_version: int,
+    deployment: Mapping[str, Any],
+) -> str:
+    try:
+        allocations = client.request("GET", f"/v1/job/{_q(job_id)}/allocations")
+    except LumaError:
+        return ""
+    if not isinstance(allocations, list):
+        return ""
+    groups = deployment.get("TaskGroups")
+    if not isinstance(groups, Mapping):
+        return ""
+    for group_name, raw_group in groups.items():
+        if not isinstance(raw_group, Mapping) or (_nonnegative_int(raw_group.get("UnhealthyAllocs")) or 0) <= 0:
+            continue
+        group_allocs = [
+            a
+            for a in allocations
+            if isinstance(a, Mapping)
+            and _nonnegative_int(a.get("JobVersion")) == target_version
+            and str(a.get("TaskGroup") or "") == str(group_name)
+            and (not a.get("DeploymentID") or str(a.get("DeploymentID")) == deployment_id)
+        ]
+        if not group_allocs:
+            continue
+        if any(
+            str(a.get("DesiredStatus") or "run").strip().lower() in {"run", "running"}
+            and str(a.get("ClientStatus") or "").strip().lower() in {"pending", "running"}
+            for a in group_allocs
+        ):
+            continue
+        if any(str(a.get("NextAllocation") or "").strip() for a in group_allocs):
+            continue
+        if all(
+            str(a.get("ClientStatus") or "").strip().lower() in {"failed", "dead"}
+            for a in group_allocs
+        ):
+            for alloc in group_allocs:
+                reason = _unrecoverable_task_failure(alloc)
+                if reason:
+                    return reason
+    return ""
+
+
 def _wait_for_deployment(
     client: "NomadApi",
     *,
@@ -784,6 +894,30 @@ def _wait_for_deployment(
                 status=status,
                 description=str(current.get("StatusDescription") or "").strip(),
             )
+        if status == "running" and _deployment_has_unhealthy_allocs(current):
+            failure = _unrecoverable_deployment_failure(
+                client,
+                job_id=job_id,
+                deployment_id=deployment_id,
+                target_version=target_version,
+                deployment=current,
+            )
+            if failure:
+                try:
+                    client.request(
+                        "POST",
+                        f"/v1/deployment/fail/{_q(deployment_id)}",
+                        {"DeploymentID": deployment_id},
+                    )
+                except LumaError:
+                    pass
+                raise _rollout_terminal_error(
+                    slug,
+                    kind="deployment",
+                    object_id=deployment_id,
+                    status="failed",
+                    description=failure,
+                )
         current = None
         _poll(deadline)
 

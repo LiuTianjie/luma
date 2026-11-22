@@ -57,6 +57,7 @@ export type ActualResourceValues = {
 
 export type DashboardTask = {
   id?: string;
+  image?: string;
   node?: string;
   region?: string;
   nodeAddress?: string;

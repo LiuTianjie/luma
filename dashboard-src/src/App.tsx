@@ -23,7 +23,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Toaster } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { nodePath, servicePath, terminalPath, updatePath, parseObjectRoute } from "./objectRoutes";
-import { ResourceDetailPage } from "./pages/ResourceDetailPage";
+import { ResourceDetailPage, serviceDetailPath } from "./pages/ResourceDetailPage";
 import { fetchDeploymentConfig } from "./deploymentConfigApi";
 import { useRouter } from "./router";
 import { pageForPath, ROUTE_BY_PAGE } from "./routes";
@@ -235,7 +235,8 @@ function AppShell() {
     {currentUpdateRequest?.configWarning ? <AlertDescription>{currentUpdateRequest.configWarning}</AlertDescription> : null}
   </Alert> : null;
   const openNodeDetail = (node: DashboardNode) => router.navigate(nodePath(node.name || ""));
-  const openServiceDetail = (service: DashboardService) => router.navigate(servicePath(service.fullName || service.name || ""));
+  const openServiceDetail = (service: DashboardService) =>
+    router.navigate(serviceDetailPath(service, vm.applications.map((app) => app.stack)));
   const openNodeTerminal = (node: DashboardNode) => router.navigate(terminalPath("node", node.name || ""));
   const openServiceTerminal = (service: DashboardService, stack: string) => router.navigate(terminalPath("service", service.fullName || service.name || "", stack));
   const closeTerminal = () => router.navigate(routeNode ? nodePath(routeNode.name || "") : routeService?.stack && vm.applications.some(app => app.stack === routeService.stack) ? `/apps/${encodeURIComponent(routeService.stack)}/services` : routeService ? servicePath(routeService.fullName || routeService.name || "") : "/fleet");
