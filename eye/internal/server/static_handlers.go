@@ -31,7 +31,7 @@ func serveJSBundle(w http.ResponseWriter, r *http.Request, body []byte, etag str
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Cache-Control", "public, max-age=300, stale-while-revalidate=86400")
 	w.Header().Set("ETag", etag)
-	if strings.TrimSpace(r.Header.Get("If-None-Match")) == etag {
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
