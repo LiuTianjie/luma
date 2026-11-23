@@ -111,6 +111,21 @@ configSchema:
     label:
       en: Exposure Mode
       zh: 流量入口模式
+  - key: cdn
+    type: select
+    group: placement
+    tier: advanced
+    required: false
+    default: none
+    options:
+      - none
+      - esa
+    label:
+      en: Edge CDN
+      zh: 边缘加速 CDN
+    description:
+      en: Optional Alibaba Cloud ESA acceleration in front of Eye (caches static console assets and SDK, accelerates global ingest).
+      zh: 可选开启阿里云 ESA 边缘加速（缓存控制台静态资源与埋点 SDK，提升国内访问与上报稳定性）。
   - key: autoOriginSuffixes
     type: string
     group: general

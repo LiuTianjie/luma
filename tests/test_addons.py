@@ -132,7 +132,7 @@ class AddonPlatformTests(DashboardAuthBase):
         resp2 = self.client.post(
             "/v1/addons/eye/configure",
             headers=self.bearer(),
-            json={"config": {"retentionDays": 14}},
+            json={"config": {"retentionDays": 14, "cdn": "esa"}},
         )
         self.assertEqual(resp2.status_code, 200, resp2.text)
         self.assertEqual(resp2.json()["generatedSecrets"], [])
@@ -155,6 +155,7 @@ class AddonPlatformTests(DashboardAuthBase):
         self.assertIn("dockerfile: Dockerfile.clickhouse", compose_yaml)
         self.assertIn(f"domain: {EYE_DOMAIN}", sidecar_yaml)
         self.assertIn("node: bot", sidecar_yaml)
+        self.assertIn("cdn: esa", sidecar_yaml)
 
     def test_unified_addon_sso_cross_addon_isolation_and_cascading_revocation(self):
         # Register both eye and builder on distinct HTTPS origins.

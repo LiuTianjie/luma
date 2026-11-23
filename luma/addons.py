@@ -609,6 +609,7 @@ def _render_eye(
     public_url = f"https://{domain}"
     node_edge = preset_id == "node-edge" or exposure == "node-edge"
 
+    cdn = str(config.get("cdn") or "").strip().lower()
     eye_svc_sidecar: Dict[str, Any] = {
         "node": node,
         "exposure": exposure,
@@ -616,6 +617,8 @@ def _render_eye(
         "port": 8090,
         "replicas": 1,
     }
+    if cdn and cdn != "none":
+        eye_svc_sidecar["cdn"] = cdn
     ch_svc_sidecar: Dict[str, Any] = {
         "node": node,
         "exposure": "none",
