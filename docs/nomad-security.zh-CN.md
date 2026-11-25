@@ -6,6 +6,41 @@
 
 `luma-nomad-security.service` 仅负责节点证书签发与续期，沿用原服务名和私有身份记录。它按当前登记的节点维护证书，离线节点恢复后再续期；证书维护失败会记录并重试，不会重开已完成的迁移。
 
+## 工作节点的宿主机访问权限 {#worker-host-access}
+
+`luma node join` 将普通工作节点登记为 `luma_host_access=isolated`。隔离节点可以运行 Docker 工作负载，宿主机卷挂载受限。授信节点 `trusted` 可以为符合准入规则的作业启用 Docker 卷挂载。两种节点配置均使用 Nomad ACL 和双向 TLS。
+
+### 手动给工作节点授信 {#grant-host-access-manually}
+
+在目标工作节点上以 root 身份运行已安装的 Luma CLI。使用该节点登记的名称、当前区域、Tailscale 地址、Nomad RPC 服务器和已签发的 TLS 文件路径。有自定义对端规则时，用 `--rpc-peer`、`--http-peer` 和 `--serf-peer` 保留对应设置。macOS 还需用 `--mesh-interface` 指定已核实的 Tailscale 接口。
+
+下面以一台 Linux 工作节点为例生成配置包。执行时换成目标节点的实际参数。
+
+```sh
+luma security prepare-node \
+  --output /root/worker-1-trusted.json \
+  --name worker-1 --region home --role client \
+  --mesh-ip 100.64.0.20 --server 100.64.0.10:4647 \
+  --host-access trusted --replace-config \
+  --tls-ca /etc/luma/nomad/tls/ca.pem \
+  --tls-cert /etc/luma/nomad/tls/cert.pem \
+  --tls-key /etc/luma/nomad/tls/key.pem
+```
+
+对照节点现有设置审核包内的 Nomad 配置和防火墙策略，确认 `luma_host_access=trusted` 且 Docker 卷挂载已启用。将生成命令为这份审核通过的配置包打印的 `sha256` 赋给 `REVIEWED_SHA256`。
+
+```sh
+luma security apply-node \
+  --bundle /root/worker-1-trusted.json \
+  --expected-sha256 "$REVIEWED_SHA256"
+```
+
+`apply-node` 会校验配置包摘要、原配置摘要和已安装的 Nomad 版本，备份当前 Nomad 配置及服务定义，然后重启目标节点的 Nomad 服务。在 Manager 上运行 `luma security plan --output /root/luma-security-plan.json`，核对目标节点的 `hostAccess` 为 `trusted`。再用 `luma node status worker-1 --format json` 确认 Nomad 状态为 `ready`、调度资格为 `eligible`，并核对 Luma Agent 的最新心跳。
+
+### 部署时自动授信 {#grant-host-access-during-deployment}
+
+Control 启用作业准入强制模式时，带持久 Docker 挂载的 Luma 部署必须能确定唯一一台就绪的存储归属节点，且该节点的 Luma Agent 支持对应的安全操作。Control 通过 Agent 校验挂载，并在需要时将处于隔离状态的归属节点设为 `trusted`。授信会在提交应用作业前重启归属节点的 Nomad 客户端。
+
 ## 凭据、网络与验收 {#boundaries-and-verification}
 
 Manager 更新通过加密存储接口合并 Control 配置，不再扫描全部历史或对正在使用的数据库执行 VACUUM。已启用的存储加密配置继续用于新写入的数据。

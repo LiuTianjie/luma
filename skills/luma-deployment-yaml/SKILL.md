@@ -33,7 +33,7 @@ For local build/upload/deploy, repository import, builder registry setup, or reg
 
 For CDN, acceleration, caching, `cdn:` manifests, `luma cdn` commands, or failures at `Prepare CDN` / `Purge CDN`, read [CDN (Alibaba Cloud ESA)](references/cdn.md).
 
-For actual deployments, recorded commands, or workflow-change prompts, read [Deployment Workflow Records](references/deployment-workflow.md). For persistent placement and local data migration, read [Local Storage and Migration](references/local-storage.md).
+For actual deployments, recorded commands, or workflow-change prompts, read [Deployment Workflow Records](references/deployment-workflow.md). For persistent placement, storage-owner host access and local data migration, read [Local Storage and Migration](references/local-storage.md).
 
 ## Token Vocabulary
 

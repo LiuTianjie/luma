@@ -47,6 +47,17 @@ Resolve aliases to registered Luma nodes and verify the Agent's OS user, HOME,
 PATH and working directory. Use explicit, authorized user/shell wrappers when the
 old SSH command depended on another account or login environment.
 
+## Worker host access
+
+Ordinary `luma node join` workers start with `luma_host_access=isolated`, which
+restricts host volume mounts for scheduled workloads. Shell transport selects
+how the CLI connects to the Agent. When asked to grant a worker host access,
+use `luma security prepare-node --host-access trusted` on that worker. Apply
+the reviewed bundle with its SHA-256 using `luma security apply-node`.
+Applying the bundle restarts that worker's Nomad. Follow the
+[worker host access guide](https://liutianjie.github.io/luma/docs/nomad-security.html#worker-host-access)
+for the required flags and verification.
+
 ## Interactive terminals
 
 ```sh

@@ -6,6 +6,41 @@ The one-time cluster security migration is retired from normal updates. Manager 
 
 `luma-nomad-security.service` now only handles certificate enrollment and renewal, retaining its service name and private identity records. It follows current registered nodes and defers offline nodes until they return. Maintenance errors are logged and retried without reopening a completed migration.
 
+## Worker host access {#worker-host-access}
+
+`luma node join` registers ordinary workers with `luma_host_access=isolated`. An isolated worker runs Docker workloads with host volume mounts restricted. A `trusted` worker enables Docker volume mounts for admitted workloads under Nomad ACLs and mutual TLS.
+
+### Grant host access manually {#grant-host-access-manually}
+
+Run the installed Luma CLI as root on the target worker. Use its registered name, current region, Tailscale address, Nomad RPC servers and enrolled TLS file paths. Carry forward any custom peer rules with `--rpc-peer`, `--http-peer` and `--serf-peer`. On macOS, supply the verified Tailscale interface with `--mesh-interface`.
+
+The following example prepares a bundle on a Linux worker. Substitute the values for your own node.
+
+```sh
+luma security prepare-node \
+  --output /root/worker-1-trusted.json \
+  --name worker-1 --region home --role client \
+  --mesh-ip 100.64.0.20 --server 100.64.0.10:4647 \
+  --host-access trusted --replace-config \
+  --tls-ca /etc/luma/nomad/tls/ca.pem \
+  --tls-cert /etc/luma/nomad/tls/cert.pem \
+  --tls-key /etc/luma/nomad/tls/key.pem
+```
+
+Review the generated Nomad configuration and firewall policy against the worker's settings. Confirm that the bundle sets `luma_host_access=trusted` and enables Docker volumes. Set `REVIEWED_SHA256` to the `sha256` printed for the reviewed bundle.
+
+```sh
+luma security apply-node \
+  --bundle /root/worker-1-trusted.json \
+  --expected-sha256 "$REVIEWED_SHA256"
+```
+
+`apply-node` checks the bundle digest, the baseline configuration digest and the installed Nomad version. It backs up the current Nomad configuration and service definition, then restarts that worker's Nomad service. On the Manager, run `luma security plan --output /root/luma-security-plan.json` and check that the worker reports `hostAccess` as `trusted`. Use `luma node status worker-1 --format json` to confirm that Nomad reports `ready` and `eligible` and that the Luma Agent has a fresh heartbeat.
+
+### Grant host access during deployment {#grant-host-access-during-deployment}
+
+When Control enforces workload admission, an actual Luma deployment with persistent Docker mounts must resolve to exactly one ready storage owner with a compatible Luma Agent. Control asks that Agent to validate the mounts and promotes an isolated owner to `trusted` when needed. The promotion restarts the owner's Nomad client before the application job is submitted.
+
 ## Boundaries and verification
 
 Manager updates merge Control configuration through the encrypted storage codec without rescanning all history or vacuuming the live database. The installed storage encryption profile continues to protect new writes.

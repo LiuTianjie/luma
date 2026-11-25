@@ -10,6 +10,18 @@ Use this reference for persistent deployments and migrating local volume data. C
 - New dashboard defaults isolate data by deployment. Existing sources must retain their identities. Compare actual Nomad mount `type`, `source`, and `target`, Docker volume options, and host mount state; changing a path/name can create an empty database without deleting the old one.
 - Local storage requires independent backups. It does not provide cross-node failover. Removing a deployment can remove its saved owner, so retain the pinned configuration for recovery.
 
+## Host access for storage owners
+
+Ordinary workers join as `isolated`. When Control enforces workload admission,
+an actual deployment with persistent Docker mounts must resolve to one
+ready storage owner with a compatible Luma Agent. Control validates the mounts
+through that Agent and promotes an isolated owner to `trusted` when needed.
+Promotion restarts the owner's Nomad client before job submission. If the
+deployment cannot resolve one owner, verify the saved placement and mount
+sources before changing host access.
+
+For standalone changes to a worker's host access, use the reviewed bundle procedure in the [worker host access guide](https://liutianjie.github.io/luma/docs/nomad-security.html#worker-host-access).
+
 ## Existing-Data Migration
 
 1. Recheck the current deployment immediately before acting. Another update may already have migrated it. If actual mounts are local and correct, skip the migration.
