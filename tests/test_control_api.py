@@ -963,11 +963,18 @@ class ControlApiTests(unittest.TestCase):
                         "nodeName": "bot-host",
                         "nodeId": "nomad-node-id",
                         "tailscaleIP": "100.80.0.20",
+                        "tailscaleDeviceId": "nBot",
                     }
 
-                with patch("luma.control.server._run_node_agent_task", side_effect=run_task):
+                with patch("luma.control.server._run_node_agent_task", side_effect=run_task), patch(
+                    "luma.control.server.tailscale_key_expiry.disable_on_join", return_value={"status": "disabled"}
+                ) as disable_expiry:
                     result = handle_node_nomad_join(state["deployToken"], {"nodeName": "bot"})
 
+                disable_expiry.assert_called_once_with(
+                    node_name="bot", node_id="nomad-node-id", tailscale_ip="100.80.0.20", device_id="nBot",
+                )
+                self.assertEqual(result["tailscaleKeyExpiry"]["status"], "disabled")
                 saved = load_state()["nodes"]["bot"]
                 self.assertEqual(result["nomadNodeId"], "nomad-node-id")
                 self.assertEqual(saved["nodeId"], "nomad-node-id")

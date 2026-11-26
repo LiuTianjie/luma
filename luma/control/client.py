@@ -483,6 +483,7 @@ class ControlClient:
         node_id: str | None = None,
         tailscale_ip: str | None = None,
         tailscale_name: str | None = None,
+        tailscale_device_id: str = "",
         enrollment_token: str = "",
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {"nodeName": node_name, "region": region}
@@ -494,6 +495,8 @@ class ControlClient:
             body["tailscaleIP"] = tailscale_ip
         if tailscale_name:
             body["tailscaleName"] = tailscale_name
+        if tailscale_device_id:
+            body["tailscaleDeviceId"] = tailscale_device_id
         if enrollment_token:
             body["enrollmentToken"] = enrollment_token
         return self.request("POST", "/v1/nodes/label", body, timeout=120)

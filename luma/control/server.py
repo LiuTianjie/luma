@@ -48,7 +48,7 @@ from ..registry_access import join_insecure_registries, registry_host_allows_htt
 from ..build_capabilities import NATIVE_ARM_BUILD_CAPABILITY, REQUIRED_BUILD_CAPABILITY, REPOSITORY_BUILD_PLAN_CAPABILITY, native_arm_build_platform, normalize_build_capabilities, require_build_result_capabilities
 from ..cloudflare import CloudflareClient
 from ..dns import delete_dns, sync_dns, with_dns_runtime
-from . import dns_zones, node_ingress
+from . import dns_zones, node_ingress, tailscale_key_expiry
 from ..dependencies import initialize_service_requirements, require_service_requirements, service_requirements
 from ..egress import minimal_mihomo_config_from_bytes
 from ..compose import (
@@ -3848,17 +3848,23 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         values["tailscaleIP"] = tailscale_ip
     if tailscale_name:
         values["tailscaleName"] = tailscale_name
-    def mutate(state: Dict[str, Any]) -> Dict[str, str]:
+    def mutate(state: Dict[str, Any]) -> Dict[str, Any]:
         require_control_node_token(state, token)
         require_registered_region(state, region)
         previous = _node_record_for_name(state.get("nodes") if isinstance(state.get("nodes"), dict) else {}, luma_name)
         management = _token_has_type(state, token, "deploy")
         if previous and (_node_record_identity_ids(previous) or _node_agent_record(previous).get("tokenHash")) and not management:
             raise LumaError("replacing a registered node requires management authorization")
-        if secured and not management:
+        enrolled = False
+        if secured:
             pending = (previous or {}).get("pendingEnrollment") or {}
             supplied = _hash_agent_token(str(body.get("enrollmentToken") or ""))
-            if pending.get("expiresAt", 0) < time.time() or pending.get("tailscaleIP") != tailscale_ip or not secrets.compare_digest(str(pending.get("hash") or ""), supplied):
+            enrolled = (
+                pending.get("expiresAt", 0) >= time.time()
+                and pending.get("tailscaleIP") == tailscale_ip
+                and secrets.compare_digest(str(pending.get("hash") or ""), supplied)
+            )
+            if not enrolled and not management:
                 raise LumaError("node enrollment proof is missing, expired or does not match")
         previous_labels = previous.get("labels") if isinstance(previous, dict) and isinstance(previous.get("labels"), dict) else {}
         previous_node_id = str((previous or {}).get("nodeId") or (previous or {}).get("nomadNodeId") or previous_labels.get("luma.node.id") or "").strip() if isinstance(previous, dict) else ""
@@ -3867,7 +3873,7 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         if saved:
             saved.pop("pendingEnrollment", None)
         agent_token = _issue_node_agent_token(state, luma_name, node_id=node_id)
-        return {"agentToken": agent_token, "previousNodeId": previous_node_id}
+        return {"agentToken": agent_token, "previousNodeId": previous_node_id, "enrolled": enrolled}
 
     mutation_result = mutate_state(mutate)
     agent_token = mutation_result["agentToken"]
@@ -3888,6 +3894,15 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "nomadHostname": node_name,
         "nomadNodeId": node_id,
     }
+    if mutation_result["enrolled"]:
+        expiry = tailscale_key_expiry.disable_on_join(
+            node_name=luma_name,
+            node_id=node_id,
+            tailscale_ip=tailscale_ip,
+            device_id=str(body.get("tailscaleDeviceId") or "").strip(),
+        )
+        if expiry is not None:
+            result["tailscaleKeyExpiry"] = expiry
     return result
 
 
@@ -3974,6 +3989,12 @@ def handle_node_nomad_join(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     mutation_result = mutate_state(mutate)
     state = load_state()
     saved = _node_record_for_name(state.get("nodes") if isinstance(state.get("nodes"), dict) else {}, node_name) or {}
+    expiry = tailscale_key_expiry.disable_on_join(
+        node_name=node_name,
+        node_id=nomad_node_id,
+        tailscale_ip=tailscale_ip,
+        device_id=str(result.get("tailscaleDeviceId") or "").strip(),
+    )
     return {
         "clusterId": state["clusterId"],
         "nodeName": node_name,
@@ -3986,6 +4007,7 @@ def handle_node_nomad_join(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "agentNodeIds": mutation_result.get("agentNodeIds") or sorted(_node_agent_identity_ids(saved)),
         "taskId": str(result.get("taskId") or ""),
         "message": f"Nomad node joined through node agent: {node_name}",
+        **({"tailscaleKeyExpiry": expiry} if expiry is not None else {}),
     }
 
 

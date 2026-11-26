@@ -1948,6 +1948,8 @@ class CliTests(unittest.TestCase):
                 ), patch(
                     "luma.cli.nodes._local_tailscale_ip", return_value="100.80.0.20"
                 ), patch(
+                    "luma.cli.nodes.tailscale_device_id", return_value="nBot"
+                ), patch(
                     "luma.cli.nodes._install_node_agent_from_token"
                 ) as install_agent, patch("luma.cli.nodes.wait_for_node_readiness", return_value={"agentVersion": "test"}) as verify:
                     code = main(
@@ -1977,6 +1979,7 @@ class CliTests(unittest.TestCase):
                     registered_name="bot",
                     node_id="nomad-node-id",
                     tailscale_ip="100.80.0.20",
+                    tailscale_device_id="nBot",
                     enrollment_token="",
                 )
                 install_agent.assert_called_once()

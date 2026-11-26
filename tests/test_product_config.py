@@ -949,7 +949,9 @@ class ProductConfigTests(unittest.TestCase):
     def test_node_agent_can_join_nomad_node(self):
         with patch("luma.bootstrap.install_nomad_node", return_value=["Nomad agent ready"]) as install_nomad, patch(
             "luma.bootstrap.local_nomad_node_info", return_value=("bot-host", "nomad-node-id")
-        ), patch("luma.bootstrap._tailscale_ip", return_value="100.80.0.20"):
+        ), patch("luma.bootstrap._tailscale_ip", return_value="100.80.0.20"), patch(
+            "luma.bootstrap.tailscale_device_id", return_value="nBot"
+        ):
             result = execute_agent_task(
                 {
                     "action": "join-nomad",
@@ -972,6 +974,7 @@ class ProductConfigTests(unittest.TestCase):
         self.assertEqual(result["nodeName"], "bot-host")
         self.assertEqual(result["nomadNodeId"], "nomad-node-id")
         self.assertEqual(result["tailscaleIP"], "100.80.0.20")
+        self.assertEqual(result["tailscaleDeviceId"], "nBot")
 
     def test_node_agent_update_task_requests_restart_after_completion(self):
         client = Mock()

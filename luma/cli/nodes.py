@@ -6,7 +6,16 @@ import getpass
 import os
 import sys
 from typing import Any, Dict
-from ..bootstrap import _is_tailscale_manager_addr, configure_dns, configure_journald_limit, install_docker, install_nomad_node, local_host_name, setup_tailscale
+from ..bootstrap import (
+    _is_tailscale_manager_addr,
+    configure_dns,
+    configure_journald_limit,
+    install_docker,
+    install_nomad_node,
+    local_host_name,
+    setup_tailscale,
+    tailscale_device_id,
+)
 from ..build_prerequisites import prepare_build_dependencies
 from ..compose import load_compose_deployment
 from ..errors import LumaError
@@ -63,6 +72,16 @@ def _prompt_node_join_options(args: argparse.Namespace) -> None:
             args.name = value
 
 
+def _print_tailscale_key_expiry(result: Dict[str, Any]) -> None:
+    expiry = result.get("tailscaleKeyExpiry")
+    if not isinstance(expiry, dict) or not expiry.get("message"):
+        return
+    if expiry.get("status") == "disabled":
+        print(f"[ok] {expiry['message']}")
+    else:
+        print(f"[warn] {expiry['message']}", file=sys.stderr)
+
+
 def cmd_node(args: argparse.Namespace) -> int:
     if args.node_command == "exec":
         from .terminal import cmd_exec
@@ -94,6 +113,7 @@ def cmd_node(args: argparse.Namespace) -> int:
         print(f"Nomad node ID: {result.get('nomadNodeId') or result.get('nodeId') or '-'}")
         if result.get("tailscaleIP"):
             print(f"Tailscale IP: {result['tailscaleIP']}")
+        _print_tailscale_key_expiry(result)
         return 0
     if args.node_command == "join":
         _prompt_node_join_options(args)
@@ -153,13 +173,16 @@ def cmd_node(args: argparse.Namespace) -> int:
             log(f"[ok] Rolled back node registration: {registered_node_name}")
             raise
         actual_node_name, actual_node_id = local_nomad_node_info()
+        tailscale_ip = _local_tailscale_ip()
+        device_id = tailscale_device_id(LocalExecutor(), tailscale_ip)
         label_result = client.label_node(
             node_name=actual_node_name,
             region=args.region,
             registered_name=args.name,
             node_id=actual_node_id,
-            tailscale_ip=_local_tailscale_ip(),
+            tailscale_ip=tailscale_ip,
             enrollment_token=str(result.get("enrollmentToken") or ""),
+            **({"tailscale_device_id": device_id} if device_id else {}),
         )
         print(label_result.get("message", f"Node labels applied: {actual_node_name}"))
         agent_token = str(label_result.get("agentToken") or "")
@@ -182,6 +205,7 @@ def cmd_node(args: argparse.Namespace) -> int:
             node_name=str(label_result.get("nodeName") or args.name), node_id=actual_node_id,
         )
         print(f"[ok] Node agent ready: {verification.get('agentVersion') or 'unknown version'}")
+        _print_tailscale_key_expiry(label_result)
         print("Node join complete")
         return 0
     if args.node_command == "exit":

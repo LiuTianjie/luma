@@ -1,5 +1,6 @@
 """Regression coverage for the incident's trust boundaries and staged migration."""
 import copy
+import io
 import json
 import os
 import shlex
@@ -10,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest import mock
@@ -390,6 +392,69 @@ class EnrollmentOwnershipTests(SecurityFixture):
             self.assertNotIn("pendingEnrollment", self.state["nodes"]["new-worker"])
             with self.assertRaises(LumaError):
                 self.server.handle_node_label("shared-join", {**body, "enrollmentToken": "one-time-proof"})
+
+    def test_join_updates_tailscale_only_for_the_verified_device(self):
+        from luma.control import tailscale_key_expiry
+
+        self.prepare()
+        nomad_security.private_write(self.runtime / "cluster.json", '{"aclRequired":true}')
+        nomad_security.private_write(self.root / "tailscale-key-expiry.json", '{"clientId":"client-id","clientSecret":"test-secret"}')
+        address = "100.64.0.3"
+        device = {"nodeId": "nWorker", "addresses": [address], "authorized": True, "keyExpiryDisabled": False}
+        with mock.patch.dict(os.environ, {"LUMA_CONTROL_STATE_DIR": str(self.root)}), mock.patch.object(
+            self.server, "load_config", return_value=mock.Mock(defaults={})
+        ), mock.patch.object(self.server, "NomadApi") as cluster_api, mock.patch.object(
+            tailscale_key_expiry, "client_tls", return_value={"ca_file": "control-ca"}
+        ), mock.patch.object(tailscale_key_expiry, "NomadApi") as peer_api, mock.patch.object(
+            tailscale_key_expiry.urllib.request, "build_opener"
+        ) as opener:
+            for attempt in ("wrong peer", "wrong device", "unavailable", "success"):
+                with self.subTest(attempt=attempt):
+                    name = "new-worker"
+                    node_id = "node-3"
+                    proof = "one-time-proof"
+                    self.state["nodes"][name] = {
+                        "region": "cn",
+                        "pendingEnrollment": {
+                            "hash": self.server._hash_agent_token(proof),
+                            "expiresAt": time.time() + 60,
+                            "tailscaleIP": address,
+                        },
+                    }
+                    cluster_api.return_value.request.return_value = {
+                        "Name": name, "Meta": {"luma_node_name": name, "luma_tailscale_ip": address},
+                    }
+                    peer_api.return_value.request.return_value = {
+                        "config": {"NodeName": "other-node" if attempt == "wrong peer" else name},
+                        "stats": {"client": {"node_id": node_id}},
+                    }
+                    lookup = {**device, "addresses": ["100.64.0.5"]} if attempt == "wrong device" else device
+                    responses = [
+                        io.BytesIO(b'{"access_token":"test-access-token"}'),
+                        io.BytesIO(json.dumps(lookup).encode()),
+                        urllib.error.HTTPError("https://api.tailscale.com", 503, "unavailable", {}, None)
+                        if attempt == "unavailable" else io.BytesIO(b"{}"),
+                    ]
+                    send = opener.return_value.open
+                    send.reset_mock()
+                    send.side_effect = responses
+                    result = self.server.handle_node_label("shared-join", {
+                        "nodeName": name, "nodeId": node_id, "region": "cn", "tailscaleIP": address,
+                        "tailscaleDeviceId": "nWorker", "enrollmentToken": proof,
+                    })
+                    self.assertTrue(result["agentToken"])
+                    self.assertEqual(self.state["nodes"][name]["nodeId"], node_id)
+                    self.assertNotIn("pendingEnrollment", self.state["nodes"][name])
+                    mutations = [call.args[0] for call in send.call_args_list if call.args[0].full_url.endswith("/key")]
+                    if attempt in {"wrong peer", "wrong device"}:
+                        self.assertFalse(mutations)
+                        if attempt == "wrong peer":
+                            send.assert_not_called()
+                    else:
+                        self.assertEqual(len(mutations), 1)
+                        self.assertEqual(mutations[0].full_url, "https://api.tailscale.com/api/v2/device/nWorker/key")
+                        self.assertEqual(json.loads(mutations[0].data), {"keyExpiryDisabled": True})
+                    self.assertEqual(result["tailscaleKeyExpiry"]["status"], "disabled" if attempt == "success" else "warning")
 
 
 class AuditTests(unittest.IsolatedAsyncioTestCase):

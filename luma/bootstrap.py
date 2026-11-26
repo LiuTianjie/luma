@@ -2120,6 +2120,23 @@ def _tailscale_ip(remote: Executor) -> str | None:
     return value or None
 
 
+def tailscale_device_id(remote: Executor, address: str) -> str:
+    """Return the stable Tailscale device ID for this host's current address."""
+    if not address:
+        return ""
+    try:
+        result = remote.run_result("tailscale status --json", timeout=5)
+        if result.code == 0:
+            status = json.loads(result.output)
+            if status["BackendState"] == "Running" and address in status["TailscaleIPs"]:
+                device_id = status["Self"]["ID"]
+                if isinstance(device_id, str):
+                    return device_id
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    return ""
+
+
 def _is_loopback_host(host: str) -> bool:
     return host in {"127.0.0.1", "localhost", "::1"}
 

@@ -109,6 +109,8 @@ luma node join https://luma.example.com --token <node-join-token> --region globa
 
 Home and other private nodes need Tailscale: set `TAILSCALE_AUTHKEY` or run `luma node tailscale` first. macOS nodes also need a running Docker (Docker Desktop or OrbStack).
 
+To disable Tailscale node key expiry automatically during enrollment, configure [the Control-side Tailscale credential](secrets.md#tailscale-node-key-expiry). The setting also applies to nodes already signed into Tailscale when they join Luma.
+
 `luma node list` shows registered nodes and their agents. `luma node exit` stops Nomad on the current machine and removes its Luma state; add `--endpoint` and `--token` to unregister it too.
 
 ### Required ports

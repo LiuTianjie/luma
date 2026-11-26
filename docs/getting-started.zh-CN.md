@@ -109,6 +109,8 @@ luma node join https://luma.example.com --token <node-join-token> --region globa
 
 家庭节点和其他私网节点需要 Tailscale：先设置 `TAILSCALE_AUTHKEY` 或执行 `luma node tailscale`。macOS 节点还需要运行中的 Docker（Docker Desktop 或 OrbStack）。
 
+配置 [Control 的 Tailscale 凭据](secrets.zh-CN.md#tailscale-node-key-expiry) 后，节点加入 Luma 时会自动关闭 Tailscale 节点密钥过期，之前已登录 Tailscale 的机器也适用。
+
 `luma node list` 显示已注册节点及其 agent 状态。`luma node exit` 会停止本机的 Nomad 并删除本机的 Luma 状态；加上 `--endpoint` 和 `--token` 会同时从集群注销。
 
 ### 所需端口 {#required-ports}

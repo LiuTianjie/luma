@@ -44,6 +44,16 @@ It contains the cluster id, management token, node join token, the Nomad gossip 
 
 Luma Control also mounts `/var/run/docker.sock` and reaches the Nomad HTTP API so it can record node meta after clients join. Treat management and node join tokens as cluster-admin sensitive.
 
+### Tailscale node key expiry
+
+To turn off node key expiry automatically on `luma node join` and `luma node nomad-join`, configure the credential once on the manager. Use a [Tailscale OAuth client](https://tailscale.com/docs/features/oauth-clients) with `devices:core` write access and provide JSON containing `clientId` and `clientSecret`. You can also provide `apiKey` alone with a Tailscale API access token for the same tailnet. The access token needs rotation before its provider expiry.
+
+```bash
+sudo /opt/luma-cli/bin/python -m luma.secret_storage store-credential /opt/luma/control/tailscale-key-expiry.json < /path/to/private-tailscale-credential.json
+```
+
+Control reads this private file at enrollment. Update Control and the joining CLI or node agent to use the feature. Control verifies the joining node over the existing Nomad TLS connection and checks its Tailscale device ID and address before updating its key. The credential stays on Control. If the update cannot be confirmed, Luma reports a warning and keeps the enrolled node. Remove the credential file to stop applying this setting to future joins.
+
 ## Deployment Secrets
 
 Service manifests can reference control-plane deployment secrets with `${NAME}` in fields such as `env`.

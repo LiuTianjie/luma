@@ -243,9 +243,9 @@ def store_credential_file(path: Path, value: str) -> None:
     private_write(path, payload)
 
 
-def read_credential_file(path: Path) -> str:
+def read_credential_file(path: Path, *, optional: bool = False) -> str:
     from .nomad_security import private_read
-    raw = private_read(path)
+    raw = private_read(path, optional=optional)
     try:
         encrypted = sealed(json.loads(raw))
     except ValueError:

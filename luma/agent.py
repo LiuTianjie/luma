@@ -3105,7 +3105,7 @@ def join_nomad_node(
     insecure_registries: list[str] | None = None,
     security: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    from .bootstrap import _tailscale_ip, install_nomad_node, local_nomad_node_info
+    from .bootstrap import _tailscale_ip, install_nomad_node, local_nomad_node_info, tailscale_device_id
     from .config import NodeConfig
 
     safe_node_name = str(node_name or "").strip()
@@ -3138,7 +3138,9 @@ def join_nomad_node(
         security=security,
     )
     actual_node_name, nomad_node_id = local_nomad_node_info()
-    tailscale_ip = _tailscale_ip(LocalExecutor()) or ""
+    remote = LocalExecutor()
+    tailscale_ip = _tailscale_ip(remote) or ""
+    device_id = tailscale_device_id(remote, tailscale_ip)
     return {
         "message": f"Nomad node joined: {safe_node_name}",
         "registeredName": safe_node_name,
@@ -3147,6 +3149,7 @@ def join_nomad_node(
         "nomadNodeId": nomad_node_id,
         "region": safe_region,
         "tailscaleIP": tailscale_ip,
+        **({"tailscaleDeviceId": device_id} if device_id else {}),
         "install": install_messages,
     }
 

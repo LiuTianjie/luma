@@ -44,6 +44,16 @@ $EDITOR .env
 
 Luma Control 还挂载 `/var/run/docker.sock` 并访问 Nomad HTTP API，以便客户端加入后记录节点元数据。管理令牌和节点加入令牌都应按集群管理级敏感凭据保管。
 
+### Tailscale 节点密钥过期 {#tailscale-node-key-expiry}
+
+在 Manager 上配置一次凭据后，`luma node join` 和 `luma node nomad-join` 会在节点加入时自动关闭节点密钥过期。为 [Tailscale OAuth 客户端](https://tailscale.com/docs/features/oauth-clients) 授予 `devices:core` 写权限，并提供包含 `clientId` 和 `clientSecret` 的 JSON。也可以仅提供 `apiKey`，值为同一 Tailnet 的 Tailscale API 访问令牌。该令牌需要在 Tailscale 规定的有效期内轮换。
+
+```bash
+sudo /opt/luma-cli/bin/python -m luma.secret_storage store-credential /opt/luma/control/tailscale-key-expiry.json < /path/to/private-tailscale-credential.json
+```
+
+Control 在节点加入时读取此私有文件。使用前需更新 Control 和执行加入的 CLI 或节点 agent。Control 通过现有的 Nomad TLS 验证节点，再核对 Tailscale 设备 ID 和地址，然后更新密钥设置。凭据只保存在 Control。更新无法确认时，Luma 会返回告警并保留已加入的节点。移除该凭据文件即可停止对后续加入的节点应用此设置。
+
 ## 部署密钥 {#deployment-secrets}
 
 服务清单可在 `env` 等字段中通过 `${NAME}` 引用控制面的部署密钥。
